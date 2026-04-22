@@ -9,16 +9,14 @@ agent: myco-agent
 prompt: >-
   Assess and evolve skills that have new knowledge, codebase drift,
   or structural overlap. The instruction contains pre-filtered skills
-  with their content, new spore IDs, and pre-computed similarity
-  analysis; the verify phase fact-checks the broader active skill
-  set against the codebase.
+  with new spore IDs plus pre-computed structural and drift analysis.
 isDefault: false
 reasoningLevel: default
 maxTurns: 72
 timeoutSeconds: 2400
 schedule:
   enabled: false
-  intervalSeconds: 900
+  intervalSeconds: 21600
   runIn:
     - idle
     - sleep
@@ -84,143 +82,12 @@ phases:
     required: true
     readOnly: true
 
-  - name: verify
-    reasoningLevel: default
-    prompt: |
-      Fact-check active skills against the actual codebase. This phase
-      catches silent drift from refactors that didn't produce spores —
-      e.g., a file was renamed, a function was removed, a pattern was
-      replaced — so the spore-driven assessment in the next phase would
-      otherwise leave the skill's stale content in place.
-
-      ## Selection
-
-      List active skills via vault_skill_records (action: list,
-      status: active). Prioritize up to 2 skills with the OLDEST
-      `last_verified_at` in properties (missing/zero counts as oldest,
-      so never-verified skills sort to the front). If fewer than 2
-      active skills exist, verify them all. This watermark is
-      independent of `last_assessed_at` — it rotates verify coverage
-      even when assess never touches the skill, which is the whole
-      point: skills that never get new spores still need to be
-      fact-checked for silent refactor drift. Full rotation time
-      scales with the active skill count divided by 2, so a larger
-      skill inventory naturally stretches the verify cadence.
-
-      Skills flagged by the inventory phase (merge_candidates or
-      narrow_candidates in vault_state:skill-evolve-inventory) can be
-      skipped here — they're already going to be rewritten in act.
-
-      ## Per-skill procedure
-
-      For each selected skill:
-
-      1. Read full content via vault_skill_records (action: get).
-      2. Identify the 3-5 most LOAD-BEARING concrete claims. A claim
-         is load-bearing if the procedure depends on it being true.
-         Examples:
-         - "Edit `packages/myco/src/db/schema.ts`" — path claim
-         - "Call `setFocusedPanel()`" — identifier claim
-         - "The daemon restarts executor on SIGHUP" — behavior claim
-         Skip generic advice ("use good naming"), tool names that are
-         universal (e.g., `grep`), and illustrative code snippets that
-         aren't literal file content.
-      3. Verify each claim with the cheapest tool that answers it:
-         - **Path claim** → fs_read with a narrow line window (e.g.,
-           start_line=1, end_line=30). ENOENT or unrelated content =
-           MISSING/OUTDATED. For a DIRECTORY path, use fs_list or
-           fs_tree instead — fs_read on a directory returns an error
-           and burns a turn.
-         - **Identifier claim** → code_grep for the symbol with a
-           path+glob filter. Zero hits in expected location = MISSING.
-         - **Behavior claim** → code_grep for signature patterns that
-           would implement it. Zero hits = MISSING.
-
-         HARD LIMIT: **at most 2 tool calls per claim**, and **at most
-         4 claims per skill**, so ~8 filesystem calls per skill
-         absolute maximum. If your first grep returns too many hits
-         or the wrong ones, DO NOT refine and retry — accept
-         INCONCLUSIVE and move on. Exploratory refinement is exactly
-         how this phase burned through budget on earlier runs.
-
-      4. Categorize each claim: VERIFIED / MISSING / OUTDATED /
-         INCONCLUSIVE. INCONCLUSIVE is fine when the claim is too
-         fuzzy to verify cheaply — don't burn turns on it.
-
-      5. Aggregate for the skill:
-         - confidence: high (>=80% verified), medium, or low
-         - severity: none / minor (1 cosmetic miss) / major
-           (load-bearing miss) / critical (most refs gone)
-
-      6. Update the skill's verify watermark REGARDLESS of severity —
-         skipping this step on severity=none would make verify re-pick
-         the same skill forever. Example call:
-
-           vault_skill_records({
-             action: "update",
-             id: "<the-skill-uuid>",
-             properties: "{\"last_verified_at\": 1776580022}"
-           })
-
-         `properties` is a JSON string, merged into the skill's existing
-         properties. Any recent epoch-seconds integer works as the
-         timestamp — this is a rotation cursor, not an audit timestamp.
-
-      ## Budget discipline
-
-      Total budget for this phase: {{max_turns}} turns covering ALL
-      selected skills combined. Plan per-skill budget as roughly
-      `{{max_turns}} / skills_selected` turns. Recommended shape:
-      1 content read + up to 4 claim checks × up to 2 tool calls +
-      1 watermark write. Stop verifying a skill as soon as severity
-      is clear — finding one MISSING load-bearing claim is enough
-      to flag the skill; don't check remaining claims.
-
-      Prefer narrow fs_read windows (start/end lines) over whole-file
-      reads. Prefer code_grep with a path/glob filter over an open grep.
-      When a tool returns "Not a file" or zero matches, accept that
-      answer and move on — do not retry with adjusted args.
-
-      Tools available for this phase: {{phase_tools}}.
-
-      ## Store results
-
-      Store via vault_set_state (key: skill-evolve-drift) as JSON:
-      {
-        "verified_at": <epoch-seconds>,
-        "reports": [
-          {
-            "skill_id": "...",
-            "name": "...",
-            "severity": "none|minor|major|critical",
-            "confidence": "high|medium|low",
-            "notes": "Short: what's missing or outdated.",
-            "load_bearing_misses": ["claim 1", "claim 2"]
-          }
-        ]
-      }
-
-      Report via vault_report. If no active skills are selectable
-      (e.g., all were flagged by inventory for merge), store an empty
-      reports array and report skip.
-    tools:
-      - vault_skill_records
-      - vault_set_state
-      - vault_report
-      - fs_read
-      - fs_list
-      - code_grep
-    maxTurns: 24
-    required: true
-    dependsOn:
-      - inventory
-
   - name: assess
-    reasoningLevel: default
+    reasoningLevel: low
     prompt: |
       Read two pre-computed inputs from vault_state:
         - key: skill-evolve-inventory (merge/narrow candidates)
-        - key: skill-evolve-drift (codebase verification reports)
+        - key: skill-evolve-drift (mechanical drift + growth reports)
 
       There are THREE sources of skills to assess:
 
@@ -244,20 +111,30 @@ phases:
       2. Verify the inventory's merge/narrow recommendation by
          reading both skills' content.
 
-      **C. Drift-flagged skills** — reports from the verify phase with
+      **C. Drift-flagged skills** — reports from the mechanical pass with
       severity of `minor`, `major`, or `critical`. These may NOT appear
       in the instruction (no new spores) but need attention because
       their content no longer matches the codebase. For each drift
       report not already covered above:
       1. Read the skill's content via vault_skill_records (action: get).
-      2. Trust the verify phase's load_bearing_misses as the STALE
-         detail set. You do NOT need to re-run fs_read/code_grep —
-         the verify phase already did that work. Only re-check if
-         the verify report's confidence is low.
+      2. Trust `load_bearing_misses` as the STALE detail set.
+         Re-check with fs_read/code_grep ONLY if confidence is low
+         OR a claim is inconclusive.
       3. Major/critical severity with confidence high/medium should
          classify as STALE (or DEPRECATED if the entire subsystem
          described is gone). Minor severity may stay CURRENT unless
          combined with new-spore evidence.
+
+      **D. Growth-flagged skills** — reports with non-empty `growth`
+      where referenced TS files gained new exports since the skill's
+      stored fingerprint baseline. For each growth report not already
+      covered above:
+      1. Read the skill's content via vault_skill_records (action: get).
+      2. For each growth claim, run at most one targeted fs_read or
+         code_grep call to decide if the new export is relevant to the
+         skill's domain.
+      3. If relevant, classify STALE and include details. If not
+         relevant, keep CURRENT and explain why.
 
       For ALL skills from all three sources, classify with one of:
          - CURRENT — still accurate, no changes needed.
@@ -285,7 +162,8 @@ phases:
          vault_skill_records (action: update, id: <skill_id>,
          properties: '{"last_assessed_at": <now>,
          "knowledge_watermark": <now>,
-         "last_classification": "<classification>"}')
+         "last_classification": "<classification>",
+         "file_fingerprints": {...latest_report.current_fingerprints...}}')
 
       6. Store classifications via vault_set_state
          (key: skill-evolve-classifications) as JSON:
@@ -296,21 +174,31 @@ phases:
 
       Report via vault_report.
 
-      If the instruction says "No skills need assessment" AND the
-      inventory has no merge/narrow candidates AND the drift report
-      has no minor+ severity entries, report skip via vault_report
-      and finish.
+      ## Budget discipline
+
+      Total budget for this phase: {{max_turns}} turns.
+      Tools available for this phase: {{phase_tools}}.
+      Spread budget across all flagged skills from A/B/C/D.
+      Plan per-skill budget roughly as `{{max_turns}} / skills_selected`
+      where skills_selected is the number of unique skills surfaced by
+      the pre-computed reports.
+
+      Hard limits:
+      - At most 2 tool calls per inconclusive or growth claim.
+      - Do not rerun broad exploration if a targeted check already
+        answers the classification decision.
     tools:
       - vault_spores
       - vault_search_fts
       - vault_skill_records
       - vault_set_state
       - vault_report
-    maxTurns: 18
+      - fs_read
+      - code_grep
+    maxTurns: 10
     required: true
     dependsOn:
       - inventory
-      - verify
 
   - name: act
     reasoningLevel: low
