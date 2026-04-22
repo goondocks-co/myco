@@ -1,9 +1,7 @@
 /**
- * Shared builder for session-start context text — used by BOTH the daemon's
- * `/context` route and the degraded-path `buildInjectedContext()` in
- * `injector.ts`. Keeping the heading format and join string here ensures the
- * two paths emit identical strings; if they diverge, consumers see different
- * session-start payloads depending on whether the daemon is up.
+ * Shared builder for session-start context text — used by the daemon's
+ * `/context` route. Extracted so the heading format and join string have a
+ * single source of truth.
  */
 
 import type { MycoConfig } from '@myco/config/schema.js';
