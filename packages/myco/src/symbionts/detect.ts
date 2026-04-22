@@ -1,4 +1,5 @@
 import { SymbiontManifestSchema, type SymbiontManifest } from './manifest-schema.js';
+import { BUNDLED_MANIFESTS } from './manifests.generated.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -16,14 +17,23 @@ const MANIFESTS_SUBDIR = 'symbionts/manifests';
 /** Cached manifests — static files that never change at runtime. */
 let manifestCache: SymbiontManifest[] | null = null;
 
-/** Load all symbiont manifests from the package's dist directory. */
+/**
+ * Load all symbiont manifests.
+ *
+ * Under Bun-compiled binaries the manifest YAMLs live inside the /$bunfs/
+ * virtual filesystem where `fs.readdirSync` can't enumerate them. The
+ * codegen-emitted `BUNDLED_MANIFESTS` array is the authoritative source in
+ * that case and also when running from source (since it's regenerated on
+ * every build via `npm run codegen`). We still try the filesystem first for
+ * dev-mode edits that haven't been codegen'd, but the bundled array is the
+ * reliable fallback that always works.
+ */
 export function loadManifests(): SymbiontManifest[] {
   if (manifestCache) return manifestCache;
   const candidates = [
     // Source layout: src/symbionts/detect.ts → src/symbionts/manifests/
     path.resolve(import.meta.dirname, MANIFESTS_SUBDIR),
     // Dist layout: dist/src/symbionts/ → dist/src/symbionts/manifests/
-    // (or dist/src/daemon/ → dist/src/symbionts/manifests/)
     path.resolve(import.meta.dirname, '..', MANIFESTS_SUBDIR),
     path.resolve(import.meta.dirname, '..', '..', MANIFESTS_SUBDIR),
     // Chunk layout: dist/chunk-*.js → dist/src/symbionts/manifests/
@@ -32,15 +42,25 @@ export function loadManifests(): SymbiontManifest[] {
 
   for (const dir of candidates) {
     if (!fs.existsSync(dir)) continue;
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.yaml'));
+    // Inside /$bunfs/ the dir may exist but readdirSync returns empty;
+    // fall through to the bundled fallback in that case.
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml'));
+    } catch { /* bundled FS can throw — fall through */ }
     if (files.length === 0) continue;
-    manifestCache = files.map(f => {
+    manifestCache = files.map((f) => {
       const raw = YAML.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
       return SymbiontManifestSchema.parse(raw);
     });
     return manifestCache;
   }
-  return [];
+
+  // Fallback: codegen-emitted bundled manifests. Always works in compiled
+  // binaries and is fast enough to use as the primary source if dev-mode FS
+  // reads stop working for some reason.
+  manifestCache = BUNDLED_MANIFESTS.map((m) => SymbiontManifestSchema.parse(m));
+  return manifestCache;
 }
 
 /** Find a loaded manifest by symbiont name, or undefined. */
