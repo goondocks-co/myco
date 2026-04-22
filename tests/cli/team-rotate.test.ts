@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,10 +6,10 @@ import path from 'node:path';
 
 const execHandlers: Array<() => string | Error> = [];
 
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return {
-    ...actual,
+import * as childProcessActual__ns from 'node:child_process';
+const childProcessActual = { ...childProcessActual__ns };
+mock.module('node:child_process', () => ({
+    ...childProcessActual,
     execFileSync: vi.fn((_command: string, _args: string[], options?: { encoding?: string }) => {
       const handler = execHandlers.shift();
       if (!handler) return options?.encoding ? '' : Buffer.from('');
@@ -17,8 +17,7 @@ vi.mock('node:child_process', async () => {
       if (result instanceof Error) throw result;
       return options?.encoding ? result : Buffer.from(result);
     }),
-  };
-});
+  }));
 
 describe('teamRotateTokens', () => {
   let tempDir: string;

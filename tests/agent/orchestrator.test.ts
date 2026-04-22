@@ -1,17 +1,17 @@
 /**
  * Tests for the orchestrator module.
  *
- * The prompt template file is mocked via vi.mock('node:fs') so tests never
+ * The prompt template file is mocked via mock.module('node:fs') so tests never
  * touch the real filesystem. Each test suite exercises one exported function.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock node:fs so readFileSync returns a controlled template
 // ---------------------------------------------------------------------------
 
-vi.mock('node:fs', () => ({
+mock.module('node:fs', () => ({
   default: {
     readFileSync: vi.fn(),
     existsSync: vi.fn(() => true),

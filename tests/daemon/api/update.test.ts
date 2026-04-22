@@ -8,13 +8,13 @@
  * - handleUpdateChannel: writes config + clears cache, 400 for invalid channel
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/daemon/update-checker.js', () => ({
+mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
   checkForUpdate: vi.fn(),
   statusFromCache: vi.fn(),
@@ -27,7 +27,7 @@ vi.mock('@myco/daemon/update-checker.js', () => ({
   resolveMycoBinary: vi.fn(() => 'myco'),
 }));
 
-vi.mock('@myco/daemon/update-installer.js', () => ({
+mock.module('@myco/daemon/update-installer.js', () => ({
   spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,7 +9,7 @@ import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
 // hooks/client.ts resolves to our spy. vi.spyOn doesn't work here — the
 // named import captures the real function at parse time.
 const spawnMock = vi.fn(() => ({ unref: () => {} }));
-vi.mock('node:child_process', () => ({ spawn: spawnMock }));
+mock.module('node:child_process', () => ({ spawn: spawnMock }));
 
 // Late import so the mock is in place before client.ts evaluates.
 const { DaemonClient } = await import('@myco/hooks/client');

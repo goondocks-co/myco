@@ -1,3 +1,7 @@
+import * as __orig__myco_agent_loader_js_1__ns from '@myco/agent/loader.js';
+const __orig__myco_agent_loader_js_1 = { ...__orig__myco_agent_loader_js_1__ns };
+import * as __orig__myco_db_client_js_2__ns from '@myco/db/client.js';
+const __orig__myco_db_client_js_2 = { ...__orig__myco_db_client_js_2__ns };
 /**
  * Tests for dryRun + evaluationId threading through the executor.
  *
@@ -10,7 +14,7 @@
  *   e. dryRun:true is forwarded to the scoped tool server.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
@@ -35,7 +39,7 @@ const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
 let mockQueryBehavior: 'success' | 'error' = 'success';
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => {
+mock.module('@anthropic-ai/claude-agent-sdk', () => {
   return {
     query: (_args: unknown) => {
       return {
@@ -88,8 +92,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 
 let mockYamlPhases: PhaseDefinition[] | undefined;
 
-vi.mock('@myco/agent/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+mock.module('@myco/agent/loader.js', () => {
+  const original = __orig__myco_agent_loader_js_1;
   return {
     ...original,
     resolveDefinitionsDir: () => '/mock/definitions',
@@ -120,7 +124,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
 // Mock: registry
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/registry.js', () => ({
+mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: () => {
     const tasks = new Map();
     tasks.set(TEST_TASK_NAME, {
@@ -140,7 +144,7 @@ vi.mock('@myco/agent/registry.js', () => ({
 // Mock: context
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/context.js', () => ({
+mock.module('@myco/agent/context.js', () => ({
   buildVaultContext: () => '## Current Vault State\nagent_id: myco-agent',
 }));
 
@@ -151,7 +155,7 @@ vi.mock('@myco/agent/context.js', () => ({
 /** Options passed to createScopedVaultToolServer, captured for assertions. */
 let scopedToolCallOptions: Array<Record<string, unknown>> = [];
 
-vi.mock('@myco/agent/tools.js', () => ({
+mock.module('@myco/agent/tools.js', () => ({
   createVaultToolServer: (_agentId: string, _runId: string) => ({
     type: 'sdk' as const,
     name: 'myco-vault',
@@ -171,8 +175,8 @@ vi.mock('@myco/agent/tools.js', () => ({
 // Mock: DB client (use in-memory test DB)
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/db/client.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/db/client.js')>();
+mock.module('@myco/db/client.js', () => {
+  const original = __orig__myco_db_client_js_2;
   return {
     ...original,
     // Redirect executor's initDatabase(vaultDbPath) to the already-initialized
@@ -197,7 +201,7 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
 // Mock: config loader
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadConfig: () => ({
     version: 3,
     config_version: 0,

@@ -18,6 +18,7 @@ const BUN_LIFECYCLE = new Set([
   'beforeEach',
   'afterAll',
   'afterEach',
+  'mock',
 ]);
 
 /** Recursively collect .ts/.tsx files under tests/. */
@@ -53,12 +54,20 @@ function rewriteVitestImport(source, fromFile) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const bunNames = names.filter((n) => BUN_LIFECYCLE.has(n));
+  const bunNames = new Set(names.filter((n) => BUN_LIFECYCLE.has(n)));
   const viNames = names.filter((n) => !BUN_LIFECYCLE.has(n));
 
+  // If the file calls `vi.mock(...)` or `vi.doMock(...)`, we rewrite those to
+  // direct `mock.module(...)` calls (bun hoists them to before sibling static
+  // imports; indirect calls through the shim don't get that treatment). Make
+  // sure the bun:test import brings `mock` in that case.
+  const usesMockModule =
+    /\bvi\.(?:mock|doMock)\s*\(/.test(source) || /\bmock\.module\s*\(/.test(source);
+  if (usesMockModule) bunNames.add('mock');
+
   const lines = [];
-  if (bunNames.length > 0) {
-    lines.push(`import { ${bunNames.join(', ')} } from 'bun:test';`);
+  if (bunNames.size > 0) {
+    lines.push(`import { ${[...bunNames].join(', ')} } from 'bun:test';`);
   }
   if (viNames.length > 0) {
     // All non-lifecycle names should be `vi`. Route through the shim.
@@ -66,6 +75,30 @@ function rewriteVitestImport(source, fromFile) {
   }
 
   return source.replace(RE, lines.join('\n'));
+}
+
+function rewriteViMockCalls(source) {
+  // `vi.mock(...)` -> `mock.module(...)`, `vi.doMock(...)` -> `mock.module(...)`.
+  // Bun hoists literal `mock.module(` calls above subsequent static imports in
+  // the same file; calls made via a shim function don't benefit from that.
+  return source
+    .replace(/\bvi\.mock\s*\(/g, 'mock.module(')
+    .replace(/\bvi\.doMock\s*\(/g, 'mock.module(');
+}
+
+/** Ensure any file that calls `mock.module(` imports `mock` from bun:test. */
+function ensureMockImport(source) {
+  if (!/\bmock\.module\s*\(/.test(source)) return source;
+  const bunImportRe = /^import\s*\{([^}]+)\}\s*from\s*['"]bun:test['"]\s*;?\s*$/m;
+  const m = source.match(bunImportRe);
+  if (!m) return source;
+  const names = m[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (names.includes('mock')) return source;
+  names.push('mock');
+  return source.replace(bunImportRe, `import { ${names.join(', ')} } from 'bun:test';`);
 }
 
 function rewriteJestDomImport(source) {
@@ -80,6 +113,8 @@ for (const file of walk(TESTS_DIR)) {
   const before = fs.readFileSync(file, 'utf8');
   let after = rewriteVitestImport(before, file);
   after = rewriteJestDomImport(after);
+  after = rewriteViMockCalls(after);
+  after = ensureMockImport(after);
   if (after !== before) {
     fs.writeFileSync(file, after);
     touched += 1;

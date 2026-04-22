@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 
 import { render } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { SystemNotifications } from '../../packages/myco/ui/src/components/notifications/SystemNotifications';
 
 const useNotificationsMock = vi.fn();
 const useScopedConfigMock = vi.fn();
 
-vi.mock('../../packages/myco/ui/src/hooks/use-notifications', () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-notifications', () => ({
   useNotifications: () => useNotificationsMock(),
 }));
 
-vi.mock('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
   useScopedConfig: () => useScopedConfigMock(),
 }));
 

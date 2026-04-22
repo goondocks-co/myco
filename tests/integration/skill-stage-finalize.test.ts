@@ -19,14 +19,14 @@
  * tests in the daemon).
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 // Mock embedding like the skill-tools unit test suite
-vi.mock('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
+mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';

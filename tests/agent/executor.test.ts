@@ -1,13 +1,21 @@
+import * as __orig__myco_agent_loader_js_1__ns from '@myco/agent/loader.js';
+const __orig__myco_agent_loader_js_1 = { ...__orig__myco_agent_loader_js_1__ns };
+import * as __orig__myco_db_queries_turns_js_2__ns from '@myco/db/queries/turns.js';
+const __orig__myco_db_queries_turns_js_2 = { ...__orig__myco_db_queries_turns_js_2__ns };
+import * as __orig__myco_db_queries_reports_js_3__ns from '@myco/db/queries/reports.js';
+const __orig__myco_db_queries_reports_js_3 = { ...__orig__myco_db_queries_reports_js_3__ns };
+import * as __orig__myco_db_client_js_4__ns from '@myco/db/client.js';
+const __orig__myco_db_client_js_4 = { ...__orig__myco_db_client_js_4__ns };
 /**
  * Tests for the agent executor.
  *
- * The Agent SDK's `query()` function is mocked via vi.mock() so tests
+ * The Agent SDK's `query()` function is mocked via mock.module() so tests
  * never call the Anthropic API. Each test uses an in-memory PGlite
  * instance with the full schema.
  */
 
 import crypto from 'node:crypto';
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
@@ -67,7 +75,7 @@ let mockAssistantCount = 0;
 let mockToolCallCounts: Record<string, number> = {};
 let mockRunReports: ReportRow[] = [];
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => {
+mock.module('@anthropic-ai/claude-agent-sdk', () => {
   return {
     query: (args: { prompt: string; options?: Record<string, unknown> }) => {
       capturedQueryArgs = args;
@@ -179,8 +187,8 @@ let mockOrchestratorConfig: OrchestratorConfig | undefined;
 /** Top-level task reasoning level from the registry mock. Set per-test. */
 let mockTaskReasoningLevel: 'low' | 'default' | 'high' | undefined;
 
-vi.mock('@myco/agent/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+mock.module('@myco/agent/loader.js', () => {
+  const original = __orig__myco_agent_loader_js_1;
   return {
     ...original,
     resolveDefinitionsDir: () => '/mock/definitions',
@@ -225,7 +233,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
 // Mock: registry (wraps loadAgentTasks — avoids filesystem reads)
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/registry.js', () => ({
+mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: (_definitionsDir: string, _vaultDir?: string) => {
     const tasks = new Map();
       const task = {
@@ -249,7 +257,7 @@ vi.mock('@myco/agent/registry.js', () => ({
 // Mock: context
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/context.js', () => ({
+mock.module('@myco/agent/context.js', () => ({
   buildVaultContext: () => '## Current Vault State\nagent_id: myco-agent\nunprocessed_batches: 5',
 }));
 
@@ -260,7 +268,7 @@ vi.mock('@myco/agent/context.js', () => ({
 /** Captured calls to createScopedVaultToolServer. */
 let scopedToolCalls: Array<{ agentId: string; runId: string; toolNames: string[]; options?: Record<string, unknown> }> = [];
 
-vi.mock('@myco/agent/tools.js', () => ({
+mock.module('@myco/agent/tools.js', () => ({
   createVaultToolServer: (_agentId: string, _runId: string) => ({
     type: 'sdk' as const,
     name: 'myco-vault',
@@ -276,16 +284,16 @@ vi.mock('@myco/agent/tools.js', () => ({
   },
 }));
 
-vi.mock('@myco/db/queries/turns.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/db/queries/turns.js')>();
+mock.module('@myco/db/queries/turns.js', () => {
+  const original = __orig__myco_db_queries_turns_js_2;
   return {
     ...original,
     countToolCallsByRun: () => mockToolCallCounts,
   };
 });
 
-vi.mock('@myco/db/queries/reports.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/db/queries/reports.js')>();
+mock.module('@myco/db/queries/reports.js', () => {
+  const original = __orig__myco_db_queries_reports_js_3;
   return {
     ...original,
     listReports: () => mockRunReports,
@@ -296,8 +304,8 @@ vi.mock('@myco/db/queries/reports.js', async (importOriginal) => {
 // Mock: initDatabaseForVault (we manage DB ourselves in tests)
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/db/client.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/db/client.js')>();
+mock.module('@myco/db/client.js', () => {
+  const original = __orig__myco_db_client_js_4;
   return {
     ...original,
     initDatabaseForVault: async () => original.getDatabase(),
@@ -317,7 +325,7 @@ let mockMergedConfig: any = {
   agent: { summary_batch_interval: 5 },
 };
 
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadConfig: () => mockMergedConfig,
   loadMergedConfig: () => mockMergedConfig,
 }));

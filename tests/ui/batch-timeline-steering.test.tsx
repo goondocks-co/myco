@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BatchTimeline } from '../../packages/myco/ui/src/components/sessions/BatchTimeline';
 import type { BatchRow, AttachmentRow } from '../../packages/myco/ui/src/hooks/use-sessions';
+import * as __orig_______packages_myco_ui_src_hooks_use_sessions_1__ns from '../../packages/myco/ui/src/hooks/use-sessions';
+const __orig_______packages_myco_ui_src_hooks_use_sessions_1 = { ...__orig_______packages_myco_ui_src_hooks_use_sessions_1__ns };
 
 /* ---------- Fixtures ---------- */
 
@@ -49,15 +51,15 @@ const noAttachments: AttachmentRow[] = [];
 
 /* ---------- Mock UI sub-components that pull in heavy deps ---------- */
 
-vi.mock('../../packages/myco/ui/src/components/ui/markdown-content', () => ({
+mock.module('../../packages/myco/ui/src/components/ui/markdown-content', () => ({
   MarkdownContent: ({ content }: { content: string }) => <span>{content}</span>,
 }));
 
-vi.mock('../../packages/myco/ui/src/components/ui/lightbox', () => ({
+mock.module('../../packages/myco/ui/src/components/ui/lightbox', () => ({
   Lightbox: () => null,
 }));
 
-vi.mock('../../packages/myco/ui/src/components/sessions/ActivityList', () => ({
+mock.module('../../packages/myco/ui/src/components/sessions/ActivityList', () => ({
   ActivityList: () => null,
 }));
 
@@ -67,8 +69,8 @@ const useSessionBatchesMock = vi.fn();
 const useSessionAttachmentsMock = vi.fn();
 const useBatchActivitiesMock = vi.fn();
 
-vi.mock('../../packages/myco/ui/src/hooks/use-sessions', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../packages/myco/ui/src/hooks/use-sessions')>();
+mock.module('../../packages/myco/ui/src/hooks/use-sessions', () => {
+  const actual = __orig_______packages_myco_ui_src_hooks_use_sessions_1;
   return {
     ...actual,
     useSessionBatches: (...args: unknown[]) => useSessionBatchesMock(...args),

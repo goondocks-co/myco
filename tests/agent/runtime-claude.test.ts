@@ -1,3 +1,5 @@
+import * as __orig__myco_agent_provider_js_1__ns from '@myco/agent/provider.js';
+const __orig__myco_agent_provider_js_1 = { ...__orig__myco_agent_provider_js_1__ns };
 /**
  * Tests for ClaudeSdkRuntime.execute() covering:
  *   - session ref forwarding (sessionId is passed through to the SDK)
@@ -6,7 +8,7 @@
  *   - usage aggregation from the result message
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { describe, expect, it, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock: claude-agent-sdk.query — capture args, control the stream
@@ -14,7 +16,7 @@ import { vi } from '../helpers/vi-shim.js';
 
 const queryCalls: Array<{ prompt: string; options: Record<string, unknown> }> = [];
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: string; options: Record<string, unknown> }) => {
     queryCalls.push(args);
     return {
@@ -62,7 +64,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 const scopedServerCalls: Array<{ agentId: string; runId: string; toolNames: string[]; options: Record<string, unknown> }> = [];
 const fullServerCalls: Array<{ agentId: string; runId: string; options: Record<string, unknown> }> = [];
 
-vi.mock('@myco/agent/tools.js', () => ({
+mock.module('@myco/agent/tools.js', () => ({
   createVaultToolServer: (agentId: string, runId: string, options: Record<string, unknown> = {}) => {
     fullServerCalls.push({ agentId, runId, options });
     return { type: 'sdk' as const, name: 'myco-vault', instance: {} };
@@ -73,8 +75,8 @@ vi.mock('@myco/agent/tools.js', () => ({
   },
 }));
 
-vi.mock('@myco/agent/provider.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/provider.js')>();
+mock.module('@myco/agent/provider.js', () => {
+  const original = __orig__myco_agent_provider_js_1;
   return {
     ...original,
     buildPhaseEnv: () => ({}),

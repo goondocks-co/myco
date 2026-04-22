@@ -12,7 +12,7 @@
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { MS_PER_HOUR } from '@myco/constants/update.js';
 
@@ -20,9 +20,9 @@ import { MS_PER_HOUR } from '@myco/constants/update.js';
 // Module mocks — must be hoisted before any imports that use the mocked modules
 // ---------------------------------------------------------------------------
 
-vi.mock('node:fs');
-vi.mock('node:child_process');
-vi.mock('node:os', () => ({
+mock.module('node:fs');
+mock.module('node:child_process');
+mock.module('node:os', () => ({
   default: {
     homedir: () => '/mock-home',
   },

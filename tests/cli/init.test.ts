@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,24 +11,24 @@ const { mockDb } = vi.hoisted(() => {
   return { mockDb };
 });
 
-vi.mock('@myco/db/client.js', () => ({
+mock.module('@myco/db/client.js', () => ({
   initDatabase: vi.fn().mockReturnValue(mockDb),
   vaultDbPath: vi.fn((dir: string) => `${dir}/myco.db`),
   closeDatabase: vi.fn(),
 }));
-vi.mock('@myco/db/schema.js', () => ({
+mock.module('@myco/db/schema.js', () => ({
   createSchema: vi.fn(),
   SCHEMA_VERSION: 1,
   EMBEDDING_DIMENSIONS: 1024,
 }));
 
 // Prevent init from detecting real symbionts and running registration in tests
-vi.mock('@myco/symbionts/detect.js', () => ({
+mock.module('@myco/symbionts/detect.js', () => ({
   detectSymbionts: vi.fn().mockReturnValue([]),
   loadManifests: vi.fn().mockReturnValue([]),
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
-vi.mock('@myco/hooks/client.js', () => ({
+mock.module('@myco/hooks/client.js', () => ({
   DaemonClient: class {
     async ensureRunning() {
       return false;

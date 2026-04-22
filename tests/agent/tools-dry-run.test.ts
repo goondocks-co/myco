@@ -19,7 +19,7 @@
  *   - With dryRun off, every tool behaves as on main (regression).
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Mock embedding before imports
-vi.mock('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
+mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';

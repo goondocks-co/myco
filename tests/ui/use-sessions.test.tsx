@@ -1,18 +1,18 @@
 // @vitest-environment jsdom
 
 import { renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { POLL_INTERVALS } from '../../packages/myco/ui/src/lib/constants';
 import { useSessionPlans } from '../../packages/myco/ui/src/hooks/use-sessions';
 
 const usePowerQueryMock = vi.fn();
 
-vi.mock('../../packages/myco/ui/src/hooks/use-power-query', () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-power-query', () => ({
   usePowerQuery: (...args: unknown[]) => usePowerQueryMock(...args),
 }));
 
-vi.mock('../../packages/myco/ui/src/lib/api', () => ({
+mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: vi.fn(),
   deleteJson: vi.fn(),
   postJson: vi.fn(),

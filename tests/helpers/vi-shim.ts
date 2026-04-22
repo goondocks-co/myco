@@ -1,6 +1,6 @@
 // Compatibility shim mapping the subset of Vitest's `vi` API that Myco's test
 // suite actually uses onto bun:test primitives. Imported from codemod-generated
-// paths like `../helpers/vi-shim.js`. Keeps existing `vi.fn()`, `vi.mock(...)`,
+// paths like `../helpers/vi-shim.js`. Keeps existing `vi.fn()`, `mock.module(...)`,
 // `vi.spyOn(...)` call sites intact after the vitest -> bun test migration.
 
 import {
@@ -50,7 +50,7 @@ export const vi = {
   hoisted<T>(factory: () => T): T {
     // bun:test hoists `mock.module(...)` calls but NOT arbitrary factories.
     // Every existing `vi.hoisted` call site in Myco's suite uses the returned
-    // values inside subsequent `vi.mock(...)` calls — which bun *does* hoist —
+    // values inside subsequent `mock.module(...)` calls — which bun *does* hoist —
     // so invoking the factory inline is sufficient in practice.
     return factory();
   },
@@ -78,10 +78,16 @@ export const vi = {
     bunSetSystemTime(d);
   },
   clearAllMocks(): void {
-    mock.restore();
+    // Bun's clearAllMocks resets call history without restoring implementations,
+    // matching vitest's clearAllMocks semantics.
+    mock.clearAllMocks();
   },
   resetAllMocks(): void {
+    // Vitest's resetAllMocks clears history AND resets implementations to
+    // jest-style undefined. Bun doesn't expose that; `restore` + `clearAll`
+    // is the closest approximation.
     mock.restore();
+    mock.clearAllMocks();
   },
   restoreAllMocks(): void {
     mock.restore();

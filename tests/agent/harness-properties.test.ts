@@ -3,10 +3,10 @@
  * executing the agent.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
-vi.mock('@myco/intelligence/embed-query.js', () => ({
+mock.module('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
 

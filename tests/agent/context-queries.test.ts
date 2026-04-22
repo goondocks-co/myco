@@ -1,12 +1,12 @@
 /**
  * Tests for context query execution.
  *
- * DB query functions are mocked via vi.mock() so tests never touch a real
+ * DB query functions are mocked via mock.module() so tests never touch a real
  * database. Each test exercises the routing logic and error handling of
  * executeContextQueries().
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import type { ContextQuery } from '@myco/agent/types.js';
 
@@ -14,19 +14,19 @@ import type { ContextQuery } from '@myco/agent/types.js';
 // Mocks: DB query functions
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/db/queries/batches.js', () => ({
+mock.module('@myco/db/queries/batches.js', () => ({
   getUnprocessedBatches: vi.fn(),
 }));
 
-vi.mock('@myco/db/queries/spores.js', () => ({
+mock.module('@myco/db/queries/spores.js', () => ({
   listSpores: vi.fn(),
 }));
 
-vi.mock('@myco/db/queries/sessions.js', () => ({
+mock.module('@myco/db/queries/sessions.js', () => ({
   listSessions: vi.fn(),
 }));
 
-vi.mock('@myco/db/queries/agent-state.js', () => ({
+mock.module('@myco/db/queries/agent-state.js', () => ({
   getStatesForAgent: vi.fn(),
 }));
 

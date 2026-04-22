@@ -7,7 +7,7 @@
  * a programmable fake instead of a real SDK.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import type {
   EffectiveConfig,
@@ -75,12 +75,12 @@ const fakeRuntime: AgentRuntime = {
   },
 };
 
-vi.mock('@myco/agent/runtime/index.js', () => ({
+mock.module('@myco/agent/runtime/index.js', () => ({
   getAgentRuntime: () => fakeRuntime,
 }));
 
 // Cost resolution is async but doesn't need real numbers here.
-vi.mock('@myco/agent/cost/index.js', () => ({
+mock.module('@myco/agent/cost/index.js', () => ({
   resolveCost: async () => ({
     source: 'actual' as const,
     costUsd: 0.01,
@@ -99,7 +99,7 @@ vi.mock('@myco/agent/cost/index.js', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Imports AFTER vi.mock() so the mocks apply.
+// Imports AFTER mock.module() so the mocks apply.
 // ---------------------------------------------------------------------------
 
 import {

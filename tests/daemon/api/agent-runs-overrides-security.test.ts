@@ -8,7 +8,7 @@
  *      `openrouter` remote providers, so the daemon's bearer key cannot
  *      be sent to an attacker-controlled host via an override.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
@@ -18,13 +18,13 @@ import type { RouteRequest } from '@myco/daemon/router';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 const runAgentSpy = vi.fn(async () => ({ runId: 'stub', status: 'completed' as const }));
-vi.mock('@myco/agent/executor.js', () => ({
+mock.module('@myco/agent/executor.js', () => ({
   runAgent: (...args: unknown[]) => runAgentSpy(...args),
 }));
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadMergedConfig: () => ({ agent: { tasks: {} } }),
 }));
-vi.mock('@myco/agent/config-resolver.js', () => ({
+mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
 }));
 
