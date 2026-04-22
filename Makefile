@@ -29,7 +29,7 @@ lint:
 	npm run lint
 
 test:
-	npx vitest run
+	npm test
 
 test-fast:
 	npm run test:fast
