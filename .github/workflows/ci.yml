@@ -14,9 +14,24 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: npm ci
       - run: npm ci --prefix packages/myco-team/worker
       - run: npm ci --prefix packages/myco-collective/worker
       - run: npm run lint
-      - run: npm run build
-      - run: npm test
+      # Build the still-tsup-based sibling packages first so their dist/ is
+      # available for anything that imports them.
+      - run: npm run build -w @goondocks/myco-team
+      - run: npm run build -w @goondocks/myco-collective
+      # Build the host-target libsqlite3 so the compiled binary can embed it.
+      - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
+      # Host-target only in CI — full cross-compile is reserved for release.
+      - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
+      - run: npm run build:ui -w @goondocks/myco
+      # Run the DB test suite under Bun. The full suite (other tests that
+      # transitively import bun:sqlite) is blocked on the vitest -> bun test
+      # runner swap (Phase 5 deferred work). DB tests are the load-bearing
+      # ones for the migration; any schema or query regression lights up here.
+      - run: bun --bun x vitest run --pool=forks tests/db

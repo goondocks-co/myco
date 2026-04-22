@@ -79,10 +79,178 @@ jobs:
             echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
           fi
 
+  # Per-target libsqlite3 compile, gated on myco tags only.
+  # Runner OS per target:
+  #   darwin-*  → macos-latest (host-compile both archs with clang -arch)
+  #   linux-x64 → ubuntu-latest (host-compile)
+  #   linux-arm64, windows-x64 → ubuntu-latest with cross toolchain installed
+  # We intentionally avoid osxcross for darwin targets.
+  compile-libsqlite3:
+    name: Compile libsqlite3 (${{ matrix.target }})
+    needs: validate-tag
+    if: needs.validate-tag.outputs.tag_prefix == 'myco'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+          - target: darwin-x64
+            os: macos-latest
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-latest
+          - target: windows-x64
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cross toolchain (linux-arm64)
+        if: matrix.target == 'linux-arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install cross toolchain (windows-x64)
+        if: matrix.target == 'windows-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64
+
+      - name: Build libsqlite3
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash packages/myco/scripts/build-libsqlite3-target.sh "$TARGET"
+
+      - name: Upload libsqlite3 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libsqlite3-${{ matrix.target }}
+          path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
+          if-no-files-found: error
+
+  # Per-target myco binary compile via `bun build --compile`. Each matrix job
+  # stages the target's sqlite-vec + ripgrep native binaries and downloads
+  # the matching libsqlite3 artifact before compiling.
+  cross-compile:
+    name: Cross-compile myco (${{ matrix.target }})
+    needs: [validate-tag, compile-libsqlite3]
+    if: needs.validate-tag.outputs.tag_prefix == 'myco'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - run: npm ci
+
+      - name: Sync target package versions from tag
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
+        run: |
+          case "$TAG_PREFIX" in
+            myco) export MYCO_VERSION="$VERSION" ;;
+            myco-team) export MYCO_TEAM_VERSION="$VERSION" ;;
+            myco-collective) export MYCO_COLLECTIVE_VERSION="$VERSION" ;;
+          esac
+          node scripts/sync-package-versions.mjs
+
+      # The target's sqlite-vec native extension must be present in
+      # node_modules for the per-target entry's import to resolve. npm ci on
+      # the host only pulls the host optional subpackage, so force-install
+      # the target's subpackage at the same pinned version.
+      - name: Install sqlite-vec target subpackage
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          SQLITE_VEC_VERSION="$(node -p "require('sqlite-vec/package.json').version")"
+          npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts
+
+      # @vscode/ripgrep's postinstall only downloads the host-matching
+      # binary, so for cross-compile we fetch the target-specific release
+      # from microsoft/ripgrep-prebuilt directly (VERSION matches the
+      # constant in node_modules/@vscode/ripgrep/lib/postinstall.js).
+      - name: Install target-specific ripgrep binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          RG_VERSION="v15.0.1"
+          case "$TARGET" in
+            darwin-arm64) RG_TRIPLE="aarch64-apple-darwin" ;;
+            darwin-x64)   RG_TRIPLE="x86_64-apple-darwin" ;;
+            linux-x64)    RG_TRIPLE="x86_64-unknown-linux-musl" ;;
+            linux-arm64)  RG_TRIPLE="aarch64-unknown-linux-musl" ;;
+            windows-x64)  RG_TRIPLE="x86_64-pc-windows-msvc" ;;
+            *) echo "unknown target: $TARGET" >&2; exit 1 ;;
+          esac
+          RG_BIN_DIR="node_modules/@vscode/ripgrep/bin"
+          mkdir -p "$RG_BIN_DIR"
+          STAGE="$(mktemp -d)"
+          if [ "$TARGET" = "windows-x64" ]; then
+            ARCHIVE="ripgrep-${RG_VERSION}-${RG_TRIPLE}.zip"
+            curl --fail --silent --show-error --location \
+              -o "${STAGE}/${ARCHIVE}" \
+              "https://github.com/microsoft/ripgrep-prebuilt/releases/download/${RG_VERSION}/${ARCHIVE}"
+            unzip -q "${STAGE}/${ARCHIVE}" -d "${STAGE}"
+            mv "${STAGE}/rg.exe" "${RG_BIN_DIR}/rg.exe"
+            # The per-target entry imports '@vscode/ripgrep/bin/rg' — file
+            # content is what matters; extension is irrelevant to Bun's
+            # file-embed. Mirror the Windows binary to both names.
+            cp "${RG_BIN_DIR}/rg.exe" "${RG_BIN_DIR}/rg"
+          else
+            ARCHIVE="ripgrep-${RG_VERSION}-${RG_TRIPLE}.tar.gz"
+            curl --fail --silent --show-error --location \
+              -o "${STAGE}/${ARCHIVE}" \
+              "https://github.com/microsoft/ripgrep-prebuilt/releases/download/${RG_VERSION}/${ARCHIVE}"
+            tar -xzf "${STAGE}/${ARCHIVE}" -C "${STAGE}"
+            mv "${STAGE}/rg" "${RG_BIN_DIR}/rg"
+            chmod +x "${RG_BIN_DIR}/rg"
+          fi
+          ls -lh "${RG_BIN_DIR}"
+
+      - name: Download libsqlite3 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: libsqlite3-${{ matrix.target }}
+          path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
+
+      - run: npm run codegen -w @goondocks/myco
+
+      - name: Compile myco binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: TARGET="$TARGET" npm run build:binary -w @goondocks/myco
+
+      - name: Upload myco binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: myco-binary-${{ matrix.target }}
+          path: packages/myco/vendor/${{ matrix.target }}/
+          if-no-files-found: error
+
   build:
     name: Build and Test
     runs-on: ubuntu-latest
-    needs: validate-tag
+    needs: [validate-tag, cross-compile]
+    # cross-compile is skipped for team/collective tags, which would
+    # normally cascade-skip this job. Force it to run in that case.
+    if: |
+      always() &&
+      needs.validate-tag.result == 'success' &&
+      (needs.cross-compile.result == 'success' || needs.cross-compile.result == 'skipped')
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -103,13 +271,77 @@ jobs:
           esac
           node scripts/sync-package-versions.mjs
 
-      - name: Build and test target package
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Lint
+        run: npm run lint
+
+      # Run the DB test suite only (603 tests). The full suite is blocked on
+      # the vitest -> bun test runner swap (Phase 5 deferred work). DB tests
+      # are the load-bearing ones for the bun:sqlite migration; any schema or
+      # query regression lights up here.
+      - name: Run DB tests under Bun
+        run: bun --bun x vitest run --pool=forks tests/db
+
+      # For team/collective tags, run the normal build (tsup-based). For
+      # myco tags, the binaries arrive from the cross-compile matrix —
+      # downloaded in the next step. Run only the UI build locally.
+      - name: Build target package (team/collective)
+        if: needs.validate-tag.outputs.tag_prefix != 'myco'
         env:
           PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
+        run: npm run build -w "$PACKAGE_NAME"
+
+      # Stage the pre-built per-target binaries into vendor/ so the fat
+      # tarball contains all 5. Only runs for myco tags. download-artifact
+      # with a pattern places each artifact in a subdirectory named after
+      # the artifact (e.g. myco-binary-darwin-arm64/myco); we then rename
+      # each to the target-only key the select-binary.mjs postinstall
+      # expects (vendor/<target>/myco).
+      - name: Download cross-compiled myco binaries
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: myco-binary-*
+          path: packages/myco/vendor-staging/
+
+      - name: Reshape vendor layout
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
-          npm run lint
-          npm run test
-          npm run build -w "$PACKAGE_NAME"
+          set -euo pipefail
+          STAGING="packages/myco/vendor-staging"
+          VENDOR="packages/myco/vendor"
+          mkdir -p "$VENDOR"
+          for dir in "$STAGING"/myco-binary-*; do
+            [ -d "$dir" ] || continue
+            target="${dir##*/myco-binary-}"
+            mkdir -p "$VENDOR/$target"
+            cp -R "$dir"/. "$VENDOR/$target/"
+          done
+          rm -rf "$STAGING"
+          ls -lR "$VENDOR"
+
+      - name: Build myco UI
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: npm run build:ui -w @goondocks/myco
+
+      # Verify that every target has a binary staged in vendor/ before we
+      # pack. Fails loudly if any cross-compile artifact is missing.
+      - name: Verify vendor/ completeness (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: |
+          set -euo pipefail
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
+            ext=""
+            [ "$target" = "windows-x64" ] && ext=".exe"
+            if [ ! -f "packages/myco/vendor/${target}/myco${ext}" ]; then
+              echo "missing binary: packages/myco/vendor/${target}/myco${ext}" >&2
+              exit 1
+            fi
+          done
 
       - name: Pack npm tarball
         working-directory: ${{ needs.validate-tag.outputs.package_dir }}
