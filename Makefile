@@ -71,12 +71,7 @@ collective-ui-dev:
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
 	echo "Starting watched daemon with UI dev proxy $$proxy"; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch \
-		--exclude ".myco/**" \
-		--exclude ".playwright-cli/**" \
-		--exclude "packages/myco/ui/**" \
-		--exclude "packages/myco/dist/**" \
-		packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon --vault "$(PWD)/.myco"
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
@@ -98,12 +93,30 @@ dev:
 		--exclude ".playwright-cli/**" \
 		--exclude "packages/myco/ui/**" \
 		--exclude "packages/myco/dist/**" \
-		packages/myco/src/entries/daemon.ts --vault "$(PWD)/.myco"
+		packages/myco/src/entries/cli.ts daemon --vault "$(PWD)/.myco"
+
+HOST_TARGET := $(shell node -e "\
+process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
+process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
+'windows-x64')")
 
 dev-link:
-	npm run build
+	@# myco-team and myco-collective stay on tsup/Node — no changes here.
+	npm run build -w @goondocks/myco-team
+	npm run build -w @goondocks/myco-collective
+	@# myco is now a Bun-compiled binary. Steps in order:
+	@#   1. codegen (hook-config.generated.ts from manifests)
+	@#   2. build libsqlite3 for the host target (cached after first run)
+	@#   3. build UI bundle (Vite)
+	@#   4. bun build --compile the host-target entry
+	cd packages/myco && npx tsx scripts/gen-hook-config.ts
+	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
+	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
+	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
 	@mkdir -p $(HOME)/.local/bin
-	@ln -sf $(PWD)/packages/myco/dist/src/cli.js $(HOME)/.local/bin/myco-dev
+	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
+	@# the Bun runtime, so the caller's Node version is irrelevant.
+	@ln -sf $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
@@ -118,7 +131,7 @@ dev-link:
 	@# the absolute path at link time makes hook capture robust under
 	@# both GUI and shell launches.
 	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > .myco/runtime.command
-	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/dist/src/cli.js"
+	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"

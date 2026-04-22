@@ -1,0 +1,39 @@
+// Build a single target via env var — used by CI matrix and the Makefile
+// dev-link. Reads TARGET from env. No shell interpolation.
+
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const target = process.env.TARGET;
+if (!target) {
+  process.stderr.write('[build:binary] TARGET env var is required\n');
+  process.exit(2);
+}
+
+const VALID = new Set(['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64']);
+if (!VALID.has(target)) {
+  process.stderr.write(`[build:binary] unknown TARGET="${target}" (valid: ${[...VALID].join(', ')})\n`);
+  process.exit(2);
+}
+
+const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const entry = path.join(pkgRoot, 'src', 'entries', `cli.${target}.ts`);
+if (!fs.existsSync(entry)) {
+  process.stderr.write(`[build:binary] missing entry: ${entry}\n`);
+  process.exit(1);
+}
+
+const outputDir = path.join(pkgRoot, 'vendor', target);
+fs.mkdirSync(outputDir, { recursive: true });
+const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
+const outfile = path.join(outputDir, binaryName);
+
+process.stdout.write(`[build:binary] ${target} -> ${outfile}\n`);
+const result = spawnSync(
+  'bun',
+  ['build', '--compile', `--target=bun-${target}`, entry, '--outfile', outfile],
+  { stdio: 'inherit', cwd: pkgRoot, env: process.env },
+);
+process.exit(result.status ?? 1);
