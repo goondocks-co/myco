@@ -1,14 +1,23 @@
-// Build a single target via env var — used by CI matrix and the Makefile
-// dev-link. Reads TARGET from env. No shell interpolation.
+// Build a single target via TARGET env var — used by CI matrix, Makefile
+// dev-link, and the plain `npm run build` local flow. Defaults to the host
+// platform when TARGET is unset so local builds don't need all five targets
+// staged. No shell interpolation.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const target = process.env.TARGET;
+function detectHostTarget() {
+  if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+  if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
+  if (process.platform === 'win32') return 'windows-x64';
+  return null;
+}
+
+const target = process.env.TARGET ?? detectHostTarget();
 if (!target) {
-  process.stderr.write('[build:binary] TARGET env var is required\n');
+  process.stderr.write(`[build:binary] no TARGET and host platform ${process.platform}-${process.arch} is unsupported\n`);
   process.exit(2);
 }
 
