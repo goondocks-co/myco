@@ -15,13 +15,15 @@ function mockClient(data: unknown = null, ok = true): DaemonClient {
 }
 
 describe('collective_settings', () => {
-  it('returns settings_overrides from the daemon', async () => {
-    const settings_overrides = { 'digest.tier': 10000, 'retention.days': 90 };
-    const client = mockClient({ settings_overrides });
+  it('maps daemon settings field to settings_overrides', async () => {
+    // Daemon exposes { collective_enabled, settings, last_sync }; MCP tool
+    // normalizes to the Collective-worker key `settings_overrides`.
+    const settings = { 'digest.tier': 10000, 'retention.days': 90 };
+    const client = mockClient({ collective_enabled: true, settings, last_sync: 1776883513 });
 
     const result = await handleCollectiveSettings(client);
 
-    expect(result).toEqual({ settings_overrides });
+    expect(result).toEqual({ settings_overrides: settings });
     expect(client.get).toHaveBeenCalledWith('/api/collective/settings');
   });
 
@@ -31,8 +33,8 @@ describe('collective_settings', () => {
     expect(result).toEqual({ settings_overrides: {} });
   });
 
-  it('returns empty overrides when daemon returns no settings_overrides field', async () => {
-    const client = mockClient({});
+  it('returns empty overrides when daemon returns no settings field', async () => {
+    const client = mockClient({ collective_enabled: true });
     const result = await handleCollectiveSettings(client);
     expect(result).toEqual({ settings_overrides: {} });
   });
