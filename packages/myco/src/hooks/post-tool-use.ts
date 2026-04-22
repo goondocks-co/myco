@@ -20,8 +20,10 @@ export async function main() {
 
     const client = new DaemonClient(VAULT_DIR);
 
-    // PostToolUse fires frequently — don't spawn the daemon here.
-    // If it's down, buffer to disk. The stop or prompt hook will respawn it.
+    // DaemonClient auto-spawns on missing daemon.json or fetch failure,
+    // coalesced within DAEMON_SPAWN_COALESCE_MS so frequent PostToolUse
+    // firings don't fork extra daemons. This call still buffers on live
+    // failure; reconcile replays on the next successful start.
     const result = await client.post('/events', {
       type: 'tool_use',
       tool_name: input.toolName,

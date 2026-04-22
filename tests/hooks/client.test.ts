@@ -11,6 +11,10 @@ describe('DaemonClient', () => {
   let mockPort: number;
 
   beforeEach(async () => {
+    // Suppress the fire-and-forget spawnDaemon side effect that post/get/put/
+    // delete now trigger when the daemon is unreachable — tests assert the
+    // request-level result; the spawn path has its own unit coverage.
+    process.env.MYCO_NO_AUTO_SPAWN = '1';
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-'));
 
     mockServer = http.createServer((req, res) => {
@@ -42,6 +46,7 @@ describe('DaemonClient', () => {
   afterEach(async () => {
     await new Promise<void>((r) => mockServer.close(() => r()));
     fs.rmSync(vaultDir, { recursive: true, force: true });
+    delete process.env.MYCO_NO_AUTO_SPAWN;
   });
 
   it('posts to daemon and returns data', async () => {
@@ -83,6 +88,7 @@ describe('DaemonClient error-body propagation', () => {
   let mode: ErrorBodyMode;
 
   beforeEach(async () => {
+    process.env.MYCO_NO_AUTO_SPAWN = '1';
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-err-'));
     mode = { kind: 'json', payload: { error: { code: 'boom', message: 'test' } } };
 
@@ -118,6 +124,7 @@ describe('DaemonClient error-body propagation', () => {
   afterEach(async () => {
     await new Promise<void>((r) => mockServer.close(() => r()));
     fs.rmSync(vaultDir, { recursive: true, force: true });
+    delete process.env.MYCO_NO_AUTO_SPAWN;
   });
 
   it('returns parsed JSON body on non-ok for post/put/get/delete', async () => {

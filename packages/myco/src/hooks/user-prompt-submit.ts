@@ -28,10 +28,9 @@ export async function main() {
     });
 
     const client = new DaemonClient(VAULT_DIR);
-    // Spawn without awaiting full health backoff; POST failure falls through to buffer.
-    if (!(await client.isHealthy())) {
-      client.spawnDaemon();
-    }
+    // Await health so context injection on the first prompt after a reboot
+    // actually gets a response; falls back to the buffer path on timeout.
+    await client.ensureRunning();
 
     if (decision.action === 'drop') {
       // Drop rule fired — cascade-delete the session row SessionStart registered.

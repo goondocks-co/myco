@@ -63,10 +63,12 @@ export class DaemonClient {
   }
 
   async post(endpoint: string, body: unknown, options?: { timeoutMs?: number }): Promise<ClientResult> {
+    const info = this.readDaemonJson();
+    if (!info) {
+      this.spawnDaemon();
+      return { ok: false };
+    }
     try {
-      const info = this.readDaemonJson();
-      if (!info) return { ok: false };
-
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -78,15 +80,18 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
+      this.spawnDaemon();
       return { ok: false };
     }
   }
 
   async put(endpoint: string, body: unknown): Promise<ClientResult> {
+    const info = this.readDaemonJson();
+    if (!info) {
+      this.spawnDaemon();
+      return { ok: false };
+    }
     try {
-      const info = this.readDaemonJson();
-      if (!info) return { ok: false };
-
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -98,15 +103,18 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
+      this.spawnDaemon();
       return { ok: false };
     }
   }
 
   async get(endpoint: string): Promise<ClientResult> {
+    const info = this.readDaemonJson();
+    if (!info) {
+      this.spawnDaemon();
+      return { ok: false };
+    }
     try {
-      const info = this.readDaemonJson();
-      if (!info) return { ok: false };
-
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -115,15 +123,18 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
+      this.spawnDaemon();
       return { ok: false };
     }
   }
 
   async delete(endpoint: string, body?: unknown): Promise<ClientResult> {
+    const info = this.readDaemonJson();
+    if (!info) {
+      this.spawnDaemon();
+      return { ok: false };
+    }
     try {
-      const info = this.readDaemonJson();
-      if (!info) return { ok: false };
-
       const init: RequestInit = {
         method: 'DELETE',
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
@@ -139,6 +150,7 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
+      this.spawnDaemon();
       return { ok: false };
     }
   }
@@ -231,11 +243,15 @@ export class DaemonClient {
   }
 
   spawnDaemon(): void {
+    // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
+    // exercising the "daemon down" path.
+    if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
     // Coalesce concurrent spawns: if daemon.json was written within the
     // coalesce window AND its pid is still alive, another spawn is already in
-    // flight — defer to it instead of forking another process. The daemon's
-    // own step-aside guard backs this up, but collapsing the spawn here
-    // avoids the wasted fork + log noise in the common case.
+    // flight — defer to it instead of forking another process. Safe to call
+    // from every failed request path (post/get/put/delete all invoke it), so
+    // any hook activity — not just session-start — resurrects a dead daemon.
+    // The daemon's own step-aside guard backs this up.
     if (this.spawnIsInFlight()) return;
 
     const { execPath, cliEntry } = resolveCliEntryPath();
