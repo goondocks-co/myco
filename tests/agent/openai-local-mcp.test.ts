@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import { createLocalVaultMcpServer } from '@myco/agent/runtime/openai-local-mcp.js';
 
 describe('createLocalVaultMcpServer', () => {

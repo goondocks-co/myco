@@ -8,7 +8,7 @@
  * - Registering built-in agents and tasks into PGlite
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';

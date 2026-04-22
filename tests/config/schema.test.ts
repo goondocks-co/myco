@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '@myco/config/schema';
 
 describe('MycoConfigSchema v3', () => {

@@ -5,7 +5,8 @@
  * daemon's stored bearer key is never sent to an attacker-controlled host.
  * `openai-compatible` / `ollama` / `lmstudio` remain user-configurable.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleTestProvider } from '@myco/daemon/api/providers';
 import { handleGetModels } from '@myco/daemon/api/models';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';

@@ -5,7 +5,8 @@
  * to verify correct endpoint usage and response mapping.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoContext } from '@myco/mcp/tools/context.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 

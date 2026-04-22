@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { run } from '@myco/cli/setup-digest';
 
 describe('myco setup-digest', () => {

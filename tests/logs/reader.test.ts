@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { queryLogs } from '@myco/logs/reader';
 import type { LogQueryResult } from '@myco/logs/reader';
 import fs from 'node:fs';

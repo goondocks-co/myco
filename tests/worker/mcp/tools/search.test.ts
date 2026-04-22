@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { handleSearch } from '@myco-team-worker/mcp/tools/search';
 import { createFakeD1, createFakeVectorize, createFakeAI, parseToolResult } from './_helpers';
 

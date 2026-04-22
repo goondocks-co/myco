@@ -5,7 +5,8 @@
  * and exercises tool handlers directly against the database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 

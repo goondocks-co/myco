@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { renderHook, act } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { useScopedConfig } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 
 const invalidateQueriesMock = vi.fn();

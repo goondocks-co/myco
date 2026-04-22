@@ -8,8 +8,8 @@
  * - handleUpdateChannel: writes config + clears cache, 400 for invalid channel
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
+import { describe, it, expect, beforeEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------

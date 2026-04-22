@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { triggerTitleSummary } from '@myco/daemon/trigger-title-summary';
 import type { MycoConfig } from '@myco/config/schema';
 

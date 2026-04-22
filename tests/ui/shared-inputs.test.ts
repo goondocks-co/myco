@@ -10,7 +10,7 @@
  *    when rerunning a run).
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import {
   SHARED_INPUT_KEYS,
   SHARED_INPUT_PATTERN,

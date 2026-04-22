@@ -7,7 +7,8 @@
  * - handleTestProvider with valid provider types
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleGetProviders, handleTestProvider } from '@myco/daemon/api/providers';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
 import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';

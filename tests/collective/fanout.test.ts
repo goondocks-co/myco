@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { searchAcrossProjects } from '../../packages/myco-collective/worker/src/fanout.js';
 import type { ProjectRecord } from '../../packages/myco-collective/worker/src/index.js';
 

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { SystemNotifications } from '../../packages/myco/ui/src/components/notifications/SystemNotifications';
 
 const useNotificationsMock = vi.fn();

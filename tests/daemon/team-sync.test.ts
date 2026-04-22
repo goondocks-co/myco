@@ -2,7 +2,8 @@
  * Tests for TeamSyncClient and team context module.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
 import {

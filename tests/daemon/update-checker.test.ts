@@ -12,7 +12,8 @@
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { MS_PER_HOUR } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------

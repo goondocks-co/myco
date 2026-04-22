@@ -6,8 +6,8 @@
  *   - usage aggregation from the result message
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-
+import { describe, expect, it, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock: claude-agent-sdk.query — capture args, control the stream
 // ---------------------------------------------------------------------------

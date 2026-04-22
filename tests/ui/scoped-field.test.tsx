@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { ScopedField } from '../../packages/myco/ui/src/components/config/ScopedField';
 import type { MycoConfig } from '../../packages/myco/ui/src/hooks/use-config';
 

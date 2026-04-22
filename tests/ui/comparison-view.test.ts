@@ -9,7 +9,7 @@
  *   - `selectVisibleColumns` — diff-column visibility with mixed run sets
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import {
   aggregateRunSet,
   detectDrift,

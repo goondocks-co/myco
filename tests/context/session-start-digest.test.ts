@@ -7,7 +7,7 @@
  *   (c) returns { content: '', tier: null } when both are missing
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import {
   getSessionStartDigestPayload,
   shouldInjectSessionStartDigest,

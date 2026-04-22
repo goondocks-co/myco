@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { OpenAIEmbeddingProvider } from '@myco/cli/providers/openai-embeddings';
 
 describe('OpenAIEmbeddingProvider', () => {

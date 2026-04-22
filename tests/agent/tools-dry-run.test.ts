@@ -19,7 +19,8 @@
  *   - With dryRun off, every tool behaves as on main (regression).
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';

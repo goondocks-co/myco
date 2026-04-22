@@ -2,7 +2,7 @@
  * Tests for log explorer API handlers: search, stream, and detail.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { insertLogEntry } from '@myco/db/queries/logs.js';
 import { handleLogSearch, handleLogStream, handleLogDetail } from '@myco/daemon/api/log-explorer';

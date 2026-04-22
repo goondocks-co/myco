@@ -9,8 +9,8 @@
  *     *TokensDetails arrays (local OpenAI-compatible providers).
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-
+import { describe, expect, it, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock @openai/agents — capture Runner.run args, control the result
 // ---------------------------------------------------------------------------

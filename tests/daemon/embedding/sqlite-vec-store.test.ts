@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SqliteVecVectorStore } from '@myco/daemon/embedding/sqlite-vec-store';
 import { EMBEDDABLE_NAMESPACES } from '@myco/daemon/embedding/types';
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema';

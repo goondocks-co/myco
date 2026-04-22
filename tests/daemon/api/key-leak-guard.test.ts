@@ -11,7 +11,8 @@
  * to the hardcoded default, and the CSRF/Origin/Content-Type gate blocks
  * the web-page exfiltration path; this test guards the last mile.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

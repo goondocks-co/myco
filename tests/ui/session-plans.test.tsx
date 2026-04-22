@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { SessionPlans } from '../../packages/myco/ui/src/components/sessions/SessionPlans';
 
 const useSessionPlansMock = vi.fn();

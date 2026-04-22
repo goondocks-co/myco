@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { initDatabase, getDatabase, closeDatabase } from '@myco/db/client.js';
 
 describe('SQLite client', () => {

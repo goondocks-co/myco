@@ -8,7 +8,8 @@
  * the executor threads dryRun + resumes lastResponseId correctly.
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import crypto from 'node:crypto';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';

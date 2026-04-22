@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
 describe('parseCsvList', () => {

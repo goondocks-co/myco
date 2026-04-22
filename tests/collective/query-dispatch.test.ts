@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 vi.mock('agents/mcp', () => ({ createMcpHandler: () => vi.fn() }));
 vi.mock('../../packages/myco-collective/worker/src/mcp/server.js', () => ({ createMcpServerInstance: () => ({}) }));
 

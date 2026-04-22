@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import type { RouteRequest } from '@myco/daemon/router';
 import { MycoConfigSchema } from '@myco/config/schema';
 

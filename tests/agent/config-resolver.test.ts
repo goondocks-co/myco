@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { TaskRow } from '@myco/db/queries/tasks.js';

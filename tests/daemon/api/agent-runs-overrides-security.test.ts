@@ -8,7 +8,8 @@
  *      `openrouter` remote providers, so the daemon's bearer key cannot
  *      be sent to an attacker-controlled host via an override.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';

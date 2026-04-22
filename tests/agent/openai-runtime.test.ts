@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import type { ProviderConfig } from '@myco/agent/types.js';
 import { resolveOpenAIClientConfig, shouldUseResponsesApi } from '@myco/agent/runtime/openai.js';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';

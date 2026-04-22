@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { cursorAdapter } from '@myco/symbionts/cursor.js';
 
 // Cursor's JSONL transcript embeds literal `[REDACTED]` blocks for intermediate

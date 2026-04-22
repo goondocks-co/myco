@@ -5,7 +5,8 @@
  * layer only — the serializeRun path is exercised by HTTP tests.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoRuns } from '@myco/mcp/tools/runs.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 

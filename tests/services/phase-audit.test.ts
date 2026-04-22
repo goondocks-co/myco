@@ -6,7 +6,8 @@
  * tests/daemon/api/agent-runs-dry-run.test.ts.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertReport } from '@myco/db/queries/reports.js';

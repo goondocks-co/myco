@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { computeTouchedPaths, enumerateLeafPaths } from '@myco/daemon/config-reactions/touched-paths.js';
 
 describe('enumerateLeafPaths', () => {

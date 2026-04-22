@@ -5,7 +5,8 @@
  * fields can be verified without spinning up the real executor.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';

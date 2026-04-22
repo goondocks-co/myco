@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { MIGRATIONS } from '@myco/db/migrations.js';
 import type { Database } from 'bun:sqlite';

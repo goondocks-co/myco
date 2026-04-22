@@ -5,8 +5,8 @@
  * touch the real filesystem. Each test suite exercises one exported function.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
+import { describe, it, expect, beforeEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock node:fs so readFileSync returns a controlled template
 // ---------------------------------------------------------------------------
