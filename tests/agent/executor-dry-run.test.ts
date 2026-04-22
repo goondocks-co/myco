@@ -247,8 +247,7 @@ function createTestTask(): void {
 // Test suite
 // ---------------------------------------------------------------------------
 
-// TODO(bun-migration): see vault spore decision-754d7dd5 — pre-existing mock gap: createVaultTools export missing; exposed by bun's strict mock.module semantics.
-describe.skip('executor dry-run threading', () => {
+describe('executor dry-run threading', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {

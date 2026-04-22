@@ -62,8 +62,7 @@ describe('PowerManager', () => {
     expect(pm.getState()).toBe('active');
   });
 
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — no vi.advanceTimersByTimeAsync equivalent under bun test.
-  it.skip('runs jobs matching current power state', async () => {
+  it('runs jobs matching current power state', async () => {
     const jobFn = vi.fn().mockResolvedValue(undefined);
     pm.register({ name: 'test-job', runIn: ['active'], fn: jobFn });
 
@@ -97,8 +96,7 @@ describe('PowerManager', () => {
     expect(pm.getState()).toBe('active');
   });
 
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — no vi.advanceTimersByTimeAsync equivalent under bun test.
-  it.skip('handles job failures gracefully', async () => {
+  it('handles job failures gracefully', async () => {
     const failingJob = vi.fn().mockRejectedValue(new Error('job failed'));
     const passingJob = vi.fn().mockResolvedValue(undefined);
 
@@ -150,8 +148,7 @@ describe('PowerManager', () => {
     expect(pm.getState()).toBe('deep_sleep');
   });
 
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — no vi.advanceTimersByTimeAsync equivalent under bun test.
-  it.skip('stops timer on deep_sleep and restarts on activity', async () => {
+  it('stops timer on deep_sleep and restarts on activity', async () => {
     const jobFn = vi.fn().mockResolvedValue(undefined);
     pm.register({ name: 'test', runIn: ['active'], fn: jobFn });
 

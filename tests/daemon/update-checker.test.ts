@@ -20,14 +20,13 @@ import { MS_PER_HOUR } from '@myco/constants/update.js';
 // Module mocks — must be hoisted before any imports that use the mocked modules
 // ---------------------------------------------------------------------------
 
-// TODO(bun-migration): see vault spore decision-754d7dd5 — pre-existing mock gap: bare `mock.module('node:fs')` calls have no factory; exposed by bun's strict mock.module semantics.
-// mock.module('node:fs');
-// mock.module('node:child_process');
-// mock.module('node:os', () => ({
-//   default: {
-//     homedir: () => '/mock-home',
-//   },
-// }));
+mock.module('node:fs');
+mock.module('node:child_process');
+mock.module('node:os', () => ({
+  default: {
+    homedir: () => '/mock-home',
+  },
+}));
 
 // The constants module re-exports paths based on os.homedir(). Since vitest
 // hoists vi.mock calls before imports, mocking 'node:os' here ensures that
@@ -140,8 +139,7 @@ afterEach(() => {
 // isUpdateExempt
 // ---------------------------------------------------------------------------
 
-// TODO(bun-migration): see vault spore decision-754d7dd5 — pre-existing mock gap; all top-level mock.module('node:fs') shims disabled under bun's strict semantics.
-describe.skip('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () => {
+describe('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()', () => {
   it('returns false when no dev-build CLI entry has been recorded', () => {
     expect(isUpdateExempt()).toBe(false);
     expect(getDevBuildCliEntry()).toBeNull();
@@ -170,7 +168,7 @@ describe.skip('isUpdateExempt() / setDevBuildCliEntry() / getDevBuildCliEntry()'
   });
 });
 
-describe.skip('resolveMycoBinary()', () => {
+describe('resolveMycoBinary()', () => {
   it('returns the recorded dev-build CLI entry when set', () => {
     setDevBuildCliEntry('/Users/dev/.local/bin/myco-dev');
     expect(resolveMycoBinary()).toBe('/Users/dev/.local/bin/myco-dev');
@@ -185,7 +183,7 @@ describe.skip('resolveMycoBinary()', () => {
 // readUpdateConfig
 // ---------------------------------------------------------------------------
 
-describe.skip('readUpdateConfig()', () => {
+describe('readUpdateConfig()', () => {
   it('returns defaults when the config file is missing', () => {
     mockNoFiles();
     const config = readUpdateConfig();
@@ -226,7 +224,7 @@ describe.skip('readUpdateConfig()', () => {
 // isCacheStale
 // ---------------------------------------------------------------------------
 
-describe.skip('isCacheStale()', () => {
+describe('isCacheStale()', () => {
   it('returns true when cache is null', () => {
     expect(isCacheStale(null, 6)).toBe(true);
   });
@@ -258,7 +256,7 @@ describe.skip('isCacheStale()', () => {
 // checkForUpdate
 // ---------------------------------------------------------------------------
 
-describe.skip('checkForUpdate()', () => {
+describe('checkForUpdate()', () => {
   beforeEach(() => {
     // No pre-existing config or cache by default
     mockNoFiles();
@@ -424,7 +422,7 @@ describe.skip('checkForUpdate()', () => {
 // statusFromCache
 // ---------------------------------------------------------------------------
 
-describe.skip('statusFromCache()', () => {
+describe('statusFromCache()', () => {
   it('returns null when no cache file exists', () => {
     mockNoFiles();
     const result = statusFromCache('1.0.0');
@@ -520,7 +518,7 @@ describe.skip('statusFromCache()', () => {
 // resolveGlobalPrefix
 // ---------------------------------------------------------------------------
 
-describe.skip('resolveGlobalPrefix()', () => {
+describe('resolveGlobalPrefix()', () => {
   it('returns trimmed stdout from npm prefix -g', () => {
     vi.mocked(execFileSync).mockReturnValue('/usr/local\n' as never);
 
@@ -535,7 +533,7 @@ describe.skip('resolveGlobalPrefix()', () => {
 // getInstalledVersion
 // ---------------------------------------------------------------------------
 
-describe.skip('getInstalledVersion()', () => {
+describe('getInstalledVersion()', () => {
   it('returns version string when package.json exists at expected path', () => {
     vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
       if (String(p).includes('@goondocks/myco/package.json')) {
@@ -575,7 +573,7 @@ describe.skip('getInstalledVersion()', () => {
 // detectDevBuild
 // ---------------------------------------------------------------------------
 
-describe.skip('detectDevBuild()', () => {
+describe('detectDevBuild()', () => {
   /** Identity resolver — test paths don't exist, so bypass real realpath. */
   const identityResolver = (p: string) => p;
 

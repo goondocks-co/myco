@@ -277,8 +277,7 @@ describe('TeamSyncClient', () => {
       expect((initArg.signal as AbortSignal).aborted).toBe(false);
     });
 
-    // TODO(bun-migration): see vault spore decision-754d7dd5 — no vi.advanceTimersByTimeAsync equivalent under bun test.
-    it.skip('aborts a stalled request via the internal deadline', async () => {
+    it('aborts a stalled request via the internal deadline', async () => {
       // Capture the signal from the fetch() call and await its abort event.
       // We use fake timers so the real 15s default timeout fires within
       // the test budget.

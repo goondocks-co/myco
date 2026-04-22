@@ -143,8 +143,7 @@ describe('DaemonClient error-body propagation', () => {
     }
   });
 
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — fetch error-body propagation differs under bun test.
-  it.skip('returns data: undefined on empty non-ok body for all four methods', async () => {
+  it('returns data: undefined on empty non-ok body for all four methods', async () => {
     mode = { kind: 'empty' };
     const client = new DaemonClient(vaultDir);
 

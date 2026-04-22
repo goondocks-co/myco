@@ -412,8 +412,7 @@ describe('SqliteVecVectorStore', () => {
   // -------------------------------------------------------------------------
 
   describe('close', () => {
-    // TODO(bun-migration): see vault spore decision-754d7dd5 — native library reinit semantics under isolated test processes.
-    it.skip('closes the database cleanly', () => {
+    it('closes the database cleanly', () => {
       const s = new SqliteVecVectorStore();
       s.upsert('sessions', 'rec-1', unitVector(0), testMeta());
       s.close();

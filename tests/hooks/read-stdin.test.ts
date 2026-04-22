@@ -34,8 +34,7 @@ async function collect(child: ReturnType<typeof spawn>) {
 }
 
 describe('readStdin', () => {
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — child-process stdin timing differs under bun test.
-  it.skip('returns {} when stdin ends without any bytes', async () => {
+  it('returns {} when stdin ends without any bytes', async () => {
     const child = spawnReadStdinChild();
     child.stdin.end();
 
@@ -45,8 +44,7 @@ describe('readStdin', () => {
     expect(JSON.parse(result.stdout)).toEqual({ data: '{}' });
   });
 
-  // TODO(bun-migration): see vault spore decision-754d7dd5 — child-process stdin timing differs under bun test.
-  it.skip('waits for a delayed first chunk and returns the full payload', async () => {
+  it('waits for a delayed first chunk and returns the full payload', async () => {
     const child = spawnReadStdinChild();
     const payload = JSON.stringify({
       conversation_id: 'chunked-session',
