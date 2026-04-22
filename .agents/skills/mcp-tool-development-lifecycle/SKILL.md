@@ -303,6 +303,119 @@ Decide whether new tools belong in local or cloud MCP surface:
 
 5. **Document placement rationale** — explain why tool belongs in its chosen surface.
 
+## Procedure H: Skill Lifecycle Tool Registration Patterns
+
+The skill lifecycle system requires specific MCP tools that follow domain-specific registration patterns:
+
+1. **Register skill candidate management tools**:
+   ```typescript
+   // In tool-definitions.ts
+   export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
+   
+   {
+     name: TOOL_SKILL_CANDIDATES,
+     description: 'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
+     cortex: {
+       guidance: 'Use for candidate discovery, approval workflows, and candidate lifecycle management',
+       priority: 80,
+       requiresTeam: false,
+       requiresCollective: false,
+     },
+     annotations: {
+       readOnlyHint: false,
+       destructiveHint: false,
+       idempotentHint: false,
+       openWorldHint: false,
+     },
+     inputSchema: {
+       type: 'object',
+       properties: {
+         action: {
+           type: 'string',
+           description: 'Action to perform: list, get, create, update, delete'
+         },
+         id: {
+           type: 'string',
+           description: 'Candidate ID (required for get/update)'
+         },
+         topic: {
+           type: 'string',
+           description: 'Skill topic (required for create)'
+         },
+         rationale: {
+           type: 'string',
+           description: 'Why this should be a skill (required for create)'
+         },
+         status: {
+           type: 'string',
+           description: 'Candidate status: identified, dismissed'
+         }
+       },
+       required: ['action']
+     }
+   }
+   ```
+
+2. **Register skill record management tools**:
+   ```typescript
+   export const TOOL_SKILL_RECORDS = 'myco_skill_records';
+   
+   {
+     name: TOOL_SKILL_RECORDS,
+     description: 'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
+     cortex: {
+       guidance: 'Use for skill lifecycle operations — reading existing skills, updating status, managing skill evolution',
+       priority: 80,
+     },
+     inputSchema: {
+       type: 'object',
+       properties: {
+         action: { type: 'string', description: 'Action: list, get, update, delete' },
+         id: { type: 'string', description: 'Skill record ID or name (for get/update/delete)' },
+         status: { type: 'string', description: 'Filter by or new status: active, stale, retired' },
+         generation: { type: 'number', description: 'New generation number (for update)' }
+       },
+       required: ['action']
+     }
+   }
+   ```
+
+3. **Register skill file writing tools**:
+   ```typescript
+   export const TOOL_WRITE_SKILL = 'myco_write_skill';
+   
+   {
+     name: TOOL_WRITE_SKILL,
+     description: 'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
+     cortex: {
+       guidance: 'Use when materializing a new skill from approved candidates or updating existing skills',
+       priority: 90,
+     },
+     annotations: {
+       readOnlyHint: false,
+       destructiveHint: false,
+       idempotentHint: false,
+       openWorldHint: false,
+     },
+     inputSchema: {
+       type: 'object',
+       properties: {
+         name: { type: 'string', description: 'Skill directory name (kebab-case, NO colon)' },
+         display_name: { type: 'string', description: 'Human-readable display name' },
+         description: { type: 'string', description: 'Short description of what the skill does' },
+         content: { type: 'string', description: 'Full SKILL.md content in markdown' },
+         rationale: { type: 'string', description: 'Why this skill was created or updated' },
+         candidate_id: { type: 'string', description: 'Candidate ID that prompted this skill creation' }
+       },
+       required: ['name', 'display_name', 'description', 'content']
+     }
+   }
+   ```
+
+4. **Implement domain-specific validation patterns** — skill tools require structural validation (YAML frontmatter, name prefixes, content length limits) that differs from general vault tools.
+
+5. **Test skill workflow integration** — verify tools support the complete skill lifecycle: survey → approve → generate → evolve.
+
 ## Cross-Cutting Gotchas
 
 **Silent parameter drops**: When schema defines a parameter but handler ignores it, agents receive no error — their input is silently dropped. This is the most common drift failure.
@@ -320,3 +433,5 @@ Decide whether new tools belong in local or cloud MCP surface:
 **Handler signature mismatch**: All handlers must accept `(input, client)` parameters. Missing DaemonClient parameter causes registration failures.
 
 **Cross-runtime schema compatibility**: OpenAI strict mode and Zod refinement patterns cause silent registration failures. Use plain JSON Schema types with descriptive documentation instead of complex validation constructs.
+
+**Skill tool registration gaps**: Skill lifecycle operations require complete tool registration (candidates, records, write_skill) — missing any component breaks agent workflows. Always register skill tools as a complete set.

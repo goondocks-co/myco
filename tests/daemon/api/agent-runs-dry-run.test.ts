@@ -131,6 +131,32 @@ describe('agent-runs API dry-run + write-intents', () => {
     });
   });
 
+  describe('handleResumeRun — dry-run preservation', () => {
+    it('preserves dryRun=true when resuming a resumable failed run', async () => {
+      insertRun({
+        id: 'run-resume-dry',
+        agent_id: 'myco-agent',
+        status: 'failed',
+        resumable: 1,
+        dryRun: true,
+        task: 'skill-evolve',
+        instruction: 'resume this run',
+      });
+
+      const { handleResumeRun } = makeHandlers();
+      const res = await handleResumeRun(makeRequest({
+        params: { id: 'run-resume-dry' },
+        body: {},
+      }));
+
+      expect((res.body as { ok: boolean }).ok).toBe(true);
+      expect(runAgentSpy).toHaveBeenCalledTimes(1);
+      const [, opts] = runAgentSpy.mock.calls[0] as [string, { dryRun?: boolean; resumeRunId?: string }];
+      expect(opts.resumeRunId).toBe('run-resume-dry');
+      expect(opts.dryRun).toBe(true);
+    });
+  });
+
   describe('handleGetRun — serializes reasoning_level + execution_overrides', () => {
     it('surfaces reasoning_level and parsed execution_overrides from the row', async () => {
       insertRun({

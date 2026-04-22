@@ -301,6 +301,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       agentId: run.agent_id,
       task: run.task ?? undefined,
       instruction: run.instruction ?? undefined,
+      dryRun: run.dry_run,
       resumeRunId: run.id,
       resumeMode: mode ?? 'manual',
       embeddingManager,

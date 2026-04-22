@@ -17,12 +17,13 @@ import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
 import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
-import { listSkillRecords } from '@myco/db/queries/skill-records.js';
+import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { epochSeconds } from '@myco/constants.js';
 import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
+import { detectDrift, type SkillFileFingerprint } from '@myco/agent/skill-drift.js';
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
@@ -341,6 +342,12 @@ interface SkillStructure {
   narrow: boolean;
 }
 
+interface SemanticPair {
+  idA: string;
+  idB: string;
+  similarity: number;
+}
+
 function normalizeSkillName(name: string): string {
   return name.replace(/[-_:]+/g, ' ');
 }
@@ -465,6 +472,28 @@ function headingOverlap(
   return { score: smaller > 0 ? shared.length / smaller : 0, shared };
 }
 
+function parseSkillProperties(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function selectOutlierPairs(
+  pairs: SemanticPair[],
+  opts: { kSigma: number; minSamples: number },
+): SemanticPair[] {
+  if (pairs.length < opts.minSamples) return [];
+  const values = pairs.map(p => p.similarity);
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
+  const stddev = Math.sqrt(variance);
+  const cutoff = mean + (opts.kSigma * stddev);
+  return pairs.filter(pair => pair.similarity > cutoff);
+}
+
 /**
  * Build the instruction for a skill-evolve run.
  *
@@ -490,7 +519,7 @@ export async function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
   retrievalProvider?: SemanticSearchProvider,
-): Promise<string> {
+): Promise<string | undefined> {
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
 
@@ -529,62 +558,128 @@ export async function buildSkillEvolveInstruction(
   needsAssessment.sort((a, b) => a.lastAssessedAt - b.lastAssessedAt);
   const selectedSkills = needsAssessment.slice(0, maxSkillsPerRun);
 
-  if (selectedSkills.length === 0) {
-    return 'No skills need assessment. All active skills are current or were recently assessed. Report skip via vault_report and finish.';
-  }
-
   // ----- Structural analysis: section counts + heading extraction -----
   // Read each skill's content from disk and extract H2 headings.
   // This gives the inventory phase mechanical signals for narrow/merge
   // detection that don't depend on LLM judgment.
   const structures: SkillStructure[] = [];
   const skillHeadings = new Map<string, string[]>();
-  for (const skill of allSkills) {
-    let content = '';
-    if (projectRoot && skill.path) {
-      try { content = readFileSync(resolve(projectRoot, skill.path), 'utf-8'); } catch { /* missing */ }
+  if (projectRoot) {
+    for (const skill of allSkills) {
+      let content = '';
+      if (skill.path) {
+        try { content = readFileSync(resolve(projectRoot, skill.path), 'utf-8'); } catch { /* missing */ }
+      }
+      const headings = extractHeadings(content);
+      skillHeadings.set(skill.name, headings);
+      structures.push({
+        name: skill.name,
+        sectionCount: headings.length,
+        headings,
+        narrow: headings.length < MIN_SECTIONS_FOR_STANDALONE,
+      });
     }
-    const headings = extractHeadings(content);
-    skillHeadings.set(skill.name, headings);
-    structures.push({
-      name: skill.name,
-      sectionCount: headings.length,
-      headings,
-      narrow: headings.length < MIN_SECTIONS_FOR_STANDALONE,
-    });
   }
 
   // ----- Pairwise similarity: description + heading overlap -----
   // Runs after the early-exit so we don't compute O(n²) scores for no-op runs.
   const overlaps: SkillOverlapPair[] = [];
-  for (let i = 0; i < allSkills.length; i++) {
-    for (let j = i + 1; j < allSkills.length; j++) {
-      const a = allSkills[i];
-      const b = allSkills[j];
-      const descJaccard = descriptionSimilarity(a.description, b.description);
-      const aHeadings = skillHeadings.get(a.name) ?? [];
-      const bHeadings = skillHeadings.get(b.name) ?? [];
-      const ho = headingOverlap(aHeadings, bHeadings);
+  if (projectRoot) {
+    for (let i = 0; i < allSkills.length; i++) {
+      for (let j = i + 1; j < allSkills.length; j++) {
+        const a = allSkills[i];
+        const b = allSkills[j];
+        const descJaccard = descriptionSimilarity(a.description, b.description);
+        const aHeadings = skillHeadings.get(a.name) ?? [];
+        const bHeadings = skillHeadings.get(b.name) ?? [];
+        const ho = headingOverlap(aHeadings, bHeadings);
 
-      // Flag if EITHER description similarity OR heading overlap is significant
-      const descFlag = descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD * 0.75;
-      const headingFlag = ho.score >= 0.4;
-      if (!descFlag && !headingFlag) continue;
+        // Flag if EITHER description similarity OR heading overlap is significant
+        const descFlag = descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD * 0.75;
+        const headingFlag = ho.score >= 0.4;
+        if (!descFlag && !headingFlag) continue;
 
-      const verdict = (descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD || ho.score >= 0.5)
-        ? 'potential-merge'
-        : 'potential-narrow';
+        const verdict = (descJaccard >= DESCRIPTION_DUPLICATE_THRESHOLD || ho.score >= 0.5)
+          ? 'potential-merge'
+          : 'potential-narrow';
 
-      overlaps.push({
-        skillA: a.name,
-        skillB: b.name,
-        descriptionJaccard: Math.round(descJaccard * 100) / 100,
-        headingOverlap: Math.round(ho.score * 100) / 100,
-        sharedHeadings: ho.shared,
-        verdict,
-      });
+        overlaps.push({
+          skillA: a.name,
+          skillB: b.name,
+          descriptionJaccard: Math.round(descJaccard * 100) / 100,
+          headingOverlap: Math.round(ho.score * 100) / 100,
+          sharedHeadings: ho.shared,
+          verdict,
+        });
+      }
     }
   }
+
+  const narrowSkills = structures.filter(s => s.narrow);
+
+  const nowEpoch = epochSeconds();
+  const oldestForVerify = [...allSkills]
+    .sort((a, b) => {
+      const propsA = parseSkillProperties(a.properties);
+      const propsB = parseSkillProperties(b.properties);
+      const tsA = typeof propsA.last_verified_at === 'number' ? propsA.last_verified_at : 0;
+      const tsB = typeof propsB.last_verified_at === 'number' ? propsB.last_verified_at : 0;
+      return tsA - tsB;
+    })
+    .slice(0, 5);
+  const drift = projectRoot
+    ? detectDrift(oldestForVerify, projectRoot, nowEpoch)
+    : {
+        verifiedAt: nowEpoch,
+        reports: [],
+        totalMissing: 0,
+        totalInconclusive: 0,
+        totalGrowth: 0,
+      };
+
+  for (const skill of oldestForVerify) {
+    const report = drift.reports.find(r => r.skillId === skill.id);
+    const props = parseSkillProperties(skill.properties);
+    const mergedFingerprints: Record<string, SkillFileFingerprint> = {
+      ...(props.file_fingerprints && typeof props.file_fingerprints === 'object'
+        ? props.file_fingerprints as Record<string, SkillFileFingerprint>
+        : {}),
+    };
+
+    if (report) {
+      for (const [path, fingerprint] of Object.entries(report.currentFingerprints)) {
+        if (!mergedFingerprints[path]) {
+          mergedFingerprints[path] = fingerprint;
+        }
+      }
+    }
+
+    props.last_verified_at = nowEpoch;
+    props.file_fingerprints = mergedFingerprints;
+    updateSkillRecord(skill.id, {
+      updated_at: nowEpoch,
+      properties: JSON.stringify(props),
+    });
+  }
+
+  let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];
+  if (retrievalProvider && projectRoot) {
+    try {
+      const allPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0);
+      semanticPairs = selectOutlierPairs(allPairs, { kSigma: 2, minSamples: 10 });
+    } catch {
+      semanticPairs = [];
+    }
+  }
+
+  const anyWork = selectedSkills.length > 0
+    || overlaps.length > 0
+    || narrowSkills.length > 0
+    || semanticPairs.length > 0
+    || drift.totalMissing > 0
+    || drift.totalInconclusive > 0
+    || drift.totalGrowth > 0;
+  if (!anyWork) return undefined;
 
   const parts: string[] = [
     `${selectedSkills.length} skill(s) need assessment.`,
@@ -617,7 +712,6 @@ export async function buildSkillEvolveInstruction(
   }
 
   // Mechanically narrow skills — explicit flags for the inventory phase
-  const narrowSkills = structures.filter(s => s.narrow);
   if (narrowSkills.length > 0) {
     parts.push('');
     parts.push('## Mechanically Narrow Skills (<2 H2 sections)');
@@ -644,25 +738,39 @@ export async function buildSkillEvolveInstruction(
   // Semantic similarity from embeddings — strongest signal for overlap detection.
   // Uses cosine similarity on embedded skill descriptions. Catches semantic
   // overlap that token-based methods miss ("adding agent integration" ~= "onboarding a symbiont").
-  if (retrievalProvider) {
+  if (retrievalProvider && projectRoot) {
     // Build a name→id lookup for resolving embedding results
     const idToName = new Map(allSkills.map(s => [s.id, s.name]));
 
-    try {
-      const semanticPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0.65);
-      if (semanticPairs.length > 0) {
-        parts.push('');
-        parts.push('## Semantic Similarity (embedding cosine distance)');
-        parts.push('Pairs with cosine similarity >= 0.65. This is the STRONGEST overlap signal.');
-        parts.push('High similarity (>0.8) means the skills describe nearly identical procedures.');
-        for (const p of semanticPairs) {
-          const nameA = idToName.get(p.idA) ?? p.idA;
-          const nameB = idToName.get(p.idB) ?? p.idB;
-          parts.push(`- **${nameA}** <-> **${nameB}**: cosine=${p.similarity}`);
-        }
+    if (semanticPairs.length > 0) {
+      parts.push('');
+      parts.push('## Semantic Similarity (distribution outliers)');
+      parts.push('Pairs selected by outlier filtering (mu + 2sigma) over this run\'s pairwise distribution.');
+      for (const p of semanticPairs) {
+        const nameA = idToName.get(p.idA) ?? p.idA;
+        const nameB = idToName.get(p.idB) ?? p.idB;
+        parts.push(`- **${nameA}** <-> **${nameB}**: cosine=${p.similarity}`);
       }
-    } catch {
-      // Embeddings not available — fall through to token-based signals only
+    }
+  }
+
+  parts.push('');
+  parts.push('## Pre-computed Drift Report');
+  parts.push(`verified_at: ${drift.verifiedAt}`);
+  parts.push(`totals: missing=${drift.totalMissing}, inconclusive=${drift.totalInconclusive}, growth=${drift.totalGrowth}`);
+  for (const report of drift.reports) {
+    parts.push(`- **${report.name}**: severity=${report.severity}, confidence=${report.confidence}`);
+    if (report.loadBearingMisses.length > 0) {
+      parts.push(`  load_bearing_misses: ${JSON.stringify(report.loadBearingMisses)}`);
+    }
+    if (report.inconclusive.length > 0) {
+      parts.push(`  inconclusive: ${JSON.stringify(report.inconclusive)}`);
+    }
+    if (report.growth.length > 0) {
+      parts.push(`  growth: ${JSON.stringify(report.growth)}`);
+    }
+    if (Object.keys(report.currentFingerprints).length > 0) {
+      parts.push(`  current_fingerprints: ${JSON.stringify(report.currentFingerprints)}`);
     }
   }
 

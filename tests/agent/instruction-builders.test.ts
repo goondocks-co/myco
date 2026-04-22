@@ -6,6 +6,9 @@
  * content assembly.
  */
 
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
 // Mock embedding before imports
@@ -30,6 +33,7 @@ import {
   CORTEX_INSTRUCTIONS_TASK,
   getSkillSurveyEligibility,
   isInstructionRequiredTask,
+  selectOutlierPairs,
   SKILL_GENERATE_TASK,
   SKILL_EVOLVE_TASK,
 } from '@myco/agent/instruction-builders.js';
@@ -165,10 +169,10 @@ describe('buildSkillEvolveInstruction', () => {
 
   it('returns skip message when no skills exist', async () => {
     const result = await buildSkillEvolveInstruction();
-    expect(result).toContain('No skills need assessment');
+    expect(result).toBeUndefined();
   });
 
-  it('returns skip message when no new spores since watermark', async () => {
+  it('returns undefined when no new spores since watermark', async () => {
     const now = epochSeconds();
     // Watermark is in the future — no spores can be newer
     createSkillWithWatermark('no-spores-skill', now + 1000);
@@ -176,7 +180,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSpore(now - 100);
 
     const result = await buildSkillEvolveInstruction();
-    expect(result).toContain('No skills need assessment');
+    expect(result).toBeUndefined();
   });
 
   it('includes skill when new spores exist since watermark', async () => {
@@ -201,7 +205,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSpore(now - 100);
 
     const result = await buildSkillEvolveInstruction();
-    expect(result).toContain('No skills need assessment');
+    expect(result).toBeUndefined();
   });
 
   it('respects max_skills_per_run param', async () => {
@@ -355,6 +359,76 @@ describe('buildSkillEvolveInstruction', () => {
     expect(uiIds[0]).toBe(uiSporeId);
     expect(provider.embedQuery).toHaveBeenCalled();
     expect(provider.searchVectors).toHaveBeenCalled();
+  });
+
+  it('returns undefined when all signals are zero with projectRoot', async () => {
+    const now = epochSeconds();
+    createSkillWithWatermark('steady-skill', now + 1000, 0, 'Steady skill');
+
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+    mkdirSync(join(root, '.agents', 'skills', 'steady-skill'), { recursive: true });
+    writeFileSync(
+      join(root, '.agents', 'skills', 'steady-skill', 'SKILL.md'),
+      '# Steady\n## Scope\nNo code refs.\n## Procedure\nNo changes.\n',
+    );
+
+    const result = await buildSkillEvolveInstruction({}, root);
+    expect(result).toBeUndefined();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('includes drift report when growth-only signal is present', async () => {
+    const now = epochSeconds();
+    const skillId = createSkillWithWatermark('growth-skill', now + 1000, 0, 'helpers skill');
+
+    const db = getDatabase();
+    db.prepare('UPDATE skill_records SET properties = ? WHERE id = ?').run(JSON.stringify({
+      knowledge_watermark: now + 1000,
+      file_fingerprints: {
+        'packages/myco/src/helpers.ts': { exports: ['ExistingSymbol'] },
+      },
+    }), skillId);
+
+    const root = mkdtempSync(join(tmpdir(), 'myco-evolve-'));
+    mkdirSync(join(root, '.agents', 'skills', 'growth-skill'), { recursive: true });
+    mkdirSync(join(root, 'packages', 'myco', 'src'), { recursive: true });
+    writeFileSync(
+      join(root, '.agents', 'skills', 'growth-skill', 'SKILL.md'),
+      '# Growth\n## Scope\nUse `packages/myco/src/helpers.ts`.\n## Procedure\nKeep updated.\n',
+    );
+    writeFileSync(
+      join(root, 'packages', 'myco', 'src', 'helpers.ts'),
+      'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\nexport const AddedTwo = 3;\n',
+    );
+
+    const result = await buildSkillEvolveInstruction({}, root);
+    expect(result).toContain('Pre-computed Drift Report');
+    expect(result).toContain('growth=');
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('selectOutlierPairs', () => {
+  it('selects high outliers from distribution', () => {
+    const pairs = [
+      { idA: 'a', idB: 'b', similarity: 0.32 },
+      { idA: 'a', idB: 'c', similarity: 0.35 },
+      { idA: 'a', idB: 'd', similarity: 0.37 },
+      { idA: 'a', idB: 'e', similarity: 0.39 },
+      { idA: 'a', idB: 'f', similarity: 0.41 },
+      { idA: 'a', idB: 'g', similarity: 0.43 },
+      { idA: 'a', idB: 'h', similarity: 0.45 },
+      { idA: 'a', idB: 'i', similarity: 0.48 },
+      { idA: 'a', idB: 'j', similarity: 0.91 },
+      { idA: 'a', idB: 'k', similarity: 0.89 },
+    ];
+    const selected = selectOutlierPairs(pairs, { kSigma: 2, minSamples: 10 });
+    expect(selected.map(p => p.similarity)).toEqual([0.91]);
+  });
+
+  it('returns empty when under minimum sample size', () => {
+    const selected = selectOutlierPairs([{ idA: 'a', idB: 'b', similarity: 0.99 }], { kSigma: 2, minSamples: 10 });
+    expect(selected).toEqual([]);
   });
 });
 
