@@ -25,7 +25,7 @@
     "prebuild": "npm run codegen",
     "build": "npm run build:core && npm run build:ui && npm run build:verify",
     "build:core": "node scripts/clean-core.mjs && tsup",
-    "build:ui": "test -d ui && cd ui && npx vite build",
+    "build:ui": "if [ -d ui ]; then cd ui && { test -d node_modules || npm ci; } && npx vite build; fi",
     "build:verify": "node -e \"require('node:fs').statSync('dist/ui/index.html')\" || (echo 'build:verify failed — dist/ui/index.html missing' >&2; exit 1)",
     "build:watch": "tsc --watch",
     "build:types": "tsc",
