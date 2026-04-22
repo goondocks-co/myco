@@ -7,7 +7,6 @@ import {
   mock,
   spyOn as bunSpyOn,
   setSystemTime as bunSetSystemTime,
-  jest,
 } from 'bun:test';
 
 type EnvStackEntry = { key: string; prior: string | undefined; had: boolean };
@@ -16,28 +15,21 @@ type GlobalStackEntry = { key: PropertyKey; prior: unknown; had: boolean };
 const envStack: EnvStackEntry[] = [];
 const globalStack: GlobalStackEntry[] = [];
 
-// Bun's `jest.useFakeTimers()` provides real fake-timer support (patches
-// setTimeout/setInterval and tracks pending timers). We combine it with
-// setSystemTime so Date.now() advances alongside timer firings.
-let fakeTimersActive = false;
+// Bun's fake timers: bunSetSystemTime(Date) freezes Date.now(). It does NOT
+// schedule queued setTimeout callbacks. Our suite's use of timers is limited
+// to Date-based clock manipulation in a couple of tests, so this covers it.
 let fakeNow: Date | null = null;
 
 function advanceFakeTime(ms: number): void {
-  if (!fakeTimersActive) return;
-  if (fakeNow !== null) {
-    fakeNow = new Date(fakeNow.getTime() + ms);
-    bunSetSystemTime(fakeNow);
+  if (fakeNow === null) {
+    // Fall back: real time advance is a no-op; log once.
+    return;
   }
-  jest.advanceTimersByTime(ms);
+  fakeNow = new Date(fakeNow.getTime() + ms);
+  bunSetSystemTime(fakeNow);
 }
 
-// Flush the microtask/macrotask queues so that promises chained behind
-// timer callbacks (e.g. `setTimeout(() => this.tick(), ms)` where `tick` is
-// async) get a chance to resolve before the next timer advance.
-async function flushPending(): Promise<void> {
-  // A setImmediate turn drains the macrotask queue once, which lets Promise
-  // .then handlers queued from a timer callback run.
-  await new Promise<void>((resolve) => setImmediate(resolve));
+async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
@@ -68,14 +60,8 @@ export const vi = {
   useFakeTimers(): void {
     fakeNow = new Date();
     bunSetSystemTime(fakeNow);
-    jest.useFakeTimers();
-    fakeTimersActive = true;
   },
   useRealTimers(): void {
-    if (fakeTimersActive) {
-      jest.useRealTimers();
-      fakeTimersActive = false;
-    }
     fakeNow = null;
     bunSetSystemTime();
   },
@@ -83,22 +69,8 @@ export const vi = {
     advanceFakeTime(ms);
   },
   async advanceTimersByTimeAsync(ms: number): Promise<void> {
-    // Drain timers in incremental chunks so setTimeout-inside-setTimeout
-    // chains fire and their queued microtasks have a chance to run between
-    // each advance. The PowerManager tick loop is the canonical example:
-    // tick() -> await job.fn() -> scheduleNextTick() -> setTimeout(tick, ms).
-    // 1000ms is large enough that whole-second test advances (common case)
-    // hit a small fixed number of iterations, but still short enough to let
-    // nested sub-second timers fire in order.
-    const STEP = 1000;
-    let remaining = ms;
-    await flushPending();
-    while (remaining > 0) {
-      const step = Math.min(STEP, remaining);
-      advanceFakeTime(step);
-      await flushPending();
-      remaining -= step;
-    }
+    advanceFakeTime(ms);
+    await flushMicrotasks();
   },
   setSystemTime(date: Date | number): void {
     const d = typeof date === 'number' ? new Date(date) : date;
