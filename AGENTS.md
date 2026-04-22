@@ -13,6 +13,8 @@ Myco captures project memory in a local vault and serves it back through context
 - We develop Myco using Myco. The project-local vault lives at `.myco/`.
 - Session data from development sessions is real vault data. Avoid destructive vault operations unless you mean it.
 - After changing hook or daemon code, run `make build` and then `myco-dev restart`. Hooks pick up new code on the next invocation; the daemon does not.
+- In git worktrees, prefer not to restart the daemon. Shared vault capture continuity is more valuable than forcing daemon restarts during isolated testing.
+- If a worktree must restart for debugging, run the local CLI entry (`node packages/myco/dist/src/cli.js restart`) from that worktree; avoid global `myco-dev restart` from worktrees.
 - `make dev-link` creates `myco-dev` and `myco-run` symlinks and writes `.myco/runtime.command`.
 - `make dev-unlink` removes those symlinks and `.myco/runtime.command`.
 
