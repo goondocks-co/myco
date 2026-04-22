@@ -78,12 +78,13 @@ phases:
       ## Output discipline
 
       Keep responses terse. No narrative explanations.
-      Prefer tool calls and short machine-readable summaries.
-      Final phase summary must be <= 4 lines.
+      Do not provide analytical prose, rationale paragraphs, or
+      walkthrough text outside tool payloads.
+      Final phase summary must be <= 2 lines.
       Required output shape:
       - One `vault_set_state` call with merge/narrow arrays.
       - One `vault_report` call with counts.
-      - Final assistant text <= 3 lines, no explanatory prose.
+      - Final assistant text <= 2 lines, no explanatory prose.
     tools:
       - vault_skill_records
       - vault_set_state
