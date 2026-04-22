@@ -38,6 +38,31 @@ describe('attachment queries', () => {
     expect(attachments[0].file_path).toContain('abc123');
   });
 
+  it('list rows expose turn_number parsed from the filename convention', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    upsertSession({ id: 'sess-1', agent: 'claude-code', started_at: now, created_at: now });
+
+    insertAttachment({
+      id: 'att-1', session_id: 'sess-1',
+      file_path: 'attachments/abc123-t3-1.png', media_type: 'image/png', created_at: now,
+    });
+    insertAttachment({
+      id: 'att-2', session_id: 'sess-1',
+      file_path: 'attachments/abc123-t3-2.png', media_type: 'image/png', created_at: now + 1,
+    });
+    insertAttachment({
+      id: 'att-legacy', session_id: 'sess-1',
+      file_path: 'attachments/legacy-no-turn.png', media_type: 'image/png', created_at: now + 2,
+    });
+
+    const rows = listAttachmentsBySession('sess-1');
+    expect(rows).toHaveLength(3);
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId['att-1'].turn_number).toBe(3);
+    expect(byId['att-2'].turn_number).toBe(3);
+    expect(byId['att-legacy'].turn_number).toBeNull();
+  });
+
   it('listAttachmentsBySession does not include the data BLOB column', async () => {
     const now = Math.floor(Date.now() / 1000);
     upsertSession({ id: 'sess-1', agent: 'claude-code', started_at: now, created_at: now });

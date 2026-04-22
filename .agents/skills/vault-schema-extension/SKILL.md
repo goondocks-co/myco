@@ -14,7 +14,7 @@ Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) an
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
-- Identify the current `user_version` — check `src/db/migrations.ts` or run `PRAGMA user_version;` against `.myco/myco.db`
+- Identify the current `user_version` — check `packages/myco/src/db/migrations.ts` or run `PRAGMA user_version;` against `.myco/myco.db`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
 
 ## Procedure A: Adding a New Table
@@ -23,7 +23,7 @@ Follow these steps in order. Skipping the query module or constants update leave
 
 ### 1. Write the migration block
 
-Locate the migration runner (`src/db/migrations.ts`). Add a new version block at the end:
+Locate the migration runner (`packages/myco/src/db/migrations.ts`). Add a new version block at the end:
 
 ```typescript
 // v9 — add my_new_table for <purpose>
@@ -54,7 +54,7 @@ Key rules:
 
 ### 2. Create the query module
 
-Create `src/db/queries/my-new-table.ts`:
+Create `packages/myco/src/db/queries/my-new-table.ts`:
 
 ```typescript
 import type { Database } from 'better-sqlite3';
@@ -88,11 +88,11 @@ export function getMyNewTableBySession(
 }
 ```
 
-Re-export from the barrel file (`src/db/queries/index.ts`). All SQL lives in `src/db/queries/` — never inline SQL strings in MCP handlers or business logic.
+Re-export from the barrel file (`packages/myco/src/db/queries/index.ts`). All SQL lives in `packages/myco/src/db/queries/` — never inline SQL strings in MCP handlers or business logic.
 
 ### 3. Update schema constants
 
-Open `src/config/constants.ts` and check each relevant set:
+Open `packages/myco/src/config/constants.ts` and check each relevant set:
 
 | Constant | Add the table if… |
 |---|---|
@@ -104,7 +104,7 @@ Open `src/config/constants.ts` and check each relevant set:
 Find all places a similar table name appears to avoid missing any registration point:
 
 ```bash
-grep -r "prompt_batches" src/config/ src/db/ --include="*.ts" -l
+grep -r "prompt_batches" packages/myco/src/config/ packages/myco/src/db/ --include="*.ts" -l
 ```
 
 ### 4. Wire the MCP surface (if needed)
@@ -145,7 +145,7 @@ Cloudflare D1 mirrors the local SQLite schema for team sync. Its critical behavi
 
 ### Maintaining the D1 migration file
 
-Keep a parallel migration file in the Workers project (e.g., `src/cloud/d1-migrations/0009_add_my_new_table.sql`):
+Keep a parallel migration file in the Workers project (e.g., `packages/myco-team/migrations/0009_add_my_new_table.sql`):
 
 ```sql
 -- 0009_add_my_new_table.sql
@@ -267,24 +267,121 @@ if (currentVersion < 10) {
 }
 ```
 
-## Procedure E: Query Pattern Selection
+## Procedure E: Query Pattern Selection and Optimization
 
-Choose the right pattern upfront — post-filter in JS is a performance trap that compounds as the table grows.
+Choose the right pattern upfront — post-filter in JS is a performance trap that compounds as the table grows. The Myco vault is accessed by both the daemon and MCP tool handlers, which can be called in tight loops by agent pipelines. Small query inefficiencies compound quickly.
 
-### Variable-length list filtering (WHERE IN with json_each)
+### Pattern 1: Use `json_each` for Variable-Length List Filters
+
+**Problem:** `WHERE id IN (?, ?, ?)` creates a new statement shape for every list length. SQLite cannot cache the query plan, so every call re-parses and re-plans.
+
+**Solution:** Pass a JSON array and use `json_each(json(?))` to produce a stable, cacheable query shape.
 
 ```typescript
-// ❌ Avoid: loads all rows into JS, then filters
-const rows = db.prepare('SELECT * FROM spores').all();
-const filtered = rows.filter(r => ids.includes(r.id));
+// ❌ Different statement shape for each call — not cacheable
+const placeholders = ids.map(() => '?').join(',');
+db.prepare(`SELECT * FROM spores WHERE id IN (${placeholders})`).all(...ids);
 
-// ✓ Correct: filtering in the query plan
-const rows = db.prepare(`
-  SELECT * FROM spores
-  WHERE id IN (SELECT value FROM json_each(?))
-  ORDER BY created_at DESC
-`).all(JSON.stringify(ids)) as SporeRow[];
+// ✅ Single stable shape — compiled and cached once
+db.prepare(`
+  SELECT s.*
+  FROM spores s
+  JOIN json_each(json(?)) je ON s.id = je.value
+  WHERE s.agent_id = ?
+`).all(JSON.stringify(ids), agentId);
 ```
+
+This pattern was applied to `hydrateSearchResults`, which was previously re-prepared on every invocation and used an uncacheable `IN` shape.
+
+### Pattern 2: Filter in SQL, Not in JavaScript
+
+**Problem:** Fetching all rows and filtering by a condition in application code is O(n) memory allocation plus a full-table read. SQLite's query planner can use indexes; JavaScript cannot.
+
+```typescript
+// ❌ Load everything, filter in memory
+const all = db.prepare('SELECT * FROM edges').all();
+const relevant = all.filter(e => ids.includes(e.source_id));
+
+// ✅ Push the filter into SQL
+db.prepare(`
+  SELECT * FROM edges
+  WHERE source_id IN (SELECT value FROM json_each(json(?)))
+`).all(JSON.stringify(ids));
+```
+
+Both `hydrateSearchResults` and the graph edge query were rewritten using this pattern. If you find yourself writing `.filter()` or `.find()` on a database result set, that's a signal to push the condition into SQL.
+
+### Pattern 3: Add Indexes at Schema Definition Time
+
+**Problem:** Adding an index to a populated table requires a full table scan to build the index. Deferring index creation is a common source of production slowdowns.
+
+**Rule:** Add covering indexes for all primary query shapes in the same `CREATE TABLE` migration. Typical patterns:
+
+```sql
+-- For any table with agent-scoped queries:
+CREATE INDEX IF NOT EXISTS idx_my_table_agent_status
+  ON my_table (agent_id, status);
+
+-- For join/lookup columns (e.g., outbox FK queries):
+CREATE INDEX IF NOT EXISTS idx_team_outbox_table_row
+  ON team_outbox (table_name, row_id);
+```
+
+The `(agent_id, status)` composite was added to `skill_candidates` and `skill_records`. The `(table_name, row_id)` index was needed for the `NOT EXISTS` outbox backfill query on team sync.
+
+### Pattern 4: Pre-Compile Prepared Statements and Regex at Module Scope
+
+**Problem:** `db.prepare(sql)` inside a function body re-compiles the statement on every call. A regex literal inside a function body is reconstructed on every call.
+
+```typescript
+// ❌ Compiled fresh on every invocation
+export function getSpore(db, id) {
+  return db.prepare('SELECT * FROM spores WHERE id = ?').get(id);
+}
+
+// ✅ Compiled once at module load
+const GET_SPORE = (db: Database) =>
+  db.prepare('SELECT * FROM spores WHERE id = ?');
+
+// Or, if db is module-level:
+const getSporeStmt = db.prepare('SELECT * FROM spores WHERE id = ?');
+
+// Same for regex:
+// ❌ New RegExp on every call
+function validate(val: string) {
+  return /^[a-z_]+$/.test(val); // recreated every call
+}
+
+// ✅ Module-scope constant
+const VALID_NAME = /^[a-z_]+$/;
+function validate(val: string) {
+  return VALID_NAME.test(val);
+}
+```
+
+This matters most for MCP tool handlers called in agent loops.
+
+### Pattern 5: Combined `listWithCount` — Never Two Round-Trips for Pagination
+
+When a list endpoint needs both a page of rows and a total count, issue both queries in the same function call (not two separate exported functions called sequentially).
+
+```typescript
+export function listSpores(db, agentId, opts) {
+  const rows = db.prepare(`
+    SELECT * FROM spores WHERE agent_id = ? AND status = ?
+    ORDER BY created_at DESC LIMIT ? OFFSET ?
+  `).all(agentId, opts.status, opts.limit, opts.offset);
+
+  const { total } = db.prepare(`
+    SELECT COUNT(*) as total FROM spores
+    WHERE agent_id = ? AND status = ?
+  `).get(agentId, opts.status) as { total: number };
+
+  return { rows, total };
+}
+```
+
+The anti-pattern is calling `list()` then `count()` separately in the handler — that's two SQLite round-trips for one logical operation. The update handler for skill records was refactored away from this pattern.
 
 ### Hydration joins (avoid N+1)
 
@@ -356,22 +453,34 @@ sqlite3 .myco/myco.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY create
 # Should show "USING INDEX idx_sessions_created_at", not "SCAN sessions"
 ```
 
+### Query Optimization Quick Reference
+
+| Situation | Pattern |
+|---|---|
+| `WHERE id IN (dynamic list)` | `json_each(json(?))` |
+| JavaScript `.filter()` on DB results | Push condition into SQL |
+| New table creation | Add `(agent_id, status)` index immediately |
+| Pagination endpoint | `listWithCount` combined query |
+| `db.prepare()` inside function | Move to module scope |
+| `/regex/` inside function | Move to module scope |
+
 ## File Layout Reference
 
 ```
-src/
-  db/
-    migrations.ts            # All versioned migration blocks, in order
-    queries/
-      index.ts               # Barrel re-export of all query modules
-      sessions.ts            # One file per logical domain
-      spores.ts
-      my-new-table.ts        # New query module
-  config/
-    constants.ts             # VAULT_GITIGNORE_TABLES and other shared sets
-  cloud/
-    d1-migrations/           # Parallel D1 SQL migration files
-      0009_add_my_new_table.sql
+packages/myco/
+  src/
+    db/
+      migrations.ts            # All versioned migration blocks, in order
+      queries/
+        index.ts               # Barrel re-export of all query modules
+        sessions.ts            # One file per logical domain
+        spores.ts
+        my-new-table.ts        # New query module
+    config/
+      constants.ts             # VAULT_GITIGNORE_TABLES and other shared sets
+packages/myco-team/
+  migrations/                  # Parallel D1 SQL migration files
+    0009_add_my_new_table.sql
 ```
 
 ## Cross-Cutting Gotchas
@@ -381,5 +490,5 @@ src/
 - **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request triggers migration. Guard reads against new columns until you know migration has run.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
-- **All SQL lives in `src/db/queries/`** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
-- **Scan `src/config/constants.ts` after every new table** — missing a registration in `SEARCHABLE_TABLES` or `MCP_READABLE_TABLES` silently limits the feature surface.
+- **All SQL lives in `packages/myco/src/db/queries/`** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
+- **Scan `packages/myco/src/config/constants.ts` after every new table** — missing a registration in `SEARCHABLE_TABLES` or `MCP_READABLE_TABLES` silently limits the feature surface.

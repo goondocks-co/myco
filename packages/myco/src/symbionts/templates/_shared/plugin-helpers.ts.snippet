@@ -1,0 +1,91 @@
+// ---------------------------------------------------------------------------
+// Shared plugin helpers — single source of truth for buffer/POST + batch kinds.
+//
+// This block is maintained in
+//   src/symbionts/templates/_shared/plugin-helpers.ts.snippet
+// and injected into each plugin file at install time by SymbiontInstaller.
+// The plugin files on disk also carry an inline copy between the
+// `// <myco:shared-helpers>` markers so they stay valid TypeScript for
+// Vitest imports; a unit test enforces the inline copy matches the snippet.
+//
+// Contract: the snippet assumes the containing file has already defined
+//   - `postJson(directory: string, path: string, body): Promise<{ok, data?}>`
+//   - no other imports from the outer file
+// and exposes
+//   - `BATCH_KIND` constants + `BatchKind` type
+//   - `bufferEvent(dir, sessionId, event)` — best-effort JSONL append
+//   - `isIgnoredResponse(data)` — true when daemon returned an "ignored" drop
+//   - `postEventWithBuffer(dir, sessionId, event)` — live POST with buffer fallback
+//
+// DO NOT edit this block inside a plugin file directly — edit the snippet
+// and run the installer (or rerun the template-sync test to update the
+// inlined copy). Changes here apply to every plugin the next time it
+// installs/updates.
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated vocabulary for `prompt_batches.kind`. Mirrors
+ * `BATCH_KIND` in src/db/queries/batches.ts — plugins can't import daemon
+ * code, so the constants are inlined here and kept in sync via the shared
+ * snippet + its sync test.
+ */
+const BATCH_KIND = {
+  INITIAL: "initial",
+  STEERING: "steering",
+  INTERRUPT: "interrupt",
+} as const;
+type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
+
+/**
+ * Append an event to `.myco/buffer/<session-id>.jsonl` for replay by the
+ * daemon's startup reconciler. On-disk shape intentionally matches
+ * `src/capture/buffer.ts`'s EventBuffer — the plugin can't import it because
+ * of the zero-runtime-dep constraint, so the protocol is the contract.
+ */
+function bufferEvent(
+  directory: string,
+  sessionId: string,
+  event: Record<string, unknown>,
+): void {
+  try {
+    const bufferDir = join(directory, ".myco", "buffer");
+    mkdirSync(bufferDir, { recursive: true });
+    const filePath = join(bufferDir, `${sessionId}.jsonl`);
+    // Strip session_id from the entry — it's encoded in the filename
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { session_id: _sid, ...payload } = event;
+    const line = JSON.stringify({
+      ...payload,
+      timestamp: payload.timestamp ?? new Date().toISOString(),
+    });
+    appendFileSync(filePath, line + "\n");
+  } catch {
+    // Best-effort — never crash the host agent.
+  }
+}
+
+/** True when the daemon returned 200 but signalled it dropped the event. */
+function isIgnoredResponse(data: unknown): boolean {
+  if (data === null || typeof data !== "object") return false;
+  const ignored = (data as { ignored?: unknown }).ignored;
+  return typeof ignored === "string" && ignored.length > 0;
+}
+
+/**
+ * POST a capture event to the daemon, buffering to disk on failure. Both
+ * transport failures and server-side "ignored" responses route to the
+ * buffer — rule bugs have silently dropped whole live sessions before, and
+ * the buffer is the recovery path once the cause is fixed.
+ */
+async function postEventWithBuffer(
+  directory: string,
+  sessionId: string,
+  event: Record<string, unknown>,
+): Promise<unknown> {
+  const result = await postJson(directory, "/events", event);
+  if (!result.ok || isIgnoredResponse(result.data)) {
+    bufferEvent(directory, sessionId, event);
+    return undefined;
+  }
+  return result.data;
+}

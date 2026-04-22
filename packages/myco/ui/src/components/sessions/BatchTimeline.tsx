@@ -31,17 +31,47 @@ function promptPreview(text: string | null): string {
     : text;
 }
 
+/* ---------- Helpers: steering grouping ---------- */
+
+interface BatchGroup {
+  parent: BatchRow;
+  children: BatchRow[];
+}
+
+function groupBatches(sortedBatches: BatchRow[]): BatchGroup[] {
+  const childrenByParentId = new Map<number, BatchRow[]>();
+  const parents: BatchRow[] = [];
+
+  for (const batch of sortedBatches) {
+    if (batch.parent_prompt_batch_id == null) {
+      parents.push(batch);
+    } else {
+      const arr = childrenByParentId.get(batch.parent_prompt_batch_id) ?? [];
+      arr.push(batch);
+      childrenByParentId.set(batch.parent_prompt_batch_id, arr);
+    }
+  }
+
+  return parents.map((parent) => ({
+    parent,
+    children: (childrenByParentId.get(parent.id) ?? []).sort(
+      (a, b) => (a.started_at ?? 0) - (b.started_at ?? 0),
+    ),
+  }));
+}
+
 /* ---------- Sub-components ---------- */
 
 interface BatchCardProps {
   batch: BatchRow;
   batchAttachments: AttachmentRow[];
+  steeringChildren: BatchRow[];
   defaultOpen?: boolean;
   promptIndex: number;
   isLast: boolean;
 }
 
-function BatchCard({ batch, batchAttachments, defaultOpen = false, promptIndex, isLast }: BatchCardProps) {
+function BatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = false, promptIndex, isLast }: BatchCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
@@ -161,6 +191,31 @@ function BatchCard({ batch, batchAttachments, defaultOpen = false, promptIndex, 
               <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
             )}
 
+            {/* Steering / interrupt children nested beneath parent */}
+            {steeringChildren.map((child) => (
+              <div key={child.id} className="mt-3 border-l-2 border-primary/30 pl-4 pb-3 mx-4">
+                <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-primary/70 mb-1">
+                  {child.kind === 'interrupt' ? '⚠ interrupt' : '↳ steering'}
+                </div>
+                <div className="flex items-baseline justify-between gap-2 mb-1">
+                  <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
+                    Prompt
+                  </span>
+                  {child.started_at && (
+                    <span className="shrink-0 font-mono text-xs text-on-surface-variant">
+                      {formatTimestamp(child.started_at)}
+                    </span>
+                  )}
+                </div>
+                <p className="font-sans text-sm text-on-surface whitespace-pre-wrap">
+                  {child.user_prompt ?? '(no prompt)'}
+                </p>
+                {child.activity_count > 0 && (
+                  <ActivityList batchId={child.id} activityCount={child.activity_count} />
+                )}
+              </div>
+            ))}
+
             {/* AI summary — distinct response block with left accent */}
             {batch.response_summary && (
               <div className="border-t border-[var(--ghost-border)] overflow-hidden">
@@ -206,16 +261,20 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
         arr.push(a);
         byBatchId.set(a.prompt_batch_id, arr);
       }
-      const match = a.file_path?.match(/-t(\d+)-/);
-      if (match?.[1]) {
-        const turn = parseInt(match[1]);
-        const arr = byTurnNumber.get(turn) ?? [];
+      if (a.turn_number != null) {
+        const arr = byTurnNumber.get(a.turn_number) ?? [];
         arr.push(a);
-        byTurnNumber.set(turn, arr);
+        byTurnNumber.set(a.turn_number, arr);
       }
     }
     return { byBatchId, byTurnNumber };
   }, [allAttachments]);
+
+  // Sort by started_at ascending — prompt_number resets across daemon restarts.
+  const groups = useMemo(() => {
+    const sorted = [...(batches ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
+    return groupBatches(sorted);
+  }, [batches]);
 
   if (batchesLoading) {
     return (
@@ -227,10 +286,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
     );
   }
 
-  // Sort by started_at ascending (chronological) — prompt_number can reset across daemon restarts
-  const batchList = [...(batches ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0));
-
-  if (batchList.length === 0) {
+  if (groups.length === 0) {
     return (
       <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant">
         <MessageSquare className="h-8 w-8 opacity-30" />
@@ -241,17 +297,18 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
 
   return (
     <div>
-      {batchList.map((batch, idx) => {
-        const resolved = byBatchId.get(batch.id)
-          ?? (batch.prompt_number !== null ? byTurnNumber.get(batch.prompt_number) ?? [] : []);
+      {groups.map(({ parent, children }, idx) => {
+        const resolved = byBatchId.get(parent.id)
+          ?? (parent.prompt_number !== null ? byTurnNumber.get(parent.prompt_number) ?? [] : []);
         return (
           <BatchCard
-            key={batch.id}
-            batch={batch}
+            key={parent.id}
+            batch={parent}
             batchAttachments={resolved}
-            defaultOpen={idx === batchList.length - 1}
+            steeringChildren={children}
+            defaultOpen={idx === groups.length - 1}
             promptIndex={idx}
-            isLast={idx === batchList.length - 1}
+            isLast={idx === groups.length - 1}
           />
         );
       })}

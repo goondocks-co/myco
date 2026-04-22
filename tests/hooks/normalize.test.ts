@@ -18,6 +18,7 @@ describe('normalizeHookInput', () => {
     delete process.env.CLAUDE_PLUGIN_ROOT;
     delete process.env.GEMINI_SESSION_ID;
     delete process.env.WINDSURF_PLUGIN_ROOT;
+    delete process.env.CURSOR_PLUGIN_ROOT;
   });
 
   afterEach(() => {
@@ -25,6 +26,7 @@ describe('normalizeHookInput', () => {
     delete process.env.CLAUDE_PLUGIN_ROOT;
     delete process.env.GEMINI_SESSION_ID;
     delete process.env.WINDSURF_PLUGIN_ROOT;
+    delete process.env.CURSOR_PLUGIN_ROOT;
   });
 
   describe('default mapping (no agent detected)', () => {
@@ -76,10 +78,10 @@ describe('normalizeHookInput', () => {
       expect(result.sessionId).toBe('env-session');
     });
 
-    it('generates a session ID when none provided', () => {
+    it('leaves sessionId undefined when none is provided', () => {
       mockLoadManifests.mockReturnValue([]);
       const result = normalizeHookInput({});
-      expect(result.sessionId).toMatch(/^s-\d+$/);
+      expect(result.sessionId).toBeUndefined();
     });
 
     it('prefers input over env var', () => {
@@ -108,12 +110,57 @@ describe('normalizeHookInput', () => {
       },
     };
 
+    const cursorManifest = {
+      name: 'cursor',
+      displayName: 'Cursor',
+      binary: 'cursor',
+      configDir: '.cursor',
+      pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
+      hookFields: {
+        sessionId: 'conversation_id',
+        transcriptPath: 'transcript_path',
+        lastResponse: 'last_assistant_message',
+        prompt: 'prompt',
+        toolName: 'tool_name',
+        toolInput: 'tool_input',
+        toolOutput: 'tool_output',
+      },
+    };
+
     it('maps trajectory_id to sessionId for Windsurf', () => {
       mockLoadManifests.mockReturnValue([windsurfManifest]);
       process.env.WINDSURF_PLUGIN_ROOT = '/some/path';
       const result = normalizeHookInput({ trajectory_id: 'traj-42', prompt: 'test' });
       expect(result.sessionId).toBe('traj-42');
       expect(result.prompt).toBe('test');
+    });
+
+    it('does not fabricate a sessionId for a known symbiont with an empty payload', () => {
+      mockLoadManifests.mockReturnValue([windsurfManifest]);
+      process.env.WINDSURF_PLUGIN_ROOT = '/some/path';
+      const result = normalizeHookInput({ prompt: 'test' });
+      expect(result.agent).toBe('windsurf');
+      expect(result.sessionId).toBeUndefined();
+    });
+
+    it('derives Cursor sessionId from transcript_path when conversation_id is missing', () => {
+      mockLoadManifests.mockReturnValue([cursorManifest]);
+      process.env.CURSOR_PLUGIN_ROOT = '/some/path';
+      const result = normalizeHookInput({
+        transcript_path: '/Users/chris/.Cursor/projects/Users-chris-Repos-myco/agent-transcripts/94f4087c-1121-463e-bc1b-9d5248e48d27/94f4087c-1121-463e-bc1b-9d5248e48d27.jsonl',
+      });
+      expect(result.agent).toBe('cursor');
+      expect(result.sessionId).toBe('94f4087c-1121-463e-bc1b-9d5248e48d27');
+    });
+
+    it('does not derive a Cursor sessionId from an unsupported transcript path', () => {
+      mockLoadManifests.mockReturnValue([cursorManifest]);
+      process.env.CURSOR_PLUGIN_ROOT = '/some/path';
+      const result = normalizeHookInput({
+        transcript_path: '/tmp/not-a-cursor-transcript.jsonl',
+      });
+      expect(result.agent).toBe('cursor');
+      expect(result.sessionId).toBeUndefined();
     });
 
     it('uses sessionIdEnv for Gemini', () => {

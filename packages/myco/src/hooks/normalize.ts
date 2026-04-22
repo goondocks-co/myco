@@ -10,6 +10,7 @@
 import { loadManifests } from '../symbionts/detect.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import { getAtPath } from '../utils/dot-path.js';
+import path from 'node:path';
 
 /** Default field mappings when no agent manifest is detected (Claude Code conventions). */
 const DEFAULT_HOOK_FIELDS = {
@@ -26,7 +27,7 @@ const DEFAULT_HOOK_FIELDS = {
 export interface NormalizedHookInput {
   /** Detected agent name from manifest (e.g., 'claude-code', 'codex', 'windsurf'). */
   agent: string;
-  sessionId: string;
+  sessionId?: string;
   transcriptPath?: string;
   lastResponse?: string;
   prompt?: string;
@@ -157,24 +158,47 @@ function detectManifest(input?: Record<string, unknown>): SymbiontManifest | nul
  * Normalize a raw hook input using the active agent's manifest field mappings.
  * Falls back to Claude Code field names if no agent is detected.
  */
+function deriveSessionIdFromTranscriptPath(
+  manifest: SymbiontManifest | null,
+  transcriptPath: string | undefined,
+): string | undefined {
+  if (!manifest || !transcriptPath) return undefined;
+
+  if (manifest.name === 'cursor') {
+    const normalized = transcriptPath.replace(/\\/g, '/');
+    const basename = path.posix.basename(normalized);
+    const jsonlMatch = normalized.match(/\/agent-transcripts\/([^/]+)\/\1\.jsonl$/);
+    if (jsonlMatch) return jsonlMatch[1];
+
+    const textMatch = basename.match(/^([^.]+)\.txt$/);
+    if (textMatch) return textMatch[1];
+  }
+
+  return undefined;
+}
+
 export function normalizeHookInput(input: Record<string, unknown>): NormalizedHookInput {
   const manifest = detectManifest(input);
   const fields = manifest?.hookFields ?? DEFAULT_HOOK_FIELDS;
+  const transcriptPath = getAtPath(input, fields.transcriptPath) as string | undefined;
 
-  // Resolve session ID: try the mapped field, then env var fallback, then MYCO_SESSION_ID
+  // Resolve session ID: try the mapped field, then explicit transcript-path parsing
+  // for known symbionts, then env var fallback, then MYCO_SESSION_ID.
+  // Do NOT fabricate synthetic session IDs for symbiont hooks with missing payloads.
   const sessionIdFromInput = getAtPath(input, fields.sessionId) as string | undefined;
+  const sessionIdFromTranscriptPath = deriveSessionIdFromTranscriptPath(manifest, transcriptPath);
   const sessionIdFromEnv = 'sessionIdEnv' in fields && fields.sessionIdEnv
     ? process.env[fields.sessionIdEnv]
     : undefined;
   const sessionId = sessionIdFromInput
+    ?? sessionIdFromTranscriptPath
     ?? sessionIdFromEnv
-    ?? process.env.MYCO_SESSION_ID
-    ?? `s-${Date.now()}`;
+    ?? process.env.MYCO_SESSION_ID;
 
   return {
     agent: manifest?.name ?? DEFAULT_AGENT_NAME,
     sessionId,
-    transcriptPath: getAtPath(input, fields.transcriptPath) as string | undefined,
+    transcriptPath,
     lastResponse: getAtPath(input, fields.lastResponse) as string | undefined,
     prompt: getAtPath(input, fields.prompt) as string | undefined,
     toolName: getAtPath(input, fields.toolName) as string | undefined,

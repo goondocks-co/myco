@@ -40,6 +40,7 @@ const DELETE_TABLES = [
   'sessions',
   'agents',
   'log_entries',
+  'migration_tasks',
 ];
 
 /**

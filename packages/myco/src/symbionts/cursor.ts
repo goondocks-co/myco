@@ -76,12 +76,33 @@ export const cursorAdapter: SymbiontAdapter = {
 
 /** Parse Cursor's newer JSONL format — same structure as Claude's but uses 'role' field */
 function parseCursorJsonl(content: string): TranscriptTurn[] {
-  return parseJsonlTurns(content, {
+  const turns = parseJsonlTurns(content, {
     roleField: 'role',
     extractTimestamp: false,
     skipToolResultUsers: false,
     stripImageTextRefs: false,
   });
+  for (const t of turns) {
+    if (t.aiResponse) {
+      const stripped = stripCursorRedactionMarkers(t.aiResponse);
+      if (stripped) t.aiResponse = stripped;
+      else delete t.aiResponse;
+    }
+  }
+  return turns;
+}
+
+/**
+ * Cursor inserts literal `[REDACTED]` blocks into assistant transcripts to
+ * mask internal tool-reasoning / thinking. The real response text stays
+ * alongside the marker; strip trailing and stand-alone occurrences so the
+ * captured summary is the user-visible text only.
+ */
+function stripCursorRedactionMarkers(text: string): string {
+  return text
+    .replace(/(^|\n)\s*\[REDACTED\]\s*(?=\n|$)/g, '')
+    .replace(/\s*\[REDACTED\]\s*$/g, '')
+    .trim();
 }
 
 /** Parse Cursor's older plain-text transcript format. */

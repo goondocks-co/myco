@@ -13,6 +13,16 @@ capture:
     - .cursor/plans/
 registration:
   hooksTarget: .cursor/hooks.json
+  hooksConfigVersion: 1
+  hookResponse:
+    format: json
+    fieldNames:
+      additionalContext: additional_context
+      continue: continue
+      stopReason: stop_reason
+      userMessage: user_message
+      followupMessage: followup_message
+      systemMessage: system_message
   mcpTarget: .cursor/mcp.json
   skillsTarget: .cursor/skills
   settingsTarget: .cursor/settings.json

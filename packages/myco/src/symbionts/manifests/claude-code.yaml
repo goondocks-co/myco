@@ -20,6 +20,33 @@ capture:
     # Ultraplan sends the approved cloud plan back to the terminal by injecting
     # it into the next user prompt as <ultraplan>...</ultraplan>.
     - ultraplan
+  prompts:
+    shapes:
+      # Standard user prompts. message.content is either a plain string or an
+      # array of typed blocks; the walker's path resolver handles both.
+      - name: user_prompt
+        match:
+          type: user
+          hasField: promptId
+        dedupeBy: promptId
+        textAt: message.content
+      # Steering prompts queued via the Esc→queue UI. Claude Code does NOT
+      # fire UserPromptSubmit for these, so the transcript is the only
+      # capture path. No explicit kind — position in the event stream
+      # determines whether the walker classifies this as steering.
+      - name: queued_command
+        match:
+          type: attachment
+          fieldEquals:
+            attachment.type: queued_command
+        dedupeBy: uuid
+        textAt: attachment.prompt
+    resetBoundaries:
+      - match:
+          type: assistant
+          fieldEquals:
+            message.stop_reason: end_turn
+    interruptMarker: "[Request interrupted by user for tool use]"
 registration:
   hooksTarget: .claude/settings.json
   mcpTarget: .mcp.json

@@ -38,11 +38,27 @@ export interface AttachmentRow {
 }
 
 /**
- * Row shape returned by list queries — excludes the `data` BLOB column.
- * Use this type when you only need metadata (e.g. listing attachments for a session).
- * The full row (including binary data) is only fetched by getAttachmentByFilePath.
+ * Row shape returned by list queries — excludes the `data` BLOB column and
+ * adds a `turn_number` derived from the filename convention
+ * (`{sessionShort}-t{promptNumber}-{n}.{ext}`). Consumers use `turn_number`
+ * as a fallback grouping key when `prompt_batch_id` is null (e.g. attachments
+ * captured before the batch linkage was recorded).
  */
-export type AttachmentListRow = Omit<AttachmentRow, 'data'>;
+export type AttachmentListRow = Omit<AttachmentRow, 'data'> & {
+  turn_number: number | null;
+};
+
+/** Storage-path convention: `{sessionShort}-t{promptNumber}-{n}.{ext}`. */
+const TURN_NUMBER_PATTERN = /-t(\d+)-/;
+
+/** Extract the turn number encoded in an attachment file path, or null if absent/invalid. */
+export function extractTurnNumber(filePath: string | null | undefined): number | null {
+  if (!filePath) return null;
+  const match = filePath.match(TURN_NUMBER_PATTERN);
+  if (!match?.[1]) return null;
+  const parsed = parseInt(match[1], 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 // ---------------------------------------------------------------------------
 // Column lists
@@ -81,6 +97,22 @@ const SELECT_LIST_COLUMNS = ATTACHMENT_LIST_COLUMNS.join(', ');
 
 /** Normalize shared metadata fields from a SQLite result row. */
 function toAttachmentBase(row: Record<string, unknown>): AttachmentListRow {
+  const filePath = row.file_path as string;
+  return {
+    id: row.id as string,
+    session_id: row.session_id as string,
+    prompt_batch_id: (row.prompt_batch_id as number) ?? null,
+    file_path: filePath,
+    media_type: (row.media_type as string) ?? null,
+    description: (row.description as string) ?? null,
+    content_hash: (row.content_hash as string) ?? null,
+    created_at: row.created_at as number,
+    turn_number: extractTurnNumber(filePath),
+  };
+}
+
+/** Normalize a SQLite result row into a typed AttachmentRow (includes BLOB). */
+function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
   return {
     id: row.id as string,
     session_id: row.session_id as string,
@@ -90,12 +122,8 @@ function toAttachmentBase(row: Record<string, unknown>): AttachmentListRow {
     description: (row.description as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
+    data: (row.data as Buffer) ?? null,
   };
-}
-
-/** Normalize a SQLite result row into a typed AttachmentRow (includes BLOB). */
-function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
-  return { ...toAttachmentBase(row), data: (row.data as Buffer) ?? null };
 }
 
 /** Normalize a SQLite result row into a typed AttachmentListRow (no BLOB). */

@@ -22,7 +22,11 @@ export default defineConfig({
   platform: 'node',
   splitting: true,
   sourcemap: true,
-  clean: true,
+  // Scoped clean: the build:core script wipes only the files tsup owns
+  // (dist/*.js, dist/*.js.map, dist/src/**) and deliberately leaves dist/ui/
+  // alone (owned by vite). tsup's `clean: true` unconditionally wipes outDir,
+  // which would destroy the UI bundle if build:core runs without build:ui.
+  clean: false,
   define: {
     '__MYCO_VERSION__': JSON.stringify(pkg.version),
     '__MYCO_TEAM_VERSION__': JSON.stringify(teamPkg.version),

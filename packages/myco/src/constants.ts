@@ -110,6 +110,13 @@ export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
  *  Prevents rapid restart loops from concurrent hooks or session reloads. */
 export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;
 
+/** Coalesce window: if daemon.json was written within this window AND its pid
+ *  is still alive, a concurrent spawn call should defer to the in-flight
+ *  spawner rather than fork another process. Paired with the daemon's own
+ *  step-aside guard, this collapses a burst of hook/MCP spawn attempts into
+ *  a single surviving daemon. */
+export const DAEMON_SPAWN_COALESCE_MS = 3_000;
+
 /** Grace period for SIGTERM before escalating to SIGKILL (ms).
  *  Gives the old daemon a chance to shut down cleanly, but force-kills
  *  to guarantee the configured port is reclaimed. */

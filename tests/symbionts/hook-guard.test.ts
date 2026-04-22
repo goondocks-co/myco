@@ -130,13 +130,34 @@ describe('myco-run.cjs', () => {
 
     it('exits 0 when the aliased binary is not on PATH (ENOENT silent)', () => {
       writeAlias(fixture, 'myco-dev');
-      // myco-dev is NOT on PATH this time.
+      // myco-dev is NOT on PATH — ENOENT → silent exit.
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
         env: { ...BASE_ENV, PATH: fixture.binDir },
         stdio: 'pipe',
         timeout: 5000,
       });
       expect(result.toString()).toBe('');
+    });
+
+    it('invokes the alias at an absolute path even when PATH is empty', () => {
+      // When runtime.command holds an absolute path, the guard execs it
+      // directly — no PATH lookup needed. This is the recovery path for
+      // GUI-launched agents (Cursor, Claude Code desktop on macOS) that
+      // inherit launchd's minimal PATH: `make dev-link` writes the full
+      // `$(HOME)/.local/bin/myco-dev` path instead of a bare name so the
+      // guard doesn't depend on the caller's PATH at all.
+      const outBin = path.join(fixture.binDir, 'myco-dev');
+      fs.writeFileSync(outBin, '#!/bin/sh\necho "ABS:$*"', { mode: 0o755 });
+      writeAlias(fixture, outBin);
+
+      const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'stop'], {
+        // PATH deliberately excludes outBin's directory — only the absolute
+        // path in runtime.command should resolve the binary.
+        env: { ...BASE_ENV, PATH: '/nonexistent-dir' },
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+      expect(result.toString().trim()).toBe('ABS:hook stop');
     });
 
     it('ignores MYCO_CMD — runtime.command is the only source', () => {

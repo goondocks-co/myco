@@ -21,6 +21,7 @@ import {
   DIGEST_EXTRACT_REVISIONS_TABLE,
   AGENT_RUN_EVALUATIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
+  MIGRATION_TASKS_TABLE,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -57,6 +58,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 19, migrate: (db) => migrateV18ToV19(db) },
   { version: 20, migrate: (db, machineId) => migrateV19ToV20(db, machineId) },
   { version: 21, migrate: (db) => migrateV20ToV21(db) },
+  { version: 22, migrate: (db) => migrateV21ToV22(db) },
+  { version: 23, migrate: (db) => migrateV22ToV23(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1230,4 +1233,81 @@ function tableExists(db: Database, name: string): boolean {
     `SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = ?`,
   ).get(name) as { c: number };
   return row.c > 0;
+}
+
+/**
+ * Migrate a version-21 database to version-22.
+ *
+ * Version 22 adds steering prompt nesting support:
+ *   - prompt_batches.parent_prompt_batch_id (nullable FK to prompt_batches.id)
+ *   - prompt_batches.kind (TEXT NOT NULL DEFAULT 'initial')
+ *   - idx_prompt_batches_parent
+ *
+ * Existing rows get kind='initial', parent_prompt_batch_id=NULL — they render
+ * exactly as before until the OpenCode backfill (Task 11) runs.
+ */
+function migrateV21ToV22(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'prompt_batches')) {
+      const existing = getTableColumnSet(db, 'prompt_batches');
+
+      if (!existing.has('parent_prompt_batch_id')) {
+        db.prepare(
+          `ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id)`,
+        ).run();
+      }
+
+      if (!existing.has('kind')) {
+        db.prepare(
+          `ALTER TABLE prompt_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'initial'`,
+        ).run();
+      }
+
+      db.prepare(
+        `CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)`,
+      ).run();
+
+      // Historical note: v22 originally contained an OpenCode backfill that
+      // reclassified batches with response_summary=NULL as steering children.
+      // That heuristic assumed missing summary implied mid-turn steering; in
+      // practice the missing summaries were a separate capture bug in the
+      // opencode plugin (stop events had no buffer fallback). The backfill
+      // was removed before shipping to avoid mass-mislabeling real turns as
+      // steering. Vaults that ran an intermediate build of v22 with the
+      // heuristic can be corrected via the historical-repair path (null
+      // response_summary recovery + parent/child reclassification run
+      // together).
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(22, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/** Migrate version 23: add `migration_tasks` ledger for runtime migrations. */
+function migrateV22ToV23(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(MIGRATION_TASKS_TABLE).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(23, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
 }

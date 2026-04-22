@@ -176,7 +176,12 @@ describe('myco update', () => {
     expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it('triggers an embedding rebuild when crossing the vector metadata rebuild version', async () => {
+  it('does not trigger any daemon-side migrations — those are the daemon\'s concern', async () => {
+    // Historical regression: the CLI used to POST /api/embedding/rebuild as
+    // a one-time migration gated by the update stamp. That design re-fired
+    // whenever the stamp couldn't be advanced (path typo, timeout, etc.),
+    // causing repeated re-embeds. Migrations now live in the daemon's
+    // `migration_tasks` ledger; the CLI just regenerates configs.
     const config = {
       version: 3, config_version: 0,
       symbionts: { 'claude-code': { enabled: true } },
@@ -188,10 +193,18 @@ describe('myco update', () => {
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    expect(postMock).toHaveBeenCalledWith('/embedding/rebuild', {});
+    expect(postMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/embedding/rebuild'),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(postMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/embedding/rebuild'),
+      expect.anything(),
+    );
   });
 
-  it('keeps the old update stamp when the embedding rebuild trigger fails', async () => {
+  it('advances the update stamp to the current version regardless of prior state', async () => {
     const config = {
       version: 3, config_version: 0,
       symbionts: { 'claude-code': { enabled: true } },
@@ -199,11 +212,12 @@ describe('myco update', () => {
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
     fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(vaultDir, 'last-update-version'), '0.21.0', 'utf-8');
-    postMock.mockResolvedValueOnce({ ok: false, data: undefined });
 
     const { run } = await import('@myco/cli/update.js');
     await run(['--project', testDir]);
 
-    expect(fs.readFileSync(path.join(vaultDir, 'last-update-version'), 'utf-8').trim()).toBe('0.21.0');
+    const stamp = fs.readFileSync(path.join(vaultDir, 'last-update-version'), 'utf-8').trim();
+    expect(stamp).not.toBe('0.21.0');
+    expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
   });
 });

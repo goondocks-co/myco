@@ -3,12 +3,14 @@
  *
  * Each symbiont manifest declares `capture.rules` — a list of `{ event,
  * when, action }` records that describe how Myco should filter captured
- * events for that agent. This module loads rules from every manifest
- * in one place and exposes a pure evaluator the hook handlers call
- * without knowing anything symbiont-specific.
+ * events for that agent. This module reads rules from the build-time
+ * generated hook-config (`hook-config.generated.ts`) and exposes a pure
+ * evaluator the hook handlers call without knowing anything symbiont-specific.
  *
- * Adding a new symbiont's capture behavior is a YAML-only change: edit
- * that agent's manifest file, no hook or evaluator changes needed.
+ * Adding a new symbiont's capture behavior is still a YAML-only change:
+ * edit that agent's manifest, run `npm run codegen` (or let the build do
+ * it for you), and the evaluator sees the new rules. No hook or evaluator
+ * changes needed.
  *
  * Rule scope (`this_agent` vs `any_agent`) lets rules opt into running
  * even when agent detection itself fails — useful for ephemeral
@@ -20,6 +22,7 @@
  */
 
 import type { CaptureRule, SymbiontManifest } from '../symbionts/manifest-schema.js';
+import { HOOK_CONFIG } from './hook-config.generated.js';
 import { getAtPath } from '../utils/dot-path.js';
 import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
 
@@ -53,6 +56,31 @@ export type SessionStartDecision =
   | { action: 'drop'; reason?: string };
 
 /**
+ * Internal shape the evaluator iterates. Legacy callers pass full
+ * SymbiontManifest[] (because that's what loadManifests() returns); we
+ * only ever read `name` and `capture.rules` off it. Generated callers
+ * pass the same pair harvested from HOOK_CONFIG directly.
+ */
+interface RuleBundle {
+  name: string;
+  rules: CaptureRule[];
+}
+
+function bundlesFromManifests(manifests: ReadonlyArray<SymbiontManifest>): RuleBundle[] {
+  return manifests.map((m) => ({ name: m.name, rules: m.capture?.rules ?? [] }));
+}
+
+/**
+ * Default rule source for hook-time callers who don't pass manifests.
+ * Computed once per process at module load; since this module is only
+ * imported inside short-lived hook processes, this is a constant-time
+ * cost and avoids re-walking HOOK_CONFIG on every evaluate() call.
+ */
+const GENERATED_BUNDLES: RuleBundle[] = Object.entries(HOOK_CONFIG).map(
+  ([name, entry]) => ({ name, rules: entry.captureRules ?? [] }),
+);
+
+/**
  * Evaluate all user_prompt rules from every manifest against one context.
  *
  * Rules are checked in declaration order, first-match-wins. A rule only
@@ -62,17 +90,35 @@ export type SessionStartDecision =
  *   3. every condition in its `when` block matches the context.
  *
  * If no rule matches, the prompt passes through unchanged.
+ *
+ * Overloaded for compatibility:
+ *   - Legacy callers pass `(manifests, detectedAgent, ctx)`.
+ *   - Hook-hot-path callers can pass `(detectedAgent, ctx)` to read rules
+ *     from the build-time generated config and skip the YAML+Zod load.
  */
 export function evaluateUserPromptRules(
   manifests: SymbiontManifest[],
   detectedAgent: string,
   ctx: UserPromptRuleContext,
+): UserPromptDecision;
+export function evaluateUserPromptRules(
+  detectedAgent: string,
+  ctx: UserPromptRuleContext,
+): UserPromptDecision;
+export function evaluateUserPromptRules(
+  manifestsOrAgent: SymbiontManifest[] | string,
+  ctxOrAgent: UserPromptRuleContext | string,
+  maybeCtx?: UserPromptRuleContext,
 ): UserPromptDecision {
-  for (const manifest of manifests) {
-    const rules = manifest.capture?.rules ?? [];
-    for (const rule of rules) {
+  const { bundles, detectedAgent, ctx } = resolveArgs<UserPromptRuleContext>(
+    manifestsOrAgent,
+    ctxOrAgent,
+    maybeCtx,
+  );
+  for (const bundle of bundles) {
+    for (const rule of bundle.rules) {
       if (rule.event !== 'user_prompt') continue;
-      if (!scopePermits(rule, manifest.name, detectedAgent)) continue;
+      if (!scopePermits(rule, bundle.name, detectedAgent)) continue;
       if (!whenMatches(rule, ctx)) continue;
       return applyAction(rule, ctx);
     }
@@ -96,13 +142,31 @@ export function evaluateSessionStartRules(
   manifests: SymbiontManifest[],
   detectedAgent: string,
   ctx: SessionStartRuleContext,
+): SessionStartDecision;
+export function evaluateSessionStartRules(
+  detectedAgent: string,
+  ctx: SessionStartRuleContext,
+): SessionStartDecision;
+export function evaluateSessionStartRules(
+  manifestsOrAgent: SymbiontManifest[] | string,
+  ctxOrAgent: SessionStartRuleContext | string,
+  maybeCtx?: SessionStartRuleContext,
 ): SessionStartDecision {
-  for (const manifest of manifests) {
-    const rules = manifest.capture?.rules ?? [];
-    for (const rule of rules) {
+  const { bundles, detectedAgent, ctx } = resolveArgs<SessionStartRuleContext>(
+    manifestsOrAgent,
+    ctxOrAgent,
+    maybeCtx,
+  );
+  const promptCtx: UserPromptRuleContext = {
+    prompt: '',
+    transcriptPath: ctx.transcriptPath,
+    transcriptMeta: ctx.transcriptMeta,
+  };
+  for (const bundle of bundles) {
+    for (const rule of bundle.rules) {
       if (rule.event !== 'session_start') continue;
-      if (!scopePermits(rule, manifest.name, detectedAgent)) continue;
-      if (!whenMatches(rule, { prompt: '', transcriptPath: ctx.transcriptPath, transcriptMeta: ctx.transcriptMeta })) continue;
+      if (!scopePermits(rule, bundle.name, detectedAgent)) continue;
+      if (!whenMatches(rule, promptCtx)) continue;
       if (rule.action === 'drop') {
         return { action: 'drop', reason: rule.reason };
       }
@@ -126,8 +190,45 @@ export function evaluateSessionCaptureRules(
   manifests: SymbiontManifest[],
   detectedAgent: string,
   ctx: SessionStartRuleContext,
+): SessionStartDecision;
+export function evaluateSessionCaptureRules(
+  detectedAgent: string,
+  ctx: SessionStartRuleContext,
+): SessionStartDecision;
+export function evaluateSessionCaptureRules(
+  manifestsOrAgent: SymbiontManifest[] | string,
+  ctxOrAgent: SessionStartRuleContext | string,
+  maybeCtx?: SessionStartRuleContext,
 ): SessionStartDecision {
-  return evaluateSessionStartRules(manifests, detectedAgent, ctx);
+  // Delegate to evaluateSessionStartRules with whichever overload was passed.
+  if (typeof manifestsOrAgent === 'string') {
+    return evaluateSessionStartRules(manifestsOrAgent, ctxOrAgent as SessionStartRuleContext);
+  }
+  return evaluateSessionStartRules(manifestsOrAgent, ctxOrAgent as string, maybeCtx as SessionStartRuleContext);
+}
+
+/**
+ * Disambiguate the two overload forms. When the first arg is a string it
+ * is the detected agent and rules come from the generated config. When it
+ * is an array it is the legacy manifests list.
+ */
+function resolveArgs<Ctx>(
+  manifestsOrAgent: SymbiontManifest[] | string,
+  ctxOrAgent: Ctx | string,
+  maybeCtx: Ctx | undefined,
+): { bundles: RuleBundle[]; detectedAgent: string; ctx: Ctx } {
+  if (typeof manifestsOrAgent === 'string') {
+    return {
+      bundles: GENERATED_BUNDLES,
+      detectedAgent: manifestsOrAgent,
+      ctx: ctxOrAgent as Ctx,
+    };
+  }
+  return {
+    bundles: bundlesFromManifests(manifestsOrAgent),
+    detectedAgent: ctxOrAgent as string,
+    ctx: maybeCtx as Ctx,
+  };
 }
 
 /**

@@ -14,7 +14,7 @@ description: |
   table.
 managed_by: myco
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
 ---
 
 # Myco Agent Harness Task Authoring
@@ -29,8 +29,8 @@ surfaces, and debugging when things go wrong.
 ## Prerequisites
 
 - Daemon is running and `agent.enabled: true` in `myco.yaml`.
-- You have read at least one existing task YAML (`src/agent/definitions/tasks/vault-evolve.yaml`
-  or `src/agent/definitions/tasks/skill-survey.yaml`) to understand the config shape.
+- You have read at least one existing task YAML (`packages/myco/src/agent/definitions/tasks/vault-evolve.yaml`
+  or `packages/myco/src/agent/definitions/tasks/skill-survey.yaml`) to understand the config shape.
 - You can describe the new task's purpose in one sentence and identify which
   vault state it reads and writes.
 
@@ -113,8 +113,8 @@ like and what the sentinel string in the output summary should be.
 
 ## Procedure 2: Write the Task Config
 
-Tasks live in `src/agent/tasks/`. Each task exports a typed config object and
-must be registered in `src/agent/tasks/index.ts`.
+Tasks live in `packages/myco/src/agent/definitions/tasks/`. Each task exports a typed config object and
+must be registered following the current task registration pattern.
 
 ### Required fields
 
@@ -146,22 +146,9 @@ export const myNewTask: AgentTask = {
 
 ### Registration
 
-After creating the task file, add it to `src/agent/tasks/index.ts`:
+After creating the task file, you **must** register it properly for the PowerManager to discover it at startup. Check the current task registration pattern in `packages/myco/src/agent/definitions/tasks/index.ts` and follow the existing structure.
 
-```ts
-export { myNewTask } from './my-new-task';
-
-export const ALL_TASKS = [
-  vaultEvolveTask,
-  skillSurveyTask,
-  // ...
-  myNewTask,  // ← add here
-];
-```
-
-The PowerManager picks up `ALL_TASKS` at startup. If you forget this step,
-the task silently never runs — no error, no log entry. Check `agent_runs`
-first when a task seems missing.
+**Critical**: If you forget this registration step, the task silently never runs — no error, no log entry. Always verify your task appears in `agent_runs` after startup to confirm registration worked.
 
 ---
 
@@ -469,12 +456,12 @@ LIMIT 20;
 ### Silent failure patterns
 
 | Symptom | Likely cause |
-|---------|-------------|
+|---------|--------------|
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly; review short-circuit condition |
 | `turn_count = 1`, empty `tool_output_summary` | LLM never called tools; malformed prompt or injected context |
 | `turn_count = budget` with incomplete work | Budget exhaustion; cap the input |
 | `completed_at IS NULL` | Phase crashed or daemon restarted mid-run |
-| Task never appears in `agent_runs` | Not registered in `ALL_TASKS` |
+| Task never appears in `agent_runs` | Not registered properly — check task registration pattern |
 
 ### Cortex dry-run isolation debugging
 
@@ -495,7 +482,7 @@ rows — the harness reads the schema at startup.
 ## Cross-Cutting Gotchas
 
 - **Forget to register the task** → task never runs, no error. Always verify
-  `ALL_TASKS` in `src/agent/tasks/index.ts` after creating a task file.
+  proper registration in `packages/myco/src/agent/definitions/tasks/index.ts` after creating a task file.
 - **`isDefault: true` on a maintenance task** → fires after every session
   even when there's nothing to maintain. Use `isDefault: false` + cron.
 - **No session gate on a transcript-reading task** → processes active sessions,

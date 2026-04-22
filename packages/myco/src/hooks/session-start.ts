@@ -1,14 +1,13 @@
 import { DaemonClient } from './client.js';
-import { readStdin } from './read-stdin.js';
-import { normalizeHookInput } from './normalize.js';
+import { readHookInput } from './input.js';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { loadManifests } from '../symbionts/detect.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { buildInjectedContext } from '../context/injector.js';
 import { initDatabase, vaultDbPath } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { resolveVaultDir } from '../vault/resolve.js';
+import { writeHookResponse } from './response.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,23 +16,23 @@ export async function main() {
   const VAULT_DIR = resolveVaultDir();
   if (!fs.existsSync(path.join(VAULT_DIR, 'myco.yaml'))) return;
 
+  let symbiont: string | undefined;
   try {
-    const rawInput = JSON.parse(await readStdin());
-    const { sessionId, agent, transcriptPath } = normalizeHookInput(rawInput);
+    const input = await readHookInput();
+    symbiont = input.agent;
+    if (!input.sessionId) return;
+    const { sessionId, transcriptPath } = input;
 
-    // Apply session_start capture rules BEFORE registering the session.
-    // For Codex ephemeral sub-invocations (title generation, etc.) this
-    // structural drop prevents the phantom row from ever being created,
-    // rather than creating it and cascade-deleting at user_prompt time.
-    // Read the transcript's session_meta for rules that inspect it
-    // (e.g., detecting sub-agent thread spawns via source.subagent).
+    // Evaluate session_start rules before registering so drops never create
+    // a row. Rules that inspect session_meta need the parsed transcript head.
     const transcriptMeta = transcriptPath ? readTranscriptMeta(transcriptPath) : undefined;
-    const decision = evaluateSessionCaptureRules(loadManifests(), agent, {
+    const decision = evaluateSessionCaptureRules(symbiont, {
       transcriptPath,
       transcriptMeta: transcriptMeta ?? undefined,
     });
     if (decision.action === 'drop') {
       process.stderr.write(`[myco] session-start: dropped (${decision.reason ?? 'rule'})\n`);
+      writeHookResponse(symbiont, 'session-start');
       return;
     }
 
@@ -50,7 +49,7 @@ export async function main() {
       const [, contextResult] = await Promise.all([
         client.post('/sessions/register', {
           session_id: sessionId,
-          agent,
+          agent: symbiont,
           branch,
           started_at: new Date().toISOString(),
         }),
@@ -61,7 +60,7 @@ export async function main() {
         if (contextResult.data.source === 'cortex') {
           process.stderr.write('[myco] Injecting Myco Cortex instructions\n');
         }
-        process.stdout.write(contextResult.data.text);
+        writeHookResponse(symbiont, 'session-start', { additionalContext: contextResult.data.text });
         return;
       }
     }
@@ -70,8 +69,9 @@ export async function main() {
     const db = initDatabase(vaultDbPath(VAULT_DIR));
     createSchema(db);
     const injected = await buildInjectedContext(config, { branch });
-    if (injected.text) process.stdout.write(injected.text);
+    writeHookResponse(symbiont, 'session-start', injected.text ? { additionalContext: injected.text } : {});
   } catch (error) {
     process.stderr.write(`[myco] session-start error: ${(error as Error).message}\n`);
+    writeHookResponse(symbiont, 'session-start');
   }
 }
