@@ -5,13 +5,14 @@ import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { epochSeconds } from '@myco/constants.js';
+import { epochSeconds, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
 import { cleanupAfterSessionCascade } from '../jobs/session-cleanup.js';
 import { triggerTitleSummary } from '../trigger-title-summary.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import type { TeamSyncClient } from '../team-sync.js';
 import { errorBody } from './error-envelope.js';
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -42,17 +43,78 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   return { body: { sessions, total, offset, limit } };
 }
 
-export async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
-  const session = getSession(req.params.id);
-  if (!session) return { status: 404, body: { error: 'not_found' } };
-
-  // Derive counts from actual rows — the database is the authority,
-  // not the cached prompt_count/tool_count on the sessions row.
-  const promptCount = countBatchesBySession(session.id);
-  const toolCount = countActivities(session.id);
-
-  return { body: { ...session, prompt_count: promptCount, tool_count: toolCount } };
+/** Dependencies for the session get-by-id fallback fanout. */
+export interface GetSessionDeps {
+  getTeamClient?: () => TeamSyncClient | null;
+  machineId?: string;
 }
+
+/**
+ * Factory form — supports team fallback when the record is missing locally.
+ *
+ * Mirrors the `createSearchHandler` pattern in `./search.ts`: on a local miss
+ * we fan out to the connected team's D1 copy, filter out results claimed by
+ * our own machine (to avoid self-echo), and tag the response `source`.
+ *
+ * Returns the same shape as the local-only path on a hit. On a team hit we
+ * leave `prompt_count`/`tool_count` `null` because the derived-count queries
+ * run against the local SQLite — consumers (UI, MCP) already tolerate nulls.
+ */
+export function createGetSessionHandler(deps: GetSessionDeps = {}) {
+  return async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
+    const session = getSession(req.params.id);
+    if (session) {
+      // Derive counts from actual rows — the database is the authority,
+      // not the cached prompt_count/tool_count on the sessions row.
+      const promptCount = countBatchesBySession(session.id);
+      const toolCount = countActivities(session.id);
+      return {
+        body: {
+          ...session,
+          prompt_count: promptCount,
+          tool_count: toolCount,
+          source: 'local',
+        },
+      };
+    }
+
+    const teamClient = deps.getTeamClient?.();
+    if (teamClient) {
+      // Defense in depth: TeamClient.getRecord already swallows errors and
+      // returns null, but in-test mocks sometimes bypass that wrapper. Keep
+      // recall resilient — team failures must never block local 404s.
+      let record: Record<string, unknown> | null = null;
+      try {
+        record = await teamClient.getRecord('sessions', req.params.id);
+      } catch {
+        record = null;
+      }
+      if (record) {
+        const recordMachineId = typeof record.machine_id === 'string' ? record.machine_id : null;
+        // Skip self-echo: the team copy originally came from us.
+        if (!(deps.machineId && recordMachineId === deps.machineId)) {
+          return {
+            body: {
+              ...record,
+              prompt_count: null,
+              tool_count: null,
+              source: recordMachineId ? `${TEAM_SOURCE_PREFIX}${recordMachineId}` : 'team',
+            },
+          };
+        }
+      }
+    }
+
+    return { status: 404, body: { error: 'not_found' } };
+  };
+}
+
+/**
+ * Back-compat: simple function export with no team fanout. Kept so the
+ * handful of tests and internal call sites that import the bare handler
+ * keep working. New code should use `createGetSessionHandler(deps)`.
+ */
+export const handleGetSession = createGetSessionHandler();
 
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {
   const batches = listBatchesBySession(req.params.id);

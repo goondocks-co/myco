@@ -88,8 +88,6 @@ const AgentRunBody = z.object({
    * recorded to `agent_run_write_intents` instead of mutating the vault.
    */
   dryRun: z.boolean().optional(),
-  /** Evaluation matrix this run belongs to, if any. */
-  evaluationId: z.string().nullable().optional(),
   /** Per-run runtime/reasoning/model overrides; also per-phase overrides. */
   executionOverrides: ExecutionOverrideBody,
 });
@@ -126,7 +124,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       instruction: rawInstruction,
       agentId,
       dryRun,
-      evaluationId,
       executionOverrides: rawExecutionOverrides,
     } = AgentRunBody.parse(req.body);
 
@@ -190,7 +187,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       embeddingManager,
       runContext,
       dryRun,
-      evaluationId,
       executionOverrides,
       logger,
     });

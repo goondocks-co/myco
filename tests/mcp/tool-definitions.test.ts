@@ -29,7 +29,6 @@ import { handleMycoSupersede } from '@myco/mcp/tools/supersede.js';
 import { handleMycoConsolidate } from '@myco/mcp/tools/consolidate.js';
 import { handleMycoSearch } from '@myco/mcp/tools/search.js';
 import { handleMycoSessions } from '@myco/mcp/tools/sessions.js';
-import { handleMycoGraph } from '@myco/mcp/tools/graph.js';
 import {
   handleCollectiveSearch,
   handleCollectiveProject,
@@ -95,12 +94,9 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
 
   it('keeps non-guided tools out of Cortex retrieval guidance', () => {
     const skillsTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skills');
-    const skillCandidatesTool = TOOL_DEFINITIONS.find((tool) => tool.name === 'myco_skill_candidates');
 
     expect(skillsTool?.cortex).toBeUndefined();
-    expect(skillCandidatesTool?.cortex).toBeUndefined();
     expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skills')).toBe(false);
-    expect(RETRIEVAL_GUIDANCE.some((entry) => entry.tool === 'myco_skill_candidates')).toBe(false);
   });
 
   // OpenAI's strict tool schema validator rejects schemas that carry
@@ -127,17 +123,11 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  // Bundle D harness-properties discipline: every Bundle D tool (and any tool
-  // that carries annotations) must set all four MCP annotation fields so
-  // clients can render the correct confirmation UI. Missing any one of these
-  // is a regression. Bundle G extended the list with five new tools; they
-  // share the same discipline.
-  it('Bundle D + G tools declare full MCP annotations', () => {
-    const required = [
-      'myco_cortex', 'myco_plans', 'myco_runs',
-      'myco_evaluations', 'myco_write_intents', 'myco_phase_audit',
-      'myco_resume_run', 'myco_digest_revisions',
-    ];
+  // Any tool that carries annotations must set all four MCP annotation fields
+  // so clients can render the correct confirmation UI. Missing any one of
+  // these is a regression.
+  it('annotated tools declare the full MCP annotation shape', () => {
+    const required = ['myco_plans', 'myco_runs'];
     for (const name of required) {
       const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
       expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();
@@ -147,23 +137,6 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
       expect(typeof tool!.annotations!.idempotentHint).toBe('boolean');
       expect(typeof tool!.annotations!.openWorldHint).toBe('boolean');
     }
-  });
-
-  // Pin every annotation VALUE for every Bundle D tool. The shape-only check
-  // above would pass even if someone silently flipped an annotation (e.g.
-  // set destructiveHint: false on myco_plans, suppressing the confirmation
-  // UI). These assertions freeze the intended semantics.
-  it('myco_cortex annotations are pinned (mixed read/mutating ops — conservative)', () => {
-    const cortex = TOOL_DEFINITIONS.find((t) => t.name === 'myco_cortex');
-    // Conservative single set covering all ops: refresh/build_prompt kick off
-    // background runs, so readOnlyHint must stay false. None of the ops
-    // destroy data, so destructiveHint is false. The set is not idempotent
-    // because repeated build_prompt calls produce distinct runs. Everything
-    // is local-only, so openWorldHint is false.
-    expect(cortex?.annotations?.readOnlyHint).toBe(false);
-    expect(cortex?.annotations?.destructiveHint).toBe(false);
-    expect(cortex?.annotations?.idempotentHint).toBe(false);
-    expect(cortex?.annotations?.openWorldHint).toBe(false);
   });
 
   it('myco_runs annotations are pinned (fully read-only, idempotent, local)', () => {
@@ -184,55 +157,6 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     expect(plans?.annotations?.destructiveHint).toBe(true);
     expect(plans?.annotations?.idempotentHint).toBe(true);
     expect(plans?.annotations?.openWorldHint).toBe(false);
-  });
-
-  // Bundle G tools — 5 new MCP surfaces. Each annotation set is pinned
-  // so a silent flip (e.g. someone marking op: "create" as read-only)
-  // would fail the suite.
-  it('myco_evaluations annotations are pinned (mixed ops — conservative)', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_evaluations');
-    // list/get are read-only, create starts background runs — mark
-    // conservatively so clients confirm before auto-running create.
-    expect(tool?.annotations?.readOnlyHint).toBe(false);
-    expect(tool?.annotations?.destructiveHint).toBe(false);
-    expect(tool?.annotations?.idempotentHint).toBe(false);
-    expect(tool?.annotations?.openWorldHint).toBe(false);
-  });
-
-  it('myco_write_intents annotations are pinned (read-only, idempotent, local)', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_write_intents');
-    expect(tool?.annotations?.readOnlyHint).toBe(true);
-    expect(tool?.annotations?.destructiveHint).toBe(false);
-    expect(tool?.annotations?.idempotentHint).toBe(true);
-    expect(tool?.annotations?.openWorldHint).toBe(false);
-  });
-
-  it('myco_phase_audit annotations are pinned (read-only, idempotent, local)', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_phase_audit');
-    expect(tool?.annotations?.readOnlyHint).toBe(true);
-    expect(tool?.annotations?.destructiveHint).toBe(false);
-    expect(tool?.annotations?.idempotentHint).toBe(true);
-    expect(tool?.annotations?.openWorldHint).toBe(false);
-  });
-
-  it('myco_resume_run annotations are pinned (mutating, non-idempotent, local)', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_resume_run');
-    // Starts a new background phase; not destructive (no data removed)
-    // but also not read-only. Each call starts a fresh phase if the run
-    // is still resumable, so idempotentHint is false.
-    expect(tool?.annotations?.readOnlyHint).toBe(false);
-    expect(tool?.annotations?.destructiveHint).toBe(false);
-    expect(tool?.annotations?.idempotentHint).toBe(false);
-    expect(tool?.annotations?.openWorldHint).toBe(false);
-  });
-
-  it('myco_digest_revisions annotations are pinned (read-only, idempotent, local)', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'myco_digest_revisions');
-    // List-only MCP surface — restore stays UI-only per policy.
-    expect(tool?.annotations?.readOnlyHint).toBe(true);
-    expect(tool?.annotations?.destructiveHint).toBe(false);
-    expect(tool?.annotations?.idempotentHint).toBe(true);
-    expect(tool?.annotations?.openWorldHint).toBe(false);
   });
 });
 
@@ -269,16 +193,6 @@ describe('handler forwards every documented schema property', () => {
     expect(url).toContain('q=auth');
     expect(url).toContain('type=spore');
     expect(url).toContain('limit=4');
-  });
-
-  it('myco_graph forwards note_id via path segment and direction/depth as query', async () => {
-    const client = mockClient({ edges: [], entities: [] });
-    await handleMycoGraph({ note_id: 'n1', direction: 'incoming', depth: 2 }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    // note_id appears as a path segment (not a query param) by design
-    expect(url).toContain('/api/graph/n1');
-    expect(url).toContain('direction=incoming');
-    expect(url).toContain('depth=2');
   });
 
   it('myco_remember forwards content, type, tags via POST body', async () => {
@@ -385,5 +299,60 @@ describe('handler forwards every documented schema property', () => {
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
     expect(url).toContain('project=p');
     expect(url).toContain('include_digest=true');
+  });
+});
+
+/**
+ * Cross-surface anti-drift. These read the Pi symbiont, Collective worker,
+ * and Team worker source files and compare their registered tool names
+ * against the canonical definitions — catching the class of drift where a
+ * tool is added or renamed in one surface but not another.
+ */
+describe('cross-surface tool-name drift', () => {
+  it('Pi symbiont registers exactly the canonical tool set', () => {
+    const piPath = path.resolve(
+      __dirname,
+      '../../packages/myco/src/symbionts/templates/pi/plugin.ts',
+    );
+    const piSource = fs.readFileSync(piPath, 'utf-8');
+    const piNames = new Set(
+      [...piSource.matchAll(/registerTool\(\{\s*name:\s*["']([^"']+)["']/g)].map((m) => m[1]),
+    );
+    const expected = new Set([
+      ...TOOL_DEFINITIONS.map((t) => t.name),
+      ...COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name),
+    ]);
+    expect(piNames).toEqual(expected);
+  });
+
+  it('Collective worker exposes exactly COLLECTIVE_TOOL_DEFINITIONS', () => {
+    const workerPath = path.resolve(
+      __dirname,
+      '../../packages/myco-collective/worker/src/mcp/server.ts',
+    );
+    const source = fs.readFileSync(workerPath, 'utf-8');
+    const names = new Set(
+      [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((m) => m[1]),
+    );
+    const expected = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name));
+    expect(names).toEqual(expected);
+  });
+
+  it('Team worker exposes a subset of canonical local tools', () => {
+    const teamPath = path.resolve(
+      __dirname,
+      '../../packages/myco-team/worker/src/mcp/server.ts',
+    );
+    const source = fs.readFileSync(teamPath, 'utf-8');
+    const names = [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+    const canonical = new Set(TOOL_DEFINITIONS.map((t) => t.name));
+    for (const n of names) {
+      expect(canonical.has(n), `Team worker tool ${n} not in canonical TOOL_DEFINITIONS`).toBe(true);
+    }
+    // Sanity: worker should at minimum register recall, so the rename landed.
+    expect(names).toContain('myco_recall');
+    expect(names).not.toContain('myco_get');
+    expect(names).not.toContain('myco_graph');
+    expect(names).not.toContain('myco_team');
   });
 });

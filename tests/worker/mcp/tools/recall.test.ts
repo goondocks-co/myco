@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { handleGet } from '@myco-team-worker/mcp/tools/get';
+import { handleRecall } from '@myco-team-worker/mcp/tools/recall';
 import { createFakeD1, parseToolResult } from './_helpers';
 
-describe('handleGet', () => {
+describe('handleRecall', () => {
   it('retrieves a record by type and id', async () => {
     const fake = createFakeD1();
     fake.addResult([{ id: 'sp1', machine_id: 'm1', content: 'found spore', observation_type: 'gotcha' }]);
 
-    const result = await handleGet({ id: 'sp1', type: 'spore' }, { MYCO_TEAM_DB: fake.db });
+    const result = await handleRecall({ id: 'sp1', type: 'spore' }, { MYCO_TEAM_DB: fake.db });
     const parsed = parseToolResult(result);
 
     expect(parsed.id).toBe('sp1');
@@ -28,7 +28,7 @@ describe('handleGet', () => {
       const fake = createFakeD1();
       fake.addResult([{ id: 'test-id' }]);
 
-      await handleGet({ id: 'test-id', type }, { MYCO_TEAM_DB: fake.db });
+      await handleRecall({ id: 'test-id', type }, { MYCO_TEAM_DB: fake.db });
       expect(fake.queries[0].sql).toContain(`FROM ${table}`);
     }
   });
@@ -36,7 +36,7 @@ describe('handleGet', () => {
   it('returns error for unknown type', async () => {
     const fake = createFakeD1();
 
-    const result = await handleGet({ id: 'x', type: 'widget' }, { MYCO_TEAM_DB: fake.db });
+    const result = await handleRecall({ id: 'x', type: 'widget' }, { MYCO_TEAM_DB: fake.db });
     const parsed = parseToolResult(result);
 
     expect(parsed.error).toBe('Unknown type: widget');
@@ -47,7 +47,7 @@ describe('handleGet', () => {
     const fake = createFakeD1();
     // No addResult — first() returns null
 
-    const result = await handleGet({ id: 'missing', type: 'session' }, { MYCO_TEAM_DB: fake.db });
+    const result = await handleRecall({ id: 'missing', type: 'session' }, { MYCO_TEAM_DB: fake.db });
     const parsed = parseToolResult(result);
 
     expect(parsed.error).toBe("session 'missing' not found");

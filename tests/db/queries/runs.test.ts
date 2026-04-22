@@ -372,18 +372,17 @@ describe('run query helpers', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // dry_run + evaluation_id round-trip (I4)
+  // dry_run round-trip (I4). The sibling evaluation_id column was retired
+  // in schema v24 alongside the matrix-evaluation feature.
   // ---------------------------------------------------------------------------
 
-  describe('dryRun + evaluationId columns', () => {
-    it('defaults dry_run to false and evaluation_id to null when omitted', () => {
+  describe('dryRun column', () => {
+    it('defaults dry_run to false when omitted', () => {
       const row = insertRun(makeRun({ id: 'run-default' }));
       expect(row.dry_run).toBe(false);
-      expect(row.evaluation_id).toBeNull();
 
       const fetched = getRun('run-default')!;
       expect(fetched.dry_run).toBe(false);
-      expect(fetched.evaluation_id).toBeNull();
     });
 
     it('round-trips dryRun:true to dry_run === true on read', () => {
@@ -394,22 +393,10 @@ describe('run query helpers', () => {
       expect(fetched.dry_run).toBe(true);
     });
 
-    it('round-trips evaluationId', () => {
-      const row = insertRun(makeRun({ id: 'run-eval', evaluationId: 'eval-abc' }));
-      expect(row.evaluation_id).toBe('eval-abc');
-    });
-
-    it('allows updating dryRun and evaluationId via updateRun', () => {
+    it('allows updating dryRun via updateRun', () => {
       insertRun(makeRun({ id: 'run-u' }));
-      const updated = updateRun('run-u', { dryRun: true, evaluationId: 'eval-xyz' });
+      const updated = updateRun('run-u', { dryRun: true });
       expect(updated!.dry_run).toBe(true);
-      expect(updated!.evaluation_id).toBe('eval-xyz');
-    });
-
-    it('can clear evaluationId by passing null', () => {
-      insertRun(makeRun({ id: 'run-clear', evaluationId: 'eval-old' }));
-      const cleared = updateRun('run-clear', { evaluationId: null });
-      expect(cleared!.evaluation_id).toBeNull();
     });
   });
 

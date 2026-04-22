@@ -10,7 +10,7 @@
  * `executionOverrides: {}` that the backend would otherwise persist.
  *
  * Extracted to a standalone module so it can be unit-tested without a React
- * harness (same rationale as `evaluation-helpers.ts`).
+ * harness (same rationale as `comparison-helpers.ts`).
  */
 
 import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';

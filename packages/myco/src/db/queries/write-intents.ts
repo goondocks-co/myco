@@ -208,31 +208,3 @@ export function countWriteIntentsByTool(runId: string): Record<string, number> {
   return out;
 }
 
-/**
- * Batched version of {@link countWriteIntentsByTool} scoped to an entire
- * evaluation. Returns `{ [runId]: { [toolName]: count } }` in a single
- * JOIN rather than forcing the caller to loop `countWriteIntentsByTool`
- * per child run.
- *
- * The `idx_write_intents_run_id_tool` composite index (added in schema
- * v17) lets the GROUP BY complete without a sort pass.
- */
-export function countWriteIntentsByToolForEvaluation(
-  evaluationId: string,
-): Record<string, Record<string, number>> {
-  const db = getDatabase();
-  const rows = db.prepare(
-    `SELECT wi.run_id, wi.tool_name, COUNT(*) AS count
-     FROM agent_run_write_intents wi
-     JOIN agent_runs r ON r.id = wi.run_id
-     WHERE r.evaluation_id = ?
-     GROUP BY wi.run_id, wi.tool_name`,
-  ).all(evaluationId) as Array<{ run_id: string; tool_name: string; count: number }>;
-
-  const out: Record<string, Record<string, number>> = {};
-  for (const row of rows) {
-    const bucket = out[row.run_id] ?? (out[row.run_id] = {});
-    bucket[row.tool_name] = Number(row.count);
-  }
-  return out;
-}
