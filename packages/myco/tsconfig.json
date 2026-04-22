@@ -21,5 +21,13 @@
     }
   },
   "include": ["src/**/*", "plugin/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "ui", "src/worker", "src/symbionts/templates"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "ui",
+    "src/worker",
+    "src/symbionts/templates",
+    "src/entries/cli.*.ts"
+  ]
 }

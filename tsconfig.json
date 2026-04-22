@@ -27,6 +27,7 @@
     "tests",
     "packages/myco/ui",
     "packages/myco/src/worker",
-    "packages/myco/src/symbionts/templates"
+    "packages/myco/src/symbionts/templates",
+    "packages/myco/src/entries/cli.*.ts"
   ]
 }
