@@ -191,7 +191,7 @@ export async function reconcileExistingDaemon(
   logger: DaemonLogger,
 ): Promise<'ok' | 'step-aside'> {
   const daemonJsonPath = path.join(vaultDir, 'daemon.json');
-  let info: { pid?: number; port?: number };
+  let info: { pid?: number; port?: number; command?: string | null };
   let mtimeMs: number;
   try {
     if (!fs.existsSync(daemonJsonPath)) return 'ok';
@@ -225,10 +225,16 @@ export async function reconcileExistingDaemon(
       });
       if (res.ok) {
         const data = await res.json() as { myco?: boolean; version?: string };
-        if (data.myco && data.version === getPluginVersion()) {
+        const existingCommand = info.command ?? null;
+        const currentCommand = process.argv[1] ?? null;
+        const runtimeMismatch = Boolean(existingCommand && currentCommand && existingCommand !== currentCommand);
+        if (data.myco && (data.version === getPluginVersion() || runtimeMismatch)) {
           logger.info(LOG_KINDS.DAEMON_START, 'Sibling daemon already healthy — stepping aside', {
             existing_pid: info.pid,
             existing_port: info.port,
+            existing_command: existingCommand,
+            current_command: currentCommand,
+            runtime_mismatch: runtimeMismatch,
           });
           return 'step-aside';
         }

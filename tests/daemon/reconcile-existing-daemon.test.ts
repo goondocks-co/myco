@@ -106,6 +106,21 @@ describe('reconcileExistingDaemon', () => {
     );
   });
 
+  it('steps aside when daemon is healthy but command differs (runtime mismatch)', async () => {
+    await withHealthServer(
+      { status: 200, body: { myco: true, version: '0.0.0-different' } },
+      async (port) => {
+        fs.writeFileSync(
+          path.join(vaultDir, 'daemon.json'),
+          JSON.stringify({ pid: siblingPid, port, command: '/tmp/bun-myco' }),
+        );
+        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        expect(result).toBe('step-aside');
+        expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
+      },
+    );
+  });
+
   it('takes over (ok) when daemon.json is older than the grace window', async () => {
     await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },

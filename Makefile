@@ -1,11 +1,11 @@
 .PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev
 
 build:
-	$(MAKE) -j2 check
+	$(MAKE) check
 	npm run build
 
 build-fast:
-	$(MAKE) -j2 check-fast
+	$(MAKE) check-fast
 	npm run build
 
 build-only:
