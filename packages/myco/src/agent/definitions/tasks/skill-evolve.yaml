@@ -74,6 +74,16 @@ phases:
 
       If the instruction says "No skills need assessment", report
       skip via vault_report and finish.
+
+      ## Output discipline
+
+      Keep responses terse. No narrative explanations.
+      Prefer tool calls and short machine-readable summaries.
+      Final phase summary must be <= 4 lines.
+      Required output shape:
+      - One `vault_set_state` call with merge/narrow arrays.
+      - One `vault_report` call with counts.
+      - Final assistant text <= 3 lines, no explanatory prose.
     tools:
       - vault_skill_records
       - vault_set_state
@@ -83,8 +93,18 @@ phases:
     readOnly: true
 
   - name: assess
-    reasoningLevel: low
+    reasoningLevel: default
     prompt: |
+      ## Scope boundary (critical)
+
+      Mechanical drift signals are TRIAGE only. They are cheap hints,
+      not source-of-truth code understanding.
+      - Use pre-computed drift/growth signals to decide where to look.
+      - Use agent exploration tools (vault_search_fts, fs_read, code_grep)
+        for final judgment on whether content is truly stale/current.
+      - Do NOT treat a single heuristic miss as authoritative when
+        surrounding evidence indicates the skill is still accurate.
+
       Read two pre-computed inputs from vault_state:
         - key: skill-evolve-inventory (merge/narrow candidates)
         - key: skill-evolve-drift (mechanical drift + growth reports)
@@ -120,10 +140,29 @@ phases:
       2. Trust `load_bearing_misses` as the STALE detail set.
          Re-check with fs_read/code_grep ONLY if confidence is low
          OR a claim is inconclusive.
+      2b. If a mechanical miss appears to be a heuristic artifact
+          (generic token, path-shape ambiguity, parser limitation),
+          classify conservatively and explain the uncertainty.
       3. Major/critical severity with confidence high/medium should
          classify as STALE (or DEPRECATED if the entire subsystem
          described is gone). Minor severity may stay CURRENT unless
          combined with new-spore evidence.
+
+      ## Drift classification threshold tuning
+
+      For drift-only skills (no meaningful new-spore evidence), use a
+      two-signal rule before STALE:
+      - Signal A: high-confidence mechanical miss
+        (major/critical severity with confidence high/medium), OR
+      - Signal B: targeted exploration confirms the miss affects a
+        load-bearing step in the current skill procedure.
+
+      Classification policy:
+      - STALE when A+B are both true, OR when there are 2+ independent
+        load-bearing misses in different parts of the procedure.
+      - CURRENT when only one weak/unconfirmed drift signal exists.
+      - INCONCLUSIVE behavior: when evidence is mixed, prefer CURRENT
+        with explicit "watch" details over forcing STALE.
 
       **D. Growth-flagged skills** — reports with non-empty `growth`
       where referenced TS files gained new exports since the skill's
@@ -135,6 +174,17 @@ phases:
          skill's domain.
       3. If relevant, classify STALE and include details. If not
          relevant, keep CURRENT and explain why.
+
+      ## Per-run scope cap
+
+      Assess at most 3 unique skills per run total across A/B/C/D.
+      Prioritize in this order:
+      1) Skills with new knowledge + high-confidence drift
+      2) Skills with new knowledge only
+      3) Drift-only skills with major/critical severity
+      4) Remaining drift/growth-only skills
+      Any remaining candidates must be deferred and listed in
+      vault_report details under `deferred_skills`.
 
       For ALL skills from all three sources, classify with one of:
          - CURRENT — still accurate, no changes needed.
@@ -157,6 +207,8 @@ phases:
          losing detail. Do NOT bias toward CURRENT when a drift report
          flags load-bearing misses with high confidence — that's
          exactly the refactor-drift case this pipeline exists to catch.
+         For drift-only cases with weak evidence, bias toward CURRENT
+         and carry forward actionable watch notes.
 
       5. Update the skill's properties with the new watermark:
          vault_skill_records (action: update, id: <skill_id>,
@@ -187,6 +239,28 @@ phases:
       - At most 2 tool calls per inconclusive or growth claim.
       - Do not rerun broad exploration if a targeted check already
         answers the classification decision.
+      - Mechanical triage should narrow search scope, not replace
+        repository exploration when a real decision is required.
+
+      Per-skill stop conditions:
+      - For drift-only skills, perform at most 1 targeted re-check
+        unless evidence directly conflicts.
+      - If classification reaches confidence threshold, stop tool calls
+        for that skill immediately.
+      - If still ambiguous after the allowed check, classify CURRENT
+        with explicit watch notes (do not continue probing).
+
+      ## Output discipline
+
+      Keep responses terse. No long prose or per-skill essays.
+      Store details in vault_set_state payloads, not in narrative text.
+      Final phase summary must be <= 6 lines.
+      Required output shape for this phase:
+      1. One `vault_set_state` write containing the complete
+         `skill-evolve-classifications` payload for all assessed skills.
+      2. One `vault_report` call with aggregate counts and any deferred/watch
+         notes.
+      3. Final assistant text <= 4 lines, no narrative walkthrough.
     tools:
       - vault_spores
       - vault_search_fts
@@ -256,11 +330,24 @@ phases:
 
       - Process MERGE/NARROW actions AFTER STALE updates, so you're
         merging already-refreshed content.
+      - Cost/quality guardrail: process at most 3 STALE updates per run.
+        If more than 3 are classified STALE, process the top 3 by impact
+        (critical drift > major drift > both drift+new knowledge > new knowledge only),
+        report deferred skill names via vault_report, and leave their
+        classifications in state for a future run.
       - If vault_write_skill rejects a merge (e.g., dedup gate trips),
         check the error and adjust content. If truly blocked, skip
         and report the issue.
 
       Report all actions via vault_report.
+
+      ## Output discipline
+
+      Keep responses terse. Avoid narrative writeups.
+      Final phase summary must be <= 5 lines plus deferred-skill list.
+      Required output shape:
+      - One `vault_report` with executed/deferred counts.
+      - Final assistant text <= 3 lines.
     tools:
       - vault_write_skill
       - vault_skill_records

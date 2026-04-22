@@ -52,30 +52,74 @@ const CLAIM_DENYLIST = new Set([
   'Array',
 ]);
 
+const SEARCHABLE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.rb', '.go', '.java', '.kt', '.rs',
+  '.php', '.cs', '.cpp', '.c', '.h', '.swift',
+  '.scala', '.lua', '.sh', '.sql', '.yaml', '.yml',
+  '.json', '.toml', '.md',
+]);
+
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  '.next',
+  '.turbo',
+  '.cache',
+]);
+
+const CONTAINS_PARENS_REGEX = /[()]/;
+const GENERIC_SLASH_WORD_REGEX = /^[a-z]+\/[a-z]+$/i;
+const DOT_TOKEN_REGEX = /^\.[A-Za-z_][A-Za-z0-9_]*$/;
+const DOT_METHOD_CALL_REGEX = /\.[A-Za-z_][A-Za-z0-9_]*\(\)$/;
+const KNOWN_METHOD_SUFFIX_REGEX = /\.(default|min|max|refine)$/;
+const PATH_SEGMENT_ALLOWED_CHARS_REGEX = /^[A-Za-z0-9._\-\/]+$/;
+const FILELIKE_EXTENSION_REGEX = /\.[A-Za-z0-9]{1,8}$/;
+const SYMBOL_TOKEN_REGEX = /^[A-Za-z_][A-Za-z0-9_]*\(\)?$/;
+const UPPER_CAMELISH_REGEX = /[A-Z].*[A-Z]/;
+const NON_ALNUM_SPACE_REGEX = /[^a-z0-9\s]/g;
+const FRONTMATTER_REGEX = /^---[\s\S]*?---\n/;
+const TRIPLE_BACKTICK_BLOCK_REGEX = /```[\s\S]*?```/g;
+const TRIPLE_TILDE_BLOCK_REGEX = /~~~[\s\S]*?~~~/g;
+const BACKTICK_TOKEN_REGEX = /`([^`\n]+)`/g;
+
 function stripFrontmatterAndCodeBlocks(content: string): string {
-  const body = content.replace(/^---[\s\S]*?---\n/, '');
+  const body = content.replace(FRONTMATTER_REGEX, '');
   return body
-    .replace(/```[\s\S]*?```/g, '')
-    .replace(/~~~[\s\S]*?~~~/g, '');
+    .replace(TRIPLE_BACKTICK_BLOCK_REGEX, '')
+    .replace(TRIPLE_TILDE_BLOCK_REGEX, '');
 }
 
 function isPathToken(token: string): boolean {
-  return token.includes('/')
-    || token.startsWith('.')
-    || /\.(ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|md|sql)$/.test(token);
+  if (CONTAINS_PARENS_REGEX.test(token)) return false;
+  if (GENERIC_SLASH_WORD_REGEX.test(token)) return false;
+  if (token.startsWith('.') && !token.startsWith('./') && !token.startsWith('../')) {
+    return false;
+  }
+  if (DOT_TOKEN_REGEX.test(token)) return false;
+  if (DOT_METHOD_CALL_REGEX.test(token)) return false;
+  if (KNOWN_METHOD_SUFFIX_REGEX.test(token)) return false;
+  if (token.includes('/')) {
+    const segments = token.split('/').filter(Boolean);
+    if (segments.length < 2) return false;
+    return PATH_SEGMENT_ALLOWED_CHARS_REGEX.test(token);
+  }
+  return FILELIKE_EXTENSION_REGEX.test(token);
 }
 
 function isDistinctiveSymbol(token: string): boolean {
   if (token.length < 5) return false;
   if (token.endsWith('()')) return true;
   if (token.includes('_')) return true;
-  return /[A-Z].*[A-Z]/.test(token);
+  return UPPER_CAMELISH_REGEX.test(token);
 }
 
 function classifyToken(token: string): ClaimKind {
   if (token.includes(' ') || token.includes('\n')) return 'skip';
   if (isPathToken(token)) return 'path';
-  if (!/^[A-Za-z_][A-Za-z0-9_]*\(\)?$/.test(token)) return 'skip';
+  if (!SYMBOL_TOKEN_REGEX.test(token)) return 'skip';
   if (CLAIM_DENYLIST.has(token.replace(/\(\)$/, ''))) return 'skip';
   return 'symbol';
 }
@@ -84,7 +128,7 @@ export function extractClaims(content: string): ExtractedClaim[] {
   const body = stripFrontmatterAndCodeBlocks(content);
   const seen = new Set<string>();
   const claims: ExtractedClaim[] = [];
-  for (const match of body.matchAll(/`([^`\n]+)`/g)) {
+  for (const match of body.matchAll(BACKTICK_TOKEN_REGEX)) {
     const token = (match[1] ?? '').trim();
     if (token && !seen.has(token)) {
       seen.add(token);
@@ -133,11 +177,12 @@ function listCodeFiles(root: string): string[] {
         continue;
       }
       if (st.isDirectory()) {
+        if (SKIP_DIRS.has(entry)) continue;
         stack.push(abs);
         continue;
       }
       const ext = extname(abs);
-      if (ext === '.ts' || ext === '.tsx') out.push(abs);
+      if (SEARCHABLE_EXTENSIONS.has(ext)) out.push(abs);
     }
   }
   return out;
@@ -147,7 +192,7 @@ function tokenizeKeywords(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(NON_ALNUM_SPACE_REGEX, ' ')
       .split(/\s+/)
       .filter(part => part.length >= 4),
   );
@@ -181,8 +226,7 @@ function buildSymbolPresenceMap(symbols: Set<string>, projectRoot: string): Map<
   for (const symbol of symbols) map.set(symbol, false);
   if (symbols.size === 0) return map;
 
-  const codeRoot = join(projectRoot, 'packages');
-  const files = listCodeFiles(codeRoot);
+  const files = listCodeFiles(projectRoot);
   for (const file of files) {
     let text = '';
     try {
@@ -203,6 +247,11 @@ function buildSymbolPresenceMap(symbols: Set<string>, projectRoot: string): Map<
 
 function isTestPath(path: string): boolean {
   return path.includes('__tests__/') || path.endsWith('.test.ts') || path.endsWith('.spec.ts');
+}
+
+function shouldFingerprintPath(path: string): boolean {
+  const ext = extname(path).toLowerCase();
+  return ext === '.ts' || ext === '.tsx';
 }
 
 export function detectDrift(
@@ -260,7 +309,7 @@ export function detectDrift(
           loadBearingMisses.push(`Missing path: ${claim.token}`);
           continue;
         }
-        if (!isTestPath(claim.token) && (claim.token.endsWith('.ts') || claim.token.endsWith('.tsx'))) {
+        if (!isTestPath(claim.token) && shouldFingerprintPath(claim.token)) {
           const fingerprint = extractFileFingerprint(absPath);
           currentFingerprints[claim.token] = fingerprint;
           const stored = loadStoredFingerprint(props, claim.token);
