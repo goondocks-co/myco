@@ -4,13 +4,14 @@
   "description": "Collective agent intelligence — Claude Code plugin",
   "type": "module",
   "bin": {
-    "myco": "bin/myco",
+    "myco": "bin/myco.cjs",
     "myco-run": "bin/myco-run"
   },
   "files": [
     "bin/",
     "dist/",
     "vendor/",
+    "scripts/",
     "commands/",
     "skills/",
     "README.md",
