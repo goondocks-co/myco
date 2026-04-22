@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { nowSec, seedSession } from '../helpers/sessions.js';
 import { TranscriptMiner } from '@myco/capture/transcript-miner.js';

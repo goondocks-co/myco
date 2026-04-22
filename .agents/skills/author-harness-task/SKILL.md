@@ -45,7 +45,7 @@ Sketch the phases on paper before writing any code.
 Every phase sits on a spectrum from pure-recipe to pure-judgment:
 
 | Pole | Characteristics | Typical examples |
-|------|----------------|-----------------|
+|------|----------------|------------------|
 | **Recipe** (deterministic) | Tight tool allowlist, short budget, script-like | Mark processed, cursor update, dedup gate |
 | **Judgment** (open-ended) | Broader tool access, longer budget, LLM reasons freely | Extract spores, consolidate, generate skill |
 

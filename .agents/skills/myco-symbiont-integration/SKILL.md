@@ -123,7 +123,7 @@ Response summaries provide compact batch descriptions for intelligence processin
 
 Implement the 3-layer fix for robust summary generation in `packages/myco/src/daemon/stop-processing.ts`:
 
-1. **Buffer fallback**: When live events are missed, parse transcript files directly
+1. **Buffer fallback**: When live events are missed, parse transcript files directly using `enrichTurnsWithToolMetadata`
 2. **TUI exit handling**: Detect when TUI-based agents terminate without stop events
 3. **Tail widening**: When transcript tail is empty, expand search window
 

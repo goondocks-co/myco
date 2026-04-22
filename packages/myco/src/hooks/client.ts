@@ -52,7 +52,10 @@ interface ClientResult {
  */
 async function parseErrorBody(res: Response): Promise<unknown> {
   try {
-    return await res.json();
+    // Node's undici returns `undefined` for an empty body, Bun's fetch returns
+    // `null`. Normalize to `undefined` so consumers can treat both the same.
+    const parsed = await res.json();
+    return parsed === null ? undefined : parsed;
   } catch {
     return undefined;
   }

@@ -156,6 +156,7 @@ mock.module('@myco/agent/context.js', () => ({
 let scopedToolCallOptions: Array<Record<string, unknown>> = [];
 
 mock.module('@myco/agent/tools.js', () => ({
+  createVaultTools: (_agentId: string, _runId: string, _options?: Record<string, unknown>) => [],
   createVaultToolServer: (_agentId: string, _runId: string) => ({
     type: 'sdk' as const,
     name: 'myco-vault',
@@ -169,6 +170,10 @@ mock.module('@myco/agent/tools.js', () => ({
       instance: {},
     };
   },
+  VAULT_TOOL_COUNT: 0,
+  validateSkillContent: () => ({ valid: true }),
+  MAX_SKILL_LINES: 500,
+  REQUIRED_FRONTMATTER_FIELDS: [],
 }));
 
 // ---------------------------------------------------------------------------

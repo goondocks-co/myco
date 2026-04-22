@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BatchTimeline } from '../../packages/myco/ui/src/components/sessions/BatchTimeline';

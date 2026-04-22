@@ -439,6 +439,33 @@ export class SqliteVecVectorStore implements VectorStore {
   // -------------------------------------------------------------------------
 
   close(): void {
+    // bun:sqlite's `db.close()` is a no-op while prepared statements are still
+    // alive — subsequent `stmt.all(...)` calls succeed even after the supposed
+    // close. Finalize all cached statements first so the handle closes for
+    // real, matching better-sqlite3's behavior.
+    const stmts: Array<{ finalize?: () => void } | undefined> = [
+      this.upsertMetaStmt,
+      this.deleteMetaStmt,
+      this.statsCountStmt,
+      this.statsModelsStmt,
+      this.staleIdsStmt,
+      this.embeddedIdsStmt,
+    ];
+    for (const stmt of stmts) {
+      try { stmt?.finalize?.(); } catch { /* already finalized */ }
+    }
+    for (const stmt of this.deleteVecStmts.values()) {
+      try { (stmt as unknown as { finalize?: () => void }).finalize?.(); } catch { /* */ }
+    }
+    for (const stmt of this.insertVecStmts.values()) {
+      try { (stmt as unknown as { finalize?: () => void }).finalize?.(); } catch { /* */ }
+    }
+    for (const stmt of this.searchStmts.values()) {
+      try { (stmt as unknown as { finalize?: () => void }).finalize?.(); } catch { /* */ }
+    }
+    this.deleteVecStmts.clear();
+    this.insertVecStmts.clear();
+    this.searchStmts.clear();
     this.db.close();
   }
 
