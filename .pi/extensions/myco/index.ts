@@ -130,24 +130,6 @@ async function getJson(
   }
 }
 
-async function putJson(
-  directory: string,
-  urlPath: string,
-  body: Record<string, unknown>,
-): Promise<{ ok: boolean; data?: unknown }> {
-  const res = await fetchFromDaemon(directory, urlPath, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res) return { ok: false };
-  try {
-    return { ok: true, data: await res.json() };
-  } catch {
-    return { ok: true };
-  }
-}
-
 async function deleteJson(
   directory: string,
   urlPath: string,
@@ -556,22 +538,8 @@ async function mycoSessions(
   return getJson(directory, `/api/mcp/sessions?${query.toString()}`);
 }
 
-async function mycoTeam(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, "/api/mcp/team");
-}
-
 async function fetchTeamStatus(directory: string): Promise<{ ok: boolean; data?: unknown }> {
   return getJson(directory, "/api/team/status");
-}
-
-async function mycoGraph(
-  directory: string,
-  input: { note_id: string; direction?: string; depth?: number },
-): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams();
-  if (input.direction) query.set("direction", input.direction);
-  if (input.depth !== undefined) query.set("depth", String(input.depth));
-  return getJson(directory, `/api/graph/${encodeURIComponent(input.note_id)}?${query.toString()}`);
 }
 
 async function mycoSupersede(
@@ -605,44 +573,6 @@ async function mycoSkills(
   return getJson(directory, `/api/skill-records?${query.toString()}`);
 }
 
-async function mycoSkillCandidates(
-  directory: string,
-  input: { id?: string; action?: string; status?: string; limit?: number },
-): Promise<{ ok: boolean; data?: unknown }> {
-  const action = input.action ?? "list";
-  if ((action === "approve" || action === "dismiss") && input.id) {
-    return putJson(directory, `/api/skill-candidates/${encodeURIComponent(input.id)}`, {
-      status: action === "approve" ? "approved" : "dismissed",
-    });
-  }
-  if (input.id) return getJson(directory, `/api/skill-candidates/${encodeURIComponent(input.id)}`);
-  const query = new URLSearchParams();
-  if (input.status) query.set("status", input.status);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/skill-candidates?${query.toString()}`);
-}
-
-async function mycoCortex(
-  directory: string,
-  input: { op: string; run_id?: string; goal?: string; symbiont?: string },
-): Promise<{ ok: boolean; data?: unknown }> {
-  switch (input.op) {
-    case "get":
-      return getJson(directory, "/api/cortex/instructions");
-    case "refresh":
-      return postJson(directory, "/api/cortex/instructions/refresh", {});
-    case "build_prompt":
-      return postJson(directory, "/api/cortex/prompt-builder", {
-        goal: input.goal,
-        ...(input.symbiont ? { symbiont: input.symbiont } : {}),
-      });
-    case "get_prompt_result":
-      return getJson(directory, `/api/cortex/prompt-builder/${encodeURIComponent(input.run_id ?? "")}`);
-    default:
-      return { ok: false, data: { error: "unknown_op" } };
-  }
-}
-
 async function mycoRuns(
   directory: string,
   input: { op?: string; id?: string; task?: string; agent_id?: string; limit?: number },
@@ -656,64 +586,12 @@ async function mycoRuns(
   return getJson(directory, `/api/agent/runs?${query.toString()}`);
 }
 
-async function mycoEvaluations(
-  directory: string,
-  input: { op?: string; status?: string; limit?: number; id?: string; task_id?: string; matrix?: unknown; notes?: string },
-): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "list";
-  if (op === "get") return getJson(directory, `/api/agent/evaluations/${encodeURIComponent(input.id ?? "")}`);
-  if (op === "create") {
-    return postJson(directory, "/api/agent/evaluations", {
-      taskId: input.task_id,
-      matrix: input.matrix,
-      ...(input.notes !== undefined ? { notes: input.notes } : {}),
-    });
-  }
-  const query = new URLSearchParams();
-  if (input.status) query.set("status", input.status);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/agent/evaluations?${query.toString()}`);
-}
-
-async function mycoWriteIntents(
-  directory: string,
-  input: { run_id: string; limit?: number; offset?: number },
-): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams();
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  if (input.offset !== undefined) query.set("offset", String(input.offset));
-  return getJson(directory, `/api/agent/runs/${encodeURIComponent(input.run_id)}/write-intents?${query.toString()}`);
-}
-
-async function mycoPhaseAudit(
-  directory: string,
-  input: { run_id: string },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, `/api/agent/runs/${encodeURIComponent(input.run_id)}/audit`);
-}
-
-async function mycoResumeRun(
-  directory: string,
-  input: { id: string; mode?: string },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return postJson(directory, `/api/agent/runs/${encodeURIComponent(input.id)}/resume`, {
-    ...(input.mode ? { mode: input.mode } : {}),
-  });
-}
-
-async function mycoDigestRevisions(
-  directory: string,
-  input: { agent_id?: string; tier?: number; limit?: number },
-): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams();
-  if (input.agent_id) query.set("agentId", input.agent_id);
-  if (input.tier !== undefined) query.set("tier", String(input.tier));
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/digest/revisions?${query.toString()}`);
-}
-
 async function collectiveProjects(directory: string): Promise<{ ok: boolean; data?: unknown }> {
   return getJson(directory, "/api/collective/projects");
+}
+
+async function collectiveSettings(directory: string): Promise<{ ok: boolean; data?: unknown }> {
+  return getJson(directory, "/api/collective/settings");
 }
 
 async function collectiveProject(
@@ -1095,6 +973,20 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? null) }], details: result.data ?? {} };
       },
     });
+
+    pi.registerTool({
+      name: "collective_settings",
+      label: "Collective Settings",
+      description: "Inspect active Collective setting overrides for this project.",
+      parameters: Type.Object({}),
+      async execute() {
+        const result = await collectiveSettings(currentCwd);
+        if (!result.ok) {
+          return { content: [{ type: "text" as const, text: "Collective settings unavailable." }], details: {} };
+        }
+        return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
+      },
+    });
   }
 
   pi.registerTool({
@@ -1273,39 +1165,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "myco_team",
-    label: "Myco Team",
-    description: "List team members registered in the vault.",
-    parameters: Type.Object({}),
-    async execute() {
-      const result = await mycoTeam(currentCwd);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: "Team data unavailable." }], details: {} };
-      }
-      const members = (result.data as { members?: unknown } | undefined)?.members ?? [];
-      return { content: [{ type: "text" as const, text: formatToolOutput(members) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_graph",
-    label: "Myco Graph",
-    description: "Traverse graph connections for a vault note.",
-    parameters: Type.Object({
-      note_id: Type.String({ description: "Note ID to start from" }),
-      direction: Type.Optional(Type.String({ description: "incoming, outgoing, or both" })),
-      depth: Type.Optional(Type.Number({ description: "Traversal depth" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoGraph(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: "Graph traversal unavailable." }], details: {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
     name: "myco_supersede",
     label: "Myco Supersede",
     description: "Mark an outdated spore as superseded by a newer one.",
@@ -1370,53 +1229,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "myco_skill_candidates",
-    label: "Myco Skill Candidates",
-    description: "List and manage skill candidates.",
-    parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: "Optional candidate id" })),
-      action: Type.Optional(Type.String({ description: "list, approve, or dismiss" })),
-      status: Type.Optional(Type.String({ description: "Optional status filter" })),
-      limit: Type.Optional(Type.Number({ description: "Optional max results" })),
-    }),
-    async execute(_toolCallId, params) {
-      if ((params.action === "approve" || params.action === "dismiss") && !params.id) {
-        return { content: [{ type: "text" as const, text: `Action '${params.action}' requires an id` }], details: {} };
-      }
-      const result = await mycoSkillCandidates(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: "Skill-candidate operation unavailable." }], details: {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? []) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_cortex",
-    label: "Myco Cortex",
-    description: "Read or refresh Cortex instructions, or build/poll a prompt-builder run.",
-    parameters: Type.Object({
-      op: Type.String({ description: "get, refresh, build_prompt, or get_prompt_result" }),
-      run_id: Type.Optional(Type.String({ description: "Run id for get_prompt_result" })),
-      goal: Type.Optional(Type.String({ description: "Goal for build_prompt" })),
-      symbiont: Type.Optional(Type.String({ description: "Optional target symbiont for build_prompt" })),
-    }),
-    async execute(_toolCallId, params) {
-      if (params.op === "build_prompt" && !params.goal) {
-        return { content: [{ type: "text" as const, text: "goal is required" }], details: {} };
-      }
-      if (params.op === "get_prompt_result" && !params.run_id) {
-        return { content: [{ type: "text" as const, text: "run_id is required" }], details: {} };
-      }
-      const result = await mycoCortex(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Cortex request failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
     name: "myco_runs",
     label: "Myco Runs",
     description: "List agent runs or fetch a single run.",
@@ -1434,104 +1246,6 @@ export default function (pi: ExtensionAPI) {
       const result = await mycoRuns(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Run query failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_evaluations",
-    label: "Myco Evaluations",
-    description: "List, inspect, or create agent evaluations.",
-    parameters: Type.Object({
-      op: Type.Optional(Type.String({ description: "list (default), get, or create" })),
-      status: Type.Optional(Type.String({ description: "Optional status filter" })),
-      limit: Type.Optional(Type.Number({ description: "Optional max results" })),
-      id: Type.Optional(Type.String({ description: "Evaluation id for op=get" })),
-      task_id: Type.Optional(Type.String({ description: "Task id for op=create" })),
-      matrix: Type.Optional(Type.Any({ description: "Matrix payload for op=create" })),
-      notes: Type.Optional(Type.String({ description: "Optional notes for op=create" })),
-    }),
-    async execute(_toolCallId, params) {
-      const op = params.op ?? "list";
-      if (op === "get" && !params.id) {
-        return { content: [{ type: "text" as const, text: "id is required for op: get" }], details: {} };
-      }
-      if (op === "create" && !params.task_id) {
-        return { content: [{ type: "text" as const, text: "task_id is required for op: create" }], details: {} };
-      }
-      const result = await mycoEvaluations(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Evaluation request failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_write_intents",
-    label: "Myco Write Intents",
-    description: "Inspect the writes a dry-run agent would have performed.",
-    parameters: Type.Object({
-      run_id: Type.String({ description: "Run id" }),
-      limit: Type.Optional(Type.Number({ description: "Optional max results" })),
-      offset: Type.Optional(Type.Number({ description: "Optional offset" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoWriteIntents(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Write-intents request failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_phase_audit",
-    label: "Myco Phase Audit",
-    description: "Read the per-phase audit trail for an agent run.",
-    parameters: Type.Object({
-      run_id: Type.String({ description: "Run id" }),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoPhaseAudit(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Phase audit unavailable") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_resume_run",
-    label: "Myco Resume Run",
-    description: "Resume a paused or interrupted agent run.",
-    parameters: Type.Object({
-      id: Type.String({ description: "Run id" }),
-      mode: Type.Optional(Type.String({ description: "Optional mode: manual or scheduled" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoResumeRun(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Resume failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_digest_revisions",
-    label: "Myco Digest Revisions",
-    description: "List historical digest revisions for an agent/tier.",
-    parameters: Type.Object({
-      agent_id: Type.Optional(Type.String({ description: "Optional agent id" })),
-      tier: Type.Number({ description: "Digest tier" }),
-      limit: Type.Optional(Type.Number({ description: "Optional max results" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoDigestRevisions(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Digest revision lookup failed") }], details: result.data ?? {} };
       }
       return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },
