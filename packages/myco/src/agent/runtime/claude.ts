@@ -7,6 +7,7 @@ import { RuntimeExecutionError } from './types.js';
 import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
 import { buildPhaseEnv } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
 
@@ -118,6 +119,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let outputTokens = 0;
     let costUsd = 0;
     let assistantMessages = 0;
+    const claudeCodeExecutable = resolveClaudeCodeExecutable();
 
     // Always pass `strictMcpConfig: true`, even when the phase wants no
     // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
@@ -147,6 +149,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         allowDangerouslySkipPermissions: true,
         persistSession: true,
         env,
+        ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
         ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
         ...(input.abortController ? { abortController: input.abortController } : {}),
       },

@@ -83,6 +83,10 @@ mock.module('@myco/agent/provider.js', () => {
   };
 });
 
+mock.module('@myco/agent/runtime/claude-code-executable.js', () => ({
+  resolveClaudeCodeExecutable: () => '/tmp/fake-claude',
+}));
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -145,6 +149,15 @@ describe('ClaudeSdkRuntime.execute', () => {
     await runtime.execute(makeInput({ abortController: controller }));
 
     expect(queryCalls[0].options.abortController).toBe(controller);
+  });
+
+  it('passes the resolved Claude Code executable path to the SDK', async () => {
+    const Runtime = await loadRuntime();
+    const runtime = new Runtime();
+
+    await runtime.execute(makeInput());
+
+    expect(queryCalls[0].options.pathToClaudeCodeExecutable).toBe('/tmp/fake-claude');
   });
 
   it('omits abortController when not supplied', async () => {

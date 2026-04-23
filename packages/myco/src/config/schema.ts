@@ -129,6 +129,15 @@ const MaintenanceSchema = z.object({
   auto_optimize_interval_hours: z.number().int().min(1).max(720).default(24),
 });
 
+const UpdateSchema = z.object({
+  /**
+   * Per-project release preference for the Operations update flow.
+   * Stored in local.yaml so one project can dogfood/beta-test without
+   * changing the machine-wide baseline used by unrelated projects.
+   */
+  channel: z.enum(['stable', 'beta']).default('stable'),
+});
+
 const TeamSchema = z.object({
   /** Whether team sync is enabled. */
   enabled: z.boolean().default(false),
@@ -208,6 +217,7 @@ export const MycoConfigSchema = z.preprocess(
     context: ContextSchema.default(() => ContextSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
+    update: UpdateSchema.default(() => UpdateSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),

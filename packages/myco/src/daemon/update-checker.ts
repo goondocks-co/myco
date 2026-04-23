@@ -21,6 +21,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import YAML from 'yaml';
 import semver from 'semver';
+import { loadLocalConfig, updateLocalConfig } from '../config/loader.js';
 
 import {
   NPM_REGISTRY_BASE_URL,
@@ -84,6 +85,8 @@ export interface CheckResult {
   latest_stable: string;
   latest_beta: string | null;
   channel: ReleaseChannel;
+  channel_scope: 'project';
+  runtime_scope: 'project' | 'machine';
   check_interval_hours: number;
   last_check: string;
   error: string | null;
@@ -158,6 +161,28 @@ export function resolveRuntimeCommand(vaultDir: string): string | null {
 export function isManagedProjectRuntime(cliEntry: string): boolean {
   const normalized = cliEntry.split(path.sep).join('/');
   return normalized.includes(`/.myco/${PROJECT_RUNTIME_DIRNAME}/node_modules/`);
+}
+
+export function readProjectReleaseChannel(vaultDir: string): ReleaseChannel {
+  const local = loadLocalConfig(vaultDir);
+  const channel = local.update?.channel;
+  return RELEASE_CHANNELS.includes(channel as ReleaseChannel)
+    ? channel as ReleaseChannel
+    : DEFAULT_RELEASE_CHANNEL;
+}
+
+export function writeProjectReleaseChannel(vaultDir: string, channel: ReleaseChannel): void {
+  updateLocalConfig(vaultDir, (local) => {
+    const next = { ...local };
+
+    if (channel === DEFAULT_RELEASE_CHANNEL) {
+      delete next.update;
+    } else {
+      next.update = { channel };
+    }
+
+    return next;
+  });
 }
 
 /**
@@ -466,16 +491,20 @@ function buildCheckResult(
   currentVersion: string,
   cache: CachedCheck,
   config: UpdateConfig,
+  channel: ReleaseChannel,
   error: string | null,
   globalPrefix: string | null,
   runtimeCommand: string | null = null,
 ): CheckResult {
-  const packages = buildPackageResults(currentVersion, cache, cache.channel, globalPrefix, runtimeCommand);
+  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix, runtimeCommand);
   const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
   const targetVersion = primaryPackage?.latest_version ?? currentVersion;
   const latestStable = primaryPackage?.latest_stable ?? currentVersion;
   const latestBeta = primaryPackage?.latest_beta ?? null;
   const updateAvailable = packages.some((pkg) => pkg.installed && pkg.update_available);
+  const runtimeScope = runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand)
+    ? 'project'
+    : 'machine';
 
   return {
     update_available: updateAvailable,
@@ -483,7 +512,9 @@ function buildCheckResult(
     latest_version: targetVersion,
     latest_stable: latestStable,
     latest_beta: latestBeta,
-    channel: cache.channel,
+    channel,
+    channel_scope: 'project',
+    runtime_scope: runtimeScope,
     check_interval_hours: config.check_interval_hours,
     last_check: cache.checked_at,
     error,
@@ -544,9 +575,11 @@ export async function checkForUpdate(
   currentVersion: string,
   globalPrefix: string | null = null,
   runtimeCommand: string | null = null,
+  channelOverride?: ReleaseChannel,
 ): Promise<CheckResult> {
   const config = readUpdateConfig();
   const existingCache = readCachedCheck();
+  const effectiveChannel = channelOverride ?? config.channel;
 
   const freshPackages: Partial<Record<UpdatePackageId, CachedPackageCheck>> = {};
   const fetchErrors: string[] = [];
@@ -603,14 +636,16 @@ export async function checkForUpdate(
       latest_version: currentVersion,
       latest_stable: currentVersion,
       latest_beta: null,
-      channel: config.channel,
+      channel: effectiveChannel,
+      channel_scope: 'project',
+      runtime_scope: runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand) ? 'project' : 'machine',
       check_interval_hours: config.check_interval_hours,
       last_check: new Date().toISOString(),
       error: fetchError,
       packages: buildPackageResults(
         currentVersion,
-        { checked_at: new Date().toISOString(), channel: config.channel, packages: {} },
-        config.channel,
+        { checked_at: new Date().toISOString(), channel: effectiveChannel, packages: {} },
+        effectiveChannel,
         globalPrefix,
         runtimeCommand,
       ),
@@ -619,7 +654,7 @@ export async function checkForUpdate(
 
   const freshCache: CachedCheck = {
     checked_at: new Date().toISOString(),
-    channel: config.channel,
+    channel: effectiveChannel,
     packages: freshPackages,
   };
 
@@ -631,7 +666,15 @@ export async function checkForUpdate(
   }
 
   const error = fetchErrors.length > 0 ? fetchErrors.join('; ') : null;
-  return buildCheckResult(currentVersion, freshCache, config, error, globalPrefix, runtimeCommand);
+  return buildCheckResult(
+    currentVersion,
+    freshCache,
+    config,
+    effectiveChannel,
+    error,
+    globalPrefix,
+    runtimeCommand,
+  );
 }
 
 /**
@@ -647,10 +690,20 @@ export function statusFromCache(
   config?: UpdateConfig,
   globalPrefix: string | null = null,
   runtimeCommand: string | null = null,
+  channelOverride?: ReleaseChannel,
 ): CheckResult | null {
   const resolvedCache = cache !== undefined ? cache : readCachedCheck();
   if (resolvedCache === null) return null;
 
   const resolvedConfig = config !== undefined ? config : readUpdateConfig();
-  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null, globalPrefix, runtimeCommand);
+  const effectiveChannel = channelOverride ?? resolvedCache.channel ?? resolvedConfig.channel;
+  return buildCheckResult(
+    currentVersion,
+    resolvedCache,
+    resolvedConfig,
+    effectiveChannel,
+    null,
+    globalPrefix,
+    runtimeCommand,
+  );
 }
