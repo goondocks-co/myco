@@ -89,7 +89,28 @@ export function detectSymbionts(projectRoot: string): DetectedSymbiont[] {
   })).filter(d => d.binaryFound || d.configDirFound);
 }
 
-/** Find the Myco package root (where package.json lives). */
+/**
+ * Find the Myco package root (where package.json lives).
+ *
+ * Resolution order:
+ *   1. `import.meta.dirname` — works in dev mode and the old tsup layout.
+ *   2. `fs.realpathSync(process.execPath)` — needed for the Bun-compiled
+ *      binary, whose import.meta is a /$bunfs/ virtual path. The binary
+ *      sits at `<pkg-root>/vendor/<target>/myco`, so its real-path parent
+ *      chain reaches the package root.
+ *   3. `process.cwd()` as last-resort fallback. Avoid when possible — cwd
+ *      can be any directory the user happens to be in, which led to a
+ *      stale-template bug when the monorepo root carried a pre-split
+ *      `dist/` that shadowed the real package.
+ */
 export function resolvePackageRoot(): string {
-  return findPackageRoot(import.meta.dirname) ?? process.cwd();
+  const fromImportMeta = findPackageRoot(import.meta.dirname);
+  if (fromImportMeta) return fromImportMeta;
+
+  try {
+    const fromExec = findPackageRoot(path.dirname(fs.realpathSync(process.execPath)));
+    if (fromExec) return fromExec;
+  } catch { /* ignore */ }
+
+  return process.cwd();
 }
