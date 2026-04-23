@@ -486,7 +486,7 @@ jobs:
             echo "no tarball found in publish-files/" >&2
             exit 1
           fi
-          npm publish "./$TARBALL" --tag "$NPM_TAG" --provenance --access public
+          npx npm@latest publish "./$TARBALL" --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:
