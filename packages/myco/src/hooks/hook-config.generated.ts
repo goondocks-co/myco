@@ -54,7 +54,19 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         }
       ],
       "interruptMarker": "[Request interrupted by user for tool use]"
-    }
+    },
+    "captureRules": [
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<command-message>"
+        },
+        "action": "drop",
+        "reason": "claude-code-slash-command-dispatch",
+        "trim": true
+      }
+    ]
   },
   "codex": {
     "capturePrompts": {

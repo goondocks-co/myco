@@ -44,6 +44,24 @@ export function extractUserPromptRecords(
   return walkTranscript(config, agent, events, transcriptPath).records;
 }
 
+/**
+ * Like {@link extractUserPromptRecords} but also returns the raw text of
+ * prompts that a capture.rules `drop` decision suppressed. Reconcile uses the
+ * dropped list to distinguish a DB batch with no transcript peer (real drift,
+ * worth warning about) from one whose transcript peer the walker intentionally
+ * dropped (e.g., Claude Code's <command-message> dispatch envelope).
+ */
+export function extractUserPromptRecordsWithDrops(
+  agent: string,
+  events: ReadonlyArray<Record<string, unknown>>,
+  transcriptPath?: string,
+): { records: UserPromptRecord[]; droppedText: string[] } {
+  const config = HOOK_CONFIG[agent]?.capturePrompts;
+  if (!config) return { records: [], droppedText: [] };
+  const result = walkTranscript(config, agent, events, transcriptPath);
+  return { records: result.records, droppedText: result.droppedText };
+}
+
 /** Classify a hypothetical next prompt given current transcript state + text. */
 export function classifyNextPromptKind(
   agent: string | undefined,
@@ -64,6 +82,8 @@ export function classifyNextPromptKind(
 
 interface WalkResult {
   records: UserPromptRecord[];
+  /** Raw text of prompts that a `drop` rule suppressed; used by reconcile to silence false stranded-batch warnings. */
+  droppedText: string[];
   priorTurnEnded: boolean;
 }
 
@@ -80,6 +100,7 @@ function walkTranscript(
 ): WalkResult {
   const seenDedupe = new Set<string>();
   const records: UserPromptRecord[] = [];
+  const droppedText: string[] = [];
   let priorTurnEnded = true;
 
   // Each reset-boundary with `changeOn` remembers its last seen value so
@@ -113,7 +134,10 @@ function walkTranscript(
       agent,
       { prompt: rawText, transcriptPath: transcriptPath ?? '<transcript-walker>' },
     );
-    if (decision.action === 'drop') continue;
+    if (decision.action === 'drop') {
+      droppedText.push(rawText);
+      continue;
+    }
     const text = decision.action === 'rewrite' ? decision.prompt : rawText;
 
     const kind = config.interruptMarker && text.startsWith(config.interruptMarker)
@@ -126,7 +150,7 @@ function walkTranscript(
     priorTurnEnded = false;
   }
 
-  return { records, priorTurnEnded };
+  return { records, droppedText, priorTurnEnded };
 }
 
 function findMatchingShape(
