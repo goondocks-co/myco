@@ -1,0 +1,335 @@
+/* ============================================================================
+   Myco — Colors & Type
+   ----------------------------------------------------------------------------
+   Myco's palette is called "Tactile Research" in the source: warm neutrals,
+   organic sage greens, ochre amber, terracotta warmth. Mycorrhizal, not
+   silicon. Type is a three-font system: Newsreader (italic display serif),
+   Inter (UI), JetBrains Mono (data / code).
+
+   Dark is canonical. "Warm Parchment" is the light companion.
+   ============================================================================ */
+
+/* ---------- Self-hosted variable fonts ---------- */
+
+@font-face {
+  font-family: 'Newsreader';
+  src: url('./fonts/Newsreader-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Newsreader';
+  src: url('./fonts/Newsreader-Italic-Variable.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./fonts/Inter-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./fonts/JetBrainsMono-Variable.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ============================================================================
+   TOKENS — Dark (canonical) — "Tactile Research"
+   ============================================================================ */
+:root {
+  /* ---------- Brand accents (cross-theme) ---------- */
+  --sage:         #abcfb8;
+  --sage-dim:     #7b9e89;
+  --sage-deep:    #446553;
+
+  --ochre:        #edbf7f;
+  --ochre-dim:    #d4a86a;
+  --ochre-deep:   #60410b;
+
+  --terracotta:     #ffb4a1;
+  --terracotta-dim: #df7a60;
+  --terracotta-deep:#8a4c3a;
+
+  /* ---------- Semantic mapping to primary/secondary/tertiary ---------- */
+  --primary:            var(--sage);
+  --primary-container:  var(--sage-dim);
+  --on-primary:         #163627;
+  --on-primary-container:#143525;
+
+  --secondary:           var(--ochre);
+  --secondary-container: var(--ochre-deep);
+  --on-secondary:        #442b00;
+
+  --tertiary:            var(--terracotta);
+  --tertiary-container:  var(--terracotta-dim);
+  --on-tertiary:         #5d1806;
+
+  /* ---------- Surfaces (layering) ---------- */
+  --surface:                    #111111;
+  --surface-dim:                #0c0c0c;
+  --surface-bright:             #444444;
+  --surface-container-lowest:   #080808;
+  --surface-container-low:      #1a1a1a;
+  --surface-container:          #242424;
+  --surface-container-high:     #333333;
+  --surface-container-highest:  #424242;
+  --surface-variant:            #3a3a3a;
+
+  /* ---------- Foreground ---------- */
+  --on-surface:          #e5e2e1;
+  --on-surface-variant:  #c1c8c2;
+  --outline:             #8b928c;
+  --outline-variant:     #424843;
+
+  /* ---------- Shadow tint & ghost borders (signature touch) ---------- */
+  --shadow-tint: 96, 65, 11;
+  --ghost-border: color-mix(in srgb, var(--outline-variant), transparent 75%);
+
+  /* ---------- Radii ---------- */
+  --radius:     0.375rem;  /* 6px — default */
+  --radius-sm:  0.25rem;   /* 4px */
+  --radius-md:  0.375rem;  /* 6px */
+  --radius-lg:  0.5rem;    /* 8px */
+  --radius-xl:  0.75rem;   /* 12px — feature cards */
+
+  /* ---------- Shadows ---------- */
+  --shadow-xs:     0 1px 2px rgba(0,0,0,0.18);
+  --shadow-sm:     0 2px 6px rgba(0,0,0,0.25);
+  --shadow-ambient:0 24px 48px rgba(var(--shadow-tint), 0.06);
+  --shadow-lift:   0 8px 24px rgba(var(--shadow-tint), 0.12);
+  --shadow-sage-glow:        0 0 8px var(--primary);
+  --shadow-ochre-glow:       0 0 8px var(--secondary);
+  --shadow-terracotta-glow:  0 0 8px var(--tertiary);
+  --shadow-inset-sage:       inset 0 0 12px rgba(171,207,184,0.2);
+
+  /* ---------- Spacing scale (Tailwind-aligned) ---------- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---------- Font families ---------- */
+  --font-heading: 'Newsreader', Georgia, serif;
+  --font-ui:      'Inter', system-ui, -apple-system, sans-serif;
+  --font-data:    'JetBrains Mono', 'Geist Mono', 'Fira Code', monospace;
+
+  /* Aliases used by index.css */
+  --font-serif: var(--font-heading);
+  --font-sans:  var(--font-ui);
+  --font-mono:  var(--font-data);
+
+  /* ---------- Base type ---------- */
+  --fg1: var(--on-surface);
+  --fg2: var(--on-surface-variant);
+  --fg3: var(--outline);
+
+  --text-micro:   10px;   /* uppercase labels */
+  --text-xs:      12px;   /* meta / kbd / badge */
+  --text-sm:      13px;
+  --text-body:    14px;   /* default UI */
+  --text-md:      15px;
+  --text-lg:      18px;   /* tagline */
+  --text-xl:      20px;   /* lifecycle heading */
+  --text-2xl:     24px;
+  --text-display: 32px;   /* section h2 */
+  --text-hero:    56px;   /* hero h1 */
+
+  --leading-tight: 1.2;
+  --leading-snug:  1.4;
+  --leading-body:  1.6;
+  --leading-prose: 1.65;
+
+  --tracking-tight: -0.01em;
+  --tracking-wide:  0.05em;
+  --tracking-wider: 0.08em; /* monospace uppercase labels */
+}
+
+/* ============================================================================
+   TOKENS — Light ("Warm Parchment")
+   ============================================================================ */
+:root.light,
+.light {
+  --surface:                    #F9F5E6;
+  --surface-dim:                #E8E1D1;
+  --surface-bright:             #FFFFFF;
+  --surface-container-lowest:   #F4EED8;
+  --surface-container-low:      #FFFFFF;
+  --surface-container:          #E8E1D1;
+  --surface-container-high:     #DDD6C6;
+  --surface-container-highest:  #D2CABB;
+  --surface-variant:            #D2CABB;
+
+  --on-surface:          #131313;
+  --on-surface-variant:  #424843;
+  --outline:             #8b928c;
+  --outline-variant:     #c1c8c2;
+
+  --primary:             var(--sage-deep);
+  --primary-container:   var(--sage-dim);
+  --on-primary:          #ffffff;
+  --on-primary-container:#002113;
+
+  --secondary:           var(--ochre-deep);
+  --secondary-container: #ffddb2;
+  --on-secondary:        #ffffff;
+
+  --tertiary:            #8B5C44;
+  --tertiary-container:  #ffdbd2;
+  --on-tertiary:         #ffffff;
+}
+
+/* ============================================================================
+   SEMANTIC TYPE CLASSES
+   ============================================================================ */
+
+.t-display,
+.h-display {
+  font-family: var(--font-heading);
+  font-weight: 500;
+  font-style: italic;
+  font-size: var(--text-hero);
+  line-height: var(--leading-tight);
+  letter-spacing: -1px;
+  color: var(--fg1);
+}
+
+.t-h1, .h1 {
+  font-family: var(--font-heading);
+  font-weight: 500;
+  font-size: var(--text-display);
+  line-height: var(--leading-snug);
+  color: var(--fg1);
+}
+
+.t-h2, .h2 {
+  font-family: var(--font-heading);
+  font-weight: 500;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-snug);
+  color: var(--fg1);
+}
+
+.t-h3, .h3 {
+  font-family: var(--font-heading);
+  font-weight: 500;
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  color: var(--fg1);
+}
+
+.t-tagline {
+  font-family: var(--font-ui);
+  font-size: var(--text-lg);
+  color: var(--fg2);
+  line-height: var(--leading-body);
+}
+
+.t-body, p {
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--fg2);
+}
+
+.t-small {
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  color: var(--fg2);
+}
+
+.t-label,
+.label-mono {
+  font-family: var(--font-data);
+  font-size: var(--text-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--fg3);
+}
+
+.t-kbd, kbd {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  color: var(--fg2);
+}
+
+.t-code, code {
+  font-family: var(--font-data);
+  font-size: 0.85em;
+  padding: 0.15em 0.35em;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container);
+  color: var(--primary);
+}
+
+.t-stat {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: var(--text-2xl);
+  color: var(--sage);
+  line-height: 1;
+}
+
+/* ============================================================================
+   UTILITY SURFACES
+   ============================================================================ */
+
+.surface-card {
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xs);
+}
+
+.surface-glass {
+  background: color-mix(in srgb, var(--surface-container) 60%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.accent-bar-sage       { border-top: 2px solid var(--sage); }
+.accent-bar-ochre      { border-top: 2px solid var(--ochre); }
+.accent-bar-terracotta { border-top: 2px solid var(--terracotta); }
+
+/* ============================================================================
+   ANIMATION
+   ============================================================================ */
+
+@keyframes myco-pulse-slow {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.8; }
+}
+.animate-pulse-slow { animation: myco-pulse-slow 3s ease-in-out infinite; }
+
+.hover-lift {
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+}
+
+/* Dashed mycelial connectors — decorative SVG strokes */
+.mycelial-connector {
+  stroke-dasharray: 4;
+  opacity: 0.3;
+}

@@ -136,9 +136,7 @@
   },
   "permissions": {
     "allow": [
-      "Bash(myco *)",
       "Bash(myco:*)",
-      "Bash(myco-dev *)",
       "Bash(myco-dev:*)"
     ]
   }

@@ -1,713 +1,745 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Myco — Project &amp; team intelligence for your agents</title>
-  <meta name="description" content="Myco turns everything your team learns into self-curating skills — repeatable workflows that keep every agent consistent, correct, and up-to-date as your code evolves.">
-
-  <!-- Open Graph -->
-  <meta property="og:title" content="Myco — The intelligence layer for your projects and team">
-  <meta property="og:description" content="Myco turns everything your team learns into self-curating skills — repeatable workflows that keep every agent consistent, correct, and up-to-date as your code evolves.">
-  <meta property="og:image" content="https://myco.sh/assets/hero@2x.png">
-  <meta property="og:url" content="https://myco.sh">
-  <meta name="twitter:card" content="summary_large_image">
-
-  <!-- Favicon -->
-  <link rel="icon" type="image/svg+xml" href="assets/favicon-docs.svg">
-
-  <!-- Fonts — same three-font system as the dashboard -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Inter:wght@100..900&family=JetBrains+Mono:wght@100..800&display=swap" rel="stylesheet">
-
-  <style>
-    /* Reset */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    /* Tactile Research color tokens */
-    :root {
-      --surface: #111111;
-      --surface-dim: #0c0c0c;
-      --surface-container-lowest: #080808;
-      --surface-container-low: #1a1a1a;
-      --surface-container: #242424;
-      --surface-container-high: #333333;
-
-      --on-surface: #e5e2e1;
-      --on-surface-variant: #c1c8c2;
-      --outline: #8b928c;
-      --outline-variant: #424843;
-
-      --sage: #abcfb8;
-      --sage-dim: #7b9e89;
-      --sage-deep: #446553;
-
-      --ochre: #edbf7f;
-      --ochre-dim: #d4a86a;
-
-      --terracotta: #ffb4a1;
-      --terracotta-dim: #df7a60;
-
-      --font-heading: 'Newsreader', Georgia, serif;
-      --font-ui: 'Inter', system-ui, sans-serif;
-      --font-data: 'JetBrains Mono', 'Fira Code', monospace;
-    }
-
-    html { scroll-behavior: smooth; }
-
-    body {
-      background: var(--surface);
-      color: var(--on-surface);
-      font-family: var(--font-ui);
-      line-height: 1.6;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* Nav */
-    .nav {
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 24px;
-      background: rgba(17, 17, 17, 0.85);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--outline-variant);
-    }
-
-    .nav-logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      text-decoration: none;
-    }
-
-    .nav-logo svg { width: 28px; height: 28px; }
-
-    .nav-logo span {
-      font-family: var(--font-heading);
-      font-size: 20px;
-      font-weight: 500;
-      color: var(--on-surface);
-      letter-spacing: 0.02em;
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 24px;
-      align-items: center;
-    }
-
-    .nav-links a {
-      color: var(--on-surface-variant);
-      text-decoration: none;
-      font-size: 14px;
-      transition: color 0.2s;
-    }
-
-    .nav-links a:hover { color: var(--sage); }
-
-    /* Hero */
-    .hero {
-      text-align: center;
-      padding: 100px 24px 80px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    .hero::before {
-      content: '';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 600px;
-      height: 600px;
-      background: radial-gradient(circle, rgba(171, 207, 184, 0.06) 0%, transparent 70%);
-      pointer-events: none;
-    }
-
-    .hero-logo { width: 88px; height: 88px; position: relative; }
-
-    .hero h1 {
-      font-family: var(--font-heading);
-      font-size: 56px;
-      font-weight: 500;
-      font-style: italic;
-      letter-spacing: -1px;
-      margin-top: 20px;
-      position: relative;
-      color: var(--on-surface);
-    }
-
-    .hero .tagline {
-      color: var(--on-surface-variant);
-      font-family: var(--font-ui);
-      font-size: 18px;
-      margin-top: 12px;
-      position: relative;
-    }
-
-    .hero-ctas {
-      display: flex;
-      gap: 16px;
-      justify-content: center;
-      margin-top: 32px;
-      position: relative;
-    }
-
-    .btn {
-      display: inline-block;
-      padding: 12px 28px;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      font-family: var(--font-ui);
-      text-decoration: none;
-      transition: opacity 0.2s, transform 0.1s;
-    }
-
-    .btn:hover { opacity: 0.85; }
-    .btn:active { transform: scale(0.98); }
-
-    .btn-primary {
-      background: var(--sage-deep);
-      color: var(--on-surface);
-      border: 1px solid var(--sage-dim);
-    }
-
-    .btn-outline {
-      border: 1px solid var(--outline-variant);
-      color: var(--sage);
-    }
-
-    /* Install */
-    .install {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 80px 24px;
-    }
-
-    .install h2 {
-      text-align: center;
-      font-family: var(--font-heading);
-      font-size: 32px;
-      font-weight: 500;
-      margin-bottom: 32px;
-    }
-
-    .tabs {
-      display: flex;
-      gap: 0;
-      border-bottom: 1px solid var(--outline-variant);
-      margin-bottom: 24px;
-    }
-
-    .tab {
-      padding: 10px 20px;
-      font-size: 14px;
-      font-family: var(--font-ui);
-      color: var(--on-surface-variant);
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      transition: color 0.2s, border-color 0.2s;
-      background: none;
-      border-top: none;
-      border-left: none;
-      border-right: none;
-    }
-
-    .tab:hover { color: var(--sage); }
-
-    .tab.active {
-      color: var(--sage);
-      border-bottom-color: var(--sage);
-    }
-
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
-
-    .code-block {
-      background: var(--surface-container-low);
-      border: 1px solid var(--outline-variant);
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 16px;
-      overflow-x: auto;
-    }
-
-    .code-block code {
-      font-family: var(--font-data);
-      font-size: 14px;
-      color: var(--sage);
-      line-height: 1.7;
-      white-space: pre;
-    }
-
-    .code-block .comment { color: var(--outline); }
-
-    .install-note {
-      color: var(--on-surface-variant);
-      font-size: 14px;
-      margin-top: 8px;
-    }
-
-    .install-note a { color: var(--ochre); transition: color 0.2s; }
-    .install-note a:hover { color: var(--ochre-dim); }
-
-    /* Features */
-    .features {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 40px 24px 80px;
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 20px;
-    }
-
-    .feature-card {
-      background: var(--surface-container-low);
-      border: 1px solid var(--outline-variant);
-      border-radius: 12px;
-      padding: 28px;
-      border-top: 2px solid var(--outline-variant);
-      transition: border-top-color 0.3s;
-    }
-
-    .feature-card:nth-child(1) { border-top-color: var(--sage); }
-    .feature-card:nth-child(2) { border-top-color: var(--ochre); }
-    .feature-card:nth-child(3) { border-top-color: var(--terracotta); }
-
-    .feature-card .icon {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      margin-bottom: 16px;
-    }
-
-    .feature-card:nth-child(1) .icon { background: var(--sage); }
-    .feature-card:nth-child(2) .icon { background: var(--ochre); }
-    .feature-card:nth-child(3) .icon { background: var(--terracotta); }
-
-    .feature-card h3 {
-      font-family: var(--font-heading);
-      font-size: 20px;
-      font-weight: 500;
-      margin-bottom: 8px;
-    }
-
-    .feature-card p {
-      color: var(--on-surface-variant);
-      font-size: 14px;
-      line-height: 1.6;
-    }
-
-    /* Skills showcase */
-    .skills-showcase {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 40px 24px 80px;
-    }
-
-    .skills-showcase h2 {
-      text-align: center;
-      font-family: var(--font-heading);
-      font-size: 32px;
-      font-weight: 500;
-      margin-bottom: 8px;
-    }
-
-    .skills-showcase .section-subtitle {
-      text-align: center;
-      color: var(--on-surface-variant);
-      font-size: 15px;
-      max-width: 640px;
-      margin: 0 auto 40px;
-      line-height: 1.6;
-    }
-
-    .lifecycle {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      position: relative;
-    }
-
-    .lifecycle-step {
-      background: var(--surface-container-low);
-      border: 1px solid var(--outline-variant);
-      border-radius: 12px;
-      padding: 24px 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      position: relative;
-      border-top: 2px solid var(--outline-variant);
-    }
-
-    .lifecycle-step:nth-child(1) { border-top-color: var(--sage); }
-    .lifecycle-step:nth-child(2) { border-top-color: var(--ochre); }
-    .lifecycle-step:nth-child(3) { border-top-color: var(--sage); }
-    .lifecycle-step:nth-child(4) { border-top-color: var(--terracotta); }
-
-    .lifecycle-step .step-label {
-      font-family: var(--font-data);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--outline);
-    }
-
-    .lifecycle-step h3 {
-      font-family: var(--font-heading);
-      font-size: 20px;
-      font-weight: 500;
-      color: var(--on-surface);
-    }
-
-    .lifecycle-step .actor {
-      font-family: var(--font-data);
-      font-size: 11px;
-      color: var(--sage);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .lifecycle-step:nth-child(2) .actor { color: var(--ochre); }
-    .lifecycle-step:nth-child(4) .actor { color: var(--terracotta); }
-
-    .lifecycle-step p {
-      color: var(--on-surface-variant);
-      font-size: 13px;
-      line-height: 1.55;
-      margin-top: 4px;
-    }
-
-    .skills-footnote {
-      text-align: center;
-      color: var(--on-surface-variant);
-      font-size: 14px;
-      margin-top: 32px;
-      max-width: 640px;
-      margin-left: auto;
-      margin-right: auto;
-      line-height: 1.6;
-    }
-
-    .skills-footnote a { color: var(--ochre); text-decoration: none; transition: color 0.2s; }
-    .skills-footnote a:hover { color: var(--ochre-dim); }
-
-    /* Footer */
-    .footer {
-      text-align: center;
-      padding: 48px 24px;
-      border-top: 1px solid var(--outline-variant);
-    }
-
-    .footer-links {
-      display: flex;
-      gap: 24px;
-      justify-content: center;
-      margin-bottom: 16px;
-    }
-
-    .footer-links a {
-      color: var(--on-surface-variant);
-      text-decoration: none;
-      font-size: 14px;
-      transition: color 0.2s;
-    }
-
-    .footer-links a:hover { color: var(--sage); }
-
-    .footer .origin {
-      color: var(--outline);
-      font-size: 13px;
-      font-family: var(--font-heading);
-      font-style: italic;
-    }
-
-    /* Agents */
-    .agents {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 40px 24px 60px;
-      text-align: center;
-    }
-
-    .agents h2 {
-      font-family: var(--font-heading);
-      font-size: 32px;
-      font-weight: 500;
-      margin-bottom: 8px;
-    }
-
-    .agents-subtitle {
-      color: var(--on-surface-variant);
-      font-size: 15px;
-      margin-bottom: 28px;
-    }
-
-    .agents-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-    }
-
-    .agent-card {
-      background: var(--surface-container-low);
-      border: 1px solid var(--outline-variant);
-      border-radius: 8px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .agent-name {
-      font-family: var(--font-ui);
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--on-surface);
-    }
-
-    .agent-status {
-      font-family: var(--font-data);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .agent-status.full { color: var(--sage); }
-    .agent-status.partial { color: var(--ochre); }
-
-    /* Mobile */
-    @media (max-width: 768px) {
-      .nav-links .quick-start-link { display: none; }
-
-      .hero { padding: 60px 24px 50px; }
-      .hero h1 { font-size: 40px; }
-      .hero .tagline { font-size: 16px; }
-      .hero-ctas { flex-direction: column; align-items: center; }
-      .hero-logo { width: 64px; height: 64px; }
-
-      .features { grid-template-columns: 1fr; }
-      .agents-grid { grid-template-columns: repeat(2, 1fr); }
-      .lifecycle { grid-template-columns: 1fr; }
-
-      .code-block { font-size: 13px; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Myco — The intelligence layer for your projects and team</title>
+<meta name="description" content="Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.">
+<meta property="og:title" content="Myco — The intelligence layer for your projects and team">
+<meta property="og:description" content="Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.">
+<meta property="og:image" content="https://myco.sh/assets/myco-hero-wide.jpg">
+<meta property="og:url" content="https://myco.sh">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="assets/favicon-sage.svg">
+<link rel="stylesheet" href="colors_and_type.css">
+<link rel="stylesheet" href="site.css">
 </head>
 <body>
 
-  <!-- Nav -->
-  <nav class="nav">
-    <a href="/" class="nav-logo">
-      <svg viewBox="0 0 160 160" fill="none">
-        <g stroke-linecap="round" stroke-linejoin="round">
-          <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="var(--sage)" stroke-width="8" opacity="0.85"/>
-          <circle cx="30" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
-          <circle cx="30" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
-          <circle cx="80" cy="85" r="8" fill="var(--sage)" opacity="0.95"/>
-          <circle cx="130" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
-          <circle cx="130" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
-        </g>
-      </svg>
-      <span>myco</span>
+<!-- =================== NAV =================== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#">
+      <img class="brand-mark" src="assets/logo-mark.svg" alt="Myco">
+      <span class="brand-wm">myco</span>
+      <span class="brand-tag" id="nav-version">loading…</span>
     </a>
     <div class="nav-links">
-      <a href="#install" class="quick-start-link">Quick Start</a>
+      <a href="#how">How it works</a>
+      <a href="#lifecycle">Skills</a>
+      <a href="#team">Team sync</a>
       <a href="#agents">Agents</a>
-      <a href="#skills">Skills</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent Harness</a>
-      <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub</a>
+      <a href="#docs">Docs</a>
     </div>
-  </nav>
-
-  <!-- Hero -->
-  <section class="hero">
-    <svg class="hero-logo" viewBox="0 0 160 160" fill="none">
-      <g stroke-linecap="round" stroke-linejoin="round">
-        <path d="M30,130 L30,40 L80,85 L130,40 L130,130" stroke="var(--sage)" stroke-width="8" opacity="0.85"/>
-        <circle cx="30" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
-        <circle cx="30" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
-        <circle cx="80" cy="85" r="8" fill="var(--sage)" opacity="0.95"/>
-        <circle cx="130" cy="40" r="7" fill="var(--ochre)" opacity="0.8"/>
-        <circle cx="130" cy="130" r="7" fill="var(--sage)" opacity="0.9"/>
-        <line x1="30" y1="85" x2="80" y2="85" stroke="var(--ochre)" stroke-width="2" opacity="0.2"/>
-        <line x1="80" y1="85" x2="130" y2="85" stroke="var(--ochre)" stroke-width="2" opacity="0.2"/>
-        <circle cx="30" cy="85" r="4" fill="var(--terracotta)" opacity="0.35"/>
-        <circle cx="130" cy="85" r="4" fill="var(--terracotta)" opacity="0.35"/>
-      </g>
-    </svg>
-    <h1>myco</h1>
-    <p class="tagline">The intelligence layer for your projects and team</p>
-    <p class="tagline" style="font-size: 15px; max-width: 620px; margin: 10px auto 0; color: var(--outline); font-style: italic;">Capture what your team learns. Turn it into skills your agents follow. Evolve them as your code does.</p>
-    <div class="hero-ctas">
-      <a href="#install" class="btn btn-primary">Get Started</a>
-      <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener" class="btn btn-outline">View on GitHub</a>
+    <div class="nav-right">
+      <a class="github-pill" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        github<span class="stars" id="gh-stars">★ —</span>
+      </a>
+      <a class="btn btn-primary" href="#install">Get started<span class="chev">→</span></a>
     </div>
-  </section>
+  </div>
+</nav>
 
-  <!-- Install -->
-  <section class="install" id="install">
-    <h2>Get Started</h2>
-    <div class="tabs">
-      <button class="tab active" data-tab="quick">Quick Install</button>
-      <button class="tab" data-tab="windows">Windows</button>
-      <button class="tab" data-tab="manual">Manual</button>
+<!-- =================== HERO =================== -->
+<section class="hero">
+  <div class="hero-haze"></div>
+  <svg class="hero-mycelium" viewBox="0 0 1440 700" preserveAspectRatio="none" aria-hidden="true">
+    <g stroke="var(--sage)" stroke-width="1" fill="none" stroke-dasharray="4">
+      <path class="m1" d="M720,700 C720,520 540,440 340,380 C220,345 80,365 0,365"/>
+      <path class="m2" d="M720,700 C720,520 900,440 1100,380 C1220,345 1360,365 1440,365"/>
+      <path class="m3" d="M720,700 C720,500 780,300 720,0"/>
+      <path d="M340,380 C460,360 580,410 720,440" stroke="var(--ochre)" opacity="0.6"/>
+      <path d="M1100,380 C980,360 860,410 720,440" stroke="var(--ochre)" opacity="0.6"/>
+      <path d="M340,380 C300,320 280,240 240,180" opacity="0.5"/>
+      <path d="M1100,380 C1140,320 1160,240 1200,180" opacity="0.5"/>
+    </g>
+    <g>
+      <circle cx="340" cy="380" r="4" fill="var(--sage)"/>
+      <circle cx="1100" cy="380" r="4" fill="var(--sage)"/>
+      <circle cx="720" cy="440" r="5" fill="var(--ochre)"/>
+      <circle cx="240" cy="180" r="3" fill="var(--terracotta)" opacity="0.7"/>
+      <circle cx="1200" cy="180" r="3" fill="var(--terracotta)" opacity="0.7"/>
+      <circle cx="0" cy="365" r="3" fill="var(--sage-dim)" opacity="0.7"/>
+      <circle cx="1440" cy="365" r="3" fill="var(--sage-dim)" opacity="0.7"/>
+    </g>
+  </svg>
+
+  <div class="hero-inner">
+    <span class="hero-badge"><span class="dot"></span><span id="hero-version">Loading latest release…</span> · MIT licensed</span>
+    <h1 class="hero-title">The intelligence layer <em>beneath</em><br>your projects and team</h1>
+    <p class="hero-sub">Capture what your team learns. Turn it into <strong>skills your agents follow</strong>. Evolve them as your code does.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary btn-lg" href="#install">Get started<span class="chev">→</span></a>
+      <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">View on GitHub</a>
+    </div>
+    <div class="hero-meta">
+      <span><span class="k">Works with</span> Claude Code · Cursor · Codex · Copilot · Gemini · Windsurf</span>
+    </div>
+  </div>
+
+  <div class="hero-image-wrap">
+    <div class="hero-image">
+      <img src="assets/myco-hero-wide.jpg" alt="Mycelial network of roots beneath the forest floor, with glowing sage threads">
+      <div class="hero-image-overlay">
+        <span class="label">Mycorrhizal network</span>
+        <span class="caption">The underground systems that connect trees in a forest.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== INSTALL =================== -->
+<section class="band" id="install" style="padding-top: 40px;">
+  <div class="wrap-narrow">
+    <div class="sec-head center">
+      <span class="eyebrow no-bar"><span class="dot"></span>One command</span>
+      <h2 class="sec-title">Install in <em>sixty seconds</em></h2>
+      <p class="sec-lede">One install, any agent. Myco auto-detects the coding agents you already use and installs hooks for each.</p>
     </div>
 
-    <div class="tab-panel active" id="panel-quick">
-      <div class="code-block"><code>curl -fsSL https://myco.sh/install.sh | sh</code></div>
-      <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>cd your-project
-myco init</code></div>
+    <div class="install-shell">
+      <div class="install-tabs">
+        <button class="install-tab active" data-install="mac">macOS / Linux</button>
+        <button class="install-tab" data-install="windows">Windows</button>
+        <button class="install-tab" data-install="npm">npm</button>
+      </div>
+
+      <div class="install-panels">
+        <div class="active" data-panel="mac">
+          <div class="terminal">
+            <div class="terminal-chrome">
+              <div class="terminal-dots"><span></span><span></span><span></span></div>
+              <span class="terminal-title">~/your-project</span>
+              <button class="terminal-copy" data-copy="curl -fsSL https://myco.sh/install.sh | sh">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <span class="line"><span class="prompt">$</span><span class="cmd">curl</span> <span class="flag">-fsSL</span> <span class="str">https://myco.sh/install.sh</span> | <span class="cmd">sh</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon binary linked to ~/.myco/bin</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="prompt">$</span><span class="cmd">cd</span> your-project &amp;&amp; <span class="cmd">myco</span> init</span>
+              <span class="blank"></span>
+              <span class="line"><span class="out">detected agents:</span></span>
+              <span class="indent"><span class="out-ok">✓</span> <span class="out">claude-code</span> <span class="comment">(hooks, mcp, skills)</span></span>
+              <span class="indent"><span class="out-ok">✓</span> <span class="out">cursor</span>      <span class="comment">(hooks, skills)</span></span>
+              <span class="indent"><span class="out-warn">·</span> <span class="out">codex</span>       <span class="comment">(optional)</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">daemon started on :7337</span></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">dashboard →</span> <span class="str">http://localhost:7337</span><span class="caret"></span></span>
+            </div>
+          </div>
+        </div>
+        <div data-panel="windows">
+          <div class="terminal">
+            <div class="terminal-chrome">
+              <div class="terminal-dots"><span></span><span></span><span></span></div>
+              <span class="terminal-title">PowerShell</span>
+              <button class="terminal-copy" data-copy="irm https://myco.sh/install.ps1 | iex">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">irm</span> <span class="str">https://myco.sh/install.ps1</span> | <span class="cmd">iex</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="out-ok">✓</span> <span class="out">installed @goondocks/myco</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="prompt">PS&gt;</span><span class="cmd">cd</span> your-project ; <span class="cmd">myco</span> init<span class="caret"></span></span>
+            </div>
+          </div>
+        </div>
+        <div data-panel="npm">
+          <div class="terminal">
+            <div class="terminal-chrome">
+              <div class="terminal-dots"><span></span><span></span><span></span></div>
+              <span class="terminal-title">~/your-project</span>
+              <button class="terminal-copy" data-copy="npm install -g @goondocks/myco">Copy</button>
+            </div>
+            <div class="terminal-body">
+              <span class="line"><span class="prompt">$</span><span class="cmd">npm</span> install <span class="flag">-g</span> <span class="str">@goondocks/myco</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="out-ok">+</span> <span class="out">@goondocks/myco</span></span>
+              <span class="line"><span class="out">added 1 package in 3s</span></span>
+              <span class="blank"></span>
+              <span class="line"><span class="prompt">$</span><span class="cmd">myco</span> init<span class="caret"></span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="install-next">
+        <span class="n">Requires</span>
+        <span class="txt">Node <code>22+</code> and at least one supported coding agent.</span>
+        <span style="margin-left:auto;"><a class="arrow-link" href="#docs">Quickstart</a></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== FEATURES (What it does) =================== -->
+<section class="band" id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">What it does</span>
+      <h2 class="sec-title">Memory is table stakes — <em>Myco goes further</em>.</h2>
+      <p class="sec-lede">Three things, working together beneath the surface of every session — so your agents get smarter as your team does.</p>
     </div>
 
-    <div class="tab-panel" id="panel-windows">
-      <div class="code-block"><code>irm https://myco.sh/install.ps1 | iex</code></div>
-      <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>cd your-project
-myco init</code></div>
+    <div class="features">
+      <article class="feature sage">
+        <div class="feature-head">
+          <span class="feature-dot"></span>
+          <span class="feature-kicker">01 · Capture</span>
+        </div>
+        <h3>Every session, deposited as spores.</h3>
+        <p>Rich multi-agent local data collection — your prompts, tools, agent summaries, plans, screenshots. Browse and search semantically via a local daemon. Agents access via local MCP.</p>
+        <div class="feature-meta">
+          <span class="tag">prompts</span>
+          <span class="tag">tool calls</span>
+          <span class="tag">plans</span>
+          <span class="tag">screenshots</span>
+        </div>
+      </article>
+
+      <article class="feature ochre">
+        <div class="feature-head">
+          <span class="feature-dot"></span>
+          <span class="feature-kicker">02 · Curate</span>
+        </div>
+        <h3>Repeated patterns become skills.</h3>
+        <p>Myco's intelligence agent surveys your vault for procedural patterns with cross-session evidence, drafts a SKILL.md, runs it through quality gates, and — with your nod — promotes it to <code>.agents/skills/</code>.</p>
+        <div class="feature-meta">
+          <span class="tag">survey</span>
+          <span class="tag">approve</span>
+          <span class="tag">generate</span>
+          <span class="tag">evolve</span>
+        </div>
+      </article>
+
+      <article class="feature terra">
+        <div class="feature-head">
+          <span class="feature-dot"></span>
+          <span class="feature-kicker">03 · Connect</span>
+        </div>
+        <h3>A shared mycelium, across the team.</h3>
+        <p>Teammates' agents contribute and share project intelligence, synchronized automatically through a Cloudflare-backed worker. Cloud MCP exposes the same knowledge to managed agents beyond your laptop.</p>
+        <div class="feature-meta">
+          <span class="tag">team sync</span>
+          <span class="tag">cloud mcp</span>
+          <span class="tag">collective</span>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- =================== DASHBOARD SHOWCASE =================== -->
+<section class="band" id="dashboard">
+  <div class="wrap">
+    <div class="showcase">
+      <div class="showcase-copy">
+        <span class="eyebrow">Local dashboard</span>
+        <h2 class="sec-title" style="margin-top: 16px;">A quiet command deck for your <em>mycelium</em>.</h2>
+        <p class="sec-lede">Myco ships a local web dashboard. Configure providers, approve skill candidates, monitor session pods, and tail daemon logs — all on <code style="font-family:var(--font-data); color: var(--sage);">localhost</code>, all yours.</p>
+
+        <ul class="showcase-bullets">
+          <li>
+            <span class="num">01</span>
+            <div>
+              <h4>Session pods</h4>
+              <p>Live view of every concurrent agent thread on your machine — spore events, wisdom extractions, stability signals. Click any pod to walk its full activity trail.</p>
+            </div>
+          </li>
+          <li>
+            <span class="num">02</span>
+            <div>
+              <h4>Skills &amp; candidates</h4>
+              <p>Approve or dismiss auto-generated skill candidates. Every change is recorded as lineage — what was in generation <em>N</em>, and why it's different in <em>N+1</em>.</p>
+            </div>
+          </li>
+          <li>
+            <span class="num">03</span>
+            <div>
+              <h4>Power-aware daemon</h4>
+              <p>Four states — active, idle, sleep, deep-sleep — so Myco costs nothing on idle laptops and wakes instantly when you sit back down.</p>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="showcase-frame">
+        <div class="showcase-frame-chrome">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="url">localhost:7337/dashboard</span>
+        </div>
+        <img src="assets/myco-dashboard.png" alt="Myco dashboard showing session pods, stats, and a mycelial network graph">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== LIFECYCLE =================== -->
+<section class="band" id="lifecycle">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Skill lifecycle</span>
+      <h2 class="sec-title">From <em>spore</em> to <em>skill</em> — automatically.</h2>
+      <p class="sec-lede">Every session deposits spores. Myco digests them, proposes plans, and — with your nod — promotes them into skills your agents follow on the next run.</p>
     </div>
 
-    <div class="tab-panel" id="panel-manual">
-      <div class="code-block"><code>npm install -g @goondocks/myco</code></div>
-      <p class="install-note">Then initialize in your project:</p>
-      <div class="code-block"><code>cd your-project
-myco init</code></div>
-    </div>
-  </section>
+    <div class="lifecycle-scene">
+      <div class="lifecycle-line"></div>
+      <div class="lifecycle">
+        <article class="life-step sage">
+          <div class="life-node">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+          </div>
+          <div class="life-label"><span>Step 01</span><span class="actor">Agent</span></div>
+          <h3>Survey</h3>
+          <p>Myco's agent scans spores, sessions, and plans for procedural patterns with cross-session evidence. One-off observations don't qualify.</p>
+          <div class="life-tag"><code>myco:survey</code><span class="n">≥ 0.7 conf</span></div>
+        </article>
 
-  <!-- Supported Agents -->
-  <section class="agents" id="agents">
-    <h2>Works with your agent</h2>
-    <p class="agents-subtitle">Automatically configure one or more agents in the same project. Frees you from ecosystem lock-in.</p>
+        <article class="life-step ochre">
+          <div class="life-node">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          </div>
+          <div class="life-label"><span>Step 02</span><span class="actor">Human</span></div>
+          <h3>Approve</h3>
+          <p>Candidates land in the Skills dashboard with rationale and confidence scores. You stay in the loop on what becomes canon for your project.</p>
+          <div class="life-tag"><code>skills / candidates</code><span class="n">human-in-loop</span></div>
+        </article>
+
+        <article class="life-step sage">
+          <div class="life-node">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+          </div>
+          <div class="life-label"><span>Step 03</span><span class="actor">Agent</span></div>
+          <h3>Generate</h3>
+          <p>A SKILL.md is drafted from the source material, staged, and passed through quality gates before being promoted to <code>.agents/skills/</code>.</p>
+          <div class="life-tag"><code>.agents/skills/</code><span class="n">gen 1</span></div>
+        </article>
+
+        <article class="life-step terra">
+          <div class="life-node">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
+          </div>
+          <div class="life-label"><span>Step 04</span><span class="actor">Agent</span></div>
+          <h3>Evolve</h3>
+          <p>As your code evolves, so do your skills. Drift is detected, stale content rewritten, oversized skills split, outdated skills retired — with full lineage.</p>
+          <div class="life-tag"><code>lineage recorded</code><span class="n">gen N+1</span></div>
+        </article>
+      </div>
+
+      <div class="lifecycle-payoff">
+        <div class="payoff">
+          <span class="metric">Day 01</span>
+          <h4>New teammates ship correctly</h4>
+          <p>Skills install once to the <code style="font-family:var(--font-data);color:var(--sage);">.agents/skills/</code> standard and symlink into each agent's native directory — so every teammate works the way your best session did.</p>
+        </div>
+        <div class="payoff">
+          <span class="metric" style="color: var(--ochre);">Every run</span>
+          <h4>Agents stop repeating mistakes</h4>
+          <p>Your project's standard of excellence gets enforced, not just documented. The happy path becomes the default path.</p>
+        </div>
+        <div class="payoff">
+          <span class="metric" style="color: var(--terracotta);">Over time</span>
+          <h4>Knowledge compounds</h4>
+          <p>Skills rewrite themselves as the code does. Every generation records rationale, content snapshot, and source IDs — a complete audit trail.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== TEAM SYNC =================== -->
+<section class="band team-band" id="team">
+  <div class="wrap">
+    <div class="team-grid">
+      <div class="team-copy">
+        <span class="eyebrow">Team sync</span>
+        <h2 class="sec-title" style="margin-top: 16px;">A shared vault, <em>without a backend.</em></h2>
+        <p class="sec-lede">Every teammate's agents benefit from the collective intelligence. Runs on Cloudflare's free tier for small teams. Local databases remain the source of truth — the cloud store is a queryable mirror.</p>
+
+        <ul class="team-bullets">
+          <li><span class="mark">✓</span><span><strong>Automatic backfill</strong> — every spore, session, plan, and graph edge syncs in the background.</span></li>
+          <li><span class="mark">✓</span><span><strong>Fanned-out search</strong> — queries hit local and team databases in parallel and merge by relevance.</span></li>
+          <li><span class="mark">✓</span><span><strong>Machine-identity attribution</strong> — results are tagged with who said what, so nothing is anonymised.</span></li>
+          <li><span class="mark">✓</span><span><strong>Cloud MCP endpoint</strong> — expose your team's knowledge to managed agents and N8N automations.</span></li>
+        </ul>
+
+        <div style="margin-top: 28px; display:flex; gap: 14px;">
+          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md" target="_blank" rel="noopener">Team sync guide<span class="chev">→</span></a>
+          <a class="btn btn-ghost" href="https://github.com/goondocks-co/myco/blob/main/docs/cloud-mcp.md" target="_blank" rel="noopener">Cloud MCP →</a>
+        </div>
+      </div>
+
+      <div class="team-diagram">
+        <span class="diag-label">Mycelium · team</span>
+        <span class="diag-meta">connected · 4 nodes</span>
+
+        <svg viewBox="0 0 500 400" preserveAspectRatio="none" aria-hidden="true">
+          <g fill="none" stroke-dasharray="4" stroke-width="1">
+            <path d="M90,90 C180,130 220,170 250,200" stroke="var(--sage)" opacity="0.5"/>
+            <path d="M410,90 C320,130 280,170 250,200" stroke="var(--sage)" opacity="0.5"/>
+            <path d="M90,310 C180,270 220,230 250,200" stroke="var(--ochre)" opacity="0.5"/>
+            <path d="M410,310 C320,270 280,230 250,200" stroke="var(--terracotta)" opacity="0.5"/>
+          </g>
+          <g>
+            <circle cx="90" cy="90" r="3" fill="var(--sage)"/>
+            <circle cx="410" cy="90" r="3" fill="var(--sage)"/>
+            <circle cx="90" cy="310" r="3" fill="var(--ochre)"/>
+            <circle cx="410" cy="310" r="3" fill="var(--terracotta)"/>
+          </g>
+        </svg>
+
+        <div class="team-node" style="top: 12%; left: 5%;">
+          <span class="nh">node · 01</span>
+          <span class="nn">chris_a7b3c2</span>
+          <span class="ns">synced</span>
+        </div>
+        <div class="team-node" style="top: 12%; right: 5%;">
+          <span class="nh">node · 02</span>
+          <span class="nn">dana_4f21d8</span>
+          <span class="ns">synced</span>
+        </div>
+        <div class="team-node ochre" style="bottom: 12%; left: 5%;">
+          <span class="nh">node · 03</span>
+          <span class="nn">riley_e0912a</span>
+          <span class="ns">syncing · 12</span>
+        </div>
+        <div class="team-node terra" style="bottom: 12%; right: 5%;">
+          <span class="nh">managed</span>
+          <span class="nn">cloud mcp</span>
+          <span class="ns">bearer · rotated</span>
+        </div>
+
+        <div class="team-core">
+          <span class="label">worker · cf</span>
+          <div class="title">myco-sync</div>
+          <div class="meta">D1 · Vectorize · KV</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== AGENTS =================== -->
+<section class="band" id="agents">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Works with your agent</span>
+      <h2 class="sec-title">Drop Myco <em>beneath</em> the agent you already use.</h2>
+      <p class="sec-lede">Hooks-based integration. No wrappers, no forked CLIs — the agent keeps its voice, Myco captures its surface.</p>
+    </div>
+
     <div class="agents-grid">
       <div class="agent-card">
-        <span class="agent-name">Claude Code</span>
+        <div class="top">
+          <span class="agent-mark">cc</span>
+          <div>
+            <div class="agent-name">Claude Code</div>
+            <div class="agent-sub">hooks · mcp · skills</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">Cursor</span>
+        <div class="top">
+          <span class="agent-mark">cs</span>
+          <div>
+            <div class="agent-name">Cursor</div>
+            <div class="agent-sub">hooks · skills</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">Codex</span>
+        <div class="top">
+          <span class="agent-mark">cx</span>
+          <div>
+            <div class="agent-name">Codex</div>
+            <div class="agent-sub">hooks · .agents/</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">VS Code Copilot</span>
+        <div class="top">
+          <span class="agent-mark">vs</span>
+          <div>
+            <div class="agent-name">VS Code Copilot</div>
+            <div class="agent-sub">hooks · .agents/</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">Gemini CLI</span>
+        <div class="top">
+          <span class="agent-mark">gm</span>
+          <div>
+            <div class="agent-name">Gemini CLI</div>
+            <div class="agent-sub">hooks · .agents/</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
-      <div class="agent-card">
-        <span class="agent-name">Windsurf</span>
+      <div class="agent-card ochre">
+        <div class="top">
+          <span class="agent-mark">ws</span>
+          <div>
+            <div class="agent-name">Windsurf</div>
+            <div class="agent-sub">hooks · skills</div>
+          </div>
+        </div>
         <span class="agent-status partial">Hooks + skills</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">OpenCode</span>
+        <div class="top">
+          <span class="agent-mark">oc</span>
+          <div>
+            <div class="agent-name">OpenCode</div>
+            <div class="agent-sub">hooks · .agents/</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
       <div class="agent-card">
-        <span class="agent-name">Pi</span>
+        <div class="top">
+          <span class="agent-mark">pi</span>
+          <div>
+            <div class="agent-name">Pi</div>
+            <div class="agent-sub">hooks · skills</div>
+          </div>
+        </div>
         <span class="agent-status full">Full support</span>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- Features -->
-  <section class="features">
-    <div class="feature-card">
-      <div class="icon"></div>
-      <h3>Capture</h3>
-      <p>Rich multi-agent local data collection: your prompts, tools, agent summaries, plans, screenshots, and more. Browse and search semantically via a local daemon. Agents access via local MCP.</p>
+<!-- =================== DOCS INDEX =================== -->
+<section class="band" id="docs">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Docs</span>
+      <h2 class="sec-title">Dig in.</h2>
+      <p class="sec-lede">Nine guides cover everything from your first <code>myco init</code> to running a Collective across dozens of projects.</p>
     </div>
-    <div class="feature-card">
-      <div class="icon"></div>
-      <h3>Team Sync</h3>
-      <p>Build institutional knowledge automatically. Teammates' agents contribute and share project intelligence, all synchronized automatically and accessible to local and cloud agents.</p>
-    </div>
-    <div class="feature-card">
-      <div class="icon"></div>
-      <h3>Collective</h3>
-      <p>Connect multiple Myco-enabled Teams to one Collective to unlock agentic access to organizational knowledge via MCP, along with a cloud-hosted management interface.</p>
-    </div>
-  </section>
 
-  <!-- Skills Showcase -->
-  <section class="skills-showcase" id="skills">
-    <h2>Automated skill curation</h2>
-    <p class="section-subtitle">
-      Memory is table stakes. Myco goes further — it turns everything your team learns into <strong style="color: var(--on-surface);">repeatable workflows</strong> that every agent follows. New teammates ship correctly on day one. Agents stop making the same mistakes. Your project's standard of excellence gets enforced, not just documented.
-    </p>
+    <div class="docs-grid">
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">
+        <span class="kind">Getting started</span>
+        <h4>Quickstart</h4>
+        <p>Install, run <code>myco init</code>, and configure providers. The happy path from zero to your first spore.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/lifecycle.md" target="_blank" rel="noopener">
+        <span class="kind">Daemon</span>
+        <h4>Daemon lifecycle</h4>
+        <p>What gets captured, how the daemon manages itself, and what to do when things go sideways.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">
+        <span class="kind">Skills</span>
+        <h4>Skill auto-curation</h4>
+        <p>The four stages — survey, approve, generate, evolve — and the SKILL.md format Myco uses.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md" target="_blank" rel="noopener">
+        <span class="kind">Team</span>
+        <h4>Team sync</h4>
+        <p>Provision the Cloudflare worker, connect teammates, fan out searches, and configure cloud embeddings.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/cloud-mcp.md" target="_blank" rel="noopener">
+        <span class="kind">Integration</span>
+        <h4>Cloud MCP</h4>
+        <p>Expose your knowledge to Anthropic Managed Agents, N8N workflows, and other cloud-resident agents.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/collective.md" target="_blank" rel="noopener">
+        <span class="kind">Scale</span>
+        <h4>Collective</h4>
+        <p>Connect multiple Myco-enabled teams into a single Collective with cross-project agent access.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">
+        <span class="kind">Advanced</span>
+        <h4>Agent harness</h4>
+        <p>The intelligence pipeline — phases, providers, task scheduling, and per-phase model overrides.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">
+        <span class="kind">Reference</span>
+        <h4>Agent MCP tools</h4>
+        <p>Full reference for the MCP tools Myco exposes — search, recall, remember, graph traversal, skills.</p>
+        <span class="go">Read guide</span>
+      </a>
+      <a class="doc-card" href="https://github.com/goondocks-co/myco/blob/main/docs/symbionts.md" target="_blank" rel="noopener">
+        <span class="kind">Advanced</span>
+        <h4>Symbionts</h4>
+        <p>How Myco integrates with each coding agent's hooks, transcript formats, and native skill directories.</p>
+        <span class="go">Read guide</span>
+      </a>
+    </div>
+  </div>
+</section>
 
-    <div class="lifecycle">
-      <div class="lifecycle-step">
-        <span class="step-label">Step 1</span>
-        <h3>Identify</h3>
-        <span class="actor">Agent</span>
-        <p>Myco's agent scans spores, sessions, and plans for procedural patterns with cross-session evidence — surfacing the workflows worth codifying.</p>
+<!-- =================== CTA =================== -->
+<section class="cta-band">
+  <div class="cta-band-bg"></div>
+  <div class="cta-inner">
+    <span class="eyebrow no-bar"><span class="dot"></span>Local-first · MIT licensed</span>
+    <h2 class="cta-title">Install once. Let the <em>forest floor</em> do the rest.</h2>
+    <p class="cta-sub">Myco runs entirely on your machine by default — no account, no vendor lock-in. Layer team sync and a Collective on top when you're ready.</p>
+    <div style="display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top: 10px;">
+      <a class="btn btn-primary btn-lg" href="#install">Get started<span class="chev">→</span></a>
+      <a class="btn btn-outline btn-lg" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- =================== FOOTER =================== -->
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="#">
+          <img class="brand-mark" src="assets/logo-mark.svg" alt="Myco">
+          <span class="brand-wm">myco</span>
+        </a>
+        <p>Named after mycorrhizal networks — the underground systems that connect <em>trees</em> in a forest.</p>
+        <p style="margin-top: 10px; font-family: var(--font-ui); font-style: normal; font-size: 12px;">By <a href="https://goondocks.co" target="_blank" rel="noopener" style="color: var(--sage);">Goondocks Consulting ↗</a></p>
       </div>
-      <div class="lifecycle-step">
-        <span class="step-label">Step 2</span>
-        <h3>Approve</h3>
-        <span class="actor">Human</span>
-        <p>Candidates land in the Skills dashboard with rationale and confidence scores. You stay in the loop on what becomes canon for your project.</p>
+      <div class="footer-col">
+        <h5>Product</h5>
+        <a href="#how">What it does</a>
+        <a href="#lifecycle">Skill lifecycle</a>
+        <a href="#team">Team sync</a>
+        <a href="#agents">Supported agents</a>
       </div>
-      <div class="lifecycle-step">
-        <span class="step-label">Step 3</span>
-        <h3>Generate</h3>
-        <span class="actor">Agent</span>
-        <p>A SKILL.md is drafted from the source material, staged, and passed through quality gates before it's promoted to <code style="font-family: var(--font-data); font-size: 12px; color: var(--sage);">.agents/skills/</code>.</p>
+      <div class="footer-col">
+        <h5>Docs</h5>
+        <a href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">Quickstart</a>
+        <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Skills</a>
+        <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent harness</a>
+        <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">MCP tools</a>
       </div>
-      <div class="lifecycle-step">
-        <span class="step-label">Step 4</span>
-        <h3>Evolve</h3>
-        <span class="actor">Agent</span>
-        <p>As your code evolves, so do your skills. Drift is detected, stale content is rewritten, oversized skills split, outdated skills retired — every change records full lineage.</p>
+      <div class="footer-col">
+        <h5>Community</h5>
+        <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub ↗</a>
+        <a href="https://github.com/goondocks-co/myco/issues" target="_blank" rel="noopener">Issues</a>
+        <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
       </div>
     </div>
-
-    <p class="skills-footnote">
-      Skills install once to the emerging <code style="font-family: var(--font-data); font-size: 13px; color: var(--sage);">.agents/skills/</code> standard and symlink into each agent's native skills directory — so every agent, on every machine, on every contributor's laptop, works the way your best session did. <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Read the full lifecycle →</a>
-    </p>
-  </section>
-
-  <!-- Footer -->
-  <footer class="footer">
-    <div class="footer-links">
-      <a href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md" target="_blank" rel="noopener">Quick Start</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/team-sync.md" target="_blank" rel="noopener">Team Sync</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/collective.md" target="_blank" rel="noopener">Collective</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/agent-harness.md" target="_blank" rel="noopener">Agent Harness</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/docs/skills.md" target="_blank" rel="noopener">Skills</a>
-      <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+    <div class="footer-meta">
+      <span class="stamp"><span class="dot"></span><span id="footer-version">v—</span> · built in the forest · <a href="https://goondocks.co" target="_blank" rel="noopener" style="color: var(--outline);">goondocks.co ↗</a></span>
+      <span class="pkg-versions" style="display:inline-flex; gap: 18px; color: var(--outline);">
+        <span><span style="color: var(--outline-variant);">@goondocks/myco-team</span> <span id="pkg-team">—</span></span>
+        <span><span style="color: var(--outline-variant);">@goondocks/myco-collective</span> <span id="pkg-collective">—</span></span>
+      </span>
+      <span>© myco — the intelligence layer for your projects and team</span>
     </div>
-    <p class="origin">Named after mycorrhizal networks — the underground systems that connect trees in a forest.</p>
-  </footer>
+  </div>
+</footer>
 
-  <!-- Tab switching -->
-  <script>
-    document.querySelectorAll('.tab').forEach(function(tab) {
-      tab.addEventListener('click', function() {
-        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-        document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
-        tab.classList.add('active');
-        document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+<script>
+  // Live release + stars from GitHub.
+  // Tag pattern in this repo: "<package>/v<semver>" (e.g. myco/v0.22.0,
+  // myco-team/v0.1.5). The GitHub release name is human-readable
+  // (e.g. "Myco 0.22.0"), so we extract the semver token from release.name
+  // first, fall back to tag_name, and finally strip any leading prefix up to
+  // and including a "v" if all else fails.
+  // Sibling-package versions read directly from each workspace's package.json
+  // on main — that's the source of truth and avoids tag-format guessing.
+  (function() {
+    function setText(id, txt) { var el = document.getElementById(id); if (el) el.textContent = txt; }
+    function fmtStars(n) {
+      if (n == null) return '★ —';
+      if (n >= 1000) return '★ ' + (n/1000).toFixed(1).replace(/\.0$/, '') + 'k';
+      return '★ ' + n;
+    }
+    function extractSemver(src) {
+      var s = (src || '').trim();
+      var m = s.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+      return m ? m[1] : s.replace(/^.*?v/i, '');
+    }
+    fetch('https://api.github.com/repos/goondocks-co/myco/releases/latest')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data || !data.tag_name) {
+          return fetch('https://api.github.com/repos/goondocks-co/myco/releases?per_page=1')
+            .then(function(r) { return r.ok ? r.json() : []; })
+            .then(function(list) { return Array.isArray(list) && list[0] ? list[0] : null; });
+        }
+        return data;
+      })
+      .then(function(rel) {
+        if (!rel) {
+          setText('nav-version', 'beta');
+          setText('hero-version', 'Beta');
+          setText('footer-version', 'v—');
+          return;
+        }
+        var v = extractSemver(rel.name || rel.tag_name);
+        var isBeta = !!rel.prerelease;
+        setText('nav-version',    (isBeta ? 'beta · ' : '') + 'v' + v);
+        setText('hero-version',   (isBeta ? 'Beta · ' : 'Stable · ') + 'v' + v);
+        setText('footer-version', 'v' + v);
+      })
+      .catch(function() {
+        setText('nav-version', 'beta');
+        setText('hero-version', 'Beta');
+        setText('footer-version', 'v—');
       });
+    fetch('https://api.github.com/repos/goondocks-co/myco')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (data && typeof data.stargazers_count === 'number') {
+          setText('gh-stars', fmtStars(data.stargazers_count));
+        }
+      })
+      .catch(function(){});
+
+    function pkgVersionFor(path, elId) {
+      fetch('https://raw.githubusercontent.com/goondocks-co/myco/main/packages/' + path + '/package.json')
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(pkg) {
+          setText(elId, pkg && pkg.version ? 'v' + pkg.version : '—');
+        })
+        .catch(function(){ setText(elId, '—'); });
+    }
+    pkgVersionFor('myco-team', 'pkg-team');
+    pkgVersionFor('myco-collective', 'pkg-collective');
+  })();
+
+  // Install tabs
+  document.querySelectorAll('.install-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      var key = tab.dataset.install;
+      document.querySelectorAll('.install-tab').forEach(function(t){ t.classList.remove('active'); });
+      tab.classList.add('active');
+      document.querySelectorAll('.install-panels > div').forEach(function(p){ p.classList.remove('active'); });
+      var panel = document.querySelector('.install-panels > div[data-panel="' + key + '"]');
+      if (panel) panel.classList.add('active');
     });
-  </script>
+  });
+
+  // Copy to clipboard
+  document.querySelectorAll('.terminal-copy').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var txt = btn.dataset.copy || '';
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(txt).then(function(){
+          var old = btn.textContent;
+          btn.textContent = 'Copied';
+          btn.classList.add('copied');
+          setTimeout(function(){ btn.textContent = old; btn.classList.remove('copied'); }, 1400);
+        });
+      }
+    });
+  });
+</script>
 
 </body>
 </html>
