@@ -154,7 +154,10 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      - run: npm ci
+      # Cross-compile does not use host postinstall side effects: we stage the
+      # target sqlite-vec package and ripgrep binary explicitly below. Skipping
+      # scripts avoids flaky host-only GitHub downloads from @vscode/ripgrep.
+      - run: npm ci --ignore-scripts
 
       - name: Sync target package versions from tag
         env:
