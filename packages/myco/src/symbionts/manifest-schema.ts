@@ -41,6 +41,13 @@ const MatchExpressionSchema = z.object({
    * `response_item` with `payload.role: "user"`).
    */
   fieldEquals: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+  /**
+   * Dot-path → value pairs that must all NOT match the event. Used to exclude
+   * structurally-similar synthesized entries (e.g. Claude Code's `isMeta: true`
+   * transcript entries for local-command caveats and skill injections) from
+   * matching a shape meant for real user prompts.
+   */
+  fieldNotEquals: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
 });
 
 const PromptShapeSchema = z.object({

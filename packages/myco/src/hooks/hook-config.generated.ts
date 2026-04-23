@@ -26,7 +26,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "name": "user_prompt",
           "match": {
             "type": "user",
-            "hasField": "promptId"
+            "hasField": "promptId",
+            "fieldNotEquals": {
+              "isMeta": true
+            }
           },
           "textAt": "message.content",
           "dedupeBy": "promptId"
@@ -64,6 +67,16 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "drop",
         "reason": "claude-code-slash-command-dispatch",
+        "trim": true
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_starts_with": "<command-name>"
+        },
+        "action": "drop",
+        "reason": "claude-code-builtin-command-dispatch",
         "trim": true
       }
     ]
