@@ -46,10 +46,23 @@ function writeJson(filePath, value) {
 }
 
 function listTags(pattern) {
-  const output = execFileSync('git', ['tag', '--list', pattern, '--sort=-version:refname'], {
-    cwd: repoRoot,
-    encoding: 'utf-8',
-  }).trim();
+  // `--sort=-version:refname` without a prerelease-suffix config sorts
+  // `v0.22.0-beta.5` ABOVE `v0.22.0`, which is the opposite of semver: a
+  // release is higher than any of its prereleases. `versionsort.suffix` tells
+  // git that `-beta` (and any other listed suffix) marks a prerelease, so a
+  // bare version sorts above anything carrying the suffix. We list each known
+  // prerelease marker separately via repeated `-c`.
+  const output = execFileSync(
+    'git',
+    [
+      '-c', 'versionsort.suffix=-alpha',
+      '-c', 'versionsort.suffix=-beta',
+      '-c', 'versionsort.suffix=-rc',
+      '-c', 'versionsort.suffix=-pre',
+      'tag', '--list', pattern, '--sort=-version:refname',
+    ],
+    { cwd: repoRoot, encoding: 'utf-8' },
+  ).trim();
   return output ? output.split('\n').filter(Boolean) : [];
 }
 
