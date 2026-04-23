@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
 import http from 'node:http';
 import fs from 'node:fs';

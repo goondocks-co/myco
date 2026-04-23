@@ -10,7 +10,7 @@
  * - CURRENT_TASK_SCHEMA_VERSION constant is defined and is a number
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import {
   AgentDefinitionSchema,
   PhaseDefinitionSchema,

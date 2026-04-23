@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,24 +11,24 @@ const { mockDb } = vi.hoisted(() => {
   return { mockDb };
 });
 
-vi.mock('@myco/db/client.js', () => ({
+mock.module('@myco/db/client.js', () => ({
   initDatabase: vi.fn().mockReturnValue(mockDb),
   vaultDbPath: vi.fn((dir: string) => `${dir}/myco.db`),
   closeDatabase: vi.fn(),
 }));
-vi.mock('@myco/db/schema.js', () => ({
+mock.module('@myco/db/schema.js', () => ({
   createSchema: vi.fn(),
   SCHEMA_VERSION: 1,
   EMBEDDING_DIMENSIONS: 1024,
 }));
 
 // Prevent init from detecting real symbionts and running registration in tests
-vi.mock('@myco/symbionts/detect.js', () => ({
+mock.module('@myco/symbionts/detect.js', () => ({
   detectSymbionts: vi.fn().mockReturnValue([]),
   loadManifests: vi.fn().mockReturnValue([]),
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
-vi.mock('@myco/hooks/client.js', () => ({
+mock.module('@myco/hooks/client.js', () => ({
   DaemonClient: class {
     async ensureRunning() {
       return false;
@@ -121,20 +122,23 @@ describe('myco init', () => {
     expect(gitignore).toContain('attachments/');
   });
 
-  it('is idempotent — does not overwrite existing vault', async () => {
+  it('is idempotent — does not overwrite user-set values on re-init', async () => {
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--non-interactive']);
 
-    // Capture the original config to prove it is not overwritten
     const configPath = path.join(vault, 'myco.yaml');
-    const original = fs.readFileSync(configPath, 'utf-8');
+    const originalEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
+    expect(originalEmbedding).toBe('bge-m3');
 
-    // Second init should detect existing vault and return early
+    // Second init with a different embedding model must NOT overwrite the
+    // user's stored choice. (The file text itself may change — e.g. the
+    // config-version migration runs on re-read — but the user's selections
+    // stay put.)
     const consoleSpy = vi.spyOn(console, 'log');
-    await run(['--vault', vault, '--embedding-model', 'other']);
+    await run(['--vault', vault, '--embedding-model', 'other', '--non-interactive']);
 
-    // Config must not be overwritten by the second init
-    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+    const afterEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
+    expect(afterEmbedding).toBe('bge-m3');
     consoleSpy.mockRestore();
   });
 
@@ -171,7 +175,10 @@ describe('myco init', () => {
     ]);
 
     const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    // --non-interactive so init doesn't open the inquirer checkbox when
+    // stdin is a TTY (which it is on some dev terminals even under
+    // `bun test`). Without it, init hangs waiting for the prompt.
+    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--non-interactive']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.symbionts).toBeDefined();

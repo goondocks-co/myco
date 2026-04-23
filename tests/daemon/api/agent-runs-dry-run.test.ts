@@ -5,7 +5,8 @@
  * fields can be verified without spinning up the real executor.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertWriteIntent } from '@myco/db/queries/write-intents.js';
@@ -17,16 +18,16 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 
 // Capture runAgent invocation options so we can verify pass-through.
 const runAgentSpy = vi.fn(async () => ({ runId: 'stub', status: 'completed' as const }));
-vi.mock('@myco/agent/executor.js', () => ({
+mock.module('@myco/agent/executor.js', () => ({
   runAgent: (...args: unknown[]) => runAgentSpy(...args),
 }));
 
 // Avoid hitting the config loader (the handler guards on a configured
 // provider); swap in a stub that always reports one is available.
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadMergedConfig: () => ({ agent: { tasks: {} } }),
 }));
-vi.mock('@myco/agent/config-resolver.js', () => ({
+mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
 }));
 

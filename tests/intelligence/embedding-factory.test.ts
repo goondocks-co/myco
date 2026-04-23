@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { createEmbeddingProvider } from '@myco/intelligence/llm.js';
 
 describe('createEmbeddingProvider', () => {

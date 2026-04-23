@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 

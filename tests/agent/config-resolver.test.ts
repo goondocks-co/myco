@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { TaskRow } from '@myco/db/queries/tasks.js';
@@ -60,16 +61,16 @@ const mockAgentRow: AgentRow = {
   updated_at: null,
 };
 
-vi.mock('@myco/db/queries/agents.js', () => ({
+mock.module('@myco/db/queries/agents.js', () => ({
   getAgent: () => mockAgentRow,
 }));
 
-vi.mock('@myco/db/queries/tasks.js', () => ({
+mock.module('@myco/db/queries/tasks.js', () => ({
   getTask: () => mockTaskRow,
   getDefaultTask: () => mockTaskRow,
 }));
 
-vi.mock('@myco/agent/loader.js', () => ({
+mock.module('@myco/agent/loader.js', () => ({
   resolveDefinitionsDir: () => '/mock/definitions',
   loadAgentDefinition: () => mockDefinition,
   resolveEffectiveConfig: (_definition: AgentDefinition, _agentRow: AgentRow | null, taskOverrides?: AgentTask) => ({
@@ -87,13 +88,13 @@ vi.mock('@myco/agent/loader.js', () => ({
   }),
 }));
 
-vi.mock('@myco/agent/registry.js', () => ({
+mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: () => new Map([['title-summary', mockYamlTask]]),
 }));
 
 const mockLoadMergedConfig = vi.fn();
 
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadMergedConfig: (...args: unknown[]) => mockLoadMergedConfig(...args),
 }));
 

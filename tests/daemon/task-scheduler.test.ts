@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { buildScheduledJobs } from '@myco/daemon/task-scheduler.js';
 import type { AgentTask } from '@myco/agent/types.js';
 import type { ScheduledJobContext } from '@myco/daemon/task-scheduler.js';

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { handleGetConfig, handlePutScopedConfig } from '@myco/daemon/api/config';
 import fs from 'node:fs';
 import path from 'node:path';

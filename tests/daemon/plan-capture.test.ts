@@ -8,7 +8,7 @@
  * - capturePlan: creates plan with session association, updates on re-capture, does NOT reset embedded flag when content unchanged
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import os from 'node:os';
 import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';

@@ -5,7 +5,8 @@
  * daemon's stored bearer key is never sent to an attacker-controlled host.
  * `openai-compatible` / `ollama` / `lmstudio` remain user-configurable.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleTestProvider } from '@myco/daemon/api/providers';
 import { handleGetModels } from '@myco/daemon/api/models';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
@@ -14,14 +15,14 @@ import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
 const fetchMock = vi.fn();
 global.fetch = fetchMock as unknown as typeof fetch;
 
-vi.mock('@myco/intelligence/ollama.js', () => ({
+mock.module('@myco/intelligence/ollama.js', () => ({
   OllamaBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:11434';
     async isAvailable() { return true; }
     async listModels() { return []; }
   },
 }));
-vi.mock('@myco/intelligence/lm-studio.js', () => ({
+mock.module('@myco/intelligence/lm-studio.js', () => ({
   LmStudioBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:1234';
     async isAvailable() { return true; }

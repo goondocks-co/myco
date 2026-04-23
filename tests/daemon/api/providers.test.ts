@@ -7,7 +7,8 @@
  * - handleTestProvider with valid provider types
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleGetProviders, handleTestProvider } from '@myco/daemon/api/providers';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
 import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
@@ -22,7 +23,7 @@ let lmStudioAvailable = false;
 let lmStudioModels: string[] = [];
 const fetchMock = vi.fn();
 
-vi.mock('@myco/intelligence/ollama.js', () => ({
+mock.module('@myco/intelligence/ollama.js', () => ({
   OllamaBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:11434';
     async isAvailable() { return ollamaAvailable; }
@@ -30,7 +31,7 @@ vi.mock('@myco/intelligence/ollama.js', () => ({
   },
 }));
 
-vi.mock('@myco/intelligence/lm-studio.js', () => ({
+mock.module('@myco/intelligence/lm-studio.js', () => ({
   LmStudioBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:1234';
     async isAvailable() { return lmStudioAvailable; }

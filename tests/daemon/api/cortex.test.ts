@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import type { RouteRequest } from '@myco/daemon/router';
 import { MycoConfigSchema } from '@myco/config/schema';
 
@@ -14,7 +15,7 @@ const {
   triggerCortexInstructions: vi.fn(),
 }));
 
-vi.mock('@myco/daemon/cortex.js', () => ({
+mock.module('@myco/daemon/cortex.js', () => ({
   getCortexInstructionsSnapshot,
   buildCortexPrompt,
   getCortexPromptResult,

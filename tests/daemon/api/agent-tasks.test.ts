@@ -1,3 +1,5 @@
+import * as __orig__myco_agent_loader_js_1__ns from '@myco/agent/loader.js';
+const __orig__myco_agent_loader_js_1 = { ...__orig__myco_agent_loader_js_1__ns };
 /**
  * Tests for agent-tasks API route handlers.
  *
@@ -6,7 +8,8 @@
  * resolveDefinitionsDir is mocked to return a sentinel path.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,8 +18,8 @@ import path from 'node:path';
 // Mocks — must be declared before imports that use them
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+mock.module('@myco/agent/loader.js', () => {
+  const original = __orig__myco_agent_loader_js_1;
   return {
     ...original,
     loadAgentTasks: vi.fn(),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import { analyzeRuntimeTokenBudget, buildRunAccountingUpdate } from '@myco/agent/run-accounting.js';
 import type { CostResolution } from '@myco/agent/cost/types.js';
 

@@ -138,7 +138,7 @@ export function hasUsageForSkillAndSession(skillId: string, sessionId: string): 
   const row = db.prepare(
     `SELECT 1 FROM skill_usage WHERE skill_id = ? AND session_id = ? LIMIT 1`,
   ).get(skillId, sessionId);
-  return row !== undefined;
+  return row != null;
 }
 
 /**

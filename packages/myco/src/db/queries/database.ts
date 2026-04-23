@@ -6,7 +6,7 @@
  */
 
 import fs from 'node:fs';
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, simplePragma } from '@myco/db/client.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ export interface SchemaInfo {
 
 function pragmaScalar<T>(name: string): T {
   const db = getDatabase();
-  return db.pragma(name, { simple: true }) as T;
+  return simplePragma(db, name) as T;
 }
 
 function safeFileSize(filePath: string): number {
@@ -282,7 +282,7 @@ export function runForeignKeyCheck(): ForeignKeyViolation[] {
 
 export function runWalCheckpointTruncate(): WalCheckpointResult {
   const db = getDatabase();
-  const rows = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+  const rows = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').all() as Array<{
     busy: number;
     log: number;
     checkpointed: number;
@@ -297,7 +297,7 @@ export function runWalCheckpointTruncate(): WalCheckpointResult {
 
 export function runPragmaOptimize(): void {
   const db = getDatabase();
-  db.pragma('optimize');
+  db.run('PRAGMA optimize');
 }
 
 const FTS_TABLE_PATTERN = /^[a-z_][a-z0-9_]*_fts$/;

@@ -5,12 +5,13 @@
  * and exercises tool handlers directly against the database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 
 // Mock tryEmbed to return null immediately — no real embedding provider in tests
-vi.mock('@myco/intelligence/embed-query.js', () => ({
+mock.module('@myco/intelligence/embed-query.js', () => ({
   tryEmbed: async () => null,
 }));
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';

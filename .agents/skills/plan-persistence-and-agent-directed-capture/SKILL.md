@@ -269,45 +269,26 @@ const planDerivedSpores = await db.all(`
 `, [planLogicalKey]);
 ```
 
-## Procedure 6: Embedding and Search Integration
+## Procedure 6: Search Integration
 
-Integrate plan content into the semantic search pipeline through the existing embedding infrastructure in `packages/myco/src/embeddings/`.
+Integrate plan content into the semantic search pipeline through FTS5 full-text search and semantic similarity queries.
 
-### Content Preparation
+### FTS5 Integration
 
-```typescript
-function preparePlanForEmbedding(plan: PlanRow): string {
-  // Combine title and content for rich embeddings
-  const content = [
-    plan.title || 'Untitled Plan',
-    plan.content,
-    JSON.parse(plan.tags || '[]').join(' ')
-  ].filter(Boolean).join('\n\n');
-  
-  // Clean and truncate for embedding model limits
-  return content
-    .replace(/```[\s\S]*?```/g, '[code block]')  // Replace code blocks
-    .replace(/\n{3,}/g, '\n\n')                  // Collapse whitespace
-    .slice(0, 8000);                             // Respect token limits
-}
-```
-
-### Embedding Pipeline Integration
-
-Plans are queued for embedding through the `embedded` flag in the plans table:
+Plans are automatically indexed for full-text search:
 
 ```typescript
-// Embedding status tracking
-const planRow: PlanRow = {
-  // ... other fields
-  embedded: 0,  // Flags plan for embedding pipeline processing
-};
-
-// The embedding daemon processes plans where embedded = 0
-// and updates the flag to 1 after successful embedding
+// Search plans by content
+const ftsResults = await vault_search_fts({
+  query: searchTerm,
+  type: 'plan',  // Restrict to plan content
+  limit: 10
+});
 ```
 
-### Search Namespace Isolation
+### Semantic Search
+
+Plans participate in semantic search through the vault's embedding infrastructure:
 
 ```typescript
 // Plan-specific semantic search
@@ -316,6 +297,26 @@ const planResults = await vault_search_semantic({
   namespace: 'plans',  // Isolate from spores, sessions, artifacts
   limit: 10
 });
+```
+
+### Content Preparation
+
+When integrating with search systems, prepare plan content appropriately:
+
+```typescript
+function preparePlanForSearch(plan: PlanRow): string {
+  // Combine title and content for rich search results
+  const content = [
+    plan.title || 'Untitled Plan',
+    plan.content,
+    JSON.parse(plan.tags || '[]').join(' ')
+  ].filter(Boolean).join('\n\n');
+  
+  // Clean for search optimization
+  return content
+    .replace(/```[\s\S]*?```/g, '[code block]')  // Replace code blocks
+    .replace(/\n{3,}/g, '\n\n');                  // Collapse whitespace
+}
 ```
 
 ## Cross-Cutting Gotchas

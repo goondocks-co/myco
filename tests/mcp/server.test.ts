@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMycoServer } from '@myco/mcp/server';
 import { DaemonClient } from '@myco/hooks/client';
 import fs from 'node:fs';

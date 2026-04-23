@@ -267,7 +267,76 @@ if (currentVersion < 10) {
 }
 ```
 
-## Procedure E: Query Pattern Selection and Optimization
+## Procedure E: Migration Testing and Conflict Resolution
+
+For complex migrations involving data transformations or potential conflicts, implement test-driven migration patterns.
+
+### Migration Test Patterns
+
+Include test functions in the migration module for complex data transformations:
+
+```typescript
+// Migration v20 example with collision resolution
+if (currentVersion < 20) {
+  // Complex plan identity collision resolution
+  const collisions = db.prepare(`
+    SELECT logical_key, COUNT(*) as count 
+    FROM plans 
+    GROUP BY logical_key 
+    HAVING count > 1
+  `).all();
+  
+  if (collisions.length > 0) {
+    resolveV20PlanIdentityCollisionsForTest(db, collisions);
+  }
+  
+  db.pragma('user_version = 20');
+}
+
+export function resolveV20PlanIdentityCollisionsForTest(
+  db: Database, 
+  collisions: Array<{logical_key: string, count: number}>
+): void {
+  for (const collision of collisions) {
+    // Implement collision resolution logic
+    const duplicates = db.prepare(`
+      SELECT id, created_at FROM plans 
+      WHERE logical_key = ?
+      ORDER BY created_at ASC
+    `).all(collision.logical_key);
+    
+    // Keep first, remove rest
+    for (let i = 1; i < duplicates.length; i++) {
+      db.prepare(`DELETE FROM plans WHERE id = ?`).run(duplicates[i].id);
+    }
+  }
+}
+```
+
+This pattern allows for complex migration logic to be tested in isolation and provides visibility into the migration process.
+
+### Idempotent Migration Guards
+
+Always design migrations to be re-runnable safely:
+
+```typescript
+// Check if migration already applied before making changes
+if (currentVersion < 21) {
+  const columnExists = db.prepare(`
+    SELECT COUNT(*) as count 
+    FROM pragma_table_info('my_table') 
+    WHERE name = 'new_column'
+  `).get() as {count: number};
+  
+  if (columnExists.count === 0) {
+    db.exec(`ALTER TABLE my_table ADD COLUMN new_column TEXT;`);
+  }
+  
+  db.pragma('user_version = 21');
+}
+```
+
+## Procedure F: Query Pattern Selection and Optimization
 
 Choose the right pattern upfront — post-filter in JS is a performance trap that compounds as the table grows. The Myco vault is accessed by both the daemon and MCP tool handlers, which can be called in tight loops by agent pipelines. Small query inefficiencies compound quickly.
 
@@ -492,3 +561,4 @@ packages/myco-team/
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
 - **All SQL lives in `packages/myco/src/db/queries/`** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
 - **Scan `packages/myco/src/config/constants.ts` after every new table** — missing a registration in `SEARCHABLE_TABLES` or `MCP_READABLE_TABLES` silently limits the feature surface.
+- **Migration test functions for complex transformations** — include test helpers like `resolveV20PlanIdentityCollisionsForTest` for migrations that involve data conflicts or complex transformations.

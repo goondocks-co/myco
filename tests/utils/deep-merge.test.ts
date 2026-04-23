@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { deepMerge, isPlainObject } from '@myco/utils/deep-merge';
 
 describe('deepMerge', () => {

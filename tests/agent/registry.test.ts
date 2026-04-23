@@ -1,3 +1,5 @@
+import * as __orig__myco_agent_loader_js_1__ns from '@myco/agent/loader.js';
+const __orig__myco_agent_loader_js_1 = { ...__orig__myco_agent_loader_js_1__ns };
 /**
  * Tests for the user task registry.
  *
@@ -5,7 +7,8 @@
  * is mocked via vi.mock to avoid depending on the actual definitions directory.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,8 +18,8 @@ import { parse as parseYaml } from 'yaml';
 // Mock loadAgentTasks so tests don't depend on the real definitions dir
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+mock.module('@myco/agent/loader.js', () => {
+  const original = __orig__myco_agent_loader_js_1;
   return {
     ...original,
     loadAgentTasks: vi.fn(),

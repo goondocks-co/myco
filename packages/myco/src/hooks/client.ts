@@ -11,11 +11,27 @@ interface DaemonInfo {
 
 /**
  * Resolve the CLI entry point for spawning daemon processes.
- * Uses process.argv[1] so the daemon restarts from the same binary
- * (myco-dev vs global myco) that launched the current process.
+ *
+ * In dev mode (tsx / bun run), `process.argv[1]` is the entry script path
+ * that `process.execPath` should re-execute. In a Bun-compiled binary,
+ * `process.argv[1]` is a virtual Bun-filesystem path like
+ * `/$bunfs/root/cli.darwin-arm64.js` — a real path would incorrectly pass it
+ * through to a child invocation that treats it as a subcommand.
+ *
+ * Detect the compiled case by the `/$bunfs/` prefix; in that case the binary
+ * is its own entry and no extra argv element is needed.
  */
-export function resolveCliEntryPath(): { execPath: string; cliEntry: string } {
-  return { execPath: process.execPath, cliEntry: process.argv[1] };
+export function resolveCliEntryPath(): { execPath: string; cliEntry: string | null } {
+  const argv1 = process.argv[1];
+  if (!argv1 || argv1.startsWith('/$bunfs/') || argv1.startsWith('B:\\~BUN\\')) {
+    return { execPath: process.execPath, cliEntry: null };
+  }
+  return { execPath: process.execPath, cliEntry: argv1 };
+}
+
+/** Build the argv for re-exec'ing this binary with a subcommand. */
+export function buildReExecArgs(cliEntry: string | null, subcommand: string[]): string[] {
+  return cliEntry === null ? subcommand : [cliEntry, ...subcommand];
 }
 
 interface HealthResponse {
@@ -36,7 +52,10 @@ interface ClientResult {
  */
 async function parseErrorBody(res: Response): Promise<unknown> {
   try {
-    return await res.json();
+    // Node's undici returns `undefined` for an empty body, Bun's fetch returns
+    // `null`. Normalize to `undefined` so consumers can treat both the same.
+    const parsed = await res.json();
+    return parsed === null ? undefined : parsed;
   } catch {
     return undefined;
   }
@@ -255,7 +274,7 @@ export class DaemonClient {
     if (this.spawnIsInFlight()) return;
 
     const { execPath, cliEntry } = resolveCliEntryPath();
-    const child = spawn(execPath, [cliEntry, 'daemon', '--vault', this.vaultDir], {
+    const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon', '--vault', this.vaultDir]), {
       detached: true,
       stdio: 'ignore',
     });

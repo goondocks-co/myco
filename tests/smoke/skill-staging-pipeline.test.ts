@@ -7,12 +7,13 @@
  * realpathSync on the tmp path so downstream assertions are stable.
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
+mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { initDatabase, closeDatabase, getDatabase, SQLITE_DB_FILE } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';

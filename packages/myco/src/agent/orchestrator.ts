@@ -16,6 +16,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
 import type { ContextQueryResult } from './context-queries.js';
+import { BUNDLED_AGENT_PROMPTS } from './definitions.generated.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,34 +67,51 @@ const PLACEHOLDER_CONTEXT_RESULTS = '{{context_results}}';
 /** Cached prompt template — loaded once, reused across calls. */
 let cachedPromptTemplate: string | undefined;
 
+function isBunVirtualPath(candidate: string): boolean {
+  return candidate.startsWith('/$bunfs/') || candidate.startsWith('B:\\~BUN\\');
+}
+
+export function resolveOrchestratorPromptTemplate(scriptDir: string): string {
+  // Check sibling prompts/ directory first (tsc output or dev mode)
+  const adjacentPath = path.join(scriptDir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
+  if (fs.existsSync(adjacentPath)) {
+    return fs.readFileSync(adjacentPath, 'utf-8');
+  }
+
+  // tsup bundles into dist/chunk-XXXX.js — walk up to package root
+  const root = findPackageRoot(scriptDir);
+  if (root) {
+    const distPath = path.join(root, 'dist', 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
+    if (fs.existsSync(distPath)) {
+      return fs.readFileSync(distPath, 'utf-8');
+    }
+    const srcPath = path.join(root, 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
+    if (fs.existsSync(srcPath)) {
+      return fs.readFileSync(srcPath, 'utf-8');
+    }
+  }
+
+  if (isBunVirtualPath(adjacentPath)) {
+    const bundled = BUNDLED_AGENT_PROMPTS[ORCHESTRATOR_PROMPT_FILE];
+    if (bundled !== undefined) {
+      return bundled;
+    }
+  }
+
+  // Final fallback
+  return fs.readFileSync(adjacentPath, 'utf-8');
+}
+
 function loadPromptTemplate(): string {
   if (!cachedPromptTemplate) {
     const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-
-    // Check sibling prompts/ directory first (tsc output or dev mode)
-    const adjacentPath = path.join(scriptDir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
-    if (fs.existsSync(adjacentPath)) {
-      cachedPromptTemplate = fs.readFileSync(adjacentPath, 'utf-8');
-      return cachedPromptTemplate;
-    }
-
-    // tsup bundles into dist/chunk-XXXX.js — walk up to package root
-    const root = findPackageRoot(scriptDir);
-    if (root) {
-      const distPath = path.join(root, 'dist', 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
-      if (fs.existsSync(distPath)) {
-        cachedPromptTemplate = fs.readFileSync(distPath, 'utf-8');
-        return cachedPromptTemplate;
-      }
-      const srcPath = path.join(root, 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
-      cachedPromptTemplate = fs.readFileSync(srcPath, 'utf-8');
-      return cachedPromptTemplate;
-    }
-
-    // Final fallback
-    cachedPromptTemplate = fs.readFileSync(adjacentPath, 'utf-8');
+    cachedPromptTemplate = resolveOrchestratorPromptTemplate(scriptDir);
   }
   return cachedPromptTemplate;
+}
+
+export function resetOrchestratorPromptTemplateCacheForTests(): void {
+  cachedPromptTemplate = undefined;
 }
 
 // ---------------------------------------------------------------------------

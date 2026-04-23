@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';
 import type { AgentTask } from '@myco/agent/types.js';
 
-vi.mock('@myco/agent/registry.js', () => ({
+mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: () => new Map<string, AgentTask>([
     ['vault-evolve', {
       name: 'vault-evolve',
@@ -16,7 +17,7 @@ vi.mock('@myco/agent/registry.js', () => ({
   ]),
 }));
 
-vi.mock('@myco/db/client.js', () => ({
+mock.module('@myco/db/client.js', () => ({
   getDatabase: () => ({
     prepare: () => ({
       all: () => [],

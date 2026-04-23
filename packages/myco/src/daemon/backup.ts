@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -252,7 +252,7 @@ export function restorePreview(
   const counts = new Map<string, { new: number; existing: number }>();
 
   // Defer FK checks — backup may reference rows in non-synced tables
-  db.pragma('foreign_keys = OFF');
+  db.run('PRAGMA foreign_keys = OFF');
   // Use a savepoint so we can test INSERTs without persisting
   db.exec('SAVEPOINT restore_preview');
   try {
@@ -279,7 +279,7 @@ export function restorePreview(
   } finally {
     db.exec('ROLLBACK TO restore_preview');
     db.exec('RELEASE restore_preview');
-    db.pragma('foreign_keys = ON');
+    db.run('PRAGMA foreign_keys = ON');
   }
 
   return Array.from(counts.entries()).map(([table, c]) => ({
@@ -308,7 +308,7 @@ export function restoreBackup(
 
   // Defer FK checks — backup may reference rows in non-synced tables (e.g. agents)
   // that don't exist yet. Re-enable after the transaction.
-  db.pragma('foreign_keys = OFF');
+  db.run('PRAGMA foreign_keys = OFF');
   try {
     const runRestore = db.transaction(() => {
       for (const insert of inserts) {
@@ -331,7 +331,7 @@ export function restoreBackup(
 
     runRestore();
   } finally {
-    db.pragma('foreign_keys = ON');
+    db.run('PRAGMA foreign_keys = ON');
   }
 
   const tables = Array.from(counts.entries()).map(([table, c]) => ({

@@ -5,7 +5,7 @@
 //
 // Usage: npx tsx packages/myco/scripts/reconcile-session-batches.ts <sessionId> [--agent <name>]
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { initDatabase } from '../src/db/client.js';
 import { TranscriptMiner } from '../src/capture/transcript-miner.js';
 
@@ -26,9 +26,9 @@ initDatabase(path.join(vaultDir, 'myco.db'));
 // Separate read-only handle so we can look up the session without disturbing
 // the initialized write handle above.
 const lookup = new Database(path.join(vaultDir, 'myco.db'), { readonly: true });
-const row = lookup.prepare<[string], { id: string; agent: string | null; transcript_path: string | null }>(
+const row = lookup.prepare(
   'SELECT id, agent, transcript_path FROM sessions WHERE id = ?',
-).get(sessionId);
+).get(sessionId) as { id: string; agent: string | null; transcript_path: string | null } | undefined;
 lookup.close();
 
 if (!row) {

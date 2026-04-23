@@ -60,17 +60,17 @@ After implementation, run a structured quality review targeting four classes of 
 
 ```bash
 git diff --name-only main          # files changed in this branch
-grep -rn "\.slice(0, 8)" src/      # session ID truncation patterns
-grep -rn "new Date().toLocaleString" src/  # date formatter candidates
+grep -rn "\.slice(0, 8)" packages/ # session ID truncation patterns
+grep -rn "new Date().toLocaleString" packages/ # date formatter candidates
 ```
 
-Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `packages/myco/src/lib/` or `ui/src/lib/` or the appropriate utility module. **Check existing utility modules before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
+Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `packages/myco/src/utils/` or `packages/ui/src/utils/` or the appropriate utility module. **Check existing utility modules before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
 
 ```typescript
 // Before: inline in two components
 const display = sessionId.slice(0, 8) + '...';
 // After: import from utility module
-import { shortSession } from '../lib/utils';
+import { shortSession } from '../utils';
 const display = shortSession(sessionId);
 ```
 
@@ -107,7 +107,7 @@ interface NotificationCtx { sessionId: string; machineId: string; timestamp: num
 function emitNotification(ctx: NotificationCtx, type: string, payload: object)
 ```
 
-The daemon layer (`src/daemon/`) and CLI handlers (`src/cli/`) accumulate parameter debt the fastest.
+The daemon layer (`packages/myco/src/daemon/`) and CLI handlers (`packages/myco/src/cli/`) accumulate parameter debt the fastest.
 
 #### 4d. Check React Prop Threading (3+ component layers)
 
@@ -122,7 +122,7 @@ If a value passes through 3+ React component layers without being used by interm
 </SessionPage>
 ```
 
-Check `src/ui/` after any feature that adds new data to page-level views.
+Check `packages/ui/src/` after any feature that adds new data to page-level views.
 
 #### 4e. Verify Zero Regressions
 

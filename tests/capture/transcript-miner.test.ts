@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import { claudeCodeAdapter } from '@myco/symbionts/claude-code.js';
 import { createPerProjectAdapter } from '@myco/symbionts/adapter.js';

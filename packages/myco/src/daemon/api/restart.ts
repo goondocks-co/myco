@@ -35,7 +35,8 @@ export async function handleRestart(
   // The child waits RESTART_CHILD_DELAY_SECONDS before starting to ensure the parent
   // has fully released the port and cleaned up daemon.json.
   const { execPath, cliEntry } = resolveCliEntryPath();
-  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath} ${cliEntry} daemon --vault ${deps.vaultDir}`;
+  const entryPart = cliEntry !== null ? ` ${cliEntry}` : '';
+  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon --vault ${deps.vaultDir}`;
 
   const child = spawn('/bin/sh', ['-c', shellCmd], {
     detached: true,

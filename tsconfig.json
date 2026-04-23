@@ -8,6 +8,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["bun"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -15,8 +16,16 @@
     "paths": {
       "@myco/*": ["./packages/myco/src/*"],
       "@myco-team/*": ["./packages/myco-team/src/*"],
+      "@myco-team-worker/*": ["./packages/myco-team/worker/src/*"],
       "@myco-collective/*": ["./packages/myco-collective/src/*"],
-      "@myco-deploy/*": ["./packages/myco-deploy/src/*"]
+      "@myco-deploy/*": ["./packages/myco-deploy/src/*"],
+      "react": ["./node_modules/react"],
+      "react-dom": ["./node_modules/react-dom"],
+      "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],
+      "react/jsx-dev-runtime": ["./node_modules/react/jsx-dev-runtime.js"],
+      "@tanstack/react-query": ["./node_modules/@tanstack/react-query/build/modern/index.js"],
+      "react-router-dom": ["./node_modules/react-router-dom/dist/index.mjs"],
+      "react-router": ["./node_modules/react-router/dist/development/index.mjs"]
     }
   },
   "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-deploy/src/**/*"],
@@ -26,6 +35,7 @@
     "tests",
     "packages/myco/ui",
     "packages/myco/src/worker",
-    "packages/myco/src/symbionts/templates"
+    "packages/myco/src/symbionts/templates",
+    "packages/myco/src/entries/cli.*.ts"
   ]
 }

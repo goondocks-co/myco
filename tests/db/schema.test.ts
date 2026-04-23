@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 import { MIGRATIONS } from '@myco/db/migrations.js';
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 
 /** Helper: check if a table exists in SQLite. */
 function tableExists(db: Database, tableName: string): boolean {

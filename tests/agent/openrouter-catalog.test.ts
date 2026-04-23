@@ -6,7 +6,8 @@
  * pin down the new guards: non-object response, non-array `data`, and a
  * hard entry-count cap. On rejection the cache MUST NOT be populated.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { estimateOpenRouterCost } from '@myco/agent/cost/openrouter';
 import { OPENROUTER_API_KEY_ENV } from '@myco/cli/providers/openrouter.js';
 

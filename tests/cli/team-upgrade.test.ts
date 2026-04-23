@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,10 +9,10 @@ import os from 'node:os';
 const execCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
 const execHandlers: Array<(args: string[], cwd?: string) => string | Error> = [];
 
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return {
-    ...actual,
+import * as childProcessActual__ns from 'node:child_process';
+const childProcessActual = { ...childProcessActual__ns };
+mock.module('node:child_process', () => ({
+    ...childProcessActual,
     execFileSync: vi.fn((command: string, args: string[], options?: { cwd?: string; encoding?: string }) => {
       execCalls.push({ command, args, cwd: options?.cwd });
       const handler = execHandlers.shift();
@@ -20,8 +21,7 @@ vi.mock('node:child_process', async () => {
       if (result instanceof Error) throw result;
       return options?.encoding ? result : Buffer.from(result);
     }),
-  };
-});
+  }));
 
 // Minimal existing wrangler.toml — pre-KV (older deployment)
 const LEGACY_TOML = `name = "myco-team-abc12345"
@@ -88,13 +88,13 @@ describe('upgradeWorker', () => {
   let previousHome: string | undefined;
 
   async function importTeamCli(): Promise<typeof import('@myco/cli/team.js')> {
-    vi.doMock('@myco-deploy/index.js', async () => {
-      const actual = await vi.importActual<typeof import('@myco-deploy/index.js')>('@myco-deploy/index.js');
-      return {
-        ...actual,
-        resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
-      };
-    });
+    // Pre-import the real module before registering the mock, so the factory
+    // doesn't recurse into the eclipsed registry entry.
+    const deployActual = await import('@myco-deploy/index.js');
+    mock.module('@myco-deploy/index.js', () => ({
+      ...deployActual,
+      resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
+    }));
     return import('@myco/cli/team.js');
   }
 

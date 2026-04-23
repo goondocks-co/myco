@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 
-vi.mock('@myco/symbionts/detect.js', () => ({
+mock.module('@myco/symbionts/detect.js', () => ({
   loadManifests: vi.fn().mockReturnValue([
     {
       name: 'cursor', displayName: 'Cursor', binary: 'cursor',
@@ -16,7 +17,7 @@ vi.mock('@myco/symbionts/detect.js', () => ({
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
 
-vi.mock('@myco/symbionts/installer.js', () => {
+mock.module('@myco/symbionts/installer.js', () => {
   const SymbiontInstaller = vi.fn(function () {
     return { uninstall: vi.fn().mockReturnValue({ hooks: true, mcp: true, skills: true, settings: false, instructions: false }) };
   });
@@ -24,7 +25,7 @@ vi.mock('@myco/symbionts/installer.js', () => {
 });
 
 let testVaultDir = '';
-vi.mock('@myco/vault/resolve.js', () => ({
+mock.module('@myco/vault/resolve.js', () => ({
   resolveVaultDir: vi.fn(() => testVaultDir),
 }));
 

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-vi.mock('agents/mcp', () => ({ createMcpHandler: () => vi.fn() }));
-vi.mock('../../packages/myco-collective/worker/src/mcp/server.js', () => ({ createMcpServerInstance: () => ({}) }));
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
+mock.module('agents/mcp', () => ({ createMcpHandler: () => vi.fn() }));
+mock.module('../../packages/myco-collective/worker/src/mcp/server.js', () => ({ createMcpServerInstance: () => ({}) }));
 
 interface ProjectRecord {
   id: string;

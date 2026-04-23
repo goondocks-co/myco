@@ -29,7 +29,7 @@ A **symbiont** is an agent or IDE integration (Claude Code, Codex, Cursor, Zed, 
 - Myco source is checked out and building (`pnpm build` passes)
 - You know the target agent's hook lifecycle events (session start, prompt, stop) and where it writes transcript/log files
 - You have at least one real session transcript from the target agent to test against
-- Familiarity with `src/symbionts/` directory layout: `manifest-schema.ts`, `manifests/`, and `src/capture/` for parsers, rules, installer
+- Familiarity with `packages/myco/src/symbionts/` directory layout: `manifest-schema.ts`, `manifests/`, and `packages/myco/src/capture/` for parsers, rules, installer
 - Understanding of Myco's daemon architecture and symbiont manifest structure
 - Familiarity with the SQLite schema for sessions, prompt_batches, and lineage edges
 - Knowledge of TypeScript patterns in `packages/myco/src/daemon/` and symbiont integration points
@@ -104,12 +104,12 @@ Each symbiont has different transcript formats requiring specialized detection:
 **Codex**: Detect `turn_id` changes in the event stream  
 **OpenCode**: Parse plugin field boundaries in server responses
 
-Example Claude Code detection in `prompt-kind.ts`:
+Example Claude Code detection in `packages/myco/src/capture/prompt-kind.ts`:
 ```typescript
 function detectSteeringInClaudeCode(events: HookEvent[]): boolean {
-  // Use walkTranscript with manifest rules to classify prompt timing
-  const results = walkTranscript(config, manifests, agent, events, transcriptPath);
-  return results.priorTurnEnded ? false : true;
+  // Use classifyNextPromptKind with manifest rules to classify prompt timing
+  const promptKinds = extractUserPromptKinds(events, transcriptPath);
+  return promptKinds.some(kind => kind.steering);
 }
 ```
 
@@ -123,7 +123,7 @@ Response summaries provide compact batch descriptions for intelligence processin
 
 Implement the 3-layer fix for robust summary generation in `packages/myco/src/daemon/stop-processing.ts`:
 
-1. **Buffer fallback**: When live events are missed, parse transcript files directly
+1. **Buffer fallback**: When live events are missed, parse transcript files directly using `enrichTurnsWithToolMetadata`
 2. **TUI exit handling**: Detect when TUI-based agents terminate without stop events
 3. **Tail widening**: When transcript tail is empty, expand search window
 
@@ -195,7 +195,7 @@ The three-layer OpenCode SIGTERM fix provides a durability template:
 
 ## Procedure 1: Author the Capture Manifest
 
-The manifest is the authoritative description of a symbiont. It lives in `src/symbionts/manifests/<symbiont-id>.yaml` and is validated against `CaptureManifestSchema` at load time.
+The manifest is the authoritative description of a symbiont. It lives in `packages/myco/src/symbionts/manifests/<symbiont-id>.yaml` and is validated against `CaptureManifestSchema` at load time.
 
 ### 1.1 Building Manifest-Driven Capture Rules
 
@@ -203,7 +203,7 @@ Move from hardcoded agent-specific logic to declarative manifest-driven capture.
 
 #### Generic Walker Architecture
 
-1. **Use the unified `walkTranscript` function** in `packages/myco/src/capture/prompt-kind.ts` instead of agent-specific walkers.
+1. **Use the unified capture rule functions** in `packages/myco/src/capture/prompt-kind.ts` and `packages/myco/src/hooks/capture-rules.ts` instead of agent-specific walkers.
 
 2. **Define capture rules in symbiont manifests** at `packages/myco/src/symbionts/manifests/*.json`:
    ```json
@@ -221,7 +221,7 @@ Move from hardcoded agent-specific logic to declarative manifest-driven capture.
    }
    ```
 
-3. **Implement domain-keyed schemas** using the `CaptureRule` type from `manifest-schema.ts`:
+3. **Implement domain-keyed schemas** using the `CaptureRule` type from `packages/myco/src/symbionts/manifest-schema.ts`:
    ```typescript
    interface CaptureConfig {
      prompts: PromptCaptureRule;
@@ -252,7 +252,7 @@ registration:
 This path is stored in the generated hook script at install time. When the MCP server spawns, the hook explicitly sets `cwd` to `mcpCwd` **before** spawning the child process:
 
 ```bash
-cd "$MYCO_MCP_CWD" && node bin/myco-run ...  # spawn with fixed cwd
+cd "$MYCO_MCP_CWD" && node packages/myco/bin/myco-run ...  # spawn with fixed cwd
 ```
 
 This ensures portable MCP behavior regardless of where the agent changes directory. Always set this field in the manifest and always expand it to an absolute path at install time.
@@ -308,7 +308,7 @@ The `settingSources: []` setting prevents the SDK from loading configuration tha
 
 **Issue:** Some agents (particularly OpenCode) need to redirect runtime commands through Myco's execution wrapper to ensure proper session context and capture pipeline integration.
 
-**Solution:** Use the Runtime.command redirect mechanism in `bin/myco-run`:
+**Solution:** Use the Runtime.command redirect mechanism in `packages/myco/bin/myco-run`:
 
 ```ts
 // In the agent's runtime configuration
@@ -479,7 +479,7 @@ All four layers must be present.
 Register the new symbiont in the `SymbiontInstaller` class with install, update, remove, and doctor methods:
 
 ```ts
-// In src/capture/installer/index.ts
+// In packages/myco/src/capture/installer/index.ts
 symbiont: {
   install: async () => { /* implementation */ },
   update: async () => { /* implementation */ }, 

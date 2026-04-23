@@ -5,7 +5,7 @@
  * produces a captured plan in the database when processed through
  * the CodexJsonlParser -> stop processor pipeline.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 import { extractTaggedPlans, captureTaggedPlan } from '@myco/daemon/plan-capture.js';

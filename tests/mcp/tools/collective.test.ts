@@ -3,7 +3,8 @@
  * tool handlers — each proxies through DaemonClient to /api/collective/*.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import {
   handleCollectiveProject,
   handleCollectiveProjects,

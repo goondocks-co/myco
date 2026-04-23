@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { initDatabase, getDatabase, closeDatabase } from '@myco/db/client.js';
 
 describe('SQLite client', () => {
@@ -38,8 +38,8 @@ describe('SQLite client', () => {
 
   it('enables foreign keys', () => {
     const db = initDatabase();
-    const row = db.pragma('foreign_keys') as Array<{ foreign_keys: number }>;
-    expect(row[0].foreign_keys).toBe(1);
+    const row = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
+    expect(row.foreign_keys).toBe(1);
   });
 
   it('closes cleanly and resets state', () => {

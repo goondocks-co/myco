@@ -1,6 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
+// Pre-import the real module before registering a partial mock. Bun's
+// `mock.module` eclipses the registry, so an inline `import()` inside the
+// factory would recurse into the mocked module and deadlock.
+import * as cortexBriefActual__ns from '@myco/context/cortex-brief.js';
+const cortexBriefActual = { ...cortexBriefActual__ns };
 
 const {
   runAgent,
@@ -12,14 +18,12 @@ const {
   getLatestRunId: vi.fn(),
 }));
 
-vi.mock('@myco/agent/executor.js', () => ({ runAgent }));
-vi.mock('@myco/context/cortex-brief.js', async () => {
-  const actual = await vi.importActual<typeof import('@myco/context/cortex-brief.js')>(
-    '@myco/context/cortex-brief.js',
-  );
-  return { ...actual, buildCortexInstructionsInput };
-});
-vi.mock('@myco/db/queries/runs.js', () => ({ getLatestRunId }));
+mock.module('@myco/agent/executor.js', () => ({ runAgent }));
+mock.module('@myco/context/cortex-brief.js', () => ({
+  ...cortexBriefActual,
+  buildCortexInstructionsInput,
+}));
+mock.module('@myco/db/queries/runs.js', () => ({ getLatestRunId }));
 
 import { triggerCortexInstructions } from '@myco/daemon/cortex';
 

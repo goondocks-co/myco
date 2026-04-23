@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { rgPath } from '@vscode/ripgrep';
+import { getRipgrepPath } from '../../runtime/native-deps.js';
 import { z } from 'zod/v4';
 import { textResult, type VaultToolDeps } from './types.js';
 
@@ -317,7 +317,7 @@ export function createExplorationTools(deps: VaultToolDeps) {
 
       let stdout: string;
       try {
-        ({ stdout } = await execFileAsync(rgPath, rgArgs, { maxBuffer: 10_000_000 }));
+        ({ stdout } = await execFileAsync(getRipgrepPath(), rgArgs, { maxBuffer: 10_000_000 }));
       } catch (err) {
         // ripgrep exits 1 when no matches — treat as empty result, not error.
         const exitCode = (err as { code?: number }).code;

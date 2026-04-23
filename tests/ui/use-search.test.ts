@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { buildSearchPath, getSemanticSince } from '../../packages/myco/ui/src/hooks/use-search';
 
 vi.useFakeTimers();

@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { ProgressTracker, handleGetProgress } from '@myco/daemon/api/progress';
 
 describe('ProgressTracker', () => {
