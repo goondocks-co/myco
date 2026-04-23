@@ -2313,7 +2313,10 @@ describe('opencode (plugin-file hooks)', () => {
       writePluginWithMarkers('const INLINED = "still valid";');
       // Deliberately no writeSharedSnippet()
 
-      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      // Suppress the BUNDLED_TEMPLATES fallback so this test can observe
+      // the "snippet absent on disk" path. In a real compiled binary the
+      // snippet is always baked in and this fallback is unreachable.
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot, true);
       installer.install();
 
       const installed = fs.readFileSync(

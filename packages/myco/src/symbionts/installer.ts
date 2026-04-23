@@ -148,6 +148,10 @@ export class SymbiontInstaller {
     private manifest: SymbiontManifest,
     private projectRoot: string,
     private packageRoot: string,
+    // When true, the bundled-templates fallback is suppressed. Tests use
+    // this to exercise scenarios where a specific template file is absent
+    // from the packageRoot without inheriting the baked-in copy.
+    private suppressBundledTemplates: boolean = false,
   ) {}
 
   /**
@@ -156,13 +160,11 @@ export class SymbiontInstaller {
    * a shared template or `'opencode/plugin.ts'` for a per-agent template.
    */
   private readTemplateFile(relPath: string): string | null {
-    // Bundled templates first — the Bun-compiled binary has no filesystem
-    // access to src/ or dist/, so without the bundled map `readFileSync`
-    // fails silently and hook/mcp/settings merges become no-ops.
-    const key = relPath.split(path.sep).join('/');
-    const bundled = BUNDLED_TEMPLATES[key];
-    if (bundled !== undefined) return bundled;
-
+    // Filesystem candidates first so tests that wire a fake packageRoot and
+    // dev-mode runs from a checkout keep their existing behavior. When both
+    // ENOENT (the compiled Bun binary — packageRoot resolves to a /$bunfs/
+    // path the host FS can't read), fall back to the bundled map produced
+    // by scripts/gen-templates.mjs.
     const candidates = [
       path.join(this.packageRoot, TEMPLATES_SUBDIR, relPath),
       // tsup preserves the src/ prefix under dist/, so the same subdir works in both layouts
@@ -171,7 +173,11 @@ export class SymbiontInstaller {
     for (const filePath of candidates) {
       try { return fs.readFileSync(filePath, 'utf-8'); } catch { /* try next */ }
     }
-    return null;
+
+    if (this.suppressBundledTemplates) return null;
+    const key = relPath.split(path.sep).join('/');
+    const bundled = BUNDLED_TEMPLATES[key];
+    return bundled ?? null;
   }
 
   /**
