@@ -48,7 +48,7 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Cloud MCP tools
 
-A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N8N, OpenAI Workflows, etc.). Seven tools reshaped for cloud agent use cases rather than mirroring the local surface. See the [Cloud MCP docs](cloud-mcp.md) for the full reference and setup.
+A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N8N, OpenAI Workflows, etc.). Five tools reshaped for cloud agent use cases rather than mirroring the local surface. See the [Cloud MCP docs](cloud-mcp.md) for the full reference and setup.
 
 ## Slash-command skills
 

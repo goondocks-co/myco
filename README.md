@@ -44,6 +44,8 @@ Two new packages are optional operator surfaces:
 - `@goondocks/myco-team` — direct team-worker administration from the terminal
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
 
+Each project also has a **Stable**/**Beta** toggle on its Operations page for early access to upcoming releases. Channel selection is per-project, so trying a Beta in one project does not affect your other projects. See [Stable and Beta channels](docs/lifecycle.md#stable-and-beta-channels).
+
 ## What is Myco?
 
 Myco is the intelligence layer beneath your projects. Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network) — the underground fungal systems that connect trees in a forest — Myco captures what happens across your coding sessions and connects it into a living knowledge graph, sharing intelligence between agents and team members beneath the surface.

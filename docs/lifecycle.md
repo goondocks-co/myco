@@ -103,6 +103,16 @@ Other projects on the same machine discover the new version the next time you op
 
 If you want a daemon to pick up changes immediately rather than waiting for the next dashboard visit, `myco restart` still works and is instant.
 
+### Stable and Beta channels
+
+The Operations page has a **Stable**/**Beta** toggle that controls which release line this project follows. Channel selection is per-project — switching one project to Beta does not affect your other projects or your machine-global `myco` install.
+
+**Switching to Beta.** Click **Beta**. Myco installs the latest beta release into the project's vault at `.myco/runtime/` and uses that version for the dashboard, hooks, and agent pipeline. Your other projects continue running whatever version they're on.
+
+**Reverting to Stable.** Click **Revert to Stable & Restart**. Myco removes the project's local Beta install, ensures the machine-global install is at the latest stable version, and restarts the daemon. The project returns to the same Stable version a fresh `npm update -g @goondocks/myco` would give you.
+
+**Machine-wide Beta preferences.** Any existing machine-wide Beta preference applies to each project by default. Click **Stable** on any project's Operations page to opt that project out.
+
 ## Configuration
 
 The most common settings, with defaults:
