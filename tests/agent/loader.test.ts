@@ -231,7 +231,7 @@ describe('agent loader', () => {
       const fi = tasks.find((t) => t.name === 'vault-evolve');
       expect(fi?.schedule).toBeDefined();
       expect(fi!.schedule!.enabled).toBe(true);
-      expect(fi!.schedule!.intervalSeconds).toBe(300);
+      expect(fi!.schedule!.intervalSeconds).toBe(21600);
       expect(fi!.schedule!.runIn).toEqual(['idle', 'sleep']);
       expect(fi!.schedule!.preCondition).toBe('has-unprocessed-batches');
     });
