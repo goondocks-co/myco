@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { resolveClaudeCodeExecutable } from '@myco/agent/runtime/claude-code-executable.js';
 
 function expectedOptionalPackage(): string {
@@ -18,6 +20,12 @@ function expectedExecutableName(): string {
   return process.platform === 'win32' ? 'claude.exe' : 'claude';
 }
 
+function runtimeModuleUrl(): string {
+  return pathToFileURL(
+    path.join(process.cwd(), 'packages/myco/src/agent/runtime/claude-code-executable.ts'),
+  ).href;
+}
+
 describe('resolveClaudeCodeExecutable', () => {
   it('resolves the optional CLI package from the installed package root on disk', () => {
     const optionalPackage = expectedOptionalPackage();
@@ -26,7 +34,7 @@ describe('resolveClaudeCodeExecutable', () => {
     const executablePath = `/tmp/node_modules/${optionalPackage}/${executableName}`;
     const calls: string[] = [];
     const executable = resolveClaudeCodeExecutable({
-      importMetaUrl: 'file:///Users/chris/Repos/myco/packages/myco/src/agent/runtime/claude-code-executable.ts',
+      importMetaUrl: runtimeModuleUrl(),
       execPath: '/tmp/vendor/myco',
       realpathSync: (value) => value as ReturnType<typeof Bun.file>,
       existsSync: (value) => value === executablePath,
@@ -47,7 +55,7 @@ describe('resolveClaudeCodeExecutable', () => {
 
   it('returns undefined when no optional native package is present', () => {
     const executable = resolveClaudeCodeExecutable({
-      importMetaUrl: 'file:///Users/chris/Repos/myco/packages/myco/src/agent/runtime/claude-code-executable.ts',
+      importMetaUrl: runtimeModuleUrl(),
       execPath: '/opt/homebrew/lib/node_modules/@goondocks/myco/vendor/darwin-arm64/myco',
       realpathSync: (value) => value as ReturnType<typeof Bun.file>,
       existsSync: () => false,
