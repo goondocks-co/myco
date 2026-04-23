@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { createEventDispatcher } from '@myco/daemon/event-dispatch.js';
 import { SessionRegistry } from '@myco/daemon/lifecycle.js';

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,8 +15,8 @@ import os from 'node:os';
  *      custom aliases working for MCP, not just hooks.
  *
  *   2. Self-locate — with no runtime.command anywhere above cwd, the
- *      launcher resolves to its own install's `dist/src/cli.js` via
- *      realpathSync, which is the historical prod behavior.
+ *      launcher resolves to its own install's packaged `bin/myco.cjs`
+ *      via realpathSync.
  *
  * Regression axis: before this launcher honored runtime.command, a
  * dev machine that installed both the dev shim and the homebrew-
@@ -37,11 +37,11 @@ interface Fixture {
 
 /**
  * Build an isolated fake install so `realpathSync(argv[1])` lands on a
- * deterministic `dist/src/cli.js` we control. The layout:
+ * deterministic packaged launcher we control. The layout:
  *
  *   fakeInstallDir/
  *     bin/myco-run          (copy of the real launcher)
- *     dist/src/cli.js       (fake CLI that prints SELF:<args>)
+ *     bin/myco.cjs          (fake packaged launcher that prints SELF:<args>)
  *
  * Tests invoke the launcher copy from that bin/ path so `argv[1]`
  * resolves to the fake install tree.
@@ -53,21 +53,19 @@ function makeFixture(): Fixture {
   const subDir = path.join(projectDir, 'nested', 'deep');
   const fakeInstallDir = path.join(tmpRoot, 'install');
   const launcherBinDir = path.join(fakeInstallDir, 'bin');
-  const launcherCliDir = path.join(fakeInstallDir, 'dist', 'src');
   const binDir = path.join(tmpRoot, 'path');
 
   fs.mkdirSync(projectDir, { recursive: true });
   fs.mkdirSync(vaultDir);
   fs.mkdirSync(subDir, { recursive: true });
   fs.mkdirSync(launcherBinDir, { recursive: true });
-  fs.mkdirSync(launcherCliDir, { recursive: true });
   fs.mkdirSync(binDir);
 
   const launcherCopy = path.join(launcherBinDir, 'myco-run');
   fs.copyFileSync(LAUNCHER_SOURCE, launcherCopy);
   fs.chmodSync(launcherCopy, 0o755);
 
-  const cliEntry = path.join(launcherCliDir, 'cli.js');
+  const cliEntry = path.join(launcherBinDir, 'myco.cjs');
   fs.writeFileSync(
     cliEntry,
     `#!/usr/bin/env node
@@ -237,7 +235,7 @@ describe('bin/myco-run launcher', () => {
   });
 
   describe('self-locate mode (no runtime.command)', () => {
-    it('invokes the self-located cli.js when no .myco/runtime.command exists above cwd', () => {
+    it('invokes the self-located packaged launcher when no .myco/runtime.command exists above cwd', () => {
       // projectDir has .myco/ but no runtime.command file. subDir is
       // deeply nested and does not have its own .myco/. The walk-up
       // finds the vault dir but no alias file → self-locate.
@@ -263,7 +261,7 @@ describe('bin/myco-run launcher', () => {
       }
     });
 
-    it('forwards argv intact to the self-located cli.js', () => {
+    it('forwards argv intact to the self-located packaged launcher', () => {
       const result = execFileSync(
         process.execPath,
         [fixture.launcherCopy, 'mcp', '--flag', 'value'],

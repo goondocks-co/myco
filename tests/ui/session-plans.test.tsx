@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { SessionPlans } from '../../packages/myco/ui/src/components/sessions/SessionPlans';
 
 const useSessionPlansMock = vi.fn();
 const mutateAsyncMock = vi.fn();
 const useDeletePlanMock = vi.fn();
 
-vi.mock('../../packages/myco/ui/src/hooks/use-sessions', () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-sessions', () => ({
   useSessionPlans: (...args: unknown[]) => useSessionPlansMock(...args),
   useDeletePlan: (...args: unknown[]) => useDeletePlanMock(...args),
 }));
@@ -16,7 +17,7 @@ vi.mock('../../packages/myco/ui/src/hooks/use-sessions', () => ({
 // Radix Dialog pulls React from the UI package's nested node_modules, which
 // conflicts with the root React instance under vitest. Replace ConfirmDialog
 // with a minimal shim that surfaces its props through the DOM.
-vi.mock('../../packages/myco/ui/src/components/ui/confirm-dialog', () => ({
+mock.module('../../packages/myco/ui/src/components/ui/confirm-dialog', () => ({
   ConfirmDialog: ({
     open,
     title,

@@ -4,17 +4,17 @@ description: |
   Use this skill when working on Myco's multi-package npm workspace structure,
   per-package CI release pipelines, or any task touching package publishing,
   version management, or release tag workflows across `packages/myco`,
-  `packages/myco-team`, and `packages/myco-collective`. Covers six distinct
-  procedures: (1) bootstrapping the monorepo workspace, (2) configuring
-  per-package OIDC publish workflows with tag-prefix triggers, (3) auditing
-  and hardening test version assertions to avoid silent drift, (4) diagnosing
-  and fixing silent tag-publish failures caused by `[skip ci]` commit messages,
-  (5) applying the worktree delivery gate safely for multi-package
-  experimental work, and (6) managing dependencies with Dependabot batching
-  workflows. Also covers Node binary PATH resolution in Wrangler sub-shell
-  spawns. Apply this skill even if the user don't explicitly ask for "monorepo"
-  or "release engineering" — it applies any time you're working with package
-  publishing, CI workflows, or dependency updates.
+  `packages/myco-team`, `packages/myco-collective`, and `packages/myco-hub`.
+  Covers six procedures: (1) bootstrapping the monorepo workspace,
+  (2) configuring per-package OIDC publish workflows with tag-prefix triggers,
+  (3) auditing and hardening test version assertions to avoid silent drift,
+  (4) diagnosing and fixing silent tag-publish failures caused by `[skip ci]`
+  commit messages, (5) applying the worktree delivery gate safely for
+  multi-package experimental work, and (6) managing dependencies with
+  Dependabot batching workflows. Also covers Node binary PATH resolution in
+  Wrangler sub-shell spawns. Apply this skill even if the user don't explicitly
+  ask for "monorepo" or "release engineering" — it applies any time you're
+  working with package publishing, CI workflows, or dependency updates.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -22,9 +22,10 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Multi-Package Monorepo and Release Engineering
 
-Myco is structured as a three-package npm workspace: `packages/myco` (the core
-CLI/daemon), `packages/myco-team` (team sync), and `packages/myco-collective`
-(org-level knowledge and cross-project features). Each package is independently
+Myco is structured as a four-package npm workspace: `packages/myco` (the core
+CLI/daemon), `packages/myco-team` (team sync), `packages/myco-collective`
+(org-level knowledge and cross-project features), and `packages/myco-hub` (local
+daemon hub for multi-project coordination). Each package is independently
 publishable with its own CLI, version, and CI release trigger. The monorepo
 split is **Collective V1 milestone zero** — no cross-package feature work begins
 until the workspace is properly structured.
@@ -55,7 +56,8 @@ In the root `package.json`, declare all packages:
   "workspaces": [
     "packages/myco",
     "packages/myco-team",
-    "packages/myco-collective"
+    "packages/myco-collective",
+    "packages/myco-hub"
   ]
 }
 ```
@@ -69,17 +71,17 @@ Each package needs a self-contained `package.json`:
 
 ```json
 {
-  "name": "@goondocks/myco-team",
+  "name": "@goondocks/myco-hub",
   "version": "0.1.0",
   "main": "dist/index.js",
   "bin": {
-    "myco-team": "dist/cli.js"
+    "myco-hub": "dist/cli.js"
   }
 }
 ```
 
-> **Naming convention:** The published package name (e.g., `@goondocks/myco-collective`)
-> is the npm identity. The release tag prefix (e.g., `collective/v0.1.0`) is the
+> **Naming convention:** The published package name (e.g., `@goondocks/myco-hub`)
+> is the npm identity. The release tag prefix (e.g., `hub/v0.1.0`) is the
 > CI trigger. They are separate namespaces — keep them consistent but understand
 > they are distinct concepts.
 
@@ -88,11 +90,11 @@ Each package needs a self-contained `package.json`:
 Each package must build independently:
 
 ```bash
-# Build only myco-team
-npm run build --workspace=packages/myco-team
+# Build only myco-hub
+npm run build --workspace=packages/myco-hub
 
-# Test only myco-team
-npm run test --workspace=packages/myco-team
+# Test only myco-hub
+npm run test --workspace=packages/myco-hub
 
 # Build all packages
 npm run build --workspaces
@@ -115,6 +117,7 @@ Each package uses a distinct tag prefix to trigger its own publish workflow:
 | `packages/myco` | `myco/vX.Y.Z` | `myco/v0.15.0` |
 | `packages/myco-team` | `myco-team/vX.Y.Z` | `myco-team/v0.3.0` |
 | `packages/myco-collective` | `collective/vX.Y.Z` | `collective/v0.1.0` |
+| `packages/myco-hub` | `hub/vX.Y.Z` | `hub/v0.1.0` |
 
 Workflow trigger:
 
@@ -122,7 +125,7 @@ Workflow trigger:
 on:
   push:
     tags:
-      - 'myco-team/v*'
+      - 'hub/v*'
 ```
 
 ### 2.2 — OIDC publish workflow
@@ -147,7 +150,7 @@ jobs:
       # Do NOT add: run: npm install -g npm@latest
       - run: npm ci
       - run: npm publish --provenance --access public
-        working-directory: packages/myco-team
+        working-directory: packages/myco-hub
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
@@ -156,12 +159,12 @@ jobs:
 
 ```bash
 # Bump version in the package manifest first
-cd packages/myco-team
-npm version 0.3.1
+cd packages/myco-hub
+npm version 0.1.1
 
 # Tag at the repo root with the prefix convention
-git tag myco-team/v0.3.1
-git push origin myco-team/v0.3.1
+git tag hub/v0.1.1
+git push origin hub/v0.1.1
 ```
 
 > **Critical:** Before tagging, verify the target commit does not carry a
@@ -206,7 +209,7 @@ with an updated version:
 
 ```typescript
 // ❌ BAD — breaks on every release sync
-expect(output).toContain('myco-team v0.2.0');
+expect(output).toContain('myco-hub v0.1.0');
 ```
 
 The test passes on the commit where it was written, but after a version bump
@@ -219,12 +222,12 @@ Fix by reading the version from the package manifest at test time:
 
 ```typescript
 // ✅ GOOD — survives version bumps
-const { version } = require('@goondocks/myco-team/package.json');
+const { version } = require('@goondocks/myco-hub/package.json');
 
-expect(output).toContain(`myco-team v${version}`);
+expect(output).toContain(`myco-hub v${version}`);
 ```
 
-Within a workspace, `require('@goondocks/myco-team/package.json')` resolves to
+Within a workspace, `require('@goondocks/myco-hub/package.json')` resolves to
 the workspace copy — no publish needed for this to work locally or in CI.
 
 ### 3.3 — Audit existing tests before tagging
@@ -236,7 +239,7 @@ Before cutting a release, grep for hardcoded version strings in the test suite:
 grep -rn "v[0-9]\+\.[0-9]\+\.[0-9]\+" tests/ --include="*.test.ts"
 
 # Known location to check in this project
-grep -n "v0\." tests/cli/team-rotate.test.ts
+grep -n "v0\." tests/cli/hub-*.test.ts
 ```
 
 Update any hardcoded version assertions to the dynamic `require()` pattern
@@ -250,9 +253,9 @@ no error was reported.
 ### 4.1 — Symptom
 
 ```
-Tag: myco-team/v0.3.1  ✓ (exists in GitHub)
-GitHub Actions run:    ✗ (no workflow triggered)
-npm registry:          ✗ (version never appears)
+Tag: hub/v0.1.1           ✓ (exists in GitHub)
+GitHub Actions run:       ✗ (no workflow triggered)
+npm registry:             ✗ (version never appears)
 ```
 
 No workflow failure — no workflow run at all. The tag is visible in the GitHub
@@ -269,7 +272,7 @@ the absence of a workflow run.
 Check the commit message of the tagged commit:
 
 ```bash
-git log --oneline myco-team/v0.3.1 -1
+git log --oneline hub/v0.1.1 -1
 # If output contains [skip ci], that's the problem
 ```
 
@@ -290,11 +293,11 @@ To fix an already-created tag on a `[skip ci]` commit, delete the tag, create
 an empty commit, and re-tag:
 
 ```bash
-git tag -d myco-team/v0.3.1
-git push origin :refs/tags/myco-team/v0.3.1
-git commit --allow-empty -m "chore: trigger publish for myco-team v0.3.1"
-git tag myco-team/v0.3.1
-git push origin myco-team/v0.3.1
+git tag -d hub/v0.1.1
+git push origin :refs/tags/hub/v0.1.1
+git commit --allow-empty -m "chore: trigger publish for myco-hub v0.1.1"
+git tag hub/v0.1.1
+git push origin hub/v0.1.1
 ```
 
 ### 4.4 — Long-term: replace the `[skip ci]` sync strategy
@@ -328,25 +331,25 @@ can break the other packages in the workspace since they share a root manifest.
 ### 5.2 — Setting up a worktree for package development
 
 ```bash
-# Create worktree for Collective development
-git worktree add ../myco-collective-work feature/collective-v1
+# Create worktree for Hub development
+git worktree add ../myco-hub-work feature/hub-v1
 
 # Work in the worktree
-cd ../myco-collective-work
-# ... make changes to packages/myco-collective ...
+cd ../myco-hub-work
+# ... make changes to packages/myco-hub ...
 
 # When done: push the feature branch to origin
-git push origin feature/collective-v1
+git push origin feature/hub-v1
 
-# Back in main repo: open a PR from feature/collective-v1 → main
-# Do NOT run: git merge feature/collective-v1 from local main
+# Back in main repo: open a PR from feature/hub-v1 → main
+# Do NOT run: git merge feature/hub-v1 from local main
 ```
 
 ### 5.3 — Cleaning up worktrees
 
 ```bash
 # Remove the worktree once the PR is merged
-git worktree remove ../myco-collective-work
+git worktree remove ../myco-hub-work
 
 # Prune stale worktree metadata
 git worktree prune
@@ -361,6 +364,7 @@ the split upfront:
 
 | Worktree | Owns |
 |---|---|
+| `feature/hub-v1` | `packages/myco-hub/`, root workspace changes |
 | `feature/collective-v1` | `packages/myco-collective/`, root workspace changes |
 | `feature/team-v2` | `packages/myco-team/` only |
 
@@ -462,7 +466,7 @@ For workspace packages, root operations are safe and preferred:
 
 ```bash
 # ✅ GOOD — for workspace members
-npm install --workspace=packages/myco-team some-package
+npm install --workspace=packages/myco-hub some-package
 ```
 
 ### 7.3 — Lockfile audit after root operations
@@ -549,6 +553,7 @@ npm audit fix
 npm audit fix --workspace=packages/myco
 npm audit fix --workspace=packages/myco-team
 npm audit fix --workspace=packages/myco-collective
+npm audit fix --workspace=packages/myco-hub
 
 # For nested non-workspace packages
 cd workers/collective-worker && npm audit fix && cd ../..
@@ -582,6 +587,7 @@ When Actions are updated, verify they don't break the monorepo patterns:
 act -j publish-myco        # Test main package publish
 act -j publish-team        # Test team package publish  
 act -j publish-collective  # Test collective package publish
+act -j publish-hub         # Test hub package publish
 ```
 
 Common Action upgrade impacts:
@@ -607,13 +613,14 @@ If mismatches exist, align to the highest compatible version:
 npm install typescript@5.7.2 --workspace=packages/myco
 npm install typescript@5.7.2 --workspace=packages/myco-team  
 npm install typescript@5.7.2 --workspace=packages/myco-collective
+npm install typescript@5.7.2 --workspace=packages/myco-hub
 ```
 
 For development dependencies, consider hoisting to the root:
 
 ```bash
 # Remove from individual packages
-npm uninstall typescript --workspace=packages/myco-team
+npm uninstall typescript --workspace=packages/myco-hub
 
 # Install at root (available to all workspace packages)  
 npm install --save-dev typescript@5.7.2

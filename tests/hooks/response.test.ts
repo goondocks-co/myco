@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { writeHookResponse } from '@myco/hooks/response.js';
 
 describe('writeHookResponse (manifest-driven)', () => {

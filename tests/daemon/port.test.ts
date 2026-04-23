@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { derivePort, PORT_RANGE_START, PORT_RANGE_SIZE } from '@myco/daemon/port';
 
 describe('derivePort', () => {

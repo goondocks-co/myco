@@ -6,7 +6,8 @@
  * tests/daemon/api/agent-runs-dry-run.test.ts.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertReport } from '@myco/db/queries/reports.js';
@@ -21,15 +22,15 @@ import type { RouteRequest } from '@myco/daemon/router';
 // Mocks required by createAgentRunHandlers (not exercised in audit tests)
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/executor.js', () => ({
+mock.module('@myco/agent/executor.js', () => ({
   runAgent: vi.fn(async () => ({ runId: 'stub', status: 'completed' as const })),
 }));
 
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadMergedConfig: () => ({ agent: { tasks: {} } }),
 }));
 
-vi.mock('@myco/agent/config-resolver.js', () => ({
+mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
 }));
 

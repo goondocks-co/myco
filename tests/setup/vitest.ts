@@ -1,4 +1,9 @@
-import '@testing-library/jest-dom/vitest';
+import { expect } from 'bun:test';
+// jest-dom calls `expect.extend(...)` against the global `expect`. bun:test
+// doesn't expose one by default, so plumb it through before importing the
+// matcher bundle.
+(globalThis as unknown as { expect: typeof expect }).expect = expect;
+await import('@testing-library/jest-dom');
 
 if (typeof window !== 'undefined') {
   const storage = new Map<string, string>();

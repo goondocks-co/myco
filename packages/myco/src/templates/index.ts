@@ -1,32 +1,12 @@
 /**
- * Template loader — reads .md templates from disk and interpolates variables.
- * Templates are markdown files in this directory, shipped to dist/src/templates/.
- * Used for vault files that the daemon writes (e.g., _portal.md).
+ * Template loader for package-owned markdown assets such as `_portal.md`.
+ *
+ * These templates are bundled into code at build time so the compiled Bun
+ * binary never depends on runtime filesystem reads under /$bunfs/.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { BUNDLED_MARKDOWN_TEMPLATES } from '../static-assets.generated.js';
 import { interpolate } from '../utils/interpolate.js';
-
-/**
- * Resolve the templates directory. Same strategy as prompts loader.
- */
-function resolveTemplatesDir(): string {
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-
-  // Check if we're already in the templates directory (tsc output or dev mode)
-  if (fs.existsSync(path.join(scriptDir, 'portal.md'))) return scriptDir;
-
-  // Walk up to package root, then use dist/src/templates/
-  const root = findPackageRoot(scriptDir);
-  if (root) return path.join(root, 'dist', 'src', 'templates');
-
-  return scriptDir;
-}
-
-const TEMPLATES_DIR = resolveTemplatesDir();
 
 const templateCache = new Map<string, string>();
 
@@ -34,7 +14,10 @@ const templateCache = new Map<string, string>();
 export function loadTemplate(name: string, vars: Record<string, string> = {}): string {
   let raw = templateCache.get(name);
   if (!raw) {
-    raw = fs.readFileSync(path.join(TEMPLATES_DIR, `${name}.md`), 'utf-8');
+    raw = BUNDLED_MARKDOWN_TEMPLATES[name];
+    if (raw === undefined) {
+      throw new Error(`Unknown template: ${name}`);
+    }
     templateCache.set(name, raw);
   }
   return interpolate(raw, vars);

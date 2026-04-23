@@ -3,6 +3,10 @@ dist/
 *.tsbuildinfo
 .env
 
+# Bun migration — vendored native artifacts (built by CI / dev-link)
+packages/myco/vendor-src/
+packages/myco/vendor/
+
 # User-local settings (vault paths contain home directory)
 .claude/settings.user.json
 
@@ -20,8 +24,8 @@ test-results/
 .context/
 
 # Myco managed (machine-specific)
-.agents/skills/myco
 .agents/skills/myco-rules
+.agents/skills/myco
 docs/superpowers/specs/
 docs/superpowers/plans/
 docs/design/

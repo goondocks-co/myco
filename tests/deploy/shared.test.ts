@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,10 +21,10 @@ import {
 const execCalls: Array<{ command: string; args: string[]; cwd?: string; input?: string }> = [];
 const execHandlers: Array<(args: string[], options?: { cwd?: string; input?: string; encoding?: string }) => string | Error> = [];
 
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-  return {
-    ...actual,
+import * as childProcessActual__ns from 'node:child_process';
+const childProcessActual = { ...childProcessActual__ns };
+mock.module('node:child_process', () => ({
+    ...childProcessActual,
     execFileSync: vi.fn((command: string, args: string[], options?: { cwd?: string; input?: string; encoding?: string }) => {
       execCalls.push({ command, args, cwd: options?.cwd, input: typeof options?.input === 'string' ? options.input : undefined });
       const handler = execHandlers.shift();
@@ -32,8 +33,7 @@ vi.mock('node:child_process', async () => {
       if (result instanceof Error) throw result;
       return options?.encoding ? result : Buffer.from(result);
     }),
-  };
-});
+  }));
 
 describe('local config helpers', () => {
   let tempDir: string;

@@ -6,7 +6,7 @@
  * log retention, and auto-backup.
  */
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 import type { DaemonLogger } from './logger.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';

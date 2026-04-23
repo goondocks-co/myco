@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import * as sessionStart from '@myco/hooks/session-start.js';
 import * as sessionEnd from '@myco/hooks/session-end.js';
 import * as stop from '@myco/hooks/stop.js';

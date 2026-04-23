@@ -9,10 +9,10 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
-
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 // Mock embedding before imports
-vi.mock('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
+mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';

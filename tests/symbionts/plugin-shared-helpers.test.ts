@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, it, expect } from 'vitest';
-
+import { describe, it, expect } from 'bun:test';
 /**
  * Plugin templates (opencode, pi) duplicate a helper block (BATCH_KIND,
  * bufferEvent, isIgnoredResponse, postEventWithBuffer) because they run in

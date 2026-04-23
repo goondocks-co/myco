@@ -9,7 +9,7 @@
  * the run's audit shows a phantom "override applied" event.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import {
   buildExecutionOverrides,
   countOverrides,

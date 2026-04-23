@@ -5,7 +5,7 @@
  * `rerun-prefill.ts`, `execution-overrides.ts`, and `RunTaskDialog.tsx`.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import {
   KNOWN_PROVIDER_TYPES,
   fromTaskRowProvider,

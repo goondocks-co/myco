@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import type { LlmProvider, LlmResponse, EmbeddingProvider, EmbeddingResponse, LlmRequestOptions } from '@myco/intelligence/llm';
 import { createLlmProvider, createEmbeddingProvider } from '@myco/intelligence/llm';
 

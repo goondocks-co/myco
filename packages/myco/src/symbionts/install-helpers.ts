@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
 const DEFAULT_AGENTS_STARTER = `# Project Rules
 
@@ -46,23 +47,15 @@ export function isMycoHookGroup(group: Record<string, unknown>): boolean {
  * Create a starter AGENTS.md if the project doesn't have one.
  * Idempotent — skips if AGENTS.md already exists.
  */
-export function ensureAgentsMd(projectRoot: string, packageRoot: string): void {
+export function ensureAgentsMd(projectRoot: string): void {
   const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
   if (fs.existsSync(agentsMdPath)) return;
 
-  const candidates = [
-    path.join(packageRoot, 'src/symbionts/templates/agents-starter.md'),
-    path.join(packageRoot, 'dist/src/symbionts/templates/agents-starter.md'),
-  ];
-  for (const p of candidates) {
-    try {
-      const content = fs.readFileSync(p, 'utf-8');
-      fs.writeFileSync(agentsMdPath, content, 'utf-8');
-      return;
-    } catch { /* try next */ }
-  }
-
-  fs.writeFileSync(agentsMdPath, DEFAULT_AGENTS_STARTER, 'utf-8');
+  fs.writeFileSync(
+    agentsMdPath,
+    BUNDLED_TEMPLATES['agents-starter.md'] ?? DEFAULT_AGENTS_STARTER,
+    'utf-8',
+  );
 }
 
 export function ensureSymlink(linkPath: string, target: string): void {

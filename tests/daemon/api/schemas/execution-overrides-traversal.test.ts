@@ -7,7 +7,7 @@
  * matters to both call sites (no-mutation, phase traversal, null-means-
  * delete) stays pinned independent of either transform.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { transformProviderOverrides } from '@myco/daemon/api/schemas/execution-overrides-traversal';
 
 describe('transformProviderOverrides', () => {

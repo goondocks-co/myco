@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { SessionRegistry } from '@myco/daemon/lifecycle';
 import { DaemonLogger } from '@myco/daemon/logger';

@@ -11,7 +11,8 @@
  * to the hardcoded default, and the CSRF/Origin/Content-Type gate blocks
  * the web-page exfiltration path; this test guards the last mile.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -47,27 +48,27 @@ const SENTINELS = {
 };
 
 // Stub external backends so no network is required.
-vi.mock('@myco/intelligence/ollama.js', () => ({
+mock.module('@myco/intelligence/ollama.js', () => ({
   OllamaBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:11434';
     async isAvailable() { return false; }
     async listModels() { return []; }
   },
 }));
-vi.mock('@myco/intelligence/lm-studio.js', () => ({
+mock.module('@myco/intelligence/lm-studio.js', () => ({
   LmStudioBackend: class {
     static DEFAULT_BASE_URL = 'http://localhost:1234';
     async isAvailable() { return false; }
     async listModels() { return []; }
   },
 }));
-vi.mock('@myco/agent/executor.js', () => ({
+mock.module('@myco/agent/executor.js', () => ({
   runAgent: vi.fn(async () => ({ runId: 'stub', status: 'completed' as const })),
 }));
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadMergedConfig: () => ({ agent: { tasks: {} } }),
 }));
-vi.mock('@myco/agent/config-resolver.js', () => ({
+mock.module('@myco/agent/config-resolver.js', () => ({
   hasConfiguredProvider: () => true,
 }));
 

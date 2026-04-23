@@ -13,7 +13,8 @@
  *   Anti-drift tests like `forwardsAllDocumentedQueryParams` would have caught it.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -5,7 +5,8 @@
  * race conditions with other test files running in vitest's threads pool.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import {
   getProviderEnvVars,
   buildPhaseEnv,

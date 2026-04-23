@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { registerAgent } from '@myco/db/queries/agents';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges';
 import { upsertSession } from '@myco/db/queries/sessions';

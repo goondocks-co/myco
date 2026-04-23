@@ -3,7 +3,8 @@
  *
  * Verifies the behavioral changes from the 28-finding review are correct.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun, getRunningRunForTask, getLatestRunId, STATUS_RUNNING, STATUS_COMPLETED } from '@myco/db/queries/runs.js';

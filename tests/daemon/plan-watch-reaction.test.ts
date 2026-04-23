@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { createPlanWatchReaction } from '@myco/daemon/plan-watch-reaction.js';
 import type { PlanWatchConfig } from '@myco/daemon/plan-capture.js';
 import type { MycoConfig } from '@myco/config/schema.js';

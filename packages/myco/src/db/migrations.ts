@@ -6,7 +6,7 @@
  * iterate over instead of hand-coding version checks.
  */
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import {

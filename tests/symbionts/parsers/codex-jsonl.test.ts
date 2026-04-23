@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 
 /**

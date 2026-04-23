@@ -113,6 +113,11 @@ function toAttachmentBase(row: Record<string, unknown>): AttachmentListRow {
 
 /** Normalize a SQLite result row into a typed AttachmentRow (includes BLOB). */
 function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
+  // bun:sqlite returns BLOB columns as Uint8Array; better-sqlite3 returned Buffer.
+  // Wrap in Buffer.from so downstream callers that rely on Buffer semantics
+  // (Buffer.isBuffer, .toString('base64'), etc.) keep working.
+  const raw = row.data as Uint8Array | Buffer | null | undefined;
+  const data = raw == null ? null : Buffer.isBuffer(raw) ? raw : Buffer.from(raw as Uint8Array);
   return {
     id: row.id as string,
     session_id: row.session_id as string,
@@ -122,7 +127,7 @@ function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
     description: (row.description as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
-    data: (row.data as Buffer) ?? null,
+    data,
   };
 }
 

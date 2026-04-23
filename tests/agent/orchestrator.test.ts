@@ -1,25 +1,12 @@
 /**
  * Tests for the orchestrator module.
  *
- * The prompt template file is mocked via vi.mock('node:fs') so tests never
- * touch the real filesystem. Each test suite exercises one exported function.
+ * Prompt-template loading is controlled via targeted fs spies so tests never
+ * touch the real filesystem and don't poison other suites.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// ---------------------------------------------------------------------------
-// Mock node:fs so readFileSync returns a controlled template
-// ---------------------------------------------------------------------------
-
-vi.mock('node:fs', () => ({
-  default: {
-    readFileSync: vi.fn(),
-    existsSync: vi.fn(() => true),
-  },
-  readFileSync: vi.fn(),
-  existsSync: vi.fn(() => true),
-}));
-
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 
 // Import after mocks are registered
@@ -27,6 +14,8 @@ import {
   composeOrchestratorPrompt,
   parseOrchestratorPlan,
   applyDirectives,
+  resetOrchestratorPromptTemplateCacheForTests,
+  resolveOrchestratorPromptTemplate,
 } from '@myco/agent/orchestrator.js';
 import type { PhaseDefinition, OrchestratorPhaseDirective } from '@myco/agent/types.js';
 import type { ContextQueryResult } from '@myco/agent/context-queries.js';
@@ -76,7 +65,14 @@ function makeDirective(overrides: Partial<OrchestratorPhaseDirective> = {}): Orc
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(fs.readFileSync).mockReturnValue(TEST_TEMPLATE);
+  vi.spyOn(fs, 'readFileSync').mockReturnValue(TEST_TEMPLATE as never);
+  vi.spyOn(fs, 'existsSync').mockReturnValue(true as never);
+  resetOrchestratorPromptTemplateCacheForTests();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetOrchestratorPromptTemplateCacheForTests();
 });
 
 // ---------------------------------------------------------------------------
@@ -150,6 +146,13 @@ describe('composeOrchestratorPrompt', () => {
     expect(result).not.toContain('{{vault_state}}');
     expect(result).not.toContain('{{phase_definitions}}');
     expect(result).not.toContain('{{context_results}}');
+  });
+
+  it('falls back to the bundled prompt template for Bun virtual paths', () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false as never);
+    const result = resolveOrchestratorPromptTemplate('/$bunfs/root');
+    expect(result).toContain('# Orchestrator');
+    expect(result).toContain('{{vault_state}}');
   });
 });
 

@@ -16,7 +16,7 @@
  *  - Flag the deleted-task edge case via `taskMissing`.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import { buildRerunPrefill } from '../../packages/myco/ui/src/components/agent/rerun-prefill';
 import type { RunRow, TaskRow } from '../../packages/myco/ui/src/hooks/use-agent';
 

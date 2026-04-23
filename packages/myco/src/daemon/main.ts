@@ -487,14 +487,30 @@ export async function main(): Promise<void> {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: (err as Error).message });
   }
 
-  // Resolve dist/ui/ from the package root
+  // Resolve dist/ui/ from the package root. Two candidate origins:
+  //   1. `import.meta.url` — works under dev mode (tsx/bun run) and the
+  //      old tsup build where each JS lives under the package root.
+  //   2. `process.execPath` — needed in the Bun-compiled binary because
+  //      `import.meta.url` there is a `/$bunfs/` virtual path that
+  //      findPackageRoot can't walk. The binary sits at
+  //      `<pkg-root>/vendor/<target>/myco`, so walking up from its real
+  //      path lands on the package root where `dist/ui/` lives.
   let uiDir: string | null = null;
   const uiDevProxyTarget = process.env.MYCO_UI_DEV_PROXY_TARGET || null;
   {
-    const root = findPackageRoot(path.dirname(new URL(import.meta.url).pathname));
-    if (root) {
+    const origins: string[] = [];
+    try {
+      origins.push(path.dirname(new URL(import.meta.url).pathname));
+    } catch { /* bunfs URL — fall through to execPath */ }
+    try {
+      origins.push(path.dirname(fs.realpathSync(process.execPath)));
+    } catch { /* no real path — ignore */ }
+
+    for (const origin of origins) {
+      const root = findPackageRoot(origin);
+      if (!root) continue;
       const candidate = path.join(root, 'dist', 'ui');
-      if (fs.existsSync(candidate)) uiDir = candidate;
+      if (fs.existsSync(candidate)) { uiDir = candidate; break; }
     }
   }
   if (uiDevProxyTarget) {

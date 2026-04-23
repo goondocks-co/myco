@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
 import { loadLocalConfig, loadMergedConfig, saveLocalConfig, updateLocalConfig } from '@myco/config/loader';
 import fs from 'node:fs';

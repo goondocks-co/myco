@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 
-vi.mock('@myco/symbionts/detect.js', () => ({
+mock.module('@myco/symbionts/detect.js', () => ({
   loadManifests: vi.fn().mockReturnValue([
     {
       name: 'claude-code', displayName: 'Claude Code', binary: 'claude',
@@ -22,7 +23,7 @@ vi.mock('@myco/symbionts/detect.js', () => ({
   resolvePackageRoot: vi.fn().mockReturnValue('/tmp'),
 }));
 
-vi.mock('@myco/symbionts/installer.js', () => ({
+mock.module('@myco/symbionts/installer.js', () => ({
   SymbiontInstaller: vi.fn(function MockSymbiontInstaller() {
     return {
     install: vi.fn().mockReturnValue({ hooks: false, mcp: false, skills: false, settings: false, instructions: false }),
@@ -32,13 +33,11 @@ vi.mock('@myco/symbionts/installer.js', () => ({
 }));
 
 const postMock = vi.fn();
-vi.mock('@myco/cli/shared.js', async () => {
-  const actual = await vi.importActual<typeof import('@myco/cli/shared.js')>('@myco/cli/shared.js');
-  return {
-    ...actual,
-    connectToDaemon: vi.fn(async () => ({ post: postMock })),
-  };
-});
+const sharedActual = await import('@myco/cli/shared.js');
+mock.module('@myco/cli/shared.js', () => ({
+  ...sharedActual,
+  connectToDaemon: vi.fn(async () => ({ post: postMock })),
+}));
 
 describe('myco update', () => {
   let testDir: string;

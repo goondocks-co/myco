@@ -9,8 +9,8 @@
  *     *TokensDetails arrays (local OpenAI-compatible providers).
  */
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-
+import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 // ---------------------------------------------------------------------------
 // Mock @openai/agents — capture Runner.run args, control the result
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ let mockRunResult: {
   appendItems: [],
 };
 
-vi.mock('@openai/agents', () => {
+mock.module('@openai/agents', () => {
   class Agent {
     constructor(public readonly config: Record<string, unknown>) {}
   }
@@ -75,7 +75,7 @@ vi.mock('@openai/agents', () => {
 // Mock openai (constructed as `new OpenAI(...)` in the runtime)
 // ---------------------------------------------------------------------------
 
-vi.mock('openai', () => {
+mock.module('openai', () => {
   return {
     default: class OpenAI {
       constructor(public readonly config: Record<string, unknown>) {}
@@ -87,11 +87,11 @@ vi.mock('openai', () => {
 // Mock local-provider prep to avoid touching Ollama/LM Studio backends
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/ollama-context.js', () => ({
+mock.module('@myco/agent/ollama-context.js', () => ({
   ensureOllamaContextVariant: async (model: string) => model,
 }));
 
-vi.mock('@myco/intelligence/lm-studio.js', () => ({
+mock.module('@myco/intelligence/lm-studio.js', () => ({
   LmStudioBackend: class {
     async ensureLoaded() {}
     getLoadedInstanceId() { return null; }
@@ -108,7 +108,7 @@ let mockMcpServer: { connect: ReturnType<typeof vi.fn>; close: ReturnType<typeof
   close: vi.fn(async () => {}),
 };
 
-vi.mock('@myco/agent/runtime/openai-local-mcp.js', () => ({
+mock.module('@myco/agent/runtime/openai-local-mcp.js', () => ({
   createLocalVaultMcpServer: (toolSurface: Record<string, unknown>) => {
     mcpServerCalls.push(toolSurface);
     return mockMcpServer;

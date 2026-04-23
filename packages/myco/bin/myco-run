@@ -20,9 +20,10 @@
 //      references a dev binary the current process can't reach.
 //
 //   2. Self-locate — resolve this launcher's own install via
-//      realpathSync(argv[1]) and exec `<install>/dist/src/cli.js`. This
-//      is the historical behavior: cwd-independent, immune to PATH
-//      pollution, correct for prod (homebrew) and dev (npm link) alike.
+//      realpathSync(argv[1]) and exec the sibling packaged launcher
+//      (`bin/myco.cjs`). This keeps `myco-run` aligned with the Bun
+//      package layout, where `myco` dispatches into the selected compiled
+//      binary under vendor/.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,9 +60,23 @@ function tryRedirectViaAlias(argv) {
   }
 }
 
-function execSelfLocated(argv) {
+function resolveSelfLocatedEntry() {
   const scriptPath = fs.realpathSync(process.argv[1]);
-  const cliEntry = path.resolve(path.dirname(scriptPath), '..', 'dist', 'src', 'cli.js');
+  const installRoot = path.resolve(path.dirname(scriptPath), '..');
+  const candidate = path.join(installRoot, 'bin', 'myco.cjs');
+  if (fs.existsSync(candidate)) return candidate;
+
+  throw new Error(`could not locate packaged Myco CLI under ${installRoot}`);
+}
+
+function execSelfLocated(argv) {
+  let cliEntry;
+  try {
+    cliEntry = resolveSelfLocatedEntry();
+  } catch (error) {
+    process.stderr.write(`[myco-run] ${error.message}\n`);
+    process.exit(1);
+  }
 
   try {
     execFileSync(process.execPath, [cliEntry, ...argv], { stdio: 'inherit' });

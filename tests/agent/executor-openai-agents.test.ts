@@ -1,3 +1,9 @@
+import * as __orig__myco_agent_ollama_context_js_1__ns from '@myco/agent/ollama-context.js';
+const __orig__myco_agent_ollama_context_js_1 = { ...__orig__myco_agent_ollama_context_js_1__ns };
+import * as __orig__myco_agent_loader_js_2__ns from '@myco/agent/loader.js';
+const __orig__myco_agent_loader_js_2 = { ...__orig__myco_agent_loader_js_2__ns };
+import * as __orig__myco_db_client_js_3__ns from '@myco/db/client.js';
+const __orig__myco_db_client_js_3 = { ...__orig__myco_db_client_js_3__ns };
 /**
  * Executor tests that exercise the openai-agents runtime path.
  *
@@ -8,7 +14,8 @@
  * the executor threads dryRun + resumes lastResponseId correctly.
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import crypto from 'node:crypto';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
@@ -42,7 +49,7 @@ interface MockRunOptions {
 const runnerCalls: Array<{ agent: unknown; input: string; options: MockRunOptions; priorSessionItems: unknown[] }> = [];
 let mockLastResponseId = 'resp_openai_final';
 
-vi.mock('@openai/agents', () => {
+mock.module('@openai/agents', () => {
   class Agent {
     constructor(public readonly config: Record<string, unknown>) {}
   }
@@ -80,7 +87,7 @@ vi.mock('@openai/agents', () => {
 // Mock: openai
 // ---------------------------------------------------------------------------
 
-vi.mock('openai', () => ({
+mock.module('openai', () => ({
   default: class OpenAI {
     constructor(public readonly config: Record<string, unknown>) {}
   },
@@ -90,8 +97,8 @@ vi.mock('openai', () => ({
 // Mock: local provider prep
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/ollama-context.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/ollama-context.js')>();
+mock.module('@myco/agent/ollama-context.js', () => {
+  const original = __orig__myco_agent_ollama_context_js_1;
   return {
     ...original,
     ensureOllamaContextVariant: async (model: string) => model,
@@ -102,7 +109,7 @@ vi.mock('@myco/agent/ollama-context.js', async (importOriginal) => {
 // Mock: Claude SDK (unused here, but pulled in by indirect imports)
 // ---------------------------------------------------------------------------
 
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+mock.module('@anthropic-ai/claude-agent-sdk', () => ({
   query: () => ({
     [Symbol.asyncIterator]: async function* () {},
     interrupt: async () => {},
@@ -124,8 +131,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 // Mock: loader
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/agent/loader.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/agent/loader.js')>();
+mock.module('@myco/agent/loader.js', () => {
+  const original = __orig__myco_agent_loader_js_2;
   return {
     ...original,
     resolveDefinitionsDir: () => '/mock/definitions',
@@ -151,7 +158,7 @@ vi.mock('@myco/agent/loader.js', async (importOriginal) => {
   };
 });
 
-vi.mock('@myco/agent/registry.js', () => ({
+mock.module('@myco/agent/registry.js', () => ({
   loadAllTasks: () => {
     const tasks = new Map();
     tasks.set(TEST_TASK_NAME, {
@@ -166,7 +173,7 @@ vi.mock('@myco/agent/registry.js', () => ({
   },
 }));
 
-vi.mock('@myco/agent/context.js', () => ({
+mock.module('@myco/agent/context.js', () => ({
   buildVaultContext: () => '## Current Vault State\nagent_id: myco-agent',
 }));
 
@@ -176,7 +183,7 @@ vi.mock('@myco/agent/context.js', () => ({
 
 let localMcpCalls: Array<Record<string, unknown>> = [];
 
-vi.mock('@myco/agent/runtime/openai-local-mcp.js', () => ({
+mock.module('@myco/agent/runtime/openai-local-mcp.js', () => ({
   createLocalVaultMcpServer: (toolSurface: Record<string, unknown>) => {
     localMcpCalls.push(toolSurface);
     return {
@@ -190,8 +197,8 @@ vi.mock('@myco/agent/runtime/openai-local-mcp.js', () => ({
 // Mock: DB client — use in-memory
 // ---------------------------------------------------------------------------
 
-vi.mock('@myco/db/client.js', async (importOriginal) => {
-  const original = await importOriginal<typeof import('@myco/db/client.js')>();
+mock.module('@myco/db/client.js', () => {
+  const original = __orig__myco_db_client_js_3;
   return {
     ...original,
     initDatabase: (...args: unknown[]) => {
@@ -204,7 +211,7 @@ vi.mock('@myco/db/client.js', async (importOriginal) => {
   };
 });
 
-vi.mock('@myco/config/loader.js', () => ({
+mock.module('@myco/config/loader.js', () => ({
   loadConfig: () => ({
     version: 3,
     config_version: 0,

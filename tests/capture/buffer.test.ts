@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { EventBuffer, resolveSessionFromBuffer } from '@myco/capture/buffer';
 import fs from 'node:fs';
 import path from 'node:path';

@@ -3,7 +3,8 @@
  * rolling content back to a prior revision via POST.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { AnthropicBackend } from '@myco/intelligence/anthropic';
 import { LmStudioBackend } from '@myco/intelligence/lm-studio';
 import { OllamaBackend } from '@myco/intelligence/ollama';

@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { generateEmbedding } from '@myco/intelligence/embeddings';
 import type { EmbeddingProvider } from '@myco/intelligence/llm';
 

@@ -1,17 +1,18 @@
 // @vitest-environment jsdom
 
 import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { ScopedField } from '../../packages/myco/ui/src/components/config/ScopedField';
 import type { MycoConfig } from '../../packages/myco/ui/src/hooks/use-config';
 
 const useScopedConfigMock = vi.fn();
 
-vi.mock('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
+mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
   useScopedConfig: () => useScopedConfigMock(),
 }));
 
-vi.mock('../../packages/myco/ui/src/components/config/restart-gate', () => ({
+mock.module('../../packages/myco/ui/src/components/config/restart-gate', () => ({
   useMarkRestartDirty: () => vi.fn(),
 }));
 

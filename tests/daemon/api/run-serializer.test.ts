@@ -7,7 +7,7 @@
  * than crashing the list endpoint and hiding every other row.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { serializeRun } from '@myco/daemon/api/run-serializer.js';
 import type { RunRow } from '@myco/db/queries/runs.js';
 

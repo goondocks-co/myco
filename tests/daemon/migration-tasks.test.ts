@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { runPendingMigrationTasks } from '@myco/daemon/migration-tasks.js';
 import { getDatabase } from '@myco/db/client.js';

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import { normalizeSearchNamespace } from '@myco/daemon/api/search.js';
 
 describe('normalizeSearchNamespace', () => {

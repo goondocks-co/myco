@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';

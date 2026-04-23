@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import fs from 'node:fs';
@@ -1814,6 +1814,23 @@ describe('installInstructions', () => {
     expect(content).toContain('Gemini CLI');
   });
 
+  it('installs bundled AGENTS and instructions templates without package template files on disk', () => {
+    fs.rmSync(packageRoot, { recursive: true, force: true });
+    fs.mkdirSync(packageRoot, { recursive: true });
+
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    const result = installer.installInstructions();
+    expect(result).toBe(true);
+
+    const agents = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('Project Rules');
+    expect(agents).toContain('/myco-rules');
+
+    const instructions = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
+    expect(instructions).toContain('Claude Code');
+    expect(instructions).toContain('AGENTS.md');
+  });
+
   it('returns false when no instructionsFile in manifest', () => {
     const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
     expect(installer.installInstructions()).toBe(false);
@@ -2313,7 +2330,10 @@ describe('opencode (plugin-file hooks)', () => {
       writePluginWithMarkers('const INLINED = "still valid";');
       // Deliberately no writeSharedSnippet()
 
-      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
+      // Suppress the BUNDLED_TEMPLATES fallback so this test can observe
+      // the "snippet absent on disk" path. In a real compiled binary the
+      // snippet is always baked in and this fallback is unreachable.
+      const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot, true);
       installer.install();
 
       const installed = fs.readFileSync(

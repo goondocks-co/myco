@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { initTeamSync } from '@myco/daemon/team-sync-init.js';
 
 const {
@@ -11,11 +12,11 @@ const {
   readSecretsMock: vi.fn(),
 }));
 
-vi.mock('@myco/config/secrets.js', () => ({
+mock.module('@myco/config/secrets.js', () => ({
   readSecrets: readSecretsMock,
 }));
 
-vi.mock('@myco/db/queries/team-outbox.js', () => ({
+mock.module('@myco/db/queries/team-outbox.js', () => ({
   listPending: vi.fn(() => []),
   markSent: vi.fn(),
   markSourceRowsSynced: vi.fn(),
@@ -25,7 +26,7 @@ vi.mock('@myco/db/queries/team-outbox.js', () => ({
   countPending: vi.fn(() => 0),
 }));
 
-vi.mock('@myco/daemon/team-sync.js', () => ({
+mock.module('@myco/daemon/team-sync.js', () => ({
   TeamSyncClient: class {
     connect = connectMock;
     pushBatch = vi.fn();

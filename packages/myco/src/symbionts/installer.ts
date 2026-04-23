@@ -6,6 +6,7 @@ import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
+import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -147,6 +148,10 @@ export class SymbiontInstaller {
     private manifest: SymbiontManifest,
     private projectRoot: string,
     private packageRoot: string,
+    // When true, the bundled-templates fallback is suppressed. Tests use
+    // this to exercise scenarios where a specific template file is absent
+    // from the packageRoot without inheriting the baked-in copy.
+    private suppressBundledTemplates: boolean = false,
   ) {}
 
   /**
@@ -155,6 +160,9 @@ export class SymbiontInstaller {
    * a shared template or `'opencode/plugin.ts'` for a per-agent template.
    */
   private readTemplateFile(relPath: string): string | null {
+    // Prefer on-disk templates in dev/test so local edits and fixture package
+    // roots are reflected immediately. The bundled map remains the compiled
+    // binary fallback when those package files are unavailable under /$bunfs/.
     const candidates = [
       path.join(this.packageRoot, TEMPLATES_SUBDIR, relPath),
       // tsup preserves the src/ prefix under dist/, so the same subdir works in both layouts
@@ -163,6 +171,11 @@ export class SymbiontInstaller {
     for (const filePath of candidates) {
       try { return fs.readFileSync(filePath, 'utf-8'); } catch { /* try next */ }
     }
+
+    if (this.suppressBundledTemplates) return null;
+    const key = relPath.split(path.sep).join('/');
+    const bundled = BUNDLED_TEMPLATES[key];
+    if (bundled !== undefined) return bundled;
     return null;
   }
 
@@ -272,7 +285,7 @@ export class SymbiontInstaller {
   }
 
   private reconcileAgentsMd(): void {
-    ensureAgentsMd(this.projectRoot, this.packageRoot);
+    ensureAgentsMd(this.projectRoot);
     const agentsPath = path.join(this.projectRoot, 'AGENTS.md');
     let content = '';
     try {
@@ -644,7 +657,7 @@ export class SymbiontInstaller {
     if (!reg?.instructionsFile) return false;
 
     // Ensure AGENTS.md exists before creating stubs that reference it
-    ensureAgentsMd(this.projectRoot, this.packageRoot);
+    ensureAgentsMd(this.projectRoot);
 
     const targetPath = path.join(this.projectRoot, reg.instructionsFile);
 
@@ -663,14 +676,7 @@ export class SymbiontInstaller {
     }
 
     // File doesn't exist — write the full stub template
-    const templateCandidates = [
-      path.join(this.packageRoot, 'src/symbionts/templates/instructions-stub.md'),
-      path.join(this.packageRoot, 'dist/src/symbionts/templates/instructions-stub.md'),
-    ];
-    let stub: string | null = null;
-    for (const p of templateCandidates) {
-      try { stub = fs.readFileSync(p, 'utf-8'); break; } catch { /* try next */ }
-    }
+    let stub = this.readTemplateFile('instructions-stub.md');
     if (!stub) return false;
 
     stub = stub.replace('{agentDisplayName}', this.manifest.displayName);

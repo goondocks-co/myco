@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

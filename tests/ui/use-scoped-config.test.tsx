@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 
 import { renderHook, act } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { useScopedConfig } from '../../packages/myco/ui/src/hooks/use-scoped-config';
 
 const invalidateQueriesMock = vi.fn();
 const writeScopedConfigMock = vi.fn();
 const clearLocalConfigKeysMock = vi.fn();
 
-vi.mock('@tanstack/react-query', () => ({
+mock.module('@tanstack/react-query', () => ({
   useQuery: vi.fn(({ queryKey }: { queryKey: readonly string[] }) => ({
     data: queryKey[1] === 'merged'
       ? {
@@ -23,7 +24,7 @@ vi.mock('@tanstack/react-query', () => ({
   }),
 }));
 
-vi.mock('../../packages/myco/ui/src/lib/api', () => ({
+mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchMergedConfig: vi.fn(),
   fetchLocalConfig: vi.fn(),
   writeScopedConfig: (...args: unknown[]) => writeScopedConfigMock(...args),

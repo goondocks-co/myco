@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { nowSec, seedSession } from '../helpers/sessions.js';
 import { createReconciler } from '@myco/daemon/reconciliation.js';

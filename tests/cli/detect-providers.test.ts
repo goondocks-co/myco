@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { run } from '@myco/cli/detect-providers';
 
 describe('myco detect-providers', () => {

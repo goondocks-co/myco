@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { windsurfAdapter } from '@myco/symbionts/windsurf.js';
 
 /** Build a JSONL string from an array of objects. */

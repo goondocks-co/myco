@@ -7,7 +7,7 @@
  * a regression cannot silently re-open the CSRF window that enables SSRF
  * exfiltration of the daemon's stored provider API keys.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import fs from 'node:fs';

@@ -13,7 +13,7 @@
  * flag so the embedder knows which rows still need vectors.
  */
 
-import type { Database } from 'better-sqlite3';
+import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES } from './schema-ddl.js';
 import { MIGRATIONS } from './migrations.js';

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,7 +11,16 @@ function spawnReadStdinChild() {
     process.stdout.write(JSON.stringify({ data }));
   `;
 
-  return spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+  // Under bun test, process.execPath is bun itself — which accepts TypeScript
+  // files natively and runs `-e <script>` as an ES module. Under node test
+  // runs we fall back to the tsx-import path.
+  const isBun = typeof (process as unknown as { isBun?: boolean }).isBun !== 'undefined'
+    || process.execPath.endsWith('bun') || process.execPath.endsWith('bun.exe');
+  const args = isBun
+    ? ['-e', script]
+    : ['--import', 'tsx', '--input-type=module', '-e', script];
+
+  return spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }

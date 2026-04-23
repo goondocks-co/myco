@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { handleGetModels } from '@myco/daemon/api/models.js';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
 

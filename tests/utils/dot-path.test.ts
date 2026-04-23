@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { getAtPath, setAtPath, unsetAtPath } from '@myco/utils/dot-path';
 
 describe('getAtPath', () => {

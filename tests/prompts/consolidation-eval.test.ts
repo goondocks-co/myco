@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { loadPrompt } from '@myco/prompts/index';
 import { createLlmProvider } from '@myco/intelligence/llm';
 import { stripReasoningTokens } from '@myco/intelligence/response';

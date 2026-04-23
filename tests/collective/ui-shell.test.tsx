@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { describe, expect, it } from 'bun:test';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import Layout from '../../packages/myco-collective/ui/src/layout/Layout';

@@ -7,7 +7,7 @@
  * pass-through, and the phase-override rewriting.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import {
   resolveOllamaContextVariants,
   DEFAULT_OLLAMA_CONTEXT_LENGTH,

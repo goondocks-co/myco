@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import type { EmbeddingProvider } from '@myco/intelligence/llm';
 import type { EmbeddingProviderConfig } from '@myco/config/schema';
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema';

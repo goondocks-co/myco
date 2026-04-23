@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { handleContext } from '@myco-team-worker/mcp/tools/context';
 import { createFakeD1, parseToolResult } from './_helpers';
 

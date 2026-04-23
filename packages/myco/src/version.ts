@@ -1,5 +1,6 @@
 /**
- * Plugin version — injected at build time by tsup define.
+ * Plugin version — set at startup by the per-target compiled entry file via
+ * `setPluginVersion()` (Bun embeds the package.json; see cli.<target>.ts).
  * Falls back to reading package.json for unbundled execution (tests, tsx).
  */
 import fs from 'node:fs';
@@ -7,20 +8,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPackageRoot } from './utils/find-package-root.js';
 
-declare const __MYCO_VERSION__: string;
-
 let cached: string | undefined;
+
+/**
+ * Register the plugin version. Called by the per-target entry after
+ * importing package.json. Last call wins; idempotent.
+ */
+export function setPluginVersion(version: string): void {
+  cached = version;
+}
 
 export function getPluginVersion(): string {
   if (cached) return cached;
 
-  // Primary: build-time injected constant
-  if (typeof __MYCO_VERSION__ !== 'undefined') {
-    cached = __MYCO_VERSION__;
-    return cached;
-  }
-
-  // Fallback: read package.json from package root (unbundled/test execution)
   const root = findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (root) {
     try {

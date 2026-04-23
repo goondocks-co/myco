@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'bun:test';
 import { classifyNextPromptKind, extractUserPromptKinds } from '@myco/capture/prompt-kind.js';
 
 // Regression: Claude Code writes real user prompts with `message.content` as a

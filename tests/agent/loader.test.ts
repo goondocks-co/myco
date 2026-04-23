@@ -8,7 +8,7 @@
  * - Registering built-in agents and tasks into PGlite
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
@@ -149,6 +149,12 @@ describe('agent loader', () => {
     it('throws when definitions directory does not exist', () => {
       expect(() => loadAgentDefinition('/nonexistent/path')).toThrow();
     });
+
+    it('falls back to bundled agent definition for Bun virtual paths', () => {
+      const def = loadAgentDefinition('/$bunfs/root/definitions');
+      expect(def.name).toBe('myco-agent');
+      expect(def.systemPromptPath).toBe('../prompts/agent.md');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -214,6 +220,12 @@ describe('agent loader', () => {
       expect(tasks).toEqual([]);
     });
 
+    it('falls back to bundled tasks for Bun virtual paths', () => {
+      const tasks = loadAgentTasks('/$bunfs/root/definitions');
+      expect(tasks).toHaveLength(EXPECTED_TASK_COUNT);
+      expect(tasks.map((task) => task.name)).toContain('title-summary');
+    });
+
     it('loads schedule from vault-evolve task', () => {
       const tasks = loadAgentTasks(DEFINITIONS_DIR);
       const fi = tasks.find((t) => t.name === 'vault-evolve');
@@ -260,6 +272,11 @@ describe('agent loader', () => {
 
     it('throws for missing prompt file', () => {
       expect(() => loadSystemPrompt(DEFINITIONS_DIR, '../prompts/nonexistent.md')).toThrow();
+    });
+
+    it('falls back to bundled prompts for Bun virtual paths', () => {
+      const content = loadSystemPrompt('/$bunfs/root/definitions', '../prompts/agent.md');
+      expect(content).toContain('You are the Myco intelligence agent.');
     });
   });
 

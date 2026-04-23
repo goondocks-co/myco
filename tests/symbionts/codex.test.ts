@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { codexAdapter } from '@myco/symbionts/codex.js';
 
 /** Build a JSONL string from an array of objects. */

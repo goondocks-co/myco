@@ -12,19 +12,42 @@
  * - resolveMycoBinary — dev CLI entry vs literal `myco` fallback
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { vi } from '../helpers/vi-shim.js';
 import { MS_PER_HOUR } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be hoisted before any imports that use the mocked modules
 // ---------------------------------------------------------------------------
 
-vi.mock('node:fs');
-vi.mock('node:child_process');
-vi.mock('node:os', () => ({
+// bun:test requires a factory for mock.module. Provide one that returns
+// mock fns for every fs method touched by update-checker, wired under both
+// the default export and named exports so `import fs from 'node:fs'` and
+// destructured imports both see the same mocks.
+const fsMocks = {
+  readFileSync: mock(() => {
+    const err: NodeJS.ErrnoException = new Error('ENOENT');
+    err.code = 'ENOENT';
+    throw err;
+  }),
+  writeFileSync: mock(() => undefined),
+  mkdirSync: mock(() => undefined),
+  unlinkSync: mock(() => undefined),
+};
+mock.module('node:fs', () => ({
+  default: fsMocks,
+  ...fsMocks,
+}));
+const execFileSyncMock = mock(() => '' as string | Buffer);
+mock.module('node:child_process', () => ({
+  default: { execFileSync: execFileSyncMock },
+  execFileSync: execFileSyncMock,
+}));
+mock.module('node:os', () => ({
   default: {
     homedir: () => '/mock-home',
   },
+  homedir: () => '/mock-home',
 }));
 
 // The constants module re-exports paths based on os.homedir(). Since vitest
@@ -49,6 +72,7 @@ import {
   type CachedCheck,
   type UpdateConfig,
 } from '@myco/daemon/update-checker.js';
+import { UPDATE_CONFIG_PATH } from '@myco/constants/update.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,7 +216,7 @@ describe('readUpdateConfig()', () => {
 
   it('reads channel from yaml when file exists', () => {
     mockFileContent(
-      '/mock-home/.myco/update.yaml',
+      UPDATE_CONFIG_PATH,
       'channel: beta\ncheck_interval_hours: 12\n',
     );
     const config = readUpdateConfig();
@@ -202,7 +226,7 @@ describe('readUpdateConfig()', () => {
 
   it('falls back to stable channel for unknown channel values', () => {
     mockFileContent(
-      '/mock-home/.myco/update.yaml',
+      UPDATE_CONFIG_PATH,
       'channel: nightly\ncheck_interval_hours: 6\n',
     );
     const config = readUpdateConfig();
@@ -211,7 +235,7 @@ describe('readUpdateConfig()', () => {
 
   it('falls back to default interval for invalid interval value', () => {
     mockFileContent(
-      '/mock-home/.myco/update.yaml',
+      UPDATE_CONFIG_PATH,
       'channel: stable\ncheck_interval_hours: -5\n',
     );
     const config: UpdateConfig = readUpdateConfig();
@@ -306,7 +330,7 @@ describe('checkForUpdate()', () => {
     beforeEach(() => {
       // Config file returns beta channel
       mockFileContent(
-        '/mock-home/.myco/update.yaml',
+        UPDATE_CONFIG_PATH,
         'channel: beta\ncheck_interval_hours: 6\n',
       );
     });

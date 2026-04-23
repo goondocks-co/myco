@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import { createConfigReactionRegistry } from '@myco/daemon/config-reactions/registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 

@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
-vi.mock('@myco/services/stats.js', () => ({
+mock.module('@myco/services/stats.js', () => ({
   gatherStats: vi.fn(),
 }));
 

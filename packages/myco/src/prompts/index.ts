@@ -1,38 +1,22 @@
 /**
- * Prompt loader — reads .md templates from disk and interpolates variables.
- * Prompts are markdown files in this directory, not TypeScript strings.
+ * Prompt loader for package-owned markdown assets.
+ *
+ * These prompts are bundled into code at build time so the compiled Bun
+ * binary never depends on runtime filesystem reads under /$bunfs/.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from '../utils/find-package-root.js';
-
-/**
- * Resolve the prompts directory. With tsup code-splitting, import.meta.url
- * points to a chunk file (dist/chunk-XXXX.js), not dist/src/prompts/.
- */
-function resolvePromptsDir(): string {
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-
-  // Check if we're already in the prompts directory (tsc output or dev mode)
-  if (fs.existsSync(path.join(scriptDir, 'extraction.md'))) return scriptDir;
-
-  // Walk up to package root, then use dist/src/prompts/
-  const root = findPackageRoot(scriptDir);
-  if (root) return path.join(root, 'dist', 'src', 'prompts');
-
-  return scriptDir;
-}
-
-const PROMPTS_DIR = resolvePromptsDir();
+import { BUNDLED_PROMPTS } from '../static-assets.generated.js';
 
 const promptCache = new Map<string, string>();
 
 export function loadPrompt(name: string): string {
   let cached = promptCache.get(name);
   if (!cached) {
-    cached = fs.readFileSync(path.join(PROMPTS_DIR, `${name}.md`), 'utf-8').trim();
+    const bundled = BUNDLED_PROMPTS[name];
+    if (bundled === undefined) {
+      throw new Error(`Unknown prompt: ${name}`);
+    }
+    cached = bundled.trim();
     promptCache.set(name, cached);
   }
   return cached;
@@ -103,4 +87,3 @@ export function buildSimilarityPrompt(
     candidateSummary,
   });
 }
-
