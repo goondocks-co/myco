@@ -6,7 +6,7 @@ import type { DaemonLogger } from './logger.js';
 import { getPluginVersion } from '../version.js';
 import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
-import { DAEMON_EVICT_TIMEOUT_MS, DAEMON_EVICT_POLL_MS } from '../constants.js';
+import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 
 const DEFAULT_STATUS = 200;
@@ -280,41 +280,14 @@ export class DaemonServer {
   /**
    * Kill any existing daemon for this vault before taking over.
    * Prevents orphaned daemons when spawned from worktrees or plugin upgrades.
-   * Must be called BEFORE resolvePort() so the old daemon releases the port.
+   * Must be called BEFORE `server.start()` so the old daemon releases the
+   * canonical port.
+   *
+   * Delegates to `evictDaemonsForVault`, which also handles orphans that
+   * hold the canonical port but aren't recorded in daemon.json.
    */
   async evictExistingDaemon(): Promise<void> {
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    let existingPid: number | undefined;
-    try {
-      const content = fs.readFileSync(jsonPath, 'utf-8');
-      const info = JSON.parse(content);
-      if (typeof info.pid === 'number' && info.pid !== process.pid) {
-        existingPid = info.pid;
-      }
-    } catch { /* no daemon.json or invalid — nothing to evict */ }
-
-    if (!existingPid) return;
-
-    // Check if the process is alive
-    try { process.kill(existingPid, 0); } catch { return; /* already dead */ }
-
-    this.logger.info(LOG_KINDS.DAEMON_START, 'Evicting existing daemon', { pid: existingPid });
-    try { process.kill(existingPid, 'SIGTERM'); } catch { return; }
-
-    // Give SIGTERM a grace period, then escalate to SIGKILL to guarantee port release
-    const deadline = Date.now() + DAEMON_EVICT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, DAEMON_EVICT_POLL_MS));
-      try { process.kill(existingPid, 0); } catch { return; /* dead */ }
-    }
-
-    this.logger.warn(LOG_KINDS.DAEMON_START, 'Evicted daemon did not exit in time, sending SIGKILL', { pid: existingPid });
-    try { process.kill(existingPid, 'SIGKILL'); } catch { return; }
-
-    // Verify SIGKILL took effect
-    await new Promise((r) => setTimeout(r, DAEMON_EVICT_POLL_MS));
-    try { process.kill(existingPid, 0); } catch { return; /* dead */ }
-    this.logger.warn(LOG_KINDS.DAEMON_START, 'Evicted daemon still alive after SIGKILL', { pid: existingPid });
+    await evictDaemonsForVault(this.vaultDir, { logger: this.logger });
   }
 
   private writeDaemonJson(): void {

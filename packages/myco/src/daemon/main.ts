@@ -10,8 +10,8 @@
 import { DaemonServer } from './server.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
-import { loadMergedConfig, updateConfig } from '../config/loader.js';
-import { resolvePort } from './port.js';
+import { loadMergedConfig } from '../config/loader.js';
+import { derivePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
@@ -171,6 +171,28 @@ import os from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
+// Sibling probe
+// ---------------------------------------------------------------------------
+
+/**
+ * True when `127.0.0.1:<port>/health` responds with a myco daemon heartbeat.
+ * Used during startup to distinguish a concurrent sibling (step-aside
+ * candidate) from an unrelated port squatter.
+ */
+export async function isHealthyMycoSibling(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+    });
+    if (!res.ok) return false;
+    const data = await res.json() as { myco?: boolean };
+    return data.myco === true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Stale daemon cleanup
 // ---------------------------------------------------------------------------
 
@@ -213,11 +235,18 @@ export async function reconcileExistingDaemon(
     return 'ok';
   }
 
-  // Alive. If it's recent AND healthy AND the same version, step aside rather
-  // than racing it. Without this guard, two concurrent spawns kill each other
-  // in sequence and the surviving PID is whichever one ran last.
+  // Alive. If it's recent AND healthy AND the same version AND on the
+  // canonical port, step aside rather than racing it. Without this guard,
+  // two concurrent spawns kill each other in sequence and the surviving PID
+  // is whichever one ran last.
+  //
+  // The canonical-port check is load-bearing: if the sibling fell back to
+  // `canonical+1` because an orphan was squatting the canonical port, we
+  // must NOT step aside — we need to proceed through eviction, kill the
+  // orphan, and bind the canonical port ourselves.
   const recent = Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS;
-  if (recent && typeof info.port === 'number') {
+  const canonicalPort = derivePort(vaultDir);
+  if (recent && typeof info.port === 'number' && info.port === canonicalPort) {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
         signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
@@ -983,13 +1012,40 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/notifications/unread-count', async () => handleUnreadCount());
 
   // --- Start server ---
+  //
+  // The port is authoritative: either the explicit `daemon.port` override in
+  // myco.yaml or the deterministic hash of the vault path via `derivePort`.
+  // No silent fallback — if the port is unavailable after eviction, either a
+  // concurrent sibling won the race (step aside) or something unrelated is
+  // squatting (fail loudly). Ghost daemons on surprise ports come from
+  // silent fallback, so we don't do that.
 
   await server.evictExistingDaemon();
-  const resolvedPort = await resolvePort(config.daemon.port, vaultDir);
-  if (resolvedPort === 0) {
-    logger.warn(LOG_KINDS.DAEMON_PORT, 'All preferred ports occupied, using ephemeral port');
+  const canonicalPort = config.daemon.port ?? derivePort(vaultDir);
+
+  try {
+    await server.start(canonicalPort);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'EADDRINUSE') throw err;
+
+    if (await isHealthyMycoSibling(canonicalPort)) {
+      logger.info(LOG_KINDS.DAEMON_START, 'Sibling claimed canonical port during startup — stepping aside', {
+        port: canonicalPort,
+      });
+      process.exit(0);
+    }
+
+    logger.error(LOG_KINDS.DAEMON_PORT, 'Canonical port is held by another process — cannot start', {
+      port: canonicalPort,
+      hint: `Run \`lsof -iTCP:${canonicalPort}\` to identify the owner, then either kill it or override daemon.port in myco.yaml`,
+    });
+    process.stderr.write(
+      `Myco daemon cannot bind port ${canonicalPort} (held by another process). ` +
+        `Run \`lsof -iTCP:${canonicalPort}\` to investigate.\n`,
+    );
+    process.exit(1);
   }
-  await server.start(resolvedPort);
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
@@ -1013,19 +1069,6 @@ export async function main(): Promise<void> {
       error: (err as Error).message,
     });
   });
-
-  // Persist the resolved port to config if it was auto-derived
-  if (config.daemon.port === null && resolvedPort !== 0) {
-    try {
-      updateConfig(vaultDir, (c) => ({
-        ...c,
-        daemon: { ...c.daemon, port: resolvedPort },
-      }));
-      logger.info(LOG_KINDS.DAEMON_CONFIG, 'Persisted auto-derived port to myco.yaml', { port: resolvedPort });
-    } catch (err) {
-      logger.warn(LOG_KINDS.DAEMON_CONFIG, 'Failed to persist auto-derived port', { error: (err as Error).message });
-    }
-  }
 
   // --- Register power-managed jobs ---
   registerPowerJobs(powerManager, {
