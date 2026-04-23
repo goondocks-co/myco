@@ -23,7 +23,7 @@ reasoningLevel: default
 
 schedule:
   enabled: true
-  intervalSeconds: 300
+  intervalSeconds: 21600
   runIn:
     - idle
     - sleep
