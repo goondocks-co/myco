@@ -120,6 +120,8 @@ describe('myco init', () => {
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('attachments/');
+    expect(gitignore).toContain('runtime/');
+    expect(gitignore).toContain('runtime.prev/');
   });
 
   it('is idempotent — does not overwrite user-set values on re-init', async () => {
