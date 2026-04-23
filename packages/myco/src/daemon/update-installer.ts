@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import {
   MYCO_GLOBAL_DIR,
   PROJECT_RUNTIME_DIRNAME,
+  PROJECT_RUNTIME_TMP_DIRNAME,
   PROJECT_RUNTIME_COMMAND_FILENAME,
   UPDATE_ERROR_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
@@ -77,7 +78,7 @@ export function generateUpdateScript(params: InstallParams): string {
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
   const localRuntimeDir = path.join(vaultDir, PROJECT_RUNTIME_DIRNAME);
-  const localRuntimeTmpDir = `${localRuntimeDir}.tmp`;
+  const localRuntimeTmpDir = path.join(vaultDir, PROJECT_RUNTIME_TMP_DIRNAME);
   const localRuntimeCommandPath = path.join(vaultDir, PROJECT_RUNTIME_COMMAND_FILENAME);
   const localRuntimeMyco = path.join(localRuntimeDir, 'node_modules', '.bin', 'myco');
   const quotedLocalRuntimeSpec = localRuntimeSpec ? JSON.stringify(localRuntimeSpec) : null;

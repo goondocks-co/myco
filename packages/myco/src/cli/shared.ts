@@ -8,6 +8,11 @@ import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
+import {
+  PROJECT_RUNTIME_DIRNAME,
+  PROJECT_RUNTIME_TMP_DIRNAME,
+  PROJECT_RUNTIME_COMMAND_FILENAME,
+} from '../constants/update.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
@@ -89,11 +94,11 @@ staging/
 # the hook guard invokes. Default (file absent) is \`myco\`; \`make dev-link\`
 # writes \`myco-dev\`; users can hand-edit for PATH conflicts or pinning.
 # Never committed — different contributors use different aliases.
-runtime.command
+${PROJECT_RUNTIME_COMMAND_FILENAME}
 
 # Project-local managed runtime used for beta isolation
-runtime/
-runtime.tmp/
+${PROJECT_RUNTIME_DIRNAME}/
+${PROJECT_RUNTIME_TMP_DIRNAME}/
 
 # Per-user appearance and settings overrides
 local.yaml
