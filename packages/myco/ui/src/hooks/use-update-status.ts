@@ -15,12 +15,14 @@ export interface UpdatePackageStatus {
   latest_stable: string | null;
   latest_beta: string | null;
   update_available: boolean;
+  revert_available?: boolean;
 }
 
 export interface UpdateStatus {
   exempt: boolean;
   running_version: string;
   update_available?: boolean;
+  revert_available?: boolean;
   latest_version?: string;
   latest_stable?: string;
   latest_beta?: string | null;

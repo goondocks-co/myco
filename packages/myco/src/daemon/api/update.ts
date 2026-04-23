@@ -70,13 +70,22 @@ const ChannelBodySchema = z.object({
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
   const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
-  const resolveManagedMycoBinary = () => resolveRuntimeCommand(vaultDir) ?? resolveMycoBinary();
-  const getRuntimeCommand = () => resolveRuntimeCommand(vaultDir);
-  const getDesiredChannel = () => readProjectReleaseChannel(vaultDir);
-  const getRuntimeScope = () => {
-    const runtimeCommand = getRuntimeCommand();
-    return runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand) ? 'project' : 'machine';
-  };
+
+  /**
+   * Per-request snapshot of everything derived from vault state on disk.
+   * Reads each source once per handler invocation; handlers pass the
+   * snapshot into all downstream helpers instead of re-reading.
+   */
+  function readVaultSnapshot() {
+    const runtimeCommand = resolveRuntimeCommand(vaultDir);
+    const desiredChannel = readProjectReleaseChannel(vaultDir);
+    const runtimeScope: 'project' | 'machine' =
+      runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
+        ? 'project'
+        : 'machine';
+    const mycoBinary = runtimeCommand ?? resolveMycoBinary();
+    return { runtimeCommand, desiredChannel, runtimeScope, mycoBinary };
+  }
 
   /** Prevents multiple restart scripts from racing during the shutdown window. */
   let restartInitiated = false;
@@ -103,6 +112,8 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { body: { exempt: true, running_version: currentVersion } };
     }
 
+    const snapshot = readVaultSnapshot();
+
     // --- Installed-version check (short-circuits before registry) ---
     if (globalPrefix && !restartInitiated) {
       const installedVersion = getInstalledVersion(globalPrefix);
@@ -118,7 +129,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
           toVersion: installedVersion,
-          mycoBinary: resolveManagedMycoBinary(),
+          mycoBinary: snapshot.mycoBinary,
         });
         scheduleShutdown();
         return {
@@ -133,13 +144,18 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     // --- Normal registry check flow (unchanged) ---
-    const desiredChannel = getDesiredChannel();
     const config = readUpdateConfig();
     const cache = readCachedCheck();
 
     if (isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget — don't block the response on the registry fetch.
-      checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand(), desiredChannel).catch(() => {});
+      checkForUpdate(
+        currentVersion,
+        globalPrefix,
+        snapshot.runtimeCommand,
+        snapshot.desiredChannel,
+        vaultDir,
+      ).catch(() => {});
     }
 
     // Pass pre-read config and cache to avoid reading the files a second time.
@@ -148,8 +164,9 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       cache,
       config,
       globalPrefix,
-      getRuntimeCommand(),
-      desiredChannel,
+      snapshot.runtimeCommand,
+      snapshot.desiredChannel,
+      vaultDir,
     );
     if (!status) {
       // No cache yet — return minimal response; background check will populate it.
@@ -157,13 +174,14 @@ export function createUpdateHandlers(deps: UpdateDeps) {
         body: {
           exempt: false,
           update_available: false,
+          revert_available: false,
           running_version: currentVersion,
           latest_version: currentVersion,
           latest_stable: currentVersion,
           latest_beta: null,
-          channel: desiredChannel,
+          channel: snapshot.desiredChannel,
           channel_scope: 'project',
-          runtime_scope: getRuntimeScope(),
+          runtime_scope: snapshot.runtimeScope,
           check_interval_hours: config.check_interval_hours,
           last_check: '',
           error: null,
@@ -187,11 +205,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       };
     }
 
+    const snapshot = readVaultSnapshot();
     const result = await checkForUpdate(
       currentVersion,
       globalPrefix,
-      getRuntimeCommand(),
-      getDesiredChannel(),
+      snapshot.runtimeCommand,
+      snapshot.desiredChannel,
+      vaultDir,
     );
     return { body: { exempt: false, ...result } };
   }
@@ -206,32 +226,60 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 400, body: { error: 'update_exempt' } };
     }
 
-    const runtimeCommand = getRuntimeCommand();
+    const snapshot = readVaultSnapshot();
     const status = statusFromCache(
       currentVersion,
       undefined,
       undefined,
       globalPrefix,
-      runtimeCommand,
-      getDesiredChannel(),
+      snapshot.runtimeCommand,
+      snapshot.desiredChannel,
+      vaultDir,
     );
-    const packageSpecs = (status?.packages ?? [])
-      .filter((pkg) => pkg.installed && pkg.update_available && pkg.latest_version)
-      .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
-    const removeLocalRuntime =
-      status?.channel === 'stable'
-      && runtimeCommand !== null
-      && isManagedProjectRuntime(runtimeCommand);
-    if (!status || (packageSpecs.length === 0 && !removeLocalRuntime)) {
+    if (!status) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
-    const localRuntimeSpec = status.channel === 'beta'
-      ? packageSpecs.find((spec) => spec.startsWith('@goondocks/myco@'))
+    const mycoPackage = status.packages.find((pkg) => pkg.id === 'myco');
+    const mycoPackageSpec = mycoPackage?.latest_version
+      ? `${mycoPackage.package_name}@${mycoPackage.latest_version}`
       : undefined;
+
+    // Specs to `npm install -g` — covers both forward updates and revert
+    // flows. For a revert, we reinstall the stable target globally so the
+    // machine runtime is at the correct version before we drop the
+    // project-local runtime.
+    const installSpecs = status.packages
+      .filter(
+        (pkg) => pkg.installed && (pkg.update_available || pkg.revert_available) && pkg.latest_version,
+      )
+      .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
+
+    // Reverting a project-local beta back to the machine-wide stable install.
+    const removeLocalRuntime =
+      status.channel === 'stable' && snapshot.runtimeScope === 'project';
+
+    // Entering beta on a project that's still on the machine runtime means we
+    // need to install a project-local myco — even when the machine install is
+    // already at the beta target version and `update_available` is false.
+    const enteringBetaLocalRuntime =
+      status.channel === 'beta' && snapshot.runtimeScope === 'machine';
+
+    const localRuntimeSpec = (() => {
+      if (enteringBetaLocalRuntime) return mycoPackageSpec;
+      if (status.channel === 'beta') {
+        return installSpecs.find((spec) => spec.startsWith('@goondocks/myco@'));
+      }
+      return undefined;
+    })();
+
+    if (installSpecs.length === 0 && !removeLocalRuntime && !localRuntimeSpec) {
+      return { status: 400, body: { error: 'no_update_available' } };
+    }
+
     const globalPackageSpecs = localRuntimeSpec
-      ? packageSpecs.filter((spec) => spec !== localRuntimeSpec)
-      : packageSpecs;
+      ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
+      : installSpecs;
 
     spawnUpdateScript({
       packageSpecs: globalPackageSpecs,
@@ -239,15 +287,19 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       removeLocalRuntime,
       projectRoot,
       vaultDir,
-      mycoBinary: resolveManagedMycoBinary(),
+      mycoBinary: snapshot.mycoBinary,
     });
     scheduleShutdown();
+
+    const reportedPackages = localRuntimeSpec && !installSpecs.includes(localRuntimeSpec)
+      ? [...installSpecs, localRuntimeSpec]
+      : installSpecs;
 
     return {
       body: {
         status: 'applying',
         version: status.latest_version,
-        packages: packageSpecs,
+        packages: reportedPackages,
       },
     };
   }
@@ -269,26 +321,29 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     writeProjectReleaseChannel(vaultDir, channel);
     clearCachedCheck();
 
+    const snapshot = readVaultSnapshot();
     const channelStatus = statusFromCache(
       currentVersion,
       undefined,
       undefined,
       globalPrefix,
-      getRuntimeCommand(),
+      snapshot.runtimeCommand,
       channel,
+      vaultDir,
     );
     if (!channelStatus) {
       return {
         body: {
           exempt: false,
           update_available: false,
+          revert_available: false,
           running_version: currentVersion,
           latest_version: currentVersion,
           latest_stable: currentVersion,
           latest_beta: null,
           channel,
           channel_scope: 'project',
-          runtime_scope: getRuntimeScope(),
+          runtime_scope: snapshot.runtimeScope,
           check_interval_hours: config.check_interval_hours,
           last_check: '',
           error: null,

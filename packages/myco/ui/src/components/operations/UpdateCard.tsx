@@ -136,6 +136,8 @@ export function UpdateCard() {
   const isChecking = checkMutation.isPending;
   const isApplying = applyState === 'applying' || applyState === 'restarting';
   const updateAvailable = status.update_available === true;
+  const revertAvailable = status.revert_available === true;
+  const actionAvailable = updateAvailable || revertAvailable;
   const activeChannel = status.channel ?? 'stable';
   const installedPackages = (status.packages ?? []).filter((pkg) => pkg.installed);
   const pendingPackages = installedPackages.filter((pkg) => pkg.update_available);
@@ -168,7 +170,7 @@ export function UpdateCard() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ArrowUpCircle
-            className={cn('h-4 w-4', updateAvailable ? 'text-secondary' : 'text-primary')}
+            className={cn('h-4 w-4', actionAvailable ? 'text-secondary' : 'text-primary')}
           />
           <SectionHeader>Updates</SectionHeader>
         </div>
@@ -182,7 +184,7 @@ export function UpdateCard() {
 
       {/* Status row */}
       <div className="flex items-center gap-3 flex-wrap">
-        {updateAvailable ? (
+        {actionAvailable ? (
           <Button
             variant="default"
             size="sm"
@@ -192,12 +194,14 @@ export function UpdateCard() {
             {isApplying ? (
               <>
                 <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                {applyState === 'restarting' ? 'Restarting…' : 'Updating…'}
+                {applyState === 'restarting' ? 'Restarting…' : (revertAvailable && !updateAvailable ? 'Reverting…' : 'Updating…')}
               </>
             ) : (
               <>
                 <ArrowUpCircle className="mr-1.5 h-3.5 w-3.5" />
-                {pendingCount > 1 ? `Update ${pendingCount} Packages & Restart` : 'Update & Restart'}
+                {revertAvailable && !updateAvailable
+                  ? 'Revert to Stable & Restart'
+                  : pendingCount > 1 ? `Update ${pendingCount} Packages & Restart` : 'Update & Restart'}
               </>
             )}
           </Button>
@@ -241,23 +245,26 @@ export function UpdateCard() {
 
       {installedPackages.length > 0 && (
         <div className="space-y-2">
-          {installedPackages.map((pkg) => (
-            <div
-              key={pkg.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-outline/20 px-3 py-2"
-            >
-              <div className="min-w-0">
-                <div className="font-sans text-sm text-on-surface">{pkg.display_name}</div>
-                <div className="font-mono text-xs text-on-surface-variant">
-                  {pkg.installed_version ?? 'not installed'}
-                  {pkg.update_available && pkg.latest_version ? ` → ${pkg.latest_version}` : ''}
+          {installedPackages.map((pkg) => {
+            const showRevert = pkg.revert_available && !pkg.update_available;
+            return (
+              <div
+                key={pkg.id}
+                className="flex items-center justify-between gap-3 rounded-md border border-outline/20 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="font-sans text-sm text-on-surface">{pkg.display_name}</div>
+                  <div className="font-mono text-xs text-on-surface-variant">
+                    {pkg.installed_version ?? 'not installed'}
+                    {(pkg.update_available || showRevert) && pkg.latest_version ? ` → ${pkg.latest_version}` : ''}
+                  </div>
                 </div>
+                <Badge variant={pkg.update_available || showRevert ? 'warning' : 'secondary'}>
+                  {pkg.update_available ? 'Update available' : showRevert ? 'Revert pending' : 'Installed'}
+                </Badge>
               </div>
-              <Badge variant={pkg.update_available ? 'warning' : 'secondary'}>
-                {pkg.update_available ? 'Update available' : 'Installed'}
-              </Badge>
-            </div>
-          ))}
+            );
+          })}
           <p className="font-sans text-xs text-on-surface-variant">
             {runtimeSummary}
           </p>

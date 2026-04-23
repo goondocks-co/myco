@@ -96,6 +96,73 @@ describe('walkClaudeCode content shape handling', () => {
   });
 });
 
+describe('walkClaudeCode slash-command dispatch drop rule', () => {
+  // When the user runs `/name args`, Claude Code logs two user entries
+  // sharing one promptId: the XML-wrapped dispatch envelope and the
+  // expanded command body. UserPromptSubmit already captured `/name args`
+  // via the hook path, so both transcript entries are redundant and — if
+  // left alone — cause reconcileBatchKinds to insert a phantom second
+  // batch because the XML prefix doesn't match the hook-stored prefix.
+  //
+  // The manifest carries a `prompt_starts_with: "<command-message>"` drop
+  // rule. Paired with `dedupeBy: promptId`, dropping the wrapper also
+  // suppresses the expanded body.
+  it('drops both transcript entries for a slash-command dispatch', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'p1',
+        message: {
+          role: 'user',
+          content:
+            '<command-message>simplify</command-message>\n'
+            + '<command-name>/simplify</command-name>\n'
+            + '<command-args>review the diff</command-args>',
+        },
+      },
+      {
+        type: 'user',
+        promptId: 'p1',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '# Simplify: Code Review and Cleanup\n...' }],
+        },
+      },
+    ];
+    expect(extractUserPromptKinds('claude-code', events)).toEqual([]);
+  });
+
+  it('leaves a plain user prompt untouched when no dispatch envelope is present', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'p1',
+        message: { role: 'user', content: 'please review the diff' },
+      },
+    ];
+    expect(extractUserPromptKinds('claude-code', events)).toEqual(['initial']);
+  });
+
+  it('does not drop a queued_command carrying raw slash-command text', () => {
+    // The Esc→queue UI writes queued slash commands as plain `/name args`
+    // in attachment.prompt, not the XML envelope. The drop rule keys on
+    // the envelope prefix, so queued commands are unaffected.
+    const events = [
+      {
+        type: 'user',
+        promptId: 'p1',
+        message: { role: 'user', content: 'open turn' },
+      },
+      {
+        type: 'attachment',
+        uuid: 'att-1',
+        attachment: { type: 'queued_command', prompt: '/simplify after this' },
+      },
+    ];
+    expect(extractUserPromptKinds('claude-code', events)).toEqual(['initial', 'steering']);
+  });
+});
+
 describe('walkClaudeCode queued_command shape (Phase 4)', () => {
   // Claude Code's Esc→queue UI writes mid-turn prompts as
   //   type:"attachment", attachment:{type:"queued_command", prompt:"..."}

@@ -20,6 +20,36 @@ capture:
     # Ultraplan sends the approved cloud plan back to the terminal by injecting
     # it into the next user prompt as <ultraplan>...</ultraplan>.
     - ultraplan
+  rules:
+    # Slash-command dispatch envelope filter (structural).
+    #
+    # When the user runs `/name args`, Claude Code fires UserPromptSubmit with
+    # the raw `/name args` text — the hook captures it and stores it in a
+    # prompt_batch (buffer-backed if the daemon is down). The transcript then
+    # logs the dispatch as a pair of user entries sharing one promptId:
+    #   1. <command-message>name</command-message>
+    #      <command-name>/name</command-name>
+    #      <command-args>args</command-args>
+    #   2. the expanded command body (the rendered .claude/commands/<name>.md).
+    #
+    # Without this rule, transcript mining at Stop emits the XML-wrapped text
+    # as a record, reconcile can't match its prefix to the hook-stored
+    # `/name args` batch, and a duplicate batch is inserted. Dropping the
+    # wrapper entry also suppresses the expanded body via shape-level
+    # dedupeBy: promptId, so zero transcript records are emitted for the
+    # dispatch. The live hook capture is authoritative.
+    #
+    # The `<command-message>` prefix is Claude-synthesized — it only appears
+    # on real slash-command dispatches (prompts whose first token is a
+    # recognized `/name`). Plain prompts, mid-sentence `/` mentions, and
+    # queued_command attachments (which carry raw `/name args` text, not the
+    # XML envelope) are unaffected.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<command-message>"
+      action: drop
+      reason: claude-code-slash-command-dispatch
   prompts:
     shapes:
       # Standard user prompts. message.content is either a plain string or an
