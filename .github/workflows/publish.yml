@@ -256,10 +256,37 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            packages/myco-team/worker/package-lock.json
+            packages/myco-collective/worker/package-lock.json
 
       - run: npm ci
-      - run: npm ci --prefix packages/myco-team/worker
-      - run: npm ci --prefix packages/myco-collective/worker
+      - name: Install myco-team worker deps
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci --prefix packages/myco-team/worker; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "myco-team worker npm ci failed on attempt $attempt; retrying..." >&2
+            sleep 5
+          done
+      - name: Install myco-collective worker deps
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci --prefix packages/myco-collective/worker; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            echo "myco-collective worker npm ci failed on attempt $attempt; retrying..." >&2
+            sleep 5
+          done
 
       - name: Sync target package versions from tag
         env:

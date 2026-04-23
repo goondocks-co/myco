@@ -113,13 +113,15 @@ like and what the sentinel string in the output summary should be.
 
 ## Procedure 2: Write the Task Config
 
-Tasks live in `packages/myco/src/agent/definitions/tasks/`. Each task exports a typed config object and
-must be registered following the current task registration pattern.
+Tasks live in `packages/myco/src/agent/definitions/tasks/`. Each task is defined as a TypeScript
+configuration object that exports a TaskDefinition.
 
 ### Required fields
 
 ```ts
-export const myNewTask: AgentTask = {
+import { TaskDefinition } from '../../types';
+
+export const myNewTask: TaskDefinition = {
   name: 'my-new-task',          // kebab-case, unique across all tasks
   isDefault: false,              // true = fires on settled session; false = manual/cron only
   phases: [ /* see below */ ],
@@ -146,9 +148,13 @@ export const myNewTask: AgentTask = {
 
 ### Registration
 
-After creating the task file, you **must** register it properly for the PowerManager to discover it at startup. Check the current task registration pattern in `packages/myco/src/agent/definitions/tasks/index.ts` and follow the existing structure.
+After creating the task file, the task is automatically discovered by the PowerManager through
+the TaskDefinition export. The harness scans all .ts files in the tasks directory and loads
+any exported TaskDefinition objects at startup.
 
-**Critical**: If you forget this registration step, the task silently never runs — no error, no log entry. Always verify your task appears in `agent_runs` after startup to confirm registration worked.
+**Critical**: Ensure your task file exports a properly typed TaskDefinition. If the export is
+malformed or missing, the task silently never runs — no error, no log entry. Always verify
+your task appears in `agent_runs` after daemon startup to confirm discovery worked.
 
 ---
 
@@ -329,7 +335,7 @@ if (gate) {
 }
 ```
 
-Document gate behavior in the task's YAML definition under `description` so
+Document gate behavior in the task's TaskDefinition under `description` so
 operators know the task is gate-aware.
 
 ### Configuration in .myco/myco.yaml
@@ -461,7 +467,7 @@ LIMIT 20;
 | `turn_count = 1`, empty `tool_output_summary` | LLM never called tools; malformed prompt or injected context |
 | `turn_count = budget` with incomplete work | Budget exhaustion; cap the input |
 | `completed_at IS NULL` | Phase crashed or daemon restarted mid-run |
-| Task never appears in `agent_runs` | Not registered properly — check task registration pattern |
+| Task never appears in `agent_runs` | TaskDefinition export malformed — check task file structure |
 
 ### Cortex dry-run isolation debugging
 
@@ -481,8 +487,8 @@ rows — the harness reads the schema at startup.
 
 ## Cross-Cutting Gotchas
 
-- **Forget to register the task** → task never runs, no error. Always verify
-  proper registration in `packages/myco/src/agent/definitions/tasks/index.ts` after creating a task file.
+- **TaskDefinition export malformed** → task never runs, no error. Always verify
+  proper TypeScript export structure and that your task appears in `agent_runs` after daemon startup.
 - **`isDefault: true` on a maintenance task** → fires after every session
   even when there's nothing to maintain. Use `isDefault: false` + cron.
 - **No session gate on a transcript-reading task** → processes active sessions,

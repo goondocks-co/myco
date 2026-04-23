@@ -1,7 +1,7 @@
 ---
 name: myco:safe-config-updates
 description: |
-  Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through `updateConfig()` in `src/config/loader.ts`, and (2) all React settings forms must spread the original config before overlaying form values in their `formToConfig()` function. Also covers the complete procedure for adding new configurable settings to Myco's two-tier scoped config system including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch `myco.yaml`, add a settings field, modify a settings page, or add new configurable fields, these patterns apply.
+  Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through `updateConfig()` in `packages/myco/src/config/loader.ts`, and (2) all React settings forms must spread the original config before overlaying form values in their `formToConfig()` function. Also covers the complete procedure for adding new configurable settings to Myco's two-tier scoped config system including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch `myco.yaml`, add a settings field, modify a settings page, or add new configurable fields, these patterns apply.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,14 +9,14 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Safe Config Update Patterns
 
-`myco.yaml` is a multi-section document owned by different UI pages and code paths. If any write path reconstructs the config from scratch rather than patching it, it silently drops keys it doesn't know about. This skill teaches the two-layer defense: a single YAML write gate in `loader.ts`, and a spread-before-overlay pattern in every React form. Additionally, Myco uses a two-tier scoped configuration model where team settings live in committed `myco.yaml` while personal overrides live in gitignored `.myco/local.yaml`, enabling per-machine personalization without affecting team defaults.
+`myco.yaml` is a multi-section document owned by different UI pages and code paths. If any write path reconstructs the config from scratch rather than patching it, it silently drops keys it doesn't know about. This skill teaches the two-layer defense: a single YAML write gate in `packages/myco/src/config/loader.ts`, and a spread-before-overlay pattern in every React form. Additionally, Myco uses a two-tier scoped configuration model where team settings live in committed `myco.yaml` while personal overrides live in gitignored `.myco/local.yaml`, enabling per-machine personalization without affecting team defaults.
 
 ## Prerequisites
 
 - Understand that `myco.yaml` has independent sections (`vault`, `backup`, `embedding`, `tasks`, etc.) and no single UI page owns the whole file
 - Know which section(s) your change targets
 - For React form changes: locate the relevant settings page and its `formToConfig()` function
-- For programmatic writes: locate `src/config/loader.ts` and `src/config/updates.ts`
+- For programmatic writes: locate `packages/myco/src/config/loader.ts` and `packages/myco/src/config/updates.ts`
 - Understand that `myco.yaml` is committed (team-shared) while `.myco/local.yaml` is vault-scoped (gitignored, per-machine)
 - Know that config is deep-merged via `loadConfig()` with `arrayStrategy: 'replace'` where local values win
 - Recognize that daemon subsystems can subscribe to config changes for live-reload without restart
@@ -29,7 +29,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 If two code paths independently serialize and write `myco.yaml`, they race and one will clobber the other's sections. Even without a race, any path that reconstructs the config from a partial view will lose keys it never read.
 
-The solution: `updateConfig(vaultDir, fn)` in `src/config/loader.ts` is the **only** function that may write `myco.yaml`. It reads the current file, calls your mutation function `fn(config) => config`, and writes the result. This guarantees every write starts from the full current state.
+The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.ts` is the **only** function that may write `myco.yaml`. It reads the current file, calls your mutation function `fn(config) => config`, and writes the result. This guarantees every write starts from the full current state.
 
 ### Steps
 
@@ -39,7 +39,7 @@ The solution: `updateConfig(vaultDir, fn)` in `src/config/loader.ts` is the **on
    import { withValue, withEmbedding, withTaskConfig } from '../config/updates';
    ```
 
-2. **Use a named helper when one exists.** `src/config/updates.ts` exports typed helpers for common mutations:
+2. **Use a named helper when one exists.** `packages/myco/src/config/updates.ts` exports typed helpers for common mutations:
    ```ts
    // Set a single scalar value at a dotted path
    await updateConfig(vaultDir, withValue('backup.dir', newDir));
@@ -125,7 +125,7 @@ Config data loss from the `formToConfig()` bug is silent at the UI layer — the
 
 ### Why patch endpoints?
 
-The Settings UI redesign introduces dedicated PATCH endpoints (`/api/settings/scoped` and `/api/settings/operations`) that replace the monolithic PUT `/api/config` pattern. This enables granular field-level updates without requiring clients to manage the full configuration object. The ScopedField React component automatically handles the patch semantics and scope resolution.
+The Settings UI uses dedicated PATCH handling via `handlePutScopedConfig` in `packages/myco/src/daemon/api/config.ts` that replaces the monolithic PUT pattern. This enables granular field-level updates without requiring clients to manage the full configuration object. The ScopedField React component automatically handles the patch semantics and scope resolution.
 
 ### Steps
 
@@ -141,34 +141,24 @@ The Settings UI redesign introduces dedicated PATCH endpoints (`/api/settings/sc
    />
    ```
 
-2. **ScopedField automatically patches via the correct endpoint:**
-   - Personal-scoped settings → `/api/settings/scoped` 
-   - Operations settings → `/api/settings/operations`
+2. **ScopedField automatically patches via the scoped config handler:**
+   - Personal-scoped settings → `handlePutScopedConfig` 
    - Handles the patch semantics internally
 
-3. **When building custom settings forms, use patch endpoints directly:**
+3. **When building custom settings forms, use the scoped config endpoint directly:**
    ```ts
-   // For personal/team scoped settings
-   await fetch('/api/settings/scoped', {
-     method: 'PATCH',
+   // For personal/team scoped settings via handlePutScopedConfig
+   await fetch('/api/config', {
+     method: 'PUT',
      body: JSON.stringify({
        path: 'embedding.model',
        value: 'text-embedding-3-large',
        scope: 'personal'
      })
    });
-
-   // For operations settings
-   await fetch('/api/settings/operations', {
-     method: 'PATCH', 
-     body: JSON.stringify({
-       field: 'auto_run',
-       value: true
-     })
-   });
    ```
 
-4. **Legacy full-config PUT is retired.** New settings UI should use patch-based endpoints exclusively. The `/api/config` PUT endpoint remains for compatibility but is not the primary pattern.
+4. **Legacy full-config PUT is deprecated.** New settings UI should use patch-based handling exclusively through the scoped config API.
 
 ### Benefits over monolithic updates
 
@@ -243,8 +233,8 @@ const TasksSchema = z.object({
 });
 ```
 
-**Step 2: Verify the PUT /api/config/scoped endpoint handles your field**
-The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch merging with validation:
+**Step 2: Verify the scoped config endpoint handles your field**
+The endpoint at `packages/myco/src/daemon/api/config.ts` handles partial patch merging with validation via `handlePutScopedConfig`:
 
 ```typescript
 // Endpoint contract: { scope: 'project' | 'local', patch: {...}, clear?: [...] }
