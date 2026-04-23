@@ -28,7 +28,7 @@ surfaces, and debugging when things go wrong.
 
 ## Prerequisites
 
-- Daemon is running and `agent.enabled: true` in `myco.yaml`.
+- Daemon is running and `agent.enabled: true` in `.myco/myco.yaml`.
 - You have read at least one existing task YAML (`packages/myco/src/agent/definitions/tasks/vault-evolve.yaml`
   or `packages/myco/src/agent/definitions/tasks/skill-survey.yaml`) to understand the config shape.
 - You can describe the new task's purpose in one sentence and identify which
@@ -332,10 +332,10 @@ if (gate) {
 Document gate behavior in the task's YAML definition under `description` so
 operators know the task is gate-aware.
 
-### Configuration in myco.yaml
+### Configuration in .myco/myco.yaml
 
 ```yaml
-# myco.yaml
+# .myco/myco.yaml
 agent:
   requireSettledSessions: true      # boolean; disable for dev/test only
   settledSessionIdleMinutes: 30     # integer minutes; default 30
@@ -358,7 +358,7 @@ agent:
 
 ### Global toggle
 
-`agent.enabled: false` in `myco.yaml` kills ALL tasks immediately. This is the
+`agent.enabled: false` in `.myco/myco.yaml` kills ALL tasks immediately. This is the
 kill-switch for the entire pipeline — use it during daemon development or after
 a bad deploy. There is no per-task enable/disable flag; the toggle is all-or-nothing.
 
@@ -474,7 +474,7 @@ are properly propagated outside the isolation boundary.
 ### Adding telemetry
 
 To add a new column to `agent_runs`, create a schema migration in
-`src/db/migrations/`. New columns are safe to add without touching existing
+`packages/myco/src/db/migrations/`. New columns are safe to add without touching existing
 rows — the harness reads the schema at startup.
 
 ---
