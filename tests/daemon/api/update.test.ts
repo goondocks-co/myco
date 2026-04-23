@@ -177,7 +177,7 @@ describe('handleUpdateStatus', () => {
     // Response returned immediately (does not await checkForUpdate)
     expect(result.body).toMatchObject({ exempt: false });
     // Background check was triggered
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable', '/vault');
   });
 
   it('returns exempt:false in body when not exempt', async () => {
@@ -234,7 +234,7 @@ describe('handleUpdateCheck', () => {
 
     const result = await handleUpdateCheck(makeReq());
 
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable', '/vault');
     expect(result.body).toMatchObject({ exempt: false, update_available: true });
   });
 
@@ -357,12 +357,16 @@ describe('handleUpdateApply', () => {
       running_version: '1.1.0-beta.1',
       latest_version: '1.0.0',
       latest_stable: '1.0.0',
+      update_available: false,
+      revert_available: true,
       packages: [
         {
           ...UPDATE_AVAILABLE_STATUS.packages[0],
           installed_version: '1.1.0-beta.1',
           latest_version: '1.0.0',
           latest_stable: '1.0.0',
+          update_available: false,
+          revert_available: true,
         },
       ],
     });
@@ -380,6 +384,45 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: '/project/.myco/runtime/node_modules/.bin/myco',
+    });
+  });
+
+  it('installs a project-local beta runtime even when the machine install matches the target', async () => {
+    // User is on stable, opts into beta for this project. Global myco is already
+    // at the version beta channel resolves to — update_available is false but
+    // we still need to create the project-local runtime.
+    vi.mocked(statusFromCache).mockReturnValue({
+      ...UPDATE_AVAILABLE_STATUS,
+      channel: 'beta',
+      update_available: false,
+      revert_available: false,
+      running_version: '1.0.0',
+      latest_version: '1.0.0',
+      packages: [
+        {
+          ...UPDATE_AVAILABLE_STATUS.packages[0],
+          installed_version: '1.0.0',
+          latest_version: '1.0.0',
+          update_available: false,
+          revert_available: false,
+        },
+      ],
+    });
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+
+    const result = await handleUpdateApply(makeReq());
+
+    expect(result.status).toBeUndefined();
+    expect(spawnUpdateScript).toHaveBeenCalledWith({
+      packageSpecs: [],
+      localRuntimeSpec: '@goondocks/myco@1.0.0',
+      removeLocalRuntime: false,
+      projectRoot: '/project',
+      vaultDir: '/vault',
+      mycoBinary: 'myco',
     });
   });
 });

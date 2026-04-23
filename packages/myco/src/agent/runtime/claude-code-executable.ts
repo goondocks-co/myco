@@ -71,9 +71,19 @@ function candidatePackageRoots(
  * installed Myco package root on disk, not by hardcoding an absolute binary
  * path per machine.
  */
+let cachedResolution: { value: string | undefined } | undefined;
+
 export function resolveClaudeCodeExecutable(
   deps: ResolveClaudeExecutableDeps = {},
 ): string | undefined {
+  const hasInjectedDeps =
+    deps.importMetaUrl !== undefined ||
+    deps.execPath !== undefined ||
+    deps.realpathSync !== undefined ||
+    deps.existsSync !== undefined ||
+    deps.requireFactory !== undefined;
+  if (!hasInjectedDeps && cachedResolution) return cachedResolution.value;
+
   const importMetaUrl = deps.importMetaUrl ?? import.meta.url;
   const execPath = deps.execPath ?? process.execPath;
   const realpathSync = deps.realpathSync ?? fs.realpathSync;
@@ -89,12 +99,16 @@ export function resolveClaudeCodeExecutable(
       try {
         const packageJsonPath = requireFromPackage.resolve(`${optionalPackage}/package.json`);
         const executablePath = path.join(path.dirname(packageJsonPath), claudeExecutableName());
-        if (existsSync(executablePath)) return executablePath;
+        if (existsSync(executablePath)) {
+          if (!hasInjectedDeps) cachedResolution = { value: executablePath };
+          return executablePath;
+        }
       } catch {
         // Try the next platform candidate or package-root origin.
       }
     }
   }
 
+  if (!hasInjectedDeps) cachedResolution = { value: undefined };
   return undefined;
 }

@@ -93,7 +93,7 @@ runtime.command
 
 # Project-local managed runtime used for beta isolation
 runtime/
-runtime.prev/
+runtime.tmp/
 
 # Per-user appearance and settings overrides
 local.yaml
