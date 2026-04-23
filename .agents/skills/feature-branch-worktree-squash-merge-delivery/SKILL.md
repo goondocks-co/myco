@@ -20,7 +20,7 @@ Use this skill when delivering a non-trivial Myco feature that spans multiple fi
 
 - Delivering a new feature that spans multiple files
 - Implementing any non-trivial change that requires a clean PR commit
-- Working on a named feature branch (`feature/my-feature-name` convention)
+- Working on a named feature branch (`feature/branch-name` convention)
 - Whenever you need to isolate implementation from the main branch during development
 
 ## Procedure
@@ -40,11 +40,11 @@ Note: `docs/superpowers/specs/` is gitignored for external contributors but trac
 ### Step 2: Create a git worktree
 
 ```bash
-git worktree add ../myco-feature-X feature/my-feature-name
-cd ../myco-feature-X
+git worktree add ../myco-branch-name feature/branch-name
+cd ../myco-branch-name
 ```
 
-**Critical**: use a sibling directory (e.g., `../myco-feature-X`), **not a subdirectory inside the repo**. Nested worktrees confuse Myco's CWD detection and create phantom sessions.
+**Critical**: use a sibling directory (e.g., `../myco-branch-name`), **not a subdirectory inside the repo**. Nested worktrees confuse Myco's CWD detection and create phantom sessions.
 
 ### Step 3: Implement with incremental commits
 
@@ -64,7 +64,7 @@ grep -rn "\.slice(0, 8)" packages/ # session ID truncation patterns
 grep -rn "new Date().toLocaleString" packages/ # date formatter candidates
 ```
 
-Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `packages/myco/src/utils/` or `packages/ui/src/utils/` or the appropriate utility module. **Check existing utility modules before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
+Any logic appearing 2+ times across changed files is a candidate for extraction. Shared helpers go in `packages/myco/src/utils/` or the appropriate utility module within the relevant package. **Check existing utility modules before adding anything** — re-extracting an existing helper creates a naming conflict and a second source of truth.
 
 ```typescript
 // Before: inline in two components
@@ -122,7 +122,7 @@ If a value passes through 3+ React component layers without being used by interm
 </SessionPage>
 ```
 
-Check `packages/ui/src/` after any feature that adds new data to page-level views.
+Check React components in the UI package after any feature that adds new data to page-level views.
 
 #### 4e. Verify Zero Regressions
 
@@ -154,7 +154,7 @@ This executes `tsc` + `vitest` + `tsup` + `vite` in sequence. **Do NOT use `npm 
 
 ### Step 6: Squash all commits, delete worktree, push
 
-Run from inside the worktree directory (`../myco-feature-X`):
+Run from inside the worktree directory (`../myco-branch-name`):
 
 ```bash
 # Squash all implementation + simplify commits into one
@@ -162,10 +162,10 @@ git reset --soft $(git merge-base HEAD main)
 git commit -m "feat: <single clear description of the feature>"
 
 # Delete the worktree before pushing
-git worktree remove ../myco-feature-X
+git worktree remove ../myco-branch-name
 
 # Push the feature branch
-git push origin feature/my-feature-name
+git push origin feature/branch-name
 ```
 
 The single squashed commit becomes the PR commit.
@@ -173,7 +173,7 @@ The single squashed commit becomes the PR commit.
 ## Key Gotchas
 
 - **`npm run build` silently ships broken packages** — only `make build` runs the full `tsc` + `vitest` + `tsup` + `vite` chain
-- **Sibling directory, not subdirectory** — always use `../myco-feature-X`; nested worktrees cause CWD detection misattribution
+- **Sibling directory, not subdirectory** — always use `../myco-branch-name`; nested worktrees cause CWD detection misattribution
 - **`/simplify` before squash, not after** — simplification belongs in the final squashed commit, not a follow-up cleanup PR
 - **Delete the worktree before pushing** — `git worktree remove` must precede `git push`; lingering worktrees confuse subsequent Claude Code sessions
 - **Design spec on `main` first** — commit the spec in `docs/superpowers/specs/` before switching to the worktree
