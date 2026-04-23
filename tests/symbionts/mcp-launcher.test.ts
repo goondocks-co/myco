@@ -269,5 +269,19 @@ describe('bin/myco-run launcher', () => {
       );
       expect(result.toString().trim()).toBe('SELF:mcp --flag value');
     });
+
+    it('prefers global `myco` when invoked through a dev-link-style symlink with no runtime.command', () => {
+      const symlinkPath = path.join(fixture.binDir, 'myco-run');
+      fs.mkdirSync(path.join(fixture.fakeInstallDir, 'src'));
+      fs.symlinkSync(fixture.launcherCopy, symlinkPath);
+      createFakeBin(fixture, 'myco', '#!/bin/sh\necho "GLOBAL:$*"');
+
+      const result = execFileSync(
+        process.execPath,
+        [symlinkPath, 'mcp'],
+        { cwd: fixture.projectDir, env: baseEnv(fixture), stdio: 'pipe', timeout: 5000 },
+      );
+      expect(result.toString().trim()).toBe('GLOBAL:mcp');
+    });
   });
 });

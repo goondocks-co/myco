@@ -27,6 +27,7 @@ import {
   NPM_PACKAGE_NAME,
   UPDATE_PACKAGES,
   MYCO_GLOBAL_DIR,
+  PROJECT_RUNTIME_DIRNAME,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
   UPDATE_ERROR_PATH,
@@ -145,6 +146,20 @@ export function resolveMycoBinary(): string {
   return devBuildCliEntry ?? 'myco';
 }
 
+export function resolveRuntimeCommand(vaultDir: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(vaultDir, 'runtime.command'), 'utf-8').trim();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
+export function isManagedProjectRuntime(cliEntry: string): boolean {
+  const normalized = cliEntry.split(path.sep).join('/');
+  return normalized.includes(`/.myco/${PROJECT_RUNTIME_DIRNAME}/node_modules/`);
+}
+
 /**
  * Returns true when the daemon is running from a dev build — skip
  * update checks and suppress the Operations UI update banner.
@@ -183,6 +198,9 @@ export function detectDevBuild(
   if (!cliEntry) return null;
   try {
     const resolvedEntry = realpath(cliEntry);
+    if (isManagedProjectRuntime(resolvedEntry)) {
+      return null;
+    }
     const resolvedPrefix = realpath(globalPrefix);
     if (resolvedEntry.startsWith(resolvedPrefix + path.sep) || resolvedEntry === resolvedPrefix) {
       return null;
@@ -394,12 +412,8 @@ function buildInstalledPackageVersions(
   if (globalPrefix === null) return installed;
 
   for (const pkg of UPDATE_PACKAGES) {
-    const version = getInstalledVersion(globalPrefix, pkg.packageName);
-    if (pkg.id === 'myco') {
-      installed.myco = version ?? currentVersion;
-      continue;
-    }
-    installed[pkg.id] = version;
+    if (pkg.id === 'myco') continue;
+    installed[pkg.id] = getInstalledVersion(globalPrefix, pkg.packageName);
   }
 
   return installed;
@@ -410,19 +424,25 @@ function buildPackageResults(
   cache: CachedCheck,
   channel: ReleaseChannel,
   globalPrefix: string | null,
+  runtimeCommand: string | null = null,
 ): PackageCheckResult[] {
   const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
+  const isManagedStableRevert =
+    channel === 'stable'
+    && runtimeCommand !== null
+    && isManagedProjectRuntime(runtimeCommand);
 
   return UPDATE_PACKAGES.map((pkg) => {
     const cached = cache.packages[pkg.id];
     const installedVersion = installedVersions[pkg.id];
     const latestVersion = cached ? resolveTargetVersionFromCache(cached, channel) : null;
-    const updateAvailable =
-      installedVersion !== null &&
-      latestVersion !== null &&
-      semver.valid(installedVersion) !== null &&
-      semver.valid(latestVersion) !== null &&
-      semver.gt(latestVersion, installedVersion);
+    const updateAvailable = pkg.id === 'myco' && isManagedStableRevert
+      ? latestVersion !== null && latestVersion !== currentVersion
+      : installedVersion !== null &&
+        latestVersion !== null &&
+        semver.valid(installedVersion) !== null &&
+        semver.valid(latestVersion) !== null &&
+        semver.gt(latestVersion, installedVersion);
 
     return {
       id: pkg.id,
@@ -448,8 +468,9 @@ function buildCheckResult(
   config: UpdateConfig,
   error: string | null,
   globalPrefix: string | null,
+  runtimeCommand: string | null = null,
 ): CheckResult {
-  const packages = buildPackageResults(currentVersion, cache, cache.channel, globalPrefix);
+  const packages = buildPackageResults(currentVersion, cache, cache.channel, globalPrefix, runtimeCommand);
   const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
   const targetVersion = primaryPackage?.latest_version ?? currentVersion;
   const latestStable = primaryPackage?.latest_stable ?? currentVersion;
@@ -522,6 +543,7 @@ export function getInstalledVersion(
 export async function checkForUpdate(
   currentVersion: string,
   globalPrefix: string | null = null,
+  runtimeCommand: string | null = null,
 ): Promise<CheckResult> {
   const config = readUpdateConfig();
   const existingCache = readCachedCheck();
@@ -590,6 +612,7 @@ export async function checkForUpdate(
         { checked_at: new Date().toISOString(), channel: config.channel, packages: {} },
         config.channel,
         globalPrefix,
+        runtimeCommand,
       ),
     };
   }
@@ -608,7 +631,7 @@ export async function checkForUpdate(
   }
 
   const error = fetchErrors.length > 0 ? fetchErrors.join('; ') : null;
-  return buildCheckResult(currentVersion, freshCache, config, error, globalPrefix);
+  return buildCheckResult(currentVersion, freshCache, config, error, globalPrefix, runtimeCommand);
 }
 
 /**
@@ -623,10 +646,11 @@ export function statusFromCache(
   cache?: CachedCheck | null,
   config?: UpdateConfig,
   globalPrefix: string | null = null,
+  runtimeCommand: string | null = null,
 ): CheckResult | null {
   const resolvedCache = cache !== undefined ? cache : readCachedCheck();
   if (resolvedCache === null) return null;
 
   const resolvedConfig = config !== undefined ? config : readUpdateConfig();
-  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null, globalPrefix);
+  return buildCheckResult(currentVersion, resolvedCache, resolvedConfig, null, globalPrefix, runtimeCommand);
 }

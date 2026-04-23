@@ -62,6 +62,7 @@ import {
   setDevBuildCliEntry,
   getDevBuildCliEntry,
   resolveMycoBinary,
+  resolveRuntimeCommand,
   readUpdateConfig,
   isCacheStale,
   checkForUpdate,
@@ -199,6 +200,18 @@ describe('resolveMycoBinary()', () => {
 
   it('returns the literal `myco` fallback when no dev entry is recorded', () => {
     expect(resolveMycoBinary()).toBe('myco');
+  });
+});
+
+describe('resolveRuntimeCommand()', () => {
+  it('returns the trimmed runtime.command value when present', () => {
+    mockFileContent('/vault/.myco/runtime.command', '  /vault/.myco/runtime/node_modules/.bin/myco \n');
+    expect(resolveRuntimeCommand('/vault/.myco')).toBe('/vault/.myco/runtime/node_modules/.bin/myco');
+  });
+
+  it('returns null when runtime.command is missing', () => {
+    mockNoFiles();
+    expect(resolveRuntimeCommand('/vault/.myco')).toBeNull();
   });
 });
 
@@ -535,6 +548,39 @@ describe('statusFromCache()', () => {
     expect(result!.update_available).toBe(true);
     expect(result!.latest_version).toBe('1.1.0-beta.1');
   });
+
+  it('offers a stable-channel revert when running from a managed project runtime', () => {
+    const cache = makeCachedCheck({
+      channel: 'stable',
+      packages: {
+        myco: {
+          package_name: '@goondocks/myco',
+          latest_stable: '1.0.0',
+          latest_beta: '1.1.0-beta.1',
+        },
+      },
+    });
+
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (String(p).endsWith('last-update-check.json')) {
+        return JSON.stringify(cache);
+      }
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    const result = statusFromCache(
+      '1.1.0-beta.1',
+      undefined,
+      undefined,
+      '/opt/homebrew',
+      '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco',
+    );
+    expect(result!.update_available).toBe(true);
+    expect(result!.latest_version).toBe('1.0.0');
+    expect(result!.packages[0]?.update_available).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -652,6 +698,20 @@ describe('detectDevBuild()', () => {
       '/opt/homebrew',
       '/home/user/.local/bin/myco-dev',
       symlinkResolver,
+    );
+    expect(result).toBeNull();
+  });
+
+  it('treats project-local managed runtimes as prod, not dev builds', () => {
+    const result = detectDevBuild(
+      '/opt/homebrew',
+      '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco',
+      (p: string) => {
+        if (p === '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco') {
+          return '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/@goondocks/myco/bin/myco.cjs';
+        }
+        return p;
+      },
     );
     expect(result).toBeNull();
   });

@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 
 import {
   MYCO_GLOBAL_DIR,
+  PROJECT_RUNTIME_DIRNAME,
   UPDATE_ERROR_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
   RESTART_REASON_FILENAME,
@@ -24,8 +25,12 @@ import {
 
 /** Parameters required to generate and spawn an update script. */
 export interface InstallParams {
-  /** Fully-qualified npm package specs to install (e.g. ["@goondocks/myco@0.11.0"]). */
+  /** Fully-qualified npm package specs to install globally (e.g. ["@goondocks/myco-team@0.11.0"]). */
   packageSpecs: string[];
+  /** Optional core Myco package spec to install into the project-local runtime. */
+  localRuntimeSpec?: string;
+  /** Remove the project-local runtime after a successful stable-channel apply. */
+  removeLocalRuntime?: boolean;
   /** Absolute path to the project root for `myco update --project`. */
   projectRoot: string;
   /** Absolute path to the vault directory for `myco daemon --vault`. */
@@ -55,7 +60,14 @@ export interface InstallParams {
  * 7. Cleans up the script file itself.
  */
 export function generateUpdateScript(params: InstallParams): string {
-  const { packageSpecs, projectRoot, vaultDir, mycoBinary } = params;
+  const {
+    packageSpecs,
+    localRuntimeSpec,
+    removeLocalRuntime = false,
+    projectRoot,
+    vaultDir,
+    mycoBinary,
+  } = params;
 
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
   const installArgs = packageSpecs.map((spec) => JSON.stringify(spec)).join(' ');
@@ -63,8 +75,17 @@ export function generateUpdateScript(params: InstallParams): string {
   const quotedVaultDir = JSON.stringify(vaultDir);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
+  const localRuntimeDir = path.join(vaultDir, PROJECT_RUNTIME_DIRNAME);
+  const localRuntimeTmpDir = `${localRuntimeDir}.tmp`;
+  const localRuntimeCommandPath = path.join(vaultDir, 'runtime.command');
+  const localRuntimeMyco = path.join(localRuntimeDir, 'node_modules', '.bin', 'myco');
+  const quotedLocalRuntimeSpec = localRuntimeSpec ? JSON.stringify(localRuntimeSpec) : null;
+  const quotedLocalRuntimeDir = JSON.stringify(localRuntimeDir);
+  const quotedLocalRuntimeTmpDir = JSON.stringify(localRuntimeTmpDir);
+  const quotedLocalRuntimeCommandPath = JSON.stringify(localRuntimeCommandPath);
+  const quotedLocalRuntimeMyco = JSON.stringify(localRuntimeMyco);
   const errorJson = JSON.stringify(
-    JSON.stringify({ error: `npm install failed for ${packageSpecs.join(', ')}` }),
+    JSON.stringify({ error: `npm install failed for ${[...packageSpecs, localRuntimeSpec].filter(Boolean).join(', ')}` }),
   );
 
   // Bake the literal myco binary into the script at generation time. Prod
@@ -79,8 +100,29 @@ MYCO=${quotedMycoBinary}
 # Wait for daemon to exit cleanly
 sleep ${UPDATE_SCRIPT_DELAY_SECONDS}
 
-# Attempt the update
-if npm install -g ${installArgs} 2>&1; then
+update_failed=0
+
+${quotedLocalRuntimeSpec ? `rm -rf ${quotedLocalRuntimeTmpDir}
+if npm install --prefix ${quotedLocalRuntimeTmpDir} ${quotedLocalRuntimeSpec} 2>&1; then
+  rm -rf ${quotedLocalRuntimeDir}
+  mv ${quotedLocalRuntimeTmpDir} ${quotedLocalRuntimeDir}
+  printf '%s\\n' ${quotedLocalRuntimeMyco} > ${quotedLocalRuntimeCommandPath}
+  MYCO=${quotedLocalRuntimeMyco}
+else
+  rm -rf ${quotedLocalRuntimeTmpDir}
+  update_failed=1
+fi
+` : ''}${installArgs ? `if [ "$update_failed" -eq 0 ]; then
+  if ! npm install -g ${installArgs} 2>&1; then
+    update_failed=1
+  fi
+fi
+` : ''}${removeLocalRuntime ? `if [ "$update_failed" -eq 0 ]; then
+  rm -f ${quotedLocalRuntimeCommandPath}
+  rm -rf ${quotedLocalRuntimeDir}
+  MYCO="myco"
+fi
+` : ''}if [ "$update_failed" -eq 0 ]; then
   # Sync project files (gitignore, symbiont registration)
   "$MYCO" update --project ${quotedProjectRoot} || true
   # Clear any previous error
@@ -88,6 +130,7 @@ if npm install -g ${installArgs} 2>&1; then
 else
   # Write error and attempt restart with old version
   echo ${errorJson} > ${quotedErrorPath}
+  MYCO=${quotedMycoBinary}
 fi
 
 # Restart daemon (works whether install succeeded or failed)

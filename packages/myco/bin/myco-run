@@ -29,6 +29,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+function isPackagedInstall(scriptPath) {
+  return scriptPath.split(path.sep).includes('node_modules');
+}
+
 function resolveRuntimeCommand(startDir) {
   let dir = path.resolve(startDir);
   while (true) {
@@ -69,6 +73,26 @@ function resolveSelfLocatedEntry() {
   throw new Error(`could not locate packaged Myco CLI under ${installRoot}`);
 }
 
+function shouldPreferGlobalFallback() {
+  try {
+    const scriptPath = fs.realpathSync(process.argv[1]);
+    const installRoot = path.resolve(path.dirname(scriptPath), '..');
+    return !isPackagedInstall(scriptPath) && fs.existsSync(path.join(installRoot, 'src'));
+  } catch {
+    return false;
+  }
+}
+
+function tryExecGlobal(argv) {
+  try {
+    execFileSync('myco', argv, { stdio: 'inherit' });
+    process.exit(0);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    process.exit(error.status ?? 1);
+  }
+}
+
 function execSelfLocated(argv) {
   let cliEntry;
   try {
@@ -88,4 +112,7 @@ function execSelfLocated(argv) {
 
 const forwardArgs = process.argv.slice(2);
 tryRedirectViaAlias(forwardArgs);
+if (shouldPreferGlobalFallback()) {
+  tryExecGlobal(forwardArgs);
+}
 execSelfLocated(forwardArgs);

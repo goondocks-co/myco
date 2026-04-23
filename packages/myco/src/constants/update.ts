@@ -16,6 +16,9 @@ export const UPDATE_CONFIG_PATH = path.join(MYCO_GLOBAL_DIR, 'update.yaml');
 /** Path to the update error file (written by update script on failure). */
 export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json');
 
+/** Project-local managed runtime directory under the vault. */
+export const PROJECT_RUNTIME_DIRNAME = 'runtime';
+
 /** Filename for the version stamp written by `myco update` (lives inside vault .myco/). */
 export const UPDATE_STAMP_FILENAME = 'last-update-version';
 

@@ -22,6 +22,8 @@ import {
   isCacheStale,
   getInstalledVersion,
   resolveMycoBinary,
+  resolveRuntimeCommand,
+  isManagedProjectRuntime,
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
@@ -67,6 +69,8 @@ const ChannelBodySchema = z.object({
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
   const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
+  const resolveManagedMycoBinary = () => resolveRuntimeCommand(vaultDir) ?? resolveMycoBinary();
+  const getRuntimeCommand = () => resolveRuntimeCommand(vaultDir);
 
   /** Prevents multiple restart scripts from racing during the shutdown window. */
   let restartInitiated = false;
@@ -108,7 +112,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
           toVersion: installedVersion,
-          mycoBinary: resolveMycoBinary(),
+          mycoBinary: resolveManagedMycoBinary(),
         });
         scheduleShutdown();
         return {
@@ -128,11 +132,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
 
     if (isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget — don't block the response on the registry fetch.
-      checkForUpdate(currentVersion, globalPrefix).catch(() => {});
+      checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand()).catch(() => {});
     }
 
     // Pass pre-read config and cache to avoid reading the files a second time.
-    const status = statusFromCache(currentVersion, cache, config, globalPrefix);
+    const status = statusFromCache(currentVersion, cache, config, globalPrefix, getRuntimeCommand());
     if (!status) {
       // No cache yet — return minimal response; background check will populate it.
       return {
@@ -167,7 +171,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       };
     }
 
-    const result = await checkForUpdate(currentVersion, globalPrefix);
+    const result = await checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand());
     return { body: { exempt: false, ...result } };
   }
 
@@ -181,19 +185,33 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 400, body: { error: 'update_exempt' } };
     }
 
-    const status = statusFromCache(currentVersion, undefined, undefined, globalPrefix);
+    const runtimeCommand = getRuntimeCommand();
+    const status = statusFromCache(currentVersion, undefined, undefined, globalPrefix, runtimeCommand);
     const packageSpecs = (status?.packages ?? [])
       .filter((pkg) => pkg.installed && pkg.update_available && pkg.latest_version)
       .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
-    if (!status || packageSpecs.length === 0) {
+    const removeLocalRuntime =
+      status?.channel === 'stable'
+      && runtimeCommand !== null
+      && isManagedProjectRuntime(runtimeCommand);
+    if (!status || (packageSpecs.length === 0 && !removeLocalRuntime)) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
+    const localRuntimeSpec = status.channel === 'beta'
+      ? packageSpecs.find((spec) => spec.startsWith('@goondocks/myco@'))
+      : undefined;
+    const globalPackageSpecs = localRuntimeSpec
+      ? packageSpecs.filter((spec) => spec !== localRuntimeSpec)
+      : packageSpecs;
+
     spawnUpdateScript({
-      packageSpecs,
+      packageSpecs: globalPackageSpecs,
+      localRuntimeSpec,
+      removeLocalRuntime,
       projectRoot,
       vaultDir,
-      mycoBinary: resolveMycoBinary(),
+      mycoBinary: resolveManagedMycoBinary(),
     });
     scheduleShutdown();
 
@@ -223,7 +241,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     writeUpdateConfig({ ...config, channel });
     clearCachedCheck();
 
-    const channelStatus = statusFromCache(currentVersion, undefined, undefined, globalPrefix);
+    const channelStatus = statusFromCache(currentVersion, undefined, undefined, globalPrefix, getRuntimeCommand());
     if (!channelStatus) {
       return {
         body: {
