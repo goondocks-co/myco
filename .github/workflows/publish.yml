@@ -481,8 +481,12 @@ jobs:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
         run: |
           set -euo pipefail
-          TARBALL="$(echo publish-files/*.tgz)"
-          npx npm@latest publish "$TARBALL" --tag "$NPM_TAG" --provenance --access public
+          TARBALL="$(find publish-files -maxdepth 1 -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "no tarball found in publish-files/" >&2
+            exit 1
+          fi
+          npm publish "./$TARBALL" --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:
