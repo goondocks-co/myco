@@ -20,7 +20,8 @@ mock.module('@myco/daemon/update-checker.js', () => ({
   statusFromCache: vi.fn(),
   readCachedCheck: vi.fn(() => null),
   readUpdateConfig: vi.fn(() => ({ channel: 'stable', check_interval_hours: 6 })),
-  writeUpdateConfig: vi.fn(),
+  readProjectReleaseChannel: vi.fn(() => 'stable'),
+  writeProjectReleaseChannel: vi.fn(),
   clearCachedCheck: vi.fn(),
   isCacheStale: vi.fn(() => false),
   getInstalledVersion: vi.fn(() => null),
@@ -40,7 +41,8 @@ import {
   statusFromCache,
   readCachedCheck,
   readUpdateConfig,
-  writeUpdateConfig,
+  readProjectReleaseChannel,
+  writeProjectReleaseChannel,
   clearCachedCheck,
   isCacheStale,
   getInstalledVersion,
@@ -128,6 +130,7 @@ describe('handleUpdateStatus', () => {
     vi.mocked(isUpdateExempt).mockReturnValue(false);
     vi.mocked(readCachedCheck).mockReturnValue(null);
     vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(isCacheStale).mockReturnValue(false);
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(checkForUpdate).mockResolvedValue(NO_UPDATE_STATUS);
@@ -174,7 +177,7 @@ describe('handleUpdateStatus', () => {
     // Response returned immediately (does not await checkForUpdate)
     expect(result.body).toMatchObject({ exempt: false });
     // Background check was triggered
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null);
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
   });
 
   it('returns exempt:false in body when not exempt', async () => {
@@ -199,6 +202,8 @@ describe('handleUpdateStatus', () => {
     expect(body.update_available).toBe(false);
     expect(body.running_version).toBe('1.0.0');
     expect(body.channel).toBe('stable');
+    expect(body.channel_scope).toBe('project');
+    expect(body.runtime_scope).toBe('machine');
     expect(body.last_check).toBe('');
   });
 });
@@ -210,6 +215,7 @@ describe('handleUpdateStatus', () => {
 describe('handleUpdateCheck', () => {
   beforeEach(() => {
     vi.mocked(isUpdateExempt).mockReturnValue(false);
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(checkForUpdate).mockResolvedValue(UPDATE_AVAILABLE_STATUS);
   });
 
@@ -228,7 +234,7 @@ describe('handleUpdateCheck', () => {
 
     const result = await handleUpdateCheck(makeReq());
 
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null);
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
     expect(result.body).toMatchObject({ exempt: false, update_available: true });
   });
 
@@ -249,6 +255,7 @@ describe('handleUpdateCheck', () => {
 describe('handleUpdateApply', () => {
   beforeEach(() => {
     vi.mocked(isUpdateExempt).mockReturnValue(false);
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(statusFromCache).mockReturnValue(UPDATE_AVAILABLE_STATUS);
     vi.mocked(spawnUpdateScript).mockReset();
     vi.mocked(spawnUpdateScript).mockReturnValue('/tmp/myco-update-123.sh');
@@ -385,8 +392,11 @@ describe('handleUpdateChannel', () => {
   beforeEach(() => {
     vi.mocked(isUpdateExempt).mockReturnValue(false);
     vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
-    vi.mocked(writeUpdateConfig).mockImplementation(() => {});
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(writeProjectReleaseChannel).mockImplementation(() => {});
     vi.mocked(clearCachedCheck).mockImplementation(() => {});
   });
 
@@ -412,7 +422,7 @@ describe('handleUpdateChannel', () => {
 
     const result = await handleUpdateChannel(makeReq({ body: { channel: 'beta' } }));
 
-    expect(writeUpdateConfig).toHaveBeenCalledWith({ channel: 'beta', check_interval_hours: 6 });
+    expect(writeProjectReleaseChannel).toHaveBeenCalledWith('/vault', 'beta');
     expect(clearCachedCheck).toHaveBeenCalled();
     expect(result.status).toBeUndefined();
   });
@@ -436,6 +446,8 @@ describe('handleUpdateChannel', () => {
     expect(body.exempt).toBe(false);
     expect(body.update_available).toBe(false);
     expect(body.channel).toBe('beta');
+    expect(body.channel_scope).toBe('project');
+    expect(body.runtime_scope).toBe('machine');
     expect(body.last_check).toBe('');
   });
 
@@ -459,6 +471,7 @@ describe('handleUpdateStatus — restart_required', () => {
     vi.mocked(isUpdateExempt).mockReturnValue(false);
     vi.mocked(readCachedCheck).mockReturnValue(null);
     vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(isCacheStale).mockReturnValue(false);
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(getInstalledVersion).mockReset();

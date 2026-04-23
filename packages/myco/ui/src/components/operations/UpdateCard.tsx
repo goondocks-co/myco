@@ -141,6 +141,10 @@ export function UpdateCard() {
   const pendingPackages = installedPackages.filter((pkg) => pkg.update_available);
   const pendingCount = pendingPackages.length;
   const latestBadge = updateBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
+  const runtimeScope = status.runtime_scope ?? 'machine';
+  const runtimeSummary = runtimeScope === 'project'
+    ? 'This project is pinned to a project-local Myco runtime. Switching back to Stable removes the local runtime and falls back to the machine install.'
+    : 'This project is using the machine-installed Myco runtime. Switching to Beta installs a project-local Myco runtime for this vault.';
 
   // State 2: exempt (dev mode)
   if (status.exempt) {
@@ -255,7 +259,7 @@ export function UpdateCard() {
             </div>
           ))}
           <p className="font-sans text-xs text-on-surface-variant">
-            Installed Myco packages update together from this machine-level updater.
+            {runtimeSummary}
           </p>
         </div>
       )}

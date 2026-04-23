@@ -25,6 +25,7 @@ import { MS_PER_HOUR } from '@myco/constants/update.js';
 // the default export and named exports so `import fs from 'node:fs'` and
 // destructured imports both see the same mocks.
 const fsMocks = {
+  existsSync: mock(() => false),
   readFileSync: mock(() => {
     const err: NodeJS.ErrnoException = new Error('ENOENT');
     err.code = 'ENOENT';
@@ -63,6 +64,8 @@ import {
   getDevBuildCliEntry,
   resolveMycoBinary,
   resolveRuntimeCommand,
+  readProjectReleaseChannel,
+  writeProjectReleaseChannel,
   readUpdateConfig,
   isCacheStale,
   checkForUpdate,
@@ -107,6 +110,7 @@ function makeRegistryResponse(latest: string, beta?: string): Record<string, unk
 
 /** Helper: mock fs.readFileSync to return specific content for a path. */
 function mockFileContent(filePath: string, content: string): void {
+  vi.mocked(fs.existsSync).mockImplementation((p) => p === filePath);
   vi.mocked(fs.readFileSync).mockImplementation((p, _opts) => {
     if (p === filePath) return content;
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
@@ -117,6 +121,7 @@ function mockFileContent(filePath: string, content: string): void {
 
 /** Helper: make all file reads throw ENOENT. */
 function mockNoFiles(): void {
+  vi.mocked(fs.existsSync).mockReturnValue(false);
   vi.mocked(fs.readFileSync).mockImplementation((p) => {
     const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
     err.code = 'ENOENT';
@@ -149,6 +154,7 @@ beforeEach(() => {
   // a prior test's "set to dev" doesn't bleed into the next test's
   // "expect prod" assertion.
   setDevBuildCliEntry(null);
+  vi.mocked(fs.existsSync).mockReturnValue(false);
   vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
   vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
   vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
@@ -212,6 +218,42 @@ describe('resolveRuntimeCommand()', () => {
   it('returns null when runtime.command is missing', () => {
     mockNoFiles();
     expect(resolveRuntimeCommand('/vault/.myco')).toBeNull();
+  });
+});
+
+describe('project release channel helpers', () => {
+  it('defaults to stable when local.yaml has no update override', () => {
+    mockNoFiles();
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('stable');
+  });
+
+  it('reads update.channel from local.yaml when present', () => {
+    mockFileContent('/vault/.myco/local.yaml', 'update:\n  channel: beta\n');
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('beta');
+  });
+
+  it('writes beta to local.yaml as a project-local override', () => {
+    mockNoFiles();
+
+    writeProjectReleaseChannel('/vault/.myco', 'beta');
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/vault/.myco/local.yaml',
+      expect.stringContaining('channel: beta'),
+      'utf-8',
+    );
+  });
+
+  it('clears the local override when switching back to stable', () => {
+    mockFileContent('/vault/.myco/local.yaml', 'update:\n  channel: beta\n');
+
+    writeProjectReleaseChannel('/vault/.myco', 'stable');
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      '/vault/.myco/local.yaml',
+      '{}\n',
+      'utf-8',
+    );
   });
 });
 

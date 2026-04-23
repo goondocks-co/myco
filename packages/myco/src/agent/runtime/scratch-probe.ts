@@ -1,4 +1,5 @@
 import { query, type Options, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
 /**
  * `query()` wrapper for scratch / verification scripts run inside this repo.
@@ -14,11 +15,13 @@ export function scratchProbe(params: {
   options?: Options;
 }): Query {
   const callerEnv = params.options?.env ?? (process.env as Record<string, string | undefined>);
+  const claudeCodeExecutable = params.options?.pathToClaudeCodeExecutable ?? resolveClaudeCodeExecutable();
   return query({
     prompt: params.prompt,
     options: {
       ...(params.options ?? {}),
       env: { ...callerEnv, MYCO_AGENT_SESSION: '1' } as Record<string, string>,
+      ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
     },
   });
 }

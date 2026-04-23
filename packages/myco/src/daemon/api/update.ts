@@ -17,7 +17,8 @@ import {
   statusFromCache,
   readCachedCheck,
   readUpdateConfig,
-  writeUpdateConfig,
+  readProjectReleaseChannel,
+  writeProjectReleaseChannel,
   clearCachedCheck,
   isCacheStale,
   getInstalledVersion,
@@ -71,6 +72,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
   const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
   const resolveManagedMycoBinary = () => resolveRuntimeCommand(vaultDir) ?? resolveMycoBinary();
   const getRuntimeCommand = () => resolveRuntimeCommand(vaultDir);
+  const getDesiredChannel = () => readProjectReleaseChannel(vaultDir);
+  const getRuntimeScope = () => {
+    const runtimeCommand = getRuntimeCommand();
+    return runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand) ? 'project' : 'machine';
+  };
 
   /** Prevents multiple restart scripts from racing during the shutdown window. */
   let restartInitiated = false;
@@ -127,16 +133,24 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     // --- Normal registry check flow (unchanged) ---
+    const desiredChannel = getDesiredChannel();
     const config = readUpdateConfig();
     const cache = readCachedCheck();
 
     if (isCacheStale(cache, config.check_interval_hours)) {
       // Fire-and-forget — don't block the response on the registry fetch.
-      checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand()).catch(() => {});
+      checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand(), desiredChannel).catch(() => {});
     }
 
     // Pass pre-read config and cache to avoid reading the files a second time.
-    const status = statusFromCache(currentVersion, cache, config, globalPrefix, getRuntimeCommand());
+    const status = statusFromCache(
+      currentVersion,
+      cache,
+      config,
+      globalPrefix,
+      getRuntimeCommand(),
+      desiredChannel,
+    );
     if (!status) {
       // No cache yet — return minimal response; background check will populate it.
       return {
@@ -147,7 +161,9 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           latest_version: currentVersion,
           latest_stable: currentVersion,
           latest_beta: null,
-          channel: config.channel,
+          channel: desiredChannel,
+          channel_scope: 'project',
+          runtime_scope: getRuntimeScope(),
           check_interval_hours: config.check_interval_hours,
           last_check: '',
           error: null,
@@ -171,7 +187,12 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       };
     }
 
-    const result = await checkForUpdate(currentVersion, globalPrefix, getRuntimeCommand());
+    const result = await checkForUpdate(
+      currentVersion,
+      globalPrefix,
+      getRuntimeCommand(),
+      getDesiredChannel(),
+    );
     return { body: { exempt: false, ...result } };
   }
 
@@ -186,7 +207,14 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     }
 
     const runtimeCommand = getRuntimeCommand();
-    const status = statusFromCache(currentVersion, undefined, undefined, globalPrefix, runtimeCommand);
+    const status = statusFromCache(
+      currentVersion,
+      undefined,
+      undefined,
+      globalPrefix,
+      runtimeCommand,
+      getDesiredChannel(),
+    );
     const packageSpecs = (status?.packages ?? [])
       .filter((pkg) => pkg.installed && pkg.update_available && pkg.latest_version)
       .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
@@ -238,10 +266,17 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     const { channel } = parsed.data;
     const config = readUpdateConfig();
 
-    writeUpdateConfig({ ...config, channel });
+    writeProjectReleaseChannel(vaultDir, channel);
     clearCachedCheck();
 
-    const channelStatus = statusFromCache(currentVersion, undefined, undefined, globalPrefix, getRuntimeCommand());
+    const channelStatus = statusFromCache(
+      currentVersion,
+      undefined,
+      undefined,
+      globalPrefix,
+      getRuntimeCommand(),
+      channel,
+    );
     if (!channelStatus) {
       return {
         body: {
@@ -252,6 +287,8 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           latest_stable: currentVersion,
           latest_beta: null,
           channel,
+          channel_scope: 'project',
+          runtime_scope: getRuntimeScope(),
           check_interval_hours: config.check_interval_hours,
           last_check: '',
           error: null,
