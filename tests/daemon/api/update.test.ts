@@ -25,6 +25,8 @@ mock.module('@myco/daemon/update-checker.js', () => ({
   isCacheStale: vi.fn(() => false),
   getInstalledVersion: vi.fn(() => null),
   resolveMycoBinary: vi.fn(() => 'myco'),
+  resolveRuntimeCommand: vi.fn(() => null),
+  isManagedProjectRuntime: vi.fn(() => false),
 }));
 
 mock.module('@myco/daemon/update-installer.js', () => ({
@@ -42,6 +44,8 @@ import {
   clearCachedCheck,
   isCacheStale,
   getInstalledVersion,
+  resolveRuntimeCommand,
+  isManagedProjectRuntime,
 } from '@myco/daemon/update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
@@ -170,7 +174,7 @@ describe('handleUpdateStatus', () => {
     // Response returned immediately (does not await checkForUpdate)
     expect(result.body).toMatchObject({ exempt: false });
     // Background check was triggered
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined);
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null);
   });
 
   it('returns exempt:false in body when not exempt', async () => {
@@ -224,7 +228,7 @@ describe('handleUpdateCheck', () => {
 
     const result = await handleUpdateCheck(makeReq());
 
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined);
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null);
     expect(result.body).toMatchObject({ exempt: false, update_available: true });
   });
 
@@ -248,6 +252,8 @@ describe('handleUpdateApply', () => {
     vi.mocked(statusFromCache).mockReturnValue(UPDATE_AVAILABLE_STATUS);
     vi.mocked(spawnUpdateScript).mockReset();
     vi.mocked(spawnUpdateScript).mockReturnValue('/tmp/myco-update-123.sh');
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
   });
 
   it('returns 400 when exempt', async () => {
@@ -287,6 +293,8 @@ describe('handleUpdateApply', () => {
 
     expect(spawnUpdateScript).toHaveBeenCalledWith({
       packageSpecs: ['@goondocks/myco@1.1.0'],
+      localRuntimeSpec: undefined,
+      removeLocalRuntime: false,
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
@@ -328,9 +336,43 @@ describe('handleUpdateApply', () => {
 
     expect(spawnUpdateScript).toHaveBeenCalledWith({
       packageSpecs: ['@goondocks/myco@1.1.0', '@goondocks/myco-team@0.1.1'],
+      localRuntimeSpec: undefined,
+      removeLocalRuntime: false,
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+    });
+  });
+
+  it('removes a managed local runtime when switching back to stable', async () => {
+    vi.mocked(statusFromCache).mockReturnValue({
+      ...UPDATE_AVAILABLE_STATUS,
+      running_version: '1.1.0-beta.1',
+      latest_version: '1.0.0',
+      latest_stable: '1.0.0',
+      packages: [
+        {
+          ...UPDATE_AVAILABLE_STATUS.packages[0],
+          installed_version: '1.1.0-beta.1',
+          latest_version: '1.0.0',
+          latest_stable: '1.0.0',
+        },
+      ],
+    });
+    vi.mocked(resolveRuntimeCommand).mockReturnValue('/project/.myco/runtime/node_modules/.bin/myco');
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(true);
+
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps());
+
+    await handleUpdateApply(makeReq());
+
+    expect(spawnUpdateScript).toHaveBeenCalledWith({
+      packageSpecs: ['@goondocks/myco@1.0.0'],
+      localRuntimeSpec: undefined,
+      removeLocalRuntime: true,
+      projectRoot: '/project',
+      vaultDir: '/vault',
+      mycoBinary: '/project/.myco/runtime/node_modules/.bin/myco',
     });
   });
 });

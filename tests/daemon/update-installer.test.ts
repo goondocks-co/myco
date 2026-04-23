@@ -111,4 +111,25 @@ describe('generateUpdateScript()', () => {
     });
     expect(script).toContain('"@goondocks/myco@1.0.0" "@goondocks/myco-team@0.1.1"');
   });
+
+  it('installs beta builds into the project-local runtime when requested', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      packageSpecs: [],
+      localRuntimeSpec: '@goondocks/myco@1.1.0-beta.1',
+    });
+    expect(script).toContain('npm install --prefix "/project/.myco/runtime.tmp" "@goondocks/myco@1.1.0-beta.1"');
+    expect(script).toContain('printf \'%s\\n\' "/project/.myco/runtime/node_modules/.bin/myco" > "/project/.myco/runtime.command"');
+    expect(script).toContain('MYCO="/project/.myco/runtime/node_modules/.bin/myco"');
+  });
+
+  it('removes the project-local runtime after a successful stable revert', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      removeLocalRuntime: true,
+    });
+    expect(script).toContain('rm -f "/project/.myco/runtime.command"');
+    expect(script).toContain('rm -rf "/project/.myco/runtime"');
+    expect(script).toContain('MYCO="myco"');
+  });
 });
