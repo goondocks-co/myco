@@ -458,6 +458,7 @@ jobs:
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             edit_args=(
               "$TAG_NAME"
+              --draft=false
               --title "$TAG_NAME"
               --notes-file release-notes.md
             )
