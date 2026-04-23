@@ -272,29 +272,21 @@ jobs:
         run: npm ci --prefix packages/myco/ui
       - name: Install myco-collective UI deps
         run: npm ci --prefix packages/myco-collective/ui
-      - name: Install myco-team worker deps
+      - name: Install worker deps
         run: |
-          for attempt in 1 2 3; do
-            if npm ci --prefix packages/myco-team/worker; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "myco-team worker npm ci failed on attempt $attempt; retrying..." >&2
-            sleep 5
-          done
-      - name: Install myco-collective worker deps
-        run: |
-          for attempt in 1 2 3; do
-            if npm ci --prefix packages/myco-collective/worker; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            echo "myco-collective worker npm ci failed on attempt $attempt; retrying..." >&2
-            sleep 5
+          set -eu
+          for workspace in packages/myco-team/worker packages/myco-collective/worker; do
+            for attempt in 1 2 3; do
+              if npm ci --prefix "$workspace"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "$workspace npm ci failed after 3 attempts" >&2
+                exit 1
+              fi
+              echo "$workspace npm ci failed on attempt $attempt; retrying..." >&2
+              sleep 5
+            done
           done
 
       - name: Sync target package versions from tag

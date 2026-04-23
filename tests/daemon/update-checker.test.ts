@@ -64,6 +64,8 @@ import {
   getDevBuildCliEntry,
   resolveMycoBinary,
   resolveRuntimeCommand,
+  isManagedProjectRuntime,
+  getRuntimeScope,
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
   readUpdateConfig,
@@ -221,6 +223,51 @@ describe('resolveRuntimeCommand()', () => {
   });
 });
 
+describe('isManagedProjectRuntime()', () => {
+  it('matches a managed runtime path inside a standard .myco vault', () => {
+    expect(
+      isManagedProjectRuntime('/Users/me/proj/.myco/runtime/node_modules/.bin/myco'),
+    ).toBe(true);
+  });
+
+  it('returns false for a machine-installed myco binary', () => {
+    expect(isManagedProjectRuntime('/opt/homebrew/bin/myco')).toBe(false);
+  });
+
+  it('uses startsWith against the vaultDir when supplied', () => {
+    const vaultDir = '/tmp/relocated-vault';
+    const entry = `${vaultDir}/runtime/node_modules/.bin/myco`;
+    expect(isManagedProjectRuntime(entry, vaultDir)).toBe(true);
+  });
+
+  it('rejects entries outside the supplied vaultDir even when the substring appears', () => {
+    // Without vaultDir, a misleading path could falsely match the substring
+    // form. With vaultDir, we anchor to the real prefix.
+    const entry = '/other/.myco/runtime/node_modules/.bin/myco';
+    expect(isManagedProjectRuntime(entry, '/my/.myco')).toBe(false);
+  });
+});
+
+describe('getRuntimeScope()', () => {
+  it('returns `machine` when no runtime.command exists', () => {
+    mockNoFiles();
+    expect(getRuntimeScope('/vault/.myco')).toBe('machine');
+  });
+
+  it('returns `project` when runtime.command points at the managed runtime', () => {
+    mockFileContent(
+      '/vault/.myco/runtime.command',
+      '/vault/.myco/runtime/node_modules/.bin/myco\n',
+    );
+    expect(getRuntimeScope('/vault/.myco')).toBe('project');
+  });
+
+  it('returns `machine` when runtime.command points outside the managed runtime', () => {
+    mockFileContent('/vault/.myco/runtime.command', 'myco-dev\n');
+    expect(getRuntimeScope('/vault/.myco')).toBe('machine');
+  });
+});
+
 describe('project release channel helpers', () => {
   it('defaults to stable when local.yaml has no update override', () => {
     mockNoFiles();
@@ -254,6 +301,29 @@ describe('project release channel helpers', () => {
       '{}\n',
       'utf-8',
     );
+  });
+
+  it('migrates legacy machine-global beta preference when project has no override', () => {
+    // Pre-0.22 users had channel in the global update.yaml. Honor it so they
+    // don't silently fall back to stable after upgrading. Project-local
+    // local.yaml shadows this when explicitly set.
+    mockFileContent(UPDATE_CONFIG_PATH, 'channel: beta\ncheck_interval_hours: 6\n');
+
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('beta');
+  });
+
+  it('prefers project-local channel over legacy machine-global channel', () => {
+    const localPath = '/vault/.myco/local.yaml';
+    vi.mocked(fs.existsSync).mockImplementation((p) => p === localPath || p === UPDATE_CONFIG_PATH);
+    vi.mocked(fs.readFileSync).mockImplementation((p) => {
+      if (p === localPath) return 'update:\n  channel: stable\n';
+      if (p === UPDATE_CONFIG_PATH) return 'channel: beta\ncheck_interval_hours: 6\n';
+      const err: NodeJS.ErrnoException = new Error(`ENOENT: ${String(p)}`);
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    expect(readProjectReleaseChannel('/vault/.myco')).toBe('stable');
   });
 });
 
@@ -619,9 +689,12 @@ describe('statusFromCache()', () => {
       '/opt/homebrew',
       '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco',
     );
-    expect(result!.update_available).toBe(true);
+    // Revert to a lower stable version is a revert, not an update.
+    expect(result!.update_available).toBe(false);
+    expect(result!.revert_available).toBe(true);
     expect(result!.latest_version).toBe('1.0.0');
-    expect(result!.packages[0]?.update_available).toBe(true);
+    expect(result!.packages[0]?.update_available).toBe(false);
+    expect(result!.packages[0]?.revert_available).toBe(true);
   });
 });
 

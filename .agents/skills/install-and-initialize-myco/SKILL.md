@@ -150,9 +150,25 @@ When developing Myco itself, you need the project's hooks and daemon to invoke y
 
 ### Prerequisites for Dev Setup
 
-- The project is built: `packages/myco/dist/src/cli.js` must exist. Run `make build` first if it doesn't.
-- You are in the repository root (`/Users/chris/Repos/myco` or equivalent).
-- The globally-installed `myco` is already working (used as the fallback when `.myco/runtime.command` is absent).
+- Node.js installed (Myco requires Node.js ≥ 18)
+- You are in the repository root (`/Users/chris/Repos/myco` or equivalent)
+- The globally-installed `myco` is already working (used as the fallback when `.myco/runtime.command` is absent)
+
+### Verify Build Status
+
+Before configuring dev binary, ensure the project is built:
+
+```bash
+# Check if CLI build exists
+if [ ! -f "packages/myco/dist/src/cli.js" ]; then
+  echo "CLI not built. Running build..."
+  make build
+else
+  echo "CLI build found."
+fi
+```
+
+The CLI build at `packages/myco/dist/src/cli.js` is required for dev configuration to work.
 
 ### Configure Dev Binary
 

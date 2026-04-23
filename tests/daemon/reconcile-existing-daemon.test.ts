@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { reconcileExistingDaemon } from '@myco/daemon/main';
+import { reconcileExistingDaemon, isHealthyMycoSibling } from '@myco/daemon/main';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { getPluginVersion } from '@myco/version';
+import { derivePort } from '@myco/daemon/port';
 
 // Prevents the concurrent-spawn cascade we observed in production, where
 // every newly-spawned daemon unconditionally SIGTERM'd whatever pid was in
@@ -22,15 +23,16 @@ function makeLogger(vaultDir: string): DaemonLogger {
 async function withHealthServer<T>(
   response: { status: number; body: unknown },
   fn: (port: number) => Promise<T>,
+  port = 0,
 ): Promise<T> {
   const server = http.createServer((_req, res) => {
     res.writeHead(response.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response.body));
   });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-  const port = (server.address() as { port: number }).port;
+  await new Promise<void>((r) => server.listen(port, '127.0.0.1', () => r()));
+  const boundPort = (server.address() as { port: number }).port;
   try {
-    return await fn(port);
+    return await fn(boundPort);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
@@ -75,7 +77,7 @@ describe('reconcileExistingDaemon', () => {
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
   });
 
-  it('steps aside when recorded daemon is recent, healthy, and same version', async () => {
+  it('steps aside when recorded daemon is recent, healthy, same version, and on canonical port', async () => {
     await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },
       async (port) => {
@@ -88,6 +90,26 @@ describe('reconcileExistingDaemon', () => {
         // daemon.json must survive — the sibling we stepped aside for owns it.
         expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
       },
+      derivePort(vaultDir),
+    );
+  });
+
+  it('takes over (ok) when recorded daemon is healthy but NOT on the canonical port', async () => {
+    // An orphan squatting the canonical port forced the sibling to fall back
+    // to a non-canonical port. We must NOT step aside — we need to proceed
+    // through eviction so the canonical port is reclaimed.
+    await withHealthServer(
+      { status: 200, body: { myco: true, version: getPluginVersion() } },
+      async (port) => {
+        fs.writeFileSync(
+          path.join(vaultDir, 'daemon.json'),
+          JSON.stringify({ pid: siblingPid, port }),
+        );
+        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        expect(result).toBe('ok');
+      },
+      // Explicitly NOT the canonical port — let the OS pick any ephemeral port.
+      0,
     );
   });
 
@@ -118,6 +140,7 @@ describe('reconcileExistingDaemon', () => {
         expect(result).toBe('step-aside');
         expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
       },
+      derivePort(vaultDir),
     );
   });
 
@@ -147,5 +170,43 @@ describe('reconcileExistingDaemon', () => {
     const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
     expect(result).toBe('ok');
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isHealthyMycoSibling — late-race detector
+// ---------------------------------------------------------------------------
+
+describe('isHealthyMycoSibling', () => {
+  it('returns true when the port answers /health with myco:true', async () => {
+    await withHealthServer(
+      { status: 200, body: { myco: true, version: '1.0.0' } },
+      async (port) => {
+        expect(await isHealthyMycoSibling(port)).toBe(true);
+      },
+    );
+  });
+
+  it('returns false when /health is non-2xx', async () => {
+    await withHealthServer(
+      { status: 500, body: { error: 'boom' } },
+      async (port) => {
+        expect(await isHealthyMycoSibling(port)).toBe(false);
+      },
+    );
+  });
+
+  it('returns false when /health responds without myco:true', async () => {
+    await withHealthServer(
+      { status: 200, body: { some: 'other service' } },
+      async (port) => {
+        expect(await isHealthyMycoSibling(port)).toBe(false);
+      },
+    );
+  });
+
+  it('returns false when the port is not listening', async () => {
+    // Port 1 refuses connections under normal userspace permissions.
+    expect(await isHealthyMycoSibling(1)).toBe(false);
   });
 });

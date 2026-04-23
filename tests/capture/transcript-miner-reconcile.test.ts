@@ -248,6 +248,59 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(result.errors.some((e) => /stranded|no matching transcript prompt/.test(e))).toBe(true);
   });
 
+  // Regression: Claude Code's slash-command dispatch writes a pair of user
+  // entries sharing one promptId — the <command-message> XML envelope and the
+  // expanded command body. UserPromptSubmit already captured `/<name> <args>`
+  // via the hook path, so both transcript entries are redundant. Before the
+  // claude-code.yaml drop rule, the walker emitted the XML-wrapped text as a
+  // record, reconcile couldn't match its prefix to the hook-stored batch, and
+  // a phantom second batch was inserted (bug showed two side-by-side prompts
+  // in the UI — the raw `/simplify …` form and the XML form).
+  it('does not duplicate a slash-command batch captured via the hook', () => {
+    handleUserPrompt(
+      's-reconcile',
+      '/simplify Okay. We have a lot of releases on Main which were designed to test the new beta on the bun binary',
+      { kind: 'initial' },
+    );
+
+    const events = [
+      // Dispatch envelope — dropped by the manifest rule.
+      {
+        type: 'user',
+        promptId: 'slash-1',
+        message: {
+          role: 'user',
+          content:
+            '<command-message>simplify</command-message>\n'
+            + '<command-name>/simplify</command-name>\n'
+            + '<command-args>Okay. We have a lot of releases on Main which were designed to test the new beta on the bun binary</command-args>',
+        },
+      },
+      // Expanded command body — suppressed via shape-level promptId dedupe.
+      {
+        type: 'user',
+        promptId: 'slash-1',
+        message: { role: 'user', content: [{ type: 'text', text: '# Simplify: Code Review and Cleanup\n...' }] },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    const result = miner.reconcileBatchKinds('s-reconcile', {
+      agent: 'claude-code',
+      transcriptPath,
+    });
+
+    expect(result.inserted).toBe(0);
+    expect(result.errors).toEqual([]);
+
+    const after = listBatchesBySession('s-reconcile');
+    expect(after).toHaveLength(1);
+    expect(after[0].user_prompt).toContain('/simplify Okay.');
+    expect(after[0].user_prompt).not.toContain('<command-message>');
+  });
+
   it('inserts batches when the transcript has prompts and the DB has none', () => {
     // Cold reconcile — daemon missed every hook, the transcript is all we have.
     const events = [

@@ -11,7 +11,7 @@ import {
   BATCH_KIND,
   type BatchRow,
 } from '../db/queries/batches.js';
-import { extractUserPromptRecords, type UserPromptRecord } from './prompt-kind.js';
+import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
 import { getTeamMachineId } from '../daemon/team-context.js';
@@ -164,7 +164,7 @@ export class TranscriptMiner {
       // statSync failure falls through to parseAllEvents, which handles it.
     }
 
-    const records = extractUserPromptRecords(
+    const { records, droppedText } = extractUserPromptRecordsWithDrops(
       input.agent,
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
@@ -219,7 +219,15 @@ export class TranscriptMiner {
       if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
     }
 
-    const stranded = buckets.remaining().length;
+    // Each capture.rules `drop` decision suppresses a transcript prompt the
+    // live hook path already captured, so one DB batch is structurally
+    // "stranded by design" per drop. Subtract those from the stranded count
+    // before warning — otherwise every slash-command dispatch logs a false
+    // signal. Prefix matching isn't viable here: the dropped transcript text
+    // (e.g., `<command-message>...`) has a different prefix than the
+    // hook-stored batch text (`/<name> <args>`), which is the whole reason we
+    // drop the transcript peer in the first place.
+    const stranded = Math.max(0, buckets.remaining().length - droppedText.length);
     if (stranded > 0) {
       errors.push(`${stranded} DB batch(es) had no matching transcript prompt`);
     }

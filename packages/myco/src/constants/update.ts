@@ -19,6 +19,19 @@ export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json')
 /** Project-local managed runtime directory under the vault. */
 export const PROJECT_RUNTIME_DIRNAME = 'runtime';
 
+/**
+ * Staging directory used during atomic swap on update.
+ *
+ * `npm install --prefix <runtime.tmp>` runs first; on success the staging
+ * dir is `mv`d into place over the old `runtime/`. Derived from
+ * {@link PROJECT_RUNTIME_DIRNAME} so a rename of the runtime dir can't
+ * silently drift from the gitignore or the installer script.
+ */
+export const PROJECT_RUNTIME_TMP_DIRNAME = `${PROJECT_RUNTIME_DIRNAME}.tmp`;
+
+/** Filename for the per-project runtime command alias (lives inside vault .myco/). */
+export const PROJECT_RUNTIME_COMMAND_FILENAME = 'runtime.command';
+
 /** Filename for the version stamp written by `myco update` (lives inside vault .myco/). */
 export const UPDATE_STAMP_FILENAME = 'last-update-version';
 

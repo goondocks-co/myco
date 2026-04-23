@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration block, a query module, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each version is a self-contained, idempotent block in the migration runner.
+Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration block, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each version is a self-contained, idempotent block in the migration runner.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) an
 
 ## Procedure A: Adding a New Table
 
-Follow these steps in order. Skipping the query module or constants update leaves the data layer incomplete.
+Follow these steps in order. Skipping the query functions or constants update leaves the data layer incomplete.
 
 ### 1. Write the migration block
 
@@ -52,9 +52,9 @@ Key rules:
 - Use `INTEGER NOT NULL DEFAULT (unixepoch())` for timestamps — store Unix epoch seconds, not ISO strings.
 - Use `TEXT PRIMARY KEY` with a UUID for entity tables; use `INTEGER PRIMARY KEY AUTOINCREMENT` only for pure log/event tables where an ordered surrogate is the point.
 
-### 2. Create the query module
+### 2. Create the query functions
 
-Create `packages/myco/src/db/queries/my-new-table.ts`:
+Add query functions directly in the appropriate module or create a dedicated query module as needed:
 
 ```typescript
 import type { Database } from 'better-sqlite3';
@@ -88,18 +88,19 @@ export function getMyNewTableBySession(
 }
 ```
 
-Re-export from the barrel file (`packages/myco/src/db/queries/index.ts`). All SQL lives in `packages/myco/src/db/queries/` — never inline SQL strings in MCP handlers or business logic.
+All SQL lives in the appropriate query modules — never inline SQL strings in MCP handlers or business logic.
 
 ### 3. Update schema constants
 
-Open `packages/myco/src/config/constants.ts` and check each relevant set:
+Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants:
 
 | Constant | Add the table if… |
 |---|---|
-| `VAULT_GITIGNORE_TABLES` | Table rows should not appear in gitignore-excluded export |
-| `BACKUP_EXCLUDED_TABLES` | Table holds transient/cache data not worth backing up |
-| `SEARCHABLE_TABLES` | Table is FTS5-indexed and surfaced via `vault_search_fts` |
-| `MCP_READABLE_TABLES` | Table is exposed to the cloud MCP read surface |
+| `TABLE_DDLS` | Always add new table DDL definition |
+| `FTS_TABLES` | Table is FTS5-indexed and searchable |
+| `SECONDARY_INDEXES` | Table has custom indexes beyond primary key |
+
+Review the schema-ddl.ts file to identify other table registration constants that may apply to your new table. Look for patterns like how existing tables (sessions, spores, etc.) are registered and follow the same registration approach.
 
 Find all places a similar table name appears to avoid missing any registration point:
 
@@ -131,7 +132,7 @@ Rules:
 - **Never add `NOT NULL` without a `DEFAULT`** — existing rows fail the constraint on open.
 - **Backfill in the same version block**, before bumping `user_version`. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole block retries.
 - **One conceptual change per version block** — keep each version atomic and describable in a single sentence.
-- Update the query module's INSERT and SELECT statements and the TypeScript row interface to include the new column.
+- Update the query functions' INSERT and SELECT statements and the TypeScript row interface to include the new column.
 
 ### What never to do
 
@@ -145,7 +146,7 @@ Cloudflare D1 mirrors the local SQLite schema for team sync. Its critical behavi
 
 ### Maintaining the D1 migration file
 
-Keep a parallel migration file in the Workers project (e.g., `packages/myco-team/migrations/0009_add_my_new_table.sql`):
+Keep a parallel migration file in the Workers project (e.g., in the team package migrations directory):
 
 ```sql
 -- 0009_add_my_new_table.sql
@@ -540,13 +541,7 @@ packages/myco/
   src/
     db/
       migrations.ts            # All versioned migration blocks, in order
-      queries/
-        index.ts               # Barrel re-export of all query modules
-        sessions.ts            # One file per logical domain
-        spores.ts
-        my-new-table.ts        # New query module
-    config/
-      constants.ts             # VAULT_GITIGNORE_TABLES and other shared sets
+      schema-ddl.ts            # Table DDL definitions and constants
 packages/myco-team/
   migrations/                  # Parallel D1 SQL migration files
     0009_add_my_new_table.sql
@@ -559,6 +554,7 @@ packages/myco-team/
 - **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request triggers migration. Guard reads against new columns until you know migration has run.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
-- **All SQL lives in `packages/myco/src/db/queries/`** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
-- **Scan `packages/myco/src/config/constants.ts` after every new table** — missing a registration in `SEARCHABLE_TABLES` or `MCP_READABLE_TABLES` silently limits the feature surface.
+- **All SQL lives in the appropriate query modules** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
+- **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing a registration in `TABLE_DDLS` or `FTS_TABLES` silently limits the feature surface.
+- **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface.
 - **Migration test functions for complex transformations** — include test helpers like `resolveV20PlanIdentityCollisionsForTest` for migrations that involve data conflicts or complex transformations.

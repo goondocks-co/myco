@@ -34,7 +34,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "planTags": [
         "ultraplan"
       ],
-      "rules": [],
+      "rules": [
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<command-message>"
+          },
+          "action": "drop",
+          "reason": "claude-code-slash-command-dispatch",
+          "trim": true
+        }
+      ],
       "prompts": {
         "shapes": [
           {
