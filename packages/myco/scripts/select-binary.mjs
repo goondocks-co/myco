@@ -32,15 +32,25 @@ if (!target) {
 
 const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
 const binaryPath = path.join(pkgRoot, 'vendor', target, binaryName);
+const isSourceCheckout = fs.existsSync(path.join(pkgRoot, 'src'));
 
-// During dev-link (Makefile) no vendor/ is populated — skip cleanly so the
-// dev workflow isn't blocked by a missing production artifact.
 if (!fs.existsSync(binaryPath)) {
+  // During source-checkout development (`npm ci` in the monorepo), vendor/
+  // may be intentionally absent until `make dev-link` or an explicit build.
+  // The published tarball does not ship `src/`, so a missing binary there is
+  // always a broken package install and must fail fast.
+  if (isSourceCheckout) {
+    process.stderr.write(
+      `[myco] No platform binary found at vendor/${target}/${binaryName}. ` +
+      `Skipping postinstall in source checkout (expected before dev-link).\n`,
+    );
+    process.exit(0);
+  }
   process.stderr.write(
     `[myco] No platform binary found at vendor/${target}/${binaryName}. ` +
-    `Skipping postinstall (expected in dev-link; error in production install).\n`,
+    `Package install is incomplete; aborting.\n`,
   );
-  process.exit(0);
+  process.exit(1);
 }
 
 if (process.platform !== 'win32') {

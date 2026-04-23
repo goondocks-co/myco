@@ -24,8 +24,8 @@ test-results/
 .context/
 
 # Myco managed (machine-specific)
-.agents/skills/myco
 .agents/skills/myco-rules
+.agents/skills/myco
 docs/superpowers/specs/
 docs/superpowers/plans/
 docs/design/

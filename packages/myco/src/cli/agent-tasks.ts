@@ -123,7 +123,7 @@ async function listTasks(args: string[], vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  const tasks = result.data as TaskRow[];
+  const tasks = (result.data as { tasks?: TaskRow[] } | undefined)?.tasks ?? [];
   if (tasks.length === 0) {
     console.log('No tasks found');
     return;
@@ -147,7 +147,13 @@ async function showTask(args: string[], vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  printTaskDetail(result.data as TaskRow);
+  const task = (result.data as { task?: TaskRow } | undefined)?.task;
+  if (!task) {
+    console.error(`Task not found: ${name}`);
+    process.exit(1);
+  }
+
+  printTaskDetail(task);
 }
 
 async function createTask(args: string[], vaultDir: string): Promise<void> {

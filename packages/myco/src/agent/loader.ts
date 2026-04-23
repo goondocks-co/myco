@@ -19,6 +19,7 @@ import { upsertTask } from '@myco/db/queries/tasks.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask, EffectiveConfig } from './types.js';
 import { AgentDefinitionSchema, AgentTaskSchema } from './schemas.js';
+import { BUNDLED_AGENT_DEFINITION, BUNDLED_AGENT_PROMPTS, BUNDLED_AGENT_TASKS } from './definitions.generated.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,6 +76,10 @@ export function resolveDefinitionsDir(): string {
   return adjacentDefs;
 }
 
+function isBunVirtualPath(candidate: string): boolean {
+  return candidate.startsWith('/$bunfs/') || candidate.startsWith('B:\\~BUN\\');
+}
+
 // ---------------------------------------------------------------------------
 // YAML loaders
 // ---------------------------------------------------------------------------
@@ -88,6 +93,9 @@ export function resolveDefinitionsDir(): string {
  */
 export function loadAgentDefinition(definitionsDir: string): AgentDefinition {
   const filePath = path.join(definitionsDir, AGENT_DEFINITION_FILE);
+  if (isBunVirtualPath(filePath) && !fs.existsSync(filePath)) {
+    return { ...BUNDLED_AGENT_DEFINITION };
+  }
   const raw = fs.readFileSync(filePath, 'utf-8');
   const parsed = AgentDefinitionSchema.parse(parseYaml(raw));
 
@@ -111,9 +119,14 @@ export function loadAgentDefinition(definitionsDir: string): AgentDefinition {
  */
 export function loadAgentTasks(definitionsDir: string): AgentTask[] {
   const tasksDir = path.join(definitionsDir, TASKS_SUBDIRECTORY);
-  if (!fs.existsSync(tasksDir)) return [];
+  if (!fs.existsSync(tasksDir)) {
+    return isBunVirtualPath(tasksDir) ? BUNDLED_AGENT_TASKS.map((task) => ({ ...task })) : [];
+  }
 
   const files = fs.readdirSync(tasksDir).filter((f) => f.endsWith('.yaml'));
+  if (files.length === 0 && isBunVirtualPath(tasksDir)) {
+    return BUNDLED_AGENT_TASKS.map((task) => ({ ...task }));
+  }
   return files.map((file) => {
     const raw = fs.readFileSync(path.join(tasksDir, file), 'utf-8');
     const parsed = AgentTaskSchema.parse(parseYaml(raw));
@@ -161,6 +174,10 @@ export function taskFromParsed(parsed: AgentTask): AgentTask {
  */
 export function loadSystemPrompt(definitionsDir: string, relativePath: string): string {
   const filePath = path.resolve(definitionsDir, relativePath);
+  if (isBunVirtualPath(filePath) && !fs.existsSync(filePath)) {
+    const bundled = BUNDLED_AGENT_PROMPTS[path.basename(relativePath)];
+    if (bundled !== undefined) return bundled.trim();
+  }
   return fs.readFileSync(filePath, 'utf-8').trim();
 }
 

@@ -258,6 +258,8 @@ jobs:
           node-version: 22
 
       - run: npm ci
+      - run: npm ci --prefix packages/myco-team/worker
+      - run: npm ci --prefix packages/myco-collective/worker
 
       - name: Sync target package versions from tag
         env:
@@ -427,36 +429,24 @@ jobs:
     needs: [validate-tag, create-release]
     environment: npm-publish
     steps:
-      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
-
-      - name: Sync target package versions from tag
-        env:
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
-        run: |
-          case "$TAG_PREFIX" in
-            myco) export MYCO_VERSION="$VERSION" ;;
-            myco-team) export MYCO_TEAM_VERSION="$VERSION" ;;
-            myco-collective) export MYCO_COLLECTIVE_VERSION="$VERSION" ;;
-          esac
-          node scripts/sync-package-versions.mjs
-
-      - name: Build target package
-        env:
-          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
-        run: npm run build -w "$PACKAGE_NAME"
+      - name: Download packaged artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: publish-files
 
       - name: Publish package
-        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
         env:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: npx npm@latest publish --tag "$NPM_TAG" --provenance --access public
+        run: |
+          set -euo pipefail
+          TARBALL="$(echo publish-files/*.tgz)"
+          npx npm@latest publish "$TARBALL" --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:
