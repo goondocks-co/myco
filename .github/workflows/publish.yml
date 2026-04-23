@@ -403,33 +403,84 @@ jobs:
           PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
           IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
         run: |
-          PREVIOUS_TAG=$(git tag --list "${TAG_PREFIX}/v*" --sort=-version:refname | grep -Fxv "$TAG_NAME" | head -1 || true)
+          set -euo pipefail
+
+          # Semver-aware tag sort: bare versions rank above prerelease variants.
+          # Without these -c flags, git treats `v0.22.0-beta.5` as higher than
+          # bare `v0.22.0`, which is the opposite of semver.
+          SORT_FLAGS=(-c versionsort.suffix=-alpha -c versionsort.suffix=-beta
+                      -c versionsort.suffix=-rc    -c versionsort.suffix=-pre)
+
+          # Pick the right "previous" tag for the changelog range.
+          # - Stable releases compare against the last STABLE tag only, so
+          #   0.22.0's notes cover everything since 0.21.2 (not since
+          #   0.22.0-beta.5).
+          # - Prereleases compare against the most recent tag of any kind,
+          #   matching the iterative beta workflow.
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            PREVIOUS_TAG=$(git "${SORT_FLAGS[@]}" tag --list "${TAG_PREFIX}/v*" \
+              --sort=-version:refname \
+              | grep -Fxv "$TAG_NAME" | head -1 || true)
+          else
+            PREVIOUS_TAG=$(git "${SORT_FLAGS[@]}" tag --list "${TAG_PREFIX}/v*" \
+              --sort=-version:refname \
+              | grep -Fxv "$TAG_NAME" \
+              | grep -Ev -- '-(alpha|beta|rc|pre)' \
+              | head -1 || true)
+          fi
+
+          # Legacy fallback for the core package: pre-monorepo tags used `v*.*.*`
+          # with no prefix. Only applies when there is no prefixed ancestor.
           if [ -z "$PREVIOUS_TAG" ] && [ "$TAG_PREFIX" = "myco" ]; then
-            PREVIOUS_TAG=$(git tag --list "v*.*.*" --sort=-version:refname | head -1 || true)
+            PREVIOUS_TAG=$(git "${SORT_FLAGS[@]}" tag --list 'v*.*.*' \
+              --sort=-version:refname | head -1 || true)
           fi
 
           if [ -n "$PREVIOUS_TAG" ]; then
             COMMITS=$(git log "${PREVIOUS_TAG}..HEAD" --pretty=format:"- %s" --no-merges | head -50)
+            COMMIT_COUNT=$(git log "${PREVIOUS_TAG}..HEAD" --oneline --no-merges | wc -l | tr -d ' ')
+            RANGE_BLURB="${COMMIT_COUNT} commits since ${PREVIOUS_TAG}"
           else
             COMMITS=$(git log --pretty=format:"- %s" --no-merges | head -20)
+            RANGE_BLURB="initial release"
           fi
 
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            cat > release-notes.md <<NOTES_EOF
-          ## Pre-release
+          # Friendly display name keyed on the tag prefix.
+          case "$TAG_PREFIX" in
+            myco)            DISPLAY_NAME="Myco" ;;
+            myco-team)       DISPLAY_NAME="Myco Team" ;;
+            myco-collective) DISPLAY_NAME="Myco Collective" ;;
+            *)               DISPLAY_NAME="$PACKAGE_NAME" ;;
+          esac
 
-          This is a pre-release for \`${PACKAGE_NAME}\` and may contain bugs or incomplete features.
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            RELEASE_TITLE="${DISPLAY_NAME} ${VERSION} · Pre-release"
+            cat > release-notes.md <<NOTES_EOF
+          \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
+
+          > Pre-release. May contain bugs or incomplete features. Opt into the Beta channel per project from the Operations page.
+
+          ## Install
+
+          \`\`\`bash
+          npm install -g ${PACKAGE_NAME}@beta
+          \`\`\`
 
           ## What's Changed
 
           ${COMMITS}
           NOTES_EOF
           else
+            RELEASE_TITLE="${DISPLAY_NAME} ${VERSION}"
             cat > release-notes.md <<NOTES_EOF
-          ## Package
+          \`${PACKAGE_NAME}\` · ${RANGE_BLURB}
 
-          - \`${PACKAGE_NAME}\`
-          - Version \`${VERSION}\`
+          ## Install / Upgrade
+
+          \`\`\`bash
+          npm install -g ${PACKAGE_NAME}        # fresh install
+          npm update  -g ${PACKAGE_NAME}        # upgrade existing
+          \`\`\`
 
           ## What's Changed
 
@@ -439,11 +490,15 @@ jobs:
 
           sed -i 's/^          //' release-notes.md
 
+          # Export the title for the next step.
+          echo "title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
           IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
+          RELEASE_TITLE: ${{ steps.notes.outputs.title }}
         run: |
           set -euo pipefail
 
@@ -451,7 +506,7 @@ jobs:
             edit_args=(
               "$TAG_NAME"
               --draft=false
-              --title "$TAG_NAME"
+              --title "$RELEASE_TITLE"
               --notes-file release-notes.md
             )
             if [ "$IS_PRERELEASE" = "true" ]; then
@@ -464,7 +519,7 @@ jobs:
               "$TAG_NAME"
               release-files/*
               --verify-tag
-              --title "$TAG_NAME"
+              --title "$RELEASE_TITLE"
               --notes-file release-notes.md
             )
             if [ "$IS_PRERELEASE" = "true" ]; then
