@@ -50,14 +50,55 @@ capture:
         prompt_starts_with: "<command-message>"
       action: drop
       reason: claude-code-slash-command-dispatch
+    # Built-in CLI command dispatch envelope filter (structural).
+    #
+    # Twin of the rule above, targeting Claude Code's built-in CLI operations
+    # (`/exit`, `/compact`, `/clear`, `/mcp`, `/plugin`, `/reload-plugins`,
+    # `/extra-usage`). Unlike user-authored slash commands, these do NOT fire
+    # UserPromptSubmit — they're internal CLI ops. They land in the transcript
+    # as user-type entries whose content starts with `<command-name>` instead
+    # of `<command-message>`:
+    #   <command-name>/compact</command-name>
+    #   <command-message>compact</command-message>
+    #   <command-args></command-args>
+    #
+    # Because these entries share a promptId with their paired
+    # `<local-command-caveat>` meta entry and any follow-up synthesized summary
+    # ("This session is being continued..." from /compact), dedupeBy: promptId
+    # suppresses those once the dispatch is dropped — one rule handles the
+    # whole envelope group.
+    #
+    # The isMeta filter on the user_prompt shape doesn't catch these because
+    # Claude Code does not tag `<command-name>` dispatch entries with isMeta.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<command-name>"
+      action: drop
+      reason: claude-code-builtin-command-dispatch
   prompts:
     shapes:
-      # Standard user prompts. message.content is either a plain string or an
-      # array of typed blocks; the walker's path resolver handles both.
+      # Standard user prompts. Claude Code tags synthesized transcript entries
+      # (local-command caveats, skill-basedir injections, expanded command
+      # bodies, misc system notices) with `isMeta: true`. Filtering on that
+      # flag at the shape level avoids whack-a-mole prefix rules for each new
+      # synthesized wrapper the CLI invents. Real user prompts carrying
+      # attachments (screenshots, documents) are `isMeta: undefined` — the
+      # synthesized `[Image source: ...]` side-log entries are isMeta: true
+      # and paired with a real non-isMeta sibling via promptId, so they're
+      # safely skipped without losing image captures.
+      #
+      # Dispatch envelopes (`<command-message>...`) are NOT isMeta — the
+      # capture.rules drop above catches those.
+      #
+      # message.content is either a plain string or an array of typed blocks;
+      # the walker's path resolver handles both.
       - name: user_prompt
         match:
           type: user
           hasField: promptId
+          fieldNotEquals:
+            isMeta: true
         dedupeBy: promptId
         textAt: message.content
       # Steering prompts queued via the Esc→queue UI. Claude Code does NOT

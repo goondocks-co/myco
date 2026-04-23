@@ -190,6 +190,11 @@ function matchExpression(match: MatchExpression, event: Record<string, unknown>)
       if (getAtPath(event, path) !== expected) return false;
     }
   }
+  if (match.fieldNotEquals) {
+    for (const [path, forbidden] of Object.entries(match.fieldNotEquals)) {
+      if (getAtPath(event, path) === forbidden) return false;
+    }
+  }
   return true;
 }
 
