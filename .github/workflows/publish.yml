@@ -176,7 +176,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          SQLITE_VEC_VERSION="$(node -p "require('sqlite-vec/package.json').version")"
+          SQLITE_VEC_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/sqlite-vec/package.json', 'utf8')).version")"
           npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts
 
       # @vscode/ripgrep's postinstall only downloads the host-matching
