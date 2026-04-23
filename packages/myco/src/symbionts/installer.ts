@@ -6,6 +6,7 @@ import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
 import { loadMergedConfig } from '../config/loader.js';
+import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
@@ -155,6 +156,13 @@ export class SymbiontInstaller {
    * a shared template or `'opencode/plugin.ts'` for a per-agent template.
    */
   private readTemplateFile(relPath: string): string | null {
+    // Bundled templates first — the Bun-compiled binary has no filesystem
+    // access to src/ or dist/, so without the bundled map `readFileSync`
+    // fails silently and hook/mcp/settings merges become no-ops.
+    const key = relPath.split(path.sep).join('/');
+    const bundled = BUNDLED_TEMPLATES[key];
+    if (bundled !== undefined) return bundled;
+
     const candidates = [
       path.join(this.packageRoot, TEMPLATES_SUBDIR, relPath),
       // tsup preserves the src/ prefix under dist/, so the same subdir works in both layouts
