@@ -28,7 +28,6 @@ function die(message) {
   process.exit(1);
 }
 
-// Exits on successful redirect; returns false to fall through otherwise.
 maybeRedirect(__filename);
 
 const pkgRoot = path.resolve(__dirname, '..');

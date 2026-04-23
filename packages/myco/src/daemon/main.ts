@@ -16,6 +16,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
+import { resolveVaultDir } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -284,13 +285,11 @@ export async function reconcileExistingDaemon(
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
-  const vaultArg = process.argv.find((_, i) => process.argv[i - 1] === '--vault');
-  if (!vaultArg) {
-    process.stderr.write('Usage: mycod --vault <path>\n');
-    process.exit(1);
-  }
-
-  const vaultDir = path.resolve(vaultArg);
+  // The vault always lives at `<projectRoot>/.myco/`. The daemon spawns
+  // with cwd = projectRoot; resolveVaultDir walks up (worktree-aware) to
+  // find the enclosing `.myco/`. There is no escape hatch — vaults are
+  // project-local.
+  const vaultDir = resolveVaultDir();
 
   // Load API keys from secrets.env into process.env before any provider init
   loadSecrets(vaultDir);

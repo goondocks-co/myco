@@ -27,6 +27,10 @@ const { execFileSync } = require('node:child_process');
  * Worktree-aware: when `cwd` is inside a git worktree, starts the walk
  * at the main repo root, because vaults live with the main repo and
  * worktrees don't carry their own.
+ *
+ * Filename literals here mirror `PROJECT_RUNTIME_COMMAND_FILENAME` and
+ * `.myco` from `src/constants/update.ts`. This file is plain CJS (runs
+ * before bun) so it can't import the TS source of truth.
  */
 function findProjectRuntimePin(cwd) {
   try {

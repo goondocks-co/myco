@@ -2,12 +2,15 @@
  * End-to-end integration test for daemon eviction.
  *
  * Spawns a fake subprocess that mimics a myco daemon by (a) holding the
- * canonical port for a vault and (b) carrying `myco daemon --vault <vault>`
- * in its argv. Verifies `evictDaemonsForVault` finds and kills it even
- * when `daemon.json` has no record of its PID.
+ * canonical port for a vault and (b) running with its cwd set inside
+ * the vault's project root. Verifies `evictDaemonsForVault` finds and
+ * kills it even when `daemon.json` has no record of its PID — the
+ * orphan failure mode Chris hit where the prior eviction logic fell
+ * back to a fallback port forever.
  *
- * This is the scenario Chris hit today: an orphan daemon on :21039
- * caused subsequent startups to silently fall back to :21040.
+ * Identity now flows through cwd introspection (`/proc/<pid>/cwd` on
+ * Linux, `lsof -d cwd` on Darwin) rather than argv matching, because
+ * daemons no longer receive an explicit `--vault` flag.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -22,7 +25,7 @@ import { derivePort } from '@myco/daemon/port.js';
 /**
  * Child program: binds the supplied port, reports ready, idles forever.
  * Written to a temp file at test-setup time so we don't have to fight
- * shell quoting of embedded JS when rewriting argv[0] below.
+ * shell quoting of embedded JS.
  */
 const ORPHAN_PROGRAM = `
 const net = require('node:net');
@@ -34,115 +37,109 @@ server.listen(port, '127.0.0.1', () => {
 setInterval(() => {}, 1000);
 `;
 
-describe('evictDaemonsForVault — orphan on canonical port', () => {
-  let tmpVault: string;
-  let scriptPath: string;
-  let orphan: ChildProcess | null = null;
+// Only Linux + Darwin can introspect process cwd. Skip the integration
+// layer on unsupported platforms where identity falls back to daemon.json.
+const supportsCwdIntrospection =
+  process.platform === 'linux' || process.platform === 'darwin';
 
-  beforeEach(() => {
-    tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-evict-int-'));
-    scriptPath = path.join(tmpVault, 'orphan.js');
-    fs.writeFileSync(scriptPath, ORPHAN_PROGRAM);
-  });
+describe.skipIf(!supportsCwdIntrospection)(
+  'evictDaemonsForVault — orphan on canonical port',
+  () => {
+    let tmpRoot: string;
+    let projectRoot: string;
+    let vaultDir: string;
+    let scriptPath: string;
+    let orphan: ChildProcess | null = null;
 
-  afterEach(() => {
-    if (orphan && orphan.pid) {
-      try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
-    }
-    orphan = null;
-    fs.rmSync(tmpVault, { recursive: true, force: true });
-  });
-
-  it('evicts a port squatter whose argv claims to be a myco daemon for this vault', async () => {
-    const canonicalPort = derivePort(tmpVault);
-
-    // Spawn our orphan with argv[0] rewritten to look like the myco daemon
-    // invocation. We can't actually change process name, but `ps -o args=`
-    // returns the invocation string as given — which starts with the
-    // command path. Node's `spawn` with the first argv being the program
-    // means the argv we care about is the subsequent list. The trick:
-    // pass a shell command that exec's node with a custom argv[0].
-    const invocation = `myco-fake-daemon daemon --vault ${tmpVault}`;
-    // bash supports `exec -a <name>` which rewrites argv[0]. `sh` may not.
-    orphan = spawn('/bin/bash', [
-      '-c',
-      `exec -a ${JSON.stringify(invocation)} ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} ${canonicalPort}`,
-    ], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      detached: false,
+    beforeEach(() => {
+      tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-evict-int-'));
+      projectRoot = path.join(tmpRoot, 'project');
+      vaultDir = path.join(projectRoot, '.myco');
+      fs.mkdirSync(vaultDir, { recursive: true });
+      scriptPath = path.join(tmpRoot, 'orphan.js');
+      fs.writeFileSync(scriptPath, ORPHAN_PROGRAM);
     });
 
-    const orphanPid = orphan.pid!;
-    expect(orphanPid).toBeGreaterThan(0);
+    afterEach(() => {
+      if (orphan && orphan.pid) {
+        try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
+      }
+      orphan = null;
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    });
 
-    // Wait for the orphan to report READY on stdout.
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('orphan did not become ready')), 3000);
-      orphan!.stdout!.on('data', (chunk: Buffer) => {
-        if (chunk.toString('utf-8').includes('READY')) {
-          clearTimeout(timer);
-          resolve();
-        }
+    it('evicts a port squatter whose cwd resolves to this vault', async () => {
+      const canonicalPort = derivePort(vaultDir);
+
+      // Spawn the orphan with cwd = projectRoot. Its cwd walks up to the
+      // enclosing `.myco/`, which is `vaultDir` — that's how eviction
+      // identifies it as ours.
+      orphan = spawn(process.execPath, [scriptPath, String(canonicalPort)], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        detached: false,
+        cwd: projectRoot,
       });
-    });
 
-    // Sanity: orphan is alive.
-    let alive = true;
-    try { process.kill(orphanPid, 0); } catch { alive = false; }
-    expect(alive).toBe(true);
+      const orphanPid = orphan.pid!;
+      expect(orphanPid).toBeGreaterThan(0);
 
-    // daemon.json is ABSENT — the orphan was never registered. This is
-    // exactly the pathological case the prior eviction logic missed.
-    expect(fs.existsSync(path.join(tmpVault, 'daemon.json'))).toBe(false);
-
-    // Evict.
-    const logs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
-    const evicted = await evictDaemonsForVault(tmpVault, {
-      graceMs: 1500,
-      pollMs: 50,
-      logger: {
-        info: (_k, msg, meta) => logs.push({ msg, meta }),
-        warn: (_k, msg, meta) => logs.push({ msg, meta }),
-      },
-    });
-
-    expect(evicted).toHaveLength(1);
-    expect(evicted[0]?.pid).toBe(orphanPid);
-    expect(evicted[0]?.source).toBe(`port:${canonicalPort}`);
-
-    // Orphan must be dead.
-    try { process.kill(orphanPid, 0); alive = true; } catch { alive = false; }
-    expect(alive).toBe(false);
-  }, 10_000);
-
-  it('ignores port squatters that are not myco daemons', async () => {
-    const canonicalPort = derivePort(tmpVault);
-
-    // Spawn a plain node process — no `myco` in argv.
-    orphan = spawn(process.execPath, [scriptPath, String(canonicalPort)], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      detached: false,
-    });
-
-    const orphanPid = orphan.pid!;
-
-    // Wait for READY.
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('orphan did not become ready')), 3000);
-      orphan!.stdout!.on('data', (chunk: Buffer) => {
-        if (chunk.toString('utf-8').includes('READY')) {
-          clearTimeout(timer);
-          resolve();
-        }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('orphan did not become ready')), 3000);
+        orphan!.stdout!.on('data', (chunk: Buffer) => {
+          if (chunk.toString('utf-8').includes('READY')) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
       });
-    });
 
-    const evicted = await evictDaemonsForVault(tmpVault, { graceMs: 500, pollMs: 50 });
+      // daemon.json is ABSENT — the orphan was never registered. The prior
+      // eviction logic missed this case; cwd-based identity catches it.
+      expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
 
-    // Non-myco process must NOT be evicted.
-    expect(evicted).toEqual([]);
-    let alive = false;
-    try { process.kill(orphanPid, 0); alive = true; } catch { /* dead */ }
-    expect(alive).toBe(true);
-  }, 10_000);
-});
+      const evicted = await evictDaemonsForVault(vaultDir, {
+        graceMs: 1500,
+        pollMs: 50,
+      });
+
+      expect(evicted).toHaveLength(1);
+      expect(evicted[0]?.pid).toBe(orphanPid);
+      expect(evicted[0]?.source).toBe(`port:${canonicalPort}`);
+
+      let alive = true;
+      try { process.kill(orphanPid, 0); } catch { alive = false; }
+      expect(alive).toBe(false);
+    }, 10_000);
+
+    it('ignores port squatters whose cwd is not inside this vault', async () => {
+      const canonicalPort = derivePort(vaultDir);
+
+      // Spawn with cwd = tmpRoot (no `.myco/` above it). findVaultFromCwd
+      // returns null → not our daemon → left alone.
+      orphan = spawn(process.execPath, [scriptPath, String(canonicalPort)], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        detached: false,
+        cwd: tmpRoot,
+      });
+
+      const orphanPid = orphan.pid!;
+
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('orphan did not become ready')), 3000);
+        orphan!.stdout!.on('data', (chunk: Buffer) => {
+          if (chunk.toString('utf-8').includes('READY')) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
+
+      const evicted = await evictDaemonsForVault(vaultDir, { graceMs: 500, pollMs: 50 });
+
+      expect(evicted).toEqual([]);
+      let alive = false;
+      try { process.kill(orphanPid, 0); alive = true; } catch { /* dead */ }
+      expect(alive).toBe(true);
+    }, 10_000);
+  },
+);
