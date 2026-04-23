@@ -154,19 +154,57 @@ jobs:
 
 ### 2.3 — Tagging for release
 
-```bash
-# Bump version in the package manifest first
-cd packages/myco-collective
-npm version 0.1.1
+**The tag is authoritative — the workflow handles the `package.json` write-back.**
+Two separate workflows fire on every tag push (stable AND prerelease):
 
-# Tag at the repo root with the prefix convention
-git tag collective/v0.1.1
-git push origin collective/v0.1.1
+- **`publish.yml`** runs `scripts/sync-package-versions.mjs` in-process with
+  `VERSION=$tag_version` before `npm publish`, so the published tarball
+  always carries the tag version regardless of main-branch `package.json`.
+- **`sync-package-versions.yml`** runs the same script on checked-out main,
+  writes the tag version into all relevant `package.json` files, and
+  commits as `github-actions[bot]` with `[skip ci]`.
+
+Two valid cut patterns:
+
+**Tag-only (default — prefer for betas):**
+```bash
+# No package.json edits — the bot handles it.
+git tag myco/v0.22.0-beta.5
+git push origin myco/v0.22.0-beta.5
 ```
+After the workflows complete, main carries a `chore(release): sync workspace
+package versions [skip ci]` commit from the bot reconciling `package.json`.
+
+**Manual bump (prefer only for the promotion to stable):**
+```bash
+# Edit package.json + packages/myco/package.json + packages/myco/ui/package.json
+# (Hand-edit the "version" field from 0.21.2 → 0.22.0, etc.)
+npm install --package-lock-only --ignore-scripts   # refresh the lock
+git add package.json packages/myco/package.json packages/myco/ui/package.json package-lock.json
+git commit -m "chore(release): bump to v0.22.0"
+git push origin main
+git tag myco/v0.22.0
+git push origin myco/v0.22.0
+```
+The bot's sync commit is then a no-op and is suppressed. Only worth the
+extra steps for stable promotions; betas should stay tag-only to keep
+iteration fast.
+
+> **Commit message:** use a semantic form that describes what the commit
+> actually does (e.g., `chore(release): bump to v0.22.0`), not a terse
+> marker like `Cut 0.22.0`. Historical commits use the terse form; future
+> release-bump commits should read as change descriptions — the git log
+> needs to be legible without side context about the release cadence.
 
 > **Critical:** Before tagging, verify the target commit does not carry a
 > `[skip ci]` message — see Procedure 4. A tag on a `[skip ci]` commit is
 > silently never published.
+
+> **Critical:** Do NOT re-bump `package.json` when using the tag-only
+> pattern. The bot needs a real diff to commit; if you bump manually but
+> forget to push the commit before tagging, the tagged SHA will carry a
+> stale version until a later commit rewrites it — confusing for anyone
+> reading the tag.
 
 ### 2.4 — Nested non-workspace packages
 
