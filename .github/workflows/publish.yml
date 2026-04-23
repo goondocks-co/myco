@@ -262,10 +262,16 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
+            packages/myco/ui/package-lock.json
+            packages/myco-collective/ui/package-lock.json
             packages/myco-team/worker/package-lock.json
             packages/myco-collective/worker/package-lock.json
 
       - run: npm ci
+      - name: Install myco UI deps
+        run: npm ci --prefix packages/myco/ui
+      - name: Install myco-collective UI deps
+        run: npm ci --prefix packages/myco-collective/ui
       - name: Install myco-team worker deps
         run: |
           for attempt in 1 2 3; do
