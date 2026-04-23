@@ -447,17 +447,38 @@ jobs:
 
           sed -i 's/^          //' release-notes.md
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3.0.0
-        with:
-          name: ${{ needs.validate-tag.outputs.tag_name }}
-          body_path: release-notes.md
-          files: release-files/*
-          draft: false
-          prerelease: ${{ needs.validate-tag.outputs.is_prerelease == 'true' }}
-          generate_release_notes: false
+      - name: Create or update GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            edit_args=(
+              "$TAG_NAME"
+              --title "$TAG_NAME"
+              --notes-file release-notes.md
+            )
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              edit_args+=(--prerelease)
+            fi
+            gh release edit "${edit_args[@]}"
+            gh release upload "$TAG_NAME" release-files/* --clobber
+          else
+            create_args=(
+              "$TAG_NAME"
+              release-files/*
+              --verify-tag
+              --title "$TAG_NAME"
+              --notes-file release-notes.md
+            )
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "${create_args[@]}"
+          fi
 
   publish:
     name: Publish to npmjs.org
