@@ -282,4 +282,68 @@ describe('maybeRedirect (integration)', () => {
     });
     expect(res.status).toBe(42);
   });
+
+  it('stays silent on stderr by default when redirecting', () => {
+    const { shimPath } = makeShim();
+    const project = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const pinned = path.join(tmpRoot, 'silent-pinned.sh');
+    fs.writeFileSync(pinned, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: project,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stderr).toBe('');
+  });
+
+  it('traces the redirect to stderr when MYCO_DEBUG_REDIRECT is set', () => {
+    const { shimPath } = makeShim();
+    const project = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const pinned = path.join(tmpRoot, 'traced-pinned.sh');
+    fs.writeFileSync(pinned, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: project,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
+    });
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('[myco] redirect:');
+    expect(res.stderr).toContain(shimPath);
+    expect(res.stderr).toContain(pinned);
+  });
+
+  it('traces the skip reason when MYCO_DEBUG_REDIRECT is set and no pin exists', () => {
+    const { shimPath } = makeShim();
+    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'nopin-'));
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
+    });
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('[myco] redirect: skip (no .myco/runtime.command pin found)');
+  });
+
+  it('traces the skip reason when MYCO_REDIRECTED is already set', () => {
+    const { shimPath } = makeShim();
+    const project = path.join(tmpRoot, 'project');
+    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), '/unused');
+
+    const res = spawnSync(process.execPath, [shimPath], {
+      cwd: project,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_REDIRECTED: '1', MYCO_DEBUG_REDIRECT: '1' },
+    });
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('[myco] redirect: skip (MYCO_REDIRECTED already set)');
+  });
 });
