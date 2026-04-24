@@ -95,7 +95,7 @@ If you also installed one of the optional standalone operator CLIs, the Operatio
 - `npm update -g @goondocks/myco-team`
 - `npm update -g @goondocks/myco-collective`
 
-Most users do not need those extra packages. The main `@goondocks/myco` install still covers normal local use, the dashboard, and the built-in `myco team init` / `myco team upgrade` flow.
+Users who are only consuming Myco locally don't need those extra packages. Team operators install `@goondocks/myco-team` for provisioning and worker administration; Collective operators install `@goondocks/myco-collective`.
 
 ### What other projects do
 

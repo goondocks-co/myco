@@ -87,7 +87,7 @@ describe('upgradeWorker', () => {
   let tempHomeDir: string;
   let previousHome: string | undefined;
 
-  async function importTeamCli(): Promise<typeof import('@myco/cli/team.js')> {
+  async function importTeamCli(): Promise<typeof import('@myco-team/cli')> {
     // Pre-import the real module before registering the mock, so the factory
     // doesn't recurse into the eclipsed registry entry.
     const deployActual = await import('@myco-deploy/index.js');
@@ -95,7 +95,7 @@ describe('upgradeWorker', () => {
       ...deployActual,
       resolveHomeConfigPath: (configDir: string, fileName: string) => path.join(tempHomeDir, configDir, fileName),
     }));
-    return import('@myco/cli/team.js');
+    return import('@myco-team/cli');
   }
 
   beforeEach(async () => {

@@ -50,10 +50,10 @@ After install, open the deployed worker URL in your browser. The admin UI gives 
 
 Each project needs team sync first.
 
-From the project itself:
+From the project itself (after installing `@goondocks/myco-team`):
 
 ```bash
-myco team init
+myco-team install
 ```
 
 Then add that team worker to the Collective:
@@ -78,11 +78,11 @@ If you already use Myco locally, your normal upgrade path does not change:
 npm update -g @goondocks/myco
 ```
 
-That updates the main Myco CLI, daemon, hooks, dashboard, and the built-in `myco team init` / `myco team upgrade` flow. Most users do not need to install anything else.
+That updates the main Myco CLI, daemon, hooks, and dashboard. Users who are only *connecting* to an existing team don't need anything else.
 
 ### Team operators
 
-Install the standalone team CLI only if you want direct worker administration commands from the terminal:
+Anyone provisioning or administering a team worker needs the team operator CLI:
 
 ```bash
 npm install -g @goondocks/myco-team
@@ -90,10 +90,11 @@ npm install -g @goondocks/myco-team
 
 That adds:
 
-- `myco-team install` — provision team sync (same as `myco team init`)
+- `myco-team install` — provision team sync (D1 + Vectorize + KV + Worker)
 - `myco-team upgrade` — redeploy the worker
 - `myco-team status` — show worker info and credentials
 - `myco-team rotate-tokens` — rotate API key and/or MCP token
+- `myco-team reindex-vectors` — rebuild the Vectorize index
 - `myco-team destroy` — tear down all Cloudflare resources
 
 ### Collective operators

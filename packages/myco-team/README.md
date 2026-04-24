@@ -2,13 +2,13 @@
 
 `@goondocks/myco-team` manages a Myco Team Sync deployment from the terminal.
 
-Install it when you want the standalone operator CLI:
+Install it to provision or administer a team worker:
 
 ```bash
 npm install -g @goondocks/myco-team
 ```
 
-Most Myco users do not need this package. The main `@goondocks/myco` package already includes the built-in `myco team init` and `myco team upgrade` flow.
+Team operators need this package; teammates who only *connect* to an existing team worker through the daemon UI do not.
 
 ## What you can do
 

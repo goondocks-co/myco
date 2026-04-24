@@ -2,7 +2,7 @@
 name: myco:setup-cloudflare-team-sync
 description: >-
   Use this skill when setting up or debugging Myco team sync on Cloudflare.
-  It applies to `myco team init`, the Team page in the daemon UI, Worker
+  It applies to `myco-team install`, the Team page in the daemon UI, Worker
   deployment, Wrangler setup, machine identity, cross-machine vault sync, and
   failure modes like pending outbox drains, missing remote records, or
   embeddings not appearing on another machine. It also covers the outbox
@@ -20,6 +20,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 - Cloudflare account (free tier covers typical Myco volumes)
 - wrangler CLI installed: `npm install -g wrangler`
 - Authenticated with Cloudflare: `wrangler login`
+- `@goondocks/myco-team` installed globally: `npm install -g @goondocks/myco-team`
 - Myco installed and daemon running (starts automatically on session start)
 - Node.js ≥22
 
@@ -40,22 +41,16 @@ The local `.myco/` vault is always the source of truth. The Cloudflare layer is 
 One team member runs this once from the project directory. It provisions the D1 database, Vectorize index, KV namespace, generates an API key, and deploys the Cloudflare Worker — all in one command.
 
 ```bash
-myco team init
-```
-
-Alternatively, if you installed the standalone team CLI (`npm install -g @goondocks/myco-team`):
-
-```bash
 myco-team install
 ```
 
-Both call the same function. The command is **idempotent** — if D1 or Vectorize already exist, it detects and reuses them.
+The command is **idempotent** — if D1 or Vectorize already exist, it detects and reuses them.
 
 On completion, the command outputs a **Worker URL** and **API key**. Share these with teammates.
 
 ### 2. Verify secrets
 
-After `myco team init`, two secrets are stored in `.myco/secrets.env`:
+After `myco-team install`, two secrets are stored in `.myco/secrets.env`:
 
 ```
 MYCO_TEAM_API_KEY=<hex-api-key>
@@ -130,7 +125,7 @@ If fewer records appear on Machine B than were pushed from Machine A, D1 batch w
 
 ### wrangler ≥4.77: `d1 create` output format changed
 
-**Symptom:** `myco team init` fails with `Could not parse D1 database ID from wrangler output`.
+**Symptom:** `myco-team install` fails with `Could not parse D1 database ID from wrangler output`.
 
 **Fix:** `myco update`. The updated parser handles both the legacy plain-string and new JSON binding block formats, and falls back to `wrangler d1 list --json`.
 
@@ -150,7 +145,7 @@ Two machines sharing the same `machine_id` will have colliding sync records in D
 
 ### wrangler.toml bindings out of sync after manual edits
 
-If `database_name` or `index_name` in `wrangler.toml` was manually edited, the Worker may bind to different resources than expected — producing a silent data split. Use `myco team upgrade` (or `myco-team upgrade`) to re-stage the deployment directory from the canonical source, which patches all bindings correctly.
+If `database_name` or `index_name` in `wrangler.toml` was manually edited, the Worker may bind to different resources than expected — producing a silent data split. Use `myco-team upgrade` to re-stage the deployment directory from the canonical source, which patches all bindings correctly.
 
 ## Implementation: The `team_outbox` Table (schema v9)
 
