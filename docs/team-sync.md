@@ -18,32 +18,24 @@ Local databases remain the source of truth — the cloud store is a queryable mi
 
 ### 1. Install Wrangler
 
-The Cloudflare CLI is required for provisioning.
+Install Wrangler and the team operator CLI. Only the person provisioning the team needs `@goondocks/myco-team` — teammates who are just connecting don't.
 
 ```bash
-npm install -g wrangler
+npm install -g wrangler @goondocks/myco-team
 wrangler login
 ```
-
-The built-in `myco team init` command continues to work from the main `@goondocks/myco` install. You do not need a second package just to enable team sync.
 
 ### 2. Create the team
 
 One team member runs this once. It provisions the Cloudflare infrastructure and deploys the sync Worker.
 
 ```bash
-myco team init
+myco-team install
 ```
 
 The command outputs a **Worker URL** and **API key**. Share these with teammates through your preferred out-of-band channel.
 
-If you want direct worker administration commands from the terminal, install the optional standalone CLI:
-
-```bash
-npm install -g @goondocks/myco-team
-```
-
-That adds `myco-team install` (same as `myco team init`), `myco-team upgrade`, `myco-team status`, `myco-team rotate-tokens`, and `myco-team destroy`.
+The full `myco-team` CLI surface: `install`, `upgrade`, `status`, `rotate-tokens`, `reindex-vectors`, `destroy`.
 
 ### 3. Connect teammates
 
@@ -105,22 +97,20 @@ Backups include all knowledge tables but exclude logs, tool call activities, and
 
 ### Upgrade
 
-Any team member with Wrangler access can update the Worker to match their installed Myco version:
+Any team member with Wrangler and `@goondocks/myco-team` installed can update the Worker to match their installed Myco version:
 
 ```bash
-myco team upgrade
+myco-team upgrade
 ```
 
-Or click **Update Worker** on the Team page when an update is available. The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
+Or click **Update Worker** on the Team page when an update is available (this runs the upgrade through the daemon, no local `myco-team` install required). The upgrade handles new infrastructure (like the KV namespace added for Cloud MCP), installs new runtime dependencies, and redeploys.
 
-If you use the standalone team CLI, the Operations page now detects and applies its package update when that CLI is installed on the same machine. Manual npm updates still work if you want them:
+The Operations page detects and applies package updates to `@goondocks/myco-team` when that CLI is installed on the same machine. Manual npm updates still work:
 
 ```bash
 npm update -g @goondocks/myco-team
 myco-team upgrade
 ```
-
-If you only use the built-in team commands, `npm update -g @goondocks/myco` remains your upgrade path.
 
 ### Architecture
 

@@ -35,13 +35,13 @@ Existing users still upgrade the main product the same way:
 npm update -g @goondocks/myco
 ```
 
-That remains the only package most users need. It updates the local CLI, daemon, hooks, dashboard, and the built-in `myco team init` / `myco team upgrade` flow.
+That remains the only package most users need for the local CLI, daemon, hooks, and dashboard.
 
-If you also installed the optional standalone operator packages, the Operations page now detects and applies updates for those installed Myco packages too. You only need to drop to npm for the initial install.
+If you also installed the optional operator packages, the Operations page detects and applies updates for them too. You only need to drop to npm for the initial install.
 
-Two new packages are optional operator surfaces:
+Two separate packages are the operator surfaces for team and collective administration:
 
-- `@goondocks/myco-team` — direct team-worker administration from the terminal
+- `@goondocks/myco-team` — provision and manage team sync (required for team features)
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
 
 Each project also has a **Stable**/**Beta** toggle on its Operations page for early access to upcoming releases. Channel selection is per-project, so trying a Beta in one project does not affect your other projects. See [Stable and Beta channels](docs/lifecycle.md#stable-and-beta-channels).
@@ -128,13 +128,14 @@ See the [Symbiont docs](docs/symbionts.md) for detailed setup information per ag
 
 ### Team sync
 
-Share knowledge across machines and team members with one command:
+Share knowledge across machines and team members. One team member installs the `@goondocks/myco-team` package and provisions the infrastructure:
 
 ```bash
-myco team init    # Provisions Cloudflare D1 + Vectorize + KV + Worker
+npm install -g @goondocks/myco-team
+myco-team install    # Provisions Cloudflare D1 + Vectorize + KV + Worker
 ```
 
-Share the output URL and API key with teammates — they connect from the Team page in the dashboard. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
+Share the output URL and API key with teammates — they connect from the Team page in the dashboard without needing the `myco-team` package themselves. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
 
 Local databases remain the source of truth. The cloud store is a queryable mirror — no data is pulled back down. Each record carries a machine identity for attribution.
 
