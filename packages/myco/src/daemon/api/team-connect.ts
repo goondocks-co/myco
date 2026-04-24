@@ -79,6 +79,37 @@ function resolveMycoTeamEntry(globalPrefix: string | null): string | null {
   return fs.existsSync(entry) ? entry : null;
 }
 
+/**
+ * Resolve a node binary that can execute myco-team's `main.js`.
+ *
+ * `process.execPath` is not usable here: when the daemon is the Bun-
+ * compiled single-file binary, execPath points at that binary, which
+ * treats its first argv as a myco subcommand rather than a JS file to
+ * run. We need an actual Node (or Bun) runtime.
+ *
+ * Priority:
+ *   1. `<globalPrefix>/bin/node` — the node that installed myco-team;
+ *      always present when the package is (Homebrew, nvm per-version).
+ *   2. Common macOS/Linux locations — catches GUI-launched daemons
+ *      under launchd's minimal PATH, which typically have /opt/homebrew
+ *      or /usr/local/bin even when shell dotfiles haven't loaded.
+ *   3. Bare `node` — relies on PATH, last resort.
+ */
+function resolveNodeBinary(globalPrefix: string | null): string {
+  if (globalPrefix) {
+    const colocatedNode = path.join(globalPrefix, 'bin', 'node');
+    if (fs.existsSync(colocatedNode)) return colocatedNode;
+  }
+  for (const candidate of [
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'node';
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -303,8 +334,15 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       };
     }
 
+    const nodeBinary = resolveNodeBinary(deps.globalPrefix);
+    // myco-team's `upgrade` subcommand takes a project root and re-resolves
+    // the vault from there — passing vaultDir directly would double-append
+    // `.myco` in non-git-repo projects (resolveVaultDir's fallback path).
+    const projectRoot = path.dirname(vaultDir);
     logger.info('team-sync.upgrade.start', 'Starting worker upgrade subprocess', {
       entry: teamEntry,
+      node: nodeBinary,
+      project_root: projectRoot,
     });
 
     let stdout = '';
@@ -312,8 +350,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     let subprocessFailed = false;
     try {
       const result = await execFileAsync(
-        process.execPath,
-        [teamEntry, 'upgrade', vaultDir, '--json'],
+        nodeBinary,
+        [teamEntry, 'upgrade', projectRoot, '--json'],
         {
           encoding: 'utf-8',
           timeout: UPGRADE_SUBPROCESS_TIMEOUT_MS,
