@@ -27,6 +27,30 @@ export { DEFAULT_MACHINE_ID };
 /** Embedding vector dimensions (bge-m3 default). */
 export const EMBEDDING_DIMENSIONS = 1024;
 
+/**
+ * Row shape for the `canopy_entries` table — project-scoped source file index
+ * that backs Canopy code intelligence. Mechanical fields (hash, size, token
+ * estimate, language, exports, imports, top_comment) are maintained by the
+ * scanner. `llm_description` is an optional override populated by the Tier 2
+ * `canopy-describe` task.
+ */
+export interface CanopyEntry {
+  project_id: string;
+  machine_id: string;
+  path: string;
+  content_hash: string;
+  size_bytes: number;
+  token_estimate: number;
+  line_count: number;
+  language: string | null;
+  exports_json: string | null; // JSON array
+  imports_json: string | null; // JSON array
+  top_comment: string | null;
+  mechanical_updated_at: number; // epoch seconds
+  llm_description: string | null;
+  llm_updated_at: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
