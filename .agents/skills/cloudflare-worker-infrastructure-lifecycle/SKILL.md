@@ -125,7 +125,7 @@ npx wrangler deploy --config worker/wrangler.toml
 
 # Verify both services on same worker
 curl https://your-team-worker.workers.dev/health
-curl https://your-team-worker.workers.dev/mcp/health
+curl https://your-team-worker.workers.dev/mcp/call
 ```
 
 The cloud MCP server exposes **5 read-only tools** with two-tier access:
@@ -141,13 +141,13 @@ Auth tokens are auto-distributed via Workers KV with AES-256-GCM encryption:
 npx wrangler kv:key get mcp_token --binding=MCP_AUTH
 
 # Verify token hash in health endpoint
-curl https://your-team-worker.workers.dev/mcp/health
+curl https://your-team-worker.workers.dev/health
 # Look for mcp_token_hash field
 ```
 
 ### Token Rotation Detection
 
-Daemons detect rotation via `/mcp/health` mismatch patterns:
+Daemons detect rotation via `/health` mismatch patterns:
 
 ```json
 {
@@ -314,10 +314,10 @@ The `/connect` endpoint embeds tokens directly in JSON responses:
 
 ### Rotation Detection Patterns
 
-Daemons poll `/mcp/health` and compare `mcp_token_hash`:
+Daemons poll `/health` and compare `mcp_token_hash`:
 
 ```javascript
-const healthResp = await fetch('/mcp/health');
+const healthResp = await fetch('/health');
 const {mcp_token_hash} = await healthResp.json();
 
 if (mcp_token_hash !== local_stored_hash) {

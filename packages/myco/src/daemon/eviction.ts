@@ -264,49 +264,87 @@ export function parseLsofOutput(stdout: string): PortOwner[] {
 }
 
 /**
- * True when `pid` is a myco daemon process invoked with `--vault <vaultDir>`.
+ * True when `pid` is a myco daemon process whose cwd belongs to `vaultDir`.
  *
- * Uses `ps -p <pid> -o args=` and matches against the resolved vault path.
- * Handles both `--vault /path` and `--vault=/path` forms.
+ * Identity is established via two cross-checks, in order:
+ *   1. `daemon.json`'s recorded pid — the healthy case. O(1) file read.
+ *   2. The pid's own cwd, resolved to its nearest enclosing `.myco/`.
+ *      Catches orphan daemons whose `daemon.json` was lost (e.g. racy
+ *      update-apply, unclean shutdown, stale-JSON removal).
+ *
+ * cwd introspection is platform-specific: `/proc/<pid>/cwd` on Linux,
+ * `lsof -p <pid> -d cwd` on Darwin. On unsupported platforms the
+ * fallback returns false, meaning orphans with lost JSON may go
+ * un-evicted there; operators must kill such processes manually.
  */
 export function isMycoDaemonForVault(pid: number, vaultDir: string): boolean {
-  let args: string;
+  if (readDaemonJsonPid(vaultDir) === pid) return true;
+
+  const cwd = readProcessCwd(pid);
+  if (!cwd) return false;
+
+  const resolvedVault = findVaultFromCwd(cwd);
+  if (!resolvedVault) return false;
+
+  // Compare via realpath when both sides exist so macOS's /var → /private/var
+  // symlink (and similar) doesn't produce a false mismatch. Fall back to
+  // plain resolve() if either path is unresolvable.
   try {
-    args = execFileSync('ps', ['-p', String(pid), '-o', 'args='], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
-    }).trim();
+    return fs.realpathSync(resolvedVault) === fs.realpathSync(vaultDir);
   } catch {
-    return false;
+    return path.resolve(resolvedVault) === path.resolve(vaultDir);
   }
-  return matchesMycoDaemonInvocation(args, vaultDir);
 }
 
-/** Extracted for direct testability without spawning `ps`. */
-export function matchesMycoDaemonInvocation(args: string, vaultDir: string): boolean {
-  if (args.length === 0) return false;
+/**
+ * Read the working directory of process `pid`.
+ *
+ * - Linux: reads `/proc/<pid>/cwd` as a symlink.
+ * - Darwin: parses `lsof -p <pid> -a -d cwd -Fn` field output.
+ * - Other platforms: returns null.
+ */
+export function readProcessCwd(pid: number): string | null {
+  try {
+    if (process.platform === 'linux') {
+      return fs.readlinkSync(`/proc/${pid}/cwd`);
+    }
+    if (process.platform === 'darwin') {
+      const out = execFileSync(
+        'lsof', ['-p', String(pid), '-a', '-d', 'cwd', '-Fn'],
+        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 },
+      );
+      // lsof field output: each record is lines prefixed by a tag letter;
+      // `n<path>` carries the cwd.
+      for (const line of out.split('\n')) {
+        if (line.startsWith('n')) return line.slice(1);
+      }
+    }
+  } catch {
+    // Dead pid, permission denied, or unsupported tooling — fall through.
+  }
+  return null;
+}
 
-  const flagIndex = args.indexOf('--vault');
-  if (flagIndex < 0) return false;
-
-  // "myco" must appear in the command portion BEFORE --vault — not in the
-  // vault path itself. Otherwise a vault at `/home/me/myco-stuff/.myco`
-  // would spuriously match any `node ... daemon --vault /home/me/myco-stuff/.myco`.
-  const head = args.slice(0, flagIndex);
-  if (!/myco/i.test(head)) return false;
-  if (!/(^|[\s/])daemon(\s|$)/.test(head)) return false;
-
-  const resolved = path.resolve(vaultDir);
-  const attached = `--vault=${resolved}`;
-  if (args.includes(attached)) return true;
-
-  const tail = args.slice(flagIndex + '--vault'.length).replace(/^[=\s]+/, '');
-  if (tail.length === 0) return false;
-
-  // `tail` may continue with additional flags; take the next token only.
-  const nextArg = tail.split(/\s+/, 1)[0] ?? '';
-  return path.resolve(nextArg) === resolved;
+/**
+ * Walk up from `cwd` to the nearest ancestor containing a `.myco/` directory,
+ * returning the absolute path to that directory (not the parent). Returns
+ * null if no vault is found before the filesystem root.
+ *
+ * Exported for direct testability without standing up a real process.
+ */
+export function findVaultFromCwd(cwd: string): string | null {
+  let dir = cwd;
+  while (true) {
+    const candidate = path.join(dir, '.myco');
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      // not here
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ collective-ui-dev:
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
 	echo "Starting watched daemon with UI dev proxy $$proxy"; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon --vault "$(PWD)/.myco"
+	MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
 
 dev:
 	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
@@ -93,7 +93,7 @@ dev:
 		--exclude ".playwright-cli/**" \
 		--exclude "packages/myco/ui/**" \
 		--exclude "packages/myco/dist/**" \
-		packages/myco/src/entries/cli.ts daemon --vault "$(PWD)/.myco"
+		packages/myco/src/entries/cli.ts daemon
 
 HOST_TARGET := $(shell node -e "\
 process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \

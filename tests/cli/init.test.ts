@@ -36,15 +36,23 @@ mock.module('@myco/hooks/client.js', () => ({
   },
 }));
 
+mock.module('@myco/vault/resolve.js', () => ({
+  resolveVaultDir: vi.fn(),
+}));
+
 import { run } from '@myco/cli/init.js';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { resolveVaultDir } from '@myco/vault/resolve.js';
 
 describe('myco init', () => {
   let testDir: string;
+  let vault: string;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-init-test-'));
+    vault = path.join(testDir, '.myco');
     vi.clearAllMocks();
+    vi.mocked(resolveVaultDir).mockReturnValue(vault);
   });
 
   afterEach(() => {
@@ -52,24 +60,21 @@ describe('myco init', () => {
   });
 
   it('creates vault with config and gitignore', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
   });
 
   it('initializes SQLite database', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     expect(initDatabase).toHaveBeenCalled();
     expect(closeDatabase).toHaveBeenCalled();
   });
 
   it('creates all required subdirectories', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     const dirs = ['buffer', 'attachments', 'logs'];
     for (const dir of dirs) {
@@ -78,9 +83,7 @@ describe('myco init', () => {
   });
 
   it('writes valid v3 config with explicit values', async () => {
-    const vault = path.join(testDir, 'vault');
     await run([
-      '--vault', vault,
       '--embedding-provider', 'ollama',
       '--embedding-model', 'bge-m3',
     ]);
@@ -96,23 +99,14 @@ describe('myco init', () => {
   });
 
   it('uses correct base_url when explicitly passed', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
+    await run(['--embedding-model', 'bge-m3', '--embedding-url', 'http://localhost:11434']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.embedding.base_url).toBe('http://localhost:11434');
   });
 
-  it('accepts custom --vault path', async () => {
-    const customVault = path.join(testDir, 'custom-vault');
-    await run(['--vault', customVault, '--embedding-model', 'bge-m3']);
-
-    expect(fs.existsSync(path.join(customVault, 'myco.yaml'))).toBe(true);
-  });
-
   it('writes .gitignore excluding runtime artifacts', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     const gitignore = fs.readFileSync(path.join(vault, '.gitignore'), 'utf-8');
     expect(gitignore).toContain('myco.db');
@@ -125,8 +119,7 @@ describe('myco init', () => {
   });
 
   it('is idempotent — does not overwrite user-set values on re-init', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--non-interactive']);
+    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
 
     const configPath = path.join(vault, 'myco.yaml');
     const originalEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
@@ -137,7 +130,7 @@ describe('myco init', () => {
     // config-version migration runs on re-read — but the user's selections
     // stay put.)
     const consoleSpy = vi.spyOn(console, 'log');
-    await run(['--vault', vault, '--embedding-model', 'other', '--non-interactive']);
+    await run(['--embedding-model', 'other', '--non-interactive']);
 
     const afterEmbedding = YAML.parse(fs.readFileSync(configPath, 'utf-8')).embedding.model;
     expect(afterEmbedding).toBe('bge-m3');
@@ -149,8 +142,7 @@ describe('myco init', () => {
     // and event_tasks_enabled=false into myco.yaml. Combined with the daemon
     // reading project-only config, this meant the scheduler never ran on a
     // fresh install even when the user enabled the toggles at personal scope.
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.agent.scheduled_tasks_enabled).toBe(true);
@@ -158,8 +150,7 @@ describe('myco init', () => {
   });
 
   it('initializes plan_dirs as empty array (agent-specific dirs come from symbiont manifests)', async () => {
-    const vault = path.join(testDir, 'vault');
-    await run(['--vault', vault, '--embedding-model', 'bge-m3']);
+    await run(['--embedding-model', 'bge-m3']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.capture.plan_dirs).toEqual([]);
@@ -176,11 +167,10 @@ describe('myco init', () => {
       { manifest: vi.mocked(loadManifests)()[0], binaryFound: true, configDirFound: false },
     ]);
 
-    const vault = path.join(testDir, 'vault');
     // --non-interactive so init doesn't open the inquirer checkbox when
     // stdin is a TTY (which it is on some dev terminals even under
     // `bun test`). Without it, init hangs waiting for the prompt.
-    await run(['--vault', vault, '--embedding-model', 'bge-m3', '--non-interactive']);
+    await run(['--embedding-model', 'bge-m3', '--non-interactive']);
 
     const config = YAML.parse(fs.readFileSync(path.join(vault, 'myco.yaml'), 'utf-8'));
     expect(config.symbionts).toBeDefined();

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { z } from 'zod';
 import { resolveCliEntryPath } from '../../hooks/client.js';
 import type { RouteResponse } from '../router.js';
@@ -36,11 +37,13 @@ export async function handleRestart(
   // has fully released the port and cleaned up daemon.json.
   const { execPath, cliEntry } = resolveCliEntryPath();
   const entryPart = cliEntry !== null ? ` ${cliEntry}` : '';
-  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon --vault ${deps.vaultDir}`;
+  const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon`;
 
+  const projectRoot = path.dirname(deps.vaultDir);
   const child = spawn('/bin/sh', ['-c', shellCmd], {
     detached: true,
     stdio: 'ignore',
+    cwd: projectRoot,
   });
   child.unref();
 

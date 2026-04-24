@@ -160,7 +160,7 @@ The tool returns a descriptive error identifying the failing constraint:
 
 ### allowed-tools Contamination
 
-The vault_write_skill gate was added specifically because of a silent propagation bug: `skill-evolve.yaml`'s "preserve ALL existing frontmatter fields" instruction faithfully copies vault_* names from a contaminated skill into every subsequent evolution. The preservation rule is not a validator.
+The vault_write_skill gate was added specifically because of a silent propagation bug: when skill evolution tasks preserve existing frontmatter fields, they faithfully copy vault_* names from a contaminated skill into every subsequent evolution. The preservation rule is not a validator.
 
 **Contamination propagation path:**
 1. A skill has vault_* names in `allowed-tools` (e.g., generated when the spec was wrong)
@@ -203,7 +203,7 @@ Skills are loaded by Claude Code when the frontmatter `description` matches the 
 The rewritten skill passes all validation checks but is structurally degraded.
 
 **Fix steps:**
-1. Check skill-evolve.yaml — it must have an explicit "bias toward CURRENT unless there is a substantive factual change" instruction and a "do NOT restructure sections that are still correct" directive
+1. Check skill evolution task configuration — it must have an explicit "bias toward CURRENT unless there is a substantive factual change" instruction and a "do NOT restructure sections that are still correct" directive
 2. Identify the previous generation via vault_skill_records lineage
 3. Compare the description — if shortened, triggering coverage is degraded
 4. Rewrite to restore description coverage plus any actual new knowledge

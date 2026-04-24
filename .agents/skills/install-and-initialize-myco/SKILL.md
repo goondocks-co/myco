@@ -160,7 +160,7 @@ Before configuring dev binary, ensure the project is built:
 
 ```bash
 # Check if CLI build exists
-if [ ! -f "packages/myco/dist/src/cli.js" ]; then
+if [ ! -f "packages/myco/bin/myco.cjs" ]; then
   echo "CLI not built. Running build..."
   make build
 else
@@ -168,7 +168,7 @@ else
 fi
 ```
 
-The CLI build at `packages/myco/dist/src/cli.js` is required for dev configuration to work.
+The CLI build at `packages/myco/bin/myco.cjs` is required for dev configuration to work.
 
 ### Configure Dev Binary
 
@@ -178,7 +178,7 @@ make dev-link
 
 This creates four symlinks in `~/.local/bin/` and writes `.myco/runtime.command`:
 
-- **`myco-dev`** — symlink to `packages/myco/dist/src/cli.js`. Used for dogfooding agent and core daemon changes.
+- **`myco-dev`** — symlink to `packages/myco/bin/myco.cjs`. Used for dogfooding agent and core daemon changes.
 - **`myco-team-dev`** — symlink to `packages/myco-team/dist/main.js`. Used for manual testing of team sync operator flows.
 - **`myco-collective-dev`** — symlink to `packages/myco-collective/dist/main.js`. Used for manual testing of Collective operator flows.
 - **`myco-run`** — symlink to `packages/myco/bin/myco-run`. Stable operator entrypoint for MCP server mode; never delete this even if it appears unused.
@@ -273,7 +273,7 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 
 **`.myco/runtime.command` is machine-specific.** If you copy your repo to another machine, re-run `make dev-link` there — the path baked into the file will be wrong otherwise.
 
-**Rebuild before testing.** `myco-dev doctor` (or any hook) reads the binary on disk. Stale `packages/myco/dist/src/cli.js` means stale behavior, even if your source edits look right.
+**Rebuild before testing.** `myco-dev doctor` (or any hook) reads the binary on disk. Stale `packages/myco/bin/myco.cjs` means stale behavior, even if your source edits look right.
 
 **Symlinks go stale after package relocation.** When the Myco project restructures (e.g., moving into a monorepo), `~/.local/bin/myco-*` symlinks still point to the old locations. If the target dist file doesn't exist at the old path, hooks will fail silently. Fix this by re-running `make dev-link` after any significant directory reorganization.
 

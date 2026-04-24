@@ -490,6 +490,224 @@ function processSessionHook(payload: any) {
 
 ---
 
+## Step 7 — Daemon Restart Resilience Patterns
+
+**When:** The daemon crashes or restarts unexpectedly, leaving tasks, sessions, or jobs in inconsistent states. Common scenarios include process termination during task execution, database locks from interrupted transactions, and orphaned state after unclean shutdowns.
+
+### Task Recovery After Restart
+
+Implement recovery patterns for tasks interrupted mid-execution:
+
+```typescript
+// During daemon startup, identify tasks that were interrupted
+export async function recoverInterruptedTasks() {
+  const interruptedTasks = await db.select()
+    .from(tasks)
+    .where(
+      and(
+        inArray(tasks.status, ['running', 'starting']),
+        lt(tasks.updated_at, sql`datetime('now', '-5 minutes')`)
+      )
+    );
+
+  for (const task of interruptedTasks) {
+    logger.warn(`[Recovery] Found interrupted task`, {
+      taskId: task.id,
+      status: task.status,
+      lastUpdate: task.updated_at
+    });
+
+    // Reset to pending for retry, or mark failed based on business logic
+    await db.update(tasks)
+      .set({ 
+        status: 'pending', 
+        updated_at: new Date(),
+        restartCount: (task.restartCount || 0) + 1 
+      })
+      .where(eq(tasks.id, task.id));
+  }
+  
+  logger.info(`[Recovery] Reset ${interruptedTasks.length} interrupted tasks`);
+}
+```
+
+### Session Cleanup on Startup
+
+Clean up sessions that were left in inconsistent states:
+
+```typescript
+// Clean up sessions that were marked active but daemon wasn't running
+export async function cleanupStaleActiveSessions() {
+  const staleActiveSessions = await db.select()
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.status, 'active'),
+        lt(sessions.updated_at, sql`datetime('now', '-30 minutes')`)
+      )
+    );
+
+  for (const session of staleActiveSessions) {
+    logger.warn(`[Recovery] Found stale active session`, {
+      sessionId: session.id,
+      lastUpdate: session.updated_at
+    });
+
+    // Transition to terminal based on content
+    const status = session.promptCount > 0 ? 'complete' : 'abandoned';
+    await db.update(sessions)
+      .set({ status, updated_at: new Date() })
+      .where(eq(sessions.id, session.id));
+  }
+  
+  logger.info(`[Recovery] Cleaned up ${staleActiveSessions.length} stale active sessions`);
+}
+```
+
+### Outbox Recovery Patterns
+
+Handle outbox entries that were being processed during shutdown:
+
+```typescript
+// Reset outbox entries that were being drained during shutdown
+export async function resetProcessingOutboxEntries() {
+  const processingEntries = await db.select()
+    .from(outbox)
+    .where(
+      and(
+        eq(outbox.status, 'processing'),
+        lt(outbox.updated_at, sql`datetime('now', '-10 minutes')`)
+      )
+    );
+
+  for (const entry of processingEntries) {
+    logger.warn(`[Recovery] Resetting processing outbox entry`, {
+      entryId: entry.id,
+      type: entry.type
+    });
+
+    await db.update(outbox)
+      .set({ 
+        status: 'pending',
+        retryCount: (entry.retryCount || 0) + 1,
+        updated_at: new Date()
+      })
+      .where(eq(outbox.id, entry.id));
+  }
+
+  logger.info(`[Recovery] Reset ${processingEntries.length} processing outbox entries`);
+}
+```
+
+### Database Lock Recovery
+
+Handle SQLite locks from interrupted transactions:
+
+```typescript
+// Check for database locks and attempt recovery
+export async function recoverDatabaseLocks() {
+  try {
+    // Test database accessibility
+    await db.select().from(sessions).limit(1).get();
+    logger.info(`[Recovery] Database accessible`);
+  } catch (err) {
+    if (err.message.includes('database is locked')) {
+      logger.warn(`[Recovery] Database locked, attempting recovery`);
+      
+      // Force close all connections and reinitialize
+      await db.$client.close();
+      
+      // Wait briefly for locks to clear
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Reinitialize database connection
+      await initializeDatabase();
+      
+      logger.info(`[Recovery] Database lock recovered`);
+    } else {
+      throw err;
+    }
+  }
+}
+```
+
+### Startup Recovery Orchestration
+
+Coordinate all recovery patterns during daemon initialization:
+
+```typescript
+// Main recovery function called during daemon startup
+export async function performStartupRecovery() {
+  const startTime = Date.now();
+  logger.info(`[Recovery] Starting daemon recovery procedures`);
+
+  try {
+    // Database recovery first
+    await recoverDatabaseLocks();
+    
+    // Then state recovery
+    await recoverInterruptedTasks();
+    await cleanupStaleActiveSessions();
+    await resetProcessingOutboxEntries();
+    
+    // Restart schedulers after state is clean
+    await restartJobSchedulers();
+    
+    const duration = Date.now() - startTime;
+    logger.info(`[Recovery] Completed daemon recovery in ${duration}ms`);
+    
+  } catch (err) {
+    logger.error(`[Recovery] Daemon recovery failed`, { error: err.message });
+    throw err;
+  }
+}
+```
+
+### Graceful Shutdown Preparation
+
+Implement clean shutdown to minimize recovery needs:
+
+```typescript
+// Prepare for graceful shutdown
+export async function prepareGracefulShutdown() {
+  logger.info(`[Shutdown] Preparing graceful daemon shutdown`);
+  
+  // Stop accepting new work
+  await stopJobSchedulers();
+  
+  // Wait for current tasks to complete (with timeout)
+  const runningTasks = await db.select()
+    .from(tasks)
+    .where(eq(tasks.status, 'running'));
+    
+  if (runningTasks.length > 0) {
+    logger.info(`[Shutdown] Waiting for ${runningTasks.length} running tasks`);
+    
+    // Wait up to 30 seconds for tasks to complete
+    for (let i = 0; i < 30; i++) {
+      const stillRunning = await db.select()
+        .from(tasks)
+        .where(eq(tasks.status, 'running'));
+        
+      if (stillRunning.length === 0) break;
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+  
+  // Mark remaining tasks as interrupted
+  await db.update(tasks)
+    .set({ status: 'interrupted', updated_at: new Date() })
+    .where(eq(tasks.status, 'running'));
+    
+  logger.info(`[Shutdown] Graceful shutdown preparation complete`);
+}
+```
+
+**Usage:** Call `performStartupRecovery()` during daemon initialization and `prepareGracefulShutdown()` on shutdown signals. This minimizes the need for recovery procedures on the next startup.
+
+---
+
 ## Quick Reference — Error to Fix Map
 
 | Error / Symptom | Likely Cause | Fix |
@@ -503,3 +721,7 @@ function processSessionHook(payload: any) {
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |
 | Phantom sessions with different parentID values | OpenCode sub-agent vs user fork confusion | Use diagnostic logging to distinguish session creation context; validate parentID references |
 | Sessions created within seconds but unclear relationship | Missing session type context in logs | Implement structured session creation logging with type classification |
+| Daemon restart leaves tasks in `running` status | Process interrupted during task execution | Implement task recovery: reset interrupted tasks to `pending` with restart count |
+| Database locked after restart | SQLite locks from interrupted transactions | Force close connections, wait for locks to clear, reinitialize |
+| Sessions stuck in `active` status after restart | Daemon shutdown during session processing | Cleanup stale active sessions: transition to `complete` or `abandoned` based on content |
+| Outbox entries stuck in `processing` status | Daemon shutdown during outbox drain | Reset processing entries to `pending` with incremented retry count |

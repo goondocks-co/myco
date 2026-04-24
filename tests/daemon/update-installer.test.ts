@@ -21,10 +21,12 @@ describe('generateRestartScript()', () => {
     expect(script).not.toContain('update --project');
   });
 
-  it('always starts the daemon with --vault', () => {
+  it('starts the daemon from projectRoot so resolveVaultDir finds the vault', () => {
     const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
-    expect(script).toContain('daemon --vault');
-    expect(script).toContain('/home/user/project/.myco');
+    expect(script).toContain('cd "/home/user/project"');
+    expect(script).toContain('"$MYCO" daemon');
+    // No explicit vault flag — vaults are project-local, resolved from cwd.
+    expect(script).not.toContain('--vault');
   });
 
   it('writes restart-reason.json before starting daemon', () => {

@@ -274,9 +274,10 @@ export class DaemonClient {
     if (this.spawnIsInFlight()) return;
 
     const { execPath, cliEntry } = resolveCliEntryPath();
-    const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon', '--vault', this.vaultDir]), {
+    const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {
       detached: true,
       stdio: 'ignore',
+      cwd: path.dirname(this.vaultDir),
     });
     child.unref();
   }

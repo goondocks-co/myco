@@ -199,7 +199,7 @@ padding. Calibrate before deploying.
 ### Starting values
 
 | Phase type | Cloud budget | Local budget |
-|------------|-------------|--------------|
+|------------|-------------|-------------|
 | Discovery / read-only | 8–12 | 25–40 |
 | Write / consolidation | 10–20 | 30–60 |
 | Validation / QA | 5–8 | 15–25 |
@@ -462,7 +462,7 @@ LIMIT 20;
 ### Silent failure patterns
 
 | Symptom | Likely cause |
-|---------|--------------|
+|---------|-------------|
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly; review short-circuit condition |
 | `turn_count = 1`, empty `tool_output_summary` | LLM never called tools; malformed prompt or injected context |
 | `turn_count = budget` with incomplete work | Budget exhaustion; cap the input |
@@ -480,7 +480,7 @@ are properly propagated outside the isolation boundary.
 ### Adding telemetry
 
 To add a new column to `agent_runs`, create a schema migration in
-`packages/myco/src/db/migrations/`. New columns are safe to add without touching existing
+`packages/myco/src/db/migrations.ts`. New columns are safe to add without touching existing
 rows — the harness reads the schema at startup.
 
 ---

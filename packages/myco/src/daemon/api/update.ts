@@ -115,7 +115,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     const snapshot = readVaultSnapshot();
 
     // --- Installed-version check (short-circuits before registry) ---
-    if (globalPrefix && !restartInitiated) {
+    // Only machine-scope projects track the global install. Project-scope
+    // runtimes (beta pins under `.myco/runtime/`, dogfood) aren't updated by
+    // `npm install -g`, so respawning via runtime.command would re-exec the
+    // same local binary and loop. Those updates flow through handleUpdateApply.
+    if (globalPrefix && !restartInitiated && snapshot.runtimeScope === 'machine') {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
         installedVersion &&

@@ -597,4 +597,28 @@ describe('handleUpdateStatus — restart_required', () => {
 
     expect(spawnRestartScript).not.toHaveBeenCalled();
   });
+
+  // Project-scope runtimes (beta pins under `.myco/runtime/`, dogfood) are
+  // deliberately isolated from the machine-wide myco. Their binary isn't
+  // updated by a global `npm install -g`, so respawning via runtime.command
+  // would re-exec the same local binary and loop. The short-circuit must
+  // skip them; updates flow through handleUpdateApply's install path.
+  it('does not trigger auto-restart when runtime_scope is project-local', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(
+      '/vault/runtime/node_modules/.bin/myco',
+    );
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(true);
+    const scheduleShutdown = vi.fn();
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(scheduleShutdown).not.toHaveBeenCalled();
+    expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+    expect(result.body).toMatchObject({ exempt: false });
+  });
 });

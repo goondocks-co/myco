@@ -35,7 +35,7 @@ export interface InstallParams {
   removeLocalRuntime?: boolean;
   /** Absolute path to the project root for `myco update --project`. */
   projectRoot: string;
-  /** Absolute path to the vault directory for `myco daemon --vault`. */
+  /** Absolute path to the vault directory (used to compute localRuntime paths). */
   vaultDir: string;
   /**
    * Literal myco binary the script should invoke for the post-install
@@ -58,7 +58,8 @@ export interface InstallParams {
  * 3. On success: runs `myco update --project <projectRoot>` (non-fatal).
  * 4. On success: clears ~/.myco/update-error.json.
  * 5. On failure: writes error JSON to ~/.myco/update-error.json.
- * 6. Always: starts `myco daemon --vault <vaultDir>` in background.
+ * 6. Always: `cd <projectRoot> && myco daemon &` so the new daemon's
+ *    resolveVaultDir picks up the vault from cwd.
  * 7. Cleans up the script file itself.
  */
 export function generateUpdateScript(params: InstallParams): string {
@@ -74,7 +75,6 @@ export function generateUpdateScript(params: InstallParams): string {
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
   const installArgs = packageSpecs.map((spec) => JSON.stringify(spec)).join(' ');
   const quotedProjectRoot = JSON.stringify(projectRoot);
-  const quotedVaultDir = JSON.stringify(vaultDir);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
   const localRuntimeDir = path.join(vaultDir, PROJECT_RUNTIME_DIRNAME);
@@ -136,7 +136,7 @@ else
 fi
 
 # Restart daemon (works whether install succeeded or failed)
-"$MYCO" daemon --vault ${quotedVaultDir} &
+cd ${quotedProjectRoot} && "$MYCO" daemon &
 
 # Clean up this script
 rm -f "$0"
@@ -181,7 +181,7 @@ export function spawnUpdateScript(params: InstallParams): string {
 export interface RestartParams {
   /** Absolute path to the project root for `myco update --project`. */
   projectRoot: string;
-  /** Absolute path to the vault directory for `myco daemon --vault`. */
+  /** Absolute path to the vault directory (used to compute localRuntime paths). */
   vaultDir: string;
   /** Whether to run `myco update --project` before restarting. */
   runLocalUpdate: boolean;
@@ -203,13 +203,12 @@ export interface RestartParams {
  * 1. Waits for the daemon to exit.
  * 2. Optionally runs `myco update --project` when runLocalUpdate is true.
  * 3. Writes restart-reason.json into the vault.
- * 4. Starts `myco daemon --vault` in background.
+ * 4. `cd <projectRoot> && myco daemon &` so resolveVaultDir picks up the vault.
  * 5. Cleans up the script file.
  */
 export function generateRestartScript(params: RestartParams): string {
   const { projectRoot, vaultDir, runLocalUpdate, fromVersion, toVersion, mycoBinary } = params;
   const quotedProjectRoot = JSON.stringify(projectRoot);
-  const quotedVaultDir = JSON.stringify(vaultDir);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const reasonFile = JSON.stringify(path.join(vaultDir, RESTART_REASON_FILENAME));
 
@@ -241,8 +240,8 @@ ${updateBlock}
 # Write restart reason for the new daemon to pick up
 echo ${reasonJson} > ${reasonFile}
 
-# Restart daemon
-"$MYCO" daemon --vault ${quotedVaultDir} &
+# Restart daemon (cd'd into projectRoot so resolveVaultDir finds the vault)
+cd ${quotedProjectRoot} && "$MYCO" daemon &
 
 # Clean up this script
 rm -f "$0"
