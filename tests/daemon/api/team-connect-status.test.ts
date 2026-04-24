@@ -10,6 +10,23 @@ function readPackageVersion(...segments: string[]): string {
   return packageJson.version;
 }
 
+/**
+ * Build a fake npm global prefix directory layout on disk so
+ * `getInstalledVersion(prefix, '@goondocks/myco-team')` resolves the
+ * expected test version without requiring an actual global install.
+ */
+function makeFakeGlobalPrefix(root: string, teamPackageVersion: string): string {
+  const prefix = path.join(root, 'npm-prefix');
+  const teamPkgDir = path.join(prefix, 'lib', 'node_modules', '@goondocks', 'myco-team');
+  fs.mkdirSync(teamPkgDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(teamPkgDir, 'package.json'),
+    JSON.stringify({ name: '@goondocks/myco-team', version: teamPackageVersion }, null, 2),
+    'utf-8',
+  );
+  return prefix;
+}
+
 describe('createTeamHandlers.handleStatus', () => {
   let tempDir: string;
   let vaultDir: string;
@@ -50,9 +67,15 @@ describe('createTeamHandlers.handleStatus', () => {
     const teamPackageJson = JSON.parse(
       fs.readFileSync(path.join(process.cwd(), 'packages', 'myco-team', 'package.json'), 'utf-8'),
     ) as { version: string };
+    // Stage a fake npm global prefix that holds the expected myco-team
+    // version. The daemon now reads the locally-installed version from
+    // `<prefix>/lib/node_modules/@goondocks/myco-team/package.json` via
+    // `getInstalledVersion` rather than importing myco-team's code.
+    const globalPrefix = makeFakeGlobalPrefix(tempDir, teamPackageJson.version);
     const handlers = createTeamHandlers({
       vaultDir,
       machineId: 'machine-test',
+      globalPrefix,
       logger: {
         debug: () => undefined,
         info: () => undefined,
