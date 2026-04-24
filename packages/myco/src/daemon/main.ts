@@ -955,6 +955,7 @@ export async function main(): Promise<void> {
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
     setTeamClient: teamSync.setTeamClient,
+    globalPrefix,
   });
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
@@ -1062,7 +1063,6 @@ export async function main(): Promise<void> {
     import('../agent/tools/skill-staging.js'),
     import('../db/queries/turns.js'),
     import('../symbionts/installer.js'),
-    import('../cli/team.js'),
   ]).catch((err) => {
     logger.warn(LOG_KINDS.DAEMON_START, 'Pre-warm of dynamic imports failed', {
       error: (err as Error).message,

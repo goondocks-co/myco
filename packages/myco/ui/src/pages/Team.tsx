@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStatus, type TeamStatusResponse } from '../hooks/use-team';
-import { postJson } from '../lib/api';
+import { postJson, ApiError } from '../lib/api';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Surface } from '../components/ui/surface';
@@ -209,7 +209,17 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         setUpgradeMessage(res.error ?? 'Upgrade failed');
       }
     } catch (err) {
-      setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
+      // Surface the "@goondocks/myco-team not installed" case with a direct
+      // install instruction instead of the generic error toast. The daemon
+      // returns a typed error code when it can't locate the package under
+      // the npm global prefix.
+      if (err instanceof ApiError && typeof err.body === 'object' && err.body !== null && 'error' in err.body
+          && (err.body as { error: unknown }).error === 'myco_team_not_installed') {
+        const message = 'message' in err.body ? String((err.body as { message: unknown }).message) : null;
+        setUpgradeMessage(message ?? 'Install @goondocks/myco-team to enable Worker upgrades: npm install -g @goondocks/myco-team');
+      } else {
+        setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
+      }
     } finally {
       setUpgrading(false);
     }

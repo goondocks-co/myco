@@ -15,7 +15,6 @@
     "resolveJsonModule": true,
     "paths": {
       "@myco/*": ["./src/*"],
-      "@myco-team/*": ["../myco-team/src/*"],
       "@myco-collective/*": ["../myco-collective/src/*"],
       "@myco-deploy/*": ["../myco-deploy/src/*"]
     }

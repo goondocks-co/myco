@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { resolveVaultDir } from '@myco/vault/resolve.js';
-import { teamDestroy, teamInit, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade } from './cli.js';
+import { teamDestroy, teamInit, teamReindexVectors, teamRotateTokens, teamStatus, teamUpgrade, upgradeWorker, reindexWorkerVectors } from './cli.js';
 
 const [command, ...args] = process.argv.slice(2);
 type CommandHandler = (args: string[]) => Promise<void>;
@@ -10,27 +10,63 @@ function showHelp(): void {
 
 Commands:
   install [project_dir]
-  upgrade [project_dir] [--reindex-vectors]
+  upgrade [project_dir] [--reindex-vectors] [--json]
   status [project_dir]
   rotate-tokens [api|mcp|all] [project_dir]
   reindex-vectors [project_dir]
   destroy [project_dir]
+
+--json on upgrade emits a single machine-readable result object on stdout
+(schema: { success, worker_url?, version?, error? }) and suppresses the
+human-readable progress output. Used by the myco daemon's one-click
+"Update Worker" handler to drive the upgrade without importing myco-team
+internals.
 `);
 }
 
-function parseUpgradeArgs(commandArgs: string[]): { vaultDir: string; reindexVectors: boolean } {
+function parseUpgradeArgs(commandArgs: string[]): {
+  vaultDir: string;
+  reindexVectors: boolean;
+  json: boolean;
+} {
   const reindexVectors = commandArgs.includes('--reindex-vectors');
-  const projectArg = commandArgs.find((arg) => arg !== '--reindex-vectors');
+  const json = commandArgs.includes('--json');
+  const projectArg = commandArgs.find(
+    (arg) => arg !== '--reindex-vectors' && arg !== '--json',
+  );
   return {
     vaultDir: resolveVaultDir(projectArg ?? process.cwd()),
     reindexVectors,
+    json,
   };
+}
+
+async function runUpgradeJson(vaultDir: string, reindexVectors: boolean): Promise<void> {
+  const result = upgradeWorker(vaultDir);
+  if (!result.success) {
+    process.stdout.write(JSON.stringify(result) + '\n');
+    process.exit(1);
+  }
+  if (reindexVectors && result.worker_url) {
+    try {
+      await reindexWorkerVectors(vaultDir, result.worker_url);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stdout.write(JSON.stringify({ ...result, success: false, error: message }) + '\n');
+      process.exit(1);
+    }
+  }
+  process.stdout.write(JSON.stringify(result) + '\n');
 }
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   install: async (commandArgs) => teamInit(resolveVaultDir(commandArgs[0] ?? process.cwd())),
   upgrade: async (commandArgs) => {
     const parsed = parseUpgradeArgs(commandArgs);
+    if (parsed.json) {
+      await runUpgradeJson(parsed.vaultDir, parsed.reindexVectors);
+      return;
+    }
     await teamUpgrade(parsed.vaultDir, { reindexVectors: parsed.reindexVectors });
   },
   status: async (commandArgs) => teamStatus(resolveVaultDir(commandArgs[0] ?? process.cwd())),
