@@ -1,8 +1,14 @@
 /**
  * CLI team commands — provision and manage Cloudflare team sync infrastructure.
  *
- * `myco team init`    — Provision D1 database, Vectorize index, deploy worker.
- * `myco team upgrade` — Redeploy worker with updated source.
+ * Exposed via the standalone `myco-team` binary (see `main.ts`):
+ *   `myco-team install` — Provision D1 database, Vectorize index, deploy worker.
+ *   `myco-team upgrade` — Redeploy worker with updated source.
+ *
+ * The daemon's `POST /api/team/upgrade-worker` handler also imports
+ * `upgradeWorker` from this module at build time (via the tsconfig `@myco-team/*`
+ * path alias) so the UI's "Update Worker" button works without requiring the
+ * user to have `myco-team` on PATH.
  */
 
 import crypto from 'node:crypto';
@@ -596,7 +602,7 @@ export interface UpgradeResult {
 export function upgradeWorker(vaultDir: string): UpgradeResult {
   const config = loadConfig(vaultDir);
   if (!config.team.worker_url) {
-    return { success: false, error: 'No team sync configured. Run: myco team init' };
+    return { success: false, error: 'No team sync configured. Run: myco-team install' };
   }
 
   migrateLegacyDeployDir(vaultDir);
@@ -604,14 +610,14 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
   const tomlPath = path.join(deployDir, 'wrangler.toml');
 
   if (!fs.existsSync(tomlPath)) {
-    return { success: false, error: 'No deployment directory found. Run: myco team init' };
+    return { success: false, error: 'No deployment directory found. Run: myco-team install' };
   }
 
   // Read ALL existing resource identifiers from current wrangler.toml.
   const existingToml = fs.readFileSync(tomlPath, 'utf-8');
   const d1Match = existingToml.match(TOML_DB_ID_REGEX);
   if (!d1Match || d1Match[1] === '<YOUR_D1_DATABASE_ID>') {
-    return { success: false, error: 'Cannot determine D1 database ID from existing deployment. Run: myco team init' };
+    return { success: false, error: 'Cannot determine D1 database ID from existing deployment. Run: myco-team install' };
   }
   const d1Id = d1Match[1];
 

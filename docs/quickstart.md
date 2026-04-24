@@ -192,10 +192,11 @@ npm install -g @goondocks/myco-team
 
 Use it for:
 
-- `myco-team install` — provision team sync (same as `myco team init`)
+- `myco-team install` — provision team sync
 - `myco-team upgrade` — redeploy the worker
 - `myco-team status` — show worker info and credentials
 - `myco-team rotate-tokens` — rotate API key and/or MCP token
+- `myco-team reindex-vectors` — rebuild the Vectorize index
 - `myco-team destroy` — tear down all Cloudflare resources
 
 ### Collective CLI

@@ -590,16 +590,16 @@ export default function Team() {
 
             <div className="space-y-3">
               <div>
-                <p className="text-sm font-medium text-on-surface mb-1">1. Install Wrangler</p>
+                <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
                 <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                  npm install -g wrangler && wrangler login
+                  npm install -g @goondocks/myco-team wrangler && wrangler login
                 </code>
               </div>
 
               <div>
                 <p className="text-sm font-medium text-on-surface mb-1">2. Provision the team</p>
                 <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                  myco team init
+                  myco-team install
                 </code>
                 <p className="text-xs text-on-surface-variant mt-1">
                   Creates a D1 database, Vectorize index, and deploys the sync worker.
@@ -610,7 +610,7 @@ export default function Team() {
               <div>
                 <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
                 <p className="text-xs text-on-surface-variant">
-                  Paste the Worker URL and API key below, or if you ran <code className="font-mono">myco team init</code>,
+                  Paste the Worker URL and API key below, or if you ran <code className="font-mono">myco-team install</code>,
                   you're already connected.
                 </p>
               </div>

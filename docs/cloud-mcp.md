@@ -36,7 +36,7 @@ Five read-only tools. The Cloud MCP surface is deliberately narrower than the lo
 
 ## Setting it up
 
-If you've already run `myco team init`, the Cloud MCP server is deployed automatically the next time you click **Update Worker** in the Team page. New team deployments get it out of the box.
+If you've already run `myco-team install`, the Cloud MCP server is deployed automatically the next time you click **Update Worker** in the Team page. New team deployments get it out of the box.
 
 ## Finding your endpoint
 
