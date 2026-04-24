@@ -10,6 +10,7 @@
 // runtime-redirect.cjs. Projects that pin a local runtime (beta channel,
 // dogfood) are re-exec'd into that binary so the interactive CLI matches
 // the binary the project's daemon, hooks, and MCP server already use.
+// Set `MYCO_DEBUG_REDIRECT=1` to trace redirect decisions on stderr.
 //
 // Rationale: npm's `bin` entry must be a single path. We can't point it
 // directly at a platform-specific binary without a post-install step. This
