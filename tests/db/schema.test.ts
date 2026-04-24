@@ -47,7 +47,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(24);
+      expect(SCHEMA_VERSION).toBe(25);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1329,16 +1329,16 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v24 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v25 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
       });
@@ -1564,6 +1564,121 @@ describe('Database schema', () => {
         expect(tableExists(db, 'agent_run_evaluations')).toBe(false);
         expect(getColumnNames(db, 'agent_runs')).not.toContain('evaluation_id');
         expect(() => runMigration(db, 24)).not.toThrow();
+      });
+    });
+
+    describe('v24 to v25: canopy code-intelligence layer', () => {
+      function runMigration(target: Database, version: number) {
+        const m = MIGRATIONS.find((mm) => mm.version === version);
+        expect(m, `migration v${version} registered`).toBeDefined();
+        m!.migrate(target, 'local');
+      }
+
+      /** Bring the vault to v24-shape: run createSchema, then drop the canopy
+       *  artifacts v25 is responsible for adding, and stamp the version back
+       *  to 24 so the v25 migration step re-runs. */
+      function setupAtV24(target: Database): void {
+        createSchema(target);
+        target.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (24, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+        target.prepare(`DROP INDEX IF EXISTS idx_canopy_hash`).run();
+        target.prepare(`DROP INDEX IF EXISTS idx_canopy_updated`).run();
+        target.prepare(`DROP TABLE IF EXISTS canopy_entries`).run();
+        for (const col of [
+          'canopy_injections_offered',
+          'canopy_injection_total_tokens',
+          'canopy_skips_after_injection',
+          'canopy_reads_after_injection',
+          'canopy_tokens_saved',
+          'canopy_redundant_reads',
+        ]) {
+          try {
+            target.prepare(`ALTER TABLE sessions DROP COLUMN ${col}`).run();
+          } catch {
+            // Column absent — acceptable.
+          }
+        }
+        try {
+          target.prepare(`ALTER TABLE activities DROP COLUMN canopy_injection_tokens`).run();
+        } catch {
+          // Column absent — acceptable.
+        }
+      }
+
+      it('creates canopy_entries, indexes, and aggregate/tool-call columns', () => {
+        setupAtV24(db);
+        expect(tableExists(db, 'canopy_entries')).toBe(false);
+        expect(getColumnNames(db, 'sessions')).not.toContain('canopy_tokens_saved');
+        expect(getColumnNames(db, 'activities')).not.toContain('canopy_injection_tokens');
+
+        runMigration(db, 25);
+
+        expect(tableExists(db, 'canopy_entries')).toBe(true);
+        const canopyCols = getColumnNames(db, 'canopy_entries');
+        for (const col of [
+          'project_id', 'machine_id', 'path', 'content_hash', 'size_bytes',
+          'token_estimate', 'line_count', 'language', 'exports_json', 'imports_json',
+          'top_comment', 'mechanical_updated_at', 'llm_description', 'llm_updated_at',
+        ]) {
+          expect(canopyCols).toContain(col);
+        }
+
+        expect(indexExists(db, 'idx_canopy_hash')).toBe(true);
+        expect(indexExists(db, 'idx_canopy_updated')).toBe(true);
+
+        const sessionCols = getColumnNames(db, 'sessions');
+        for (const col of [
+          'canopy_injections_offered',
+          'canopy_injection_total_tokens',
+          'canopy_skips_after_injection',
+          'canopy_reads_after_injection',
+          'canopy_tokens_saved',
+          'canopy_redundant_reads',
+        ]) {
+          expect(sessionCols).toContain(col);
+        }
+
+        expect(getColumnNames(db, 'activities')).toContain('canopy_injection_tokens');
+      });
+
+      it('new columns are nullable — rows insert cleanly with NULLs', () => {
+        setupAtV24(db);
+        runMigration(db, 25);
+
+        db.prepare(
+          `INSERT INTO sessions (id, agent, started_at, created_at)
+           VALUES ('ses-null', 'claude-code', 1000, 1000)`,
+        ).run();
+        const row = db.prepare(
+          `SELECT canopy_tokens_saved, canopy_injections_offered FROM sessions WHERE id = 'ses-null'`,
+        ).get() as { canopy_tokens_saved: number | null; canopy_injections_offered: number | null };
+        expect(row.canopy_tokens_saved).toBeNull();
+        expect(row.canopy_injections_offered).toBeNull();
+      });
+
+      it('records schema_version row 25 after migration', () => {
+        setupAtV24(db);
+        runMigration(db, 25);
+        const row = db.prepare(`SELECT version FROM schema_version WHERE version = 25`).get() as
+          | { version: number }
+          | undefined;
+        expect(row?.version).toBe(25);
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        setupAtV24(db);
+        runMigration(db, 25);
+        expect(() => runMigration(db, 25)).not.toThrow();
+      });
+
+      it('is safe when artifacts already exist (fresh-install v25 replay)', () => {
+        createSchema(db);
+        expect(tableExists(db, 'canopy_entries')).toBe(true);
+        expect(() => runMigration(db, 25)).not.toThrow();
       });
     });
   });

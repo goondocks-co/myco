@@ -21,6 +21,7 @@ import {
   DIGEST_EXTRACT_REVISIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
+  CANOPY_ENTRIES_TABLE,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -60,6 +61,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 22, migrate: (db) => migrateV21ToV22(db) },
   { version: 23, migrate: (db) => migrateV22ToV23(db) },
   { version: 24, migrate: (db) => migrateV23ToV24(db) },
+  { version: 25, migrate: (db) => migrateV24ToV25(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1357,6 +1359,58 @@ function migrateV23ToV24(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(24, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 25 lands the Canopy code-intelligence layer:
+ *   - new `canopy_entries` table (project-scoped source file index)
+ *   - `activities.canopy_injection_tokens` — per-Read injection cost, NULL otherwise
+ *   - six aggregate columns on `sessions` for per-session injection outcomes
+ *   - two indexes on canopy_entries (content_hash lookup, mechanical_updated_at scan)
+ *
+ * All new columns on existing tables are nullable; pre-feature rows stay NULL.
+ */
+function migrateV24ToV25(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(CANOPY_ENTRIES_TABLE).run();
+
+    if (tableExists(db, 'sessions')) {
+      const sessionCols = getTableColumnSet(db, 'sessions');
+      const sessionAdds: Array<[string, string]> = [
+        ['canopy_injections_offered', 'ALTER TABLE sessions ADD COLUMN canopy_injections_offered INTEGER'],
+        ['canopy_injection_total_tokens', 'ALTER TABLE sessions ADD COLUMN canopy_injection_total_tokens INTEGER'],
+        ['canopy_skips_after_injection', 'ALTER TABLE sessions ADD COLUMN canopy_skips_after_injection INTEGER'],
+        ['canopy_reads_after_injection', 'ALTER TABLE sessions ADD COLUMN canopy_reads_after_injection INTEGER'],
+        ['canopy_tokens_saved', 'ALTER TABLE sessions ADD COLUMN canopy_tokens_saved INTEGER'],
+        ['canopy_redundant_reads', 'ALTER TABLE sessions ADD COLUMN canopy_redundant_reads INTEGER'],
+      ];
+      for (const [col, stmt] of sessionAdds) {
+        if (!sessionCols.has(col)) db.prepare(stmt).run();
+      }
+    }
+
+    if (tableExists(db, 'activities')) {
+      const activitiesCols = getTableColumnSet(db, 'activities');
+      if (!activitiesCols.has('canopy_injection_tokens')) {
+        db.prepare('ALTER TABLE activities ADD COLUMN canopy_injection_tokens INTEGER').run();
+      }
+    }
+
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)').run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(25, epochSeconds());
 
     db.prepare('COMMIT').run();
   } catch (err) {
