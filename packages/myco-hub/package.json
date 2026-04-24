@@ -1,0 +1,47 @@
+{
+  "name": "@goondocks/myco-hub",
+  "version": "0.1.0",
+  "description": "Local Myco daemon hub and reverse proxy",
+  "type": "module",
+  "bin": {
+    "myco-hub": "dist/main.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/goondocks-co/myco/tree/main/packages/myco-hub",
+  "bugs": {
+    "url": "https://github.com/goondocks-co/myco/issues"
+  },
+  "keywords": [
+    "myco",
+    "daemon",
+    "hub",
+    "local",
+    "proxy"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git",
+    "directory": "packages/myco-hub"
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc --noEmit",
+    "test": "echo 'myco-hub tests run from repo root'"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.3"
+  }
+}

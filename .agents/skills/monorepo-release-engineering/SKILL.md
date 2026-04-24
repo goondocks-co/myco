@@ -209,16 +209,16 @@ iteration fast.
 ### 2.4 — Nested non-workspace packages
 
 For packages that exist within the monorepo but are NOT part of the workspace
-(e.g., Cloudflare Workers in `/workers/*`), configure separate CI triggers:
+(e.g., Cloudflare Workers co-located within package directories at `packages/myco-team/worker` and `packages/myco-collective/worker`), configure separate CI triggers:
 
 ```yaml
-# For workers/collective-worker
+# For packages/myco-collective/worker
 on:
   push:
     tags:
       - 'worker-collective/v*'
     paths:
-      - 'workers/collective-worker/**'
+      - 'packages/myco-collective/worker/**'
 ```
 
 These packages maintain independent `package.json` files but don't participate
@@ -227,9 +227,9 @@ own directory during CI:
 
 ```yaml
 - run: npm ci
-  working-directory: workers/collective-worker
+  working-directory: packages/myco-collective/worker
 - run: npm run deploy
-  working-directory: workers/collective-worker
+  working-directory: packages/myco-collective/worker
 ```
 
 ## Procedure 3: Harden Tests Against Version Drift
@@ -243,7 +243,7 @@ Tests that hardcode version strings fail silently when a package is released
 with an updated version:
 
 ```typescript
-// ❌ BAD — breaks on every release sync
+// ❌ BAD — breaks on every release
 expect(output).toContain('myco-collective v0.1.0');
 ```
 
@@ -407,7 +407,7 @@ sequentially, not in parallel.
 
 ### 5.5 — Quality gate integration for nested workers
 
-When the worktree contains nested workers (e.g., `/workers/collective-worker`),
+When the worktree contains nested workers (e.g., `packages/myco-collective/worker`, `packages/myco-team/worker`),
 extend the quality gate to validate worker-specific concerns:
 
 ```bash
@@ -472,7 +472,7 @@ Running certain npm commands from the monorepo root can mutate the lockfiles
 in nested packages, even when those packages are not part of the root workspace:
 
 ```bash
-# From repo root - can mutate workers/*/package-lock.json
+# From repo root - can mutate packages/*/worker/package-lock.json
 npm install some-package
 npm audit fix
 npm update
@@ -488,12 +488,12 @@ Always operate within the package directory for non-workspace packages:
 
 ```bash
 # ❌ BAD — from repo root
-npm install --prefix workers/collective-worker some-package
+npm install --prefix packages/myco-collective/worker some-package
 
 # ✅ GOOD — within the package directory  
-cd workers/collective-worker
+cd packages/myco-collective/worker
 npm install some-package
-cd ../..
+cd ../../..
 ```
 
 For workspace packages, root operations are safe and preferred:
@@ -511,8 +511,8 @@ After any root npm operation, check for unintended mutations:
 # Check for any lockfile changes
 git status | grep package-lock.json
 
-# If workers/ lockfiles changed, reset them:
-git checkout -- workers/*/package-lock.json
+# If nested worker lockfiles changed, reset them:
+git checkout -- packages/*/worker/package-lock.json
 ```
 
 Only commit lockfile changes for the specific package you intended to modify.
@@ -563,12 +563,12 @@ updates:
   
   # Explicit nested package monitoring
   - package-ecosystem: "npm"
-    directory: "/workers/collective-worker"
+    directory: "/packages/myco-collective/worker"
     schedule:
       interval: "weekly"
   
   - package-ecosystem: "npm"  
-    directory: "/ui-next"
+    directory: "/packages/myco-team/worker"
     schedule:
       interval: "weekly"
 ```
@@ -589,8 +589,8 @@ npm audit fix --workspace=packages/myco-team
 npm audit fix --workspace=packages/myco-collective
 
 # For nested non-workspace packages
-cd workers/collective-worker && npm audit fix && cd ../..
-cd ui-next && npm audit fix && cd ../..
+cd packages/myco-collective/worker && npm audit fix && cd ../../..
+cd packages/myco-team/worker && npm audit fix && cd ../../..
 ```
 
 Always run the full test suite after any `npm audit fix`:

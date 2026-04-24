@@ -6,6 +6,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 import { RELEASE_CHANNELS } from '../../lib/constants';
+import { withBasePath } from '../../lib/base-path';
 import {
   useUpdateStatus,
   useUpdateCheck,
@@ -66,7 +67,7 @@ export function UpdateCard() {
     const poll = async () => {
       if (cancelled || Date.now() > deadline) return;
       try {
-        const res = await fetch('/health');
+        const res = await fetch(withBasePath('/health'));
         if (res.ok) {
           window.location.reload();
           return;
@@ -101,7 +102,7 @@ export function UpdateCard() {
             return;
           }
           try {
-            const res = await fetch('/health');
+            const res = await fetch(withBasePath('/health'));
             if (res.ok) { resolve(); return; }
           } catch { /* daemon still down — keep polling */ }
           setTimeout(check, HEALTH_POLL_INTERVAL_MS);

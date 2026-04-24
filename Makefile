@@ -41,7 +41,7 @@ watch:
 	npm run build:watch
 
 clean:
-	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist
+	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist
 
 install:
 	npm install
@@ -101,9 +101,10 @@ process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 
 'windows-x64')")
 
 dev-link:
-	@# myco-team and myco-collective stay on tsup/Node — no changes here.
+	@# myco-team, myco-collective, and myco-hub stay on tsup/Node.
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
+	npm run build -w @goondocks/myco-hub
 	@# myco is now a Bun-compiled binary. Steps in order:
 	@#   1. codegen (hook-config.generated.ts from manifests)
 	@#   2. build libsqlite3 for the host target (cached after first run)
@@ -122,6 +123,8 @@ dev-link:
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
 	@ln -sf $(PWD)/packages/myco-collective/dist/main.js $(HOME)/.local/bin/myco-collective-dev
 	@chmod +x $(HOME)/.local/bin/myco-collective-dev
+	@ln -sf $(PWD)/packages/myco-hub/dist/main.js $(HOME)/.local/bin/myco-hub-dev
+	@chmod +x $(HOME)/.local/bin/myco-hub-dev
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
 	@mkdir -p .myco
@@ -134,6 +137,7 @@ dev-link:
 	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
+	@echo "✓ myco-hub-dev symlinked to $(PWD)/packages/myco-hub/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ .myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
 	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
@@ -152,11 +156,13 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@rm -f $(HOME)/.local/bin/myco-team-dev
 	@rm -f $(HOME)/.local/bin/myco-collective-dev
+	@rm -f $(HOME)/.local/bin/myco-hub-dev
 	@rm -f $(HOME)/.local/bin/myco-run
 	@rm -f .myco/runtime.command
 	@echo "✓ myco-dev symlink removed"
 	@echo "✓ myco-team-dev symlink removed"
 	@echo "✓ myco-collective-dev symlink removed"
+	@echo "✓ myco-hub-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ .myco/runtime.command removed — hook guard falls back to default 'myco'"
 	@# Regenerate symbiont configs using prod myco so any

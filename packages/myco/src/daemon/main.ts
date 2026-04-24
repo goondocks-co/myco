@@ -155,6 +155,7 @@ import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
+import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -1047,6 +1048,22 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  const hubMetadata = buildHubProjectMetadata({
+    projectRoot,
+    vaultDir,
+    machineId,
+    port: server.port,
+    version: server.version,
+  });
+  server.registerRoute('GET', '/api/hub/project', async () => ({ body: hubMetadata }));
+  registerWithHub(hubMetadata)
+    .then((registered) => {
+      if (registered) {
+        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port });
+      }
+    })
+    .catch(() => {});
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
