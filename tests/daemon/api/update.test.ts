@@ -598,17 +598,44 @@ describe('handleUpdateStatus — restart_required', () => {
     expect(spawnRestartScript).not.toHaveBeenCalled();
   });
 
-  // Project-scope runtimes (beta pins under `.myco/runtime/`, dogfood) are
-  // deliberately isolated from the machine-wide myco. Their binary isn't
-  // updated by a global `npm install -g`, so respawning via runtime.command
-  // would re-exec the same local binary and loop. The short-circuit must
-  // skip them; updates flow through handleUpdateApply's install path.
-  it('does not trigger auto-restart when runtime_scope is project-local', async () => {
+  // Any runtime.command pin isolates the daemon from the global install.
+  // The short-circuit must skip whenever a pin is set, regardless of where
+  // the pin points. Two representative cases:
+  //
+  //   1. Pin under `.myco/runtime/` — beta-channel project-local install.
+  //   2. Pin outside `.myco/runtime/` — dogfood `~/.local/bin/myco-dev`
+  //      symlinked to a locally-built repo binary.
+  //
+  // Before this fix, only case 1 was gated (via the `runtimeScope`
+  // label), leaving dogfood daemons in a restart loop whenever the
+  // globally-installed version outran the pinned binary.
+  it('does not trigger auto-restart when runtime.command pins a project-local beta runtime', async () => {
     vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
     vi.mocked(resolveRuntimeCommand).mockReturnValue(
       '/vault/runtime/node_modules/.bin/myco',
     );
     vi.mocked(isManagedProjectRuntime).mockReturnValue(true);
+    const scheduleShutdown = vi.fn();
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
+    );
+
+    const result = await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).not.toHaveBeenCalled();
+    expect(scheduleShutdown).not.toHaveBeenCalled();
+    expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+    expect(result.body).toMatchObject({ exempt: false });
+  });
+
+  it('does not trigger auto-restart when runtime.command pins a dogfood binary outside .myco/runtime/', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    // Dogfood layout: ~/.local/bin/myco-dev symlinked to the repo's built
+    // vendor binary. `isManagedProjectRuntime` returns false (not under
+    // `.myco/runtime/node_modules/`), but the daemon is still pinned —
+    // restart would respawn the same binary and loop.
+    vi.mocked(resolveRuntimeCommand).mockReturnValue('/Users/x/.local/bin/myco-dev');
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
     const scheduleShutdown = vi.fn();
     const { handleUpdateStatus } = createUpdateHandlers(
       makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),

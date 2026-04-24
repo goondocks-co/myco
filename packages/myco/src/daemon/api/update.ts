@@ -115,11 +115,17 @@ export function createUpdateHandlers(deps: UpdateDeps) {
     const snapshot = readVaultSnapshot();
 
     // --- Installed-version check (short-circuits before registry) ---
-    // Only machine-scope projects track the global install. Project-scope
-    // runtimes (beta pins under `.myco/runtime/`, dogfood) aren't updated by
-    // `npm install -g`, so respawning via runtime.command would re-exec the
-    // same local binary and loop. Those updates flow through handleUpdateApply.
-    if (globalPrefix && !restartInitiated && snapshot.runtimeScope === 'machine') {
+    // Only run this when there is NO `runtime.command` pin at all. A pin
+    // means the daemon is locked to a specific binary (beta runtimes under
+    // `.myco/runtime/`, dogfood symlinks like ~/.local/bin/myco-dev, any
+    // other user-set pin). `npm install -g` never touches those binaries,
+    // so respawning via the pin re-execs the same binary and loops. This
+    // gate is on `runtimeCommand === null` rather than the older
+    // `runtimeScope === 'machine'` check because the scope label lumped
+    // "no pin" and "pin outside .myco/runtime/" together — the latter still
+    // has the loop problem. Pinned-runtime updates flow through
+    // handleUpdateApply's install path.
+    if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null) {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
         installedVersion &&
