@@ -32,5 +32,5 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
-  "version": "0.22.2"
+  "version": "0.22.3"
 }
