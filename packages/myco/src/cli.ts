@@ -32,7 +32,7 @@ Commands:
   version                  Show plugin version
   mcp                     Start the MCP stdio server
   hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact)
-  daemon --vault <dir>    Start the daemon process
+  daemon                   Start the daemon for the current project
 `;
 
 async function main(): Promise<void> {

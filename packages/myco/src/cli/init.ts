@@ -13,7 +13,6 @@ import { DEFAULT_OLLAMA_EMBEDDING_MODEL } from '../constants.js';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
@@ -28,7 +27,6 @@ function printBanner(): void {
 }
 
 export async function run(args: string[]): Promise<void> {
-  const vaultPath = parseStringFlag(args, '--vault');
   const nonInteractive = args.includes('--non-interactive');
   const isInteractive = !nonInteractive && !!process.stdin.isTTY;
 
@@ -37,10 +35,10 @@ export async function run(args: string[]): Promise<void> {
     printBanner();
   }
 
-  // Resolve vault directory
-  const vaultDir = vaultPath
-    ? (vaultPath.startsWith('~/') ? path.join(os.homedir(), vaultPath.slice(2)) : path.resolve(vaultPath))
-    : path.join(resolveVaultDir());
+  // Vaults are always project-local at `<projectRoot>/.myco/`. There is no
+  // escape hatch — resolveVaultDir walks up from cwd (worktree-aware) to
+  // find the right project root.
+  const vaultDir = resolveVaultDir();
 
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 

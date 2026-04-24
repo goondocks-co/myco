@@ -1,10 +1,10 @@
 /**
  * Unit tests for daemon eviction.
  *
- * The pure helpers (`parseLsofOutput`, `matchesMycoDaemonInvocation`) are
- * tested directly. The orchestration (`evictDaemonsForVault`) is exercised
- * via the exported `findDaemonTargetsForVault` using in-process state:
- * a real live PID (the test process itself) stands in for "alive daemon,"
+ * The pure helpers (`parseLsofOutput`, `findVaultFromCwd`) are tested
+ * directly. The orchestration (`evictDaemonsForVault`) is exercised via
+ * the exported `findDaemonTargetsForVault` using in-process state: a
+ * real live PID (the test process itself) stands in for "alive daemon,"
  * a guaranteed-dead PID stands in for "stale daemon.json entry."
  */
 
@@ -16,7 +16,7 @@ import net from 'node:net';
 
 import {
   parseLsofOutput,
-  matchesMycoDaemonInvocation,
+  findVaultFromCwd,
   findDaemonTargetsForVault,
   findPidsListeningOn,
   terminateProcess,
@@ -67,50 +67,43 @@ describe('parseLsofOutput()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// matchesMycoDaemonInvocation
+// findVaultFromCwd
 // ---------------------------------------------------------------------------
 
-describe('matchesMycoDaemonInvocation()', () => {
-  const vault = '/Users/chris/Repos/myco/.myco';
+describe('findVaultFromCwd()', () => {
+  let tmpRoot: string;
 
-  it('matches the vendor Bun binary invocation', () => {
-    const args = `/Users/chris/Repos/myco/packages/myco/vendor/darwin-arm64/myco daemon --vault ${vault}`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(true);
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-evict-cwd-'));
   });
 
-  it('matches node invoking the CLI entry', () => {
-    const args = `node /path/to/myco/dist/src/cli.js daemon --vault ${vault}`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(true);
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('matches --vault=<path> syntax', () => {
-    const args = `/bin/myco daemon --vault=${vault}`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(true);
+  it('returns null when no .myco/ exists in any ancestor', () => {
+    const nested = path.join(tmpRoot, 'a', 'b');
+    fs.mkdirSync(nested, { recursive: true });
+    expect(findVaultFromCwd(nested)).toBeNull();
   });
 
-  it('returns false when args lack the myco word', () => {
-    const args = `node server.js daemon --vault ${vault}`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(false);
+  it('returns the .myco/ path when cwd is the project root', () => {
+    const vault = path.join(tmpRoot, '.myco');
+    fs.mkdirSync(vault);
+    expect(findVaultFromCwd(tmpRoot)).toBe(vault);
   });
 
-  it('returns false when args lack the daemon subcommand', () => {
-    const args = `/bin/myco status --vault ${vault}`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(false);
+  it('walks up to find the enclosing .myco/ from a subdirectory', () => {
+    const vault = path.join(tmpRoot, '.myco');
+    fs.mkdirSync(vault);
+    const nested = path.join(tmpRoot, 'src', 'deep', 'path');
+    fs.mkdirSync(nested, { recursive: true });
+    expect(findVaultFromCwd(nested)).toBe(vault);
   });
 
-  it('returns false for a different vault', () => {
-    const args = `/bin/myco daemon --vault /other/project/.myco`;
-    expect(matchesMycoDaemonInvocation(args, vault)).toBe(false);
-  });
-
-  it('resolves relative vault paths for comparison', () => {
-    const args = `/bin/myco daemon --vault ${vault}`;
-    // Passing a path with a trailing slash still matches.
-    expect(matchesMycoDaemonInvocation(args, `${vault}/`)).toBe(true);
-  });
-
-  it('returns false on empty args', () => {
-    expect(matchesMycoDaemonInvocation('', vault)).toBe(false);
+  it('returns null when .myco exists only as a file (not a dir)', () => {
+    fs.writeFileSync(path.join(tmpRoot, '.myco'), 'not a directory');
+    expect(findVaultFromCwd(tmpRoot)).toBeNull();
   });
 });
 
