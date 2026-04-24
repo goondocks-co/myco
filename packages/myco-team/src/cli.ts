@@ -250,7 +250,7 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
   throw lastError ?? new Error('MCP token rotation failed');
 }
 
-async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<void> {
+export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<void> {
   const config = workerUrlOverride ? null : requireLocalConfig(vaultDir);
   const secrets = readSecrets(vaultDir);
   const apiKey = secrets[TEAM_API_KEY_SECRET];
