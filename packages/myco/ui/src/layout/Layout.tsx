@@ -23,11 +23,13 @@ import {
   Sparkles,
   Bell,
   Brain,
+  Waypoints,
 } from 'lucide-react';
 import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
-import { Button } from '../components/ui/button';
+import { useHubStatus } from '../hooks/use-hub-status';
+import { Button, buttonVariants } from '../components/ui/button';
 import { GlobalSearch } from '../components/search/GlobalSearch';
 import { NotificationBanner } from '../components/notifications/NotificationBanner';
 import { NotificationPanel } from '../components/notifications/NotificationPanel';
@@ -35,6 +37,7 @@ import { SystemNotifications } from '../components/notifications/SystemNotificat
 import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
 import { AppearanceSection } from './AppearanceSection';
+import { DEFAULT_HUB_URL } from '@myco/constants/hub';
 
 /* ---------- Constants ---------- */
 
@@ -139,6 +142,56 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
       <RotateCcw className={cn('h-4 w-4', isRestarting && 'animate-spin')} />
       {!collapsed && <span>{isRestarting ? 'Restarting...' : 'Restart Daemon'}</span>}
     </Button>
+  );
+}
+
+function HubLinkButton({ collapsed = false }: { collapsed?: boolean }) {
+  const { data, isFetching, isError } = useHubStatus();
+  const url = data?.url ?? DEFAULT_HUB_URL;
+  const running = data?.running === true;
+  const unavailableTitle = isFetching && !data
+    ? `Checking Myco Hub at ${url}`
+    : `Myco Hub is not connected at ${url}`;
+  const title = running ? `Open Myco Hub at ${url}` : unavailableTitle;
+  const iconClassName = cn('h-4 w-4 shrink-0', isFetching && !running && 'animate-pulse');
+  const controlClassName = cn(
+    'text-on-surface-variant hover:text-on-surface',
+    collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
+  );
+
+  if (running) {
+    return (
+      <a
+        href={url}
+        target="_top"
+        title={title}
+        className={cn(
+          buttonVariants({ variant: 'ghost', size: 'sm' }),
+          controlClassName,
+        )}
+      >
+        <Waypoints className={iconClassName} />
+        {!collapsed && <span>Open Hub</span>}
+      </a>
+    );
+  }
+
+  return (
+    <span
+      title={title}
+      className={cn(collapsed ? 'inline-flex' : 'block w-full')}
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled
+        aria-label={isError ? 'Myco Hub status unavailable' : 'Myco Hub offline'}
+        className={controlClassName}
+      >
+        <Waypoints className={iconClassName} />
+        {!collapsed && <span>{isFetching && !data ? 'Checking Hub' : 'Hub Offline'}</span>}
+      </Button>
+    </span>
   );
 }
 
@@ -286,6 +339,7 @@ function SidebarContent({
       {/* Footer */}
       <div className={cn('py-3 space-y-2 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
         {!collapsed && <AppearanceSection collapsed={collapsed} />}
+        <HubLinkButton collapsed={collapsed} />
         <RestartButton collapsed={collapsed} />
       </div>
 

@@ -24,6 +24,16 @@ describe('myco-hub server routes', () => {
     expect(res.headers.get('location')).toBe('/');
   });
 
+  it('serves a hub-specific SVG favicon', async () => {
+    const res = await fetch(`${serverUrl()}/favicon.svg`);
+    const body = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('image/svg+xml');
+    expect(body).toContain('<svg');
+    expect(body).toContain('#79c6a4');
+  });
+
   it('rejects mutating requests from a non-hub host before routing', async () => {
     const res = await request('/api/projects/missing/start', {
       method: 'POST',

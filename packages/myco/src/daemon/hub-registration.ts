@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readProjectRuntimeCommand } from './hub-runtime.js';
+import { DEFAULT_HUB_URL } from '../constants/hub.js';
 
-const DEFAULT_HUB_URL = 'http://127.0.0.1:21000';
 const HUB_REGISTER_TIMEOUT_MS = 1200;
 
 export interface HubProjectMetadata {
@@ -37,10 +37,13 @@ export function buildHubProjectMetadata(args: {
   };
 }
 
-export async function registerWithHub(metadata: HubProjectMetadata): Promise<boolean> {
-  const hubUrl = (process.env.MYCO_HUB_URL ?? DEFAULT_HUB_URL).replace(/\/+$/, '');
+export async function registerWithHub(
+  metadata: HubProjectMetadata,
+  hubUrl = normalizeHubUrl(process.env.MYCO_HUB_URL ?? DEFAULT_HUB_URL),
+): Promise<boolean> {
+  const normalizedHubUrl = normalizeHubUrl(hubUrl);
   try {
-    const res = await fetch(`${hubUrl}/api/daemon/register`, {
+    const res = await fetch(`${normalizedHubUrl}/api/daemon/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(metadata),
@@ -50,6 +53,10 @@ export async function registerWithHub(metadata: HubProjectMetadata): Promise<boo
   } catch {
     return false;
   }
+}
+
+export function normalizeHubUrl(url: string): string {
+  return url.replace(/\/+$/, '');
 }
 
 function readStartedAt(vaultDir: string): string | null {

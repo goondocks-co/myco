@@ -51,6 +51,7 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
+import { createHubStatusHandler, resolveHubUrl } from './api/hub.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -665,6 +666,7 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
+  server.registerRoute('GET', '/api/hub/status', createHubStatusHandler({ liveConfig }));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
@@ -1057,10 +1059,11 @@ export async function main(): Promise<void> {
     version: server.version,
   });
   server.registerRoute('GET', '/api/hub/project', async () => ({ body: hubMetadata }));
-  registerWithHub(hubMetadata)
+  const hubUrl = resolveHubUrl(liveConfig.current);
+  registerWithHub(hubMetadata, hubUrl)
     .then((registered) => {
       if (registered) {
-        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port });
+        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port, hubUrl });
       }
     })
     .catch(() => {});

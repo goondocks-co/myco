@@ -5,7 +5,7 @@ import { reconcileRunningDaemons } from './discovery.js';
 import { ensureProjectRunning, restartProject, stopProject, withRuntime } from './daemon.js';
 import { proxyProjectRequest } from './proxy.js';
 import { getKnownProject, listKnownProjects, removeKnownProject, upsertProjectRegistration } from './registry.js';
-import { renderHubHtml, renderProjectFrameHtml } from './ui.js';
+import { renderHubFaviconSvg, renderHubHtml, renderProjectFrameHtml } from './ui.js';
 
 export async function serve(): Promise<void> {
   const config = loadConfig();
@@ -42,6 +42,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   if (req.method === 'GET' && url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     res.end(renderHubHtml());
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/favicon.svg') {
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=86400' });
+    res.end(renderHubFaviconSvg());
     return;
   }
 

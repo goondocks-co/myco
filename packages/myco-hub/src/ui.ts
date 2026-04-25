@@ -6,6 +6,7 @@ export function renderHubHtml(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <title>Myco Hub</title>
   <style>
     :root {
@@ -800,6 +801,7 @@ export function renderProjectFrameHtml(project: ProjectRecord, projects: Project
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <title>${name} - Myco Hub</title>
   <style>
     :root {
@@ -931,6 +933,19 @@ export function renderProjectFrameHtml(project: ProjectRecord, projects: Project
   </script>
 </body>
 </html>`;
+}
+
+export function renderHubFaviconSvg(): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#10140f"/>
+  <path d="M20 32h24M32 20v24M22.5 22.5l19 19M41.5 22.5l-19 19" stroke="#2f3a32" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="10" fill="#79c6a4"/>
+  <circle cx="20" cy="20" r="6" fill="#9fc3ee"/>
+  <circle cx="44" cy="20" r="6" fill="#c1c8c2"/>
+  <circle cx="20" cy="44" r="6" fill="#c1c8c2"/>
+  <circle cx="44" cy="44" r="6" fill="#9fc3ee"/>
+  <circle cx="32" cy="32" r="3" fill="#10140f"/>
+</svg>`;
 }
 
 function escapeHtml(value: string): string {

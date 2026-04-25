@@ -85,4 +85,27 @@ describe('daemon hub registration metadata', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('accepts an explicit hub URL from daemon config', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await expect(registerWithHub({
+        name: 'example',
+        projectRoot: '/tmp/example',
+        vaultDir: '/tmp/example/.myco',
+        machineId: 'local_abc',
+        port: 21039,
+        pid: 1234,
+        version: '0.22.3',
+        startedAt: null,
+        runtimeCommand: null,
+      }, 'http://localhost:21999/')).resolves.toBe(true);
+
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('http://localhost:21999/api/daemon/register');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
