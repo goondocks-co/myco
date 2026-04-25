@@ -105,6 +105,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".claude/settings.json",
       "settingsFormat": "json",
       "instructionsFile": "CLAUDE.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": true
     }
   },
   {
@@ -253,7 +256,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "cursor",
@@ -300,7 +304,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".cursor/skills",
       "settingsTarget": ".cursor/settings.json",
       "settingsFormat": "json"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "gemini",
@@ -336,7 +341,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".gemini/settings.json",
       "settingsFormat": "json",
       "instructionsFile": "GEMINI.md"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "opencode",
@@ -372,7 +378,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": "opencode.json",
       "settingsFormat": "json"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "pi",
@@ -404,7 +411,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
       "settingsFormat": "json"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "vscode-copilot",
@@ -436,7 +444,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".vscode/settings.json",
       "settingsFormat": "json",
       "instructionsFile": ".github/copilot-instructions.md"
-    }
+    },
+    "capabilities": {}
   },
   {
     "name": "windsurf",
@@ -468,6 +477,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".windsurf/settings.json",
       "settingsFormat": "json"
-    }
+    },
+    "capabilities": {}
   }
 ] as const;
