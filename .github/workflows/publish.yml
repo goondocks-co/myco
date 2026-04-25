@@ -1,5 +1,6 @@
 name: Release
 
+# Triggered on tag push for any of the per-package tag prefixes.
 on:
   push:
     tags:
