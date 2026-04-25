@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isExcluded } from '@myco/canopy/exclude';
+import { createExcludeMatcher, isExcluded } from '@myco/canopy/exclude';
 import { MycoConfigSchema } from '@myco/config/schema';
 
 // Source the default pattern list from the live schema so this test fails if
@@ -48,5 +48,15 @@ describe('isExcluded (default patterns)', () => {
 
   it('returns false for empty pattern list', () => {
     expect(isExcluded('node_modules/foo.js', [])).toBe(false);
+  });
+});
+
+describe('createExcludeMatcher', () => {
+  it('reuses compiled patterns across calls and matches each shape correctly', () => {
+    const matcher = createExcludeMatcher(DEFAULT_PATTERNS);
+    expect(matcher('node_modules/foo/index.js')).toBe(true);    // segment
+    expect(matcher('packages/a/package-lock.json')).toBe(true); // basename-literal
+    expect(matcher('vendor/foo.lock')).toBe(true);              // basename-glob
+    expect(matcher('src/index.ts')).toBe(false);
   });
 });
