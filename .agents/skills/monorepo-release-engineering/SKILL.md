@@ -1,25 +1,18 @@
 ---
 name: myco:monorepo-release-engineering
 description: |
-  Use this skill when working on Myco's multi-package npm workspace structure,
-  per-package CI release pipelines, or any task touching package publishing,
-  version management, or release tag workflows across all five published
-  packages: `@goondocks/myco`, `@goondocks/myco-team`, `@goondocks/myco-collective`,
-  `@goondocks/myco-hub`, and `@goondocks/myco-shared`.
-  Covers: (1) bootstrapping the monorepo workspace,
-  (2) configuring per-package OIDC publish workflows with tag-prefix triggers,
-  (3) **adding a new publishable package** — the four-place wiring required to
-  avoid silent skips,
-  (4) auditing and hardening test version assertions to avoid silent drift,
-  (5) diagnosing silent tag-publish failures (`[skip ci]`, missing triggers,
-  cascade-skip from transitive needs),
-  (6) **first-time bootstrap for trusted-publishing** — local publish then OIDC,
-  (7) applying the worktree delivery gate safely for multi-package work,
-  (8) managing dependencies with Dependabot batching, and
-  (9) Node binary PATH resolution in Wrangler sub-shell spawns. Apply this
-  skill even if the user doesn't explicitly ask for "monorepo" or "release
-  engineering" — it applies any time you're working with package publishing,
-  CI workflows, or dependency updates.
+  Use this skill for Myco's npm workspace, CI publishing pipelines, or any task
+  touching package release, versioning, or tag workflows across the five
+  published packages (`@goondocks/myco`, `myco-team`, `myco-collective`,
+  `myco-hub`, `myco-shared`). Covers workspace bootstrap, OIDC tag-trigger
+  publishing, adding a new publishable package (the four-place wiring needed
+  to avoid silent skips), test version-string drift, diagnosing silent
+  tag-publish failures (`[skip ci]`, missing triggers, cascade-skip from
+  transitive needs), first-time trusted-publishing bootstrap (local publish
+  then OIDC), worktree delivery gates, Dependabot batching, and Node binary
+  PATH resolution in Wrangler sub-shell spawns. Apply even when the user
+  doesn't explicitly say "monorepo" or "release engineering" — it covers any
+  package publishing, CI workflow, or dependency update work.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
