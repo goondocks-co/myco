@@ -8,7 +8,11 @@
   },
   "files": [
     "dist/",
-    "worker/",
+    "worker/src/",
+    "worker/package.json",
+    "worker/package-lock.json",
+    "worker/tsconfig.json",
+    "worker/wrangler.toml",
     "README.md",
     "LICENSE"
   ],
