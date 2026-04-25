@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { useBatchActivities, type ActivityRow } from '../../hooks/use-sessions';
 import { formatDurationMs as formatDuration } from '../../lib/format';
+import { CanopyToolCallIndicator } from './CanopyToolCallIndicator';
 import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -41,6 +42,7 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
           </span>
         )}
         <span className="shrink-0 ml-auto" />
+        <CanopyToolCallIndicator sessionId={activity.session_id} activity={activity} />
         <span className="shrink-0 font-mono text-xs text-on-surface-variant">
           {formatDuration(activity.duration_ms)}
         </span>

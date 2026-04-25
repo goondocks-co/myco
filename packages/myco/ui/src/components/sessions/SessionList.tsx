@@ -12,6 +12,7 @@ import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
+import { CanopySessionListRollupTile } from './CanopySessionListRollupTile';
 import { cn } from '../../lib/cn';
 import { useMemo, useState } from 'react';
 
@@ -255,6 +256,11 @@ export function SessionList() {
         title="Session Archive"
         subtitle={isLoading ? 'Loading...' : `${total} session${total !== 1 ? 's' : ''} captured`}
       />
+
+      {/* Canopy rollup — hides itself when no data */}
+      <div className="mb-4">
+        <CanopySessionListRollupTile />
+      </div>
 
       {toolbar}
 
