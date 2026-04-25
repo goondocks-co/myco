@@ -7,6 +7,7 @@ import { AppearanceProvider } from './providers/appearance';
 import App from './App';
 import { STALE_TIME } from './lib/constants';
 import './index.css';
+import { getBasePath } from './lib/base-path';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: STALE_TIME } },
@@ -17,7 +18,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <PowerProvider>
       <QueryClientProvider client={queryClient}>
         <AppearanceProvider>
-          <BrowserRouter>
+          <BrowserRouter basename={getBasePath() || undefined}>
             <App />
           </BrowserRouter>
         </AppearanceProvider>

@@ -480,6 +480,7 @@ function buildInstalledPackageVersions(
     myco: currentVersion,
     'myco-team': null,
     'myco-collective': null,
+    'myco-hub': null,
   };
 
   if (globalPrefix === null) return installed;

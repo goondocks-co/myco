@@ -36,7 +36,6 @@ operational pitfalls that will silently break releases if you don't know them.
 ## Prerequisites
 
 - Node 22 (bundled npm 10.x — supports OIDC natively, no upgrade needed)
-- GitHub Actions with npm OIDC publishing configured (`provenance` + `id-token: write`)
 - Each package has its own `package.json` with a unique `name` field
 - Root `package.json` defines the `workspaces` array
 - You are working on a feature branch, not directly on `main`
@@ -104,7 +103,7 @@ symlink, not via built artifacts.
 
 ## Procedure 2: Configure Per-Package CI Release Pipelines
 
-**When:** Setting up or modifying GitHub Actions publish workflows for any package.
+**When:** Setting up or modifying CI publish workflows for any package.
 
 ### 2.1 — Tag-prefix trigger convention
 
@@ -116,66 +115,22 @@ Each package uses a distinct tag prefix to trigger its own publish workflow:
 | `packages/myco-team` | `myco-team/vX.Y.Z` | `myco-team/v0.3.0` |
 | `packages/myco-collective` | `collective/vX.Y.Z` | `collective/v0.1.0` |
 
-Workflow trigger:
+### 2.2 — Current state: Manual publishing
 
-```yaml
-on:
-  push:
-    tags:
-      - 'collective/v*'
-```
+**Currently:** Myco releases are published manually using npm CLI. Automated GitHub Actions publish workflows are planned but not yet implemented.
 
-### 2.2 — OIDC publish workflow
+Node 22's bundled npm 10.x supports OIDC natively. **Never run `npm install -g npm@latest` in CI** — it replaces npm's own dependencies and corrupts them, silently breaking the OIDC publish step with a cryptic auth error.
 
-Node 22's bundled npm 10.x supports OIDC natively. **Never run
-`npm install -g npm@latest` in CI** — it replaces npm's own dependencies and
-corrupts them, silently breaking the OIDC publish step with a cryptic auth error.
+When automated publishing is implemented, ensure:
+- `permissions: { id-token: write }` for OIDC provenance
+- `npm publish --provenance --access public` for secure publishing
+- No global npm upgrades that corrupt OIDC dependencies
 
-```yaml
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write   # Required for OIDC provenance
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-      # Do NOT add: run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm publish --provenance --access public
-        working-directory: packages/myco-collective
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-```
+### 2.3 — Manual tagging and publishing
 
-### 2.3 — Tagging for release
+**The tag is authoritative.** Current manual release process:
 
-**The tag is authoritative — the workflow handles the `package.json` write-back.**
-Two separate workflows fire on every tag push (stable AND prerelease):
-
-- **`publish.yml`** runs `scripts/sync-package-versions.mjs` in-process with
-  `VERSION=$tag_version` before `npm publish`, so the published tarball
-  always carries the tag version regardless of main-branch `package.json`.
-- **`sync-package-versions.yml`** runs the same script on checked-out main,
-  writes the tag version into all relevant `package.json` files, and
-  commits as `github-actions[bot]` with `[skip ci]`.
-
-Two valid cut patterns:
-
-**Tag-only (default — prefer for betas):**
-```bash
-# No package.json edits — the bot handles it.
-git tag myco/v0.22.0-beta.5
-git push origin myco/v0.22.0-beta.5
-```
-After the workflows complete, main carries a `chore(release): sync workspace
-package versions [skip ci]` commit from the bot reconciling `package.json`.
-
-**Manual bump (prefer only for the promotion to stable):**
+**Manual bump and publish:**
 ```bash
 # Edit package.json + packages/myco/package.json + packages/myco/ui/package.json
 # (Hand-edit the "version" field from 0.21.2 → 0.22.0, etc.)
@@ -185,10 +140,24 @@ git commit -m "chore(release): bump to v0.22.0"
 git push origin main
 git tag myco/v0.22.0
 git push origin myco/v0.22.0
+
+# Manual publish to npm
+cd packages/myco
+npm publish --access public
+cd ../..
 ```
-The bot's sync commit is then a no-op and is suppressed. Only worth the
-extra steps for stable promotions; betas should stay tag-only to keep
-iteration fast.
+
+**Tag-only (prefer for betas):**
+```bash
+# No package.json edits — handle manually or via automation
+git tag myco/v0.22.0-beta.5
+git push origin myco/v0.22.0-beta.5
+
+# Manual publish to npm
+cd packages/myco
+npm publish --tag beta --access public
+cd ../..
+```
 
 > **Commit message:** use a semantic form that describes what the commit
 > actually does (e.g., `chore(release): bump to v0.22.0`), not a terse
@@ -196,41 +165,14 @@ iteration fast.
 > release-bump commits should read as change descriptions — the git log
 > needs to be legible without side context about the release cadence.
 
-> **Critical:** Before tagging, verify the target commit does not carry a
-> `[skip ci]` message — see Procedure 4. A tag on a `[skip ci]` commit is
-> silently never published.
-
-> **Critical:** Do NOT re-bump `package.json` when using the tag-only
-> pattern. The bot needs a real diff to commit; if you bump manually but
-> forget to push the commit before tagging, the tagged SHA will carry a
-> stale version until a later commit rewrites it — confusing for anyone
-> reading the tag.
-
 ### 2.4 — Nested non-workspace packages
 
 For packages that exist within the monorepo but are NOT part of the workspace
-(e.g., Cloudflare Workers in `/workers/*`), configure separate CI triggers:
-
-```yaml
-# For workers/collective-worker
-on:
-  push:
-    tags:
-      - 'worker-collective/v*'
-    paths:
-      - 'workers/collective-worker/**'
-```
+(e.g., Cloudflare Workers co-located within package directories at `packages/myco-team/worker` and `packages/myco-collective/worker`), configure separate CI triggers:
 
 These packages maintain independent `package.json` files but don't participate
 in the root workspace linking. They require explicit `npm install` in their
-own directory during CI:
-
-```yaml
-- run: npm ci
-  working-directory: workers/collective-worker
-- run: npm run deploy
-  working-directory: workers/collective-worker
-```
+own directory during CI.
 
 ## Procedure 3: Harden Tests Against Version Drift
 
@@ -243,7 +185,7 @@ Tests that hardcode version strings fail silently when a package is released
 with an updated version:
 
 ```typescript
-// ❌ BAD — breaks on every release sync
+// ❌ BAD — breaks on every release
 expect(output).toContain('myco-collective v0.1.0');
 ```
 
@@ -280,73 +222,76 @@ grep -n "v0\." tests/cli/collective-*.test.ts
 Update any hardcoded version assertions to the dynamic `require()` pattern
 before pushing the release tag.
 
-## Procedure 4: Diagnose Silent Tag-Publish Failures
+## Procedure 4: Diagnose Manual Publish Issues
 
-**When:** A release tag was pushed but the package did not appear on npm, and
-no error was reported.
+**When:** A release was attempted but the package did not appear on npm as expected.
 
-### 4.1 — Symptom
+### 4.1 — Common failure modes
 
+**Authentication issues:**
+```bash
+# Verify npm auth status
+npm whoami
+
+# Re-authenticate if needed
+npm login
 ```
-Tag: collective/v0.1.1     ✓ (exists in GitHub)
-GitHub Actions run:        ✗ (no workflow triggered)
-npm registry:              ✗ (version never appears)
+
+**Wrong package directory:**
+```bash
+# ❌ Publishing from wrong location
+npm publish  # from repo root
+
+# ✅ Publishing from package directory
+cd packages/myco
+npm publish --access public
 ```
 
-No workflow failure — no workflow run at all. The tag is visible in the GitHub
-UI but nothing happened.
+**Version conflicts:**
+```bash
+# Check if version already exists
+npm view @goondocks/myco versions --json
 
-### 4.2 — Root cause: `[skip ci]` on the tagged commit
+# If version exists, bump and try again
+npm version patch  # or minor, major
+npm publish --access public
+```
 
-Sync workflows often write back to `main` with a `[skip ci]` commit message to
-prevent infinite CI loops. If you tag a commit that carries `[skip ci]`,
-GitHub **silently skips all workflows** for that tag — including the publish
-workflow. There is no error, no notification, and no indication in the UI beyond
-the absence of a workflow run.
+### 4.2 — Future automated workflow diagnostics
 
-Check the commit message of the tagged commit:
+When GitHub Actions publish workflows are implemented, common issues will include:
+
+**`[skip ci]` on tagged commits:** If you tag a commit that carries `[skip ci]`,
+GitHub will silently skip all workflows for that tag — including the publish
+workflow. Check the commit message of the tagged commit:
 
 ```bash
-git log --oneline collective/v0.1.1 -1
+git log --oneline myco/v0.15.0 -1
 # If output contains [skip ci], that's the problem
 ```
 
-### 4.3 — Workaround: pre-tag commit check
+**Missing workflow triggers:** Ensure workflow files are configured with the correct tag patterns and permissions.
 
-Before tagging, verify the target commit is clean:
+### 4.3 — Pre-publish verification checklist
 
-```bash
-COMMIT_MSG=$(git log -1 --pretty=%B)
-if echo "$COMMIT_MSG" | grep -q '\[skip ci\]'; then
-  echo "ERROR: Cannot tag a [skip ci] commit — publish workflow will be skipped"
-  echo "Create an empty commit or tag a different commit."
-  exit 1
-fi
-```
-
-To fix an already-created tag on a `[skip ci]` commit, delete the tag, create
-an empty commit, and re-tag:
+Before any publish attempt:
 
 ```bash
-git tag -d collective/v0.1.1
-git push origin :refs/tags/collective/v0.1.1
-git commit --allow-empty -m "chore: trigger publish for myco-collective v0.1.1"
-git tag collective/v0.1.1
-git push origin collective/v0.1.1
+# 1. Verify package builds successfully
+npm run build
+
+# 2. Verify tests pass
+npm test
+
+# 3. Check version is unique
+npm view $(npm pkg get name | tr -d '"') versions --json
+
+# 4. Verify package.json is correct
+npm pkg get name version
+
+# 5. Dry run the publish
+npm publish --dry-run --access public
 ```
-
-### 4.4 — Long-term: replace the `[skip ci]` sync strategy
-
-The `[skip ci]` approach is fragile. A more robust long-term fix is to detect
-sync commits by actor rather than by commit message:
-
-```yaml
-# In the publish workflow, skip runs triggered by the sync bot
-if: github.actor != 'github-actions[bot]'
-```
-
-Or use path filters that naturally exclude the files the sync workflow touches.
-Either approach avoids the silent-skip behavior.
 
 ## Procedure 5: Worktree Delivery Gate for Multi-Package Work
 
@@ -407,7 +352,7 @@ sequentially, not in parallel.
 
 ### 5.5 — Quality gate integration for nested workers
 
-When the worktree contains nested workers (e.g., `/workers/collective-worker`),
+When the worktree contains nested workers (e.g., `packages/myco-collective/worker`, `packages/myco-team/worker`),
 extend the quality gate to validate worker-specific concerns:
 
 ```bash
@@ -472,7 +417,7 @@ Running certain npm commands from the monorepo root can mutate the lockfiles
 in nested packages, even when those packages are not part of the root workspace:
 
 ```bash
-# From repo root - can mutate workers/*/package-lock.json
+# From repo root - can mutate packages/*/worker/package-lock.json
 npm install some-package
 npm audit fix
 npm update
@@ -488,12 +433,12 @@ Always operate within the package directory for non-workspace packages:
 
 ```bash
 # ❌ BAD — from repo root
-npm install --prefix workers/collective-worker some-package
+npm install --prefix packages/myco-collective/worker some-package
 
 # ✅ GOOD — within the package directory  
-cd workers/collective-worker
+cd packages/myco-collective/worker
 npm install some-package
-cd ../..
+cd ../../..
 ```
 
 For workspace packages, root operations are safe and preferred:
@@ -511,8 +456,8 @@ After any root npm operation, check for unintended mutations:
 # Check for any lockfile changes
 git status | grep package-lock.json
 
-# If workers/ lockfiles changed, reset them:
-git checkout -- workers/*/package-lock.json
+# If nested worker lockfiles changed, reset them:
+git checkout -- packages/*/worker/package-lock.json
 ```
 
 Only commit lockfile changes for the specific package you intended to modify.
@@ -563,12 +508,12 @@ updates:
   
   # Explicit nested package monitoring
   - package-ecosystem: "npm"
-    directory: "/workers/collective-worker"
+    directory: "/packages/myco-collective/worker"
     schedule:
       interval: "weekly"
   
   - package-ecosystem: "npm"  
-    directory: "/ui-next"
+    directory: "/packages/myco-team/worker"
     schedule:
       interval: "weekly"
 ```
@@ -589,8 +534,8 @@ npm audit fix --workspace=packages/myco-team
 npm audit fix --workspace=packages/myco-collective
 
 # For nested non-workspace packages
-cd workers/collective-worker && npm audit fix && cd ../..
-cd ui-next && npm audit fix && cd ../..
+cd packages/myco-collective/worker && npm audit fix && cd ../../..
+cd packages/myco-team/worker && npm audit fix && cd ../../..
 ```
 
 Always run the full test suite after any `npm audit fix`:
@@ -601,33 +546,7 @@ npm run build --workspaces
 make test-workers  # if workers exist
 ```
 
-### 8.4 — GitHub Action upgrade assessment patterns
-
-GitHub Actions in `.github/workflows/` also require dependency management. Use Dependabot for Actions:
-
-```yaml
-# .github/dependabot.yml (add to existing config)
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-```
-
-When Actions are updated, verify they don't break the monorepo patterns:
-
-```bash
-# Test key workflows locally before merging
-act -j publish-myco        # Test main package publish
-act -j publish-team        # Test team package publish  
-act -j publish-collective  # Test collective package publish
-```
-
-Common Action upgrade impacts:
-- `actions/setup-node` changes can affect workspace resolution
-- `actions/checkout` changes can affect nested package detection
-- Cache action updates can invalidate existing cache keys
-
-### 8.5 — Dependency version alignment across packages
+### 8.4 — Dependency version alignment across packages
 
 Workspace packages should align on shared dependencies to avoid version conflicts:
 
@@ -663,7 +582,7 @@ npm install --save-dev typescript@5.7.2
 |---|---|---|
 | `npm install -g npm@latest` in CI | OIDC publish fails with cryptic auth error | Remove the step; Node 22's bundled npm 10.x supports OIDC natively |
 | Hardcoded version in tests | Tests fail after release sync with no code changes | Use `require('package.json').version` dynamically |
-| `[skip ci]` on tagged commit | Tag exists but package never publishes, no error shown | Check commit message before tagging; use an empty commit if needed |
+| Manual publish from wrong directory | Package not found error during publish | Always `cd` to the package directory before `npm publish` |
 | Bare `node` in spawn calls | `env: node: No such file or directory` in Wrangler | Replace with `process.execPath` |
 | Merging worktree directly to local `main` | Incomplete features land in main, CI bypassed | Always deliver via PR: worktree → feature branch → PR |
 | Tagging before auditing test version strings | Tests fail on the release commit itself | Run version-string grep audit before pushing a release tag |

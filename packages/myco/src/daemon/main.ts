@@ -51,6 +51,7 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
+import { createHubStatusHandler, resolveHubUrl } from './api/hub.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -155,6 +156,7 @@ import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
+import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -664,6 +666,7 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
+  server.registerRoute('GET', '/api/hub/status', createHubStatusHandler({ liveConfig }));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
@@ -1047,6 +1050,23 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
+
+  const hubMetadata = buildHubProjectMetadata({
+    projectRoot,
+    vaultDir,
+    machineId,
+    port: server.port,
+    version: server.version,
+  });
+  server.registerRoute('GET', '/api/hub/project', async () => ({ body: hubMetadata }));
+  const hubUrl = resolveHubUrl(liveConfig.current);
+  registerWithHub(hubMetadata, hubUrl)
+    .then((registered) => {
+      if (registered) {
+        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port, hubUrl });
+      }
+    })
+    .catch(() => {});
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a

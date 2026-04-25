@@ -78,6 +78,8 @@ backup:
 maintenance:
   auto_optimize: true
   auto_optimize_interval_hours: 24
+update:
+  channel: stable
 team:
   enabled: true
   worker_url: https://myco-team-974bc350.goondocks.workers.dev

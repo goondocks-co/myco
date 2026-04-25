@@ -232,16 +232,12 @@ Task maxTurns: sum of phase budgets + ~5 turns overhead
 ```
 
 **Recommended configuration for up to 3 STALE skills:**
-```yaml
-# task level
-maxTurns: 60
-timeoutSeconds: 1800
+Task-level configuration pattern follows the standard phased executor structure with maxTurns and timeoutSeconds at the task level, and per-phase budget allocation within individual phase configurations.
 
-# assess phase
-maxTurns: 20
-
-# evolve phase
-maxTurns: 35
+```
+Task level: maxTurns: 60, timeoutSeconds: 1800
+Assess phase: maxTurns: 20
+Evolve phase: maxTurns: 35
 ```
 
 **Silent failure mode:** If `maxTurns` is too low, the run ends "normally" but stops mid-rewrite with no error message. Always verify that the expected STALE skills were actually updated — check their generation number and `updated_at` after the run.

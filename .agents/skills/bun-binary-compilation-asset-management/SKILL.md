@@ -25,22 +25,20 @@ Myco uses Bun's static compilation to produce standalone binaries with embedded 
 
 ## Template and Asset Bundling Strategies
 
-Myco uses **filesystem-first + bundled-string fallback** pattern for package assets via multiple generated template modules. Static assets like installer templates must be accessible both during development (filesystem reads) and in compiled binaries (bundled strings).
+Myco uses **filesystem-first + bundled-string fallback** pattern for package assets via generated template modules. Static assets like installer templates must be accessible both during development (filesystem reads) and in compiled binaries (bundled strings).
 
-### Four-Generator Template System
+### Two-Generator Template System
 
-Myco evolved from single template bundling to a four-generator system handling different asset types:
+Myco uses a two-generator system handling different asset types:
 
 ```bash
 # Generate all template modules at build time
 cd packages/myco
 npm run codegen
 
-# This runs multiple generators:
-# 1. scripts/gen-templates.mjs → templates.generated.ts (installer templates)
-# 2. scripts/gen-manifests.mjs → manifests.generated.ts (symbiont manifests)  
-# 3. scripts/gen-schemas.mjs → schemas.generated.ts (validation schemas)
-# 4. scripts/gen-assets.mjs → assets.generated.ts (static assets)
+# This runs two generators:
+# 1. scripts/gen-hook-config.ts → hook-config.generated.ts & manifests.generated.ts
+# 2. scripts/gen-templates.mjs → templates.generated.ts
 ```
 
 Each generator walks its respective source directory and embeds files:
@@ -53,11 +51,12 @@ const entries = files.map((abs) => {
   const body = fs.readFileSync(abs, 'utf-8');
   return [rel, body];
 });
+```
 
-// Similar patterns in other generators with different source directories:
-// gen-manifests.mjs → walks src/symbionts/manifests/
-// gen-schemas.mjs → walks src/schemas/
-// gen-assets.mjs → walks src/assets/
+```typescript
+// In scripts/gen-hook-config.ts (hook config and manifests)
+// Generates both hook-config.generated.ts and manifests.generated.ts
+// from src/hooks/ and src/symbionts/manifests/ respectively
 ```
 
 ### Implement the fallback pattern across asset types
@@ -89,13 +88,6 @@ private readManifestFile(relPath: string): ManifestData | null {
   const bundled = BUNDLED_MANIFESTS[key];
   return bundled !== undefined ? bundled : null;
 }
-
-// Similar pattern in schema loader  
-private readSchemaFile(relPath: string): SchemaData | null {
-  // Filesystem first, then BUNDLED_SCHEMAS fallback
-  const bundled = BUNDLED_SCHEMAS[key];
-  return bundled !== undefined ? bundled : null;
-}
 ```
 
 **Critical gotcha**: Each asset loader can return `null` when the filesystem path fails and no bundled fallback exists. Always check for null across all asset types:
@@ -104,7 +96,6 @@ private readSchemaFile(relPath: string): SchemaData | null {
 // BAD: Silent failure across multiple asset types
 const template = installer.readTemplateFile('hook-guard.cjs');
 const manifest = loader.readManifestFile('claude-code.json');
-const schema = validator.readSchemaFile('config.schema.json');
 
 // GOOD: Explicit checks for all asset types
 const template = installer.readTemplateFile('hook-guard.cjs');
@@ -112,21 +103,17 @@ if (!template) throw new Error(`Template not found: hook-guard.cjs`);
 
 const manifest = loader.readManifestFile('claude-code.json');  
 if (!manifest) throw new Error(`Manifest not found: claude-code.json`);
-
-const schema = validator.readSchemaFile('config.schema.json');
-if (!schema) throw new Error(`Schema not found: config.schema.json`);
 ```
 
 ### Design runtime boundary decisions for multi-asset architecture
 
-**Package assets** (bundled via generators): Installer templates, symbiont manifests, validation schemas, UI assets, default configs, static strings  
+**Package assets** (bundled via generators): Installer templates, symbiont manifests, hook configurations, default configs, static strings  
 **User assets** (filesystem): User configs, generated files, session data, vault contents, runtime logs
 
 When adding new static assets, decide the boundary and target generator:
 - **Installer templates** → add to `src/symbionts/templates/` for `gen-templates.mjs`
-- **Symbiont manifests** → add to `src/symbionts/manifests/` for `gen-manifests.mjs` 
-- **Validation schemas** → add to `src/schemas/` for `gen-schemas.mjs`
-- **UI/static assets** → add to `src/assets/` for `gen-assets.mjs`
+- **Symbiont manifests** → add to `src/symbionts/manifests/` for `gen-hook-config.ts` 
+- **Hook configurations** → add to `src/hooks/` for `gen-hook-config.ts`
 - **User-generated or installation-specific** → read from filesystem at runtime
 
 ## Virtual Filesystem Handling
@@ -202,8 +189,7 @@ ls -la $(dirname $(which myco))/
 # Check if assets were bundled properly across all generators
 grep -r "BUNDLED_TEMPLATES" packages/myco/src/symbionts/templates.generated.ts
 grep -r "BUNDLED_MANIFESTS" packages/myco/src/symbionts/manifests.generated.ts  
-grep -r "BUNDLED_SCHEMAS" packages/myco/src/schemas.generated.ts
-grep -r "BUNDLED_ASSETS" packages/myco/src/assets.generated.ts
+grep -r "HOOK_CONFIG" packages/myco/src/hooks/hook-config.generated.ts
 ```
 
 ## Build Artifact Packaging
@@ -489,11 +475,11 @@ grep -r "readFileSync\|createReadStream" packages/myco/src/
 grep -r "existsSync\|statSync" packages/myco/src/
 
 # Focus on asset loading patterns across all asset types
-grep -r "templates\|manifests\|schemas\|assets" packages/myco/src/
+grep -r "templates\|manifests\|hooks" packages/myco/src/
 ```
 
 Categorize each by ownership:
-- **Package-owned**: Templates, manifests, schemas, UI assets, defaults → should be bundled via appropriate generator
+- **Package-owned**: Templates, manifests, hook configs, defaults → should be bundled via appropriate generator
 - **User-owned**: Configs, data, sessions, plans → should stay filesystem
 
 ### Convert package assets to bundled access
@@ -508,11 +494,8 @@ mv src/config/default.template.json src/symbionts/templates/config/default.templ
 # Symbiont manifests
 mv src/manifests/new-agent.json src/symbionts/manifests/new-agent.json
 
-# Validation schemas  
-mv src/validation/config.schema.json src/schemas/config.schema.json
-
-# UI/static assets
-mv src/ui/logo.svg src/assets/ui/logo.svg
+# Hook configurations  
+mv src/hooks/new-hook.ts src/hooks/new-hook.ts
 ```
 
 2. **Regenerate bundled modules**:
@@ -525,7 +508,6 @@ npm run codegen  # Regenerates all *.generated.ts files
 // Before: Direct filesystem reads
 const template = readFileSync('./config/default.template.json', 'utf-8');
 const manifest = readFileSync('./manifests/new-agent.json', 'utf-8');
-const schema = readFileSync('./validation/config.schema.json', 'utf-8');
 
 // After: Use appropriate bundled fallback patterns
 const installer = new SymbiontInstaller(manifest, projectRoot, packageRoot);
@@ -535,10 +517,6 @@ if (!template) throw new Error('Default template not found');
 const manifestLoader = new ManifestLoader(packageRoot);
 const manifest = manifestLoader.readManifestFile('new-agent.json');
 if (!manifest) throw new Error('Manifest not found');
-
-const schemaLoader = new SchemaLoader(packageRoot);
-const schema = schemaLoader.readSchemaFile('config.schema.json');
-if (!schema) throw new Error('Schema not found');
 ```
 
 ### Test both access paths
@@ -557,7 +535,6 @@ npm run build:binary
 # Test missing asset scenario for each asset type (should fail gracefully)
 rm src/symbionts/templates/config/default.template.json
 rm src/symbionts/manifests/new-agent.json
-rm src/schemas/config.schema.json
 npm run codegen
 ./vendor/*/myco --version  # Should show appropriate error for each missing type
 ```
@@ -574,9 +551,8 @@ export function diagnoseBunfsError(filePath: string, error: Error): Error {
       `This usually means the asset was not bundled at build time.\n` +
       `For package assets, add to the appropriate directory and run 'npm run codegen':\n` +
       `  - Templates: src/symbionts/templates/ (gen-templates.mjs)\n` +
-      `  - Manifests: src/symbionts/manifests/ (gen-manifests.mjs)\n` +  
-      `  - Schemas: src/schemas/ (gen-schemas.mjs)\n` +
-      `  - UI Assets: src/assets/ (gen-assets.mjs)\n` +
+      `  - Manifests: src/symbionts/manifests/ (gen-hook-config.ts)\n` +  
+      `  - Hook Config: src/hooks/ (gen-hook-config.ts)\n` +
       `For user assets, ensure the path points to a real filesystem location.`
     );
   }
@@ -600,12 +576,11 @@ Ensure package vs user boundaries are correctly implemented across all asset typ
 # Verify package assets are bundled in all generated files
 grep -c "src/symbionts/templates" packages/myco/src/symbionts/templates.generated.ts
 grep -c "src/symbionts/manifests" packages/myco/src/symbionts/manifests.generated.ts
-grep -c "src/schemas" packages/myco/src/schemas.generated.ts  
-grep -c "src/assets" packages/myco/src/assets.generated.ts
+grep -c "src/hooks" packages/myco/src/hooks/hook-config.generated.ts
 
 # Verify user assets stay on filesystem  
 find .myco/ -name "*.json" -o -name "*.yaml" | head -5
 
 # Check no package assets leak to user directories
-! find .myco/ -name "manifests" -o -name "templates" -o -name "schemas" -o -name "assets"
+! find .myco/ -name "manifests" -o -name "templates" -o -name "hooks"
 ```
