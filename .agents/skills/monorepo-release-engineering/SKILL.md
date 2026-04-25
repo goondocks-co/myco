@@ -3,18 +3,23 @@ name: myco:monorepo-release-engineering
 description: |
   Use this skill when working on Myco's multi-package npm workspace structure,
   per-package CI release pipelines, or any task touching package publishing,
-  version management, or release tag workflows across `packages/myco`,
-  `packages/myco-team`, and `packages/myco-collective`.
-  Covers six procedures: (1) bootstrapping the monorepo workspace,
+  version management, or release tag workflows across all five published
+  packages: `@goondocks/myco`, `@goondocks/myco-team`, `@goondocks/myco-collective`,
+  `@goondocks/myco-hub`, and `@goondocks/myco-shared`.
+  Covers: (1) bootstrapping the monorepo workspace,
   (2) configuring per-package OIDC publish workflows with tag-prefix triggers,
-  (3) auditing and hardening test version assertions to avoid silent drift,
-  (4) diagnosing and fixing silent tag-publish failures caused by `[skip ci]`
-  commit messages, (5) applying the worktree delivery gate safely for
-  multi-package experimental work, and (6) managing dependencies with
-  Dependabot batching workflows. Also covers Node binary PATH resolution in
-  Wrangler sub-shell spawns. Apply this skill even if the user don't explicitly
-  ask for "monorepo" or "release engineering" — it applies any time you're
-  working with package publishing, CI workflows, or dependency updates.
+  (3) **adding a new publishable package** — the four-place wiring required to
+  avoid silent skips,
+  (4) auditing and hardening test version assertions to avoid silent drift,
+  (5) diagnosing silent tag-publish failures (`[skip ci]`, missing triggers,
+  cascade-skip from transitive needs),
+  (6) **first-time bootstrap for trusted-publishing** — local publish then OIDC,
+  (7) applying the worktree delivery gate safely for multi-package work,
+  (8) managing dependencies with Dependabot batching, and
+  (9) Node binary PATH resolution in Wrangler sub-shell spawns. Apply this
+  skill even if the user doesn't explicitly ask for "monorepo" or "release
+  engineering" — it applies any time you're working with package publishing,
+  CI workflows, or dependency updates.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -22,16 +27,25 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Multi-Package Monorepo and Release Engineering
 
-Myco is structured as a three-package npm workspace: `packages/myco` (the core
-CLI/daemon), `packages/myco-team` (team sync), and `packages/myco-collective`
-(org-level knowledge and cross-project features). Each package is independently
-publishable with its own CLI, version, and CI release trigger. The monorepo
-split is **Collective V1 milestone zero** — no cross-package feature work begins
-until the workspace is properly structured.
+Myco is structured as a multi-package npm workspace. Five packages publish to
+npm, each with its own version, CLI, and tag-driven CI release trigger:
 
-This skill covers the full release engineering domain: initial workspace setup,
-per-package publishing pipelines, test hardening against version drift, and the
-operational pitfalls that will silently break releases if you don't know them.
+| Package | Role | GH Release? |
+|---|---|---|
+| `@goondocks/myco` | Core CLI / daemon | yes |
+| `@goondocks/myco-team` | Team-sync Worker + CLI | yes |
+| `@goondocks/myco-collective` | Collective Worker + UI + CLI | yes |
+| `@goondocks/myco-hub` | Local daemon hub + reverse proxy | yes |
+| `@goondocks/myco-shared` | Internal helpers (process/port/JSON) | **no** — internal-only |
+
+`packages/myco-deploy` exists in the workspace but is not published.
+
+This skill covers the full release engineering domain: workspace setup,
+per-package publishing pipelines, **how to add a new publishable package
+without silent skips**, test hardening against version drift, **CI publish
+diagnostics for skipped jobs**, **first-time trusted-publishing bootstrap**,
+and the operational pitfalls that will silently break releases if you don't
+know them.
 
 ## Prerequisites
 
@@ -111,61 +125,139 @@ Each package uses a distinct tag prefix to trigger its own publish workflow:
 
 | Package | Tag format | Example |
 |---|---|---|
-| `packages/myco` | `myco/vX.Y.Z` | `myco/v0.15.0` |
-| `packages/myco-team` | `myco-team/vX.Y.Z` | `myco-team/v0.3.0` |
-| `packages/myco-collective` | `collective/vX.Y.Z` | `collective/v0.1.0` |
+| `@goondocks/myco` | `myco/vX.Y.Z` | `myco/v0.22.3` |
+| `@goondocks/myco-team` | `myco-team/vX.Y.Z` | `myco-team/v0.1.6` |
+| `@goondocks/myco-collective` | `myco-collective/vX.Y.Z` | `myco-collective/v0.1.7` |
+| `@goondocks/myco-hub` | `myco-hub/vX.Y.Z` | `myco-hub/v0.1.0` |
+| `@goondocks/myco-shared` | `myco-shared/vX.Y.Z` | `myco-shared/v0.1.1` |
 
-### 2.2 — Current state: Manual publishing
+### 2.2 — Current state: tag-only releases via GitHub Actions OIDC
 
-**Currently:** Myco releases are published manually using npm CLI. Automated GitHub Actions publish workflows are planned but not yet implemented.
+CI publishing is **live and authoritative**. Two workflows fire on the same
+tag-prefix patterns:
 
-Node 22's bundled npm 10.x supports OIDC natively. **Never run `npm install -g npm@latest` in CI** — it replaces npm's own dependencies and corrupts them, silently breaking the OIDC publish step with a cryptic auth error.
+- `.github/workflows/publish.yml` — builds, packs, optionally creates a GitHub
+  Release, and publishes to npm via OIDC trusted-publishing.
+- `.github/workflows/sync-package-versions.yml` — reads the tag, writes the
+  version into the matching `package.json` files on `main`, and commits with
+  `[skip ci]`.
 
-When automated publishing is implemented, ensure:
-- `permissions: { id-token: write }` for OIDC provenance
-- `npm publish --provenance --access public` for secure publishing
-- No global npm upgrades that corrupt OIDC dependencies
+This means **you never edit `version` fields by hand**. Tag, push, done.
+`scripts/sync-package-versions.mjs` is the source of truth for which package
+gets which version on a given tag prefix.
 
-### 2.3 — Manual tagging and publishing
+Node 22's bundled npm 10.x supports OIDC natively. **Never run
+`npm install -g npm@latest` in CI** — it replaces npm's own dependencies and
+corrupts them, silently breaking the OIDC publish step with a cryptic auth
+error.
 
-**The tag is authoritative.** Current manual release process:
+The publish job uses `--provenance --access public` and runs in a
+`npm-publish` GitHub environment that gates on the tag-prefix allow-list (set
+on the npm package's Trusted Publishers config).
 
-**Manual bump and publish:**
+### 2.3 — Tag-only release procedure
+
+**For a stable release:**
 ```bash
-# Edit package.json + packages/myco/package.json + packages/myco/ui/package.json
-# (Hand-edit the "version" field from 0.21.2 → 0.22.0, etc.)
-npm install --package-lock-only --ignore-scripts   # refresh the lock
-git add package.json packages/myco/package.json packages/myco/ui/package.json package-lock.json
-git commit -m "chore(release): bump to v0.22.0"
-git push origin main
-git tag myco/v0.22.0
-git push origin myco/v0.22.0
+# Make sure main is up to date and tests pass locally
+git checkout main && git pull
+make build  # quality gate
 
-# Manual publish to npm
-cd packages/myco
-npm publish --access public
-cd ../..
+# Tag and push — that's it. sync-package-versions.yml writes the version,
+# publish.yml builds and publishes.
+git tag myco/v0.22.4
+git push origin myco/v0.22.4
 ```
 
-**Tag-only (prefer for betas):**
+**For a prerelease (beta/alpha/rc):**
 ```bash
-# No package.json edits — handle manually or via automation
-git tag myco/v0.22.0-beta.5
-git push origin myco/v0.22.0-beta.5
-
-# Manual publish to npm
-cd packages/myco
-npm publish --tag beta --access public
-cd ../..
+git tag myco/v0.22.4-beta.1
+git push origin myco/v0.22.4-beta.1
+# publish.yml maps -alpha → @alpha, -beta → @beta, -rc → @next on npm.
 ```
 
-> **Commit message:** use a semantic form that describes what the commit
-> actually does (e.g., `chore(release): bump to v0.22.0`), not a terse
-> marker like `Cut 0.22.0`. Historical commits use the terse form; future
-> release-bump commits should read as change descriptions — the git log
-> needs to be legible without side context about the release cadence.
+**Watch the run land:**
+```bash
+gh run list --workflow=publish.yml --limit 1
+gh run watch $(gh run list --workflow=publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+```
 
-### 2.4 — Nested non-workspace packages
+If `Publish to npmjs.org` is **`skipped`**, see Procedure 5 — that's a CI
+diagnostic, not a normal state.
+
+> **Commit message:** for any non-tag commit that touches release infra, use a
+> semantic form (`chore(release): …`, `fix(release): …`). The git log is the
+> primary debugging tool when releases regress.
+
+### 2.4 — Adding a new publishable package (the four-place wiring)
+
+**The single most error-prone moment in this domain.** Missing any one of
+these places makes the workflow silently no-op when the tag is pushed.
+
+When a new package needs CI publishing, you must update **four** files:
+
+1. **`packages/<new-pkg>/package.json`** — must have `"name"`, `"version"`,
+   `"main"`/`"exports"`, `"files"` (whitelisting `dist/` etc.), and either
+   `"publishConfig": { "access": "public" }` or top-level `"private": false`.
+   Internal-only packages: keep `"private": true`.
+
+2. **`.github/workflows/publish.yml`**:
+   - Add to `on.push.tags`:
+     ```yaml
+     - '<prefix>/v*.*.*'
+     - '<prefix>/v*.*.*-*'
+     ```
+   - Add a case branch in the `validate-tag` step:
+     ```bash
+     <prefix>)
+       PACKAGE_NAME="@goondocks/<pkg>"
+       PACKAGE_DIR="packages/<pkg>"
+       TARBALL_PREFIX="goondocks-<pkg>"
+       ;;
+     ```
+   - If the package is **internal** and shouldn't have a GitHub Release,
+     add it to the exclusion in `create-release`'s `if:` clause:
+     ```yaml
+     needs.validate-tag.outputs.tag_prefix != 'myco-shared'
+     ```
+
+3. **`.github/workflows/sync-package-versions.yml`**:
+   - Add the same two `on.push.tags` patterns.
+   - Add `packages/<pkg>/package.json` to the `git add` list in the commit
+     step. (Forgetting this means the version gets written but never committed,
+     so subsequent runs keep re-writing the same change.)
+
+4. **`scripts/sync-package-versions.mjs`** — append a `PACKAGE_TARGETS` entry:
+   ```js
+   {
+     envKey: 'MYCO_<UPPER>_VERSION',
+     tagPrefix: '<prefix>',
+     files: ['packages/<pkg>/package.json'],
+   },
+   ```
+
+5. **npm Trusted Publishers config** (one-time, on npmjs.com after the first
+   publish): add a publisher entry pointing at `goondocks-co/myco`'s
+   `publish.yml` workflow with environment `npm-publish`. See Procedure 6 for
+   the bootstrap sequence.
+
+**Verification before pushing the first tag:**
+```bash
+# Trigger pattern is in the workflow
+grep -n '<prefix>/v' .github/workflows/publish.yml .github/workflows/sync-package-versions.yml
+# Validate-tag has the case branch
+grep -A3 '<prefix>)' .github/workflows/publish.yml
+# Sync script knows about it
+grep '<prefix>' scripts/sync-package-versions.mjs
+# Workspace dependency graph resolves
+npm install
+ls -la node_modules/@goondocks/<pkg>     # symlink → packages/<pkg>
+```
+
+If any of those four are missing, the tag will silently no-op — see
+Procedure 5 for diagnosis.
+
+### 2.5 — Nested non-workspace packages
 
 For packages that exist within the monorepo but are NOT part of the workspace
 (e.g., Cloudflare Workers co-located within package directories at `packages/myco-team/worker` and `packages/myco-collective/worker`), configure separate CI triggers:
@@ -222,76 +314,185 @@ grep -n "v0\." tests/cli/collective-*.test.ts
 Update any hardcoded version assertions to the dynamic `require()` pattern
 before pushing the release tag.
 
-## Procedure 4: Diagnose Manual Publish Issues
+## Procedure 4: Diagnose Silent CI Publish Failures
 
-**When:** A release was attempted but the package did not appear on npm as expected.
+**When:** A tag was pushed, but the package did not land on npm. CI may show
+the workflow as `success` overall — that does **not** mean publish ran.
 
-### 4.1 — Common failure modes
+### 4.1 — The four silent-skip modes
 
-**Authentication issues:**
-```bash
-# Verify npm auth status
-npm whoami
+Each presents the same surface symptom ("nothing on npm after push"):
 
-# Re-authenticate if needed
-npm login
-```
+| Mode | Root cause | Detection |
+|---|---|---|
+| **Tag-trigger missing** | `on.push.tags` doesn't list the new prefix | No workflow run appears at all under `gh run list --workflow=publish.yml` |
+| **Validate-tag rejects** | Case branch missing → `*)` falls through → `exit 1` | One job ran (`Validate Release Tag`), conclusion `failure` |
+| **`[skip ci]` on the tagged commit** | Tag points at a commit whose message contains `[skip ci]` | No run; `git log -1 <tag>` shows the marker |
+| **Cascade-skip from transitive needs** | Downstream job's implicit `success()` evaluation skips because an ancestor was skipped | Run appears, build is `success`, but `Create GitHub Release` and/or `Publish to npmjs.org` are `skipped` |
 
-**Wrong package directory:**
-```bash
-# ❌ Publishing from wrong location
-npm publish  # from repo root
-
-# ✅ Publishing from package directory
-cd packages/myco
-npm publish --access public
-```
-
-**Version conflicts:**
-```bash
-# Check if version already exists
-npm view @goondocks/myco versions --json
-
-# If version exists, bump and try again
-npm version patch  # or minor, major
-npm publish --access public
-```
-
-### 4.2 — Future automated workflow diagnostics
-
-When GitHub Actions publish workflows are implemented, common issues will include:
-
-**`[skip ci]` on tagged commits:** If you tag a commit that carries `[skip ci]`,
-GitHub will silently skip all workflows for that tag — including the publish
-workflow. Check the commit message of the tagged commit:
+### 4.2 — Diagnostic commands
 
 ```bash
-git log --oneline myco/v0.15.0 -1
-# If output contains [skip ci], that's the problem
+# Did the workflow even fire?
+gh run list --workflow=publish.yml --limit 5 --json databaseId,headBranch,conclusion
+
+# What's the per-job status of the run?
+RUN_ID=<from above>
+gh api repos/goondocks-co/myco/actions/runs/$RUN_ID/jobs --jq '.jobs[] | {name, conclusion}'
+
+# Was the tagged commit marked [skip ci]?
+git log -1 --format='%s%n%b' <tag-name>
+
+# What's actually on npm?
+npm view @goondocks/<pkg> versions --json
+npm view @goondocks/<pkg> dist-tags
+
+# Compare to git tags — drift means CI silently skipped at some point
+git tag --list "<prefix>/v*" | tail -5
 ```
 
-**Missing workflow triggers:** Ensure workflow files are configured with the correct tag patterns and permissions.
+### 4.3 — The cascade-skip pattern (most-bitten)
 
-### 4.3 — Pre-publish verification checklist
+GitHub Actions evaluates a job's implicit `success()` against **all transitive
+ancestors**, not just direct `needs:`. When `cross-compile` is gated
+`if: tag_prefix == 'myco'`, it's `skipped` for any other prefix. Even though
+`build` runs (it has `if: always() && (cross-compile.result == 'skipped' || ...)`),
+`build`'s success doesn't shield `create-release` and `publish` — their
+default `success()` sees the skipped ancestor and quietly skips them too.
 
-Before any publish attempt:
+**Detection:** look for `Build and Test` = `success` paired with
+`Create GitHub Release` = `skipped` and `Publish to npmjs.org` = `skipped`
+in the same run. That's the cascade.
+
+**Fix:** mirror the `always() &&` override on each downstream job:
+```yaml
+create-release:
+  needs: [validate-tag, build]
+  if: |
+    always() &&
+    needs.validate-tag.result == 'success' &&
+    needs.build.result == 'success'
+
+publish:
+  needs: [validate-tag, build, create-release]
+  if: |
+    always() &&
+    needs.validate-tag.result == 'success' &&
+    needs.build.result == 'success' &&
+    (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+```
+
+The current workflow has these gates. **Don't remove them** — and when
+adding a new downstream job, copy the same pattern.
+
+This pattern bit `myco-team/v0.1.5`, `myco-team/v0.1.6`, and
+`myco-collective/v0.1.7` between when `cross-compile` was added and when the
+gates were fixed in commits `dd4838a7` and `026e06b3`. The git tags exist;
+those versions never made it to npm.
+
+### 4.4 — Recovery: re-tagging vs. version-bumping
+
+If a tag fired but failed/skipped and **the version isn't on npm yet**:
+```bash
+git tag -d <prefix>/vX.Y.Z
+git push origin :refs/tags/<prefix>/vX.Y.Z
+git tag <prefix>/vX.Y.Z <fix-sha>
+git push origin <prefix>/vX.Y.Z
+```
+
+If the version **is** on npm (you'd see it in `npm view`), don't reuse the
+number — bump and tag a new patch:
+```bash
+git tag <prefix>/vX.Y.(Z+1)
+git push origin <prefix>/vX.Y.(Z+1)
+```
+
+### 4.5 — Pre-tag verification
+
+Before pushing a release tag:
+```bash
+make build           # full quality gate (tsc + tests + per-package builds)
+gh run list --workflow=publish.yml --limit 1   # confirm latest workflow shape on main
+git log -1 origin/main --format='%s'           # NOT [skip ci]
+```
+
+## Procedure 5: First-Time Publish Bootstrap (Trusted Publishing)
+
+**When:** Adding a brand-new package to npm. CI's OIDC publish requires the
+package to **already exist** on the registry before trusted-publishing config
+can attach to it.
+
+### 5.1 — Why CI can't go first
+
+npm's trusted-publishers UI is per-package. Until v0.0.1 of the package is on
+the registry, there's no package page on which to configure a trusted
+publisher. So the bootstrap is: **publish locally once, then attach the
+trusted publisher, then let CI take over for v0.0.2+.**
+
+### 5.2 — Bootstrap sequence
 
 ```bash
-# 1. Verify package builds successfully
-npm run build
+# Pre-flight
+npm whoami                                     # logged in
+npm view @goondocks/<pkg> 2>&1 | head -1       # should be 404
+git status                                     # clean
+git checkout main && git pull
 
-# 2. Verify tests pass
-npm test
+# Build and inspect
+npm install
+npm run build -w @goondocks/<pkg>
+npm pack --workspace @goondocks/<pkg> --pack-destination /tmp
+tar -tzf /tmp/goondocks-<pkg>-X.Y.Z.tgz
+tar -xOzf /tmp/goondocks-<pkg>-X.Y.Z.tgz package/package.json | head -20
+# Confirm main/types/exports point to dist/
 
-# 3. Check version is unique
-npm view $(npm pkg get name | tr -d '"') versions --json
+# Publish (no provenance — OIDC is CI-only)
+npm publish --workspace @goondocks/<pkg> --access public
 
-# 4. Verify package.json is correct
-npm pkg get name version
-
-# 5. Dry run the publish
-npm publish --dry-run --access public
+# Verify
+sleep 10
+npm view @goondocks/<pkg>
 ```
+
+> **Do NOT pass `--provenance` locally** — it requires GitHub OIDC and fails
+> with a token-source mismatch outside CI.
+>
+> **Do NOT push a `<prefix>/v0.0.1` git tag yet.** CI would try to publish
+> the same version and either fail with `403 cannot publish over existing
+> version` or — if the trusted publisher isn't configured yet — fail with
+> `401`.
+
+### 5.3 — Configure the trusted publisher
+
+1. Go to `https://www.npmjs.com/package/@goondocks/<pkg>/access`.
+2. **Trusted Publishers** → **Add Publisher** → GitHub Actions.
+3. Organization: `goondocks-co`, Repository: `myco`,
+   Workflow: `publish.yml`, Environment: `npm-publish`.
+4. Save.
+
+### 5.4 — Test the CI path
+
+Bump in source, tag, push:
+```bash
+# In a fresh commit on main with X.Y.(Z+1) in packages/<pkg>/package.json
+# (or let sync-package-versions handle it — see Procedure 2.3)
+git tag <prefix>/vX.Y.(Z+1)
+git push origin <prefix>/vX.Y.(Z+1)
+gh run watch $(gh run list --workflow=publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+```
+
+A successful run shows `Publish to npmjs.org` = `success`. After this point
+the package is fully OIDC-driven; no more local publishes.
+
+### 5.5 — Bootstrap pitfalls
+
+| Pitfall | Symptom | Fix |
+|---|---|---|
+| Used `--provenance` locally | "ENEEDAUTH" / token-source mismatch | Drop the flag for the bootstrap publish |
+| Forgot `--access public` on a scoped package | `402 Payment Required` | Add `--access public` |
+| 2FA set to "Authorization and writes" | npm prompts for OTP, CI will later fail | Set 2FA to "Authorization only" or pass `--otp=<code>` |
+| Pushed a git tag before configuring trusted publisher | CI publish fails 401 | Delete tag, configure trusted publisher, retry |
+| Pushed `vX.Y.Z` to CI matching the local-published version | `403 cannot publish over existing version` | Bump to `vX.Y.(Z+1)` |
 
 ## Procedure 5: Worktree Delivery Gate for Multi-Package Work
 
@@ -580,9 +781,15 @@ npm install --save-dev typescript@5.7.2
 
 | Gotcha | Symptom | Fix |
 |---|---|---|
+| Forgetting one of the four-place wirings for a new package | Tag push triggers nothing OR validate-tag fails OR sync-versions doesn't commit | See Procedure 2.4 — tags trigger, case branch, sync-yml file list, sync-mjs PACKAGE_TARGETS |
+| Cascade-skip from transitive needs | Build succeeds, create-release + publish silently skip | Add `if: always() && needs.X.result == 'success'` to every downstream job. See Procedure 4.3 |
+| `npm publish --provenance` locally during bootstrap | Token-source mismatch / ENEEDAUTH | Drop `--provenance`; OIDC is CI-only. Local bootstrap is plain `npm publish --access public` |
+| Pushing a tag before configuring trusted publisher | CI publish 401 | Bootstrap order: local publish → npm Trusted Publishers UI → push tag |
+| Reusing a version that's live on npm | `403 cannot publish over existing version` | If version is on npm, bump. If only the tag exists (CI skipped), force-retag the existing version |
+| Git-tag/npm-registry drift | `git tag --list` shows a version `npm view` doesn't | Cascade-skip happened. Re-tag at fixed-workflow SHA (Procedure 4.4) |
 | `npm install -g npm@latest` in CI | OIDC publish fails with cryptic auth error | Remove the step; Node 22's bundled npm 10.x supports OIDC natively |
 | Hardcoded version in tests | Tests fail after release sync with no code changes | Use `require('package.json').version` dynamically |
-| Manual publish from wrong directory | Package not found error during publish | Always `cd` to the package directory before `npm publish` |
+| Manual publish from wrong directory | Package not found error during publish | Always `cd` to the package directory or use `npm publish --workspace @goondocks/<pkg>` |
 | Bare `node` in spawn calls | `env: node: No such file or directory` in Wrangler | Replace with `process.execPath` |
 | Merging worktree directly to local `main` | Incomplete features land in main, CI bypassed | Always deliver via PR: worktree → feature branch → PR |
 | Tagging before auditing test version strings | Tests fail on the release commit itself | Run version-string grep audit before pushing a release tag |
