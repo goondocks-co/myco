@@ -47,7 +47,13 @@ const SESSIONS_TABLE = `
     created_at             INTEGER NOT NULL,
     embedded               INTEGER DEFAULT 0,
     machine_id             TEXT NOT NULL DEFAULT 'local',
-    synced_at              INTEGER
+    synced_at              INTEGER,
+    canopy_injections_offered      INTEGER,
+    canopy_injection_total_tokens  INTEGER,
+    canopy_skips_after_injection   INTEGER,
+    canopy_reads_after_injection   INTEGER,
+    canopy_tokens_saved            INTEGER,
+    canopy_redundant_reads         INTEGER
   )`;
 
 const PROMPT_BATCHES_TABLE = `
@@ -87,7 +93,8 @@ const ACTIVITIES_TABLE = `
     timestamp            INTEGER NOT NULL,
     processed            INTEGER DEFAULT 0,
     content_hash         TEXT UNIQUE,
-    created_at           INTEGER NOT NULL
+    created_at           INTEGER NOT NULL,
+    canopy_injection_tokens INTEGER
   )`;
 
 const PLANS_TABLE = `
@@ -511,6 +518,50 @@ export const DIGEST_EXTRACT_REVISIONS_TABLE = `
     created_at          INTEGER NOT NULL
   )`;
 
+export const CANOPY_ENTRIES_TABLE = `
+  CREATE TABLE IF NOT EXISTS canopy_entries (
+    project_id             TEXT    NOT NULL,
+    machine_id             TEXT    NOT NULL DEFAULT 'local',
+    path                   TEXT    NOT NULL,
+    content_hash           TEXT    NOT NULL,
+    size_bytes             INTEGER NOT NULL,
+    token_estimate         INTEGER NOT NULL,
+    line_count             INTEGER NOT NULL,
+    language               TEXT,
+    exports_json           TEXT,
+    imports_json           TEXT,
+    top_comment            TEXT,
+    mechanical_updated_at  INTEGER NOT NULL,
+    llm_description        TEXT,
+    llm_updated_at         INTEGER,
+    PRIMARY KEY (project_id, path)
+  ) WITHOUT ROWID`;
+
+/**
+ * Canopy aggregate column names + decls on the `sessions` table. Shared by
+ * `SESSIONS_TABLE` (initial create), `migrateV24ToV25` (ALTER on existing
+ * vaults), and the query-layer column lists / row interface.
+ */
+export const CANOPY_SESSION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+  ['canopy_injections_offered', 'INTEGER'],
+  ['canopy_injection_total_tokens', 'INTEGER'],
+  ['canopy_skips_after_injection', 'INTEGER'],
+  ['canopy_reads_after_injection', 'INTEGER'],
+  ['canopy_tokens_saved', 'INTEGER'],
+  ['canopy_redundant_reads', 'INTEGER'],
+];
+
+/** Canopy column on the `activities` (tool-call) table. */
+export const CANOPY_ACTIVITY_COLUMN: readonly [string, string] = [
+  'canopy_injection_tokens',
+  'INTEGER',
+];
+
+export const CANOPY_INDEX_DDLS: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)',
+];
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 export const FTS_TABLES = [
@@ -707,6 +758,9 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id ON agent_run_write_intents (run_id)',
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
+
+  // Canopy
+  ...CANOPY_INDEX_DDLS,
 ];
 
 // -- Ordered table creation -------------------------------------------------
@@ -751,4 +805,6 @@ export const TABLE_DDLS = [
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
+  // Canopy layer
+  CANOPY_ENTRIES_TABLE,
 ];

@@ -30,7 +30,7 @@ Commands:
   restart                  Restart the daemon
   version                  Show plugin version
   mcp                     Start the MCP stdio server
-  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact)
+  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact)
   daemon                   Start the daemon for the current project
 `;
 
@@ -56,6 +56,7 @@ async function main(): Promise<void> {
       'session-end': () => import('./hooks/session-end.js'),
       'stop': () => import('./hooks/stop.js'),
       'user-prompt-submit': () => import('./hooks/user-prompt-submit.js'),
+      'pre-tool-use': () => import('./hooks/pre-tool-use.js'),
       'post-tool-use': () => import('./hooks/post-tool-use.js'),
       'post-tool-use-failure': () => import('./hooks/post-tool-use-failure.js'),
       'subagent-start': () => import('./hooks/subagent-start.js'),
