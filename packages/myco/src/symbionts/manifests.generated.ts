@@ -257,7 +257,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "cursor",
@@ -305,7 +307,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".cursor/settings.json",
       "settingsFormat": "json"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "gemini",
@@ -342,7 +346,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json",
       "instructionsFile": "GEMINI.md"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "opencode",
@@ -379,7 +385,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": "opencode.json",
       "settingsFormat": "json"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "pi",
@@ -412,7 +420,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsFormat": "json"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "vscode-copilot",
@@ -445,7 +455,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json",
       "instructionsFile": ".github/copilot-instructions.md"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   },
   {
     "name": "windsurf",
@@ -478,6 +490,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".windsurf/settings.json",
       "settingsFormat": "json"
     },
-    "capabilities": {}
+    "capabilities": {
+      "preToolUseInjection": false
+    }
   }
 ] as const;
