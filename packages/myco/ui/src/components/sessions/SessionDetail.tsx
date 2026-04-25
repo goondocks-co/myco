@@ -12,6 +12,7 @@ import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { SessionPlans } from './SessionPlans';
+import { CanopyEfficiencyTile } from './CanopyEfficiencyTile';
 import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
@@ -267,6 +268,9 @@ export function SessionDetail({ id }: SessionDetailProps) {
         <StatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
         <StatCard label="Plans" value={String(plans?.length ?? 0)} accent="outline" />
       </div>
+
+      {/* Canopy token efficiency — hides itself when no data */}
+      <CanopyEfficiencyTile sessionId={id} />
 
       {/* Metadata details (collapsible-style row) */}
       <Surface level="low" className="p-4 overflow-hidden">
