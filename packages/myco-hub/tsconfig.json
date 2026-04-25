@@ -11,7 +11,10 @@
     "ignoreDeprecations": "6.0",
     "resolveJsonModule": true,
     "types": ["node"],
-    "baseUrl": "."
+    "baseUrl": ".",
+    "paths": {
+      "@myco-shared/*": ["../myco-shared/src/*"]
+    }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "../myco-shared/src/**/*.ts"]
 }

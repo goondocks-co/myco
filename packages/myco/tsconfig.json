@@ -16,6 +16,7 @@
     "paths": {
       "@myco/*": ["./src/*"],
       "@myco-collective/*": ["../myco-collective/src/*"],
+      "@myco-shared/*": ["../myco-shared/src/*"],
       "@myco-deploy/*": ["../myco-deploy/src/*"]
     }
   },
