@@ -1,4 +1,5 @@
 import type { AppearanceValues as AppearanceConfig } from '@myco/config/appearance-values';
+import { withBasePath } from './base-path';
 
 const API_BASE = '/api';
 
@@ -39,7 +40,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     ? { 'Content-Type': 'application/json', ...init?.headers }
     : init?.headers;
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(withBasePath(`${API_BASE}${path}`), {
     ...init,
     headers,
   });

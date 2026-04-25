@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { postJson } from '../lib/api';
+import { withBasePath } from '../lib/base-path';
 
 const RESTART_POLL_INTERVAL_MS = 500;
 const RESTART_TIMEOUT_MS = 30_000;
@@ -32,7 +33,7 @@ export function useRestart() {
             return;
           }
           try {
-            const res = await fetch('/health', { signal: abortRef.current!.signal });
+            const res = await fetch(withBasePath('/health'), { signal: abortRef.current!.signal });
             if (res.ok) {
               resolve();
               return;

@@ -239,8 +239,8 @@ function setupPackageRoot(): void {
     'chat.tools.terminal.autoApprove': { 'myco': true, 'myco-dev': true },
   });
   writeJson(path.join(codexTemplateDir, 'hooks.json'), {
-    SessionStart: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook session-start --symbiont codex', timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: 'cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" && node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
+    SessionStart: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook session-start --symbiont codex', timeout: 10 }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
     myco: { command: 'myco-run', args: ['mcp'] },

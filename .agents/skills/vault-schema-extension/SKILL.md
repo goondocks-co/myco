@@ -9,48 +9,54 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration block, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each version is a self-contained, idempotent block in the migration runner.
+Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array.
 
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
-- Identify the current `user_version` — check `packages/myco/src/db/migrations.ts` or run `PRAGMA user_version;` against `.myco/myco.db`
+- Check the current highest version in the `MIGRATIONS` array in `packages/myco/src/db/migrations.ts`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
 
 ## Procedure A: Adding a New Table
 
 Follow these steps in order. Skipping the query functions or constants update leaves the data layer incomplete.
 
-### 1. Write the migration block
+### 1. Add migration to the MIGRATIONS registry
 
-Locate the migration runner (`packages/myco/src/db/migrations.ts`). Add a new version block at the end:
+Locate the migration runner (`packages/myco/src/db/migrations.ts`). Add a new `Migration` entry to the `MIGRATIONS` array:
 
 ```typescript
-// v9 — add my_new_table for <purpose>
-if (currentVersion < 9) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS my_new_table (
-      id          TEXT PRIMARY KEY,
-      session_id  TEXT,
-      content     TEXT NOT NULL,
-      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-      FOREIGN KEY (session_id) REFERENCES sessions(id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_my_new_table_session
-      ON my_new_table(session_id);
-    CREATE INDEX IF NOT EXISTS idx_my_new_table_created_at
-      ON my_new_table(created_at DESC);
-  `);
-  db.pragma('user_version = 9');
-}
+export const MIGRATIONS: Migration[] = [
+  // ... existing migrations
+  {
+    version: 21,
+    name: 'add_my_new_table',
+    description: 'Add my_new_table for <purpose>',
+    up: (db: Database) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS my_new_table (
+          id          TEXT PRIMARY KEY,
+          session_id  TEXT,
+          content     TEXT NOT NULL,
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (session_id) REFERENCES sessions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_my_new_table_session
+          ON my_new_table(session_id);
+        CREATE INDEX IF NOT EXISTS idx_my_new_table_created_at
+          ON my_new_table(created_at DESC);
+      `);
+    }
+  }
+];
 ```
 
 Key rules:
 - **Always use `IF NOT EXISTS`** — migrations run at every startup and must be idempotent.
-- **Bump `user_version` last**, after all DDL in the block succeeds. If the block throws partway through, the version stays at the previous value and the migration retries on the next startup — this is intentional.
-- **Add all indexes inline** with the table creation. Putting them in a later block risks a partial-schema state if the process dies between versions.
+- **Add all indexes inline** with the table creation. Putting them in a later migration risks a partial-schema state if the process dies between versions.
 - Use `INTEGER NOT NULL DEFAULT (unixepoch())` for timestamps — store Unix epoch seconds, not ISO strings.
 - Use `TEXT PRIMARY KEY` with a UUID for entity tables; use `INTEGER PRIMARY KEY AUTOINCREMENT` only for pure log/event tables where an ordered surrogate is the point.
+- **Each migration is atomic** — the migration runner applies all migrations up to the highest version or rolls back entirely on failure.
 
 ### 2. Create the query functions
 
@@ -119,26 +125,29 @@ Use `ALTER TABLE` for additive changes (new columns). SQLite does not support dr
 ### Adding a column
 
 ```typescript
-// v10 — add supersedes column to skill_candidates
-if (currentVersion < 10) {
-  db.exec(`ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT;`);
-  // Backfill: give existing rows a safe default before any code relies on the column
-  db.exec(`UPDATE skill_candidates SET supersedes = '[]' WHERE supersedes IS NULL;`);
-  db.pragma('user_version = 10');
+{
+  version: 22,
+  name: 'add_supersedes_column',
+  description: 'Add supersedes column to skill_candidates',
+  up: (db: Database) => {
+    db.exec(`ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT;`);
+    // Backfill: give existing rows a safe default before any code relies on the column
+    db.exec(`UPDATE skill_candidates SET supersedes = '[]' WHERE supersedes IS NULL;`);
+  }
 }
 ```
 
 Rules:
 - **Never add `NOT NULL` without a `DEFAULT`** — existing rows fail the constraint on open.
-- **Backfill in the same version block**, before bumping `user_version`. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole block retries.
-- **One conceptual change per version block** — keep each version atomic and describable in a single sentence.
+- **Backfill in the same migration**, before the migration completes. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole migration retries.
+- **One conceptual change per migration** — keep each migration atomic and describable in a single sentence.
 - Update the query functions' INSERT and SELECT statements and the TypeScript row interface to include the new column.
 
 ### What never to do
 
 - `DROP COLUMN` — SQLite requires a full table rebuild; it will corrupt existing vaults that have been opened with the old schema.
 - `RENAME COLUMN` — same constraint.
-- Two unrelated `ALTER TABLE` statements in one version block — if one fails, the retry will attempt both again, and the first may now throw "duplicate column."
+- Two unrelated `ALTER TABLE` statements in one migration — if one fails, the retry will attempt both again, and the first may now throw "duplicate column."
 
 ## Procedure C: D1/Cloud Schema Alignment
 
@@ -149,7 +158,7 @@ Cloudflare D1 mirrors the local SQLite schema for team sync. Its critical behavi
 Keep a parallel migration file in the Workers project (e.g., in the team package migrations directory):
 
 ```sql
--- 0009_add_my_new_table.sql
+-- 0021_add_my_new_table.sql
 CREATE TABLE IF NOT EXISTS my_new_table (
   id          TEXT PRIMARY KEY,
   session_id  TEXT,
@@ -186,46 +195,50 @@ Tables that the intelligence agent keyword-searches need FTS5 virtual tables wit
 
 ### Creating the FTS5 virtual table and triggers
 
-Add both in the same migration block as the source table:
+Add both in the same migration entry as the source table:
 
 ```typescript
-if (currentVersion < 9) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS my_new_table (
-      id      TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
-      created_at INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-
-    -- Content-table FTS5: reads from source table, stays in sync via triggers
-    CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
-      USING fts5(
-        content,
-        content='my_new_table',
-        content_rowid='rowid'
+{
+  version: 21,
+  name: 'add_my_new_table_with_fts',
+  description: 'Add my_new_table with FTS5 search support',
+  up: (db: Database) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS my_new_table (
+        id      TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
 
-    CREATE TRIGGER IF NOT EXISTS my_new_table_fts_insert
-      AFTER INSERT ON my_new_table BEGIN
-        INSERT INTO my_new_table_fts(rowid, content)
-          VALUES (new.rowid, new.content);
-      END;
+      -- Content-table FTS5: reads from source table, stays in sync via triggers
+      CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
+        USING fts5(
+          content,
+          content='my_new_table',
+          content_rowid='rowid'
+        );
 
-    CREATE TRIGGER IF NOT EXISTS my_new_table_fts_delete
-      BEFORE DELETE ON my_new_table BEGIN
-        INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
-          VALUES ('delete', old.rowid, old.content);
-      END;
+      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_insert
+        AFTER INSERT ON my_new_table BEGIN
+          INSERT INTO my_new_table_fts(rowid, content)
+            VALUES (new.rowid, new.content);
+        END;
 
-    CREATE TRIGGER IF NOT EXISTS my_new_table_fts_update
-      AFTER UPDATE ON my_new_table BEGIN
-        INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
-          VALUES ('delete', old.rowid, old.content);
-        INSERT INTO my_new_table_fts(rowid, content)
-          VALUES (new.rowid, new.content);
-      END;
-  `);
-  db.pragma('user_version = 9');
+      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_delete
+        BEFORE DELETE ON my_new_table BEGIN
+          INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
+            VALUES ('delete', old.rowid, old.content);
+        END;
+
+      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_update
+        AFTER UPDATE ON my_new_table BEGIN
+          INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
+            VALUES ('delete', old.rowid, old.content);
+          INSERT INTO my_new_table_fts(rowid, content)
+            VALUES (new.rowid, new.content);
+        END;
+    `);
+  }
 }
 ```
 
@@ -254,17 +267,21 @@ export function searchMyNewTable(
 
 ### Backfilling existing rows into a new FTS index
 
-If FTS is added to a table that already has rows, populate the index in the migration block before bumping the version:
+If FTS is added to a table that already has rows, populate the index in the migration:
 
 ```typescript
-if (currentVersion < 10) {
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
-      USING fts5(content, content='my_new_table', content_rowid='rowid');
-    INSERT INTO my_new_table_fts(rowid, content)
-      SELECT rowid, content FROM my_new_table;
-  `);
-  db.pragma('user_version = 10');
+{
+  version: 22,
+  name: 'add_fts_to_existing_table',
+  description: 'Add FTS5 index to existing my_new_table',
+  up: (db: Database) => {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
+        USING fts5(content, content='my_new_table', content_rowid='rowid');
+      INSERT INTO my_new_table_fts(rowid, content)
+        SELECT rowid, content FROM my_new_table;
+    `);
+  }
 }
 ```
 
@@ -278,34 +295,37 @@ Include test functions in the migration module for complex data transformations:
 
 ```typescript
 // Migration v20 example with collision resolution
-if (currentVersion < 20) {
-  // Complex plan identity collision resolution
-  const collisions = db.prepare(`
-    SELECT logical_key, COUNT(*) as count 
-    FROM plans 
-    GROUP BY logical_key 
-    HAVING count > 1
-  `).all();
-  
-  if (collisions.length > 0) {
-    resolveV20PlanIdentityCollisionsForTest(db, collisions);
+{
+  version: 20,
+  name: 'resolve_plan_identity_collisions',
+  description: 'Resolve plan identity collisions from schema v19',
+  up: (db: Database) => {
+    // Complex plan identity collision resolution
+    const collisions = db.prepare(`
+      SELECT logical_key, COUNT(*) as count
+      FROM plans
+      GROUP BY logical_key
+      HAVING count > 1
+    `).all();
+
+    if (collisions.length > 0) {
+      resolveV20PlanIdentityCollisionsForTest(db, collisions);
+    }
   }
-  
-  db.pragma('user_version = 20');
 }
 
 export function resolveV20PlanIdentityCollisionsForTest(
-  db: Database, 
+  db: Database,
   collisions: Array<{logical_key: string, count: number}>
 ): void {
   for (const collision of collisions) {
     // Implement collision resolution logic
     const duplicates = db.prepare(`
-      SELECT id, created_at FROM plans 
+      SELECT id, created_at FROM plans
       WHERE logical_key = ?
       ORDER BY created_at ASC
     `).all(collision.logical_key);
-    
+
     // Keep first, remove rest
     for (let i = 1; i < duplicates.length; i++) {
       db.prepare(`DELETE FROM plans WHERE id = ?`).run(duplicates[i].id);
@@ -321,19 +341,22 @@ This pattern allows for complex migration logic to be tested in isolation and pr
 Always design migrations to be re-runnable safely:
 
 ```typescript
-// Check if migration already applied before making changes
-if (currentVersion < 21) {
-  const columnExists = db.prepare(`
-    SELECT COUNT(*) as count 
-    FROM pragma_table_info('my_table') 
-    WHERE name = 'new_column'
-  `).get() as {count: number};
-  
-  if (columnExists.count === 0) {
-    db.exec(`ALTER TABLE my_table ADD COLUMN new_column TEXT;`);
+{
+  version: 23,
+  name: 'add_column_with_check',
+  description: 'Add new_column to my_table with safety check',
+  up: (db: Database) => {
+    // Check if migration already applied before making changes
+    const columnExists = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM pragma_table_info('my_table')
+      WHERE name = 'new_column'
+    `).get() as {count: number};
+
+    if (columnExists.count === 0) {
+      db.exec(`ALTER TABLE my_table ADD COLUMN new_column TEXT;`);
+    }
   }
-  
-  db.pragma('user_version = 21');
 }
 ```
 
@@ -462,7 +485,7 @@ for (const b of batches) {
   b.session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(b.session_id);
 }
 
-// ✓ Single JOIN
+// ✅ Single JOIN
 const rows = db.prepare(`
   SELECT b.*, s.title AS session_title, s.status AS session_status
   FROM prompt_batches b
@@ -540,17 +563,17 @@ sqlite3 .myco/myco.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY create
 packages/myco/
   src/
     db/
-      migrations.ts            # All versioned migration blocks, in order
+      migrations.ts            # MIGRATIONS array with declarative Migration entries
       schema-ddl.ts            # Table DDL definitions and constants
 packages/myco-team/
   migrations/                  # Parallel D1 SQL migration files
-    0009_add_my_new_table.sql
+    0021_add_my_new_table.sql
 ```
 
 ## Cross-Cutting Gotchas
 
 - **`IF NOT EXISTS` is mandatory everywhere** — on both `CREATE TABLE` and `CREATE TRIGGER`. Migrations run at every startup; a bare `CREATE TABLE` throws on the second run.
-- **Bump `user_version` last** — partial migrations retry on next startup. This is the correct recovery path.
+- **Each migration is atomic** — the migration runner applies all migrations up to the highest version or rolls back entirely on failure.
 - **D1 ALTER TABLE is lazy** — the column does not exist on D1 until the first post-deploy request triggers migration. Guard reads against new columns until you know migration has run.
 - **FTS triggers must use `IF NOT EXISTS`** — duplicate triggers corrupt the index silently.
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.

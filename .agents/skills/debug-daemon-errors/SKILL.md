@@ -186,7 +186,7 @@ ORDER BY s1.created_at DESC;"
 - Sub-agent sessions have `parentId` pointing to a user session
 - User fork sessions have `parentId = NULL`  
 - Both may arrive within seconds but through different hook paths
-- Sub-agent sessions often have prefixed titles like `"[Sub-agent] ..."` 
+- Sub-agent sessions often have prefixed titles like `"[Sub-agent] ..."`
 
 **Fix pattern:** Distinguish session creation context in hook handling:
 ```typescript
@@ -204,6 +204,43 @@ if (payload.parentSessionId) {
   logger.info(`[Session] Creating independent user session`);
 }
 ```
+
+---
+
+### Session Re-Registration After Worktree-to-Main Handoff
+
+**When:** Working in a detached worktree, copying changes to a local feature branch in the main checkout, and the daemon loses track of the session context during the branch switch.
+
+**Symptom:** After copying changes from a worktree to the main repo and switching branches, the daemon may show session ID mismatches, create phantom duplicate sessions, lose session history, or fail to capture subsequent activity.
+
+**Root Cause:** The daemon session registry is tied to the git context where it was originally registered. When you copy work from a detached worktree to a different branch in the main checkout, the session remains registered to the old context.
+
+**Fix Pattern:**
+```typescript
+// Session re-registration API pattern
+export async function reRegisterSessionToCurrentBranch(sessionId: string) {
+  const currentGitContext = await getCurrentGitContext();
+
+  await db.update(sessions)
+    .set({
+      gitBranch: currentGitContext.branch,
+      gitCommit: currentGitContext.commit,
+      workingDirectory: process.cwd(),
+      updated_at: new Date()
+    })
+    .where(eq(sessions.id, sessionId));
+
+  sessionRegistry.clearContext(sessionId);
+  sessionRegistry.register(sessionId, currentGitContext);
+
+  logger.info(`[Session] Re-registered session ${sessionId} to branch ${currentGitContext.branch}`);
+}
+```
+
+**Manual Recovery:**
+1. Restart daemon: `myco daemon:restart`
+2. Or use re-registration: `myco session:reregister <session-id>`
+3. Verify: `myco daemon:status` and `git branch`
 
 ---
 
@@ -725,3 +762,4 @@ export async function prepareGracefulShutdown() {
 | Database locked after restart | SQLite locks from interrupted transactions | Force close connections, wait for locks to clear, reinitialize |
 | Sessions stuck in `active` status after restart | Daemon shutdown during session processing | Cleanup stale active sessions: transition to `complete` or `abandoned` based on content |
 | Outbox entries stuck in `processing` status | Daemon shutdown during outbox drain | Reset processing entries to `pending` with incremented retry count |
+| Session context mismatch after worktree-to-main copy | Session registered to wrong git context | Restart daemon or use session re-registration API to update context |

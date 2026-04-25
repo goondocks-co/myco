@@ -53,11 +53,15 @@ export const TEAM_PACKAGE_NAME = '@goondocks/myco-team';
 /** Optional standalone Myco Collective package name. */
 export const COLLECTIVE_PACKAGE_NAME = '@goondocks/myco-collective';
 
+/** Optional standalone Myco Hub package name. */
+export const HUB_PACKAGE_NAME = '@goondocks/myco-hub';
+
 /** Global-package update targets shown in the Operations UI. */
 export const UPDATE_PACKAGES = [
   { id: 'myco', packageName: NPM_PACKAGE_NAME, displayName: 'Myco' },
   { id: 'myco-team', packageName: TEAM_PACKAGE_NAME, displayName: 'Myco Team' },
   { id: 'myco-collective', packageName: COLLECTIVE_PACKAGE_NAME, displayName: 'Myco Collective' },
+  { id: 'myco-hub', packageName: HUB_PACKAGE_NAME, displayName: 'Myco Hub' },
 ] as const;
 export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 

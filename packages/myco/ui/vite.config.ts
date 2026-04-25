@@ -16,7 +16,7 @@ const mycoPackageJson = JSON.parse(
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
-  base: '/',
+  base: './',
   define: {
     __MYCO_UI_VERSION__: JSON.stringify(mycoPackageJson.version),
   },

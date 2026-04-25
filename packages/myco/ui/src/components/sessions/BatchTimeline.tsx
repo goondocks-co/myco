@@ -6,6 +6,7 @@ import { Lightbox } from '../ui/lightbox';
 import { useSessionBatches, useSessionAttachments, type BatchRow, type AttachmentRow } from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
 import { cn } from '../../lib/cn';
+import { withBasePath } from '../../lib/base-path';
 
 /* ---------- Constants ---------- */
 
@@ -164,7 +165,7 @@ function BatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = fa
                       onClick={() => setLightboxIndex(idx)}
                     >
                       <img
-                        src={`/api/attachments/${att.file_path}`}
+                        src={withBasePath(`/api/attachments/${att.file_path}`)}
                         alt={att.description ?? att.file_path ?? ''}
                         className="max-w-[200px] max-h-[140px] object-cover rounded-md"
                         loading="lazy"
@@ -176,7 +177,7 @@ function BatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = fa
               {lightboxIndex !== null && (
                 <Lightbox
                   images={batchAttachments.map((a) => ({
-                    src: `/api/attachments/${a.file_path}`,
+                    src: withBasePath(`/api/attachments/${a.file_path}`),
                     alt: a.description ?? a.file_path ?? '',
                   }))}
                   index={lightboxIndex}

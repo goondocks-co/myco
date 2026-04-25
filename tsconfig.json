@@ -18,6 +18,7 @@
       "@myco-team/*": ["./packages/myco-team/src/*"],
       "@myco-team-worker/*": ["./packages/myco-team/worker/src/*"],
       "@myco-collective/*": ["./packages/myco-collective/src/*"],
+      "@myco-hub/*": ["./packages/myco-hub/src/*"],
       "@myco-deploy/*": ["./packages/myco-deploy/src/*"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],
@@ -28,7 +29,7 @@
       "react-router": ["./node_modules/react-router/dist/development/index.mjs"]
     }
   },
-  "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-deploy/src/**/*"],
+  "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-hub/src/**/*", "packages/myco-deploy/src/**/*"],
   "exclude": [
     "node_modules",
     "dist",
