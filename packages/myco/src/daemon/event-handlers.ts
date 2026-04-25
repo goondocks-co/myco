@@ -11,6 +11,8 @@ import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpe
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
+import { getDatabase } from '@myco/db/client.js';
+import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -140,6 +142,24 @@ export function handleToolUse(
     timestamp: now,
     created_at: now,
   });
+
+  // Canopy linkage: if a PreToolUse injection was recorded for this
+  // (sessionId, file_path), stamp the offered token count onto the new
+  // activity row. NULL otherwise — Track C's aggregation treats that as
+  // "no injection" for the call.
+  if (filePath) {
+    const injectionTokens = consumePendingInjection(sessionId, filePath);
+    if (injectionTokens !== null) {
+      try {
+        getDatabase()
+          .prepare('UPDATE activities SET canopy_injection_tokens = ? WHERE id = ?')
+          .run(injectionTokens, activity.id);
+      } catch {
+        // Non-fatal: column missing on a downgraded schema or row vanished.
+        // Aggregation falls back to NULL.
+      }
+    }
+  }
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
