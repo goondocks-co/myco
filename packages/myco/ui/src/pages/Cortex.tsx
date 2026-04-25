@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Brain, Check, Copy, Database, Sparkles } from 'lucide-react';
+import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { useAgentRuns } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
@@ -38,7 +38,7 @@ import {
 } from '../lib/constants';
 import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
-type ActiveTab = 'instructions' | 'builder' | 'digest';
+type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy';
 
 interface CortexInstructionsResponse {
   content: string;
@@ -85,6 +85,7 @@ const CORTEX_TABS = [
   { id: 'instructions', label: 'Instructions' },
   { id: 'builder', label: 'Builder' },
   { id: 'digest', label: 'Digest' },
+  { id: 'canopy', label: 'Canopy' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
@@ -227,7 +228,15 @@ export default function Cortex() {
         onTabChange={handleTabChange}
       />
 
-      {activeTab === 'digest' ? <DigestTab /> : activeTab === 'builder' ? <BuilderTab /> : <InstructionsTab />}
+      {activeTab === 'digest' ? (
+        <DigestTab />
+      ) : activeTab === 'builder' ? (
+        <BuilderTab />
+      ) : activeTab === 'canopy' ? (
+        <CanopyTab />
+      ) : (
+        <InstructionsTab />
+      )}
     </div>
   );
 }
@@ -822,6 +831,151 @@ function DigestTab() {
       </Surface>
 
       <DigestView />
+    </div>
+  );
+}
+
+function CanopyTab() {
+  const { effective, isLoading } = useScopedConfig();
+  if (isLoading || !effective) {
+    return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <Surface level="low" className="rounded-lg border border-primary/15 p-5">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="rounded-md bg-primary/10 p-2 text-primary">
+            <Trees className="h-4 w-4" />
+          </div>
+          <div className="space-y-1">
+            <p className="font-sans text-sm font-medium text-on-surface">
+              Canopy code intelligence — file-level metadata Cortex can offer agents on Read.
+            </p>
+            <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
+              The mechanical scanner runs automatically. Tier 2 LLM summaries are opt-in and use
+              the agent provider configured under Settings. Local-first models are recommended.
+            </p>
+          </div>
+        </div>
+      </Surface>
+
+      <Surface
+        id="config-section-cortex-canopy-injection"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+      >
+        <SectionHeader>Injection</SectionHeader>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'cortex.canopy.injection.enabled', boolean>
+            path="cortex.canopy.injection.enabled"
+            label="Inject canopy on Read"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? true} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+
+          <ScopedField<'cortex.canopy.injection.size_threshold', number>
+            path="cortex.canopy.injection.size_threshold"
+            label="Minimum file size (bytes)"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="number"
+                min={0}
+                value={String(value ?? 800)}
+                onChange={(event) => onChange(Number(event.target.value))}
+              />
+            )}
+          </ScopedField>
+        </div>
+      </Surface>
+
+      <Surface
+        id="config-section-cortex-canopy-llm"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+      >
+        <div className="space-y-1">
+          <SectionHeader>LLM Descriptions (Tier 2)</SectionHeader>
+          <p className="font-sans text-sm text-on-surface-variant">
+            Generates one-sentence summaries for each file using the agent provider configured
+            under Settings. Off by default — opt in once a local model is available.
+          </p>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'cortex.canopy.llm.enabled', boolean>
+            path="cortex.canopy.llm.enabled"
+            label="Enable canopy-describe"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? false} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+
+          <ScopedField<'cortex.canopy.llm.reasoning_tier', 'low' | 'medium' | 'high'>
+            path="cortex.canopy.llm.reasoning_tier"
+            label="Reasoning tier"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Select
+                value={String(value ?? 'low')}
+                onValueChange={(next) => onChange(next as 'low' | 'medium' | 'high')}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </ScopedField>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'cortex.canopy.llm.max_description_chars', number>
+            path="cortex.canopy.llm.max_description_chars"
+            label="Max description characters"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="number"
+                min={40}
+                max={400}
+                value={String(value ?? 180)}
+                onChange={(event) => onChange(Number(event.target.value))}
+              />
+            )}
+          </ScopedField>
+
+          <ScopedField<'cortex.canopy.llm.max_attempts', number>
+            path="cortex.canopy.llm.max_attempts"
+            label="Max retry attempts"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="number"
+                min={1}
+                max={5}
+                value={String(value ?? 2)}
+                onChange={(event) => onChange(Number(event.target.value))}
+              />
+            )}
+          </ScopedField>
+        </div>
+      </Surface>
     </div>
   );
 }
