@@ -9,6 +9,8 @@ on:
       - 'myco-team/v*.*.*-*'
       - 'myco-collective/v*.*.*'
       - 'myco-collective/v*.*.*-*'
+      - 'myco-hub/v*.*.*'
+      - 'myco-hub/v*.*.*-*'
       - 'myco-shared/v*.*.*'
       - 'myco-shared/v*.*.*-*'
 
@@ -53,6 +55,11 @@ jobs:
               PACKAGE_NAME="@goondocks/myco-collective"
               PACKAGE_DIR="packages/myco-collective"
               TARBALL_PREFIX="goondocks-myco-collective"
+              ;;
+            myco-hub)
+              PACKAGE_NAME="@goondocks/myco-hub"
+              PACKAGE_DIR="packages/myco-hub"
+              TARBALL_PREFIX="goondocks-myco-hub"
               ;;
             myco-shared)
               PACKAGE_NAME="@goondocks/myco-shared"
