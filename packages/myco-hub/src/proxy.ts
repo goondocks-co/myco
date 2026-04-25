@@ -34,9 +34,6 @@ export async function proxyProjectRequest(
   const incoming = new URL(req.url ?? '/', 'http://hub.local');
   let upstreamPath = incoming.pathname.slice(prefix.length);
   if (!upstreamPath.startsWith('/')) upstreamPath = `/${upstreamPath}`;
-  if (upstreamPath === '/') {
-    // preserve root
-  }
   const target = `http://127.0.0.1:${runtime.port}${upstreamPath}${incoming.search}`;
 
   const headers = new Headers();

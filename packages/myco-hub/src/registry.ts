@@ -63,12 +63,26 @@ export function upsertProjectRegistration(
     lastSeenAt: now,
   };
 
+  if (existing && recordsEquivalent(existing, record)) return existing;
+
   file.projects = [
     ...file.projects.filter((project) => project.id !== id),
     record,
   ].sort((a, b) => a.name.localeCompare(b.name) || a.projectRoot.localeCompare(b.projectRoot));
   writeProjectsFile(file);
   return record;
+}
+
+function recordsEquivalent(a: ProjectRecord, b: ProjectRecord): boolean {
+  return a.id === b.id
+    && a.name === b.name
+    && a.projectRoot === b.projectRoot
+    && a.vaultDir === b.vaultDir
+    && a.machineId === b.machineId
+    && a.source === b.source
+    && a.preferredPort === b.preferredPort
+    && a.runtimeCommand === b.runtimeCommand
+    && a.firstSeenAt === b.firstSeenAt;
 }
 
 export function listKnownProjects(): ProjectRecord[] {

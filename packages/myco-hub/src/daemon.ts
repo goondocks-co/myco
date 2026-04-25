@@ -178,18 +178,13 @@ async function healthCheck(port: number): Promise<{ ok: boolean; version?: strin
   }
 }
 
-function emptyRuntime(
-  status: ProjectStatus,
-  pid: number | null = null,
-  port: number | null = null,
-  startedAt: string | null = null,
-): ProjectRuntime {
+function emptyRuntime(status: ProjectStatus): ProjectRuntime {
   return {
     status,
-    pid,
-    port,
+    pid: null,
+    port: null,
     version: null,
-    startedAt,
+    startedAt: null,
     lastHealthAt: null,
   };
 }

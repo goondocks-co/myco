@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 
-export const HUB_DIR = process.env.MYCO_HUB_DIR ?? path.join(os.homedir(), '.myco', 'hub');
+export const DEFAULT_HUB_DIR = path.join(os.homedir(), '.myco', 'hub');
+export const HUB_DIR = process.env.MYCO_HUB_DIR ?? DEFAULT_HUB_DIR;
 export const CONFIG_PATH = path.join(HUB_DIR, 'config.json');
 export const PROJECTS_PATH = path.join(HUB_DIR, 'projects.json');
 export const PID_PATH = path.join(HUB_DIR, 'hub.pid');

@@ -1,11 +1,18 @@
 import http from 'node:http';
 import os from 'node:os';
-import { loadConfig, appendLog } from './paths.js';
+import { loadConfig, appendLog, type HubConfig } from './paths.js';
 import { reconcileRunningDaemons } from './discovery.js';
 import { ensureProjectRunning, restartProject, stopProject, withRuntime } from './daemon.js';
 import { proxyProjectRequest } from './proxy.js';
 import { getKnownProject, listKnownProjects, removeKnownProject, upsertProjectRegistration } from './registry.js';
 import { renderHubFaviconSvg, renderHubHtml, renderProjectFrameHtml } from './ui.js';
+
+const PROJECT_ACTIONS = {
+  start: ensureProjectRunning,
+  stop: stopProject,
+  restart: restartProject,
+} as const;
+type ProjectAction = keyof typeof PROJECT_ACTIONS;
 
 export async function serve(): Promise<void> {
   const config = loadConfig();
@@ -32,8 +39,9 @@ export function createHubServer(): http.Server {
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://hub.local');
+  const config = loadConfig();
 
-  const rejection = validateHubRequest(req, url.pathname);
+  const rejection = validateHubRequest(req, url.pathname, config);
   if (rejection) {
     writeJson(res, rejection.status, { error: rejection.error });
     return;
@@ -75,7 +83,6 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   }
 
   if (req.method === 'GET' && url.pathname === '/api/projects') {
-    const config = loadConfig();
     if (config.reconcile_running_daemons) await reconcileRunningDaemons();
     const projects = await Promise.all(listKnownProjects().map(withRuntime));
     writeJson(res, 200, {
@@ -103,11 +110,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       writeJson(res, 404, { error: 'project_not_found' });
       return;
     }
-    const runtime = action.action === 'start'
-      ? await ensureProjectRunning(project)
-      : action.action === 'stop'
-        ? await stopProject(project)
-        : await restartProject(project);
+    const runtime = await PROJECT_ACTIONS[action.action](project);
     writeJson(res, 200, { project: { ...project, runtime } });
     return;
   }
@@ -138,10 +141,10 @@ function findProject(id: string) {
   return getKnownProject(id);
 }
 
-function matchProjectAction(pathname: string): { id: string; action: 'start' | 'stop' | 'restart' } | null {
+function matchProjectAction(pathname: string): { id: string; action: ProjectAction } | null {
   const match = pathname.match(/^\/api\/projects\/([^/]+)\/(start|stop|restart)$/);
   if (!match?.[1] || !match[2]) return null;
-  return { id: decodeURIComponent(match[1]), action: match[2] as 'start' | 'stop' | 'restart' };
+  return { id: decodeURIComponent(match[1]), action: match[2] as ProjectAction };
 }
 
 function matchProjectForget(pathname: string): { id: string } | null {
@@ -188,16 +191,21 @@ function readJson(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-function validateHubRequest(req: http.IncomingMessage, pathname: string): { status: number; error: string } | null {
+function validateHubRequest(
+  req: http.IncomingMessage,
+  pathname: string,
+  config: HubConfig,
+): { status: number; error: string } | null {
   const method = (req.method ?? '').toUpperCase();
   const mutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
   if (!mutating) return null;
 
+  const allowed = hubAuthorities(config);
   const host = req.headers.host;
-  if (host && !isHubHost(host)) return { status: 403, error: 'forbidden_host' };
+  if (host && !allowed.hosts.has(host)) return { status: 403, error: 'forbidden_host' };
 
   const origin = req.headers.origin;
-  if (origin && !isHubOrigin(origin)) return { status: 403, error: 'forbidden_origin' };
+  if (origin && !allowed.origins.has(origin)) return { status: 403, error: 'forbidden_origin' };
 
   if (pathname === '/api/daemon/register' && !origin) return null;
 
@@ -207,18 +215,11 @@ function validateHubRequest(req: http.IncomingMessage, pathname: string): { stat
   return null;
 }
 
-function isHubHost(host: string): boolean {
-  const config = loadConfig();
+function hubAuthorities(config: HubConfig): { hosts: Set<string>; origins: Set<string> } {
   const port = String(config.port);
-  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `${config.host}:${port}`;
-}
-
-function isHubOrigin(origin: string): boolean {
-  const config = loadConfig();
-  const port = String(config.port);
-  return (
-    origin === `http://127.0.0.1:${port}` ||
-    origin === `http://localhost:${port}` ||
-    origin === `http://${config.host}:${port}`
-  );
+  const authorities = [`127.0.0.1:${port}`, `localhost:${port}`, `${config.host}:${port}`];
+  return {
+    hosts: new Set(authorities),
+    origins: new Set(authorities.map((authority) => `http://${authority}`)),
+  };
 }

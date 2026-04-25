@@ -28,9 +28,14 @@ export interface DaemonJson {
 }
 
 export async function reconcileRunningDaemons(): Promise<void> {
+  const owners = findPidsListeningInRange(MYCO_DAEMON_PORT_START, MYCO_DAEMON_PORT_END);
+  const probes = await Promise.all(owners.map(async (owner) => ({
+    owner,
+    metadata: await fetchDaemonMetadata(owner.port),
+  })));
+
   const found = new Map<string, { pid: number; port: number }>();
-  for (const owner of findPidsListeningInRange(MYCO_DAEMON_PORT_START, MYCO_DAEMON_PORT_END)) {
-    const metadata = await fetchDaemonMetadata(owner.port);
+  for (const { owner, metadata } of probes) {
     if (metadata) {
       upsertProjectRegistration(metadata, 'daemon-api');
       continue;

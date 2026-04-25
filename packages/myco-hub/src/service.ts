@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CONFIG_PATH, DEFAULT_HOST, DEFAULT_PORT, HUB_DIR, LOG_PATH, PID_PATH, ensureHubDir, loadConfig, saveConfig } from './paths.js';
-import { readProcessCommandLine } from './process.js';
+import { CONFIG_PATH, DEFAULT_HOST, DEFAULT_HUB_DIR, DEFAULT_PORT, HUB_DIR, LOG_PATH, PID_PATH, ensureHubDir, loadConfig, saveConfig } from './paths.js';
+import { isProcessAlive, readProcessCommandLine } from './process.js';
 
 const SERVICE_NAME = 'co.goondocks.myco-hub';
 
@@ -163,7 +163,7 @@ function serviceExecArgs(): string[] {
 }
 
 function serviceEnvironment(): Record<string, string> {
-  return process.env.MYCO_HUB_DIR ? { MYCO_HUB_DIR: HUB_DIR } : {};
+  return HUB_DIR === DEFAULT_HUB_DIR ? {} : { MYCO_HUB_DIR: HUB_DIR };
 }
 
 function launchAgentPath(): string {
@@ -183,17 +183,8 @@ function readPid(): number | null {
   }
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function isHubPid(pid: number): boolean {
-  if (!isAlive(pid)) return false;
+  if (!isProcessAlive(pid)) return false;
   const commandLine = readProcessCommandLine(pid);
   if (!commandLine) return false;
   return /\bserve\b/.test(commandLine)
