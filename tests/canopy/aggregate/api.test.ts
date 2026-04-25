@@ -87,7 +87,7 @@ describe('handleGetSessionCanopy', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns aggregate + reads for a session with data', async () => {
+  it('returns the flat aggregate for a session with data', async () => {
     const sessionId = 'sess-api-1';
     seedSession(sessionId);
     seedCanopyEntry('a.ts', 1000);
@@ -96,27 +96,20 @@ describe('handleGetSessionCanopy', () => {
 
     const res = await handleGetSessionCanopy(makeReq({ params: { id: sessionId } }));
     expect(res.status ?? 200).toBe(200);
-    const body = res.body as Record<string, unknown>;
-    expect(body.session_id).toBe(sessionId);
-    const agg = body.aggregate as Record<string, number | null>;
-    expect(agg.injections_offered).toBe(1);
-    expect(agg.tokens_saved).toBe(920);
-    const reads = body.reads as Array<Record<string, unknown>>;
-    expect(reads.length).toBe(1);
-    expect(reads[0].file_path).toBe('a.ts');
-    expect(reads[0].canopy_injection_tokens).toBe(80);
+    const body = res.body as Record<string, number | null>;
+    expect(body.canopy_injections_offered).toBe(1);
+    expect(body.canopy_tokens_saved).toBe(920);
   });
 
-  it('returns NULL aggregate for a pre-feature session', async () => {
+  it('returns NULL fields for a pre-feature session', async () => {
     const sessionId = 'sess-api-prefeature';
     seedSession(sessionId);
     // Don't materialize → all canopy columns stay NULL.
 
     const res = await handleGetSessionCanopy(makeReq({ params: { id: sessionId } }));
-    const body = res.body as Record<string, unknown>;
-    const agg = body.aggregate as Record<string, number | null>;
-    expect(agg.injections_offered).toBeNull();
-    expect(agg.tokens_saved).toBeNull();
+    const body = res.body as Record<string, number | null>;
+    expect(body.canopy_injections_offered).toBeNull();
+    expect(body.canopy_tokens_saved).toBeNull();
   });
 });
 
@@ -159,9 +152,7 @@ describe('handleGetCanopyToolCallBlob', () => {
     expect(body.injection_tokens).toBe(80);
   });
 
-  it('returns reason="compose_unavailable" when the canopy_entries row exists but Track B compose is not loaded', async () => {
-    // Track B's compose module isn't on this branch, so the dynamic import
-    // resolves null and the handler degrades cleanly.
+  it('returns the composed blob when canopy_entries row exists', async () => {
     const sessionId = 'sess-api-blob-3';
     seedSession(sessionId);
     seedCanopyEntry('present.ts', 800);
@@ -172,11 +163,9 @@ describe('handleGetCanopyToolCallBlob', () => {
     }));
     const body = res.body as Record<string, unknown>;
     expect(body.file_path).toBe('present.ts');
-    // On this branch (Track B not merged) the helper is unavailable, so
-    // the API surfaces the reason rather than a blob. Once Track B lands
-    // and exports composeBlob, this will start returning a string.
-    expect(body.reason).toBe('compose_unavailable');
-    expect(body.blob).toBeNull();
+    expect(typeof body.blob).toBe('string');
+    expect((body.blob as string).length).toBeGreaterThan(0);
+    expect(body.reason).toBeNull();
   });
 });
 
@@ -204,10 +193,13 @@ describe('handleGetCanopyRollup', () => {
     `).run('s1');
 
     const res = await handleGetCanopyRollup(makeReq());
-    const body = res.body as Record<string, number>;
-    expect(body.sessions_with_data).toBe(1);
+    const body = res.body as Record<string, number | null>;
+    expect(body.sessions_with_canopy).toBe(1);
     expect(body.total_tokens_saved).toBe(1200);
-    expect(body.skip_ratio).toBeCloseTo(0.75, 5);
+    expect(body.avg_tokens_saved_per_session).toBe(1200);
+    expect(body.injection_effectiveness_ratio).toBeCloseTo(0.75, 5);
+    expect(body.total_injections_offered).toBe(4);
+    expect(body.total_skips_after_injection).toBe(3);
   });
 
   it('parses since/until query params', async () => {
@@ -228,8 +220,8 @@ describe('handleGetCanopyRollup', () => {
     `).run('new');
 
     const res = await handleGetCanopyRollup(makeReq({ query: { since: '300' } }));
-    const body = res.body as Record<string, number>;
-    expect(body.sessions_with_data).toBe(1);
+    const body = res.body as Record<string, number | null>;
+    expect(body.sessions_with_canopy).toBe(1);
     expect(body.total_tokens_saved).toBe(90);
   });
 });

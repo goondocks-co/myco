@@ -92,25 +92,17 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
   const session = getSession(sessionId);
   if (!session) return notFound('session');
 
-  const reads = listCanopyReads(null, sessionId);
-
-  // Pull aggregates from the row directly (materialized at last Stop). For
-  // pre-feature sessions every column is NULL — the UI hides the tile in
-  // that case (see Track D Task D.1).
-  const aggregate = {
-    injections_offered: session.canopy_injections_offered,
-    injection_total_tokens: session.canopy_injection_total_tokens,
-    skips_after_injection: session.canopy_skips_after_injection,
-    reads_after_injection: session.canopy_reads_after_injection,
-    tokens_saved: session.canopy_tokens_saved,
-    redundant_reads: session.canopy_redundant_reads,
-  };
-
+  // Flat shape with column-name parity (see SessionCanopyAggregate in
+  // packages/myco/ui/src/hooks/use-canopy.ts). Pre-feature sessions return
+  // every field as NULL; the UI hides the tile when that happens.
   return {
     body: {
-      session_id: sessionId,
-      aggregate,
-      reads,
+      canopy_injections_offered: session.canopy_injections_offered,
+      canopy_injection_total_tokens: session.canopy_injection_total_tokens,
+      canopy_skips_after_injection: session.canopy_skips_after_injection,
+      canopy_reads_after_injection: session.canopy_reads_after_injection,
+      canopy_tokens_saved: session.canopy_tokens_saved,
+      canopy_redundant_reads: session.canopy_redundant_reads,
     },
   };
 };
@@ -182,8 +174,27 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
   const since = parseEpochSeconds(req.query.since);
   const until = parseEpochSeconds(req.query.until);
 
-  const rollup = rollupCanopy(null, { since, until });
-  return { body: rollup };
+  const r = rollupCanopy(null, { since, until });
+  // Reshape for the UI (see CanopyRollup in use-canopy.ts). Field renames +
+  // two derived metrics that are cheaper to compute here than in React.
+  const sessionsWithCanopy = r.sessions_with_data ?? 0;
+  const totalSaved = r.total_tokens_saved ?? 0;
+  const totalOffered = r.total_injections_offered ?? 0;
+  const totalSkips = r.total_skips_after_injection ?? 0;
+  return {
+    body: {
+      total_tokens_saved: r.total_tokens_saved,
+      sessions_with_canopy: r.sessions_with_data,
+      avg_tokens_saved_per_session: sessionsWithCanopy > 0
+        ? Math.round(totalSaved / sessionsWithCanopy)
+        : null,
+      total_injections_offered: r.total_injections_offered,
+      total_skips_after_injection: r.total_skips_after_injection,
+      injection_effectiveness_ratio: totalOffered > 0
+        ? totalSkips / totalOffered
+        : null,
+    },
+  };
 };
 
 // ---------------------------------------------------------------------------
