@@ -459,12 +459,17 @@ jobs:
               --sort=-version:refname | head -1 || true)
           fi
 
+          # Use git log's own -n limit instead of `| head -N`. With
+          # `set -euo pipefail`, head closing the pipe causes git to exit
+          # SIGPIPE (141) and the whole step fails — first-time releases for
+          # a new prefix hit this because the fallback `git log` walks the
+          # entire repo history.
           if [ -n "$PREVIOUS_TAG" ]; then
-            COMMITS=$(git log "${PREVIOUS_TAG}..HEAD" --pretty=format:"- %s" --no-merges | head -50)
+            COMMITS=$(git log -n 50 "${PREVIOUS_TAG}..HEAD" --pretty=format:"- %s" --no-merges)
             COMMIT_COUNT=$(git log "${PREVIOUS_TAG}..HEAD" --oneline --no-merges | wc -l | tr -d ' ')
             RANGE_BLURB="${COMMIT_COUNT} commits since ${PREVIOUS_TAG}"
           else
-            COMMITS=$(git log --pretty=format:"- %s" --no-merges | head -20)
+            COMMITS=$(git log -n 20 --pretty=format:"- %s" --no-merges)
             RANGE_BLURB="initial release"
           fi
 
