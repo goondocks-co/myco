@@ -478,6 +478,8 @@ jobs:
             myco)            DISPLAY_NAME="Myco" ;;
             myco-team)       DISPLAY_NAME="Myco Team" ;;
             myco-collective) DISPLAY_NAME="Myco Collective" ;;
+            myco-hub)        DISPLAY_NAME="Myco Hub" ;;
+            myco-shared)     DISPLAY_NAME="Myco Shared" ;;
             *)               DISPLAY_NAME="$PACKAGE_NAME" ;;
           esac
 
