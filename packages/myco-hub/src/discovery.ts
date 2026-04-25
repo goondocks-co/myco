@@ -1,10 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { findPidsListeningInRange, findVaultForProcess } from './process.js';
+import {
+  PORT_RANGE_END,
+  PORT_RANGE_START,
+  findPidsListeningInRange,
+  findVaultForProcess,
+  readJsonFile,
+} from '@goondocks/myco-shared';
 import { upsertProjectRegistration } from './registry.js';
 
-export const MYCO_DAEMON_PORT_START = 19200;
-export const MYCO_DAEMON_PORT_END = 29199;
+export const MYCO_DAEMON_PORT_START = PORT_RANGE_START;
+export const MYCO_DAEMON_PORT_END = PORT_RANGE_END;
 
 export interface ProjectRecord {
   id: string;
@@ -72,11 +78,7 @@ export function isVault(vaultDir: string): boolean {
 }
 
 export function readDaemonJson(vaultDir: string): DaemonJson | null {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8')) as DaemonJson;
-  } catch {
-    return null;
-  }
+  return readJsonFile(path.join(vaultDir, 'daemon.json')) as DaemonJson | null;
 }
 
 export function readRuntimeCommand(vaultDir: string): string | null {

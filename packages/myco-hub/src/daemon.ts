@@ -1,6 +1,14 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  cleanStaleDaemonJson,
+  findPidsListeningInRange,
+  findVaultForProcess,
+  isProcessAlive,
+  terminateProcess,
+  type PortOwner,
+} from '@goondocks/myco-shared';
 import { appendLog } from './paths.js';
 import {
   MYCO_DAEMON_PORT_END,
@@ -9,7 +17,6 @@ import {
   readRuntimeCommand,
   type ProjectRecord,
 } from './discovery.js';
-import { findPidsListeningInRange, findVaultForProcess, isProcessAlive, type PortOwner } from './process.js';
 
 const HEALTH_TIMEOUT_MS = 1500;
 const START_RETRY_DELAYS_MS = [100, 200, 300, 500, 800, 1200, 1800];
@@ -99,35 +106,12 @@ export async function stopProject(project: ProjectRecord): Promise<ProjectRuntim
     if (isProcessAlive(owner.pid)) pids.add(owner.pid);
   }
 
-  for (const pid of pids) {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // already gone
-    }
-  }
-  await waitForExit(pids, STOP_GRACE_MS);
+  await Promise.all([...pids].map((pid) => terminateProcess(pid, {
+    graceMs: STOP_GRACE_MS,
+    pollMs: STOP_POLL_MS,
+  })));
 
-  for (const pid of pids) {
-    if (!isProcessAlive(pid)) continue;
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // already gone
-    }
-  }
-  await waitForExit(pids, STOP_POLL_MS * 10);
-
-  try {
-    const jsonPath = path.join(project.vaultDir, 'daemon.json');
-    const current = readDaemonJson(project.vaultDir);
-    if (!current?.pid || !isProcessAlive(current.pid) || pids.has(current.pid) || !isProjectPid(project, current.pid)) {
-      fs.unlinkSync(jsonPath);
-    }
-  } catch {
-    // absent or owned by a successor
-  }
-
+  cleanStaleDaemonJson(project.vaultDir, [...pids]);
   return getRuntime(project);
 }
 
@@ -191,13 +175,6 @@ function emptyRuntime(status: ProjectStatus): ProjectRuntime {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForExit(pids: Set<number>, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while ([...pids].some(isProcessAlive) && Date.now() < deadline) {
-    await sleep(STOP_POLL_MS);
-  }
 }
 
 function samePath(actual: string | null, expected: string): boolean {

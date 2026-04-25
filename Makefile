@@ -41,7 +41,7 @@ watch:
 	npm run build:watch
 
 clean:
-	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist
+	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist packages/myco-shared/dist
 
 install:
 	npm install

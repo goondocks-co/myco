@@ -536,7 +536,7 @@ export function renderHubHtml(): string {
     <aside class="sidebar" aria-label="Hub navigation">
       <div class="brand">
         <div class="brand-mark"><span>myco hub</span><span class="brand-dot"></span></div>
-        <div class="brand-subtitle">Local Daemon Network</div>
+        <div class="brand-subtitle">Local</div>
       </div>
       <nav class="nav">
         <a class="nav-item active" href="/"><span>Dashboard</span><span class="nav-kicker">live</span></a>

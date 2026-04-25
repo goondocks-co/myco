@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @goondocks/myco && npm run build:packages",
+    "build": "npm run build -w @goondocks/myco-shared && npm run build -w @goondocks/myco && npm run build:packages",
     "build:packages": "npm run build -w @goondocks/myco-team && npm run build -w @goondocks/myco-collective && npm run build -w @goondocks/myco-hub",
     "build:core": "npm run build:core -w @goondocks/myco",
     "build:ui": "npm run build:ui -w @goondocks/myco",

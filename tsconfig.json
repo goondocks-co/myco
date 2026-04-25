@@ -20,6 +20,7 @@
       "@myco-collective/*": ["./packages/myco-collective/src/*"],
       "@myco-hub/*": ["./packages/myco-hub/src/*"],
       "@myco-deploy/*": ["./packages/myco-deploy/src/*"],
+      "@goondocks/myco-shared": ["./packages/myco-shared/src/index.ts"],
       "react": ["./node_modules/react"],
       "react-dom": ["./node_modules/react-dom"],
       "react/jsx-runtime": ["./node_modules/react/jsx-runtime.js"],
@@ -29,7 +30,7 @@
       "react-router": ["./node_modules/react-router/dist/development/index.mjs"]
     }
   },
-  "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-hub/src/**/*", "packages/myco-deploy/src/**/*"],
+  "include": ["packages/myco/src/**/*", "packages/myco-team/src/**/*", "packages/myco-collective/src/**/*", "packages/myco-hub/src/**/*", "packages/myco-shared/src/**/*", "packages/myco-deploy/src/**/*"],
   "exclude": [
     "node_modules",
     "dist",
