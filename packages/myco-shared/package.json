@@ -1,0 +1,46 @@
+{
+  "name": "@goondocks/myco-shared",
+  "version": "0.1.0",
+  "description": "Shared internal helpers (process, port, browser, JSON) for Myco packages",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/goondocks-co/myco/tree/main/packages/myco-shared",
+  "bugs": {
+    "url": "https://github.com/goondocks-co/myco/issues"
+  },
+  "keywords": [
+    "myco",
+    "internal"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goondocks-co/myco.git",
+    "directory": "packages/myco-shared"
+  },
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc --noEmit",
+    "test": "echo 'myco-shared tests run from repo root'"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.0.0",
+    "typescript": "^6.0.3"
+  }
+}

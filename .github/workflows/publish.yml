@@ -9,6 +9,8 @@ on:
       - 'myco-team/v*.*.*-*'
       - 'myco-collective/v*.*.*'
       - 'myco-collective/v*.*.*-*'
+      - 'myco-shared/v*.*.*'
+      - 'myco-shared/v*.*.*-*'
 
 permissions:
   contents: write
@@ -51,6 +53,11 @@ jobs:
               PACKAGE_NAME="@goondocks/myco-collective"
               PACKAGE_DIR="packages/myco-collective"
               TARBALL_PREFIX="goondocks-myco-collective"
+              ;;
+            myco-shared)
+              PACKAGE_NAME="@goondocks/myco-shared"
+              PACKAGE_DIR="packages/myco-shared"
+              TARBALL_PREFIX="goondocks-myco-shared"
               ;;
             *)
               echo "Unsupported release tag: $TAG_NAME" >&2

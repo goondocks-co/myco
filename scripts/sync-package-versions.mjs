@@ -35,6 +35,13 @@ const PACKAGE_TARGETS = [
       'packages/myco-collective/worker/package.json',
     ],
   },
+  {
+    envKey: 'MYCO_SHARED_VERSION',
+    tagPrefix: 'myco-shared',
+    files: [
+      'packages/myco-shared/package.json',
+    ],
+  },
 ];
 
 function readJson(filePath) {

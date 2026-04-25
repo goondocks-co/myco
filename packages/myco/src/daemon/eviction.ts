@@ -21,7 +21,6 @@
  * matching, and evicts them all.
  */
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,6 +29,23 @@ import {
   DAEMON_EVICT_POLL_MS,
   DAEMON_EVICT_TIMEOUT_MS,
 } from '../constants.js';
+import {
+  cleanStaleDaemonJson,
+  findPidsListeningOn,
+  findVaultFromCwd,
+  isProcessAlive,
+  parseLsofOutput,
+  readProcessCwd,
+  terminateProcess,
+} from '@goondocks/myco-shared';
+
+export {
+  findPidsListeningOn,
+  findVaultFromCwd,
+  parseLsofOutput,
+  readProcessCwd,
+  terminateProcess,
+};
 
 /** How many ports above the canonical to scan for stale daemons. */
 const EVICT_PORT_SCAN_RANGE = 10;
@@ -99,7 +115,6 @@ export async function evictDaemonsForVault(
   // PIDs. Leaving it can cause subsequent startups to "step aside" from a
   // process we just killed.
   cleanStaleDaemonJson(vaultDir, targets.map((t) => t.pid));
-
   return targets;
 }
 
@@ -136,65 +151,6 @@ export function findDaemonTargetsForVault(
 }
 
 // ---------------------------------------------------------------------------
-// Process termination
-// ---------------------------------------------------------------------------
-
-interface TerminateOpts {
-  graceMs: number;
-  pollMs: number;
-  logger?: EvictionLogger;
-}
-
-/** SIGTERM → poll → SIGKILL → verify. Resolves when the process is gone. */
-export async function terminateProcess(pid: number, opts: TerminateOpts): Promise<void> {
-  const { graceMs, pollMs, logger } = opts;
-
-  if (!isProcessAlive(pid)) return;
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    return; // already dead between isAlive and kill
-  }
-
-  if (await waitForProcessExit(pid, graceMs, pollMs)) return;
-
-  logger?.warn(LOG_KIND, 'Daemon did not exit after SIGTERM, escalating to SIGKILL', {
-    pid,
-    grace_ms: graceMs,
-  });
-
-  try {
-    process.kill(pid, 'SIGKILL');
-  } catch {
-    return; // died during the escalation window
-  }
-
-  // Short verify window — the kernel normally reaps promptly after SIGKILL.
-  if (await waitForProcessExit(pid, pollMs * 5, pollMs)) return;
-
-  logger?.warn(LOG_KIND, 'Daemon still alive after SIGKILL', { pid });
-}
-
-/** Poll `process.kill(pid, 0)` until it throws (dead) or the deadline passes. */
-async function waitForProcessExit(pid: number, timeoutMs: number, pollMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return true;
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return !isProcessAlive(pid);
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------
 
@@ -207,60 +163,6 @@ function readDaemonJsonPid(vaultDir: string): number | undefined {
   } catch {
     return undefined;
   }
-}
-
-interface PortOwner {
-  port: number;
-  pid: number;
-}
-
-/**
- * Return PIDs currently LISTENing on any of the given ports, via `lsof`.
- *
- * Shelling out to `lsof` is a deliberate choice: Node's net APIs only report
- * whether a port is bindable, not who owns it. `lsof` is present on both
- * Darwin and Linux; the Bun single-file binary can invoke it the same way.
- */
-export function findPidsListeningOn(ports: number[]): PortOwner[] {
-  if (ports.length === 0) return [];
-  const range = formatPortRange(ports);
-
-  let stdout: string;
-  try {
-    stdout = execFileSync(
-      'lsof',
-      ['-iTCP:' + range, '-sTCP:LISTEN', '-nP', '-F', 'pn'],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 },
-    );
-  } catch {
-    // `lsof` exits non-zero when nothing matches — treat as "no squatters".
-    return [];
-  }
-
-  return parseLsofOutput(stdout);
-}
-
-/**
- * Parse the `-F pn` field-formatted output of `lsof`. Each record starts with
- * `p<pid>`; subsequent `n` lines give the name (e.g. `127.0.0.1:21039`) which
- * we parse to extract the listening port.
- */
-export function parseLsofOutput(stdout: string): PortOwner[] {
-  const owners: PortOwner[] = [];
-  let currentPid: number | undefined;
-  for (const line of stdout.split('\n')) {
-    if (line.startsWith('p')) {
-      const pid = Number(line.slice(1));
-      currentPid = Number.isFinite(pid) ? pid : undefined;
-    } else if (line.startsWith('n') && currentPid !== undefined) {
-      const match = line.match(/:(\d+)$/);
-      if (!match?.[1]) continue;
-      const port = Number(match[1]);
-      if (!Number.isFinite(port)) continue;
-      owners.push({ port, pid: currentPid });
-    }
-  }
-  return owners;
 }
 
 /**
@@ -296,57 +198,6 @@ export function isMycoDaemonForVault(pid: number, vaultDir: string): boolean {
   }
 }
 
-/**
- * Read the working directory of process `pid`.
- *
- * - Linux: reads `/proc/<pid>/cwd` as a symlink.
- * - Darwin: parses `lsof -p <pid> -a -d cwd -Fn` field output.
- * - Other platforms: returns null.
- */
-export function readProcessCwd(pid: number): string | null {
-  try {
-    if (process.platform === 'linux') {
-      return fs.readlinkSync(`/proc/${pid}/cwd`);
-    }
-    if (process.platform === 'darwin') {
-      const out = execFileSync(
-        'lsof', ['-p', String(pid), '-a', '-d', 'cwd', '-Fn'],
-        { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 },
-      );
-      // lsof field output: each record is lines prefixed by a tag letter;
-      // `n<path>` carries the cwd.
-      for (const line of out.split('\n')) {
-        if (line.startsWith('n')) return line.slice(1);
-      }
-    }
-  } catch {
-    // Dead pid, permission denied, or unsupported tooling — fall through.
-  }
-  return null;
-}
-
-/**
- * Walk up from `cwd` to the nearest ancestor containing a `.myco/` directory,
- * returning the absolute path to that directory (not the parent). Returns
- * null if no vault is found before the filesystem root.
- *
- * Exported for direct testability without standing up a real process.
- */
-export function findVaultFromCwd(cwd: string): string | null {
-  let dir = cwd;
-  while (true) {
-    const candidate = path.join(dir, '.myco');
-    try {
-      if (fs.statSync(candidate).isDirectory()) return candidate;
-    } catch {
-      // not here
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -355,25 +206,4 @@ function rangeInclusive(lo: number, hi: number): number[] {
   const out: number[] = [];
   for (let p = lo; p <= hi; p++) out.push(p);
   return out;
-}
-
-function formatPortRange(ports: number[]): string {
-  const sorted = [...new Set(ports)].sort((a, b) => a - b);
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
-  if (first === undefined || last === undefined) return '';
-  return first === last ? `${first}` : `${first}-${last}`;
-}
-
-function cleanStaleDaemonJson(vaultDir: string, evictedPids: number[]): void {
-  try {
-    const jsonPath = path.join(vaultDir, 'daemon.json');
-    const raw = fs.readFileSync(jsonPath, 'utf-8');
-    const info = JSON.parse(raw) as { pid?: unknown };
-    if (typeof info.pid === 'number' && evictedPids.includes(info.pid)) {
-      fs.unlinkSync(jsonPath);
-    }
-  } catch {
-    // daemon.json already absent or a sibling wrote a new one — leave it.
-  }
 }

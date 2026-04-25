@@ -1,4 +1,6 @@
 import type http from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import type { ProjectRecord } from './discovery.js';
 import { ensureProjectRunning, getRuntime } from './daemon.js';
 
@@ -75,24 +77,34 @@ export async function proxyProjectRequest(
       res.end();
       return;
     }
-    const upstreamBody = Buffer.from(await upstream.arrayBuffer());
-    if (isHtmlResponse(responseHeaders['content-type'])) {
+
+    const contentType = responseHeaders['content-type'];
+    if (isHtmlResponse(contentType) || isCssResponse(contentType)) {
+      const text = await upstream.text();
+      const rewritten = isHtmlResponse(contentType)
+        ? rewriteHtml(text, prefix)
+        : rewriteCss(text, prefix);
       delete responseHeaders['content-length'];
       responseHeaders['cache-control'] = 'no-cache';
       res.writeHead(upstream.status, responseHeaders);
-      res.end(rewriteHtml(upstreamBody.toString('utf-8'), prefix));
+      res.end(rewritten);
       return;
     }
-    if (isCssResponse(responseHeaders['content-type'])) {
-      delete responseHeaders['content-length'];
-      responseHeaders['cache-control'] = 'no-cache';
-      res.writeHead(upstream.status, responseHeaders);
-      res.end(rewriteCss(upstreamBody.toString('utf-8'), prefix));
-      return;
-    }
+
     res.writeHead(upstream.status, responseHeaders);
-    res.end(upstreamBody);
+    if (!upstream.body) {
+      res.end();
+      return;
+    }
+    await pipeline(
+      Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+      res,
+    );
   } catch (error) {
+    if (res.headersSent) {
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     writeJson(res, 502, {
       error: 'project_proxy_failed',
       message: error instanceof Error ? error.message : String(error),
