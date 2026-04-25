@@ -644,14 +644,13 @@
 </footer>
 
 <script>
-  // Live release + stars from GitHub.
-  // Tag pattern in this repo: "<package>/v<semver>" (e.g. myco/v0.22.0,
-  // myco-team/v0.1.5). The GitHub release name is human-readable
-  // (e.g. "Myco 0.22.0"), so we extract the semver token from release.name
-  // first, fall back to tag_name, and finally strip any leading prefix up to
-  // and including a "v" if all else fails.
-  // Sibling-package versions read directly from each workspace's package.json
-  // on main — that's the source of truth and avoids tag-format guessing.
+  // Versions read directly from each workspace's package.json on main —
+  // that's the source of truth. The previous implementation used the GitHub
+  // "latest release" endpoint, but with releases now cut for sibling
+  // packages (myco-hub, myco-shared, myco-team, myco-collective) the
+  // last-shipped tag wins, which can shadow the main @goondocks/myco
+  // version. Reading package.json keeps the headline version pinned to the
+  // main package regardless of sibling release cadence.
   (function() {
     function setText(id, txt) { var el = document.getElementById(id); if (el) el.textContent = txt; }
     function fmtStars(n) {
@@ -659,30 +658,17 @@
       if (n >= 1000) return '★ ' + (n/1000).toFixed(1).replace(/\.0$/, '') + 'k';
       return '★ ' + n;
     }
-    function extractSemver(src) {
-      var s = (src || '').trim();
-      var m = s.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
-      return m ? m[1] : s.replace(/^.*?v/i, '');
-    }
-    fetch('https://api.github.com/repos/goondocks-co/myco/releases/latest')
+    fetch('https://raw.githubusercontent.com/goondocks-co/myco/main/packages/myco/package.json')
       .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(data) {
-        if (!data || !data.tag_name) {
-          return fetch('https://api.github.com/repos/goondocks-co/myco/releases?per_page=1')
-            .then(function(r) { return r.ok ? r.json() : []; })
-            .then(function(list) { return Array.isArray(list) && list[0] ? list[0] : null; });
-        }
-        return data;
-      })
-      .then(function(rel) {
-        if (!rel) {
+      .then(function(pkg) {
+        var v = pkg && pkg.version;
+        if (!v) {
           setText('nav-version', 'beta');
           setText('hero-version', 'Beta');
           setText('footer-version', 'v—');
           return;
         }
-        var v = extractSemver(rel.name || rel.tag_name);
-        var isBeta = !!rel.prerelease;
+        var isBeta = /-/.test(v);
         setText('nav-version',    (isBeta ? 'beta · ' : '') + 'v' + v);
         setText('hero-version',   (isBeta ? 'Beta · ' : 'Stable · ') + 'v' + v);
         setText('footer-version', 'v' + v);
