@@ -166,7 +166,7 @@ const CapabilitiesSchema = z.object({
    * other symbionts flip this on as their hook surfaces mature.
    */
   preToolUseInjection: z.boolean().default(false),
-}).default({});
+}).default(() => ({ preToolUseInjection: false }));
 
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
 
