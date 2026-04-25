@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco-hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local Myco daemon hub and reverse proxy",
   "type": "module",
   "bin": {
