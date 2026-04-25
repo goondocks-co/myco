@@ -54,6 +54,13 @@ export interface SessionLifecycleDeps {
   // respect the change without a daemon restart.
   liveConfig: { current: MycoConfig };
   vaultDir: string;
+  /**
+   * Holder for the canopy delta runner. Populated after register-power-jobs
+   * has run; the register handler triggers a fire-and-forget delta scan on
+   * each SessionStart so the index stays current with on-disk changes that
+   * happened between sessions.
+   */
+  canopyDelta?: { run: () => Promise<void> };
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +80,9 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     liveConfig,
     vaultDir,
   } = deps;
+  // Read through `deps` on every register call so the holder set after
+  // registerPowerJobs becomes visible to subsequent SessionStart events.
+  const canopyDeltaHolder = (): { run: () => Promise<void> } | undefined => deps.canopyDelta;
 
   /** POST /sessions/register */
   async function handleRegister(req: { body: unknown }): Promise<RouteResponse> {
@@ -112,6 +122,17 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       link: `/sessions/${session_id}`,
       metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
     }, liveConfig.current);
+
+    // Fire-and-forget canopy delta refresh. The runner debounces internally,
+    // so multiple registers (re-attaches, fast switches) collapse cleanly.
+    const delta = canopyDeltaHolder();
+    if (delta) {
+      delta.run().catch((err) => {
+        logger.warn(LOG_KINDS.LIFECYCLE_REGISTER, 'Canopy delta scan failed on register', {
+          error: (err as Error).message,
+        });
+      });
+    }
 
     return { body: { ok: true, sessions: registry.sessions } };
   }

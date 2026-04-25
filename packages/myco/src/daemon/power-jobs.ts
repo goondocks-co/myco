@@ -14,6 +14,7 @@ import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
 import { createBackup } from './backup.js';
 import { resolveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
@@ -45,15 +46,22 @@ export interface PowerJobDeps {
   db: Database;
   machineId: string;
   vaultDir: string;
+  /** Repo root used for canopy scans and any project-rooted job. */
+  projectRoot: string;
   databaseManager: DatabaseMaintenanceManager;
+}
+
+export interface PowerJobsResult {
+  /** Handles for jobs whose runtime is exposed beyond PowerManager (e.g. delta scan from SessionStart). */
+  canopy: CanopyJobsRegistration;
 }
 
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): void {
-  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, databaseManager } = deps;
+export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
+  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, databaseManager } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
@@ -152,4 +160,18 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       });
     },
   });
+
+  // Canopy code intelligence: project_id is the absolute project root —
+  // stable on this machine, no extra plumbing required for the local-only
+  // table.
+  const canopy = registerCanopyJobs(powerManager, {
+    db,
+    logger,
+    machineId,
+    projectRoot,
+    projectId: projectRoot,
+    liveConfig,
+  });
+
+  return { canopy };
 }
