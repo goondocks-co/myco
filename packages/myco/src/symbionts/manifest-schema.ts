@@ -154,6 +154,22 @@ const RegistrationSchema = z.object({
   instructionsFile: z.string().optional(),
 });
 
+/**
+ * Optional capability flags that gate Myco features per symbiont. All
+ * capabilities default to `false` when the field is absent so adding a new
+ * capability never silently activates it for existing symbionts.
+ */
+const CapabilitiesSchema = z.object({
+  /**
+   * Whether this symbiont can carry context injected from a PreToolUse hook
+   * response. Claude Code supports this via hookSpecificOutput.additionalContext;
+   * other symbionts flip this on as their hook surfaces mature.
+   */
+  preToolUseInjection: z.boolean().default(false),
+}).default({});
+
+export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -176,6 +192,7 @@ export const SymbiontManifestSchema = z.object({
   resumeCommand: z.string().optional(),
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
+  capabilities: CapabilitiesSchema.optional(),
 });
 
 export type SymbiontManifest = z.infer<typeof SymbiontManifestSchema>;
