@@ -390,6 +390,13 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [validate-tag, build]
+    # build runs for all tag prefixes via its always() gate; downstream
+    # jobs need the same override or GitHub Actions cascade-skips them
+    # because cross-compile (a transitive ancestor) was skipped.
+    if: |
+      always() &&
+      needs.validate-tag.result == 'success' &&
+      needs.build.result == 'success'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -540,6 +547,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [validate-tag, create-release]
     environment: npm-publish
+    if: |
+      always() &&
+      needs.validate-tag.result == 'success' &&
+      needs.create-release.result == 'success'
     steps:
       - uses: actions/setup-node@v6
         with:
