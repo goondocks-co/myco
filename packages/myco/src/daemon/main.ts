@@ -75,6 +75,7 @@ import { createSessionContextHandler, createPromptContextHandler, createResumeCo
 import { createCortexHandlers } from './api/cortex.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
+import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
@@ -827,6 +828,9 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
+
+  // --- Canopy read-side API routes (Track C of Phase 1) ---
+  registerCanopyReadRoutes(server);
 
   // --- Skill lifecycle API routes ---
   server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
