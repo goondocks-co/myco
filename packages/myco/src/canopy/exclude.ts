@@ -1,15 +1,6 @@
-/**
- * Minimal glob matcher for Canopy exclude patterns. We intentionally do not
- * pull in `minimatch` — the default pattern set only uses three shapes:
- *   1. Bare segment  e.g. `node_modules`, `.git`, `dist`
- *      → matches if any path segment equals the pattern
- *   2. `**\/<name>`    e.g. `**\/package-lock.json`
- *      → matches if the basename equals <name>
- *   3. `**\/<glob>`    e.g. `**\/*.lock`
- *      → matches if the basename matches the glob (* and ? supported)
- *
- * Anything more exotic should be added here with an accompanying test case.
- */
+// Minimal glob matcher for Canopy exclude patterns. We avoid the minimatch dep
+// because the default pattern set only needs three shapes: bare segment,
+// `**/<basename>`, and `**/<glob>` against the basename.
 
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');

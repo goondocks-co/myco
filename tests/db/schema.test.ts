@@ -1187,6 +1187,13 @@ describe('Database schema', () => {
              started_at INTEGER NOT NULL,
              created_at INTEGER NOT NULL
            )`,
+          `CREATE TABLE activities (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             session_id  TEXT NOT NULL REFERENCES sessions(id),
+             tool_name   TEXT NOT NULL,
+             timestamp   INTEGER NOT NULL,
+             created_at  INTEGER NOT NULL
+           )`,
           `CREATE TABLE agent_runs (
              id             TEXT PRIMARY KEY,
              agent_id       TEXT NOT NULL,

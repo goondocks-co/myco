@@ -22,6 +22,9 @@ import {
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
   CANOPY_ENTRIES_TABLE,
+  CANOPY_SESSION_COLUMNS,
+  CANOPY_ACTIVITY_COLUMN,
+  CANOPY_INDEX_DDLS,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -1377,34 +1380,25 @@ function migrateV23ToV24(db: Database): void {
  * All new columns on existing tables are nullable; pre-feature rows stay NULL.
  */
 function migrateV24ToV25(db: Database): void {
+  const existingSessions = getTableColumnSet(db, 'sessions');
+  const sessionPending = CANOPY_SESSION_COLUMNS.filter(([name]) => !existingSessions.has(name));
+
+  const existingActivities = getTableColumnSet(db, 'activities');
+  const [activityName, activityDecl] = CANOPY_ACTIVITY_COLUMN;
+  const activityPending = !existingActivities.has(activityName);
+
   db.prepare('BEGIN').run();
   try {
     db.prepare(CANOPY_ENTRIES_TABLE).run();
 
-    if (tableExists(db, 'sessions')) {
-      const sessionCols = getTableColumnSet(db, 'sessions');
-      const sessionAdds: Array<[string, string]> = [
-        ['canopy_injections_offered', 'ALTER TABLE sessions ADD COLUMN canopy_injections_offered INTEGER'],
-        ['canopy_injection_total_tokens', 'ALTER TABLE sessions ADD COLUMN canopy_injection_total_tokens INTEGER'],
-        ['canopy_skips_after_injection', 'ALTER TABLE sessions ADD COLUMN canopy_skips_after_injection INTEGER'],
-        ['canopy_reads_after_injection', 'ALTER TABLE sessions ADD COLUMN canopy_reads_after_injection INTEGER'],
-        ['canopy_tokens_saved', 'ALTER TABLE sessions ADD COLUMN canopy_tokens_saved INTEGER'],
-        ['canopy_redundant_reads', 'ALTER TABLE sessions ADD COLUMN canopy_redundant_reads INTEGER'],
-      ];
-      for (const [col, stmt] of sessionAdds) {
-        if (!sessionCols.has(col)) db.prepare(stmt).run();
-      }
+    for (const [name, decl] of sessionPending) {
+      db.prepare(`ALTER TABLE sessions ADD COLUMN ${name} ${decl}`).run();
+    }
+    if (activityPending) {
+      db.prepare(`ALTER TABLE activities ADD COLUMN ${activityName} ${activityDecl}`).run();
     }
 
-    if (tableExists(db, 'activities')) {
-      const activitiesCols = getTableColumnSet(db, 'activities');
-      if (!activitiesCols.has('canopy_injection_tokens')) {
-        db.prepare('ALTER TABLE activities ADD COLUMN canopy_injection_tokens INTEGER').run();
-      }
-    }
-
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)').run();
+    for (const ddl of CANOPY_INDEX_DDLS) db.prepare(ddl).run();
 
     db.prepare(
       `INSERT INTO schema_version (version, applied_at)

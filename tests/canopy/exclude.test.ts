@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import { isExcluded } from '@myco/canopy/exclude';
+import { MycoConfigSchema } from '@myco/config/schema';
 
-const DEFAULT_PATTERNS = [
-  'node_modules', '.git', 'dist', 'build', '.next', '.turbo',
-  '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
-];
+// Source the default pattern list from the live schema so this test fails if
+// the defaults drift, instead of silently exercising a stale copy.
+const DEFAULT_PATTERNS = MycoConfigSchema.parse({ version: 3 }).canopy.exclude.patterns;
 
 describe('isExcluded (default patterns)', () => {
   it('excludes node_modules at any depth', () => {

@@ -537,6 +537,31 @@ export const CANOPY_ENTRIES_TABLE = `
     PRIMARY KEY (project_id, path)
   ) WITHOUT ROWID`;
 
+/**
+ * Canopy aggregate column names + decls on the `sessions` table. Shared by
+ * `SESSIONS_TABLE` (initial create), `migrateV24ToV25` (ALTER on existing
+ * vaults), and the query-layer column lists / row interface.
+ */
+export const CANOPY_SESSION_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+  ['canopy_injections_offered', 'INTEGER'],
+  ['canopy_injection_total_tokens', 'INTEGER'],
+  ['canopy_skips_after_injection', 'INTEGER'],
+  ['canopy_reads_after_injection', 'INTEGER'],
+  ['canopy_tokens_saved', 'INTEGER'],
+  ['canopy_redundant_reads', 'INTEGER'],
+];
+
+/** Canopy column on the `activities` (tool-call) table. */
+export const CANOPY_ACTIVITY_COLUMN: readonly [string, string] = [
+  'canopy_injection_tokens',
+  'INTEGER',
+];
+
+export const CANOPY_INDEX_DDLS: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)',
+];
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 export const FTS_TABLES = [
@@ -735,8 +760,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
 
   // Canopy
-  'CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)',
-  'CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)',
+  ...CANOPY_INDEX_DDLS,
 ];
 
 // -- Ordered table creation -------------------------------------------------
