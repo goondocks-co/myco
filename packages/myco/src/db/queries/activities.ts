@@ -59,6 +59,7 @@ export interface ActivityRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  canopy_injection_tokens: number | null;
 }
 
 /** Filter options for `listActivities`. */
@@ -88,6 +89,7 @@ const ACTIVITY_COLUMNS = [
   'processed',
   'content_hash',
   'created_at',
+  'canopy_injection_tokens',
 ] as const;
 
 const SELECT_COLUMNS = ACTIVITY_COLUMNS.join(', ');
@@ -114,6 +116,7 @@ function toActivityRow(row: Record<string, unknown>): ActivityRow {
     processed: row.processed as number,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
+    canopy_injection_tokens: (row.canopy_injection_tokens as number) ?? null,
   };
 }
 

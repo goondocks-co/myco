@@ -81,6 +81,12 @@ export interface SessionRow {
   created_at: number;
   machine_id: string;
   synced_at: number | null;
+  canopy_injections_offered: number | null;
+  canopy_injection_total_tokens: number | null;
+  canopy_skips_after_injection: number | null;
+  canopy_reads_after_injection: number | null;
+  canopy_tokens_saved: number | null;
+  canopy_redundant_reads: number | null;
 }
 
 /** Updatable fields for `updateSession`. */
@@ -151,6 +157,12 @@ const SESSION_COLUMNS = [
   'created_at',
   'machine_id',
   'synced_at',
+  'canopy_injections_offered',
+  'canopy_injection_total_tokens',
+  'canopy_skips_after_injection',
+  'canopy_reads_after_injection',
+  'canopy_tokens_saved',
+  'canopy_redundant_reads',
 ] as const;
 
 const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
@@ -187,6 +199,12 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     created_at: row.created_at as number,
     machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
+    canopy_injections_offered: (row.canopy_injections_offered as number) ?? null,
+    canopy_injection_total_tokens: (row.canopy_injection_total_tokens as number) ?? null,
+    canopy_skips_after_injection: (row.canopy_skips_after_injection as number) ?? null,
+    canopy_reads_after_injection: (row.canopy_reads_after_injection as number) ?? null,
+    canopy_tokens_saved: (row.canopy_tokens_saved as number) ?? null,
+    canopy_redundant_reads: (row.canopy_redundant_reads as number) ?? null,
   };
 }
 

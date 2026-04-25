@@ -21,6 +21,10 @@ import {
   DIGEST_EXTRACT_REVISIONS_TABLE,
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
+  CANOPY_ENTRIES_TABLE,
+  CANOPY_SESSION_COLUMNS,
+  CANOPY_ACTIVITY_COLUMN,
+  CANOPY_INDEX_DDLS,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -60,6 +64,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 22, migrate: (db) => migrateV21ToV22(db) },
   { version: 23, migrate: (db) => migrateV22ToV23(db) },
   { version: 24, migrate: (db) => migrateV23ToV24(db) },
+  { version: 25, migrate: (db) => migrateV24ToV25(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1357,6 +1362,49 @@ function migrateV23ToV24(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(24, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 25 lands the Canopy code-intelligence layer:
+ *   - new `canopy_entries` table (project-scoped source file index)
+ *   - `activities.canopy_injection_tokens` — per-Read injection cost, NULL otherwise
+ *   - six aggregate columns on `sessions` for per-session injection outcomes
+ *   - two indexes on canopy_entries (content_hash lookup, mechanical_updated_at scan)
+ *
+ * All new columns on existing tables are nullable; pre-feature rows stay NULL.
+ */
+function migrateV24ToV25(db: Database): void {
+  const existingSessions = getTableColumnSet(db, 'sessions');
+  const sessionPending = CANOPY_SESSION_COLUMNS.filter(([name]) => !existingSessions.has(name));
+
+  const existingActivities = getTableColumnSet(db, 'activities');
+  const [activityName, activityDecl] = CANOPY_ACTIVITY_COLUMN;
+  const activityPending = !existingActivities.has(activityName);
+
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(CANOPY_ENTRIES_TABLE).run();
+
+    for (const [name, decl] of sessionPending) {
+      db.prepare(`ALTER TABLE sessions ADD COLUMN ${name} ${decl}`).run();
+    }
+    if (activityPending) {
+      db.prepare(`ALTER TABLE activities ADD COLUMN ${activityName} ${activityDecl}`).run();
+    }
+
+    for (const ddl of CANOPY_INDEX_DDLS) db.prepare(ddl).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(25, epochSeconds());
 
     db.prepare('COMMIT').run();
   } catch (err) {

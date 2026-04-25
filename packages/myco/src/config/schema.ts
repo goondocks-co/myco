@@ -181,6 +181,65 @@ const SymbiontEntrySchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+/**
+ * Canopy — the project-local data plane for code intelligence.
+ * Controls collection (scanning, exclusion, refresh cadence). Separate from
+ * what Cortex does with the collected data (see CortexSchema below).
+ */
+const CanopyRefreshSchema = z.object({
+  /** Whether the PowerManager-scheduled background rescan runs at all. */
+  background_enabled: z.boolean().default(true),
+  /** Human-readable period consumed by PowerManager's duration parser. */
+  background_period: z.string().default('1h'),
+});
+
+const CanopyExcludeSchema = z.object({
+  /** Glob/segment patterns skipped during scans. */
+  patterns: z.array(z.string()).default([
+    'node_modules', '.git', 'dist', 'build', '.next', '.turbo',
+    '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
+  ]),
+});
+
+const CanopySchema = z.object({
+  refresh: CanopyRefreshSchema.default(() => CanopyRefreshSchema.parse({})),
+  exclude: CanopyExcludeSchema.default(() => CanopyExcludeSchema.parse({})),
+});
+
+/**
+ * Cortex controls — what Cortex does with collected data.
+ * Nested because the scoped-settings surface groups consumer-side
+ * configuration separately from the data plane.
+ */
+const CortexCanopyInjectionSchema = z.object({
+  /** Master switch for PreToolUse Canopy injection on Read. */
+  enabled: z.boolean().default(true),
+  /** Minimum size_bytes before injection is offered. */
+  size_threshold: z.number().int().default(800),
+});
+
+const CortexCanopyLlmSchema = z.object({
+  /** Enable the Tier 2 `canopy-describe` task. Default off — opt in. */
+  enabled: z.boolean().default(false),
+  /** Reasoning tier hint passed to the provider selector. */
+  reasoning_tier: z.enum(['low', 'medium', 'high']).default('low'),
+  /** Prompt ref resolved under packages/myco/src/prompts/. */
+  prompt_ref: z.string().default('canopy-describe'),
+  /** Hard cap on post-processed description length. */
+  max_description_chars: z.number().int().default(180),
+  /** Retry budget before leaving llm_description NULL. */
+  max_attempts: z.number().int().default(2),
+});
+
+const CortexCanopySchema = z.object({
+  injection: CortexCanopyInjectionSchema.default(() => CortexCanopyInjectionSchema.parse({})),
+  llm: CortexCanopyLlmSchema.default(() => CortexCanopyLlmSchema.parse({})),
+});
+
+const CortexSchema = z.object({
+  canopy: CortexCanopySchema.default(() => CortexCanopySchema.parse({})),
+});
+
 export {
   APPEARANCE_THEMES,
   APPEARANCE_MODES,
@@ -228,6 +287,8 @@ export const MycoConfigSchema = z.preprocess(
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
+    canopy: CanopySchema.default(() => CanopySchema.parse({})),
+    cortex: CortexSchema.default(() => CortexSchema.parse({})),
     appearance: AppearanceConfigSchema,
     symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
   }),
@@ -244,4 +305,6 @@ export type HubConfig = z.infer<typeof HubSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
+export type CanopyConfig = z.infer<typeof CanopySchema>;
+export type CortexConfig = z.infer<typeof CortexSchema>;
 export type SymbiontEntry = z.infer<typeof SymbiontEntrySchema>;
