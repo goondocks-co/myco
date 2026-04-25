@@ -33,6 +33,8 @@ import {
   handleTaskCompleted,
   handleCompact,
 } from './event-handlers.js';
+import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
+import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
@@ -358,6 +360,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
       }
+      // Canopy: rescan the touched file synchronously after activity capture.
+      // Best-effort; handleCanopyToolUse swallows its own errors so the
+      // capture pipeline is never blocked.
+      handleCanopyToolUse({
+        db: getDatabase(),
+        logger,
+        machineId,
+        projectRoot,
+        projectId: projectRoot,
+        toolName,
+        toolInput: event.tool_input,
+      });
     }
 
     if (event.type === 'tool_failure') {
