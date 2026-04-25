@@ -1,1 +1,1 @@
-export { openBrowser } from '@myco-shared/index.js';
+export { openBrowser } from '@goondocks/myco-shared';

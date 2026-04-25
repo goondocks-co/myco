@@ -10,4 +10,4 @@ export {
   parseLinuxListenerOutput,
   parseWindowsTcpConnections,
   type PortOwner,
-} from '@myco-shared/index.js';
+} from '@goondocks/myco-shared';

@@ -9,6 +9,8 @@ on:
       - 'myco-team/v*.*.*-*'
       - 'myco-collective/v*.*.*'
       - 'myco-collective/v*.*.*-*'
+      - 'myco-shared/v*.*.*'
+      - 'myco-shared/v*.*.*-*'
 
 concurrency:
   group: sync-package-versions
@@ -49,7 +51,8 @@ jobs:
           git add package.json package-lock.json \
             packages/myco/package.json packages/myco/ui/package.json \
             packages/myco-team/package.json packages/myco-team/worker/package.json \
-            packages/myco-collective/package.json packages/myco-collective/ui/package.json packages/myco-collective/worker/package.json
+            packages/myco-collective/package.json packages/myco-collective/ui/package.json packages/myco-collective/worker/package.json \
+            packages/myco-shared/package.json
 
           if git diff --cached --quiet; then
             echo "No version changes to commit"

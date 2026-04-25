@@ -6,7 +6,7 @@ import {
   findPidsListeningInRange,
   findVaultForProcess,
   readJsonFile,
-} from '@myco-shared/index.js';
+} from '@goondocks/myco-shared';
 import { upsertProjectRegistration } from './registry.js';
 
 export const MYCO_DAEMON_PORT_START = PORT_RANGE_START;

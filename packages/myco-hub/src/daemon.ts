@@ -8,7 +8,7 @@ import {
   isProcessAlive,
   terminateProcess,
   type PortOwner,
-} from '@myco-shared/index.js';
+} from '@goondocks/myco-shared';
 import { appendLog } from './paths.js';
 import {
   MYCO_DAEMON_PORT_END,

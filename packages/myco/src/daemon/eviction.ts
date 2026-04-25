@@ -37,7 +37,7 @@ import {
   parseLsofOutput,
   readProcessCwd,
   terminateProcess,
-} from '@myco-shared/index.js';
+} from '@goondocks/myco-shared';
 
 export {
   findPidsListeningOn,

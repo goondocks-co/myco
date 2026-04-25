@@ -3,4 +3,4 @@
  * package can keep using the historical `@myco/utils/json` import path.
  */
 
-export { tryParseJson, readJsonFile } from '@myco-shared/index.js';
+export { tryParseJson, readJsonFile } from '@goondocks/myco-shared';
