@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { vi } from '../helpers/vi-shim.js';
-import { buildHubProjectMetadata } from '@myco/daemon/hub-registration.js';
+import { buildHubProjectMetadata, registerWithHub } from '@myco/daemon/hub-registration.js';
 
 describe('daemon hub registration metadata', () => {
   it('uses project runtime.command as the runtime source of truth', () => {
@@ -31,6 +31,58 @@ describe('daemon hub registration metadata', () => {
       expect(metadata.startedAt).toBe('2026-04-24T00:00:00.000Z');
     } finally {
       readFileSync.mockRestore();
+    }
+  });
+
+  it('registers with the configured hub URL using JSON metadata', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('MYCO_HUB_URL', 'http://127.0.0.1:21000/');
+
+    try {
+      const metadata = {
+        name: 'example',
+        projectRoot: '/tmp/example',
+        vaultDir: '/tmp/example/.myco',
+        machineId: 'local_abc',
+        port: 21039,
+        pid: 1234,
+        version: '0.22.3',
+        startedAt: null,
+        runtimeCommand: '/tmp/myco-dev',
+      };
+
+      await expect(registerWithHub(metadata)).resolves.toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://127.0.0.1:21000/api/daemon/register');
+      expect(init.method).toBe('POST');
+      expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+      expect(JSON.parse(String(init.body))).toEqual(metadata);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns false when hub registration fails', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('{}', { status: 500 })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await expect(registerWithHub({
+        name: 'example',
+        projectRoot: '/tmp/example',
+        vaultDir: '/tmp/example/.myco',
+        machineId: 'local_abc',
+        port: 21039,
+        pid: 1234,
+        version: '0.22.3',
+        startedAt: null,
+        runtimeCommand: null,
+      })).resolves.toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

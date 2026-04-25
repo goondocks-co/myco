@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CONFIG_PATH, DEFAULT_HOST, DEFAULT_PORT, HUB_DIR, LOG_PATH, PID_PATH, ensureHubDir, loadConfig, saveConfig } from './paths.js';
+import { readProcessCommandLine } from './process.js';
 
 const SERVICE_NAME = 'co.goondocks.myco-hub';
 
@@ -29,27 +30,27 @@ export function uninstallService(): void {
   stopService();
   if (process.platform === 'darwin') {
     const plist = launchAgentPath();
-    spawnSync('launchctl', ['unload', plist], { stdio: 'ignore' });
+    runServiceCommand('launchctl', ['unload', plist], { allowNotLoaded: true });
     fs.rmSync(plist, { force: true });
     return;
   }
   if (process.platform === 'linux') {
-    spawnSync('systemctl', ['--user', 'disable', '--now', `${SERVICE_NAME}.service`], { stdio: 'ignore' });
+    runServiceCommand('systemctl', ['--user', 'disable', '--now', `${SERVICE_NAME}.service`], { allowNotLoaded: true });
     fs.rmSync(systemdServicePath(), { force: true });
-    spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+    runServiceCommand('systemctl', ['--user', 'daemon-reload']);
     return;
   }
 }
 
 export function startService(): void {
   if (process.platform === 'darwin') {
-    spawnSync('launchctl', ['load', '-w', launchAgentPath()], { stdio: 'ignore' });
-    spawnSync('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${SERVICE_NAME}`], { stdio: 'ignore' });
+    runServiceCommand('launchctl', ['load', '-w', launchAgentPath()], { allowAlreadyLoaded: true });
+    runServiceCommand('launchctl', ['kickstart', '-k', `gui/${process.getuid?.()}/${SERVICE_NAME}`]);
     return;
   }
   if (process.platform === 'linux') {
-    spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
-    spawnSync('systemctl', ['--user', 'enable', '--now', `${SERVICE_NAME}.service`], { stdio: 'inherit' });
+    runServiceCommand('systemctl', ['--user', 'daemon-reload']);
+    runServiceCommand('systemctl', ['--user', 'enable', '--now', `${SERVICE_NAME}.service`]);
     return;
   }
   throw new Error('service start is not yet supported on Windows');
@@ -58,21 +59,27 @@ export function startService(): void {
 export function stopService(): void {
   const pid = readPid();
   if (pid) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already stopped */ }
+    if (isHubPid(pid)) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already stopped */ }
+    } else {
+      removePidFile();
+    }
   }
   if (process.platform === 'darwin') {
-    spawnSync('launchctl', ['bootout', `gui/${process.getuid?.()}/${SERVICE_NAME}`], { stdio: 'ignore' });
+    runServiceCommand('launchctl', ['bootout', `gui/${process.getuid?.()}/${SERVICE_NAME}`], { allowNotLoaded: true });
   } else if (process.platform === 'linux') {
-    spawnSync('systemctl', ['--user', 'stop', `${SERVICE_NAME}.service`], { stdio: 'ignore' });
+    runServiceCommand('systemctl', ['--user', 'stop', `${SERVICE_NAME}.service`], { allowNotLoaded: true });
   }
 }
 
 export function serviceStatus(): { running: boolean; pid: number | null; url: string; configPath: string; logPath: string } {
   const config = loadConfig();
   const pid = readPid();
+  const running = pid !== null && isHubPid(pid);
+  if (pid !== null && !running) removePidFile();
   return {
-    running: pid !== null && isAlive(pid),
-    pid,
+    running,
+    pid: running ? pid : null,
     url: `http://${config.host}:${config.port}/`,
     configPath: CONFIG_PATH,
     logPath: LOG_PATH,
@@ -96,6 +103,14 @@ function installLaunchAgent(): void {
   const plistPath = launchAgentPath();
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
   const args = serviceExecArgs();
+  const env = serviceEnvironment();
+  const envXml = Object.entries(env).length > 0
+    ? `  <key>EnvironmentVariables</key>
+  <dict>
+${Object.entries(env).map(([key, value]) => `    <key>${escapeXml(key)}</key>\n    <string>${escapeXml(value)}</string>`).join('\n')}
+  </dict>
+`
+    : '';
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -110,7 +125,7 @@ ${args.map((arg) => `    <string>${escapeXml(arg)}</string>`).join('\n')}
   <true/>
   <key>KeepAlive</key>
   <true/>
-  <key>StandardOutPath</key>
+${envXml}  <key>StandardOutPath</key>
   <string>${LOG_PATH}</string>
   <key>StandardErrorPath</key>
   <string>${LOG_PATH}</string>
@@ -124,6 +139,8 @@ function installSystemdUserService(): void {
   const servicePath = systemdServicePath();
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const args = serviceExecArgs().map(systemdQuote).join(' ');
+  const envLines = Object.entries(serviceEnvironment())
+    .map(([key, value]) => `Environment=${key}=${systemdQuote(value)}`);
   const service = `[Unit]
 Description=Myco local daemon hub
 
@@ -133,6 +150,7 @@ ExecStart=${args}
 Restart=always
 RestartSec=2
 Environment=NODE_ENV=production
+${envLines.join('\n')}
 
 [Install]
 WantedBy=default.target
@@ -142,6 +160,10 @@ WantedBy=default.target
 
 function serviceExecArgs(): string[] {
   return [process.execPath, path.resolve(process.argv[1] ?? ''), 'serve'];
+}
+
+function serviceEnvironment(): Record<string, string> {
+  return process.env.MYCO_HUB_DIR ? { MYCO_HUB_DIR: HUB_DIR } : {};
 }
 
 function launchAgentPath(): string {
@@ -168,6 +190,40 @@ function isAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function isHubPid(pid: number): boolean {
+  if (!isAlive(pid)) return false;
+  const commandLine = readProcessCommandLine(pid);
+  if (!commandLine) return false;
+  return /\bserve\b/.test(commandLine)
+    && (commandLine.includes('myco-hub') || commandLine.includes('packages/myco-hub'));
+}
+
+function removePidFile(): void {
+  fs.rmSync(PID_PATH, { force: true });
+}
+
+function runServiceCommand(
+  command: string,
+  args: string[],
+  options: { allowAlreadyLoaded?: boolean; allowNotLoaded?: boolean } = {},
+): void {
+  const result = spawnSync(command, args, {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (!result.error && result.status === 0) return;
+
+  const stderr = String(result.stderr ?? '').trim();
+  const stdout = String(result.stdout ?? '').trim();
+  const output = [stderr, stdout].filter(Boolean).join('\n');
+  const normalized = output.toLowerCase();
+  if (options.allowAlreadyLoaded && /already|exists|load failed: 5/.test(normalized)) return;
+  if (options.allowNotLoaded && /not loaded|no such process|could not find|not-found|not found|not loaded/.test(normalized)) return;
+
+  const reason = result.error?.message || output || `exit status ${result.status ?? 'unknown'}`;
+  throw new Error(`${command} ${args.join(' ')} failed: ${reason}`);
 }
 
 function escapeXml(input: string): string {

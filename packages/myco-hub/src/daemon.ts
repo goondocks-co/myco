@@ -1,11 +1,20 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readDaemonJson, readRuntimeCommand, type ProjectRecord } from './discovery.js';
-import { isProcessAlive } from './process.js';
+import { appendLog } from './paths.js';
+import {
+  MYCO_DAEMON_PORT_END,
+  MYCO_DAEMON_PORT_START,
+  readDaemonJson,
+  readRuntimeCommand,
+  type ProjectRecord,
+} from './discovery.js';
+import { findPidsListeningInRange, findVaultForProcess, isProcessAlive, type PortOwner } from './process.js';
 
 const HEALTH_TIMEOUT_MS = 1500;
 const START_RETRY_DELAYS_MS = [100, 200, 300, 500, 800, 1200, 1800];
+const STOP_GRACE_MS = 5000;
+const STOP_POLL_MS = 100;
 
 export type ProjectStatus = 'running' | 'starting' | 'stopped' | 'unhealthy';
 
@@ -28,32 +37,42 @@ export async function withRuntime(project: ProjectRecord): Promise<ProjectWithRu
 
 export async function getRuntime(project: ProjectRecord): Promise<ProjectRuntime> {
   const daemon = readDaemonJson(project.vaultDir);
-  if (!daemon?.pid || !daemon.port) {
-    return emptyRuntime('stopped');
+  if (daemon?.pid && daemon.port) {
+    if (isProjectPid(project, daemon.pid)) {
+      const health = await healthCheck(daemon.port);
+      if (!health.ok) {
+        return {
+          status: 'unhealthy',
+          pid: daemon.pid,
+          port: daemon.port,
+          version: daemon.version ?? null,
+          startedAt: daemon.started ?? null,
+          lastHealthAt: null,
+        };
+      }
+
+      return {
+        status: 'running',
+        pid: daemon.pid,
+        port: daemon.port,
+        version: health.version ?? daemon.version ?? null,
+        startedAt: daemon.started ?? null,
+        lastHealthAt: new Date().toISOString(),
+      };
+    }
   }
 
-  const alive = isProcessAlive(daemon.pid);
-  if (!alive) return emptyRuntime('stopped', daemon.pid, daemon.port, daemon.started ?? null);
+  const owner = findProjectPortOwners(project)[0];
+  if (!owner) return emptyRuntime('stopped');
 
-  const health = await healthCheck(daemon.port);
-  if (!health.ok) {
-    return {
-      status: 'unhealthy',
-      pid: daemon.pid,
-      port: daemon.port,
-      version: daemon.version ?? null,
-      startedAt: daemon.started ?? null,
-      lastHealthAt: null,
-    };
-  }
-
+  const health = await healthCheck(owner.port);
   return {
-    status: 'running',
-    pid: daemon.pid,
-    port: daemon.port,
-    version: health.version ?? daemon.version ?? null,
-    startedAt: daemon.started ?? null,
-    lastHealthAt: new Date().toISOString(),
+    status: health.ok ? 'running' : 'unhealthy',
+    pid: owner.pid,
+    port: owner.port,
+    version: health.version ?? daemon?.version ?? null,
+    startedAt: daemon?.started ?? null,
+    lastHealthAt: health.ok ? new Date().toISOString() : null,
   };
 }
 
@@ -71,22 +90,40 @@ export async function ensureProjectRunning(project: ProjectRecord): Promise<Proj
 }
 
 export async function stopProject(project: ProjectRecord): Promise<ProjectRuntime> {
+  const pids = new Set<number>();
   const daemon = readDaemonJson(project.vaultDir);
-  if (daemon?.pid && isProcessAlive(daemon.pid)) {
+  if (daemon?.pid && isProjectPid(project, daemon.pid)) {
+    pids.add(daemon.pid);
+  }
+  for (const owner of findProjectPortOwners(project)) {
+    if (isProcessAlive(owner.pid)) pids.add(owner.pid);
+  }
+
+  for (const pid of pids) {
     try {
-      process.kill(daemon.pid, 'SIGTERM');
+      process.kill(pid, 'SIGTERM');
     } catch {
       // already gone
     }
-    for (let i = 0; i < 20 && isProcessAlive(daemon.pid); i++) {
-      await sleep(100);
+  }
+  await waitForExit(pids, STOP_GRACE_MS);
+
+  for (const pid of pids) {
+    if (!isProcessAlive(pid)) continue;
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already gone
     }
   }
+  await waitForExit(pids, STOP_POLL_MS * 10);
 
   try {
     const jsonPath = path.join(project.vaultDir, 'daemon.json');
     const current = readDaemonJson(project.vaultDir);
-    if (!current?.pid || current.pid === daemon?.pid) fs.unlinkSync(jsonPath);
+    if (!current?.pid || !isProcessAlive(current.pid) || pids.has(current.pid) || !isProjectPid(project, current.pid)) {
+      fs.unlinkSync(jsonPath);
+    }
   } catch {
     // absent or owned by a successor
   }
@@ -106,7 +143,26 @@ function spawnProjectDaemon(project: ProjectRecord): void {
     detached: true,
     stdio: 'ignore',
   });
+  child.once('error', (error) => {
+    appendLog('project daemon spawn failed', {
+      project: project.name,
+      projectRoot: project.projectRoot,
+      runtimeCommand,
+      error: error.message,
+    });
+  });
   child.unref();
+}
+
+function findProjectPortOwners(project: ProjectRecord): PortOwner[] {
+  return findPidsListeningInRange(MYCO_DAEMON_PORT_START, MYCO_DAEMON_PORT_END)
+    .filter((owner) => {
+      return samePath(findVaultForProcess(owner.pid), project.vaultDir);
+    });
+}
+
+function isProjectPid(project: ProjectRecord, pid: number): boolean {
+  return isProcessAlive(pid) && samePath(findVaultForProcess(pid), project.vaultDir);
 }
 
 async function healthCheck(port: number): Promise<{ ok: boolean; version?: string }> {
@@ -140,4 +196,24 @@ function emptyRuntime(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForExit(pids: Set<number>, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while ([...pids].some(isProcessAlive) && Date.now() < deadline) {
+    await sleep(STOP_POLL_MS);
+  }
+}
+
+function samePath(actual: string | null, expected: string): boolean {
+  if (!actual) return false;
+  return normalizePath(actual) === normalizePath(expected);
+}
+
+function normalizePath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
 }

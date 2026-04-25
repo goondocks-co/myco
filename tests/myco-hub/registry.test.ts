@@ -9,6 +9,7 @@ describe('myco-hub project registry', () => {
   beforeAll(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hub-home-'));
     process.env.HOME = tmpHome;
+    process.env.MYCO_HUB_DIR = path.join(tmpHome, '.myco', 'hub');
   });
 
   beforeEach(() => {
@@ -20,6 +21,7 @@ describe('myco-hub project registry', () => {
   afterAll(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
     delete process.env.HOME;
+    delete process.env.MYCO_HUB_DIR;
   });
 
   it('upserts project daemon registrations into the last-seen cache', async () => {
@@ -58,6 +60,7 @@ describe('myco-hub project registry', () => {
     expect(projects).toHaveLength(1);
     expect(projects[0]?.preferredPort).toBe(21040);
     expect(projects[0]?.runtimeCommand).toBe('/tmp/myco-dev');
+    expect(projects[0]?.source).toBe('registration');
   });
 
   it('does not list stale cache entries after the vault is gone', async () => {
@@ -76,5 +79,25 @@ describe('myco-hub project registry', () => {
 
     fs.rmSync(vaultDir, { recursive: true, force: true });
     expect(listKnownProjects()).toEqual([]);
+  });
+
+  it('removes a known project from the hub cache without deleting its vault', async () => {
+    const { upsertProjectRegistration, listKnownProjects, removeKnownProject } = await import('@myco-hub/registry.js');
+    const projectRoot = path.join(tmpHome, 'Repos', 'smoke');
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\n', 'utf-8');
+
+    const project = upsertProjectRegistration({
+      name: 'smoke',
+      projectRoot,
+      vaultDir,
+      machineId: 'local_abc',
+    });
+
+    expect(removeKnownProject(project.id)).toBe(true);
+    expect(listKnownProjects()).toEqual([]);
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(true);
+    expect(removeKnownProject(project.id)).toBe(false);
   });
 });

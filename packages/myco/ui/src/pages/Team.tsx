@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTeamStatus, type TeamStatusResponse } from '../hooks/use-team';
@@ -480,7 +481,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
           <div className="flex items-center justify-between pt-2 border-t border-outline-variant/10">
             <p className="text-xs text-on-surface-variant">
               <span className="text-tertiary font-medium">{status.dead_letter_count} failed</span> record{status.dead_letter_count > 1 ? 's' : ''} — exceeded max retries.{' '}
-              <a href="/logs?component=team-sync&level=error" className="underline hover:text-on-surface">View logs</a>
+              <Link to="/logs?component=team-sync&level=error" className="underline hover:text-on-surface">View logs</Link>
             </p>
             <Button
               variant="outline"

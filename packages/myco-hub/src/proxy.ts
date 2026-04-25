@@ -1,6 +1,6 @@
 import type http from 'node:http';
 import type { ProjectRecord } from './discovery.js';
-import { ensureProjectRunning } from './daemon.js';
+import { ensureProjectRunning, getRuntime } from './daemon.js';
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -21,8 +21,11 @@ export async function proxyProjectRequest(
   prefix: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  options: { startIfNeeded?: boolean } = {},
 ): Promise<void> {
-  const runtime = await ensureProjectRunning(project);
+  const runtime = options.startIfNeeded === false
+    ? await getRuntime(project)
+    : await ensureProjectRunning(project);
   if (runtime.status !== 'running' || !runtime.port) {
     writeJson(res, 503, { error: 'project_daemon_unavailable', status: runtime.status });
     return;
@@ -70,18 +73,106 @@ export async function proxyProjectRequest(
       if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
       responseHeaders[key] = rewriteLocation(value, key, runtime.port, prefix);
     }
-    res.writeHead(upstream.status, responseHeaders);
     if (req.method === 'HEAD') {
+      res.writeHead(upstream.status, responseHeaders);
       res.end();
       return;
     }
-    res.end(Buffer.from(await upstream.arrayBuffer()));
+    const upstreamBody = Buffer.from(await upstream.arrayBuffer());
+    if (isHtmlResponse(responseHeaders['content-type'])) {
+      delete responseHeaders['content-length'];
+      responseHeaders['cache-control'] = 'no-cache';
+      res.writeHead(upstream.status, responseHeaders);
+      res.end(rewriteHtml(upstreamBody.toString('utf-8'), prefix));
+      return;
+    }
+    if (isCssResponse(responseHeaders['content-type'])) {
+      delete responseHeaders['content-length'];
+      responseHeaders['cache-control'] = 'no-cache';
+      res.writeHead(upstream.status, responseHeaders);
+      res.end(rewriteCss(upstreamBody.toString('utf-8'), prefix));
+      return;
+    }
+    res.writeHead(upstream.status, responseHeaders);
+    res.end(upstreamBody);
   } catch (error) {
     writeJson(res, 502, {
       error: 'project_proxy_failed',
       message: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+function isHtmlResponse(contentType: string | undefined): boolean {
+  return (contentType ?? '').toLowerCase().includes('text/html');
+}
+
+function isCssResponse(contentType: string | undefined): boolean {
+  return (contentType ?? '').toLowerCase().includes('text/css');
+}
+
+function rewriteHtml(html: string, prefix: string): string {
+  const rewritten = html.replace(
+    /\b(src|href|action)=("|')\/(?!\/)([^"']*)\2/g,
+    (_match, attr: string, quote: string, value: string) => `${attr}=${quote}${cacheBust(`${prefix}/${value}`)}${quote}`,
+  );
+  const shim = `<script>${hubCompatibilityShim(prefix)}</script>`;
+  if (rewritten.includes('</head>')) return rewritten.replace('</head>', `${shim}</head>`);
+  return `${shim}${rewritten}`;
+}
+
+function rewriteCss(css: string, prefix: string): string {
+  return css.replace(
+    /url\((["']?)\/(?!\/)([^)"']+)\1\)/g,
+    (_match, quote: string, value: string) => `url(${quote}${cacheBust(`${prefix}/${value}`)}${quote})`,
+  );
+}
+
+function cacheBust(value: string): string {
+  const separator = value.includes('?') ? '&' : '?';
+  return `${value}${separator}myco_hub_proxy=1`;
+}
+
+function hubCompatibilityShim(prefix: string): string {
+  return `
+(function () {
+  var prefix = ${JSON.stringify(prefix)};
+  window.__MYCO_HUB_PREFIX__ = prefix;
+  function shouldRewrite(value) {
+    return typeof value === 'string'
+      && value.charAt(0) === '/'
+      && value.indexOf(prefix + '/') !== 0
+      && value.indexOf('/view/') !== 0;
+  }
+  function rewrite(value) {
+    return shouldRewrite(value) ? prefix + value : value;
+  }
+  var originalFetch = window.fetch;
+  window.fetch = function (input, init) {
+    if (typeof input === 'string') return originalFetch.call(this, rewrite(input), init);
+    if (input instanceof URL && input.origin === window.location.origin && shouldRewrite(input.pathname)) {
+      return originalFetch.call(this, rewrite(input.pathname + input.search + input.hash), init);
+    }
+    if (input instanceof Request) {
+      var url = new URL(input.url);
+      if (url.origin === window.location.origin && shouldRewrite(url.pathname)) {
+        return originalFetch.call(this, new Request(rewrite(url.pathname + url.search + url.hash), input), init);
+      }
+    }
+    return originalFetch.call(this, input, init);
+  };
+  var originalOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    if (typeof url === 'string') arguments[1] = rewrite(url);
+    return originalOpen.apply(this, arguments);
+  };
+  if (window.EventSource) {
+    var OriginalEventSource = window.EventSource;
+    window.EventSource = function (url, config) {
+      return new OriginalEventSource(typeof url === 'string' ? rewrite(url) : url, config);
+    };
+  }
+})();`.trim();
 }
 
 function rewriteLocation(value: string, key: string, port: number, prefix: string): string {

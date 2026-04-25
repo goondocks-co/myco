@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import {
   Settings2,
@@ -219,9 +220,9 @@ export function AgentConfig() {
         {!hasAgentProvider && (
           <p className="font-sans text-xs text-on-surface-variant/70">
             Configure an agent provider in{' '}
-            <a href="/settings" className="underline hover:text-on-surface transition-colors">
+            <Link to="/settings" className="underline hover:text-on-surface transition-colors">
               Settings
-            </a>{' '}
+            </Link>{' '}
             to enable agent tasks.
           </p>
         )}

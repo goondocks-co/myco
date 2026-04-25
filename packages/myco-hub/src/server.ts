@@ -1,19 +1,15 @@
 import http from 'node:http';
+import os from 'node:os';
 import { loadConfig, appendLog } from './paths.js';
 import { reconcileRunningDaemons } from './discovery.js';
 import { ensureProjectRunning, restartProject, stopProject, withRuntime } from './daemon.js';
 import { proxyProjectRequest } from './proxy.js';
-import { getKnownProject, listKnownProjects, upsertProjectRegistration } from './registry.js';
-import { renderHubHtml } from './ui.js';
+import { getKnownProject, listKnownProjects, removeKnownProject, upsertProjectRegistration } from './registry.js';
+import { renderHubHtml, renderProjectFrameHtml } from './ui.js';
 
 export async function serve(): Promise<void> {
   const config = loadConfig();
-  const server = http.createServer((req, res) => {
-    void handleRequest(req, res).catch((error) => {
-      appendLog('request failed', { error: error instanceof Error ? error.message : String(error) });
-      writeJson(res, 500, { error: 'hub_request_failed' });
-    });
-  });
+  const server = createHubServer();
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -21,6 +17,15 @@ export async function serve(): Promise<void> {
       server.off('error', reject);
       appendLog('hub started', { host: config.host, port: config.port, pid: process.pid });
       resolve();
+    });
+  });
+}
+
+export function createHubServer(): http.Server {
+  return http.createServer((req, res) => {
+    void handleRequest(req, res).catch((error) => {
+      appendLog('request failed', { error: error instanceof Error ? error.message : String(error) });
+      writeJson(res, 500, { error: 'hub_request_failed' });
     });
   });
 }
@@ -45,17 +50,42 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/daemon/register') {
+    res.writeHead(303, { Location: '/' });
+    res.end();
+    return;
+  }
+
+  const frame = matchProjectFrame(url.pathname);
+  if (frame && req.method === 'GET') {
+    const project = findProject(frame.id);
+    if (!project) {
+      writeJson(res, 404, { error: 'project_not_found' });
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end(renderProjectFrameHtml(project, listKnownProjects()));
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/projects') {
     const config = loadConfig();
     if (config.reconcile_running_daemons) await reconcileRunningDaemons();
     const projects = await Promise.all(listKnownProjects().map(withRuntime));
-    writeJson(res, 200, { projects });
+    writeJson(res, 200, {
+      hub: {
+        host: config.host,
+        hostname: os.hostname(),
+        port: config.port,
+      },
+      projects,
+    });
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/daemon/register') {
     const body = await readJson(req);
-    const project = upsertProjectRegistration(body as Parameters<typeof upsertProjectRegistration>[0]);
+    const project = upsertProjectRegistration(body as Parameters<typeof upsertProjectRegistration>[0], 'registration');
     writeJson(res, 200, { ok: true, project });
     return;
   }
@@ -76,6 +106,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return;
   }
 
+  const forget = matchProjectForget(url.pathname);
+  if (forget && req.method === 'POST') {
+    writeJson(res, 200, { ok: removeKnownProject(forget.id) });
+    return;
+  }
+
   const proxy = matchProxy(url.pathname);
   if (proxy) {
     const project = findProject(proxy.id);
@@ -83,7 +119,9 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       writeJson(res, 404, { error: 'project_not_found' });
       return;
     }
-    await proxyProjectRequest(project, proxy.prefix, req, res);
+    await proxyProjectRequest(project, proxy.prefix, req, res, {
+      startIfNeeded: !isPassiveProxyPath(url.pathname, proxy.prefix),
+    });
     return;
   }
 
@@ -100,11 +138,28 @@ function matchProjectAction(pathname: string): { id: string; action: 'start' | '
   return { id: decodeURIComponent(match[1]), action: match[2] as 'start' | 'stop' | 'restart' };
 }
 
+function matchProjectForget(pathname: string): { id: string } | null {
+  const match = pathname.match(/^\/api\/projects\/([^/]+)\/forget$/);
+  if (!match?.[1]) return null;
+  return { id: decodeURIComponent(match[1]) };
+}
+
 function matchProxy(pathname: string): { id: string; prefix: string } | null {
   const match = pathname.match(/^\/p\/([^/]+)(?:\/|$)/);
   if (!match?.[1]) return null;
   const id = decodeURIComponent(match[1]);
   return { id, prefix: `/p/${match[1]}` };
+}
+
+function matchProjectFrame(pathname: string): { id: string } | null {
+  const match = pathname.match(/^\/view\/([^/]+)(?:\/|$)/);
+  if (!match?.[1]) return null;
+  return { id: decodeURIComponent(match[1]) };
+}
+
+function isPassiveProxyPath(pathname: string, prefix: string): boolean {
+  const upstreamPath = pathname.slice(prefix.length) || '/';
+  return upstreamPath === '/api/stats';
 }
 
 function writeJson(res: http.ServerResponse, status: number, body: unknown): void {

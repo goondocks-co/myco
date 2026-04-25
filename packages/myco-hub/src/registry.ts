@@ -27,6 +27,7 @@ const ProjectsFileSchema = z.object({
     projectRoot: z.string(),
     vaultDir: z.string(),
     machineId: z.string(),
+    source: z.enum(['registration', 'daemon-api', 'process-scan', 'unknown']).optional().default('unknown'),
     preferredPort: z.number().int().min(1).max(65535).nullable(),
     runtimeCommand: z.string().nullable(),
     firstSeenAt: z.string(),
@@ -39,7 +40,10 @@ interface ProjectsFile {
   projects: ProjectRecord[];
 }
 
-export function upsertProjectRegistration(raw: ProjectRegistration): ProjectRecord {
+export function upsertProjectRegistration(
+  raw: ProjectRegistration,
+  source: ProjectRecord['source'] = 'registration',
+): ProjectRecord {
   const registration = RegistrationSchema.parse(raw);
   const now = new Date().toISOString();
   const file = readProjectsFile();
@@ -52,6 +56,7 @@ export function upsertProjectRegistration(raw: ProjectRegistration): ProjectReco
     projectRoot: registration.projectRoot,
     vaultDir: registration.vaultDir,
     machineId: registration.machineId,
+    source,
     preferredPort: registration.port ?? existing?.preferredPort ?? readDaemonJson(registration.vaultDir)?.port ?? null,
     runtimeCommand: registration.runtimeCommand ?? readRuntimeCommand(registration.vaultDir) ?? existing?.runtimeCommand ?? null,
     firstSeenAt: existing?.firstSeenAt ?? now,
@@ -68,10 +73,14 @@ export function upsertProjectRegistration(raw: ProjectRegistration): ProjectReco
 
 export function listKnownProjects(): ProjectRecord[] {
   const file = readProjectsFile();
-  return file.projects
-    .filter((project) => isVault(project.vaultDir))
+  const projects = file.projects.filter((project) => isVault(project.vaultDir));
+  if (projects.length !== file.projects.length) {
+    writeProjectsFile({ ...file, projects });
+  }
+  return projects
     .map((project) => ({
       ...project,
+      source: project.source ?? 'unknown',
       preferredPort: readDaemonJson(project.vaultDir)?.port ?? project.preferredPort,
       runtimeCommand: readRuntimeCommand(project.vaultDir) ?? project.runtimeCommand,
     }));
@@ -79,6 +88,14 @@ export function listKnownProjects(): ProjectRecord[] {
 
 export function getKnownProject(id: string): ProjectRecord | null {
   return listKnownProjects().find((project) => project.id === id) ?? null;
+}
+
+export function removeKnownProject(id: string): boolean {
+  const file = readProjectsFile();
+  const nextProjects = file.projects.filter((project) => project.id !== id);
+  if (nextProjects.length === file.projects.length) return false;
+  writeProjectsFile({ ...file, projects: nextProjects });
+  return true;
 }
 
 function readProjectsFile(): ProjectsFile {

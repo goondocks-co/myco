@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { findPidsListeningInRange, findVaultFromCwd, readProcessCwd } from './process.js';
+import { findPidsListeningInRange, findVaultForProcess } from './process.js';
 import { upsertProjectRegistration } from './registry.js';
 
 export const MYCO_DAEMON_PORT_START = 19200;
@@ -12,6 +12,7 @@ export interface ProjectRecord {
   projectRoot: string;
   vaultDir: string;
   machineId: string;
+  source: 'registration' | 'daemon-api' | 'process-scan' | 'unknown';
   preferredPort: number | null;
   runtimeCommand: string | null;
   firstSeenAt: string;
@@ -27,34 +28,33 @@ export interface DaemonJson {
 }
 
 export async function reconcileRunningDaemons(): Promise<void> {
-  const found = new Set<string>();
+  const found = new Map<string, { pid: number; port: number }>();
   for (const owner of findPidsListeningInRange(MYCO_DAEMON_PORT_START, MYCO_DAEMON_PORT_END)) {
     const metadata = await fetchDaemonMetadata(owner.port);
     if (metadata) {
-      upsertProjectRegistration(metadata);
+      upsertProjectRegistration(metadata, 'daemon-api');
       continue;
     }
 
-    const cwd = readProcessCwd(owner.pid);
-    if (!cwd) continue;
-    const vault = findVaultFromCwd(cwd);
-    if (vault && isVault(vault)) found.add(vault);
+    const vault = findVaultForProcess(owner.pid);
+    if (vault && isVault(vault) && !found.has(vault)) found.set(vault, owner);
   }
 
-  for (const vaultDir of found) {
+  for (const [vaultDir, owner] of found) {
     const projectRoot = path.dirname(vaultDir);
     const daemon = readDaemonJson(vaultDir);
+    const daemonMatchesOwner = daemon?.pid === owner.pid && daemon?.port === owner.port;
     upsertProjectRegistration({
       name: path.basename(projectRoot),
       projectRoot,
       vaultDir,
       machineId: readText(path.join(vaultDir, 'machine_id')) ?? 'unknown',
-      port: daemon?.port ?? null,
-      pid: daemon?.pid ?? null,
-      version: daemon?.version ?? null,
-      startedAt: daemon?.started ?? null,
+      port: owner.port,
+      pid: owner.pid,
+      version: daemonMatchesOwner ? daemon.version ?? null : null,
+      startedAt: daemonMatchesOwner ? daemon.started ?? null : null,
       runtimeCommand: readRuntimeCommand(vaultDir),
-    });
+    }, 'process-scan');
   }
 }
 
@@ -76,21 +76,6 @@ export function readDaemonJson(vaultDir: string): DaemonJson | null {
 
 export function readRuntimeCommand(vaultDir: string): string | null {
   return readText(path.join(vaultDir, 'runtime.command'));
-}
-
-function readConfiguredPort(vaultDir: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
-    const daemonIndex = raw.search(/^daemon:\s*$/m);
-    if (daemonIndex < 0) return null;
-    const tail = raw.slice(daemonIndex);
-    const match = tail.match(/^\s+port:\s*(\d+)\s*$/m);
-    if (!match?.[1]) return null;
-    const port = Number(match[1]);
-    return Number.isInteger(port) ? port : null;
-  } catch {
-    return null;
-  }
 }
 
 async function fetchDaemonMetadata(port: number): Promise<Parameters<typeof upsertProjectRegistration>[0] | null> {
