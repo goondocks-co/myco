@@ -312,13 +312,14 @@ before pushing the release tag.
 **When:** A tag was pushed, but the package did not land on npm. CI may show
 the workflow as `success` overall — that does **not** mean publish ran.
 
-### 4.1 — The four silent-skip modes
+### 4.1 — The five silent-skip modes
 
 Each presents the same surface symptom ("nothing on npm after push"):
 
 | Mode | Root cause | Detection |
 |---|---|---|
 | **Tag-trigger missing** | `on.push.tags` doesn't list the new prefix | No workflow run appears at all under `gh run list --workflow=publish.yml` |
+| **Stale workflow registration** | Triggers were added to the workflow file but GitHub Actions is still using the prior registration; tag pushes match neither old nor new pattern set | No workflow run, even though `on.push.tags` includes the prefix and the tag points at a commit where the workflow file is correct. Reproduces across multiple known-working prefixes. **Fix: a no-op edit to the workflow file (e.g. add a top-level comment), commit, and push — that re-registers the trigger set. Then re-push the tag.** Bit `myco-hub/v0.1.1` for ~35 minutes despite multiple delete-and-recreate attempts |
 | **Validate-tag rejects** | Case branch missing → `*)` falls through → `exit 1` | One job ran (`Validate Release Tag`), conclusion `failure` |
 | **`[skip ci]` on the tagged commit** | Tag points at a commit whose message contains `[skip ci]` | No run; `git log -1 <tag>` shows the marker |
 | **Cascade-skip from transitive needs** | Downstream job's implicit `success()` evaluation skips because an ancestor was skipped | Run appears, build is `success`, but `Create GitHub Release` and/or `Publish to npmjs.org` are `skipped` |
@@ -383,7 +384,38 @@ This pattern bit `myco-team/v0.1.5`, `myco-team/v0.1.6`, and
 gates were fixed in commits `dd4838a7` and `026e06b3`. The git tags exist;
 those versions never made it to npm.
 
-### 4.4 — Recovery: re-tagging vs. version-bumping
+### 4.4 — `Create GitHub Release` exits 141 (SIGPIPE) on first-time prefixes
+
+When a new tag prefix has no prior tag of its own kind, the release-notes
+generator falls back to walking the entire repo log to fill the
+"What's Changed" section. Under `set -euo pipefail` (which the workflow
+uses), the historical pattern `git log --pretty=format:"- %s" --no-merges
+| head -20` blows up: `head` closes the pipe early, `git` receives SIGPIPE
+(exit 141), `pipefail` propagates it, the step exits 141.
+
+**Detection:** `Create GitHub Release` shows `failure`, log ends with
+`Process completed with exit code 141`, the failing step is `Generate
+release notes`. The step's stdout includes the heredoc bodies but no
+git-log output preceding the error.
+
+**Fix:** use git's native `-n N` flag instead of piping to `head`:
+
+```bash
+# ❌ fails under pipefail when there are more than N commits in the range
+COMMITS=$(git log --pretty=format:"- %s" --no-merges | head -20)
+
+# ✅ git limits its own output, no pipe involved
+COMMITS=$(git log -n 20 --pretty=format:"- %s" --no-merges)
+```
+
+The current workflow uses the `-n` form. **Don't reintroduce `| head -N`**
+in any release-notes generator — and, more generally, in any pipefail-
+guarded step that consumes a long-running producer's output.
+
+This bit `myco-hub/v0.1.1` (the first myco-hub release that fired CI),
+fixed in commit `8f9b8b03`.
+
+### 4.5 — Recovery: re-tagging vs. version-bumping
 
 If a tag fired but failed/skipped and **the version isn't on npm yet**:
 ```bash
@@ -400,7 +432,7 @@ git tag <prefix>/vX.Y.(Z+1)
 git push origin <prefix>/vX.Y.(Z+1)
 ```
 
-### 4.5 — Pre-tag verification
+### 4.6 — Pre-tag verification
 
 Before pushing a release tag:
 ```bash
@@ -775,6 +807,8 @@ npm install --save-dev typescript@5.7.2
 | Gotcha | Symptom | Fix |
 |---|---|---|
 | Forgetting one of the four-place wirings for a new package | Tag push triggers nothing OR validate-tag fails OR sync-versions doesn't commit | See Procedure 2.4 — tags trigger, case branch, sync-yml file list, sync-mjs PACKAGE_TARGETS |
+| Stale workflow registration after adding a new trigger pattern | Tag pushes silently fire nothing even though the workflow file is correct, reproducible across multiple known-working prefixes | Make any no-op edit to `publish.yml` (e.g. add a comment), commit, push, then re-push the tag. See Procedure 4.1 |
+| `git log \| head -N` under pipefail | `Create GitHub Release` exits 141 on first-time-prefix releases | Replace with `git log -n N` — git's native limit, no pipe. See Procedure 4.4 |
 | Cascade-skip from transitive needs | Build succeeds, create-release + publish silently skip | Add `if: always() && needs.X.result == 'success'` to every downstream job. See Procedure 4.3 |
 | `npm publish --provenance` locally during bootstrap | Token-source mismatch / ENEEDAUTH | Drop `--provenance`; OIDC is CI-only. Local bootstrap is plain `npm publish --access public` |
 | Pushing a tag before configuring trusted publisher | CI publish 401 | Bootstrap order: local publish → npm Trusted Publishers UI → push tag |
