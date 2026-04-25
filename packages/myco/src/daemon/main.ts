@@ -73,6 +73,7 @@ import {
 import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
+import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import {
@@ -656,6 +657,13 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
+
+  // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
+  server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
+    liveConfig,
+    vaultDir,
+    getDatabase,
+  }));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
