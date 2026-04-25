@@ -44,6 +44,18 @@ export const BUNDLED_AGENT_DEFINITION: AgentDefinition = {
 
 export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
   {
+    "name": "canopy-describe",
+    "displayName": "Canopy Describe",
+    "description": "Populate llm_description on canopy_entries with one-sentence file summaries. Local-first, single-turn per file, no tool surface.",
+    "agent": "myco-agent",
+    "prompt": "This task is dispatched by the canopy-describe PowerManager job, which invokes the per-row executor directly. The agent harness never receives this prompt — it is a placeholder so the YAML satisfies the loader's required-field validation.",
+    "isDefault": false,
+    "toolOverrides": [],
+    "reasoningLevel": "low",
+    "maxTurns": 1,
+    "timeoutSeconds": 600
+  },
+  {
     "name": "cortex-instructions",
     "displayName": "Cortex Instructions",
     "description": "Author compact session-start instructions that teach downstream agents how to use Myco tool behavior correctly, especially retrieval and plan persistence.\n",

@@ -1,0 +1,31 @@
+# =============================================================================
+# Built-in Task: Canopy Describe (Tier 2)
+# =============================================================================
+# Generates one-sentence file summaries for the canopy_entries index.
+#
+# This task does NOT run through the agent harness. It is invoked by a
+# dedicated PowerManager job that calls `runCanopyDescribe()` directly —
+# the LLM gets a fixed prompt, no tool surface, and a single turn per file.
+# The YAML exists so the task surfaces in agent.tasks config (provider
+# overrides, scheduling visibility) and in the UI alongside the rest.
+#
+# Default off — the run loop short-circuits on
+# `cortex.canopy.llm.enabled: false`. Flip it on per-scope from Settings.
+# =============================================================================
+
+name: canopy-describe
+displayName: Canopy Describe
+description: >-
+  Populate llm_description on canopy_entries with one-sentence file
+  summaries. Local-first, single-turn per file, no tool surface.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 1
+timeoutSeconds: 600
+prompt: >-
+  This task is dispatched by the canopy-describe PowerManager job, which
+  invokes the per-row executor directly. The agent harness never receives
+  this prompt — it is a placeholder so the YAML satisfies the loader's
+  required-field validation.
+toolOverrides: []
