@@ -614,10 +614,13 @@ export async function main(): Promise<void> {
   });
 
   // --- Session routes ---
-  const sessionLifecycle = createSessionLifecycleHandlers({
+  // The deps object is mutated after registerPowerJobs so the canopy delta
+  // runner becomes visible to SessionStart triggers.
+  const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor,
     server, powerManager, machineId, logger, liveConfig, vaultDir,
-  });
+  };
+  const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
   server.registerRoute('POST', '/sessions/unregister', sessionLifecycle.handleUnregister);
 
@@ -1090,7 +1093,7 @@ export async function main(): Promise<void> {
   });
 
   // --- Register power-managed jobs ---
-  registerPowerJobs(powerManager, {
+  const powerJobs = registerPowerJobs(powerManager, {
     embeddingManager,
     registry,
     logger,
@@ -1098,9 +1101,23 @@ export async function main(): Promise<void> {
     db,
     machineId,
     vaultDir,
+    projectRoot,
     databaseManager,
   });
   teamSync.registerFlushJob(powerManager);
+
+  // Wire the canopy delta runner into the session-register path so each
+  // SessionStart triggers a fire-and-forget refresh. The runner debounces.
+  (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
+
+  // Initial canopy populate runs in the background — does not block boot.
+  // The delta scan handles steady-state refresh; this fire-and-forget call
+  // covers the first run on a fresh install where the table is empty.
+  powerJobs.canopy.runFullScan().catch((err) => {
+    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
+      error: (err as Error).message,
+    });
+  });
 
   // -- Dynamic task scheduling --
   await registerScheduledTasks(powerManager, {
