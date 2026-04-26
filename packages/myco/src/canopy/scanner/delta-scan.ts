@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createExcludeMatcher } from '../exclude.js';
+import { createLayeredExcludeMatcher } from '../exclude.js';
 import { walkProject } from './walk.js';
 import { scanFile, DEFAULT_MAX_FILE_BYTES } from './scan-file.js';
 import {
@@ -35,7 +35,10 @@ export interface DeltaScanOptions {
 export function deltaScan(opts: DeltaScanOptions): CanopyScanResult {
   const start = Date.now();
   const now = epochSeconds();
-  const isExcluded = createExcludeMatcher(opts.excludePatterns);
+  const isExcluded = createLayeredExcludeMatcher({
+    projectRoot: opts.projectRoot,
+    userPatterns: opts.excludePatterns,
+  });
   const existing = listExistingHashes(opts.db, opts.projectId);
   const visited = new Set<string>();
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_FILE_BYTES;

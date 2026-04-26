@@ -372,6 +372,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         projectId: resolveCanopyProjectId(vaultDir),
         toolName,
         toolInput: event.tool_input,
+        excludePatterns: liveConfig.current.canopy.exclude.patterns,
       });
     }
 

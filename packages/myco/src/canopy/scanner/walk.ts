@@ -4,8 +4,13 @@ import path from 'node:path';
 export interface WalkOptions {
   /** Absolute path to walk. */
   projectRoot: string;
-  /** Returns true when a relative path should be excluded. Compiled once per scan. */
-  isExcluded: (relPath: string) => boolean;
+  /**
+   * Returns true when a relative path should be excluded. Compiled once
+   * per scan. The optional `isDir` flag lets layered matchers (notably
+   * `.gitignore` dir-only rules) make the right call; callers that build
+   * a single-purpose matcher can ignore it.
+   */
+  isExcluded: (relPath: string, isDir?: boolean) => boolean;
 }
 
 /**
@@ -36,12 +41,12 @@ export function* walkProject(opts: WalkOptions): Generator<string> {
       if (e.isSymbolicLink()) continue;
 
       if (e.isDirectory()) {
-        if (opts.isExcluded(relChild)) continue;
+        if (opts.isExcluded(relChild, true)) continue;
         stack.push(relChild);
         continue;
       }
       if (!e.isFile()) continue;
-      if (opts.isExcluded(relChild)) continue;
+      if (opts.isExcluded(relChild, false)) continue;
       yield relChild;
     }
   }

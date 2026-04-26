@@ -23,6 +23,8 @@ export interface HandleToolUseOptions {
   projectId: string;
   toolName: string;
   toolInput: unknown;
+  /** User-custom exclude patterns from `canopy.exclude.patterns`. */
+  excludePatterns?: string[];
 }
 
 /**
@@ -41,6 +43,7 @@ export function handleCanopyToolUse(opts: HandleToolUseOptions): void {
       machineId: opts.machineId,
       projectRoot: opts.projectRoot,
       filePath,
+      excludePatterns: opts.excludePatterns,
     });
     if (result.ok) {
       opts.logger.debug(LOG_KINDS.CANOPY_RESCAN, 'Canopy single-file rescan', {
