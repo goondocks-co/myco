@@ -194,11 +194,14 @@ const CanopyRefreshSchema = z.object({
 });
 
 const CanopyExcludeSchema = z.object({
-  /** Glob/segment patterns skipped during scans. */
-  patterns: z.array(z.string()).default([
-    'node_modules', '.git', 'dist', 'build', '.next', '.turbo',
-    '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
-  ]),
+  /**
+   * Extra glob/segment patterns the scanner should skip on top of the
+   * project's `.gitignore` and Myco's managed segments (handled inside
+   * the scanner). Empty by default — almost every project's `.gitignore`
+   * already declares the right things, and adding patterns here means
+   * "exclude this in addition to what gitignore says".
+   */
+  patterns: z.array(z.string()).default([]),
 });
 
 const CanopySchema = z.object({

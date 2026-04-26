@@ -83,6 +83,29 @@ describe('rescanSingle', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.relPath).toBe('src/b.ts');
   });
+
+  it('refuses to upsert a row for a managed-segment path (e.g. .myco/)', () => {
+    write('.myco/notes.md', 'shhh\n');
+    const r = rescanSingle({
+      db: getDatabase(), projectId, machineId: 'local', projectRoot,
+      filePath: '.myco/notes.md',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('excluded');
+    expect(rowExists('.myco/notes.md')).toBe(false);
+  });
+
+  it('refuses to upsert a row for a gitignored path', () => {
+    write('.gitignore', 'private/\n');
+    write('private/secret.ts', 'shhh\n');
+    const r = rescanSingle({
+      db: getDatabase(), projectId, machineId: 'local', projectRoot,
+      filePath: 'private/secret.ts',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('excluded');
+    expect(rowExists('private/secret.ts')).toBe(false);
+  });
 });
 
 describe('handleCanopyToolUse', () => {

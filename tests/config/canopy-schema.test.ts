@@ -8,9 +8,9 @@ describe('Canopy config defaults', () => {
     const cfg = MycoConfigSchema.parse(minimal);
     expect(cfg.canopy.refresh.background_enabled).toBe(true);
     expect(cfg.canopy.refresh.background_period).toBe('1h');
-    expect(cfg.canopy.exclude.patterns).toContain('node_modules');
-    expect(cfg.canopy.exclude.patterns).toContain('.git');
-    expect(cfg.canopy.exclude.patterns).toContain('**/package-lock.json');
+    // The user-custom layer is empty by default; the scanner now sources
+    // baseline exclusions from `.gitignore` and the symbiont manifests.
+    expect(cfg.canopy.exclude.patterns).toEqual([]);
   });
 
   it('applies cortex.canopy injection defaults', () => {

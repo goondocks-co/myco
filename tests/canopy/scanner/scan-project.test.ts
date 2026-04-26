@@ -6,10 +6,12 @@ import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { scanProject } from '@myco/canopy/scanner/scan-project';
 import { deltaScan } from '@myco/canopy/scanner/delta-scan';
-import { MycoConfigSchema } from '@myco/config/schema';
 
 const PROJECT_ID = 'test-project';
-const DEFAULT_PATTERNS = MycoConfigSchema.parse({ version: 3 }).canopy.exclude.patterns;
+// Schema defaults are now empty — exclusion comes from the per-fixture
+// `.gitignore` plus Myco-managed segments. Tests that depend on
+// `node_modules`/`.git` being skipped write a `.gitignore` for the case.
+const DEFAULT_PATTERNS: string[] = [];
 
 let tmp: string;
 let projectRoot: string;
@@ -50,6 +52,9 @@ const baseOpts = () => ({
 
 describe('scanProject', () => {
   it('populates rows for non-excluded files and respects default exclusions', () => {
+    // Write a project-local .gitignore so the scanner's gitignore layer
+    // does the work that the now-empty default user patterns used to do.
+    write('.gitignore', 'node_modules\n.git\npackage-lock.json\n');
     write('src/a.ts', 'export const a = 1;\n');
     write('src/b.ts', 'export const b = 2;\n');
     write('node_modules/ignored.ts', 'export const x = 1;\n');
@@ -58,9 +63,9 @@ describe('scanProject', () => {
     write('README.md', '# hello\n');
 
     const result = scanProject(baseOpts());
-    expect(result.scanned).toBeGreaterThanOrEqual(3);
-    expect(rowCount()).toBe(3);
-    expect(result.added).toBe(3);
+    // .gitignore + src/a + src/b + README = 4 indexable files
+    expect(rowCount()).toBe(4);
+    expect(result.added).toBe(4);
     expect(result.removed).toBe(0);
   });
 
