@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
@@ -904,7 +904,14 @@ function CanopyTab() {
           <SectionHeader>LLM Descriptions (Tier 2)</SectionHeader>
           <p className="font-sans text-sm text-on-surface-variant">
             Generates one-sentence summaries for each file using the agent provider configured
-            under Settings. Off by default — opt in once a local model is available.
+            under Settings. Off by default — configure the{' '}
+            <Link
+              to="/agent?tab=tasks&task=canopy-describe"
+              className="text-primary underline underline-offset-2 hover:text-primary/80"
+            >
+              canopy-describe task
+            </Link>
+            {' '}to enable.
           </p>
         </div>
 
