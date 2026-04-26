@@ -19,15 +19,6 @@ describe('Canopy config defaults', () => {
     expect(cfg.cortex.canopy.injection.size_threshold).toBe(800);
   });
 
-  it('applies cortex.canopy LLM defaults — off by default, low tier', () => {
-    const cfg = MycoConfigSchema.parse(minimal);
-    expect(cfg.cortex.canopy.llm.enabled).toBe(false);
-    expect(cfg.cortex.canopy.llm.reasoning_tier).toBe('low');
-    expect(cfg.cortex.canopy.llm.prompt_ref).toBe('canopy-describe');
-    expect(cfg.cortex.canopy.llm.max_description_chars).toBe(180);
-    expect(cfg.cortex.canopy.llm.max_attempts).toBe(2);
-  });
-
   it('accepts partial overrides and merges with defaults', () => {
     const cfg = MycoConfigSchema.parse({
       version: 3,
@@ -38,14 +29,6 @@ describe('Canopy config defaults', () => {
     expect(cfg.canopy.refresh.background_enabled).toBe(true); // preserved default
     expect(cfg.cortex.canopy.injection.enabled).toBe(false);
     expect(cfg.cortex.canopy.injection.size_threshold).toBe(800); // preserved default
-  });
-
-  it('rejects invalid reasoning_tier', () => {
-    const result = MycoConfigSchema.safeParse({
-      version: 3,
-      cortex: { canopy: { llm: { reasoning_tier: 'extreme' } } },
-    });
-    expect(result.success).toBe(false);
   });
 
   it('rejects non-integer size_threshold', () => {

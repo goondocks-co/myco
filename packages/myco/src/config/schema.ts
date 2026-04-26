@@ -218,22 +218,8 @@ const CortexCanopyInjectionSchema = z.object({
   size_threshold: z.number().int().default(800),
 });
 
-const CortexCanopyLlmSchema = z.object({
-  /** Enable the Tier 2 `canopy-describe` task. Default off — opt in. */
-  enabled: z.boolean().default(false),
-  /** Reasoning tier hint passed to the provider selector. */
-  reasoning_tier: z.enum(['low', 'medium', 'high']).default('low'),
-  /** Prompt ref resolved under packages/myco/src/prompts/. */
-  prompt_ref: z.string().default('canopy-describe'),
-  /** Hard cap on post-processed description length. */
-  max_description_chars: z.number().int().default(180),
-  /** Retry budget before leaving llm_description NULL. */
-  max_attempts: z.number().int().default(2),
-});
-
 const CortexCanopySchema = z.object({
   injection: CortexCanopyInjectionSchema.default(() => CortexCanopyInjectionSchema.parse({})),
-  llm: CortexCanopyLlmSchema.default(() => CortexCanopyLlmSchema.parse({})),
 });
 
 const CortexSchema = z.object({

@@ -916,8 +916,8 @@ function CanopyTab() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'cortex.canopy.llm.enabled', boolean>
-            path="cortex.canopy.llm.enabled"
+          <ScopedField<'agent.tasks.canopy-describe.schedule.enabled', boolean>
+            path="agent.tasks.canopy-describe.schedule.enabled"
             label="Enable canopy-describe"
             defaultScope="project"
           >
@@ -926,22 +926,22 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'cortex.canopy.llm.reasoning_tier', 'low' | 'medium' | 'high'>
-            path="cortex.canopy.llm.reasoning_tier"
-            label="Reasoning tier"
+          <ScopedField<'agent.tasks.canopy-describe.phases.describe.reasoningLevel', 'low' | 'default' | 'high'>
+            path="agent.tasks.canopy-describe.phases.describe.reasoningLevel"
+            label="Reasoning level"
             defaultScope="project"
           >
             {({ value, onChange }) => (
               <Select
                 value={String(value ?? 'low')}
-                onValueChange={(next) => onChange(next as 'low' | 'medium' | 'high')}
+                onValueChange={(next) => onChange(next as 'low' | 'default' | 'high')}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="default">Default</SelectItem>
                   <SelectItem value="high">High</SelectItem>
                 </SelectContent>
               </Select>
@@ -950,8 +950,8 @@ function CanopyTab() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'cortex.canopy.llm.max_description_chars', number>
-            path="cortex.canopy.llm.max_description_chars"
+          <ScopedField<'agent.tasks.canopy-describe.params.max_description_chars', number>
+            path="agent.tasks.canopy-describe.params.max_description_chars"
             label="Max description characters"
             defaultScope="project"
           >
@@ -966,8 +966,8 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'cortex.canopy.llm.max_attempts', number>
-            path="cortex.canopy.llm.max_attempts"
+          <ScopedField<'agent.tasks.canopy-describe.params.max_attempts', number>
+            path="agent.tasks.canopy-describe.params.max_attempts"
             label="Max retry attempts"
             defaultScope="project"
           >
