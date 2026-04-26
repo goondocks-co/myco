@@ -11,7 +11,6 @@ import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
@@ -898,90 +897,19 @@ function CanopyTab() {
       <Surface
         id="config-section-cortex-canopy-llm"
         level="low"
-        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-2"
       >
-        <div className="space-y-1">
-          <SectionHeader>LLM Descriptions (Tier 2)</SectionHeader>
-          <p className="font-sans text-sm text-on-surface-variant">
-            Generates one-sentence summaries for each file using the agent provider configured
-            under Settings. Off by default — configure the{' '}
-            <Link
-              to="/agent?tab=tasks&task=canopy-describe"
-              className="text-primary underline underline-offset-2 hover:text-primary/80"
-            >
-              canopy-describe task
-            </Link>
-            {' '}to enable.
-          </p>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'agent.tasks.canopy-describe.schedule.enabled', boolean>
-            path="agent.tasks.canopy-describe.schedule.enabled"
-            label="Enable canopy-describe"
-            defaultScope="project"
+        <SectionHeader>LLM Descriptions (Tier 2)</SectionHeader>
+        <p className="font-sans text-sm text-on-surface-variant">
+          One-sentence file summaries that ride along with the injection blob. Configured on the{' '}
+          <Link
+            to="/agent?tab=tasks&task=canopy-describe"
+            className="text-primary underline underline-offset-2 hover:text-primary/80"
           >
-            {({ value, onChange }) => (
-              <Switch checked={value ?? false} onCheckedChange={onChange} />
-            )}
-          </ScopedField>
-
-          <ScopedField<'agent.tasks.canopy-describe.phases.describe.reasoningLevel', 'low' | 'default' | 'high'>
-            path="agent.tasks.canopy-describe.phases.describe.reasoningLevel"
-            label="Reasoning level"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Select
-                value={String(value ?? 'low')}
-                onValueChange={(next) => onChange(next as 'low' | 'default' | 'high')}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="default">Default</SelectItem>
-                  <SelectItem value="high">High</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
-          </ScopedField>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'agent.tasks.canopy-describe.params.max_description_chars', number>
-            path="agent.tasks.canopy-describe.params.max_description_chars"
-            label="Max description characters"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Input
-                type="number"
-                min={40}
-                max={400}
-                value={String(value ?? 180)}
-                onChange={(event) => onChange(Number(event.target.value))}
-              />
-            )}
-          </ScopedField>
-
-          <ScopedField<'agent.tasks.canopy-describe.params.max_attempts', number>
-            path="agent.tasks.canopy-describe.params.max_attempts"
-            label="Max retry attempts"
-            defaultScope="project"
-          >
-            {({ value, onChange }) => (
-              <Input
-                type="number"
-                min={1}
-                max={5}
-                value={String(value ?? 2)}
-                onChange={(event) => onChange(Number(event.target.value))}
-              />
-            )}
-          </ScopedField>
-        </div>
+            canopy-describe task
+          </Link>
+          {' '}— schedule, provider, reasoning level, and per-row caps all live there so a single page is the source of truth.
+        </p>
       </Surface>
     </div>
   );
