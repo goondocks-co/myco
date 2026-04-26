@@ -242,6 +242,15 @@ export async function registerScheduledTasks(
       'has-skill-survey-evidence': () => {
         return getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible;
       },
+      'has-pending-canopy-rows': () => {
+        const row = getDatabase().prepare(
+          `SELECT 1 FROM canopy_entries
+            WHERE llm_description IS NULL
+               OR llm_updated_at < mechanical_updated_at
+            LIMIT 1`,
+        ).get();
+        return row !== undefined;
+      },
     },
     onTaskError: (taskName, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {
