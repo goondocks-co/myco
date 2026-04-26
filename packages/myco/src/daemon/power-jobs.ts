@@ -16,6 +16,7 @@ import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
 import { registerCanopyDescribeJob, type CanopyDescribeJobRegistration } from '@myco/canopy/describe/jobs.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { createBackup } from './backup.js';
 import { resolveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
@@ -164,25 +165,19 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  // Canopy code intelligence: project_id is the absolute project root —
-  // stable on this machine, no extra plumbing required for the local-only
-  // table.
+  const projectId = resolveCanopyProjectId(vaultDir);
   const canopy = registerCanopyJobs(powerManager, {
     db,
     logger,
     machineId,
     projectRoot,
-    projectId: projectRoot,
+    projectId,
     liveConfig,
   });
-
-  // Canopy describe (Tier 2): opt-in LLM summaries. The job ticks on
-  // PowerManager cadence; gating on cortex.canopy.llm.enabled lives inside
-  // runCanopyDescribe so flipping the toggle takes effect on the next tick.
   const canopyDescribe = registerCanopyDescribeJob(powerManager, {
     db,
     logger,
-    projectId: projectRoot,
+    projectId,
     projectRoot,
     liveConfig,
   });

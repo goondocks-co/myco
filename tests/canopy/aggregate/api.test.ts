@@ -137,7 +137,7 @@ describe('handleGetCanopyToolCallBlob', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns reason="entry_missing" when the canopy_entries row is gone', async () => {
+  it('returns 404 entry_missing when the canopy_entries row is gone', async () => {
     const sessionId = 'sess-api-blob-2';
     seedSession(sessionId);
     const tcId = seedRead(sessionId, 'gone.ts', 80, epochNow());
@@ -145,14 +145,13 @@ describe('handleGetCanopyToolCallBlob', () => {
     const res = await handleGetCanopyToolCallBlob(makeReq({
       params: { id: sessionId, tcId: String(tcId) },
     }));
-    const body = res.body as Record<string, unknown>;
-    expect(body.blob).toBeNull();
-    expect(body.reason).toBe('entry_missing');
-    expect(body.file_path).toBe('gone.ts');
-    expect(body.injection_tokens).toBe(80);
+    expect(res.status).toBe(404);
+    const body = res.body as { error?: { code?: string; message?: string } };
+    expect(body.error?.code).toBe('not_found');
+    expect(body.error?.message).toBe('entry_missing');
   });
 
-  it('returns the composed blob when canopy_entries row exists', async () => {
+  it('returns the structured CanopyBlob when canopy_entries row exists', async () => {
     const sessionId = 'sess-api-blob-3';
     seedSession(sessionId);
     seedCanopyEntry('present.ts', 800);
@@ -162,10 +161,11 @@ describe('handleGetCanopyToolCallBlob', () => {
       params: { id: sessionId, tcId: String(tcId) },
     }));
     const body = res.body as Record<string, unknown>;
-    expect(body.file_path).toBe('present.ts');
-    expect(typeof body.blob).toBe('string');
-    expect((body.blob as string).length).toBeGreaterThan(0);
-    expect(body.reason).toBeNull();
+    expect(body.path).toBe('present.ts');
+    expect(typeof body.tokenEstimate).toBe('number');
+    expect(typeof body.lineCount).toBe('number');
+    expect(Array.isArray(body.exports)).toBe(true);
+    expect(Array.isArray(body.imports)).toBe(true);
   });
 });
 

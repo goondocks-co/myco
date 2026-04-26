@@ -34,6 +34,7 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
@@ -368,7 +369,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         logger,
         machineId,
         projectRoot,
-        projectId: projectRoot,
+        projectId: resolveCanopyProjectId(vaultDir),
         toolName,
         toolInput: event.tool_input,
       });

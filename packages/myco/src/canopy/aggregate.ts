@@ -29,11 +29,24 @@ export function materializeCanopyAggregates(
   db?: Database | null,
 ): CanopySessionAggregate | null {
   const handle = db ?? getDatabase();
+  // Most sessions have no Canopy activity (capability off, injection
+  // disabled, or no Read tool calls). Skip the heavier aggregate query +
+  // sessions-row UPDATE in those cases — the columns stay NULL, which the
+  // UI already treats as "no data, hide the tile."
+  try {
+    const probe = handle
+      .prepare(
+        'SELECT 1 FROM activities WHERE session_id = ? AND canopy_injection_tokens IS NOT NULL LIMIT 1',
+      )
+      .get(sessionId);
+    if (!probe) return null;
+  } catch {
+    return null;
+  }
   let agg: CanopySessionAggregate;
   try {
     agg = aggregateSessionCanopy(handle, sessionId);
   } catch {
-    // Read failure shouldn't block the Stop pipeline. Caller logs.
     return null;
   }
 

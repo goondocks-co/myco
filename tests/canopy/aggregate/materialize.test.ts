@@ -100,24 +100,20 @@ describe('materializeCanopyAggregates', () => {
     expect(session!.canopy_redundant_reads).toBe(1);
   });
 
-  it('writes zeros for a session with no Read activities', () => {
+  it('short-circuits and leaves canopy columns NULL for a session with no injections', () => {
     const sessionId = 'sess-mat-empty';
     seedSession(sessionId);
 
     const result = materializeCanopyAggregates(sessionId);
-    expect(result).not.toBeNull();
-    expect(result!.injections_offered).toBe(0);
+    expect(result).toBeNull();
 
     const session = getSession(sessionId);
-    expect(session!.canopy_injections_offered).toBe(0);
-    expect(session!.canopy_injection_total_tokens).toBe(0);
-    expect(session!.canopy_tokens_saved).toBe(0);
+    expect(session!.canopy_injections_offered).toBeNull();
+    expect(session!.canopy_tokens_saved).toBeNull();
   });
 
-  it('is a no-op for a session that does not exist (no row to update)', () => {
-    // No exception, returns the zero aggregate.
+  it('is a no-op for a session that does not exist', () => {
     const result = materializeCanopyAggregates('nonexistent-session');
-    expect(result).not.toBeNull();
-    expect(result!.injections_offered).toBe(0);
+    expect(result).toBeNull();
   });
 });

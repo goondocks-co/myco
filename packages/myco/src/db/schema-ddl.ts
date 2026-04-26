@@ -652,6 +652,8 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_activities_prompt_batch_id ON activities (prompt_batch_id)',
   'CREATE INDEX IF NOT EXISTS idx_activities_tool_name ON activities (tool_name)',
+  // Canopy aggregation skip-resolution: NOT EXISTS over (session_id, tool_name='Read').
+  'CREATE INDEX IF NOT EXISTS idx_activities_session_tool ON activities (session_id, tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON activities (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_activities_processed ON activities (processed)',
 

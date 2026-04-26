@@ -22,6 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
+import { resolveCanopyProjectId } from '../../canopy/identity.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
@@ -56,21 +57,7 @@ interface InjectResponseBody {
   reason?: NoInjectionReason;
 }
 
-/**
- * Project identity for canopy_entries lookup. The scanner upserts under
- * the same key. We use the project root absolute path (vaultDir's parent)
- * because it's stable across daemon restarts and matches what Track A's
- * scanner has access to without any new infrastructure.
- */
-export function projectIdForVault(vaultDir: string): string {
-  return path.dirname(vaultDir);
-}
-
-/**
- * Look up a single canopy_entries row by (project_id, path). Returns null
- * if absent. Encapsulated here so Track C can own a richer
- * db/queries/canopy.ts surface independently.
- */
+/** Look up a single canopy_entries row by (project_id, path). */
 function lookupEntry(db: Database, projectId: string, filePath: string): CanopyEntry | null {
   const row = db.prepare(
     `SELECT
@@ -110,7 +97,7 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
 
     const projectRoot = path.dirname(deps.vaultDir);
-    const projectId = projectIdForVault(deps.vaultDir);
+    const projectId = resolveCanopyProjectId(deps.vaultDir);
     const config = deps.liveConfig.current.cortex.canopy.injection;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
