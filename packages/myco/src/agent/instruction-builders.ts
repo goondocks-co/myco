@@ -15,6 +15,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
+import { getDatabase } from '@myco/db/client.js';
 import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
@@ -64,6 +65,8 @@ export const SKILL_EVOLVE_TASK = 'skill-evolve';
 export const SKILL_SURVEY_TASK = 'skill-survey';
 /** Task name for the Cortex session-start instructions pipeline step. */
 export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
+/** Task name for the canopy-describe Tier 2 task. */
+export const CANOPY_DESCRIBE_TASK = 'canopy-describe';
 
 /** Caps for pre-assembled survey context. */
 const SURVEY_MAX_WISDOM_SPORES = 30;
@@ -778,6 +781,121 @@ export async function buildSkillEvolveInstruction(
 }
 
 // ---------------------------------------------------------------------------
+// canopy-describe
+// ---------------------------------------------------------------------------
+
+const CANOPY_DESCRIBE_FIRST_LINES = 60;
+const CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE = 50;
+
+/** Subset of canopy_entries needed to render a single-row instruction. */
+interface CanopyEntryRow {
+  path: string;
+  language: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  top_comment: string | null;
+}
+
+function parseCanopyJsonArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function readCanopyFirstLines(absolutePath: string, limit: number): Promise<string> {
+  const fs = await import('node:fs/promises');
+  try {
+    const content = await fs.readFile(absolutePath, 'utf-8');
+    return content.split(/\r?\n/).slice(0, limit).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+interface CanopyPendingRow { count: number }
+
+function countPendingCanopyRows(): number {
+  try {
+    const row = getDatabase().prepare(
+      `SELECT COUNT(*) AS count FROM canopy_entries
+        WHERE llm_description IS NULL
+           OR llm_updated_at < mechanical_updated_at`,
+    ).get() as CanopyPendingRow | undefined;
+    return row?.count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function loadCanopyRow(canopyEntryId: string): CanopyEntryRow | undefined {
+  return getDatabase()
+    .prepare('SELECT path, language, exports_json, imports_json, top_comment FROM canopy_entries WHERE path = ? LIMIT 1')
+    .get(canopyEntryId) as CanopyEntryRow | undefined;
+}
+
+/**
+ * Build the instruction for a canopy-describe run.
+ *
+ * Single-row mode (params.canopy_entry_id present): renders a fixed-context
+ * prompt for that one row and tells the agent to call canopy_describe_write
+ * once. Returns undefined if the row is missing.
+ *
+ * Batch mode (no canopy_entry_id): emits a short directive pointing the
+ * agent at the canopy_describe_next/_write tools. Returns undefined when
+ * the queue is empty so the scheduler can short-circuit.
+ */
+export async function buildCanopyDescribeInstruction(
+  params?: Record<string, string | number | boolean>,
+  projectRoot?: string,
+): Promise<BuiltTaskInstruction | undefined> {
+  const canopyEntryId = typeof params?.canopy_entry_id === 'string' ? params.canopy_entry_id : undefined;
+
+  if (canopyEntryId) {
+    const row = loadCanopyRow(canopyEntryId);
+    if (!row) return undefined;
+
+    const exports = parseCanopyJsonArray(row.exports_json);
+    const imports = parseCanopyJsonArray(row.imports_json);
+    const firstLines = projectRoot
+      ? await readCanopyFirstLines(`${projectRoot.replace(/\/$/, '')}/${row.path}`, CANOPY_DESCRIBE_FIRST_LINES)
+      : '';
+
+    const lines = [
+      'Single-row mode. Describe this file in exactly one sentence and call',
+      'canopy_describe_write({ path, description }) with the result. Stop after the write.',
+      '',
+      `File: ${row.path}`,
+      `Language: ${row.language ?? 'unknown'}`,
+      `Exports: ${exports.length > 0 ? exports.join(', ') : '(none)'}`,
+      `Imports: ${imports.length > 0 ? imports.join(', ') : '(none)'}`,
+      `Top comment: ${row.top_comment?.trim() || '(none)'}`,
+      '',
+      `First ${CANOPY_DESCRIBE_FIRST_LINES} lines:`,
+      firstLines || '(empty)',
+    ];
+    return { instruction: lines.join('\n') };
+  }
+
+  if (countPendingCanopyRows() === 0) return undefined;
+
+  const batchSize = Number(params?.batch_size ?? CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE);
+  const lines = [
+    'Batch mode. Drain pending Canopy entries using canopy_describe_next and',
+    `canopy_describe_write. Process at most ${batchSize} rows this run.`,
+    '',
+    'For each row returned by canopy_describe_next, emit one sentence following',
+    'the style rules in the phase prompt and call canopy_describe_write({ path,',
+    'description }). Stop when canopy_describe_next returns zero entries or you',
+    'have written close to the batch_size cap.',
+  ];
+  return { instruction: lines.join('\n') };
+}
+
+// ---------------------------------------------------------------------------
 // Unified dispatch
 // ---------------------------------------------------------------------------
 
@@ -821,6 +939,8 @@ export async function buildTaskInstruction(
           }
         : undefined;
     }
+    case CANOPY_DESCRIBE_TASK:
+      return buildCanopyDescribeInstruction(taskParams, projectRoot);
     default:
       return undefined;
   }
@@ -841,5 +961,6 @@ export function isInstructionRequiredTask(taskName: string): boolean {
   return taskName === SKILL_GENERATE_TASK
     || taskName === SKILL_EVOLVE_TASK
     || taskName === SKILL_SURVEY_TASK
-    || taskName === CORTEX_INSTRUCTIONS_TASK;
+    || taskName === CORTEX_INSTRUCTIONS_TASK
+    || taskName === CANOPY_DESCRIBE_TASK;
 }

@@ -46,14 +46,40 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
   {
     "name": "canopy-describe",
     "displayName": "Canopy Describe",
-    "description": "Populate llm_description on canopy_entries with one-sentence file summaries. Local-first, single-turn per file, no tool surface.",
+    "description": "Generate one-sentence file summaries to populate llm_description on canopy_entries. Local-first; runs as a background trickle.",
     "agent": "myco-agent",
-    "prompt": "This task is dispatched by the canopy-describe PowerManager job, which invokes the per-row executor directly. The agent harness never receives this prompt — it is a placeholder so the YAML satisfies the loader's required-field validation.",
+    "prompt": "Either describe a single canopy_entries row (single-row mode) or drain a batch of pending rows using canopy_describe_next + canopy_describe_write (batch mode). The instruction tells you which mode you are in.",
     "isDefault": false,
-    "toolOverrides": [],
     "reasoningLevel": "low",
-    "maxTurns": 1,
-    "timeoutSeconds": 600
+    "maxTurns": 60,
+    "timeoutSeconds": 1800,
+    "phases": [
+      {
+        "name": "describe",
+        "prompt": "You write one-sentence summaries of source files for a code\nintelligence system. The instruction payload contains the data\nyou need.\n\nSingle-row mode: the payload contains one file's metadata and a\nhead-of-file excerpt. Reply with one sentence describing the\nfile's architectural purpose, then call canopy_describe_write\nwith the row's path and your sentence. Stop.\n\nBatch mode: call canopy_describe_next to pull a batch of pending\nrows. For each entry, emit one sentence and call\ncanopy_describe_write({ path, description }). Continue until the\nbatch returns zero entries or you reach the batch_size cap, then\nstop.\n\nStyle rules (apply to every description):\n- Exactly one sentence.\n- Maximum 180 characters.\n- No markdown, no quotes, no preamble.\n- Describe the file's purpose at the architectural level — do not\n  narrate exports already visible in the metadata.\n- If the file is configuration, generated, or trivial, say so.\n",
+        "tools": [
+          "canopy_describe_next",
+          "canopy_describe_write"
+        ],
+        "maxTurns": 60,
+        "reasoningLevel": "low",
+        "required": true
+      }
+    ],
+    "schedule": {
+      "enabled": false,
+      "intervalSeconds": 3600,
+      "runIn": [
+        "idle",
+        "sleep"
+      ],
+      "preCondition": "has-pending-canopy-rows"
+    },
+    "params": {
+      "batch_size": 50,
+      "max_description_chars": 180,
+      "max_attempts": 2
+    }
   },
   {
     "name": "cortex-instructions",

@@ -15,7 +15,6 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
-import { registerCanopyDescribeJob, type CanopyDescribeJobRegistration } from '@myco/canopy/describe/jobs.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { createBackup } from './backup.js';
 import { resolveBackupDir } from './api/backup.js';
@@ -56,8 +55,6 @@ export interface PowerJobDeps {
 export interface PowerJobsResult {
   /** Handles for jobs whose runtime is exposed beyond PowerManager (e.g. delta scan from SessionStart). */
   canopy: CanopyJobsRegistration;
-  /** Handle for the Tier 2 canopy-describe job — exposes an on-demand runner for future UI triggers. */
-  canopyDescribe: CanopyDescribeJobRegistration;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,13 +171,6 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     projectId,
     liveConfig,
   });
-  const canopyDescribe = registerCanopyDescribeJob(powerManager, {
-    db,
-    logger,
-    projectId,
-    projectRoot,
-    liveConfig,
-  });
 
-  return { canopy, canopyDescribe };
+  return { canopy };
 }

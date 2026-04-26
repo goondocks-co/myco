@@ -4,10 +4,11 @@
  * LLMs across providers wander in predictable ways: leading boilerplate
  * ("Here is..."), refusal patterns ("I'm sorry"), and lazy
  * exports-verbatim regurgitation. This module mechanically rejects those
- * outputs so the caller can decide between a retry and a NULL fallback.
+ * outputs. The canopy_describe_write tool calls postProcess on every
+ * agent submission and rejects rows that come back null.
  *
- * Returning `null` means "this output is unusable, leave llm_description
- * NULL or retry". Returning a string means "use this".
+ * Returning `null` means "this output is unusable". Returning a string
+ * means "use this".
  */
 
 // Boilerplate prefixes — match prefix only so the rest of the sentence
