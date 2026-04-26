@@ -11,6 +11,7 @@ import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
