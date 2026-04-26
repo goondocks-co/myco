@@ -7,6 +7,7 @@ import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
 import { composeBlobStructured } from '@myco/canopy/inject/compose.js';
+import { relativizeForLookup } from './canopy-inject.js';
 
 function notFound(reason: string): RouteResponse {
   return { status: 404, body: errorBody('not_found', reason) };
@@ -70,7 +71,8 @@ export const handleGetCanopyToolCallBlob: RouteHandler = async (req) => {
   // the call ran; otherwise the UI shows the current anatomy, not a stale
   // snapshot — design choice per the spec.
   if (!ctx.project_id) return notFound('project_root_missing');
-  const entry = findCanopyEntry(ctx.project_id, ctx.file_path);
+  const lookupPath = relativizeForLookup(ctx.file_path, ctx.project_id);
+  const entry = findCanopyEntry(ctx.project_id, lookupPath);
   if (!entry) return notFound('entry_missing');
 
   return { body: composeBlobStructured(entry) };
