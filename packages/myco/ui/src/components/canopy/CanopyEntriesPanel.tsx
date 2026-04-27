@@ -58,7 +58,17 @@ export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}
             onBack={() => setSelectedPath(undefined)}
           />
         </Surface>
-      ) : null}
+      ) : (
+        <Surface
+          level="low"
+          className="rounded-lg border border-outline-variant/20 p-8"
+          data-testid="canopy-entry-detail-placeholder"
+        >
+          <p className="text-center font-sans text-sm text-on-surface-variant">
+            Select a file to see its description, exports, and metadata.
+          </p>
+        </Surface>
+      )}
     </div>
   );
 }

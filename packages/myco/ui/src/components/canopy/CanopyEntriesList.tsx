@@ -1,11 +1,20 @@
-import { useMemo } from 'react';
-import { AlertCircle, FileSearch } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AlertCircle, ChevronDown, ChevronUp, FileSearch, Search } from 'lucide-react';
 import { Badge } from '../ui/badge';
+import { Input } from '../ui/input';
 import { Surface } from '../ui/surface';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../ui/select';
+import {
   useCanopyEntries,
+  type CanopyEntriesSortBy,
+  type CanopyEntriesSortDir,
   type CanopyEntryRow,
 } from '../../hooks/use-canopy';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
@@ -49,10 +58,18 @@ const LANGUAGE_OPTIONS = [
   { value: 'sql',         label: 'SQL' },
 ];
 
-const ENTRY_FILTERS: FilterDefinition[] = [
-  { key: 'language',  label: 'Language',  options: LANGUAGE_OPTIONS },
-  { key: 'described', label: 'Described', options: TRISTATE_OPTIONS },
-  { key: 'embedded',  label: 'Embedded',  options: TRISTATE_OPTIONS },
+/**
+ * Sortable column definitions. Each entry pairs the API sort_by token with
+ * the human-readable header label. The column header click handler maps from
+ * the column id to the sort_by; columns not in this list render as plain
+ * text headers (no chevron, no click affordance).
+ */
+const SORT_COLUMNS: Array<{ id: CanopyEntriesSortBy; label: string }> = [
+  { id: 'path',           label: 'Path' },
+  { id: 'language',       label: 'Language' },
+  { id: 'embedded',       label: 'Embedded' },
+  { id: 'llm_updated_at', label: 'Last Described' },
+  { id: 'token_estimate', label: 'Tokens' },
 ];
 
 /* ---------- Helpers ---------- */
@@ -73,21 +90,103 @@ function yesNoBadge(flag: boolean): React.ReactNode {
 
 /* ---------- Sub-components ---------- */
 
+/**
+ * A labeled dropdown — the visible label is the difference from `ListToolbar`,
+ * which only surfaces the label as a placeholder (and never when a value is
+ * selected). Chris's smoke-test review flagged the bare "All / Yes / No"
+ * dropdowns as ambiguous, so we render the column purpose inline.
+ */
+function FilterDropdown({
+  label,
+  value,
+  options,
+  onValueChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-on-surface-variant">
+      <span className="font-sans text-xs uppercase tracking-wider">
+        {label}
+      </span>
+      <div className="w-32 shrink-0">
+        <Select value={value} onValueChange={onValueChange}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </label>
+  );
+}
+
 function ColHeader({
   children,
   className,
+  sortKey,
+  activeSort,
+  activeDir,
+  onSort,
 }: {
   children: React.ReactNode;
   className?: string;
+  sortKey?: CanopyEntriesSortBy;
+  activeSort?: CanopyEntriesSortBy;
+  activeDir?: CanopyEntriesSortDir;
+  onSort?: (key: CanopyEntriesSortBy) => void;
 }) {
+  const sortable = sortKey !== undefined && onSort !== undefined;
+  const isActive = sortable && activeSort === sortKey;
+  if (!sortable) {
+    return (
+      <th
+        className={cn(
+          'px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant',
+          className,
+        )}
+      >
+        {children}
+      </th>
+    );
+  }
   return (
     <th
       className={cn(
         'px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant',
         className,
       )}
+      aria-sort={isActive ? (activeDir === 'desc' ? 'descending' : 'ascending') : 'none'}
     >
-      {children}
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          'flex items-center gap-1 uppercase tracking-widest text-[10px] font-medium transition-colors',
+          isActive ? 'text-on-surface' : 'text-on-surface-variant hover:text-on-surface',
+        )}
+        aria-label={`Sort by ${String(children)}`}
+      >
+        <span>{children}</span>
+        {isActive ? (
+          activeDir === 'desc' ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronUp className="h-3 w-3" />
+          )
+        ) : (
+          <ChevronDown className="h-3 w-3 opacity-30" />
+        )}
+      </button>
     </th>
   );
 }
@@ -190,15 +289,29 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
     },
   });
 
+  const [sortBy, setSortBy] = useState<CanopyEntriesSortBy>('path');
+  const [sortDir, setSortDir] = useState<CanopyEntriesSortDir>('asc');
+  const handleSort = (key: CanopyEntriesSortBy) => {
+    if (key === sortBy) {
+      // Same column — toggle direction.
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(key);
+      setSortDir('asc');
+    }
+  };
+
   const queryArgs = useMemo(() => ({
     limit: DEFAULT_PAGE_SIZE,
     offset,
     language: activeFilter('language'),
     described: tristateToBool(activeFilter('described')),
     embedded: tristateToBool(activeFilter('embedded')),
-    // Path filter is debounced via the search input.
-    path_prefix: debouncedSearch,
-  }), [offset, activeFilter, debouncedSearch]);
+    // Free-text search across path AND llm_description.
+    q: debouncedSearch,
+    sort_by: sortBy,
+    sort_dir: sortDir,
+  }), [offset, activeFilter, debouncedSearch, sortBy, sortDir]);
 
   const { data, isLoading, isError, error } = useCanopyEntries(queryArgs);
 
@@ -206,25 +319,63 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
   const total = data?.total ?? 0;
 
   const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Filter by path prefix..."
-      searchValue={searchInput}
-      onSearchChange={handleSearchChange}
-      filters={ENTRY_FILTERS}
-      filterValues={filterValues}
-      onFilterChange={handleFilterChange}
-    />
+    <Surface level="bright" className="flex flex-wrap items-center gap-3 px-4 py-2 rounded-md">
+      <Search className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
+      <Input
+        placeholder="Search files (path or description)…"
+        value={searchInput}
+        onChange={(e) => handleSearchChange(e.target.value)}
+        className="bg-transparent border-none shadow-none focus-visible:ring-0 px-0 h-auto py-0 font-sans text-sm flex-1 min-w-[180px]"
+        aria-label="Search files"
+      />
+      <FilterDropdown
+        label="Language"
+        value={filterValues.language ?? FILTER_ALL}
+        options={LANGUAGE_OPTIONS}
+        onValueChange={(v) => handleFilterChange('language', v)}
+      />
+      <FilterDropdown
+        label="Described"
+        value={filterValues.described ?? FILTER_ALL}
+        options={TRISTATE_OPTIONS}
+        onValueChange={(v) => handleFilterChange('described', v)}
+      />
+      <FilterDropdown
+        label="Embedded"
+        value={filterValues.embedded ?? FILTER_ALL}
+        options={TRISTATE_OPTIONS}
+        onValueChange={(v) => handleFilterChange('embedded', v)}
+      />
+    </Surface>
   );
 
   const tableHead = (
     <thead>
       <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-        <ColHeader>Path</ColHeader>
-        <ColHeader>Language</ColHeader>
-        <ColHeader>Described</ColHeader>
-        <ColHeader>Embedded</ColHeader>
-        <ColHeader>Last Described</ColHeader>
-        <ColHeader>Tokens</ColHeader>
+        {SORT_COLUMNS.map((col, idx) => {
+          // The "Described" column lives between Language and Embedded in the
+          // visual layout but isn't sortable on its own — described===null
+          // is already filterable and a separate sort would surprise users.
+          // Re-inject it here at idx===2 so column order stays in sync with
+          // the table body.
+          const elements: React.ReactNode[] = [
+            <ColHeader
+              key={col.id}
+              sortKey={col.id}
+              activeSort={sortBy}
+              activeDir={sortDir}
+              onSort={handleSort}
+            >
+              {col.label}
+            </ColHeader>,
+          ];
+          if (col.id === 'language') {
+            elements.push(
+              <ColHeader key="described">Described</ColHeader>,
+            );
+          }
+          return elements;
+        })}
       </tr>
     </thead>
   );

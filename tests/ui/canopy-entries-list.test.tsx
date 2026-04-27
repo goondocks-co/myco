@@ -134,4 +134,62 @@ describe('CanopyEntriesList', () => {
       expect(row.getAttribute('aria-selected')).toBe('true');
     });
   });
+
+  it('renders visible Described and Embedded labels next to the dropdowns', async () => {
+    fetchJsonMock.mockResolvedValue({ rows: [], total: 0, limit: 50, offset: 0 });
+    renderList({});
+    await waitFor(() => {
+      expect(screen.getByTestId('canopy-entries-empty')).toBeInTheDocument();
+    });
+    // The toolbar renders Described and Embedded as visible inline labels —
+    // not just as the placeholder text inside the dropdown.
+    expect(screen.getByText('Described')).toBeInTheDocument();
+    expect(screen.getByText('Embedded')).toBeInTheDocument();
+    expect(screen.getByText('Language')).toBeInTheDocument();
+  });
+
+  it('typing in the search box (after debounce) issues a request with q=', async () => {
+    fetchJsonMock.mockResolvedValue({ rows: [], total: 0, limit: 50, offset: 0 });
+    renderList({});
+    await waitFor(() => expect(fetchJsonMock).toHaveBeenCalled());
+
+    const input = screen.getByLabelText('Search files') as HTMLInputElement;
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.change(input, { target: { value: 'auth' } });
+
+    await waitFor(() => {
+      const lastUrl = String(fetchJsonMock.mock.calls.at(-1)?.[0] ?? '');
+      expect(lastUrl).toContain('q=auth');
+    }, { timeout: 1500 });
+  });
+
+  it('clicking a sortable column header changes the sort_by query param', async () => {
+    fetchJsonMock.mockResolvedValue({
+      rows: [makeEntry({ path: 'src/foo.ts' })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    renderList({});
+    await waitFor(() => expect(fetchJsonMock).toHaveBeenCalled());
+
+    const { fireEvent } = await import('@testing-library/react');
+    // Click the Language header.
+    const languageBtn = screen.getByLabelText('Sort by Language');
+    fireEvent.click(languageBtn);
+
+    await waitFor(() => {
+      const lastUrl = String(fetchJsonMock.mock.calls.at(-1)?.[0] ?? '');
+      expect(lastUrl).toContain('sort_by=language');
+      expect(lastUrl).toContain('sort_dir=asc');
+    });
+
+    // Click again — should toggle to desc.
+    fireEvent.click(languageBtn);
+    await waitFor(() => {
+      const lastUrl = String(fetchJsonMock.mock.calls.at(-1)?.[0] ?? '');
+      expect(lastUrl).toContain('sort_by=language');
+      expect(lastUrl).toContain('sort_dir=desc');
+    });
+  });
 });

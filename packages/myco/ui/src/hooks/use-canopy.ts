@@ -185,13 +185,31 @@ export interface CanopyEntriesListResponse {
   offset: number;
 }
 
+/**
+ * Allowed sort columns mirroring the daemon's allowlist
+ * (`packages/myco/src/daemon/api/canopy-read.ts`). Repeated here so the
+ * UI's type checker catches typos before the daemon does.
+ */
+export type CanopyEntriesSortBy =
+  | 'path'
+  | 'language'
+  | 'embedded'
+  | 'llm_updated_at'
+  | 'token_estimate';
+export type CanopyEntriesSortDir = 'asc' | 'desc';
+
 export interface CanopyEntriesQuery {
   limit?: number;
   offset?: number;
   language?: string;
   described?: boolean;
   embedded?: boolean;
+  /** @deprecated Use `q` for path matches; kept for backward compatibility. */
   path_prefix?: string;
+  /** Free-text substring match across path AND llm_description. */
+  q?: string;
+  sort_by?: CanopyEntriesSortBy;
+  sort_dir?: CanopyEntriesSortDir;
 }
 
 function buildEntriesQueryString(args: CanopyEntriesQuery): string {
@@ -202,6 +220,9 @@ function buildEntriesQueryString(args: CanopyEntriesQuery): string {
   if (args.described !== undefined) params.set('described', String(args.described));
   if (args.embedded !== undefined) params.set('embedded', String(args.embedded));
   if (args.path_prefix !== undefined) params.set('path_prefix', args.path_prefix);
+  if (args.q !== undefined && args.q !== '') params.set('q', args.q);
+  if (args.sort_by !== undefined) params.set('sort_by', args.sort_by);
+  if (args.sort_dir !== undefined) params.set('sort_dir', args.sort_dir);
   const qs = params.toString();
   return qs ? `?${qs}` : '';
 }
@@ -217,6 +238,9 @@ export function useCanopyEntries(args: CanopyEntriesQuery) {
       args.described ?? null,
       args.embedded ?? null,
       args.path_prefix ?? null,
+      args.q ?? null,
+      args.sort_by ?? null,
+      args.sort_dir ?? null,
     ],
     queryFn: ({ signal }) =>
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
