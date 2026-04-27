@@ -28,6 +28,7 @@ const DELETE_TABLES = [
   'entities',
   'digest_extracts',
   'cortex_instructions',
+  'canopy_entries',
   'attachments',
   'activities',
   'spores',

@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 import { MIGRATIONS } from '@myco/db/migrations.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { getDatabase } from '@myco/db/client.js';
+import { EMBEDDABLE_TABLES, EMBEDDABLE_TEXT_COLUMNS, getUnembedded, getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 
 describe('canopy_entries.embedded migration v26', () => {
   it('adds embedded column with default 0 on fresh install', () => {
@@ -45,5 +48,46 @@ describe('canopy_entries.embedded migration v26', () => {
       `SELECT MAX(version) AS v FROM schema_version`,
     ).get() as { v: number };
     expect(row.v).toBe(26);
+  });
+});
+
+describe('canopy_entries in embeddable allowlist', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('includes canopy_entries in EMBEDDABLE_TABLES', () => {
+    expect(EMBEDDABLE_TABLES).toContain('canopy_entries');
+  });
+
+  it('maps canopy_entries text column to llm_description', () => {
+    expect(EMBEDDABLE_TEXT_COLUMNS.canopy_entries).toBe('llm_description');
+  });
+
+  it('getUnembedded(canopy_entries) only returns rows with non-null llm_description', () => {
+    const db = getDatabase();
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(
+      `INSERT INTO canopy_entries (project_id, machine_id, path, content_hash, size_bytes,
+        token_estimate, line_count, mechanical_updated_at, llm_description, embedded)
+       VALUES ('proj', 'local', 'a.ts', 'h1', 100, 20, 5, ?, 'described file a', 0),
+              ('proj', 'local', 'b.ts', 'h2', 100, 20, 5, ?, NULL, 0)`,
+    ).run(now, now);
+
+    const rows = getUnembedded('canopy_entries', 10);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe('proj:a.ts');
+    expect(rows[0].text).toBe('described file a');
+  });
+
+  it('getEmbeddingQueueDepth includes canopy_entries pending count', () => {
+    const db = getDatabase();
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(
+      `INSERT INTO canopy_entries (project_id, machine_id, path, content_hash, size_bytes,
+        token_estimate, line_count, mechanical_updated_at, llm_description, embedded)
+       VALUES ('p', 'local', 'a.ts', 'h', 1, 1, 1, ?, 'desc', 0)`,
+    ).run(now);
+    expect(getEmbeddingQueueDepth().queue_depth).toBeGreaterThanOrEqual(1);
   });
 });

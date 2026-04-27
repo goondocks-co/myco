@@ -12,7 +12,7 @@ import { getDatabase } from '@myco/db/client.js';
 // ---------------------------------------------------------------------------
 
 /** Tables that participate in vector embedding. */
-export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records'] as const;
+export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'] as const;
 
 /** TypeScript type for valid embeddable table names. */
 export type EmbeddableTable = (typeof EMBEDDABLE_TABLES)[number];
@@ -24,10 +24,11 @@ export const EMBEDDABLE_TEXT_COLUMNS: Record<EmbeddableTable, string> = {
   plans: 'content',
   artifacts: 'content',
   skill_records: 'description',
+  canopy_entries: 'llm_description',
 };
 
 /** Error message for invalid table names. */
-const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, spores, plans, artifacts, skill_records';
+const INVALID_TABLE_MSG = 'Invalid table name — must be one of: sessions, spores, plans, artifacts, skill_records, canopy_entries';
 
 /** Default number of rows returned by getUnembedded. */
 const DEFAULT_UNEMBEDDED_LIMIT = 100;
@@ -73,6 +74,20 @@ export function getUnembedded(
   assertValidTable(table);
   const db = getDatabase();
   const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
+
+  if (table === 'canopy_entries') {
+    return db.prepare(
+      `SELECT (project_id || ':' || path) AS id,
+              mechanical_updated_at AS created_at,
+              ${textCol} AS text
+         FROM canopy_entries
+        WHERE embedded = 0
+          AND llm_description IS NOT NULL
+        ORDER BY mechanical_updated_at ASC
+        LIMIT ?`,
+    ).all(limit) as Array<{ id: string; created_at: number; text: string }>;
+  }
+
   const contentFilter = table === 'sessions' ? ' AND summary IS NOT NULL' : '';
   const statusFilter = (table === 'spores' || table === 'skill_records') ? " AND status = 'active'" : '';
 
@@ -95,21 +110,23 @@ export function getEmbeddingQueueDepth(): {
 
   const queueRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions      WHERE embedded = 0 AND summary IS NOT NULL) +
-      (SELECT COUNT(*) FROM spores        WHERE embedded = 0 AND status = 'active') +
-      (SELECT COUNT(*) FROM plans         WHERE embedded = 0 AND content IS NOT NULL) +
-      (SELECT COUNT(*) FROM artifacts     WHERE embedded = 0 AND content IS NOT NULL) +
-      (SELECT COUNT(*) FROM skill_records WHERE embedded = 0 AND status = 'active')
+      (SELECT COUNT(*) FROM sessions       WHERE embedded = 0 AND summary IS NOT NULL) +
+      (SELECT COUNT(*) FROM spores         WHERE embedded = 0 AND status = 'active') +
+      (SELECT COUNT(*) FROM plans          WHERE embedded = 0 AND content IS NOT NULL) +
+      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 0 AND content IS NOT NULL) +
+      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 0 AND status = 'active') +
+      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 0 AND llm_description IS NOT NULL)
     AS cnt
   `).get() as { cnt: number };
 
   const embeddedRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions      WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM spores        WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM plans         WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM artifacts     WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM skill_records WHERE embedded = 1)
+      (SELECT COUNT(*) FROM sessions       WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM spores         WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM plans          WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 1) +
+      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 1)
     AS cnt
   `).get() as { cnt: number };
 
