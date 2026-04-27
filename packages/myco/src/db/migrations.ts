@@ -22,6 +22,7 @@ import {
   CORTEX_INSTRUCTIONS_TABLE,
   MIGRATION_TASKS_TABLE,
   CANOPY_ENTRIES_TABLE,
+  CANOPY_MAPS_TABLE,
   CANOPY_SESSION_COLUMNS,
   CANOPY_ACTIVITY_COLUMN,
   CANOPY_INDEX_DDLS,
@@ -66,6 +67,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 24, migrate: (db) => migrateV23ToV24(db) },
   { version: 25, migrate: (db) => migrateV24ToV25(db) },
   { version: 26, migrate: (db) => migrateV25ToV26(db) },
+  { version: 27, migrate: (db) => migrateV26ToV27(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1440,6 +1442,28 @@ function migrateV25ToV26(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(26, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+function migrateV26ToV27(db: Database): void {
+  const sessionCols = getTableColumnSet(db, 'sessions');
+  const sessionPending = !sessionCols.has('canopy_map_tool_calls');
+
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(CANOPY_MAPS_TABLE).run();
+    if (sessionPending) {
+      db.prepare(`ALTER TABLE sessions ADD COLUMN canopy_map_tool_calls INTEGER NOT NULL DEFAULT 0`).run();
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(27, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
