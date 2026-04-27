@@ -31,6 +31,7 @@ import { loadSystemPrompt } from './loader.js';
 import { buildVaultContext } from './context.js';
 import { resolveRunConfig } from './config-resolver.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
+import { resolveLmStudioContextLoads } from './lmstudio-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
 import { validateTaskPostconditions } from './task-postconditions.js';
 import { CORTEX_INSTRUCTIONS_TASK, SKILL_GENERATE_TASK } from './instruction-builders.js';
@@ -313,6 +314,30 @@ export async function runAgent(
       options?.logger?.warn(
         'agent.ollama.context-variant-conflict',
         `Ollama model "${conflict.model}" referenced with conflicting context_length values — reconciled to ${conflict.resolved}`,
+        {
+          model: conflict.model,
+          values: conflict.values,
+          resolved: conflict.resolved,
+        },
+      );
+    }
+  }
+
+  // Same shape as the Ollama resolver, but for LM Studio: loads the model
+  // via /api/v1/models/load with the configured context_length. Only runs
+  // when context_length is explicitly set on an lmstudio provider; unset
+  // passes through to whatever the GUI already has loaded.
+  {
+    const resolved = await resolveLmStudioContextLoads(
+      taskProviderOverride,
+      phaseProviderOverrides,
+    );
+    taskProviderOverride = resolved.taskProvider;
+    phaseProviderOverrides = resolved.phaseOverrides;
+    for (const conflict of resolved.conflicts) {
+      options?.logger?.warn(
+        'agent.lmstudio.context-conflict',
+        `LM Studio model "${conflict.model}" referenced with conflicting context_length values — reconciled to ${conflict.resolved}`,
         {
           model: conflict.model,
           values: conflict.values,
