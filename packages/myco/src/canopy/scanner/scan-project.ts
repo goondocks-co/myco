@@ -1,7 +1,7 @@
 import { createLayeredExcludeMatcher } from '../exclude.js';
 import { walkProject } from './walk.js';
 import { scanFile, DEFAULT_MAX_FILE_BYTES } from './scan-file.js';
-import { upsertCanopyEntry, deleteMissingEntries } from './upsert.js';
+import { upsertCanopyEntry, deleteMissingEntries, listExistingHashes } from './upsert.js';
 import { epochSeconds } from '@myco/constants.js';
 import type { Database } from 'bun:sqlite';
 import type { CanopyScanResult } from '../types.js';
@@ -33,14 +33,11 @@ export function scanProject(opts: ScanProjectOptions): CanopyScanResult {
   let updated = 0;
   let errored = 0;
 
-  // To distinguish add from update without an extra SELECT per row, sample
-  // existing paths once up-front. The cost is one bounded query at start;
-  // every subsequent decision is an O(1) Set check.
-  const existing = new Set<string>(
-    (opts.db.prepare(
-      'SELECT path FROM canopy_entries WHERE project_id = ?',
-    ).all(opts.projectId) as { path: string }[]).map((r) => r.path),
-  );
+  // Pre-load existing rows once so the loop can skip the upsert (and the
+  // mechanical_updated_at bump) when content_hash is unchanged. Without this
+  // guard, every full scan would mark every Tier 2 description stale and
+  // re-queue it for canopy-describe even though nothing actually changed.
+  const existing = listExistingHashes(opts.db, opts.projectId);
 
   for (const relPath of walkProject({ projectRoot: opts.projectRoot, isExcluded })) {
     scanned++;
@@ -58,8 +55,12 @@ export function scanProject(opts: ScanProjectOptions): CanopyScanResult {
       continue;
     }
     visited.add(relPath);
+    const prior = existing.get(relPath);
+    if (prior && result.entry.content_hash === prior.content_hash) {
+      continue; // unchanged → don't churn mechanical_updated_at
+    }
     upsertCanopyEntry(opts.db, result.entry);
-    if (existing.has(relPath)) updated++;
+    if (prior) updated++;
     else added++;
   }
 

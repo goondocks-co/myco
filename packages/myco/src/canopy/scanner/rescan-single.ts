@@ -62,6 +62,17 @@ export function rescanSingle(opts: RescanSingleOptions): RescanSingleResult {
   });
   if (!result.ok) return { ok: false, reason: 'skipped', relPath: rel };
 
+  // Skip the upsert when content_hash matches the stored row — Write/Edit
+  // events that produce identical bytes (no-op edits, idempotent reformats)
+  // shouldn't bump mechanical_updated_at and shouldn't re-queue any Tier 2
+  // description for re-generation.
+  const prior = opts.db
+    .prepare('SELECT content_hash FROM canopy_entries WHERE project_id = ? AND path = ?')
+    .get(opts.projectId, rel) as { content_hash: string } | undefined;
+  if (prior && prior.content_hash === result.entry.content_hash) {
+    return { ok: true, action: 'upserted', relPath: rel };
+  }
+
   upsertCanopyEntry(opts.db, result.entry);
   return { ok: true, action: 'upserted', relPath: rel };
 }
