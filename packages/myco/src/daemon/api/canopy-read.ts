@@ -8,6 +8,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
 import { composeBlob } from '@myco/canopy/inject/compose.js';
 import { relativizeForLookup } from './canopy-inject.js';
+import { readCanopyMap } from '@myco/canopy/map/store.js';
 
 function notFound(reason: string): RouteResponse {
   return { status: 404, body: errorBody('not_found', reason) };
@@ -271,6 +272,83 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
 }
 
 // ---------------------------------------------------------------------------
+// /canopy/map — get current map / regenerate
+// ---------------------------------------------------------------------------
+
+const CANOPY_MAP_EMPTY_STATE_MESSAGE = 'No project map yet.';
+
+export interface CanopyMapGetArgs {
+  project_id: string;
+  machine_id: string;
+}
+
+export interface CanopyMapGetResult {
+  content: string;
+  is_empty?: true;
+  message?: string;
+  generated_at?: number;
+  token_estimate?: number;
+  inputs_hash?: string;
+}
+
+export interface CanopyMapRegenerateArgs {
+  project_id: string;
+  machine_id: string;
+  force_cold_start: boolean;
+}
+
+export interface CanopyMapRegenerateResult {
+  ok: true;
+  run_id: string;
+}
+
+/**
+ * Runner contract for handleCanopyMapRegenerate. The route registration
+ * supplies a real implementation that builds the canopy-map instruction
+ * and dispatches via the agent executor (mirroring the
+ * /api/agent/run path); tests inject a stub so they don't need to stand
+ * up the executor.
+ */
+export interface CanopyMapTaskRunner {
+  runner: (input: {
+    task: 'canopy-map';
+    params: { force_cold_start: boolean };
+    project_id: string;
+    machine_id: string;
+  }) => Promise<{ run_id: string }>;
+}
+
+export async function handleCanopyMapGet(args: CanopyMapGetArgs): Promise<CanopyMapGetResult> {
+  const row = readCanopyMap(args.project_id, args.machine_id);
+  if (!row) {
+    return {
+      is_empty: true,
+      content: '',
+      message: CANOPY_MAP_EMPTY_STATE_MESSAGE,
+    };
+  }
+  return {
+    content: row.content,
+    generated_at: row.generated_at,
+    token_estimate: row.token_estimate,
+    inputs_hash: row.inputs_hash,
+  };
+}
+
+export async function handleCanopyMapRegenerate(
+  args: CanopyMapRegenerateArgs,
+  deps: CanopyMapTaskRunner,
+): Promise<CanopyMapRegenerateResult> {
+  const { run_id } = await deps.runner({
+    task: 'canopy-map',
+    params: { force_cold_start: args.force_cold_start === true },
+    project_id: args.project_id,
+    machine_id: args.machine_id,
+  });
+  return { ok: true, run_id };
+}
+
+// ---------------------------------------------------------------------------
 // Wire-in helper
 // ---------------------------------------------------------------------------
 
@@ -281,9 +359,25 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
  * Canopy injection endpoints register separately via their own file; the two
  * registrations are non-overlapping so order doesn't matter.
  */
+export interface CanopyReadRouteDeps {
+  resolveProjectId: () => string;
+  /**
+   * Optional resolver for the daemon's machine identity. Required by the
+   * /canopy/map routes; when omitted, those routes are not registered.
+   */
+  resolveMachineId?: () => string;
+  /**
+   * Optional runner for /canopy/map/regenerate. The daemon supplies an
+   * implementation that builds the canopy-map instruction and dispatches
+   * via the agent executor (parallel to the /api/agent/run path); tests
+   * can register the get-only route by omitting this.
+   */
+  runCanopyMapTask?: CanopyMapTaskRunner['runner'];
+}
+
 export function registerCanopyReadRoutes(server: {
   registerRoute(method: string, pattern: string, handler: RouteHandler): void;
-}, deps?: { resolveProjectId: () => string }): void {
+}, deps?: CanopyReadRouteDeps): void {
   server.registerRoute('GET', '/api/sessions/:id/canopy', handleGetSessionCanopy);
   server.registerRoute(
     'GET',
@@ -305,5 +399,40 @@ export function registerCanopyReadRoutes(server: {
     // checking for the `/reembed` suffix.
     server.registerRoute('POST', '/api/canopy/entries/*',  reembedHandler);
     server.registerRoute('GET',  '/api/canopy/entries/*',  getHandler);
+  }
+
+  // /canopy/map routes need both a project_id resolver and a machine_id
+  // resolver; regenerate additionally needs the task runner. The map is
+  // keyed (project_id, machine_id) at write time, so reads must use the
+  // same identity to avoid silently returning the empty-state envelope.
+  if (deps?.resolveMachineId) {
+    const resolveProjectId = deps.resolveProjectId;
+    const resolveMachineId = deps.resolveMachineId;
+
+    const getMapHandler: RouteHandler = async () => ({
+      body: await handleCanopyMapGet({
+        project_id: resolveProjectId(),
+        machine_id: resolveMachineId(),
+      }),
+    });
+    server.registerRoute('GET', '/api/canopy/map', getMapHandler);
+
+    if (deps.runCanopyMapTask) {
+      const runCanopyMapTask = deps.runCanopyMapTask;
+      const regenerateHandler: RouteHandler = async (req) => {
+        const body = (req.body ?? {}) as { force_cold_start?: unknown };
+        const force_cold_start = body.force_cold_start === true;
+        const result = await handleCanopyMapRegenerate(
+          {
+            project_id: resolveProjectId(),
+            machine_id: resolveMachineId(),
+            force_cold_start,
+          },
+          { runner: runCanopyMapTask },
+        );
+        return { body: result };
+      };
+      server.registerRoute('POST', '/api/canopy/map/regenerate', regenerateHandler);
+    }
   }
 }

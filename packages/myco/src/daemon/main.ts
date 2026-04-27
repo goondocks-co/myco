@@ -844,6 +844,55 @@ export async function main(): Promise<void> {
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
     resolveProjectId: () => resolveCanopyProjectId(vaultDir),
+    resolveMachineId: () => getMachineId(vaultDir),
+    runCanopyMapTask: async ({ task, params }) => {
+      // Mirror the dispatch shape used by /api/agent/run (see
+      // createAgentRunHandlers.handleRun): build the instruction, fire
+      // runAgent, then look up the run id that runAgent inserted
+      // synchronously before its first await. This matches how the
+      // scheduler enqueues canopy-map and keeps a single source of truth
+      // for instruction assembly.
+      const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
+      const { runAgent } = await import('../agent/executor.js');
+      const { getLatestRunId } = await import('../db/queries/runs.js');
+      const { DEFAULT_AGENT_ID } = await import('../constants.js');
+
+      const mycoConfig = liveConfig.current;
+      const projectRoot = path.resolve(vaultDir, '..');
+      const built = await buildTaskInstruction(
+        task,
+        params,
+        DEFAULT_AGENT_ID,
+        projectRoot,
+        embeddingManager,
+        mycoConfig,
+        () => teamSync.getTeamClient(),
+      );
+
+      const resultPromise = runAgent(vaultDir, {
+        task,
+        instruction: built?.instruction,
+        runContext: built?.context,
+        agentId: DEFAULT_AGENT_ID,
+        embeddingManager,
+        logger,
+      });
+
+      // runAgent inserts the agent_runs row synchronously before its first
+      // await. Capture the id before letting the promise run unsupervised.
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+
+      // Fire-and-forget — caller already has the run id; we don't block
+      // the HTTP response on the LLM round-trip. Errors are logged so
+      // they don't vanish.
+      resultPromise.catch((err) => {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-map regenerate threw', {
+          error: (err as Error).message ?? String(err),
+        });
+      });
+
+      return { run_id: runId ?? '' };
+    },
   });
 
   // --- Skill lifecycle API routes ---
