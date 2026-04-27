@@ -87,6 +87,7 @@ export interface SessionRow {
   canopy_reads_after_injection: number | null;
   canopy_tokens_saved: number | null;
   canopy_redundant_reads: number | null;
+  canopy_map_tool_calls: number;
 }
 
 /** Updatable fields for `updateSession`. */
@@ -163,6 +164,7 @@ const SESSION_COLUMNS = [
   'canopy_reads_after_injection',
   'canopy_tokens_saved',
   'canopy_redundant_reads',
+  'canopy_map_tool_calls',
 ] as const;
 
 const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
@@ -205,6 +207,7 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     canopy_reads_after_injection: (row.canopy_reads_after_injection as number) ?? null,
     canopy_tokens_saved: (row.canopy_tokens_saved as number) ?? null,
     canopy_redundant_reads: (row.canopy_redundant_reads as number) ?? null,
+    canopy_map_tool_calls: (row.canopy_map_tool_calls as number) ?? 0,
   };
 }
 

@@ -32,6 +32,12 @@ export interface SessionCanopyAggregate {
   canopy_reads_after_injection: number | null;
   canopy_tokens_saved: number | null;
   canopy_redundant_reads: number | null;
+  /**
+   * Count of `canopy_map` MCP tool calls attributed to this session.
+   * Always a non-negative integer (NOT NULL DEFAULT 0 in the schema), so
+   * pre-feature sessions report `0` rather than `null`.
+   */
+  canopy_map_tool_calls: number;
 }
 
 /**

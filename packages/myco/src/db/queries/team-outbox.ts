@@ -53,6 +53,7 @@ const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
     'canopy_reads_after_injection',
     'canopy_tokens_saved',
     'canopy_redundant_reads',
+    'canopy_map_tool_calls',
   ],
 };
 

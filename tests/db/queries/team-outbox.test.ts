@@ -52,6 +52,7 @@ describe('team outbox query helpers', () => {
         canopy_reads_after_injection: 1,
         canopy_tokens_saved: 500,
         canopy_redundant_reads: 4,
+        canopy_map_tool_calls: 7,
       })).toEqual({
         id: 'session-1',
         summary: 'shared',

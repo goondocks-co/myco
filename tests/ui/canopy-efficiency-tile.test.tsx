@@ -30,6 +30,7 @@ const POPULATED: SessionCanopyAggregate = {
   canopy_reads_after_injection: 4,
   canopy_tokens_saved: 4_320,
   canopy_redundant_reads: 1,
+  canopy_map_tool_calls: 3,
 };
 
 const ALL_NULL: SessionCanopyAggregate = {
@@ -39,6 +40,7 @@ const ALL_NULL: SessionCanopyAggregate = {
   canopy_reads_after_injection: null,
   canopy_tokens_saved: null,
   canopy_redundant_reads: null,
+  canopy_map_tool_calls: 0,
 };
 
 const NEGATIVE: SessionCanopyAggregate = {
@@ -48,6 +50,7 @@ const NEGATIVE: SessionCanopyAggregate = {
   canopy_reads_after_injection: 5,
   canopy_tokens_saved: -400,
   canopy_redundant_reads: 0,
+  canopy_map_tool_calls: 0,
 };
 
 /* ---------- Tests ---------- */
@@ -90,6 +93,38 @@ describe('CanopyEfficiencyTile', () => {
     expect(tile).toBeInTheDocument();
     // -400 fits below the kilo threshold so it formats as a comma-grouped int.
     expect(tile.textContent).toContain('-400');
+  });
+
+  it('renders "Map calls: N" as a separate secondary metric when count is positive', () => {
+    renderTile(POPULATED);
+
+    const mapCalls = screen.getByTestId('canopy-map-calls');
+    expect(mapCalls).toBeInTheDocument();
+    expect(mapCalls.textContent).toBe('Map calls: 3');
+
+    // Sanity-check that map calls is NOT folded into tokens saved — the
+    // headline number must still be the unmodified tokens-saved value.
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile.textContent).toContain('4.3k');
+  });
+
+  it('renders "Map calls: 0" when no map calls have been made', () => {
+    // Matches the tile's existing zero-rendering behavior for tokens saved:
+    // zeros are kept visible rather than hidden, since the tile is small
+    // enough to tolerate them and they set the stage for the metric.
+    renderTile(ALL_NULL);
+
+    const mapCalls = screen.getByTestId('canopy-map-calls');
+    expect(mapCalls).toBeInTheDocument();
+    expect(mapCalls.textContent).toBe('Map calls: 0');
+  });
+
+  it('renders "Map calls: 0" for the null-fixture (pre-feature) path', () => {
+    renderTile(null);
+
+    const mapCalls = screen.getByTestId('canopy-map-calls');
+    expect(mapCalls).toBeInTheDocument();
+    expect(mapCalls.textContent).toBe('Map calls: 0');
   });
 
   it('exposes the headline savings via aria-label for assistive tech', () => {

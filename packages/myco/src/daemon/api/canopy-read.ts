@@ -53,6 +53,7 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
       canopy_reads_after_injection: session.canopy_reads_after_injection,
       canopy_tokens_saved: session.canopy_tokens_saved,
       canopy_redundant_reads: session.canopy_redundant_reads,
+      canopy_map_tool_calls: session.canopy_map_tool_calls,
     },
   };
 };

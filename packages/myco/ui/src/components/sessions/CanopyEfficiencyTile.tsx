@@ -116,6 +116,10 @@ export function CanopyEfficiencyTile({
   const reads = data?.canopy_reads_after_injection ?? null;
   const redundant = data?.canopy_redundant_reads ?? null;
   const totalTokens = data?.canopy_injection_total_tokens ?? null;
+  // Map calls is NOT NULL DEFAULT 0 in the schema, so pre-feature sessions
+  // (where data is null) report `0` here too — same shape the live session
+  // would show before the agent has called canopy_map().
+  const mapCalls = data?.canopy_map_tool_calls ?? 0;
 
   const skipRatio =
     offered !== null && offered > 0 && skips !== null
@@ -153,6 +157,18 @@ export function CanopyEfficiencyTile({
         {skipRatio && (
           <p className="font-mono text-[10px] text-outline mt-1">{skipRatio}</p>
         )}
+        {/*
+          Secondary metric: canopy_map() tool calls in this session. Rendered
+          as a small, separate line beneath the headline — explicitly NOT
+          folded into "tokens saved" because the two count different things
+          (per-Read injection savings vs. agent-driven map lookups).
+        */}
+        <p
+          className="font-mono text-[10px] text-outline mt-1"
+          data-testid="canopy-map-calls"
+        >
+          Map calls: {mapCalls}
+        </p>
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
@@ -208,6 +224,11 @@ export function CanopyEfficiencyTile({
                 hint="Files Read more than once in this session (informational)."
               />
             )}
+            <SubStat
+              label="Map calls"
+              value={mapCalls.toLocaleString()}
+              hint="Times the agent called canopy_map() during this session."
+            />
           </div>
 
           <Link
