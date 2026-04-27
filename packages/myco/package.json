@@ -63,7 +63,7 @@
     "@anthropic-ai/sdk": "^0.90.0",
     "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "^1.28.0",
-    "@openai/agents": "^0.8.4",
+    "@openai/agents": "^0.8.5",
     "chokidar": "^5.0.0",
     "gray-matter": "^4.0.3",
     "semver": "^7.7.4",
