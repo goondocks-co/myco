@@ -122,6 +122,92 @@ describe('handleCanopyEntriesList', () => {
     expect((res.rows as Array<{ path: string }>)[0].path).toBe('src/b.ts');
   });
 
+  it('sorts by language ASC', async () => {
+    seedTrio();
+    const res = await handleCanopyEntriesList({
+      project_id: PROJECT_ID,
+      sort_by: 'language',
+      sort_dir: 'asc',
+    });
+    expect(res.total).toBe(3);
+    // python comes before typescript; path is the tiebreaker for two ts rows.
+    expect((res.rows as Array<{ path: string }>).map(r => r.path))
+      .toEqual(['c.py', 'a.ts', 'src/b.ts']);
+  });
+
+  it('sorts by token_estimate DESC', async () => {
+    seedEntry({ path: 'small.ts', language: 'typescript', embedded: 0 });
+    // Override token_estimate by writing directly — seedTrio() leaves it 0.
+    const db = getDatabase();
+    db.prepare('UPDATE canopy_entries SET token_estimate = 10 WHERE path = ?').run('small.ts');
+    seedEntry({ path: 'big.ts', language: 'typescript', embedded: 0 });
+    db.prepare('UPDATE canopy_entries SET token_estimate = 1000 WHERE path = ?').run('big.ts');
+    seedEntry({ path: 'medium.ts', language: 'typescript', embedded: 0 });
+    db.prepare('UPDATE canopy_entries SET token_estimate = 100 WHERE path = ?').run('medium.ts');
+
+    const res = await handleCanopyEntriesList({
+      project_id: PROJECT_ID,
+      sort_by: 'token_estimate',
+      sort_dir: 'desc',
+    });
+    expect((res.rows as Array<{ path: string }>).map(r => r.path))
+      .toEqual(['big.ts', 'medium.ts', 'small.ts']);
+  });
+
+  it('q matches both path and llm_description (case-insensitive)', async () => {
+    seedEntry({ path: 'src/auth.ts',  language: 'typescript', description: 'session helpers',                embedded: 0 });
+    seedEntry({ path: 'src/login.ts', language: 'typescript', description: 'handles AUTH flow + redirects',  embedded: 0 });
+    seedEntry({ path: 'src/util.ts',  language: 'typescript', description: 'string helpers',                  embedded: 0 });
+
+    const res = await handleCanopyEntriesList({ project_id: PROJECT_ID, q: 'auth' });
+    expect(res.total).toBe(2);
+    const paths = (res.rows as Array<{ path: string }>).map(r => r.path).sort();
+    expect(paths).toEqual(['src/auth.ts', 'src/login.ts']);
+  });
+
+  it('q escapes _ so literal underscores match', async () => {
+    seedEntry({ path: 'src/foo_bar.ts',   language: 'typescript', embedded: 0 });
+    // Decoy — would match a non-escaped `foo_bar` LIKE because `_` matches any char.
+    seedEntry({ path: 'src/fooXbar.ts',   language: 'typescript', embedded: 0 });
+    seedEntry({ path: 'src/baz.ts',       language: 'typescript', embedded: 0 });
+
+    const res = await handleCanopyEntriesList({ project_id: PROJECT_ID, q: 'foo_bar' });
+    expect(res.total).toBe(1);
+    expect((res.rows as Array<{ path: string }>)[0].path).toBe('src/foo_bar.ts');
+  });
+
+  it('q escapes % so literal percent signs match', async () => {
+    seedEntry({ path: 'src/100%done.md', language: 'markdown', embedded: 0 });
+    seedEntry({ path: 'src/something.md', language: 'markdown', embedded: 0 });
+
+    const res = await handleCanopyEntriesList({ project_id: PROJECT_ID, q: '100%' });
+    expect(res.total).toBe(1);
+    expect((res.rows as Array<{ path: string }>)[0].path).toBe('src/100%done.md');
+  });
+
+  it('q AND path_prefix compose', async () => {
+    seedEntry({ path: 'src/auth.ts',     language: 'typescript', description: 'auth', embedded: 0 });
+    seedEntry({ path: 'tests/auth.ts',   language: 'typescript', description: 'auth', embedded: 0 });
+
+    const res = await handleCanopyEntriesList({
+      project_id: PROJECT_ID,
+      path_prefix: 'src/',
+      q: 'auth',
+    });
+    expect(res.total).toBe(1);
+    expect((res.rows as Array<{ path: string }>)[0].path).toBe('src/auth.ts');
+  });
+
+  it('rejects invalid sort_by', async () => {
+    seedTrio();
+    await expect(
+      handleCanopyEntriesList({
+        project_id: PROJECT_ID,
+        sort_by: 'definitely_not_a_column' as never,
+      }),
+    ).rejects.toThrow(/invalid sort_by/);
+  });
+
   it('does not leak rows from other projects', async () => {
     seedTrio();
     seedCanopyEntry(getDatabase(), {

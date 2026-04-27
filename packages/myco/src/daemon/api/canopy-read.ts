@@ -112,6 +112,21 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
 // /canopy/entries — list / detail / reembed
 // ---------------------------------------------------------------------------
 
+/** Allowed sort columns for `/canopy/entries`. Anything outside this list is
+ *  rejected at the API boundary so we never interpolate user input into the
+ *  ORDER BY clause. */
+export const CANOPY_ENTRIES_SORT_BY = [
+  'path',
+  'language',
+  'embedded',
+  'llm_updated_at',
+  'token_estimate',
+] as const;
+export type CanopyEntriesSortBy = (typeof CANOPY_ENTRIES_SORT_BY)[number];
+
+export const CANOPY_ENTRIES_SORT_DIR = ['asc', 'desc'] as const;
+export type CanopyEntriesSortDir = (typeof CANOPY_ENTRIES_SORT_DIR)[number];
+
 export interface CanopyEntriesListArgs {
   project_id: string;
   limit?: number;
@@ -120,6 +135,18 @@ export interface CanopyEntriesListArgs {
   described?: boolean;
   embedded?: boolean;
   path_prefix?: string;
+  /** Free-text substring match across `path` AND `llm_description`. */
+  q?: string;
+  sort_by?: CanopyEntriesSortBy;
+  sort_dir?: CanopyEntriesSortDir;
+}
+
+/**
+ * Escape SQL LIKE wildcards so users can search for literal `_`, `%`, and `\`.
+ * Pairs with `ESCAPE '\\'` in the LIKE clause.
+ */
+function escapeLikePattern(input: string): string {
+  return input.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
 export interface CanopyEntriesListResult {
@@ -134,10 +161,10 @@ export async function handleCanopyEntriesList(
 ): Promise<CanopyEntriesListResult> {
   const db = getDatabase();
   // This site composes the canonical project_id scope with optional
-  // language/embedded/path_prefix filters; the described===true branch
+  // language/embedded/path_prefix/q filters; the described===true branch
   // overlaps with describedCanopyEntriesPredicate() in @myco/db/queries/canopy.js,
   // but the rest of the matrix is structurally distinct enough that a unified
-  // helper would leak abstraction. The ORDER BY mirrors CANOPY_ENTRIES_ORDER_BY.
+  // helper would leak abstraction.
   const where: string[] = ['project_id = ?'];
   const params: unknown[] = [args.project_id];
   if (args.language !== undefined)    { where.push('language = ?');                params.push(args.language); }
@@ -145,14 +172,40 @@ export async function handleCanopyEntriesList(
   if (args.described === false)       { where.push('llm_description IS NULL'); }
   if (args.embedded === true)         { where.push('embedded = 1'); }
   if (args.embedded === false)        { where.push('embedded = 0'); }
-  if (args.path_prefix !== undefined) { where.push('path LIKE ?');                  params.push(`${args.path_prefix}%`); }
+  if (args.path_prefix !== undefined) {
+    where.push("path LIKE ? ESCAPE '\\'");
+    params.push(`${escapeLikePattern(args.path_prefix)}%`);
+  }
+  if (args.q !== undefined && args.q !== '') {
+    const pattern = `%${escapeLikePattern(args.q)}%`;
+    where.push("(path LIKE ? ESCAPE '\\' OR llm_description LIKE ? ESCAPE '\\')");
+    params.push(pattern, pattern);
+  }
+
+  // Validate sort_by against the allowlist. Anything else is a 400 at the
+  // route layer; passing through directly would let user input reach the SQL.
+  const sortBy: CanopyEntriesSortBy = args.sort_by ?? 'path';
+  if (!CANOPY_ENTRIES_SORT_BY.includes(sortBy)) {
+    throw new Error(`invalid sort_by: ${args.sort_by}`);
+  }
+  const sortDir: CanopyEntriesSortDir = args.sort_dir ?? 'asc';
+  if (!CANOPY_ENTRIES_SORT_DIR.includes(sortDir)) {
+    throw new Error(`invalid sort_dir: ${args.sort_dir}`);
+  }
+  const sqlDir = sortDir === 'desc' ? 'DESC' : 'ASC';
+  // Path is always the tiebreaker so pagination is stable within a sort key.
+  // When the primary sort already IS path, we use the canonical multi-column
+  // tiebreaker chain from CANOPY_ENTRIES_ORDER_BY.
+  const orderBy = sortBy === 'path'
+    ? CANOPY_ENTRIES_ORDER_BY.replace(/\bpath\s+ASC\b/, `path ${sqlDir}`)
+    : `${sortBy} ${sqlDir}, path ASC`;
 
   const limit = args.limit ?? 50;
   const offset = args.offset ?? 0;
   const rows = db.prepare(
     `SELECT * FROM canopy_entries
       WHERE ${where.join(' AND ')}
-      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
+      ORDER BY ${orderBy}
       LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as Array<Record<string, unknown>>;
   const total = (db.prepare(
@@ -229,6 +282,14 @@ function extractEntryPath(pathname: string, prefix: string): string | null {
  */
 function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
   const listHandler: RouteHandler = async (req) => {
+    const sortByRaw = parseStringQuery(req.query.sort_by);
+    if (sortByRaw !== undefined && !(CANOPY_ENTRIES_SORT_BY as readonly string[]).includes(sortByRaw)) {
+      return badRequest(`invalid sort_by: ${sortByRaw}`);
+    }
+    const sortDirRaw = parseStringQuery(req.query.sort_dir);
+    if (sortDirRaw !== undefined && !(CANOPY_ENTRIES_SORT_DIR as readonly string[]).includes(sortDirRaw)) {
+      return badRequest(`invalid sort_dir: ${sortDirRaw}`);
+    }
     const args: CanopyEntriesListArgs = {
       project_id: deps.resolveProjectId(),
       limit:       parseIntQuery(req.query.limit),
@@ -237,6 +298,9 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
       described:   parseBooleanQuery(req.query.described),
       embedded:    parseBooleanQuery(req.query.embedded),
       path_prefix: parseStringQuery(req.query.path_prefix),
+      q:           parseStringQuery(req.query.q),
+      sort_by:     sortByRaw as CanopyEntriesSortBy | undefined,
+      sort_dir:    sortDirRaw as CanopyEntriesSortDir | undefined,
     };
     return { body: await handleCanopyEntriesList(args) };
   };
