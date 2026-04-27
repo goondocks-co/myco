@@ -1,20 +1,23 @@
-import { Surface } from '../ui/surface';
-import { SectionHeader } from '../ui/section-header';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
 import {
   useSessionCanopy,
-  isCanopyAggregateEmpty,
   type SessionCanopyAggregate,
 } from '../../hooks/use-canopy';
 import { cn } from '../../lib/cn';
 
+/** Cortex page hosts the Canopy settings + the canonical feature description. */
+const CANOPY_SETTINGS_HREF = '/cortex?tab=canopy';
+
 /* ---------- Constants ---------- */
 
-/**
- * Local-format thresholds. Matches the loose convention used by other tiles
- * (no shared formatter library). Negative net-saved values are rendered with
- * a minus sign so users see when injection cost exceeded gain — honest, not
- * hidden.
- */
 const KILO = 1_000;
 const MEGA = 1_000_000;
 
@@ -33,14 +36,12 @@ function formatTokens(n: number): string {
   return `${sign}${abs.toLocaleString()}`;
 }
 
-/** Pure plain-integer formatter for sub-stat counts. */
 function formatCount(n: number | null): string {
   return n === null ? '—' : n.toLocaleString();
 }
 
 /* ---------- Sub-components ---------- */
 
-/** Single label/value row in the sub-stats stack. */
 function SubStat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div
@@ -60,110 +61,164 @@ function SubStat({ label, value, hint }: { label: string; value: string; hint?: 
 export interface CanopyEfficiencyTileProps {
   sessionId: string;
   /**
- * Test/storybook input: inject an aggregate directly to bypass the network
+   * Test/storybook input: inject an aggregate directly to bypass the network
    * fetch. When provided, the component skips the hook and renders the
    * supplied row exactly as the live hook would. `null` means "no data" and
-   * triggers the same hide-gracefully path as a 404 response.
+   * still renders the tile (with zeros) — matches the live behavior for
+   * pre-feature sessions and non-Claude symbionts where Canopy can't yet
+   * report meaningful numbers.
    */
   fixture?: SessionCanopyAggregate | null;
   className?: string;
 }
 
 /**
- * Token-efficiency tile for the session detail page.
+ * Compact StatCard-shaped tile reporting Canopy's per-Read injection
+ * outcomes. Slots into the session detail's stat-card row (sibling of
+ * Prompts/Tool Calls/Plans). Click opens a modal with the full breakdown
+ * and a link out to the Cortex → Canopy settings page, which owns the
+ * full description of what Canopy is and what it measures (so this tile
+ * doesn't have to re-state scope on every session detail page).
  *
- * Hides itself entirely when:
- *  - the API returns `null` (404 — no Canopy row or pre-feature session),
- *  - or every aggregate column is `null` (row exists but no outcomes were
- *    captured, e.g. injection disabled in the active scope).
+ * Always rendered, including when:
+ *  - the agent has no PreToolUse injection surface (codex, cursor, gemini,
+ *    windsurf, opencode, pi, vscode-copilot — they get zeros today),
+ *  - the API returns `null` (pre-feature session),
+ *  - or every aggregate column is `null`.
  *
- * No "N/A" placeholder — the design calls for graceful hiding so the
- * surrounding stat-tile row stays clean for sessions that pre-date the
- * feature. When data is present, surface the net savings prominently and
- * back it with the structural sub-stats users need to audit the math.
+ * Zeros aren't hidden because the tile is small enough to live with them,
+ * and they set the stage for cross-symbiont measurement once we have
+ * other ways to attribute Myco's token spend (cortex, spore injection)
+ * and savings to a session.
+ *
+ * Scope: the displayed number is direct savings from skipped Reads after
+ * PreToolUse injection on Claude Code. The Cortex → Canopy settings page
+ * is the canonical place where this scope is explained — the modal links
+ * out to it instead of duplicating the description.
  */
 export function CanopyEfficiencyTile({
   sessionId,
   fixture,
   className,
 }: CanopyEfficiencyTileProps) {
+  const [open, setOpen] = useState(false);
   const fixtureProvided = fixture !== undefined;
-  const { data: fetched, isLoading } = useSessionCanopy(fixtureProvided ? undefined : sessionId);
+  const { data: fetched, isLoading } = useSessionCanopy(
+    fixtureProvided ? undefined : sessionId,
+  );
   const data = fixtureProvided ? fixture : fetched ?? null;
 
-  // Loading: stay invisible. The tile is non-essential and a flash of empty
-  // state is worse than a delayed reveal.
   if (!fixtureProvided && isLoading) return null;
 
-  // Hide-gracefully gate.
-  if (isCanopyAggregateEmpty(data)) return null;
+  const tokensSaved = data?.canopy_tokens_saved ?? 0;
+  const offered = data?.canopy_injections_offered ?? null;
+  const skips = data?.canopy_skips_after_injection ?? null;
+  const reads = data?.canopy_reads_after_injection ?? null;
+  const redundant = data?.canopy_redundant_reads ?? null;
+  const totalTokens = data?.canopy_injection_total_tokens ?? null;
 
-  // After the empty-gate, every nullable field is treated as 0 for arithmetic
-  // — but the sub-stat row still renders the em-dash for fields that came
-  // back as `null`, preserving the distinction between "no data" and "zero".
-  const tokensSaved = data!.canopy_tokens_saved ?? 0;
-  const offered = data!.canopy_injections_offered;
-  const skips = data!.canopy_skips_after_injection;
-  const reads = data!.canopy_reads_after_injection;
-  const redundant = data!.canopy_redundant_reads;
-  const totalTokens = data!.canopy_injection_total_tokens;
+  const skipRatio =
+    offered !== null && offered > 0 && skips !== null
+      ? `${skips}/${offered} skipped`
+      : null;
 
   return (
-    <Surface
-      level="low"
-      className={cn(
-        'p-4 overflow-hidden rounded-lg border-t-2 border-t-sage',
-        'border border-outline-variant/10',
-        className,
-      )}
-      data-testid="canopy-efficiency-tile"
-    >
-      <SectionHeader className="mb-3">Token efficiency</SectionHeader>
-
-      <div className="mb-4">
-        <p
-          className={cn(
-            'font-serif text-3xl font-bold tracking-tight',
-            tokensSaved >= 0 ? 'text-sage' : 'text-terracotta',
-          )}
-          aria-label={`${formatTokens(tokensSaved)} net tokens saved`}
-        >
-          {formatTokens(tokensSaved)}
-        </p>
-        <p className="font-mono text-[10px] uppercase tracking-wider text-outline mt-1">
-          net tokens {tokensSaved >= 0 ? 'saved' : 'spent'}
-        </p>
-      </div>
-
-      <div className="space-y-0">
-        <SubStat
-          label="Injections offered"
-          value={formatCount(offered)}
-          hint="PreToolUse Read events where Canopy injected anatomy."
-        />
-        <SubStat
-          label="Skipped after injection"
-          value={formatCount(skips)}
-          hint="Files the agent did not Read after seeing the injected blob."
-        />
-        <SubStat
-          label="Read anyway"
-          value={formatCount(reads)}
-          hint="Files the agent Read in full after the injection."
-        />
-        <SubStat
-          label="Injection cost"
-          value={totalTokens === null ? '—' : `${formatTokens(totalTokens)} tok`}
-          hint="Sum of tokens spent on Canopy injections this session."
-        />
-        {redundant !== null && redundant > 0 && (
-          <SubStat
-            label="Redundant reads"
-            value={formatCount(redundant)}
-            hint="Files Read more than once in this session (informational)."
-          />
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={cn(
+          'rounded-lg border border-outline-variant/10 bg-surface-container/60 p-4 border-t-2 border-t-sage',
+          'transition-[border-color,background-color] duration-200',
+          'hover:border-outline-variant/25 hover:bg-surface-container/80 cursor-pointer text-left',
+          'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-sage/40',
+          className,
         )}
-      </div>
-    </Surface>
+        data-testid="canopy-efficiency-tile"
+        aria-label={`${formatTokens(tokensSaved)} tokens saved by Canopy. Click for breakdown.`}
+      >
+        <p className="font-mono text-[10px] uppercase tracking-wider text-outline mb-2">
+          Reads saved
+        </p>
+        <div className="flex items-end justify-between gap-2">
+          <p
+            className={cn(
+              'font-serif text-2xl font-bold',
+              tokensSaved >= 0 ? 'text-sage' : 'text-terracotta',
+            )}
+          >
+            {formatTokens(tokensSaved)}
+          </p>
+        </div>
+        {skipRatio && (
+          <p className="font-mono text-[10px] text-outline mt-1">{skipRatio}</p>
+        )}
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Canopy: Reads saved this session</DialogTitle>
+            <DialogDescription>
+              Direct token savings from files the agent skipped Reading after
+              Canopy injected file anatomy via PreToolUse.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="mb-4">
+            <p
+              className={cn(
+                'font-serif text-3xl font-bold tracking-tight',
+                tokensSaved >= 0 ? 'text-sage' : 'text-terracotta',
+              )}
+              aria-label={`${formatTokens(tokensSaved)} net tokens saved on Reads`}
+            >
+              {formatTokens(tokensSaved)}
+            </p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-outline mt-1">
+              net tokens {tokensSaved >= 0 ? 'saved on reads' : 'spent on injections'}
+            </p>
+          </div>
+
+          <div className="space-y-0">
+            <SubStat
+              label="Injections offered"
+              value={formatCount(offered)}
+              hint="PreToolUse Read events where Canopy injected anatomy."
+            />
+            <SubStat
+              label="Skipped after injection"
+              value={formatCount(skips)}
+              hint="Files the agent did not Read after seeing the injected blob."
+            />
+            <SubStat
+              label="Read anyway"
+              value={formatCount(reads)}
+              hint="Files the agent Read in full after the injection."
+            />
+            <SubStat
+              label="Injection cost"
+              value={totalTokens === null ? '—' : `${formatTokens(totalTokens)} tok`}
+              hint="Sum of tokens spent on Canopy injections this session."
+            />
+            {redundant !== null && redundant > 0 && (
+              <SubStat
+                label="Redundant reads"
+                value={formatCount(redundant)}
+                hint="Files Read more than once in this session (informational)."
+              />
+            )}
+          </div>
+
+          <Link
+            to={CANOPY_SETTINGS_HREF}
+            onClick={() => setOpen(false)}
+            className="inline-block mt-4 font-mono text-xs text-sage hover:underline"
+          >
+            Learn more about Canopy →
+          </Link>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

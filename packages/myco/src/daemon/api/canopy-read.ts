@@ -6,7 +6,7 @@ import { getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
-import { composeBlobStructured } from '@myco/canopy/inject/compose.js';
+import { composeBlob } from '@myco/canopy/inject/compose.js';
 import { relativizeForLookup } from './canopy-inject.js';
 
 function notFound(reason: string): RouteResponse {
@@ -66,16 +66,17 @@ export const handleGetCanopyToolCallBlob: RouteHandler = async (req) => {
   const ctx = getCanopyToolCallContext(null, sessionId, tcId);
   if (!ctx) return notFound('tool_call');
 
-  // The blob is regenerated from the canopy_entries row at request time.
-  // Stable as long as the file's mechanical anatomy hasn't changed since
-  // the call ran; otherwise the UI shows the current anatomy, not a stale
-  // snapshot — design choice per the spec.
+  // The blob is regenerated from the canopy_entries row at request time so
+  // the popover renders byte-for-byte what composeBlob() would produce
+  // today. If the file's mechanical anatomy has advanced since the call,
+  // the popover shows the current blob, not a stale snapshot — design
+  // choice per the spec, and the same path the agent would now see.
   if (!ctx.project_id) return notFound('project_root_missing');
   const lookupPath = relativizeForLookup(ctx.file_path, ctx.project_id);
   const entry = findCanopyEntry(ctx.project_id, lookupPath);
   if (!entry) return notFound('entry_missing');
 
-  return { body: composeBlobStructured(entry) };
+  return { body: { blob: composeBlob(entry) } };
 };
 
 export const handleGetCanopyRollup: RouteHandler = async (req) => {

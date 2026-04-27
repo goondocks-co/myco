@@ -106,6 +106,38 @@ describe('rescanSingle', () => {
     if (!r.ok) expect(r.reason).toBe('excluded');
     expect(rowExists('private/secret.ts')).toBe(false);
   });
+
+  it('tombstones a previously-indexed row when a Write turns the file binary', () => {
+    // First scan: plain text → row lands in canopy_entries.
+    write('src/notes.md', 'project notes\n');
+    rescanSingle({ db: getDatabase(), projectId, machineId: 'local', projectRoot, filePath: 'src/notes.md' });
+    expect(rowExists('src/notes.md')).toBe(true);
+
+    // Now overwrite with content containing a NUL byte. The file still
+    // exists, so the existsSync gate passes; scanFile then rejects with
+    // reason='binary'. Without inline cleanup the row would linger and
+    // /canopy/inject would keep handing the agent stale anatomy until the
+    // next periodic full/delta scan.
+    fs.writeFileSync(path.join(projectRoot, 'src/notes.md'), Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    const r = rescanSingle({ db: getDatabase(), projectId, machineId: 'local', projectRoot, filePath: 'src/notes.md' });
+    expect(r).toEqual({ ok: true, action: 'deleted', relPath: 'src/notes.md' });
+    expect(rowExists('src/notes.md')).toBe(false);
+  });
+
+  it('tombstones a previously-indexed row when a Write pushes the file past maxBytes', () => {
+    write('src/big.ts', 'export const x = 1;\n');
+    rescanSingle({ db: getDatabase(), projectId, machineId: 'local', projectRoot, filePath: 'src/big.ts' });
+    expect(rowExists('src/big.ts')).toBe(true);
+
+    // Bloat past a tight maxBytes cap to trip the too_large branch.
+    fs.writeFileSync(path.join(projectRoot, 'src/big.ts'), 'x'.repeat(2048));
+    const r = rescanSingle({
+      db: getDatabase(), projectId, machineId: 'local', projectRoot,
+      filePath: 'src/big.ts', maxBytes: 1024,
+    });
+    expect(r).toEqual({ ok: true, action: 'deleted', relPath: 'src/big.ts' });
+    expect(rowExists('src/big.ts')).toBe(false);
+  });
 });
 
 describe('handleCanopyToolUse', () => {

@@ -60,7 +60,19 @@ export function rescanSingle(opts: RescanSingleOptions): RescanSingleResult {
     now: epochSeconds(),
     maxBytes: opts.maxBytes,
   });
-  if (!result.ok) return { ok: false, reason: 'skipped', relPath: rel };
+  if (!result.ok) {
+    // Reconcile the row when the file is now unindexable for a deterministic
+    // reason — full/delta scans tombstone these via the visited-set, but
+    // event-driven rescans need to do it inline or `/canopy/inject` will
+    // keep handing the agent stale anatomy until the next periodic scan.
+    // `read_error` is left alone since it's typically transient (mid-flight
+    // rename, EBUSY) and the next Write/Edit will retry naturally.
+    if (result.reason === 'binary' || result.reason === 'too_large' || result.reason === 'symlink') {
+      deleteCanopyEntry(opts.db, opts.projectId, rel);
+      return { ok: true, action: 'deleted', relPath: rel };
+    }
+    return { ok: false, reason: 'skipped', relPath: rel };
+  }
 
   // Skip the upsert when content_hash matches the stored row — Write/Edit
   // events that produce identical bytes (no-op edits, idempotent reformats)

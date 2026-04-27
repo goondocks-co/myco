@@ -27,7 +27,14 @@ maxTurns: 60
 timeoutSeconds: 1800
 schedule:
   enabled: false
-  intervalSeconds: 3600
+  # Cadence math at batch_size: 10 — 900s drains ~40 rows/hour while idle.
+  # A repo with 1k files and rapid churn keeps up; a fresh small project
+  # drains in one tick. has-pending-canopy-rows gates the run, so empty
+  # queues cost nothing per tick. Drop to 600/300 for a one-time backlog
+  # burn-down; raise back to 3600 if you'd rather pay the cost slowly.
+  # task-scheduler.ts already prevents overlap, so ticks fired while a
+  # prior run is in flight are silently skipped.
+  intervalSeconds: 900
   runIn:
     - idle
     - sleep
@@ -37,7 +44,15 @@ prompt: >-
   a batch of pending rows using canopy_describe_next + canopy_describe_write
   (batch mode). The instruction tells you which mode you are in.
 params:
-  batch_size: 50
+  # Sized for local models. The cap is not a context-budget cap — it's a
+  # per-turn tool-emission cap. canopy_describe_next returns the whole
+  # batch in one tool result (~400 tokens per entry), and 26B-class local
+  # models (gemma, qwen, llama-3.x) can only confidently emit follow-up
+  # tool calls against a result of ~10 entries before they fall back to
+  # the easier action of just re-fetching. Symptom is a fetch-loop:
+  # `canopy_describe_next` called repeatedly, zero `canopy_describe_write`
+  # calls. Frontier models could go higher; local stays at 10.
+  batch_size: 10
   max_description_chars: 180
   max_attempts: 2
 phases:

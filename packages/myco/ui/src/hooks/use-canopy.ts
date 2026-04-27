@@ -48,18 +48,13 @@ export interface CanopyRollup {
 }
 
 /**
- * Verbatim injection blob persisted with a tool-call row. The shape is the
- * structural payload Cortex composed at PreToolUse — `summary` is populated
- * only when a Tier 2 `llm_description` was available.
+ * Verbatim injection blob for a tool-call row. The wire shape is just the
+ * pre-rendered string Cortex would compose for the live row right now —
+ * single source of truth with the agent's PreToolUse path, including the
+ * freshness gate, item caps, and the 800-char overall cap.
  */
 export interface CanopyInjectionBlob {
-  path: string;
-  tokenEstimate: number;
-  lineCount: number;
-  exports: string[];
-  imports: string[];
-  top: string | null;
-  summary: string | null;
+  blob: string;
 }
 
 /* ---------- Helpers ---------- */

@@ -27,7 +27,6 @@
  */
 
 import type { CanopyEntry } from '../../db/schema.js';
-import type { CanopyBlob } from '../types.js';
 
 const META_WITH_SUMMARY =
   '[meta] File summary from Myco. If this already answers your question, skipping the full read may be appropriate.';
@@ -129,21 +128,4 @@ export function composeBlob(entry: CanopyEntry): string {
 /** Quick token estimator — same 4 chars/token heuristic used elsewhere in Canopy. */
 export function blobTokenCost(blob: string): number {
   return Math.ceil(blob.length / 4);
-}
-
-/**
- * Structured form of the same data composeBlob renders verbatim. The blob
- * replay UI fetches this shape so it can render with React typography
- * without re-parsing the wire string.
- */
-export function composeBlobStructured(entry: CanopyEntry): CanopyBlob {
-  return {
-    path: entry.path,
-    tokenEstimate: entry.token_estimate,
-    lineCount: entry.line_count,
-    exports: parseJsonArray(entry.exports_json),
-    imports: parseJsonArray(entry.imports_json),
-    top: entry.top_comment,
-    summary: entry.llm_description,
-  };
 }

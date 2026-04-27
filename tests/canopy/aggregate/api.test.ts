@@ -173,11 +173,11 @@ describe('handleGetCanopyToolCallBlob', () => {
       params: { id: sessionId, tcId: String(tcId) },
     }));
     expect(res.status ?? 200).toBe(200);
-    const body = res.body as Record<string, unknown>;
-    expect(body.path).toBe('present.ts');
+    const body = res.body as { blob: string };
+    expect(body.blob).toContain('[canopy] present.ts');
   });
 
-  it('returns the structured CanopyBlob when canopy_entries row exists', async () => {
+  it('returns the verbatim composed blob when canopy_entries row exists', async () => {
     const sessionId = 'sess-api-blob-3';
     seedSession(sessionId);
     seedCanopyEntry('present.ts', 800);
@@ -186,12 +186,16 @@ describe('handleGetCanopyToolCallBlob', () => {
     const res = await handleGetCanopyToolCallBlob(makeReq({
       params: { id: sessionId, tcId: String(tcId) },
     }));
-    const body = res.body as Record<string, unknown>;
-    expect(body.path).toBe('present.ts');
-    expect(typeof body.tokenEstimate).toBe('number');
-    expect(typeof body.lineCount).toBe('number');
-    expect(Array.isArray(body.exports)).toBe(true);
-    expect(Array.isArray(body.imports)).toBe(true);
+    const body = res.body as { blob: string };
+    // The endpoint must return the same string composeBlob() produces — same
+    // freshness gate, same caps, same [meta] line. The popover renders this
+    // verbatim, so the wire shape is just the string.
+    expect(typeof body.blob).toBe('string');
+    expect(body.blob).toContain('[canopy] present.ts — 800 tok');
+    expect(body.blob).toContain('exports: foo');
+    // No fresh llm_description seeded → anatomy meta line, not summary meta.
+    expect(body.blob).toContain('[meta] File anatomy from Myco');
+    expect(body.blob).not.toContain('[meta] File summary from Myco');
   });
 });
 

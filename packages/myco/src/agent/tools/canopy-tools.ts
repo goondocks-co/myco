@@ -29,10 +29,11 @@ import { textResult, type VaultToolDeps } from './types.js';
 // from blowing out the model's context.
 const FIRST_LINES = 60;
 
-const DEFAULT_BATCH_LIMIT = 50;
-// Hard ceiling so a runaway agent can't ask for the entire table at
-// once. Tuned to stay well below the local-model context budget when
-// every row's first_lines is included.
+// 10 is the largest value that has been observed to drain reliably on
+// 26B-class local models — see canopy-describe.yaml for the per-turn
+// tool-emission ceiling that bounds this. The MAX is generous so a
+// frontier-routed run can pull more in one shot.
+const DEFAULT_BATCH_LIMIT = 10;
 const MAX_BATCH_LIMIT = 100;
 
 // Cap on the post-processed description length, mirroring the prior
@@ -79,8 +80,7 @@ async function readFirstLines(absolutePath: string, limit: number): Promise<stri
   return content.split(/\r?\n/).slice(0, limit).join('\n');
 }
 
-function resolveProjectId(deps: VaultToolDeps, override?: string): string | null {
-  if (override && override.length > 0) return override;
+function resolveProjectId(deps: VaultToolDeps): string | null {
   if (deps.vaultDir) return resolveCanopyProjectId(deps.vaultDir);
   return deps.projectRoot ?? null;
 }
@@ -97,10 +97,13 @@ export function createCanopyTools(deps: VaultToolDeps) {
     'Return up to `limit` canopy_entries rows that need an llm_description (NULL or stale relative to mechanical_updated_at). Returns an empty entries array when the queue is drained — that is the signal to stop.',
     {
       limit: z.number().int().positive().optional().describe(`Max rows to return (default ${DEFAULT_BATCH_LIMIT}, ceiling ${MAX_BATCH_LIMIT}).`),
-      project_id: z.string().optional().describe('Override project_id; defaults to the daemon vault\'s project.'),
     },
     async (args) => {
-      const projectId = resolveProjectId(deps, args.project_id ?? undefined);
+      // No project_id override knob — projectId/projectRoot must move
+      // together (path.dirname(vaultDir) is both), and exposing one without
+      // the other lets a caller select rows from one project but read
+      // first_lines under another. Daemon serves one vault → one project.
+      const projectId = resolveProjectId(deps);
       if (!projectId) {
         return textResult({ error: 'canopy_describe_next: project_id unavailable (no vaultDir/projectRoot on tool deps)' });
       }

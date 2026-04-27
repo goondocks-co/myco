@@ -785,7 +785,13 @@ export async function buildSkillEvolveInstruction(
 // ---------------------------------------------------------------------------
 
 const CANOPY_DESCRIBE_FIRST_LINES = 60;
-const CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE = 50;
+// Sized for local models: not a context-budget cap, a per-turn
+// tool-emission cap. canopy_describe_next returns the whole batch in one
+// tool result; 26B-class local models can only emit follow-up tool calls
+// reliably against ~10 entries at a time before they fall back to
+// re-fetching instead of writing. See canopy-describe.yaml for the full
+// failure-mode notes.
+const CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE = 10;
 
 /** Subset of canopy_entries needed to render a single-row instruction. */
 interface CanopyEntryRow {
@@ -818,23 +824,32 @@ async function readCanopyFirstLines(absolutePath: string, limit: number): Promis
 
 interface CanopyPendingRow { count: number }
 
-function countPendingCanopyRows(): number {
+// Predicate kept in lockstep with SELECT_PENDING_SQL in
+// agent/tools/canopy-tools.ts — both must answer "is there work for
+// canopy_describe_next to drain?" identically, or the precondition gates
+// runs the tool can't satisfy and we burn a turn for nothing.
+const CANOPY_PENDING_PREDICATE =
+  'llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at';
+
+function countPendingCanopyRows(projectId: string | undefined): number {
+  if (!projectId) return 0;
   try {
     const row = getDatabase().prepare(
       `SELECT COUNT(*) AS count FROM canopy_entries
-        WHERE llm_description IS NULL
-           OR llm_updated_at < mechanical_updated_at`,
-    ).get() as CanopyPendingRow | undefined;
+        WHERE project_id = ?
+          AND (${CANOPY_PENDING_PREDICATE})`,
+    ).get(projectId) as CanopyPendingRow | undefined;
     return row?.count ?? 0;
   } catch {
     return 0;
   }
 }
 
-function loadCanopyRow(canopyEntryId: string): CanopyEntryRow | undefined {
+function loadCanopyRow(projectId: string | undefined, canopyEntryId: string): CanopyEntryRow | undefined {
+  if (!projectId) return undefined;
   return getDatabase()
-    .prepare('SELECT path, language, exports_json, imports_json, top_comment FROM canopy_entries WHERE path = ? LIMIT 1')
-    .get(canopyEntryId) as CanopyEntryRow | undefined;
+    .prepare('SELECT path, language, exports_json, imports_json, top_comment FROM canopy_entries WHERE project_id = ? AND path = ? LIMIT 1')
+    .get(projectId, canopyEntryId) as CanopyEntryRow | undefined;
 }
 
 /**
@@ -853,9 +868,14 @@ export async function buildCanopyDescribeInstruction(
   projectRoot?: string,
 ): Promise<BuiltTaskInstruction | undefined> {
   const canopyEntryId = typeof params?.canopy_entry_id === 'string' ? params.canopy_entry_id : undefined;
+  // Per canopy/identity.ts the project_id is path.dirname(vaultDir), and
+  // every Canopy call site treats projectRoot and projectId as the same
+  // value — projectRoot here doubles as the project_id used to scope the
+  // canopy_entries lookup so it matches sibling queries.
+  const canopyProjectId = projectRoot;
 
   if (canopyEntryId) {
-    const row = loadCanopyRow(canopyEntryId);
+    const row = loadCanopyRow(canopyProjectId, canopyEntryId);
     if (!row) return undefined;
 
     const exports = parseCanopyJsonArray(row.exports_json);
@@ -880,17 +900,19 @@ export async function buildCanopyDescribeInstruction(
     return { instruction: lines.join('\n') };
   }
 
-  if (countPendingCanopyRows() === 0) return undefined;
+  if (countPendingCanopyRows(canopyProjectId) === 0) return undefined;
 
   const batchSize = Number(params?.batch_size ?? CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE);
   const lines = [
-    'Batch mode. Drain pending Canopy entries using canopy_describe_next and',
-    `canopy_describe_write. Process at most ${batchSize} rows this run.`,
+    `Batch mode. Process exactly ${batchSize} Canopy entries this run.`,
     '',
-    'For each row returned by canopy_describe_next, emit one sentence following',
-    'the style rules in the phase prompt and call canopy_describe_write({ path,',
-    'description }). Stop when canopy_describe_next returns zero entries or you',
-    'have written close to the batch_size cap.',
+    `Step 1: Call canopy_describe_next({ limit: ${batchSize} }) ONCE.`,
+    'Step 2: For EACH entry it returns, emit one sentence following the',
+    '        style rules in the phase prompt, then call',
+    '        canopy_describe_write({ path, description }) for that entry.',
+    'Step 3: Stop. Do NOT call canopy_describe_next a second time — even',
+    '        if more entries are pending, this run is done. The next',
+    '        scheduled tick will pick up the rest.',
   ];
   return { instruction: lines.join('\n') };
 }

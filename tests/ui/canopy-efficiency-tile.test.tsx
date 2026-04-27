@@ -53,43 +53,54 @@ const NEGATIVE: SessionCanopyAggregate = {
 /* ---------- Tests ---------- */
 
 describe('CanopyEfficiencyTile', () => {
-  it('renders the tile with populated data', () => {
+  it('renders the compact card with the headline number and skip ratio', () => {
     renderTile(POPULATED);
 
-    expect(screen.getByTestId('canopy-efficiency-tile')).toBeInTheDocument();
-    expect(screen.getByText(/token efficiency/i)).toBeInTheDocument();
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile).toBeInTheDocument();
+    expect(tile.textContent).toContain('Reads saved');
     // Compact-formatted prominent number (4_320 → "4.3k").
-    expect(screen.getByText(/4\.3k/)).toBeInTheDocument();
-    expect(screen.getByText(/net tokens saved/i)).toBeInTheDocument();
-    // Sub-stats render their values.
-    expect(screen.getByText('12')).toBeInTheDocument(); // injections offered
-    expect(screen.getByText('8')).toBeInTheDocument();  // skipped
-    expect(screen.getByText('4')).toBeInTheDocument();  // read anyway
+    expect(tile.textContent).toContain('4.3k');
+    // Skip ratio sublabel ("8/12 skipped").
+    expect(tile.textContent).toContain('8/12 skipped');
   });
 
-  it('hides itself entirely when fixture is null', () => {
-    const { container } = renderTile(null);
-    expect(container.firstChild).toBeNull();
-    expect(screen.queryByTestId('canopy-efficiency-tile')).not.toBeInTheDocument();
+  it('renders with zeros when fixture is null (pre-feature session)', () => {
+    renderTile(null);
+
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile).toBeInTheDocument();
+    expect(tile.textContent).toContain('Reads saved');
+    expect(tile.textContent).toContain('0');
   });
 
-  it('hides itself entirely when every column is null', () => {
-    const { container } = renderTile(ALL_NULL);
-    expect(container.firstChild).toBeNull();
-    expect(screen.queryByTestId('canopy-efficiency-tile')).not.toBeInTheDocument();
+  it('renders with zeros when every column is null (non-Claude / disabled scope)', () => {
+    renderTile(ALL_NULL);
+
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile).toBeInTheDocument();
+    expect(tile.textContent).toContain('Reads saved');
+    expect(tile.textContent).toContain('0');
   });
 
   it('shows a negative net-spend when injection cost exceeds gain', () => {
     renderTile(NEGATIVE);
 
-    expect(screen.getByTestId('canopy-efficiency-tile')).toBeInTheDocument();
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile).toBeInTheDocument();
     // -400 fits below the kilo threshold so it formats as a comma-grouped int.
-    expect(screen.getByText(/-400/)).toBeInTheDocument();
-    expect(screen.getByText(/net tokens spent/i)).toBeInTheDocument();
+    expect(tile.textContent).toContain('-400');
   });
 
-  it('omits the redundant-reads row when count is zero', () => {
-    renderTile({ ...POPULATED, canopy_redundant_reads: 0 });
-    expect(screen.queryByText(/redundant reads/i)).not.toBeInTheDocument();
+  it('exposes the headline savings via aria-label for assistive tech', () => {
+    // Modal content (sub-stats + scope disclaimer) lives behind a click,
+    // and the test runner's jsdom doesn't fully support Radix's portal
+    // mounting (no MutationObserver). The aria-label is the always-visible
+    // accessibility surface that mirrors the prominent number, so we
+    // verify the data threading there instead of opening the dialog.
+    renderTile(POPULATED);
+    const tile = screen.getByTestId('canopy-efficiency-tile');
+    expect(tile.getAttribute('aria-label')).toContain('4.3k');
+    expect(tile.getAttribute('aria-label')).toMatch(/saved by canopy/i);
   });
 });

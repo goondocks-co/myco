@@ -71,15 +71,15 @@ agent:
         intervalSeconds: 1800
     canopy-describe:
       provider:
-        runtime: claude-sdk
+        runtime: openai-agents
         type: lmstudio
         base_url: http://localhost:1234
         model: google/gemma-4-26b-a4b
         reasoning_map:
           low: google/gemma-4-26b-a4b
-          default: google/gemma-4-26b-a4b
-          high: google/gemma-4-26b-a4b
-      runtime: claude-sdk
+          default: google/gemma-4-31b
+          high: google/gemma-4-31b
+      runtime: openai-agents
       schedule:
         enabled: true
 context:
@@ -120,7 +120,7 @@ notifications:
 canopy:
   refresh:
     background_enabled: true
-    background_period: 1h
+    background_period_minutes: 60
   exclude:
     patterns:
       - node_modules

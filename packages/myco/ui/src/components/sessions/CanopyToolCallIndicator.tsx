@@ -68,12 +68,7 @@ function BlobPanel({ sessionId, toolCallId }: { sessionId: string; toolCallId: n
       className="font-mono text-xs whitespace-pre-wrap break-words bg-surface-container-lowest rounded-md p-3 text-on-surface overflow-x-auto"
       data-testid="canopy-blob-text"
     >
-      {`[canopy] ${data.path} — ${data.tokenEstimate} tok, ${data.lineCount} lines`}
-      {data.exports.length > 0 && `\n  exports: ${data.exports.join(', ')}`}
-      {data.imports.length > 0 && `\n  imports: ${data.imports.join(', ')}`}
-      {data.summary && `\n  summary: "${data.summary}"`}
-      {!data.summary && data.top && `\n  top: "${data.top}"`}
-      {`\n[meta] File anatomy from Myco. If exports + top line already answer your question, skipping the full read may be appropriate.`}
+      {data.blob}
     </pre>
   );
 }
@@ -115,6 +110,15 @@ export function CanopyToolCallIndicator({ sessionId, activity }: CanopyToolCallI
           // the row's expand state.
           e.stopPropagation();
           setOpen(true);
+        }}
+        onKeyDown={(e) => {
+          // The parent activity row is a role="button" that intercepts
+          // Enter/Space keydowns and calls preventDefault — that suppresses
+          // the browser-synthesized click on this inner button. Stop the
+          // keydown here so keyboard users can actually open the popover.
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.stopPropagation();
+          }
         }}
         className={cn(
           'inline-flex items-center gap-1 px-1.5 py-0.5 rounded',

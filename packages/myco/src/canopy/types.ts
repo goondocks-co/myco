@@ -29,17 +29,3 @@ export interface CanopyScanResult {
   errored: number;
   durationMs: number;
 }
-
-/**
- * Injection-time blob shape. Composed from a persisted
- * CanopyEntry; `summary` is populated from `llm_description` when present.
- */
-export interface CanopyBlob {
-  path: string;
-  tokenEstimate: number;
-  lineCount: number;
-  exports: string[];
-  imports: string[];
-  top: string | null;
-  summary: string | null;
-}

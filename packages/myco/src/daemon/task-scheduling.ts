@@ -23,12 +23,22 @@ import {
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { getDatabase } from '@myco/db/client.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
+
+// Tasks whose pending queue is fully derivable from durable state — for
+// these, "resume the failed run" is not a useful concept: a fresh run
+// would do the same work as a resumed one, and the resume path collapses
+// every scheduled tick onto a single agent_runs row (executor.ts:264
+// skips insertRun when resuming), erasing failure history and making the
+// task impossible to tune. Opt them out of getLatestResumableRunForTask
+// so each scheduled fire inserts a new row.
+const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe']);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,7 +128,9 @@ export async function registerScheduledTasks(
       if (!enabled) return;
 
       const { runAgent } = await import('@myco/agent/executor.js');
-      const resumableRun = getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
+      const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
+        ? null
+        : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
       if (resumableRun) {
         const resumed = await runAgent(vaultDir, {
           agentId: DEFAULT_AGENT_ID,
@@ -243,12 +255,21 @@ export async function registerScheduledTasks(
         return getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible;
       },
       'has-pending-canopy-rows': () => {
+        // Predicate must match SELECT_PENDING_SQL in agent/tools/canopy-tools.ts —
+        // both must answer "is there work for canopy_describe_next to drain?"
+        // identically, otherwise the precondition fires runs the tool can't
+        // satisfy. Scoped by project_id for the same reason every other
+        // canopy_entries query is.
+        const projectId = resolveCanopyProjectId(vaultDir);
         const row = getDatabase().prepare(
           `SELECT 1 FROM canopy_entries
-            WHERE llm_description IS NULL
-               OR llm_updated_at < mechanical_updated_at
+            WHERE project_id = ?
+              AND (
+                llm_updated_at IS NULL
+                OR llm_updated_at < mechanical_updated_at
+              )
             LIMIT 1`,
-        ).get();
+        ).get(projectId);
         return row !== undefined;
       },
     },
