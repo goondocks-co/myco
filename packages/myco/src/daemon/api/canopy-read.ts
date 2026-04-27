@@ -107,6 +107,164 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
 };
 
 // ---------------------------------------------------------------------------
+// /canopy/entries — list / detail / reembed
+// ---------------------------------------------------------------------------
+
+export interface CanopyEntriesListArgs {
+  project_id: string;
+  limit?: number;
+  offset?: number;
+  language?: string;
+  described?: boolean;
+  embedded?: boolean;
+  path_prefix?: string;
+}
+
+export interface CanopyEntriesListResult {
+  rows: Array<Record<string, unknown>>;
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function handleCanopyEntriesList(
+  args: CanopyEntriesListArgs,
+): Promise<CanopyEntriesListResult> {
+  const db = getDatabase();
+  const where: string[] = ['project_id = ?'];
+  const params: unknown[] = [args.project_id];
+  if (args.language !== undefined)    { where.push('language = ?');                params.push(args.language); }
+  if (args.described === true)        { where.push('llm_description IS NOT NULL'); }
+  if (args.described === false)       { where.push('llm_description IS NULL'); }
+  if (args.embedded === true)         { where.push('embedded = 1'); }
+  if (args.embedded === false)        { where.push('embedded = 0'); }
+  if (args.path_prefix !== undefined) { where.push('path LIKE ?');                  params.push(`${args.path_prefix}%`); }
+
+  const limit = args.limit ?? 50;
+  const offset = args.offset ?? 0;
+  const rows = db.prepare(
+    `SELECT * FROM canopy_entries
+      WHERE ${where.join(' AND ')}
+      ORDER BY path ASC
+      LIMIT ? OFFSET ?`,
+  ).all(...params, limit, offset) as Array<Record<string, unknown>>;
+  const total = (db.prepare(
+    `SELECT COUNT(*) AS n FROM canopy_entries WHERE ${where.join(' AND ')}`,
+  ).get(...params) as { n: number }).n;
+
+  return { rows, total, limit, offset };
+}
+
+export async function handleCanopyEntryGet(
+  args: { project_id: string; path: string },
+): Promise<Record<string, unknown>> {
+  const row = getDatabase().prepare(
+    `SELECT * FROM canopy_entries WHERE project_id = ? AND path = ?`,
+  ).get(args.project_id, args.path) as Record<string, unknown> | undefined;
+  if (!row) throw new Error(`Canopy entry not found: ${args.path}`);
+  return row;
+}
+
+export async function handleCanopyEntryReembed(
+  args: { project_id: string; path: string },
+): Promise<{ ok: true }> {
+  const result = getDatabase().prepare(
+    `UPDATE canopy_entries SET embedded = 0 WHERE project_id = ? AND path = ?`,
+  ).run(args.project_id, args.path);
+  if (result.changes === 0) throw new Error(`Canopy entry not found: ${args.path}`);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Route adapters for /canopy/entries
+// ---------------------------------------------------------------------------
+
+function parseIntQuery(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function parseStringQuery(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  return value;
+}
+
+function parseBooleanQuery(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return undefined;
+}
+
+/**
+ * Strip the `/api/canopy/entries/` prefix from a pathname to recover the
+ * URL-encoded canopy path (which may contain `/`). Returns the decoded
+ * project-relative path, or null if the pathname doesn't start with the
+ * expected prefix or has no remainder.
+ */
+function extractEntryPath(pathname: string, prefix: string): string | null {
+  if (!pathname.startsWith(prefix)) return null;
+  const rest = pathname.slice(prefix.length);
+  if (!rest) return null;
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the route adapters that bind handlers to the daemon's current
+ * project_id. Kept as a factory so the daemon can inject its vaultDir-derived
+ * projectId at registration time — matching the createCanopyInjectHandler
+ * pattern used elsewhere in this file's neighborhood.
+ */
+function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
+  const listHandler: RouteHandler = async (req) => {
+    const args: CanopyEntriesListArgs = {
+      project_id: deps.resolveProjectId(),
+      limit:       parseIntQuery(req.query.limit),
+      offset:      parseIntQuery(req.query.offset),
+      language:    parseStringQuery(req.query.language),
+      described:   parseBooleanQuery(req.query.described),
+      embedded:    parseBooleanQuery(req.query.embedded),
+      path_prefix: parseStringQuery(req.query.path_prefix),
+    };
+    return { body: await handleCanopyEntriesList(args) };
+  };
+
+  // The entry path may contain '/', which the param router can't capture in
+  // a single segment. We mount the get/reembed routes as `/api/canopy/entries/*`
+  // prefix routes and recover the rest of the URL from the pathname.
+  const reembedSuffix = '/reembed';
+  const getHandler: RouteHandler = async (req) => {
+    const path = extractEntryPath(req.pathname, '/api/canopy/entries/');
+    if (!path) return badRequest('missing_path');
+    try {
+      const row = await handleCanopyEntryGet({ project_id: deps.resolveProjectId(), path });
+      return { body: row };
+    } catch (e) {
+      return notFound((e as Error).message);
+    }
+  };
+
+  const reembedHandler: RouteHandler = async (req) => {
+    const raw = extractEntryPath(req.pathname, '/api/canopy/entries/');
+    if (!raw || !raw.endsWith(reembedSuffix)) return badRequest('missing_path');
+    const path = raw.slice(0, -reembedSuffix.length);
+    if (!path) return badRequest('missing_path');
+    try {
+      return { body: await handleCanopyEntryReembed({ project_id: deps.resolveProjectId(), path }) };
+    } catch (e) {
+      return notFound((e as Error).message);
+    }
+  };
+
+  return { listHandler, getHandler, reembedHandler };
+}
+
+// ---------------------------------------------------------------------------
 // Wire-in helper
 // ---------------------------------------------------------------------------
 
@@ -119,7 +277,7 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
  */
 export function registerCanopyReadRoutes(server: {
   registerRoute(method: string, pattern: string, handler: RouteHandler): void;
-}): void {
+}, deps?: { resolveProjectId: () => string }): void {
   server.registerRoute('GET', '/api/sessions/:id/canopy', handleGetSessionCanopy);
   server.registerRoute(
     'GET',
@@ -127,4 +285,19 @@ export function registerCanopyReadRoutes(server: {
     handleGetCanopyToolCallBlob,
   );
   server.registerRoute('GET', '/api/canopy/rollup', handleGetCanopyRollup);
+
+  // /canopy/entries routes need a project_id resolver. Existing tests register
+  // canopy-read routes without deps; skip the entries routes when no resolver
+  // is supplied to avoid breaking older callers.
+  if (deps) {
+    const { listHandler, getHandler, reembedHandler } = makeEntriesRouteHandlers(deps);
+    server.registerRoute('GET',  '/api/canopy/entries',    listHandler);
+    // Wildcard prefix routes. The Router matches `/*` after exact and param
+    // routes, and the entry-path may contain '/' which a `:path` param cannot
+    // capture in a single segment. Order of registration doesn't matter — the
+    // get vs reembed dispatch happens inside extractEntryPath/the handler
+    // checking for the `/reembed` suffix.
+    server.registerRoute('POST', '/api/canopy/entries/*',  reembedHandler);
+    server.registerRoute('GET',  '/api/canopy/entries/*',  getHandler);
+  }
 }

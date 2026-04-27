@@ -74,6 +74,7 @@ import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
+import { resolveCanopyProjectId } from '../canopy/identity.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
@@ -841,7 +842,9 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
 
   // --- Canopy read-side API routes ---
-  registerCanopyReadRoutes(server);
+  registerCanopyReadRoutes(server, {
+    resolveProjectId: () => resolveCanopyProjectId(vaultDir),
+  });
 
   // --- Skill lifecycle API routes ---
   server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
