@@ -78,12 +78,13 @@ const SPORE_OBSERVATION_OPTIONS: Array<{ value: SporeObservationType; label: str
 
 /**
  * Build the navigation target for a canopy result. We route into the Cortex
- * "Canopy Entries" tab with the file path as a URL param so the panel can
- * pre-select the row. `encodeURIComponent` handles slashes in sub-paths.
+ * Canopy tab's Entries section with the file path as a URL param so the
+ * panel can pre-select the row. `encodeURIComponent` handles slashes in
+ * sub-paths.
  */
 function getCanopyResultPath(result: CanopySearchResult): string {
-  if (!result.path) return '/cortex?tab=canopy-entries';
-  return `/cortex?tab=canopy-entries&path=${encodeURIComponent(result.path)}`;
+  if (!result.path) return '/cortex?tab=canopy&section=entries';
+  return `/cortex?tab=canopy&section=entries&path=${encodeURIComponent(result.path)}`;
 }
 
 function getResultPath(result: AnySearchResult): string {

@@ -222,7 +222,7 @@ describe('GlobalSearch — Files facet', () => {
 
     expect(navigateMock).toHaveBeenCalledTimes(1);
     const target = navigateMock.mock.calls[0][0] as string;
-    expect(target.startsWith('/cortex?tab=canopy-entries&path=')).toBe(true);
+    expect(target.startsWith('/cortex?tab=canopy&section=entries&path=')).toBe(true);
     expect(target).toContain(encodeURIComponent('packages/myco/src/canopy/scanner/index.ts'));
   });
 });

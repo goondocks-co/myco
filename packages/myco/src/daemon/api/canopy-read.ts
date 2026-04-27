@@ -345,7 +345,7 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
 // /canopy/map — get current map / regenerate
 // ---------------------------------------------------------------------------
 
-const CANOPY_MAP_EMPTY_STATE_MESSAGE = 'No project map yet.';
+const CANOPY_MAP_EMPTY_STATE_MESSAGE = 'No Canopy Map yet.';
 
 export interface CanopyMapGetArgs {
   project_id: string;

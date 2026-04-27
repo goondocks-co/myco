@@ -74,7 +74,7 @@ export function ProjectMapPanel() {
       <Surface level="low" className="rounded-lg border border-outline-variant/20 p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-2 min-w-0">
-            <SectionHeader>Project Map</SectionHeader>
+            <SectionHeader>Canopy Map</SectionHeader>
             <div className="flex flex-wrap items-center gap-2 text-xs text-on-surface-variant">
               <span data-testid="project-map-generated-at">
                 Last generated: <span className="font-mono text-on-surface">{generatedLabel}</span>
@@ -139,7 +139,7 @@ export function ProjectMapPanel() {
             data-testid="project-map-error"
           >
             <AlertCircle className="h-5 w-5" />
-            <span className="font-sans text-sm">Failed to load project map.</span>
+            <span className="font-sans text-sm">Failed to load Canopy Map.</span>
             <span className="font-sans text-xs text-on-surface-variant">
               {mapQuery.error instanceof Error ? mapQuery.error.message : 'Unknown error'}
             </span>
@@ -153,7 +153,7 @@ export function ProjectMapPanel() {
           >
             <MapIcon className="h-6 w-6 text-primary" />
             <p className="font-sans text-sm text-on-surface">
-              {map?.message ?? 'No project map yet.'}
+              {map?.message ?? 'No Canopy Map yet.'}
             </p>
             <p className="max-w-md font-sans text-xs text-on-surface-variant">
               Generate the first map to give agents a high-level tour of the

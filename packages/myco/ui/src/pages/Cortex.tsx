@@ -18,6 +18,7 @@ import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
 import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
 import { ProjectMapPanel } from '../components/canopy/ProjectMapPanel';
+import { TabSwitcher } from '../components/ui/tab-switcher';
 import {
   Select,
   SelectContent,
@@ -40,7 +41,27 @@ import {
 } from '../lib/constants';
 import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
-type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy' | 'canopy-entries' | 'project-map';
+type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy';
+type CanopySection = 'overview' | 'entries' | 'map';
+
+const CANOPY_SECTIONS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'entries', label: 'Entries' },
+  { id: 'map', label: 'Map' },
+] as const;
+const VALID_CANOPY_SECTIONS = new Set<CanopySection>(CANOPY_SECTIONS.map((s) => s.id));
+const CANOPY_SECTION_PARAM = 'section';
+
+/**
+ * Legacy sub-tab IDs that mapped to today's nested Canopy sections. Existing
+ * bookmarks use these; the redirect shim below rewrites them to the new
+ * `?tab=canopy&section=...` shape on first navigation so people land where
+ * they expect without a 404 detour.
+ */
+const LEGACY_TAB_TO_CANOPY_SECTION: Record<string, CanopySection> = {
+  'canopy-entries': 'entries',
+  'project-map': 'map',
+};
 
 interface CortexInstructionsResponse {
   content: string;
@@ -88,8 +109,6 @@ const CORTEX_TABS = [
   { id: 'builder', label: 'Builder' },
   { id: 'digest', label: 'Digest' },
   { id: 'canopy', label: 'Canopy' },
-  { id: 'canopy-entries', label: 'Canopy Entries' },
-  { id: 'project-map', label: 'Project Map' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
@@ -104,7 +123,25 @@ const DIGEST_TIERS = [
 function resolveActiveTab(search: string): ActiveTab {
   const params = new URLSearchParams(search);
   const raw = params.get(CONFIG_FOCUS_TAB_PARAM);
-  return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
+  if (!raw) return 'instructions';
+  // Legacy aliases redirect to the unified Canopy tab; the section is
+  // resolved separately in resolveCanopySection().
+  if (raw in LEGACY_TAB_TO_CANOPY_SECTION) return 'canopy';
+  return VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
+}
+
+function resolveCanopySection(search: string): CanopySection {
+  const params = new URLSearchParams(search);
+  const tab = params.get(CONFIG_FOCUS_TAB_PARAM);
+  // Honor a legacy alias as long as the explicit `section` param isn't set.
+  if (tab && tab in LEGACY_TAB_TO_CANOPY_SECTION) {
+    const aliasTarget = LEGACY_TAB_TO_CANOPY_SECTION[tab];
+    if (aliasTarget) return aliasTarget;
+  }
+  const raw = params.get(CANOPY_SECTION_PARAM);
+  return raw && VALID_CANOPY_SECTIONS.has(raw as CanopySection)
+    ? (raw as CanopySection)
+    : 'overview';
 }
 
 function formatTimestamp(epochSeconds: number | null): string {
@@ -210,6 +247,8 @@ export default function Cortex() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = resolveActiveTab(location.search);
+  const canopySection = resolveCanopySection(location.search);
+
   const handleTabChange = useCallback((tabId: string) => {
     if (!VALID_TABS.has(tabId as ActiveTab)) return;
     const params = new URLSearchParams(location.search);
@@ -218,8 +257,51 @@ export default function Cortex() {
     } else {
       params.set(CONFIG_FOCUS_TAB_PARAM, tabId);
     }
+    // Switching tabs always drops the section param — sections only make
+    // sense within the Canopy tab and they default to 'overview' anyway.
+    if (tabId !== 'canopy') params.delete(CANOPY_SECTION_PARAM);
     const search = params.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  const handleCanopySectionChange = useCallback((sectionId: string) => {
+    if (!VALID_CANOPY_SECTIONS.has(sectionId as CanopySection)) return;
+    const params = new URLSearchParams(location.search);
+    // Migrate any legacy alias on the way out — keep the URL canonical.
+    const rawTab = params.get(CONFIG_FOCUS_TAB_PARAM);
+    if (rawTab && rawTab in LEGACY_TAB_TO_CANOPY_SECTION) {
+      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
+    } else {
+      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
+    }
+    if (sectionId === 'overview') {
+      params.delete(CANOPY_SECTION_PARAM);
+    } else {
+      params.set(CANOPY_SECTION_PARAM, sectionId);
+    }
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  // Deep links from before the unification — `?tab=canopy-entries` and
+  // `?tab=project-map` — are accepted by the resolvers above. On first
+  // render we rewrite the URL so the browser shows the canonical shape;
+  // resolvers stay tolerant for any other consumer (e.g. saved bookmarks).
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const rawTab = params.get(CONFIG_FOCUS_TAB_PARAM);
+    if (rawTab && rawTab in LEGACY_TAB_TO_CANOPY_SECTION) {
+      const target = LEGACY_TAB_TO_CANOPY_SECTION[rawTab];
+      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
+      if (target && target !== 'overview') {
+        params.set(CANOPY_SECTION_PARAM, target);
+      } else {
+        params.delete(CANOPY_SECTION_PARAM);
+      }
+      const search = params.toString();
+      navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+    }
+    // Run once per pathname/search change.
   }, [location.pathname, location.search, navigate]);
 
   return (
@@ -237,10 +319,36 @@ export default function Cortex() {
       ) : activeTab === 'builder' ? (
         <BuilderTab />
       ) : activeTab === 'canopy' ? (
-        <CanopyTab />
-      ) : activeTab === 'canopy-entries' ? (
+        <CanopyTabUnified
+          section={canopySection}
+          onSectionChange={handleCanopySectionChange}
+          searchParams={location.search}
+        />
+      ) : (
+        <InstructionsTab />
+      )}
+    </div>
+  );
+}
+
+interface CanopyTabUnifiedProps {
+  section: CanopySection;
+  onSectionChange: (section: string) => void;
+  searchParams: string;
+}
+
+function CanopyTabUnified({ section, onSectionChange, searchParams }: CanopyTabUnifiedProps) {
+  return (
+    <div className="space-y-6">
+      <TabSwitcher
+        tabs={CANOPY_SECTIONS.map((s) => ({ id: s.id, label: s.label }))}
+        activeTab={section}
+        onTabChange={onSectionChange}
+      />
+
+      {section === 'entries' ? (
         (() => {
-          const pathFromUrl = new URLSearchParams(location.search).get('path') ?? undefined;
+          const pathFromUrl = new URLSearchParams(searchParams).get('path') ?? undefined;
           return (
             <CanopyEntriesPanel
               key={pathFromUrl ?? 'no-path'}
@@ -248,10 +356,10 @@ export default function Cortex() {
             />
           );
         })()
-      ) : activeTab === 'project-map' ? (
+      ) : section === 'map' ? (
         <ProjectMapPanel />
       ) : (
-        <InstructionsTab />
+        <CanopyTab />
       )}
     </div>
   );

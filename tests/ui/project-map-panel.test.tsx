@@ -60,7 +60,7 @@ const POPULATED_MAP: CanopyMapResponse = {
 const EMPTY_MAP: CanopyMapResponse = {
   content: '',
   is_empty: true,
-  message: 'No project map yet.',
+  message: 'No Canopy Map yet.',
 };
 
 /* ---------- Tests ---------- */
@@ -80,7 +80,7 @@ describe('ProjectMapPanel', () => {
       expect(screen.getByTestId('project-map-empty')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('No project map yet.')).toBeInTheDocument();
+    expect(screen.getByText('No Canopy Map yet.')).toBeInTheDocument();
     // The empty branch renders its own emphasized regenerate button.
     expect(screen.getByTestId('project-map-regenerate-empty')).toBeInTheDocument();
     // Header shows the no-map badge and em-dash placeholders for metadata.
