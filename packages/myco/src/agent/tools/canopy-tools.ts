@@ -164,7 +164,45 @@ export function createCanopyTools(deps: VaultToolDeps) {
     { annotations: {} },
   );
 
-  return [canopyDescribeNext, canopyDescribeWrite];
+  const canopyListTool = tool(
+    'canopy_list',
+    'List canopy entries for the current project. Returns path, language, llm_description, exports, imports, token_estimate. Defaults to described rows; pass include_undescribed=true to include rows that have not yet been described.',
+    {
+      include_undescribed: z.boolean().optional().describe('Include rows where llm_description is NULL (default false)'),
+      limit: z.number().int().positive().optional().describe('Maximum rows to return (default 1000)'),
+    },
+    async (args) => {
+      const projectId = resolveProjectId(deps);
+      if (!projectId) {
+        return textResult({ error: 'canopy_list: project_id unavailable (no vaultDir/projectRoot on tool deps)' });
+      }
+      const limit = args.limit ?? 1000;
+      const filter = args.include_undescribed === true ? '' : ' AND llm_description IS NOT NULL';
+      const rows = getDatabase().prepare(
+        `SELECT path, language, llm_description, exports_json, imports_json, token_estimate
+           FROM canopy_entries
+          WHERE project_id = ?${filter}
+          ORDER BY path ASC
+          LIMIT ?`,
+      ).all(projectId, limit) as Array<{
+        path: string; language: string | null; llm_description: string | null;
+        exports_json: string | null; imports_json: string | null; token_estimate: number;
+      }>;
+      return textResult({
+        rows: rows.map((r) => ({
+          path: r.path,
+          language: r.language,
+          llm_description: r.llm_description,
+          exports: parseJsonStringArray(r.exports_json),
+          imports: parseJsonStringArray(r.imports_json),
+          token_estimate: r.token_estimate,
+        })),
+      });
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  return [canopyDescribeNext, canopyDescribeWrite, canopyListTool];
 }
 
 // Categorise post-process rejections so the agent can react (retry vs.

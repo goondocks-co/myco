@@ -187,7 +187,7 @@ const EXPLORATION_TOOL_NAMES = new Set([
 ]);
 
 const CANOPY_TOOL_NAMES = new Set([
-  'canopy_describe_next', 'canopy_describe_write',
+  'canopy_describe_next', 'canopy_describe_write', 'canopy_list',
 ]);
 
 /** Max chars stored from a tool response in the run audit trail. */
