@@ -374,7 +374,7 @@ function InstructionsTab() {
           </Badge>
         </div>
 
-        <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
+        <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5">
           {instructionsQuery.isLoading ? (
             <p className="font-sans text-sm text-on-surface-variant">Loading instructions...</p>
           ) : instructions?.content ? (
@@ -590,7 +590,7 @@ function BuilderTab() {
         {builderRunsQuery.isLoading ? (
           <p className="font-sans text-sm text-on-surface-variant">Loading recent builds...</p>
         ) : builderRuns.length === 0 ? (
-          <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
+          <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5">
             <p className="font-sans text-sm text-on-surface-variant">
               No builder runs yet. Start one above and Cortex will keep the prompt artifact here.
             </p>
@@ -598,7 +598,7 @@ function BuilderTab() {
         ) : (
           <div className="space-y-3">
             {builderRuns.map(({ run, parsed }) => (
-              <Surface key={run.id} level="base" className="rounded-lg border border-outline-variant/20 p-4 space-y-3">
+              <Surface key={run.id} level="default" className="rounded-lg border border-outline-variant/20 p-4 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -752,7 +752,7 @@ function BuilderRunDetail({
         </div>
       </div>
 
-      <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-2">
+      <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5 space-y-2">
         <p className="font-sans text-sm font-medium text-on-surface">Generated Prompt</p>
         {result?.prompt ? (
           <pre className="whitespace-pre-wrap font-mono text-sm text-on-surface">{result.prompt}</pre>
@@ -766,7 +766,7 @@ function BuilderRunDetail({
       </Surface>
 
       {result?.reports?.length ? (
-        <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-3">
+        <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5 space-y-3">
           <p className="font-sans text-sm font-medium text-on-surface">Task Reports</p>
           <div className="space-y-2">
             {result.reports.map((report) => (
@@ -883,6 +883,7 @@ function CanopyTab() {
           path="canopy.exclude.patterns"
           label="Extra exclude patterns"
           defaultScope="project"
+          commitOn="blur"
         >
           {({ value, onChange }) => {
             const lines = (value ?? []).join('\n');
@@ -902,6 +903,45 @@ function CanopyTab() {
             );
           }}
         </ScopedField>
+
+        <div className="space-y-1 pt-2">
+          <p className="font-sans text-xs uppercase tracking-wide text-on-surface-variant">
+            Background refresh
+          </p>
+          <p className="font-sans text-sm text-on-surface-variant">
+            Session start and the Write/Edit tool already keep the index fresh during
+            sessions. The background sweep is the safety net for changes made outside
+            sessions ({' '}<code className="font-mono text-xs">git pull</code>, edits
+            via non-Myco tools).
+          </p>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'canopy.refresh.background_enabled', boolean>
+            path="canopy.refresh.background_enabled"
+            label="Periodic background scan"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? true} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+
+          <ScopedField<'canopy.refresh.background_period', string>
+            path="canopy.refresh.background_period"
+            label="Period (e.g. 1h, 30m, 6h)"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="text"
+                placeholder="1h"
+                value={value ?? '1h'}
+                onChange={(event) => onChange(event.target.value)}
+              />
+            )}
+          </ScopedField>
+        </div>
       </Surface>
 
       <Surface
