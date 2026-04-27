@@ -1,14 +1,15 @@
 /**
  * Read-only vault tools.
  *
- * 9 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
+ * 10 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
  * vault_spores, vault_sessions, vault_search_fts, vault_search_semantic,
- * vault_state, vault_edges
+ * vault_search_canopy, vault_state, vault_edges
  */
 
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
+import { getDatabase } from '@myco/db/client.js';
 import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
@@ -46,6 +47,23 @@ const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_EDGES_LIMIT = 50;
 /** Default projection mode for read tools. */
 const DEFAULT_INCLUDE_METADATA = false;
+
+/**
+ * Resolve `(project_id, path)` from a synthesized canopy record id of the form
+ * `<project_id>:<path>` (split on the FIRST colon — paths may contain colons
+ * on some platforms, project_ids do not). Returns the row's llm_description or
+ * null when the row is missing.
+ */
+function hydrateCanopyDescription(syntheticId: string): string | null {
+  const idx = syntheticId.indexOf(':');
+  if (idx <= 0) return null;
+  const projectId = syntheticId.slice(0, idx);
+  const path = syntheticId.slice(idx + 1);
+  const row = getDatabase().prepare(
+    `SELECT llm_description FROM canopy_entries WHERE project_id = ? AND path = ?`,
+  ).get(projectId, path) as { llm_description: string | null } | undefined;
+  return row?.llm_description ?? null;
+}
 
 function projectToolRows<T>(
   rows: T[],
@@ -369,6 +387,74 @@ export function createReadTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true, openWorldHint: true } },
   );
 
+  const vaultSearchCanopy = tool(
+    'vault_search_canopy',
+    'Semantic similarity search across the project canopy index — i.e. file-level llm_description summaries produced by the canopy-describe task. Pinned to the `canopy_entries` namespace; returns one row per file matching the query, hydrated with `{project_id, path, llm_description, language, score}`. Use this to find relevant source files by what they DO, not by keyword.',
+    {
+      query: z.string().describe('Natural-language query describing the behavior or concern you are looking for.'),
+      limit: z.number().optional().describe('Maximum results to return.'),
+      language: z.string().optional().describe('Optional language filter (e.g. "typescript").'),
+      path_prefix: z.string().optional().describe('Optional repo-relative path prefix filter (e.g. "src/auth/").'),
+    },
+    async (args) => {
+      if (!embeddingManager) {
+        return textResult({ results: [], message: 'Embedding provider unavailable' });
+      }
+      try {
+        const queryVector = await embeddingManager.embedQuery(args.query);
+        if (!queryVector) {
+          return textResult({ results: [], message: 'Embedding provider unavailable' });
+        }
+        const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
+        const filters: Record<string, unknown> = {
+          ...(args.language !== undefined ? { language: args.language } : {}),
+          ...(args.path_prefix !== undefined ? { path_prefix: args.path_prefix } : {}),
+        };
+        const vectorFilters = Object.keys(filters).length > 0 ? filters : undefined;
+
+        // Local-only: canopy is per-machine and not synced to team — no team-client merge here.
+        const rawResults = embeddingManager.searchVectors(queryVector, {
+          namespace: 'canopy_entries',
+          limit: searchLimit,
+          threshold: SEARCH_SIMILARITY_THRESHOLD,
+          filters: vectorFilters,
+        });
+
+        const results = rawResults.map((r) => {
+          const meta = (r.metadata ?? {}) as { project_id?: unknown; path?: unknown; language?: unknown };
+          const projectId = typeof meta.project_id === 'string' ? meta.project_id : null;
+          const path = typeof meta.path === 'string' ? meta.path : null;
+          const language = typeof meta.language === 'string' ? meta.language : null;
+          return {
+            project_id: projectId,
+            path,
+            llm_description: hydrateCanopyDescription(r.id),
+            language,
+            score: r.similarity,
+          };
+        });
+
+        return textResult({ results });
+      } catch (err) {
+        const message = errorMessage(err);
+        let hint: string | undefined;
+        if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
+          hint = 'Embedding provider timed out. Retry once or reduce query length.';
+        } else if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
+          hint = 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
+        } else if (/no such table|no such column/i.test(message)) {
+          hint = 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
+        }
+        return textResult({
+          error: `vault_search_canopy failed: ${message}${hint ? ` — ${hint}` : ''}`,
+          results: [],
+          query: args.query,
+        });
+      }
+    },
+    { annotations: { readOnlyHint: true, openWorldHint: true } },
+  );
+
   const vaultState = tool(
     'vault_state',
     'Get all state key-value pairs for the current agent.',
@@ -415,6 +501,7 @@ export function createReadTools(deps: VaultToolDeps) {
     vaultSessions,
     vaultSearchFts,
     vaultSearchSemantic,
+    vaultSearchCanopy,
     vaultState,
     vaultEdges,
   ];

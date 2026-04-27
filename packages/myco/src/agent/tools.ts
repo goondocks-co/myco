@@ -166,8 +166,8 @@ const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
 
 const READ_TOOL_NAMES = new Set([
   'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
-  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_state',
-  'vault_edges',
+  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_search_canopy',
+  'vault_state', 'vault_edges',
 ]);
 
 const WRITE_TOOL_NAMES = new Set([
