@@ -25,7 +25,24 @@ import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
 
-const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records'] as const;
+const EMBEDDABLE_NAMESPACES = [
+  'sessions',
+  'spores',
+  'plans',
+  'artifacts',
+  'skill_records',
+  'canopy_entries',
+] as const;
+
+/**
+ * Display labels for embeddable namespaces. The canopy_entries namespace is
+ * surfaced as "Files" to match the universal-search facet (Task 10) for
+ * cross-surface consistency. All other namespaces fall back to their raw name.
+ */
+const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {
+  canopy_entries: 'Files',
+};
+
 const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DATABASE_LOG_CATEGORY = 'database';
 
@@ -119,7 +136,7 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
                   idx % 2 === 1 ? 'bg-surface-container-low/30' : '',
                 )}
               >
-                <td className="py-2.5 pr-4">{ns}</td>
+                <td className="py-2.5 pr-4">{NAMESPACE_LABELS[ns] ?? ns}</td>
                 <td className="py-2.5 pr-4 text-right">{embedded}</td>
                 <td className="py-2.5 pr-4 text-right">
                   {pending > 0 ? (
