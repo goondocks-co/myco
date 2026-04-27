@@ -974,11 +974,12 @@ function CanopyTab() {
           </div>
           <div className="space-y-1">
             <p className="font-sans text-sm font-medium text-on-surface">
-              Canopy code intelligence — file-level metadata Cortex can offer agents on Read.
+              Canopy is your project's live code index.
             </p>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              The mechanical scanner runs automatically. Tier 2 LLM summaries are opt-in and use
-              the agent provider configured under Settings. Local-first models are recommended.
+              It tracks what every file does so connected agents can answer
+              codebase questions and skip redundant Reads. The Myco agent
+              describes files in the background — opt-in, configurable below.
             </p>
           </div>
         </div>
@@ -1108,16 +1109,19 @@ function CanopyTab() {
         level="low"
         className="rounded-lg border border-outline-variant/20 p-6 space-y-2"
       >
-        <SectionHeader>LLM Descriptions (Tier 2)</SectionHeader>
+        <SectionHeader>Myco-generated file descriptions</SectionHeader>
         <p className="font-sans text-sm text-on-surface-variant">
-          One-sentence file summaries that ride along with the injection blob. Configured on the{' '}
+          One-sentence summaries the Myco agent writes for each file. They
+          power semantic search across your codebase and ride along with
+          Canopy injection on Read. Configure the schedule and reasoning
+          level on the{' '}
           <Link
             to="/agent?tab=tasks&task=canopy-describe"
             className="text-primary underline underline-offset-2 hover:text-primary/80"
           >
             canopy-describe task
           </Link>
-          {' '}— schedule, provider, reasoning level, and per-row caps all live there so a single page is the source of truth.
+          .
         </p>
       </Surface>
     </div>

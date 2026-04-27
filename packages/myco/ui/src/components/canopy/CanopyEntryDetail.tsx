@@ -225,16 +225,16 @@ export function CanopyEntryDetail({ path, onBack }: CanopyEntryDetailProps) {
       {/* Description callout */}
       {entry.llm_description ? (
         <Surface level="low" className="rounded-md border border-primary/15 p-4">
-          <SectionHeader>LLM Description</SectionHeader>
+          <SectionHeader>Description</SectionHeader>
           <p className="mt-2 font-sans text-sm text-on-surface leading-relaxed">
             {entry.llm_description}
           </p>
         </Surface>
       ) : (
         <Surface level="low" className="rounded-md border border-outline-variant/20 p-4">
-          <SectionHeader>LLM Description</SectionHeader>
+          <SectionHeader>Description</SectionHeader>
           <p className="mt-2 font-sans text-sm text-on-surface-variant">
-            No Tier 2 description has been generated for this entry yet.
+            The Myco agent hasn't described this file yet.
           </p>
         </Surface>
       )}
@@ -293,10 +293,10 @@ export function CanopyEntryDetail({ path, onBack }: CanopyEntryDetailProps) {
               <CopyButton text={entry.content_hash} />
             </span>
           </FieldRow>
-          <FieldRow label="Mechanical scan">
+          <FieldRow label="Indexed">
             {formatEpochAbsolute(entry.mechanical_updated_at)}
           </FieldRow>
-          <FieldRow label="LLM update">
+          <FieldRow label="Described">
             {entry.llm_updated_at !== null
               ? formatEpochAbsolute(entry.llm_updated_at)
               : '—'}

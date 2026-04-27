@@ -84,7 +84,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
   {
     "name": "canopy-map",
     "displayName": "Canopy Map",
-    "description": "Produce a markdown architectural overview of the project (directory skeleton + key files / golden paths) and store it in canopy_maps. Refines the prior map diff-style when one exists.",
+    "description": "Build the Canopy Map — a guided tour of your project's architecture that connected agents can pull on demand to orient before exploring with Glob or Grep. Refreshes incrementally as the codebase shifts.",
     "agent": "myco-agent",
     "prompt": "Produce a markdown architectural overview of this project. The gather phase pre-assembles the inputs (canopy_entries + rules files); the render phase shapes them into the final map. The map is persisted via vault_report with action \"canopy_map\".",
     "isDefault": false,

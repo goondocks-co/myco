@@ -35,12 +35,12 @@ export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}
           </div>
           <div className="space-y-1">
             <p className="font-sans text-sm font-medium text-on-surface">
-              Browse the canopy index — what Cortex offers agents on Read.
+              Every described file in your project.
             </p>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              Each row is a single file with its mechanical anatomy and any Tier 2
-              LLM description. Click a row to see the full details and to queue a
-              re-embed when a description has drifted.
+              Click a row to see what the Myco agent recorded — the file's
+              description, exports, imports, and top comment. Re-embed any
+              row whose description has drifted from the latest content.
             </p>
           </div>
         </div>

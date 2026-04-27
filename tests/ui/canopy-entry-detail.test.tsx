@@ -105,7 +105,7 @@ describe('CanopyEntryDetail', () => {
       expect(screen.getByTestId('canopy-entry-detail')).toBeInTheDocument();
     });
     expect(
-      screen.getByText('No Tier 2 description has been generated for this entry yet.'),
+      screen.getByText("The Myco agent hasn't described this file yet."),
     ).toBeInTheDocument();
     expect(screen.getByText('Not embedded')).toBeInTheDocument();
     expect(screen.getByText('No description')).toBeInTheDocument();
