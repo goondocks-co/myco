@@ -17,6 +17,7 @@ import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
 import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
+import { ProjectMapPanel } from '../components/canopy/ProjectMapPanel';
 import {
   Select,
   SelectContent,
@@ -39,7 +40,7 @@ import {
 } from '../lib/constants';
 import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
-type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy' | 'canopy-entries';
+type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy' | 'canopy-entries' | 'project-map';
 
 interface CortexInstructionsResponse {
   content: string;
@@ -88,6 +89,7 @@ const CORTEX_TABS = [
   { id: 'digest', label: 'Digest' },
   { id: 'canopy', label: 'Canopy' },
   { id: 'canopy-entries', label: 'Canopy Entries' },
+  { id: 'project-map', label: 'Project Map' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
@@ -246,6 +248,8 @@ export default function Cortex() {
             />
           );
         })()
+      ) : activeTab === 'project-map' ? (
+        <ProjectMapPanel />
       ) : (
         <InstructionsTab />
       )}

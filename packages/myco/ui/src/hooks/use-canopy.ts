@@ -255,6 +255,57 @@ export function useReembedCanopyEntry() {
   });
 }
 
+/* ---------- Canopy Project Map ---------- */
+
+/**
+ * Wire shape for `GET /api/canopy/map`. When no map row exists yet, the
+ * daemon returns `{ is_empty: true, content: '', message: '...' }`. When a
+ * row exists, the metadata fields (`generated_at`, `token_estimate`,
+ * `inputs_hash`) are populated and `is_empty` is absent.
+ */
+export interface CanopyMapResponse {
+  content: string;
+  is_empty?: true;
+  message?: string;
+  generated_at?: number;
+  token_estimate?: number;
+  inputs_hash?: string;
+}
+
+/** Cache TTL for the project map (30 seconds — moves only on regenerate). */
+const MAP_STALE_TIME = 30_000;
+
+/** Fetches the rendered project map. */
+export function useCanopyMap() {
+  return useQuery<CanopyMapResponse>({
+    queryKey: ['canopy-map'],
+    queryFn: ({ signal }) => fetchJson<CanopyMapResponse>('/canopy/map', { signal }),
+    staleTime: MAP_STALE_TIME,
+  });
+}
+
+/**
+ * Kicks off a regenerate by POSTing to `/canopy/map/regenerate`. On success,
+ * invalidates the map query so the panel refetches the freshly written row.
+ *
+ * Note: the regenerate endpoint dispatches the canopy-map task asynchronously
+ * — `ok: true` means the run was started, not that the map is ready.
+ * Consumers may want to poll or rely on the next manual refresh.
+ */
+export function useRegenerateCanopyMap() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { force_cold_start?: boolean }) => {
+      return postJson<{ ok: true; run_id: string }>('/canopy/map/regenerate', {
+        force_cold_start: vars.force_cold_start === true,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['canopy-map'] });
+    },
+  });
+}
+
 /**
  * Fetches the verbatim injection blob persisted with a tool-call row.
  * Lazy — only runs when both ids are defined (the indicator passes
