@@ -861,6 +861,50 @@ function CanopyTab() {
       </Surface>
 
       <Surface
+        id="config-section-cortex-canopy-collection"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+      >
+        <div className="space-y-1">
+          <SectionHeader>Collection</SectionHeader>
+          <p className="font-sans text-sm text-on-surface-variant">
+            The scanner automatically skips anything matched by this project's
+            {' '}<code className="font-mono text-xs">.gitignore</code>{' '}
+            plus directories that Myco and your installed symbionts manage
+            ({' '}<code className="font-mono text-xs">.myco/</code>,
+            {' '}<code className="font-mono text-xs">.agents/</code>,
+            {' '}<code className="font-mono text-xs">.claude/</code>,
+            {' '}<code className="font-mono text-xs">.cursor/</code>, etc.).
+            Add patterns below to exclude additional paths.
+          </p>
+        </div>
+
+        <ScopedField<'canopy.exclude.patterns', string[]>
+          path="canopy.exclude.patterns"
+          label="Extra exclude patterns"
+          defaultScope="project"
+        >
+          {({ value, onChange }) => {
+            const lines = (value ?? []).join('\n');
+            return (
+              <textarea
+                className="min-h-[120px] w-full rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
+                placeholder={"# one glob per line, e.g.\nfixtures/large/**\n**/*.snap"}
+                value={lines}
+                onChange={(event) => {
+                  const next = event.target.value
+                    .split('\n')
+                    .map((line) => line.trim())
+                    .filter((line) => line.length > 0 && !line.startsWith('#'));
+                  onChange(next);
+                }}
+              />
+            );
+          }}
+        </ScopedField>
+      </Surface>
+
+      <Surface
         id="config-section-cortex-canopy-injection"
         level="low"
         className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
