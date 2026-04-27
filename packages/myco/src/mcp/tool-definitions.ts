@@ -82,21 +82,23 @@ const PROP_TAGS = 'Tags for discoverability — component names, technologies, c
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_SEARCH,
-    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way.',
+    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way. Pass type="canopy" to search the project canopy index — file-level llm_description summaries — when you need to find relevant source files by what they DO, not by keyword; canopy results return one row per file as `{project_id, path, llm_description, language, score}` and are local-only (not synced to team).',
     cortex: {
-      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note.',
+      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note. Pass type="canopy" when you need to find source files by behavior rather than keyword.',
       priority: 20,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Natural language search query — describe what you are looking for' },
-        type: { type: 'string', enum: ['session', 'plan', 'spore', 'all'], description: 'Filter by note type (default: all)' },
+        type: { type: 'string', enum: ['session', 'plan', 'spore', 'canopy', 'all'], description: 'Filter by note type (default: all). "canopy" searches per-file llm_description summaries and returns {project_id, path, llm_description, language, score}.' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
         observation_type: { type: 'string', description: 'Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)' },
         status: { type: 'string', description: 'Optional semantic filter for record status (for example active)' },
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
+        language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
+        path_prefix: { type: 'string', description: 'Canopy-only: optional repo-relative path prefix filter (e.g. "src/auth/")' },
       },
       required: ['query'],
     },
