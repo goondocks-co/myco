@@ -30,6 +30,7 @@ import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { initDatabase, vaultDbPath } from '../db/client.js';
 import { resolveCanopyProjectId } from '../canopy/identity.js';
+import { getMachineId } from '../daemon/machine-id.js';
 import { incrementCanopyMapToolCalls } from '../db/queries/sessions.js';
 
 import {
@@ -295,7 +296,10 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
           return { content: [{ type: 'text', text: JSON.stringify(empty) }] };
         }
         const projectId = resolveCanopyProjectId(vaultDir);
-        const machineId = process.env.MYCO_MACHINE_ID ?? 'local';
+        // Track the daemon's identity resolution so reads use the same
+        // (project_id, machine_id) key the canopy-map task wrote under.
+        // Env override stays available for tests/non-symbiont launches.
+        const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
         const sessionId = process.env.MYCO_SESSION_ID ?? null;
         const result = await handleCanopyMap({ projectId, machineId });
         if (sessionId) {

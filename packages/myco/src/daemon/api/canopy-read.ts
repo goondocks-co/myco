@@ -2,7 +2,7 @@
 
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
-import { getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
+import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
@@ -133,6 +133,11 @@ export async function handleCanopyEntriesList(
   args: CanopyEntriesListArgs,
 ): Promise<CanopyEntriesListResult> {
   const db = getDatabase();
+  // This site composes the canonical project_id scope with optional
+  // language/embedded/path_prefix filters; the described===true branch
+  // overlaps with describedCanopyEntriesPredicate() in @myco/db/queries/canopy.js,
+  // but the rest of the matrix is structurally distinct enough that a unified
+  // helper would leak abstraction. The ORDER BY mirrors CANOPY_ENTRIES_ORDER_BY.
   const where: string[] = ['project_id = ?'];
   const params: unknown[] = [args.project_id];
   if (args.language !== undefined)    { where.push('language = ?');                params.push(args.language); }
@@ -147,7 +152,7 @@ export async function handleCanopyEntriesList(
   const rows = db.prepare(
     `SELECT * FROM canopy_entries
       WHERE ${where.join(' AND ')}
-      ORDER BY path ASC
+      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
       LIMIT ? OFFSET ?`,
   ).all(...params, limit, offset) as Array<Record<string, unknown>>;
   const total = (db.prepare(

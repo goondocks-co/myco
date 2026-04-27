@@ -14,6 +14,15 @@ import { getDatabase } from '@myco/db/client.js';
 /** Tables that participate in vector embedding. */
 export const EMBEDDABLE_TABLES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries'] as const;
 
+/**
+ * Vector-store namespace identifier for the canopy_entries table. Used as a
+ * discriminant by cross-cutting search/embed code paths (e.g.
+ * `searchCanopy`'s `searchVectors({ namespace })` call). Distinct from the
+ * SQL table identifier `canopy_entries` that appears in raw queries — those
+ * intentionally remain as string literals.
+ */
+export const CANOPY_ENTRIES_NAMESPACE = 'canopy_entries' as const;
+
 /** TypeScript type for valid embeddable table names. */
 export type EmbeddableTable = (typeof EMBEDDABLE_TABLES)[number];
 

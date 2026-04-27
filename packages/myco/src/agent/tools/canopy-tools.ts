@@ -21,6 +21,7 @@ import type { CanopyEntry } from '@myco/db/schema.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
+import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
@@ -36,6 +37,11 @@ const FIRST_LINES = 60;
 // frontier-routed run can pull more in one shot.
 const DEFAULT_BATCH_LIMIT = 10;
 const MAX_BATCH_LIMIT = 100;
+
+// canopy_list bounds. Mirrors the DEFAULT/MAX pattern above so the tool
+// can't be coaxed into materializing thousands of rows in one shot.
+const CANOPY_LIST_DEFAULT_LIMIT = 200;
+const CANOPY_LIST_MAX_LIMIT = 500;
 
 // Cap on the post-processed description length, mirroring the prior
 // cortex.canopy.llm.max_description_chars default. Centralised here so
@@ -169,22 +175,27 @@ export function createCanopyTools(deps: VaultToolDeps) {
     'List canopy entries for the current project. Returns path, language, llm_description, exports, imports, token_estimate. Defaults to described rows; pass include_undescribed=true to include rows that have not yet been described.',
     {
       include_undescribed: z.boolean().optional().describe('Include rows where llm_description is NULL (default false)'),
-      limit: z.number().int().positive().optional().describe('Maximum rows to return (default 1000)'),
+      limit: z.number().int().positive().optional().describe(`Maximum rows to return (default ${CANOPY_LIST_DEFAULT_LIMIT}, ceiling ${CANOPY_LIST_MAX_LIMIT})`),
     },
     async (args) => {
       const projectId = resolveProjectId(deps);
       if (!projectId) {
         return textResult({ error: 'canopy_list: project_id unavailable (no vaultDir/projectRoot on tool deps)' });
       }
-      const limit = args.limit ?? 1000;
-      const filter = args.include_undescribed === true ? '' : ' AND llm_description IS NOT NULL';
+      const requestedLimit = args.limit ?? CANOPY_LIST_DEFAULT_LIMIT;
+      const limit = Math.min(Math.max(1, requestedLimit), CANOPY_LIST_MAX_LIMIT);
+      // include_undescribed toggles between the canonical described
+      // predicate and a project-only predicate that includes NULL rows.
+      const { where, params } = args.include_undescribed === true
+        ? { where: 'project_id = ?', params: [projectId] as unknown[] }
+        : describedCanopyEntriesPredicate(projectId);
       const rows = getDatabase().prepare(
         `SELECT path, language, llm_description, exports_json, imports_json, token_estimate
            FROM canopy_entries
-          WHERE project_id = ?${filter}
-          ORDER BY path ASC
+          WHERE ${where}
+          ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
           LIMIT ?`,
-      ).all(projectId, limit) as Array<{
+      ).all(...params, limit) as Array<{
         path: string; language: string | null; llm_description: string | null;
         exports_json: string | null; imports_json: string | null; token_estimate: number;
       }>;

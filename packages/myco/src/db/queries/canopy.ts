@@ -316,6 +316,35 @@ export function rollupCanopy(
 }
 
 // ---------------------------------------------------------------------------
+// Shared canopy_entries listing helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical ORDER BY for canopy_entries listings. Stable alphabetical order
+ * keeps inputs_hash computation and pagination deterministic across calls.
+ */
+export const CANOPY_ENTRIES_ORDER_BY = 'path ASC';
+
+/**
+ * Build the WHERE clause + params for "described canopy entries scoped to
+ * project". Callers append additional filters and shape the SELECT column
+ * list themselves — the column lists differ across consumers (the agent
+ * tool, the daemon API, and the render-phase context loader each project
+ * a different subset), so this helper only fixes the canonical predicate.
+ *
+ * Returns: `{ where, params }` where `where` is everything after `WHERE`
+ * (no leading keyword) and `params` matches the placeholder count.
+ */
+export function describedCanopyEntriesPredicate(
+  projectId: string,
+): { where: string; params: unknown[] } {
+  return {
+    where: 'project_id = ? AND llm_description IS NOT NULL',
+    params: [projectId],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Per-session Read activities (with canopy column) for the UI
 // ---------------------------------------------------------------------------
 

@@ -14,6 +14,7 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
+import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import {
   computeInputsHash,
@@ -25,6 +26,7 @@ import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
+import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
 import { getDatabase } from '@myco/db/client.js';
 import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
@@ -820,16 +822,6 @@ interface CanopyEntryRow {
   top_comment: string | null;
 }
 
-function parseCanopyJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
 async function readCanopyFirstLines(absolutePath: string, limit: number): Promise<string> {
   const fs = await import('node:fs/promises');
   try {
@@ -896,8 +888,8 @@ export async function buildCanopyDescribeInstruction(
     const row = loadCanopyRow(canopyProjectId, canopyEntryId);
     if (!row) return undefined;
 
-    const exports = parseCanopyJsonArray(row.exports_json);
-    const imports = parseCanopyJsonArray(row.imports_json);
+    const exports = parseJsonStringArray(row.exports_json);
+    const imports = parseJsonStringArray(row.imports_json);
     const firstLines = projectRoot
       ? await readCanopyFirstLines(`${projectRoot.replace(/\/$/, '')}/${row.path}`, CANOPY_DESCRIBE_FIRST_LINES)
       : '';
@@ -940,13 +932,13 @@ export async function buildCanopyDescribeInstruction(
 // ---------------------------------------------------------------------------
 
 /**
- * Canopy entries representative cap. The render phase prompts at low
- * reasoning; passing thousands of rows would shred the context. Most
- * projects under this cap include every described file; oversized repos
- * truncate alphabetically (path-sorted) — the deterministic order keeps
- * the inputs_hash stable run-over-run.
+ * Canopy entries representative cap. Bounded to keep render-phase prompt
+ * within reasonable token budgets across model providers (Anthropic Sonnet,
+ * local 32K-context models). Larger repos get a representative slice rather
+ * than a degraded prompt. The deterministic alphabetical (path-sorted)
+ * truncation keeps the inputs_hash stable run-over-run.
  */
-const CANOPY_MAP_MAX_ENTRIES = 800;
+const CANOPY_MAP_MAX_ENTRIES = 300;
 
 /** Default rules-file filenames searched at the project root. */
 const CANOPY_MAP_ROOT_RULES_FILES = ['AGENTS.md', 'CLAUDE.md'];
@@ -1000,14 +992,14 @@ async function loadRulesFiles(projectRoot: string): Promise<RulesFileInput[]> {
 }
 
 function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
+  const { where, params } = describedCanopyEntriesPredicate(projectId);
   const rows = getDatabase().prepare(
     `SELECT path, content_hash, llm_description
        FROM canopy_entries
-      WHERE project_id = ?
-        AND llm_description IS NOT NULL
-      ORDER BY path ASC
+      WHERE ${where}
+      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
       LIMIT ?`,
-  ).all(projectId, CANOPY_MAP_MAX_ENTRIES) as Array<{
+  ).all(...params, CANOPY_MAP_MAX_ENTRIES) as Array<{
     path: string;
     content_hash: string;
     llm_description: string | null;
@@ -1039,7 +1031,7 @@ export async function gatherCanopyMapContext(
 
   // Prior map lookup is keyed (project_id, machine_id). The map is per-machine
   // because token_estimate and timing reflect how *this* machine ran the
-  // task — sync between machines is a separate concern (Plan B Task 6).
+  // task — sync between machines is a separate concern.
   const machineId = getMachineId(vaultDir);
   const prior = readCanopyMap(projectId, machineId);
 

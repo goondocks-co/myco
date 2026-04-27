@@ -36,8 +36,8 @@ const EMBEDDABLE_NAMESPACES = [
 
 /**
  * Display labels for embeddable namespaces. The canopy_entries namespace is
- * surfaced as "Files" to match the universal-search facet (Task 10) for
- * cross-surface consistency. All other namespaces fall back to their raw name.
+ * surfaced as "Files" to match the universal-search facet for cross-surface
+ * consistency. All other namespaces fall back to their raw name.
  */
 const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {
   canopy_entries: 'Files',

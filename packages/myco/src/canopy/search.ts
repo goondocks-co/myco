@@ -8,6 +8,7 @@
  */
 
 import type { VectorStore } from '../daemon/embedding/types.js';
+import { CANOPY_ENTRIES_NAMESPACE } from '../db/queries/embeddings.js';
 import { hydrateCanopyDescriptionsBatch } from './hydrate.js';
 
 export interface CanopySearchOptions {
@@ -44,7 +45,7 @@ export async function searchCanopy(
 
   const filters = options.language !== undefined ? { language: options.language } : undefined;
   const raw = embeddingManager.searchVectors(queryVector, {
-    namespace: 'canopy_entries',
+    namespace: CANOPY_ENTRIES_NAMESPACE,
     limit: options.limit,
     threshold: options.threshold,
     filters,
