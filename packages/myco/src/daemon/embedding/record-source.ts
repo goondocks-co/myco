@@ -66,6 +66,16 @@ function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
   };
 }
 
+/** Build metadata for a canopy_entries row. */
+function canopyEntryMetadata(row: Record<string, unknown>): DomainMetadata {
+  return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
+    ...(row.path != null ? { path: row.path as string } : {}),
+    ...(row.language != null ? { language: row.language as string } : {}),
+    ...(row.llm_updated_at != null ? { created_at: row.llm_updated_at as number } : {}),
+  };
+}
+
 /** Get the metadata builder for a given namespace. */
 function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): DomainMetadata {
   switch (namespace) {
@@ -79,6 +89,8 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
       return emptyMetadata();
     case 'skill_records':
       return skillRecordMetadata(row);
+    case 'canopy_entries':
+      return canopyEntryMetadata(row);
   }
 }
 
@@ -106,6 +118,10 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
     if (namespace === 'skill_records') {
       return this.getUnembeddedActiveSkillRecords(limit);
+    }
+
+    if (namespace === 'canopy_entries') {
+      return this.getUnembeddedCanopyEntries(limit);
     }
 
     // For sessions/plans/artifacts: delegate to getUnembedded, then enrich with metadata
@@ -163,6 +179,14 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
         ).all(ACTIVE_STATUS) as Array<{ id: string }>;
         return rows.map((r) => r.id);
       }
+      case 'canopy_entries': {
+        const rows = db.prepare(
+          `SELECT (project_id || ':' || path) AS id
+             FROM canopy_entries
+            WHERE llm_description IS NOT NULL`,
+        ).all() as Array<{ id: string }>;
+        return rows.map((r) => r.id);
+      }
     }
   }
 
@@ -183,6 +207,25 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
     const db = getDatabase();
     const textCol = EMBEDDABLE_TEXT_COLUMNS[namespace as EmbeddableTable];
+
+    if (namespace === 'canopy_entries') {
+      const placeholders = ids.map(() => '(?, ?)').join(', ');
+      const args = ids.flatMap((id) => {
+        const idx = id.indexOf(':');
+        return [id.slice(0, idx), id.slice(idx + 1)];
+      });
+      const rows = db.prepare(
+        `SELECT *, (project_id || ':' || path) AS id, ${textCol} AS text
+           FROM canopy_entries
+          WHERE (project_id, path) IN (VALUES ${placeholders})`,
+      ).all(...args) as Array<Record<string, unknown>>;
+      return rows.map((row) => ({
+        id: String(row.id),
+        text: row.text as string,
+        metadata: canopyEntryMetadata(row),
+      }));
+    }
+
     const placeholders = ids.map(() => '?').join(', ');
 
     const rows = db.prepare(
@@ -198,11 +241,29 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
   /** Mark a record as embedded. Delegates to existing helper. */
   markEmbedded(namespace: string, id: string): void {
+    if (namespace === 'canopy_entries') {
+      const idx = id.indexOf(':');
+      const projectId = id.slice(0, idx);
+      const path = id.slice(idx + 1);
+      getDatabase().prepare(
+        `UPDATE canopy_entries SET embedded = 1 WHERE project_id = ? AND path = ?`,
+      ).run(projectId, path);
+      return;
+    }
     dbMarkEmbedded(namespace, id);
   }
 
   /** Clear the embedded flag on a record. Delegates to existing helper. */
   clearEmbedded(namespace: string, id: string): void {
+    if (namespace === 'canopy_entries') {
+      const idx = id.indexOf(':');
+      const projectId = id.slice(0, idx);
+      const path = id.slice(idx + 1);
+      getDatabase().prepare(
+        `UPDATE canopy_entries SET embedded = 0 WHERE project_id = ? AND path = ?`,
+      ).run(projectId, path);
+      return;
+    }
     dbClearEmbedded(namespace, id);
   }
 
@@ -231,6 +292,13 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   getPendingCount(namespace: string): number {
     assertValidNamespace(namespace);
     const db = getDatabase();
+
+    if (namespace === 'canopy_entries') {
+      const row = db.prepare(
+        `SELECT COUNT(*) AS cnt FROM canopy_entries WHERE embedded = 0 AND llm_description IS NOT NULL`,
+      ).get() as { cnt: number };
+      return Number(row.cnt);
+    }
 
     const contentFilter = namespace === 'sessions' ? ' AND summary IS NOT NULL' : '';
     const statusFilter = (namespace === 'spores' || namespace === 'skill_records') ? ` AND status = '${ACTIVE_STATUS}'` : '';
@@ -287,6 +355,29 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
       id: String(row.id),
       text: row.text as string,
       metadata: skillRecordMetadata(row),
+    }));
+  }
+
+  /** Custom query for canopy_entries: embedded=0 AND llm_description IS NOT NULL. */
+  private getUnembeddedCanopyEntries(limit: number): Array<{
+    id: string;
+    text: string;
+    metadata: DomainMetadata;
+  }> {
+    const db = getDatabase();
+    const rows = db.prepare(
+      `SELECT (project_id || ':' || path) AS id,
+              project_id, path, language, llm_updated_at,
+              llm_description AS text
+         FROM canopy_entries
+        WHERE embedded = 0 AND llm_description IS NOT NULL
+        ORDER BY mechanical_updated_at ASC
+        LIMIT ?`,
+    ).all(limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: String(row.id),
+      text: row.text as string,
+      metadata: canopyEntryMetadata(row),
     }));
   }
 }
