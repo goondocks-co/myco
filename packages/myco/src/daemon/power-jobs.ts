@@ -67,7 +67,30 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   let reconcileRunning = false;
   powerManager.register({
     name: 'embedding-reconcile',
-    runIn: ['active', 'idle'],
+    // The job ticks in active/idle/sleep. `sleep` is the slow tick the
+    // PowerManager uses to drain queues; without it, the loop stalls as
+    // soon as the user steps away. Deep-sleep is reached by exhaustion of
+    // the predicate below, not by the job's runIn list (deep-sleep stops
+    // the timer entirely, so adding it here would be a no-op).
+    runIn: ['active', 'idle', 'sleep'],
+    /**
+     * When the toggle is on AND the embedding queue still has pending work,
+     * hold the daemon in `sleep` state so the slow tick keeps draining the
+     * backlog. Once the queue empties, the predicate returns false and the
+     * machine is free to transition to deep_sleep on the next evaluation.
+     *
+     * The flag defaults to true so out-of-the-box behavior matches the
+     * "queue should drain overnight" expectation operators have. Operators
+     * that want strict deep-sleep can flip the toggle off in Operations.
+     */
+    preventsDeepSleep: () => {
+      if (liveConfig.current.embedding.run_in_deep_sleep === false) return false;
+      try {
+        return embeddingManager.totalPendingCount() > 0;
+      } catch {
+        return false;
+      }
+    },
     fn: async () => {
       if (reconcileRunning) return;
       reconcileRunning = true;

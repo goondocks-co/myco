@@ -583,6 +583,31 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
         <NamespaceTable data={data} />
       </Surface>
 
+      {/* Reconcile policy */}
+      <Surface level="low" className="p-6 space-y-3">
+        <SectionHeader>Reconcile Policy</SectionHeader>
+        <ScopedField<'embedding.run_in_deep_sleep', boolean>
+          path="embedding.run_in_deep_sleep"
+          label="Continue embedding in deep sleep"
+          defaultScope="local"
+        >
+          {({ value, onChange }) => (
+            <div className="flex items-start gap-3">
+              <Switch
+                checked={value ?? true}
+                onCheckedChange={onChange}
+                aria-label="Continue embedding in deep sleep"
+              />
+              <p className="font-sans text-xs text-on-surface-variant max-w-xl">
+                Keep the queue draining when the machine is idle long enough to
+                deep sleep — recommended for repos with large embedding
+                backlogs.
+              </p>
+            </div>
+          )}
+        </ScopedField>
+      </Surface>
+
       {/* Action toolbar */}
       <Surface level="low" className="p-6 space-y-3">
         <SectionHeader>Actions</SectionHeader>

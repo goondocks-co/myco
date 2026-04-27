@@ -7,6 +7,14 @@ const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
   model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
+  /**
+   * When true, the embedding reconcile loop continues running in the deep-sleep
+   * power state — the daemon stays in `sleep` (with a longer tick interval)
+   * instead of entering deep sleep, as long as embedding work is pending.
+   * Recommended for projects with large embedding backlogs so the queue keeps
+   * draining when the machine sits idle long enough to deep-sleep.
+   */
+  run_in_deep_sleep: z.boolean().default(true),
 });
 
 const DaemonSchema = z.object({
