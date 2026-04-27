@@ -96,7 +96,7 @@ function DetailShell({
   return (
     <Surface
       glass
-      className="absolute top-3 right-3 bottom-3 z-20 w-[480px] max-w-[calc(100%-1.5rem)] flex flex-col shadow-lg border border-outline-variant/15 rounded-md"
+      className="fixed top-3 right-3 bottom-3 z-30 w-[480px] max-w-[calc(100vw-1.5rem)] flex flex-col shadow-lg border border-outline-variant/15 rounded-md"
       data-testid="canopy-entry-detail-panel"
     >
       {onClose ? (
