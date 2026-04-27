@@ -10,12 +10,12 @@
  *     Anthropic-compatible endpoint stays unchanged. We mutate LM Studio's
  *     server-side state, not the provider's `model` field.
  *
- *  2. No default. If `context_length` is unset on an `lmstudio` provider,
- *     we leave LM Studio alone. LM Studio is a desktop app where users
- *     load models with explicit GUI controls; silently re-loading at a
- *     Myco-chosen value would be invasive. Ollama's default exists because
- *     Ollama models ship with native 128K–256K windows that over-allocate
- *     KV cache; LM Studio users have already chosen.
+ *  2. Default applies. When `context_length` is unset on an `lmstudio`
+ *     provider, we use `DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS` (32K).
+ *     This matches the Ollama default — the constant is the contract for
+ *     all local providers in Myco, and Myco's typical agent prompts
+ *     (especially batch tasks like canopy-describe) routinely exceed the
+ *     4K window LM Studio loads with by default.
  *
  * Failure semantics: load failures (network, 4xx/5xx, timeout) log a
  * warning and pass the provider through unchanged. The agent run still
@@ -33,6 +33,7 @@
 
 import type { ProviderConfig } from './types.js';
 import { DEFAULT_LMSTUDIO_URL } from './provider.js';
+import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from './context-windows.js';
 
 /** Timeout for an LM Studio model load request (ms). */
 const LMSTUDIO_LOAD_TIMEOUT_MS = 60_000;
@@ -192,11 +193,11 @@ export async function resolveLmStudioContextLoads(
 
   const recordLmStudio = (p: ProviderConfig | undefined): void => {
     if (p?.type !== 'lmstudio' || !p.model) return;
-    if (typeof p.contextLength !== 'number') return;
+    const ctx = p.contextLength ?? DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS;
     const baseUrl = p.baseUrl ?? DEFAULT_LMSTUDIO_URL;
     const key = makeKey(p.model, baseUrl);
     const entry = seen.get(key) ?? { model: p.model, baseUrl, values: new Set<number>() };
-    entry.values.add(p.contextLength);
+    entry.values.add(ctx);
     seen.set(key, entry);
   };
 
@@ -239,7 +240,6 @@ export async function resolveLmStudioContextLoads(
   const rewriteProvider = (p: ProviderConfig | undefined): ProviderConfig | undefined => {
     if (!p) return p;
     if (p.type !== 'lmstudio' || !p.model) return p;
-    if (typeof p.contextLength !== 'number') return p;
     const baseUrl = p.baseUrl ?? DEFAULT_LMSTUDIO_URL;
     const ctx = resolvedContext.get(makeKey(p.model, baseUrl));
     if (ctx === undefined) return p;

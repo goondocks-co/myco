@@ -170,7 +170,7 @@ describe('resolveLmStudioContextLoads', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('passes through when contextLength is unset (no default load)', async () => {
+  it('applies the 32K local-default load when contextLength is unset', async () => {
     const { loadModel, calls } = makeLoadStub();
     const taskProvider: ProviderConfig = {
       type: 'lmstudio',
@@ -180,8 +180,14 @@ describe('resolveLmStudioContextLoads', () => {
 
     const result = await resolveLmStudioContextLoads(taskProvider, {}, loadModel);
 
-    expect(calls).toHaveLength(0);
-    expect(result.taskProvider).toEqual(taskProvider);
+    expect(calls).toEqual([
+      { model: 'openai/gpt-oss-20b', ctx: 32_768, baseUrl: 'http://localhost:1234' },
+    ]);
+    expect(result.taskProvider).toMatchObject({
+      type: 'lmstudio',
+      model: 'openai/gpt-oss-20b',
+      contextLength: 32_768,
+    });
   });
 
   it('loads the model when contextLength is set explicitly', async () => {
@@ -285,8 +291,9 @@ describe('resolveLmStudioContextLoads', () => {
 
     await resolveLmStudioContextLoads(taskProvider, phaseOverrides, loadModel);
 
-    // The phase override's provider has no contextLength — only the task
-    // scope contributes to the resolved set.
+    // Phase override has no contextLength → defaults to 32K (the local-agent
+    // default). Task scope is also 32K. Same value across scopes → one load,
+    // no conflict.
     expect(calls).toEqual([
       { model: 'openai/gpt-oss-20b', ctx: 32768, baseUrl: 'http://localhost:1234' },
     ]);
