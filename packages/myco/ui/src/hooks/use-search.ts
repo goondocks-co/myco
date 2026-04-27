@@ -16,9 +16,34 @@ export interface SearchResult {
   session_id?: string;
 }
 
+/**
+ * Canopy results have a different shape than the generic SearchResult — the
+ * daemon returns per-file rows (path, llm_description, language, score)
+ * keyed by project_id rather than vault id. The "Files" facet routes through
+ * `type=canopy` and renders these rows directly. See `daemon/api/search.ts`
+ * for the backend branch.
+ */
+export interface CanopySearchResult {
+  type: 'canopy';
+  project_id: string | null;
+  path: string | null;
+  llm_description: string | null;
+  language: string | null;
+  score: number;
+}
+
+export type AnySearchResult = SearchResult | CanopySearchResult;
+
 export interface SearchResponse {
   mode: string;
   results: SearchResult[];
+  error?: string;
+}
+
+export interface CanopySearchResponse {
+  mode: string;
+  results: Array<Omit<CanopySearchResult, 'type'>>;
+  provider_unavailable?: boolean;
   error?: string;
 }
 
@@ -28,6 +53,10 @@ export interface SemanticSearchUiFilters {
   namespace?: string;
   observationType?: string;
   recentWindow?: SemanticRecentWindow;
+}
+
+export interface CanopySearchUiFilters {
+  language?: string;
 }
 
 export function getSemanticSince(window: SemanticRecentWindow): number | undefined {
@@ -65,6 +94,22 @@ export function buildSearchPath(
   return `/search?${params.toString()}`;
 }
 
+/**
+ * Build the daemon search path for canopy/files queries. Routes through the
+ * same `/search` endpoint as semantic/fts but pins `type=canopy`, which the
+ * daemon handles via a dedicated branch (see `daemon/api/search.ts`).
+ */
+export function buildCanopySearchPath(
+  query: string,
+  filters?: CanopySearchUiFilters,
+): string {
+  const params = new URLSearchParams({ q: query, type: 'canopy' });
+  if (filters?.language) {
+    params.set('language', filters.language);
+  }
+  return `/search?${params.toString()}`;
+}
+
 export function useSearch(
   query: string,
   mode: 'semantic' | 'fts' = 'semantic',
@@ -78,6 +123,34 @@ export function useSearch(
         { signal },
       ),
     enabled: query.length > SEARCH_MIN_LENGTH,
+    staleTime: SEARCH_STALE_TIME,
+  });
+}
+
+/**
+ * Hook for the "Files" facet — fetches canopy entries by semantic similarity
+ * to the user's query. The daemon returns per-file rows; we tag each with
+ * `type: 'canopy'` so the unified results renderer can dispatch on it.
+ */
+export function useCanopySearch(
+  query: string,
+  filters?: CanopySearchUiFilters,
+  enabled = true,
+) {
+  return useQuery<{ mode: string; results: CanopySearchResult[]; provider_unavailable?: boolean }>({
+    queryKey: ['search-canopy', query, filters?.language ?? 'all'],
+    queryFn: async ({ signal }) => {
+      const raw = await fetchJson<CanopySearchResponse>(
+        buildCanopySearchPath(query, filters),
+        { signal },
+      );
+      return {
+        mode: raw.mode,
+        results: (raw.results ?? []).map((r) => ({ ...r, type: 'canopy' as const })),
+        provider_unavailable: raw.provider_unavailable,
+      };
+    },
+    enabled: enabled && query.length > SEARCH_MIN_LENGTH,
     staleTime: SEARCH_STALE_TIME,
   });
 }

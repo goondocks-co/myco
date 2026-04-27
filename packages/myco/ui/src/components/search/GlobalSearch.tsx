@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
@@ -12,7 +12,14 @@ import {
 } from '../ui/select';
 import { Toggle } from '../ui/toggle';
 import { SearchResults } from './SearchResults';
-import { useSearch, type SearchResult, type SemanticRecentWindow } from '../../hooks/use-search';
+import {
+  useSearch,
+  useCanopySearch,
+  type AnySearchResult,
+  type CanopySearchResult,
+  type SearchResult,
+  type SemanticRecentWindow,
+} from '../../hooks/use-search';
 
 /** Debounce delay (ms) before firing a search query. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -24,14 +31,33 @@ type SearchMode = 'semantic' | 'fts';
 type SemanticNamespace = 'all' | 'spores' | 'sessions' | 'plans' | 'artifacts' | 'skill_records';
 type SporeObservationType = 'all' | 'decision' | 'gotcha' | 'discovery' | 'bug_fix' | 'trade_off' | 'cross-cutting';
 
-const NAMESPACE_OPTIONS: Array<{ value: SemanticNamespace; label: string }> = [
-  { value: 'all', label: 'All types' },
-  { value: 'spores', label: 'Spores' },
+/**
+ * Facet — the user-visible scope toggle. "Files" routes through `type=canopy`
+ * (canopy code-intel index) and uses a different result shape than the other
+ * facets. Everything else flows through the general semantic/FTS path with
+ * the corresponding `namespace`.
+ */
+type SearchFacet = 'all' | 'sessions' | 'spores' | 'plans' | 'skills' | 'files';
+
+const FACET_OPTIONS: Array<{ value: SearchFacet; label: string }> = [
+  { value: 'all', label: 'All' },
   { value: 'sessions', label: 'Sessions' },
+  { value: 'spores', label: 'Spores' },
   { value: 'plans', label: 'Plans' },
-  { value: 'artifacts', label: 'Artifacts' },
-  { value: 'skill_records', label: 'Skills' },
+  { value: 'skills', label: 'Skills' },
+  { value: 'files', label: 'Files' },
 ];
+
+/** Map a facet to the semantic-namespace value the daemon expects. */
+function facetToNamespace(facet: SearchFacet): SemanticNamespace {
+  switch (facet) {
+    case 'sessions': return 'sessions';
+    case 'spores':   return 'spores';
+    case 'plans':    return 'plans';
+    case 'skills':   return 'skill_records';
+    default:         return 'all';
+  }
+}
 
 const RECENT_OPTIONS: Array<{ value: SemanticRecentWindow; label: string }> = [
   { value: 'any', label: 'Any time' },
@@ -50,22 +76,37 @@ const SPORE_OBSERVATION_OPTIONS: Array<{ value: SporeObservationType; label: str
   { value: 'cross-cutting', label: 'Cross-cutting' },
 ];
 
-function getResultPath(result: SearchResult): string {
-  switch (result.type) {
+/**
+ * Build the navigation target for a canopy result. We route into the Cortex
+ * "Canopy Entries" tab (Task 9) with the file path as a URL param so the
+ * panel can pre-select the row. `encodeURIComponent` handles slashes in
+ * sub-paths.
+ */
+function getCanopyResultPath(result: CanopySearchResult): string {
+  if (!result.path) return '/cortex?tab=canopy-entries';
+  return `/cortex?tab=canopy-entries&path=${encodeURIComponent(result.path)}`;
+}
+
+function getResultPath(result: AnySearchResult): string {
+  if (result.type === 'canopy') {
+    return getCanopyResultPath(result as CanopySearchResult);
+  }
+  const r = result as SearchResult;
+  switch (r.type) {
     case 'session':
-      return `/sessions/${result.id}`;
+      return `/sessions/${r.id}`;
     case 'spore':
-      return `/mycelium?tab=spores&spore=${encodeURIComponent(result.id)}`;
+      return `/mycelium?tab=spores&spore=${encodeURIComponent(r.id)}`;
     case 'plan':
-      return result.session_id
-        ? `/sessions/${result.session_id}?tab=plans&plan=${encodeURIComponent(result.id)}`
+      return r.session_id
+        ? `/sessions/${r.session_id}?tab=plans&plan=${encodeURIComponent(r.id)}`
         : '/sessions';
     case 'prompt_batch':
-      return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
+      return r.session_id ? `/sessions/${r.session_id}` : '/sessions';
     case 'activity':
-      return result.session_id ? `/sessions/${result.session_id}` : '/sessions';
+      return r.session_id ? `/sessions/${r.session_id}` : '/sessions';
     case 'skill':
-      return `/skills?skill=${encodeURIComponent(result.id)}`;
+      return `/skills?skill=${encodeURIComponent(r.id)}`;
     default:
       return '/';
   }
@@ -81,11 +122,14 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const [inputValue, setInputValue] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [mode, setMode] = useState<SearchMode>('semantic');
-  const [namespace, setNamespace] = useState<SemanticNamespace>('all');
+  const [facet, setFacet] = useState<SearchFacet>('all');
   const [observationType, setObservationType] = useState<SporeObservationType>('all');
   const [recentWindow, setRecentWindow] = useState<SemanticRecentWindow>('any');
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const isFilesFacet = facet === 'files';
+  const namespace = facetToNamespace(facet);
 
   // Debounce the query
   useEffect(() => {
@@ -100,7 +144,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     if (open) {
       setInputValue('');
       setDebouncedQuery('');
-      setNamespace('all');
+      setFacet('all');
       setObservationType('all');
       setRecentWindow('any');
       setHighlightedIndex(0);
@@ -117,9 +161,29 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
       }
     : undefined;
 
-  const { data, isLoading } = useSearch(debouncedQuery, mode, semanticFilters);
+  // Files facet routes through canopy retrieval (a separate result shape);
+  // every other facet shares the unified semantic/FTS path. We keep both
+  // hooks mounted but disable the inactive one so cache doesn't churn.
+  const { data: generalData, isLoading: generalLoading } = useSearch(
+    debouncedQuery,
+    mode,
+    semanticFilters,
+  );
+  const { data: canopyData, isLoading: canopyLoading } = useCanopySearch(
+    debouncedQuery,
+    undefined,
+    isFilesFacet,
+  );
 
-  const results = (data?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
+  const data = isFilesFacet ? canopyData : generalData;
+  const isLoading = isFilesFacet ? canopyLoading : generalLoading;
+
+  const results: AnySearchResult[] = useMemo(() => {
+    if (isFilesFacet) {
+      return (canopyData?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
+    }
+    return (generalData?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
+  }, [isFilesFacet, canopyData, generalData]);
 
   // Reset highlight when results change
   useEffect(() => {
@@ -127,7 +191,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   }, [results.length, debouncedQuery]);
 
   const handleSelect = useCallback(
-    (result: SearchResult) => {
+    (result: AnySearchResult) => {
       const path = getResultPath(result);
       onOpenChange(false);
       navigate(path);
@@ -198,33 +262,38 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
           </div>
         </div>
 
-        {mode === 'semantic' && (
+        {(mode === 'semantic' || isFilesFacet) && (
           <div className="flex flex-wrap items-center gap-2 border-b border-[var(--ghost-border)] px-4 py-2 bg-surface-container-lowest/30">
             <div className="w-[132px]">
-              <Select value={namespace} onValueChange={(value) => setNamespace(value as SemanticNamespace)}>
-                <SelectTrigger className="h-8 text-xs">
+              <Select
+                value={facet}
+                onValueChange={(value) => setFacet(value as SearchFacet)}
+              >
+                <SelectTrigger className="h-8 text-xs" aria-label="Facet">
                   <SelectValue placeholder="Scope" />
                 </SelectTrigger>
                 <SelectContent>
-                  {NAMESPACE_OPTIONS.map((option) => (
+                  {FACET_OPTIONS.map((option) => (
                     <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="w-[132px]">
-              <Select value={recentWindow} onValueChange={(value) => setRecentWindow(value as SemanticRecentWindow)}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="Recent" />
-                </SelectTrigger>
-                <SelectContent>
-                  {RECENT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {(namespace === 'all' || namespace === 'spores') && (
+            {!isFilesFacet && (
+              <div className="w-[132px]">
+                <Select value={recentWindow} onValueChange={(value) => setRecentWindow(value as SemanticRecentWindow)}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Recent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RECENT_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {!isFilesFacet && (namespace === 'all' || namespace === 'spores') && (
               <div className="w-[156px]">
                 <Select value={observationType} onValueChange={(value) => setObservationType(value as SporeObservationType)}>
                   <SelectTrigger className="h-8 text-xs">

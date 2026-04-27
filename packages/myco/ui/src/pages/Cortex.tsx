@@ -237,7 +237,9 @@ export default function Cortex() {
       ) : activeTab === 'canopy' ? (
         <CanopyTab />
       ) : activeTab === 'canopy-entries' ? (
-        <CanopyEntriesPanel />
+        <CanopyEntriesPanel
+          initialPath={new URLSearchParams(location.search).get('path') ?? undefined}
+        />
       ) : (
         <InstructionsTab />
       )}
