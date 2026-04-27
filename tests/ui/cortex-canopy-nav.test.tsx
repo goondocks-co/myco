@@ -2,9 +2,7 @@
 
 /**
  * Tests the unified Canopy sub-tab on the Cortex page: the secondary nav
- * (Overview | Entries | Map), the legacy `?tab=canopy-entries` /
- * `?tab=project-map` URL aliases that redirect into the new shape, and
- * default-section behavior.
+ * (Overview | Entries | Map) and default-section behavior.
  */
 
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
@@ -135,20 +133,6 @@ describe('Cortex unified Canopy tab', () => {
       expect(screen.getByRole('button', { name: 'Map' })).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole('button', { name: 'Map' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('project-map-panel')).toBeInTheDocument();
-    });
-  });
-
-  it('legacy ?tab=canopy-entries deep-link lands on the entries section', async () => {
-    renderAt('/cortex?tab=canopy-entries');
-    await waitFor(() => {
-      expect(screen.getByTestId('canopy-entries-empty')).toBeInTheDocument();
-    });
-  });
-
-  it('legacy ?tab=project-map deep-link lands on the map section', async () => {
-    renderAt('/cortex?tab=project-map');
     await waitFor(() => {
       expect(screen.getByTestId('project-map-panel')).toBeInTheDocument();
     });

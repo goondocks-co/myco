@@ -52,17 +52,6 @@ const CANOPY_SECTIONS = [
 const VALID_CANOPY_SECTIONS = new Set<CanopySection>(CANOPY_SECTIONS.map((s) => s.id));
 const CANOPY_SECTION_PARAM = 'section';
 
-/**
- * Legacy sub-tab IDs that mapped to today's nested Canopy sections. Existing
- * bookmarks use these; the redirect shim below rewrites them to the new
- * `?tab=canopy&section=...` shape on first navigation so people land where
- * they expect without a 404 detour.
- */
-const LEGACY_TAB_TO_CANOPY_SECTION: Record<string, CanopySection> = {
-  'canopy-entries': 'entries',
-  'project-map': 'map',
-};
-
 interface CortexInstructionsResponse {
   content: string;
   generatedAt: number | null;
@@ -124,20 +113,11 @@ function resolveActiveTab(search: string): ActiveTab {
   const params = new URLSearchParams(search);
   const raw = params.get(CONFIG_FOCUS_TAB_PARAM);
   if (!raw) return 'instructions';
-  // Legacy aliases redirect to the unified Canopy tab; the section is
-  // resolved separately in resolveCanopySection().
-  if (raw in LEGACY_TAB_TO_CANOPY_SECTION) return 'canopy';
   return VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
 }
 
 function resolveCanopySection(search: string): CanopySection {
   const params = new URLSearchParams(search);
-  const tab = params.get(CONFIG_FOCUS_TAB_PARAM);
-  // Honor a legacy alias as long as the explicit `section` param isn't set.
-  if (tab && tab in LEGACY_TAB_TO_CANOPY_SECTION) {
-    const aliasTarget = LEGACY_TAB_TO_CANOPY_SECTION[tab];
-    if (aliasTarget) return aliasTarget;
-  }
   const raw = params.get(CANOPY_SECTION_PARAM);
   return raw && VALID_CANOPY_SECTIONS.has(raw as CanopySection)
     ? (raw as CanopySection)
@@ -267,13 +247,7 @@ export default function Cortex() {
   const handleCanopySectionChange = useCallback((sectionId: string) => {
     if (!VALID_CANOPY_SECTIONS.has(sectionId as CanopySection)) return;
     const params = new URLSearchParams(location.search);
-    // Migrate any legacy alias on the way out — keep the URL canonical.
-    const rawTab = params.get(CONFIG_FOCUS_TAB_PARAM);
-    if (rawTab && rawTab in LEGACY_TAB_TO_CANOPY_SECTION) {
-      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
-    } else {
-      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
-    }
+    params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
     if (sectionId === 'overview') {
       params.delete(CANOPY_SECTION_PARAM);
     } else {
@@ -281,27 +255,6 @@ export default function Cortex() {
     }
     const search = params.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
-  }, [location.pathname, location.search, navigate]);
-
-  // Deep links from before the unification — `?tab=canopy-entries` and
-  // `?tab=project-map` — are accepted by the resolvers above. On first
-  // render we rewrite the URL so the browser shows the canonical shape;
-  // resolvers stay tolerant for any other consumer (e.g. saved bookmarks).
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const rawTab = params.get(CONFIG_FOCUS_TAB_PARAM);
-    if (rawTab && rawTab in LEGACY_TAB_TO_CANOPY_SECTION) {
-      const target = LEGACY_TAB_TO_CANOPY_SECTION[rawTab];
-      params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
-      if (target && target !== 'overview') {
-        params.set(CANOPY_SECTION_PARAM, target);
-      } else {
-        params.delete(CANOPY_SECTION_PARAM);
-      }
-      const search = params.toString();
-      navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
-    }
-    // Run once per pathname/search change.
   }, [location.pathname, location.search, navigate]);
 
   return (
