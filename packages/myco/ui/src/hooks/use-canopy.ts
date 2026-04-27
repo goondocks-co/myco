@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { ApiError, fetchJson } from '../lib/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError, fetchJson, postJson } from '../lib/api';
 
 /* ---------- Constants ---------- */
 
@@ -11,6 +11,9 @@ const ROLLUP_STALE_TIME = 300_000;
 
 /** Cache TTL for an injection-blob fetch (effectively immutable per tool-call). */
 const BLOB_STALE_TIME = 3_600_000;
+
+/** Cache TTL for the canopy entries list/detail (30 seconds). */
+const ENTRIES_STALE_TIME = 30_000;
 
 /* ---------- Types ---------- */
 
@@ -139,6 +142,107 @@ export function useCanopyRollup() {
     retry: (failureCount, err) => {
       if (err instanceof ApiError && err.status === 404) return false;
       return failureCount < 2;
+    },
+  });
+}
+
+/* ---------- Canopy Entries (browse/detail/reembed) ---------- */
+
+/**
+ * Single canopy_entries row as returned by the daemon API. Mirrors the
+ * `CanopyEntry` interface in `packages/myco/src/db/schema.ts`. Numeric
+ * `embedded` (0/1) is preserved on the wire — the UI converts to boolean
+ * for display.
+ */
+export interface CanopyEntryRow {
+  project_id: string;
+  machine_id: string;
+  path: string;
+  content_hash: string;
+  size_bytes: number;
+  token_estimate: number;
+  line_count: number;
+  language: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  top_comment: string | null;
+  mechanical_updated_at: number;
+  llm_description: string | null;
+  llm_updated_at: number | null;
+  embedded: number;
+}
+
+export interface CanopyEntriesListResponse {
+  rows: CanopyEntryRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CanopyEntriesQuery {
+  limit?: number;
+  offset?: number;
+  language?: string;
+  described?: boolean;
+  embedded?: boolean;
+  path_prefix?: string;
+}
+
+function buildEntriesQueryString(args: CanopyEntriesQuery): string {
+  const params = new URLSearchParams();
+  if (args.limit !== undefined) params.set('limit', String(args.limit));
+  if (args.offset !== undefined) params.set('offset', String(args.offset));
+  if (args.language !== undefined) params.set('language', args.language);
+  if (args.described !== undefined) params.set('described', String(args.described));
+  if (args.embedded !== undefined) params.set('embedded', String(args.embedded));
+  if (args.path_prefix !== undefined) params.set('path_prefix', args.path_prefix);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+/** Fetches the paginated list of canopy entries with optional filters. */
+export function useCanopyEntries(args: CanopyEntriesQuery) {
+  return useQuery<CanopyEntriesListResponse>({
+    queryKey: ['canopy-entries', args],
+    queryFn: ({ signal }) =>
+      fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
+    staleTime: ENTRIES_STALE_TIME,
+  });
+}
+
+/**
+ * Fetches a single canopy entry by project-relative path. Returns `null` on
+ * 404 so callers can render an inline "not found" state without an error
+ * boundary.
+ */
+export function useCanopyEntry(path: string | undefined) {
+  return useQuery<CanopyEntryRow | null>({
+    queryKey: ['canopy-entry', path],
+    queryFn: ({ signal }) =>
+      fetchJsonOrNullOn404<CanopyEntryRow>(`/canopy/entries/${encodeURIComponent(path ?? '')}`, signal),
+    enabled: typeof path === 'string' && path.length > 0,
+    staleTime: ENTRIES_STALE_TIME,
+    retry: (failureCount, err) => {
+      if (err instanceof ApiError && err.status === 404) return false;
+      return failureCount < 2;
+    },
+  });
+}
+
+/**
+ * Marks an entry as needing re-embed by POSTing to its `/reembed` endpoint.
+ * On success, invalidates list and detail caches so the embedded badge
+ * flips back to "No" until the next embedder run.
+ */
+export function useReembedCanopyEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (path: string) => {
+      return postJson<{ ok: true }>(`/canopy/entries/${encodeURIComponent(path)}/reembed`);
+    },
+    onSuccess: (_data, path) => {
+      void qc.invalidateQueries({ queryKey: ['canopy-entries'] });
+      void qc.invalidateQueries({ queryKey: ['canopy-entry', path] });
     },
   });
 }

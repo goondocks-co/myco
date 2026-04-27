@@ -16,6 +16,7 @@ import { Switch } from '../components/ui/switch';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
+import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
 import {
   Select,
   SelectContent,
@@ -38,7 +39,7 @@ import {
 } from '../lib/constants';
 import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
-type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy';
+type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy' | 'canopy-entries';
 
 interface CortexInstructionsResponse {
   content: string;
@@ -86,6 +87,7 @@ const CORTEX_TABS = [
   { id: 'builder', label: 'Builder' },
   { id: 'digest', label: 'Digest' },
   { id: 'canopy', label: 'Canopy' },
+  { id: 'canopy-entries', label: 'Canopy Entries' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
@@ -234,6 +236,8 @@ export default function Cortex() {
         <BuilderTab />
       ) : activeTab === 'canopy' ? (
         <CanopyTab />
+      ) : activeTab === 'canopy-entries' ? (
+        <CanopyEntriesPanel />
       ) : (
         <InstructionsTab />
       )}

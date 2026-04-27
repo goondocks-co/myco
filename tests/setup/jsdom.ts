@@ -45,6 +45,7 @@ g.HTMLSelectElement = dom.window.HTMLSelectElement;
 g.HTMLTextAreaElement = dom.window.HTMLTextAreaElement;
 g.Element = dom.window.Element;
 g.Node = dom.window.Node;
+g.DocumentFragment = dom.window.DocumentFragment;
 g.Event = dom.window.Event;
 g.CustomEvent = dom.window.CustomEvent;
 g.KeyboardEvent = dom.window.KeyboardEvent;
