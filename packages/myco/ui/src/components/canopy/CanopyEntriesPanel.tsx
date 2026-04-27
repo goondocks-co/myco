@@ -15,19 +15,17 @@ interface CanopyEntriesPanelProps {
 }
 
 /**
- * Stacked master-detail surface. The list stays visible above the detail
- * panel so users can hop between rows without losing context. This mirrors
- * the daemon UI's existing convention for narrow workspaces — see the
- * Skills tab for a comparable pattern, where `Skills.tsx` switches between
- * list-only and a back-buttoned detail. Here we keep both visible because
- * the entry detail tends to be short (description + metadata + a few
- * symbols) and users browse by skimming.
+ * Master/detail surface for Canopy entries. The list always renders full
+ * width; selecting a row reveals a right-side slide-out detail panel
+ * (mirroring the Mycelium Inspector pattern). The slide-out is absolutely
+ * positioned over the right edge of the relative container so the list
+ * stays scannable while the detail floats on top.
  */
 export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}) {
   const [selectedPath, setSelectedPath] = useState<string | undefined>(defaultPath);
 
   return (
-    <div className="space-y-6">
+    <div className="relative space-y-6">
       <Surface level="low" className="rounded-lg border border-primary/15 p-5">
         <div className="flex flex-wrap items-start gap-3">
           <div className="rounded-md bg-primary/10 p-2 text-primary">
@@ -52,23 +50,11 @@ export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}
       />
 
       {selectedPath ? (
-        <Surface level="low" className="rounded-lg border border-outline-variant/20 p-6">
-          <CanopyEntryDetail
-            path={selectedPath}
-            onBack={() => setSelectedPath(undefined)}
-          />
-        </Surface>
-      ) : (
-        <Surface
-          level="low"
-          className="rounded-lg border border-outline-variant/20 p-8"
-          data-testid="canopy-entry-detail-placeholder"
-        >
-          <p className="text-center font-sans text-sm text-on-surface-variant">
-            Select a file to see its description, exports, and metadata.
-          </p>
-        </Surface>
-      )}
+        <CanopyEntryDetail
+          path={selectedPath}
+          onClose={() => setSelectedPath(undefined)}
+        />
+      ) : null}
     </div>
   );
 }

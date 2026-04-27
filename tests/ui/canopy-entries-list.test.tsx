@@ -30,6 +30,9 @@ mock.module('../../packages/myco/ui/src/lib/api', () => ({
 const { CanopyEntriesList } = await import(
   '../../packages/myco/ui/src/components/canopy/CanopyEntriesList'
 );
+const { CanopyEntriesPanel } = await import(
+  '../../packages/myco/ui/src/components/canopy/CanopyEntriesPanel'
+);
 
 /* ---------- Helpers ---------- */
 
@@ -190,6 +193,105 @@ describe('CanopyEntriesList', () => {
       const lastUrl = String(fetchJsonMock.mock.calls.at(-1)?.[0] ?? '');
       expect(lastUrl).toContain('sort_by=language');
       expect(lastUrl).toContain('sort_dir=desc');
+    });
+  });
+});
+
+/* ---------- Panel slide-out tests ---------- */
+
+function renderPanel() {
+  const client = makeQueryClient();
+  return render(
+    <QueryClientProvider client={client}>
+      <CanopyEntriesPanel />
+    </QueryClientProvider>,
+  );
+}
+
+describe('CanopyEntriesPanel slide-out', () => {
+  beforeEach(() => {
+    fetchJsonMock.mockReset();
+    postJsonMock.mockReset();
+  });
+
+  it('does not render the detail panel before any row is selected', async () => {
+    fetchJsonMock.mockResolvedValue({
+      rows: [makeEntry({ path: 'src/foo.ts' })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('src/foo.ts')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('canopy-entry-detail-panel')).toBeNull();
+  });
+
+  it('opens the slide-out detail when a row is clicked, keeping the list visible', async () => {
+    // The list query and the entry-fetch query share the fetchJson mock.
+    // Return list rows on the first call, then the entry on subsequent calls.
+    fetchJsonMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/canopy/entries/')) {
+        return Promise.resolve(makeEntry({ path: 'src/foo.ts' }));
+      }
+      return Promise.resolve({
+        rows: [makeEntry({ path: 'src/foo.ts' })],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('src/foo.ts')).toBeInTheDocument();
+    });
+
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(screen.getByTestId('canopy-entry-row-src/foo.ts'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canopy-entry-detail-panel')).toBeInTheDocument();
+    });
+
+    // List remains visible while the slide-out is open.
+    expect(screen.getByTestId('canopy-entry-row-src/foo.ts')).toBeInTheDocument();
+  });
+
+  it('closes the slide-out when the X button is clicked', async () => {
+    fetchJsonMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/canopy/entries/')) {
+        return Promise.resolve(makeEntry({ path: 'src/foo.ts' }));
+      }
+      return Promise.resolve({
+        rows: [makeEntry({ path: 'src/foo.ts' })],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('src/foo.ts')).toBeInTheDocument();
+    });
+
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(screen.getByTestId('canopy-entry-row-src/foo.ts'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canopy-entry-detail-panel')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('canopy-entry-detail-close'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('canopy-entry-detail-panel')).toBeNull();
     });
   });
 });
