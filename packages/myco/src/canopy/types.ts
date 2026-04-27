@@ -31,7 +31,7 @@ export interface CanopyScanResult {
 }
 
 /**
- * Injection-time blob shape. Composed by Track B from a persisted
+ * Injection-time blob shape. Composed from a persisted
  * CanopyEntry; `summary` is populated from `llm_description` when present.
  */
 export interface CanopyBlob {

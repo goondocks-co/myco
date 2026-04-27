@@ -12,12 +12,12 @@
  * Side effect on `inject: true`: records the (sessionId, file_path) →
  * tokens linkage in the in-memory pending registry so the PostToolUse
  * activity-insert path can write `canopy_injection_tokens` onto the new
- * row. The activities table column itself was added in Phase 0.
+ * row.
  *
  * The endpoint is purely SQLite + config reads; sub-millisecond budget.
  * Errors degrade to `{ inject: false, reason: 'unknown_file' }` so the
- * hook never blocks the agent's tool call. Track B's hook handler also
- * has its own error guard, but defense in depth is cheap here.
+ * hook never blocks the agent's tool call. The hook handler also has its
+ * own error guard, but defense in depth is cheap here.
  */
 
 import path from 'node:path';
@@ -135,6 +135,9 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
 
     if (filePath) {
       recordPendingInjection(sessionId, decision.entry.path, injectionTokens);
+      if (filePath !== decision.entry.path) {
+        recordPendingInjection(sessionId, filePath, injectionTokens);
+      }
     }
 
     const body: InjectResponseBody = {

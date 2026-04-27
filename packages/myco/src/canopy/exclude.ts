@@ -10,6 +10,7 @@
 // the gitignore layer (they don't un-exclude anything the other layers ban).
 import { loadProjectGitignoreMatcher } from './gitignore.js';
 import { getManagedExcludeSegments } from './managed-paths.js';
+import { isCanopySensitivePath } from './sensitive-paths.js';
 
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
@@ -109,6 +110,7 @@ export function createLayeredExcludeMatcher(
     for (const seg of normalized.split('/')) {
       if (managedSegments.has(seg)) return true;
     }
+    if (!isDir && isCanopySensitivePath(normalized)) return true;
     if (userMatcher(normalized)) return true;
     return false;
   };

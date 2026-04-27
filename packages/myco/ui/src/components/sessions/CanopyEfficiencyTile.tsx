@@ -60,7 +60,7 @@ function SubStat({ label, value, hint }: { label: string; value: string; hint?: 
 export interface CanopyEfficiencyTileProps {
   sessionId: string;
   /**
-   * Test/storybook seam: inject an aggregate directly to bypass the network
+ * Test/storybook input: inject an aggregate directly to bypass the network
    * fetch. When provided, the component skips the hook and renders the
    * supplied row exactly as the live hook would. `null` means "no data" and
    * triggers the same hide-gracefully path as a 404 response.
@@ -73,8 +73,7 @@ export interface CanopyEfficiencyTileProps {
  * Token-efficiency tile for the session detail page.
  *
  * Hides itself entirely when:
- *  - the API returns `null` (404 — no Canopy row, pre-feature session, or
- *    Track C endpoint not yet shipped),
+ *  - the API returns `null` (404 — no Canopy row or pre-feature session),
  *  - or every aggregate column is `null` (row exists but no outcomes were
  *    captured, e.g. injection disabled in the active scope).
  *
@@ -88,12 +87,8 @@ export function CanopyEfficiencyTile({
   fixture,
   className,
 }: CanopyEfficiencyTileProps) {
-  // Always call the hook to keep React's hook order stable. When `fixture` is
-  // explicitly supplied (including `null`), we ignore the hook's data and
-  // render directly from the fixture. The hook is still cheap because the
-  // query key is unique per session and React Query dedupes.
-  const { data: fetched, isLoading } = useSessionCanopy(sessionId);
   const fixtureProvided = fixture !== undefined;
+  const { data: fetched, isLoading } = useSessionCanopy(fixtureProvided ? undefined : sessionId);
   const data = fixtureProvided ? fixture : fetched ?? null;
 
   // Loading: stay invisible. The tile is non-essential and a flash of empty

@@ -54,4 +54,9 @@ describe('walkProject', () => {
     const results = [...walkProject({ projectRoot: tmp, isExcluded: () => false })];
     expect(results).toEqual(['a.ts']);
   });
+
+  it('throws when the project root itself cannot be read', () => {
+    const missing = path.join(tmp, 'missing-root');
+    expect(() => [...walkProject({ projectRoot: missing, isExcluded: () => false })]).toThrow(/Cannot read project root/);
+  });
 });

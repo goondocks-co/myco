@@ -22,10 +22,17 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
       'border-l-2 transition-colors',
       expanded ? 'border-l-primary/30' : 'border-transparent hover:border-l-primary/20',
     )}>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-container/30 transition-all"
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setExpanded((prev) => !prev);
+          }
+        }}
         aria-expanded={expanded}
       >
         {expanded ? (
@@ -51,7 +58,7 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
         ) : (
           <XCircle className="h-3.5 w-3.5 shrink-0 text-tertiary" />
         )}
-      </button>
+      </div>
 
       {/* Expandable detail — CSS grid for smooth animation */}
       <div

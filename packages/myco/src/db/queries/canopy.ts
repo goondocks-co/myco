@@ -106,16 +106,35 @@ WITH session_root AS (
   FROM sessions
   WHERE id = ?
 ),
-reads AS (
+raw_reads AS (
   SELECT
     a.id                       AS tc_id,
-    json_extract(a.tool_input, '$.file_path') AS path,
+    COALESCE(
+      json_extract(a.tool_input, '$.file_path'),
+      json_extract(a.tool_input, '$.filePath'),
+      a.file_path
+    ) AS raw_path,
     a.canopy_injection_tokens  AS injection_tokens,
     CASE WHEN a.canopy_injection_tokens IS NOT NULL THEN 1 ELSE 0 END AS had_injection,
     a.timestamp                AS ts
   FROM activities a
   WHERE a.session_id = ?
     AND a.tool_name = 'Read'
+),
+reads AS (
+  SELECT
+    rr.tc_id,
+    CASE
+      WHEN rr.raw_path IS NOT NULL
+       AND (SELECT project_id FROM session_root) IS NOT NULL
+       AND rr.raw_path LIKE (SELECT project_id FROM session_root) || '/%'
+      THEN substr(rr.raw_path, length((SELECT project_id FROM session_root)) + 2)
+      ELSE rr.raw_path
+    END AS path,
+    rr.injection_tokens,
+    rr.had_injection,
+    rr.ts
+  FROM raw_reads rr
 ),
 skip_resolution AS (
   SELECT
@@ -126,12 +145,12 @@ skip_resolution AS (
     CASE
       WHEN r.had_injection = 1
        AND NOT EXISTS (
-         SELECT 1 FROM activities a2
-         WHERE a2.session_id = ?
-           AND a2.tool_name = 'Read'
-           AND a2.id != r.tc_id
-           AND a2.timestamp >= r.ts
-           AND json_extract(a2.tool_input, '$.file_path') = r.path
+         SELECT 1 FROM reads r2
+         WHERE r2.path = r.path
+           AND (
+             r2.ts > r.ts
+             OR (r2.ts = r.ts AND r2.tc_id > r.tc_id)
+           )
        )
       THEN 1 ELSE 0
     END AS skipped
@@ -202,7 +221,7 @@ export function aggregateSessionCanopy(
   sessionId: string,
 ): CanopySessionAggregate {
   const handle = db ?? getDatabase();
-  const row = handle.prepare(AGGREGATE_SQL).get(sessionId, sessionId, sessionId) as
+  const row = handle.prepare(AGGREGATE_SQL).get(sessionId, sessionId) as
     | {
         injections_offered: number | null;
         injection_total_tokens: number | null;
@@ -319,7 +338,7 @@ export function listCanopyReads(db: Database | null, sessionId: string): CanopyR
         SELECT
           id,
           timestamp,
-          json_extract(tool_input, '$.file_path') AS file_path,
+          COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.filePath'), file_path) AS file_path,
           canopy_injection_tokens
         FROM activities
         WHERE session_id = ?
@@ -357,7 +376,7 @@ export function getCanopyToolCallContext(
         SELECT
           a.id                                       AS activity_id,
           a.session_id                               AS session_id,
-          json_extract(a.tool_input, '$.file_path')  AS file_path,
+          COALESCE(json_extract(a.tool_input, '$.file_path'), json_extract(a.tool_input, '$.filePath'), a.file_path) AS file_path,
           a.canopy_injection_tokens                  AS injection_tokens,
           s.project_root                             AS project_id
         FROM activities a
@@ -365,6 +384,7 @@ export function getCanopyToolCallContext(
         WHERE a.id = ?
           AND a.session_id = ?
           AND a.tool_name = 'Read'
+          AND a.canopy_injection_tokens IS NOT NULL
       `,
     )
     .get(activityId, sessionId) as CanopyToolCallContext | undefined;

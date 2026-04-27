@@ -20,6 +20,7 @@ import { getDatabase } from '@myco/db/client.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
+import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
 // Number of leading file lines included in the per-row payload. Local
@@ -112,8 +113,9 @@ export function createCanopyTools(deps: VaultToolDeps) {
       const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
 
       const rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+      const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
-      const entries = await Promise.all(rows.map(async (row) => ({
+      const entries = await Promise.all(safeRows.map(async (row) => ({
         path: row.path,
         language: row.language ?? 'unknown',
         exports: parseJsonArray(row.exports_json),

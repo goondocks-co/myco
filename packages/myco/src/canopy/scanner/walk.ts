@@ -31,7 +31,10 @@ export function* walkProject(opts: WalkOptions): Generator<string> {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      if (relDir === '') {
+        throw new Error(`Cannot read project root ${opts.projectRoot}: ${(err as Error).message}`);
+      }
       continue;
     }
 

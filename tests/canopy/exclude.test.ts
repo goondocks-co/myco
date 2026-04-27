@@ -105,6 +105,15 @@ describe('createLayeredExcludeMatcher', () => {
     expect(m('src/index.ts')).toBe(false);
   });
 
+  it('excludes common secret-bearing files even without gitignore entries', () => {
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    expect(m('.env')).toBe(true);
+    expect(m('.env.local')).toBe(true);
+    expect(m('src/private.key')).toBe(true);
+    expect(m('certs/client.p12')).toBe(true);
+    expect(m('src/index.ts')).toBe(false);
+  });
+
   it('honors gitignore negation within the gitignore layer only', () => {
     // gitignore: `build` excluded except `build/keep.txt`.
     fs.writeFileSync(path.join(tmp, '.gitignore'), 'build\n!build/keep.txt\n');

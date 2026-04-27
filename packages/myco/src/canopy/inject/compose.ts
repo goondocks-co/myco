@@ -77,6 +77,12 @@ function buildBlob(entry: CanopyEntry, fields: ComposeFields): string {
   return lines.join('\n');
 }
 
+function freshDescription(entry: CanopyEntry): string | null {
+  if (!entry.llm_description) return null;
+  if (entry.llm_updated_at === null) return null;
+  return entry.llm_updated_at >= entry.mechanical_updated_at ? entry.llm_description : null;
+}
+
 /**
  * Compose the injection blob for an entry. Returns the textual payload
  * the daemon hands back to the agent via hookSpecificOutput.additionalContext.
@@ -86,7 +92,7 @@ export function composeBlob(entry: CanopyEntry): string {
     exports: parseJsonArray(entry.exports_json),
     imports: parseJsonArray(entry.imports_json),
     topComment: entry.top_comment,
-    summary: entry.llm_description,
+    summary: freshDescription(entry),
   };
 
   let blob = buildBlob(entry, fields);

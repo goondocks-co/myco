@@ -57,7 +57,7 @@ function BlobPanel({ sessionId, toolCallId }: { sessionId: string; toolCallId: n
         <span className="font-sans text-sm">
           {error instanceof Error
             ? error.message
-            : 'No injection blob available — Track C may not have shipped this endpoint yet.'}
+            : 'No injection blob available for this tool call.'}
         </span>
       </div>
     );

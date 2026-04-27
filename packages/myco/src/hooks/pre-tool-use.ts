@@ -3,8 +3,7 @@
  *
  * Calls the daemon's /canopy/inject endpoint and, if the daemon offers a
  * blob, writes it back to the agent via hookSpecificOutput.additionalContext
- * (Claude Code's plain-text contract — `writeHookResponse` honors the
- * symbiont's hook-response format).
+ * using the symbiont's hook-response format.
  *
  * Match post-tool-use.ts's graceful-failure stance: any error degrades to
  * an empty hook response so the agent's tool call is never blocked.

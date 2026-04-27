@@ -17,7 +17,7 @@ const BLOB_STALE_TIME = 3_600_000;
 /**
  * Per-session Canopy aggregates returned by `GET /sessions/:id/canopy`.
  *
- * Mirrors the canopy_* columns on the session row (Phase 0 schema).
+ * Mirrors the canopy_* columns on the session row.
  * All numeric fields are nullable to cover pre-feature sessions, sessions
  * where the feature is disabled in the active scope, and sessions whose
  * Stop hook hasn't materialized aggregates yet.
@@ -65,8 +65,8 @@ export interface CanopyInjectionBlob {
 /* ---------- Helpers ---------- */
 
 /**
- * Treat 404 as "no data" rather than an error. Used for endpoints Track C
- * may not have shipped yet, plus pre-feature sessions where no row exists.
+ * Treat 404 as "no data" rather than an error. Used for pre-feature
+ * sessions where no row exists.
  * Re-throws every other error so React Query can surface real failures.
  */
 async function fetchJsonOrNullOn404<T>(path: string, signal?: AbortSignal): Promise<T | null> {
@@ -101,6 +101,7 @@ export function isCanopyAggregateEmpty(agg: SessionCanopyAggregate | null | unde
 /** Same hide-gracefully test for the lifetime rollup. */
 export function isCanopyRollupEmpty(rollup: CanopyRollup | null | undefined): boolean {
   if (!rollup) return true;
+  if (rollup.sessions_with_canopy === 0 && rollup.total_injections_offered === 0) return true;
   return (
     rollup.total_tokens_saved === null
     && rollup.sessions_with_canopy === null
@@ -116,8 +117,7 @@ export function isCanopyRollupEmpty(rollup: CanopyRollup | null | undefined): bo
 /**
  * Fetches per-session Canopy aggregates. Returns `null` (not an error) when
  * the endpoint 404s, so callers can hide the tile entirely without branching
- * on the error path. Track C's `/sessions/:id/canopy` route may not exist on
- * every branch — graceful 404 handling lets the UI ship ahead of the API.
+ * on the error path.
  */
 export function useSessionCanopy(sessionId: string | undefined) {
   return useQuery<SessionCanopyAggregate | null>({

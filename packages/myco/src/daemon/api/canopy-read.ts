@@ -113,8 +113,8 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
  * Register the read-side Canopy routes on a Router-like server. Mirrors
  * the pattern used by other daemon/api/*.ts wirings.
  *
- * Track B's canopy-inject endpoints register separately via their own
- * file; the two registrations are non-overlapping so order doesn't matter.
+ * Canopy injection endpoints register separately via their own file; the two
+ * registrations are non-overlapping so order doesn't matter.
  */
 export function registerCanopyReadRoutes(server: {
   registerRoute(method: string, pattern: string, handler: RouteHandler): void;

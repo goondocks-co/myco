@@ -21,6 +21,7 @@ interface SeedEntry {
   exports?: string[];
   imports?: string[];
   llmDescription?: string | null;
+  llmUpdatedAt?: number | null;
 }
 
 function seed(projectId: string, entries: SeedEntry[]): void {
@@ -30,7 +31,7 @@ function seed(projectId: string, entries: SeedEntry[]): void {
        project_id, machine_id, path, content_hash, size_bytes,
        token_estimate, line_count, language, exports_json, imports_json,
        top_comment, mechanical_updated_at, llm_description, llm_updated_at
-     ) VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+     ) VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const e of entries) {
     stmt.run(
@@ -46,6 +47,7 @@ function seed(projectId: string, entries: SeedEntry[]): void {
       e.topComment ?? null,
       NOW,
       e.llmDescription ?? null,
+      e.llmUpdatedAt ?? null,
     );
   }
 }
@@ -232,6 +234,8 @@ describe('POST /canopy/inject — handler', () => {
       },
     });
     expect(res.body).toMatchObject({ inject: true, path: 'src/big.ts' });
+    const body = res.body as { injectionTokens: number };
+    expect(consumePendingInjection('s1', absPath)).toBe(body.injectionTokens);
   });
 
   it('uses summary [meta] line when llm_description is populated', async () => {
@@ -241,6 +245,7 @@ describe('POST /canopy/inject — handler', () => {
         size: 4096,
         exports: ['foo'],
         llmDescription: 'A test file used for integration coverage.',
+        llmUpdatedAt: NOW,
       },
     ]);
     const handler = createCanopyInjectHandler({

@@ -14,6 +14,7 @@ import {
   countPending,
   incrementRetryCount,
   countDeadLettered,
+  sanitizeSyncPayload,
   MAX_OUTBOX_RETRIES,
 } from '@myco/db/queries/team-outbox.js';
 import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
@@ -38,6 +39,37 @@ describe('team outbox query helpers', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
+
+  describe('sanitizeSyncPayload', () => {
+    it('strips local-only session columns before team sync', () => {
+      expect(sanitizeSyncPayload('sessions', {
+        id: 'session-1',
+        summary: 'shared',
+        embedded: 1,
+        canopy_injections_offered: 3,
+        canopy_injection_total_tokens: 120,
+        canopy_skips_after_injection: 2,
+        canopy_reads_after_injection: 1,
+        canopy_tokens_saved: 500,
+        canopy_redundant_reads: 4,
+      })).toEqual({
+        id: 'session-1',
+        summary: 'shared',
+      });
+    });
+
+    it('leaves shared columns for other tables intact', () => {
+      expect(sanitizeSyncPayload('spores', {
+        id: 'spore-1',
+        content: 'shared',
+        canopy_tokens_saved: 500,
+      })).toEqual({
+        id: 'spore-1',
+        content: 'shared',
+        canopy_tokens_saved: 500,
+      });
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // enqueueOutbox

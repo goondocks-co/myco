@@ -269,6 +269,36 @@ describe('aggregateSessionCanopy', () => {
     expect(agg.reads_after_injection).toBe(0);
     expect(agg.tokens_saved).toBe(920); // 1000 - 80
   });
+
+  it('does not treat earlier same-second Reads as later Reads', () => {
+    const sessionId = 'sess-same-second';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'a.ts', token_estimate: 1000 }]);
+    seedActivities(sessionId, [
+      { file_path: 'a.ts', injection_tokens: null, ts: 10 },
+      { file_path: 'a.ts', injection_tokens: 80, ts: 10 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.skips_after_injection).toBe(1);
+    expect(agg.reads_after_injection).toBe(0);
+    expect(agg.tokens_saved).toBe(920);
+  });
+
+  it('canonicalizes absolute Read paths before joining canopy_entries', () => {
+    const sessionId = 'sess-absolute-path';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'src/a.ts', token_estimate: 1000 }]);
+    seedActivities(sessionId, [
+      { file_path: `${PROJECT_ID}/src/a.ts`, injection_tokens: 80, ts: 1 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.skips_after_injection).toBe(1);
+    expect(agg.tokens_saved).toBe(920);
+  });
 });
 
 describe('rollupCanopy', () => {

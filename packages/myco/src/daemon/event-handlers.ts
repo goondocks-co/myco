@@ -5,6 +5,7 @@
  * main() and are extracted here for testability and modularity.
  */
 
+import path from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
 import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
@@ -51,6 +52,13 @@ function extractToolFilePath(toolInput: unknown): string | null {
   if (typeof camelFilePath === 'string') return camelFilePath;
 
   return null;
+}
+
+function relativizeToolPath(filePath: string): string {
+  if (!path.isAbsolute(filePath)) return filePath;
+  const rel = path.relative(process.cwd(), filePath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return filePath;
+  return rel.split(path.sep).join('/');
 }
 
 // ---------------------------------------------------------------------------
@@ -132,23 +140,25 @@ export function handleToolUse(
   const now = epochSeconds();
 
   const filePath = extractToolFilePath(toolInput);
+  const activityFilePath = filePath ? relativizeToolPath(filePath) : null;
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
     tool_output_summary: toolOutput?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
-    file_path: filePath,
+    file_path: activityFilePath,
     timestamp: now,
     created_at: now,
   });
 
   // Canopy linkage: if a PreToolUse injection was recorded for this
   // (sessionId, file_path), stamp the offered token count onto the new
-  // activity row. NULL otherwise — Track C's aggregation treats that as
-  // "no injection" for the call.
+  // activity row. NULL otherwise; aggregation treats that as no injection.
   if (filePath) {
-    const injectionTokens = consumePendingInjection(sessionId, filePath);
+    const injectionTokens =
+      consumePendingInjection(sessionId, activityFilePath ?? filePath)
+      ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
     if (injectionTokens !== null) {
       try {
         getDatabase()

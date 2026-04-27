@@ -51,16 +51,30 @@ describe('composeBlob — Tier 1 (mechanical only)', () => {
 describe('composeBlob — Tier 2 (with llm_description)', () => {
   it('renders summary in place of top when present', () => {
     const blob = composeBlob(
-      makeEntry({ llm_description: 'SessionStart hook handler that persists the session.' }),
+      makeEntry({
+        llm_description: 'SessionStart hook handler that persists the session.',
+        llm_updated_at: 1700000000,
+      }),
     );
     expect(blob).toContain('  summary: "SessionStart hook handler that persists the session."');
     expect(blob).not.toContain('  top:');
   });
 
   it('uses the summary [meta] line when summary is present', () => {
-    const blob = composeBlob(makeEntry({ llm_description: 'A summary.' }));
+    const blob = composeBlob(makeEntry({ llm_description: 'A summary.', llm_updated_at: 1700000000 }));
     expect(blob).toContain('[meta] File summary from Myco.');
     expect(blob).not.toContain('File anatomy from Myco');
+  });
+
+  it('falls back to mechanical anatomy when the summary is stale', () => {
+    const blob = composeBlob(makeEntry({
+      llm_description: 'Old summary.',
+      llm_updated_at: 1700000000,
+      mechanical_updated_at: 1700000001,
+    }));
+    expect(blob).not.toContain('summary: "Old summary."');
+    expect(blob).toContain('top: "Handles SessionStart lifecycle events; writes initial session row."');
+    expect(blob).toContain('[meta] File anatomy from Myco.');
   });
 });
 
@@ -95,7 +109,7 @@ describe('composeBlob — safety cap', () => {
 
   it('truncates long summaries first', () => {
     const longSummary = 'A'.repeat(500);
-    const blob = composeBlob(makeEntry({ llm_description: longSummary }));
+    const blob = composeBlob(makeEntry({ llm_description: longSummary, llm_updated_at: 1700000000 }));
     expect(blob.length).toBeLessThanOrEqual(800);
     expect(blob).toContain('[canopy]');
     expect(blob).toContain('[meta]');

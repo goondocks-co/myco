@@ -39,6 +39,15 @@ const ALL_NULL: CanopyRollup = {
   injection_effectiveness_ratio: null,
 };
 
+const ALL_ZERO: CanopyRollup = {
+  total_tokens_saved: 0,
+  sessions_with_canopy: 0,
+  avg_tokens_saved_per_session: 0,
+  total_injections_offered: 0,
+  total_skips_after_injection: 0,
+  injection_effectiveness_ratio: 0,
+};
+
 /* ---------- Tests ---------- */
 
 describe('CanopySessionListRollupTile', () => {
@@ -61,6 +70,11 @@ describe('CanopySessionListRollupTile', () => {
 
   it('hides itself entirely when every column is null', () => {
     const { container } = renderTile(ALL_NULL);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('hides itself entirely when the rollup endpoint returns an all-zero empty state', () => {
+    const { container } = renderTile(ALL_ZERO);
     expect(container.firstChild).toBeNull();
   });
 

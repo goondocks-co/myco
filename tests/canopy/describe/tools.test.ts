@@ -107,6 +107,17 @@ describe('canopy_describe_next', () => {
     expect(out.entries).toHaveLength(2);
   });
 
+  it('does not return first_lines for secret-bearing files', async () => {
+    writeFileSync(path.join(projectRoot, '.env'), 'API_TOKEN=secret\n', 'utf-8');
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: '.env' }));
+    upsertCanopyEntry(getDatabase(), makeEntry({ path: 'src/foo.ts' }));
+
+    const tool = findTool(createTools(), 'canopy_describe_next');
+    const out = parseResult(await tool.handler({ limit: 5 }, {} as any));
+    const paths = out.entries.map((e: { path: string }) => e.path);
+    expect(paths).toEqual(['src/foo.ts']);
+  });
+
   it('excludes rows whose llm_updated_at >= mechanical_updated_at', async () => {
     upsertCanopyEntry(getDatabase(), makeEntry({
       path: 'fresh.ts',

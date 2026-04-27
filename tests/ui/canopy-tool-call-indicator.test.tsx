@@ -37,6 +37,7 @@ const baseActivity: ActivityRow = {
   processed: 1,
   content_hash: null,
   created_at: 100,
+  canopy_injection_tokens: null,
 };
 
 /* ---------- Tests ---------- */

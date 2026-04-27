@@ -38,6 +38,7 @@ export class CanopyDeltaScanRunner {
   }
 
   private async execute(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const patterns = this.ctx.liveConfig.current.canopy.exclude.patterns;
     try {
       const result = deltaScan({

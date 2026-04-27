@@ -27,6 +27,8 @@ export interface CanopyJobsRegistration {
   delta: CanopyDeltaScanRunner;
   /** Manual full-scan trigger (used for the initial populate after first install). */
   runFullScan: () => Promise<void>;
+  /** Initial populate trigger; no-ops when the project already has canopy rows. */
+  runInitialPopulate: () => Promise<void>;
 }
 
 /**
@@ -56,7 +58,21 @@ export function registerCanopyJobs(
   return {
     delta,
     runFullScan: () => runCanopyScan(ctx),
+    runInitialPopulate: () => runInitialCanopyPopulate(ctx),
   };
+}
+
+function deferCanopyWork(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+export async function runInitialCanopyPopulate(ctx: CanopyJobContext): Promise<void> {
+  const row = ctx.db
+    .prepare('SELECT 1 AS present FROM canopy_entries WHERE project_id = ? LIMIT 1')
+    .get(ctx.projectId) as { present: number } | undefined;
+  if (row) return;
+  await deferCanopyWork();
+  await runCanopyScan(ctx);
 }
 
 export async function runCanopyScan(ctx: CanopyJobContext): Promise<void> {

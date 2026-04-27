@@ -840,7 +840,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
 
-  // --- Canopy read-side API routes (Track C of Phase 1) ---
+  // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server);
 
   // --- Skill lifecycle API routes ---
@@ -1122,10 +1122,9 @@ export async function main(): Promise<void> {
   // SessionStart triggers a fire-and-forget refresh. The runner debounces.
   (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
 
-  // Initial canopy populate runs in the background — does not block boot.
-  // The delta scan handles steady-state refresh; this fire-and-forget call
-  // covers the first run on a fresh install where the table is empty.
-  powerJobs.canopy.runFullScan().catch((err) => {
+  // Initial canopy populate runs in the background only when the table is
+  // empty. The delta scan handles steady-state refresh.
+  powerJobs.canopy.runInitialPopulate().catch((err) => {
     logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
       error: (err as Error).message,
     });

@@ -88,6 +88,30 @@ describe('scanProject', () => {
     scanProject(baseOpts());
     expect(rowCount()).toBe(first);
   });
+
+  it('does not tombstone existing rows when the project root is unreadable or missing', () => {
+    write('src/a.ts', 'export const a = 1;\n');
+    scanProject(baseOpts());
+    expect(rowCount()).toBe(1);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    expect(() => scanProject(baseOpts())).toThrow(/Cannot read project root/);
+    expect(rowCount()).toBe(1);
+  });
+
+  it('hard-excludes common secret-bearing files', () => {
+    write('src/a.ts', 'export const a = 1;\n');
+    write('.env', 'API_TOKEN=secret\n');
+    write('secrets/private.pem', '-----BEGIN PRIVATE KEY-----\nsecret\n');
+
+    const result = scanProject(baseOpts());
+    const rows = getDatabase()
+      .prepare('SELECT path FROM canopy_entries WHERE project_id = ? ORDER BY path')
+      .all(PROJECT_ID) as { path: string }[];
+
+    expect(result.added).toBe(1);
+    expect(rows.map((r) => r.path)).toEqual(['src/a.ts']);
+  });
 });
 
 describe('deltaScan', () => {

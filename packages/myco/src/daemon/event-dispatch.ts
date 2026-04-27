@@ -361,19 +361,24 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
       }
-      // Canopy: rescan the touched file synchronously after activity capture.
-      // Best-effort; handleCanopyToolUse swallows its own errors so the
-      // capture pipeline is never blocked.
-      handleCanopyToolUse({
-        db: getDatabase(),
-        logger,
-        machineId,
-        projectRoot,
-        projectId: resolveCanopyProjectId(vaultDir),
-        toolName,
-        toolInput: event.tool_input,
-        excludePatterns: liveConfig.current.canopy.exclude.patterns,
-      });
+      // Canopy: rescan the touched file after acknowledging capture.
+      // Best-effort; handleCanopyToolUse swallows its own errors.
+      setTimeout(() => {
+        try {
+          handleCanopyToolUse({
+            db: getDatabase(),
+            logger,
+            machineId,
+            projectRoot,
+            projectId: resolveCanopyProjectId(vaultDir),
+            toolName,
+            toolInput: event.tool_input,
+            excludePatterns: liveConfig.current.canopy.exclude.patterns,
+          });
+        } catch {
+          // The deferred scanner is observability-only; capture already succeeded.
+        }
+      }, 0);
     }
 
     if (event.type === 'tool_failure') {

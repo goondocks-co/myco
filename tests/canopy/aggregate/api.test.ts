@@ -151,6 +151,32 @@ describe('handleGetCanopyToolCallBlob', () => {
     expect(body.error?.message).toBe('entry_missing');
   });
 
+  it('returns 404 for a Read that did not receive a Canopy injection', async () => {
+    const sessionId = 'sess-api-blob-no-injection';
+    seedSession(sessionId);
+    seedCanopyEntry('present.ts', 800);
+    const tcId = seedRead(sessionId, 'present.ts', null, epochNow());
+
+    const res = await handleGetCanopyToolCallBlob(makeReq({
+      params: { id: sessionId, tcId: String(tcId) },
+    }));
+    expect(res.status).toBe(404);
+  });
+
+  it('canonicalizes absolute tool-call paths for blob lookup', async () => {
+    const sessionId = 'sess-api-blob-absolute';
+    seedSession(sessionId);
+    seedCanopyEntry('present.ts', 800);
+    const tcId = seedRead(sessionId, `${PROJECT_ID}/present.ts`, 70, epochNow());
+
+    const res = await handleGetCanopyToolCallBlob(makeReq({
+      params: { id: sessionId, tcId: String(tcId) },
+    }));
+    expect(res.status ?? 200).toBe(200);
+    const body = res.body as Record<string, unknown>;
+    expect(body.path).toBe('present.ts');
+  });
+
   it('returns the structured CanopyBlob when canopy_entries row exists', async () => {
     const sessionId = 'sess-api-blob-3';
     seedSession(sessionId);
