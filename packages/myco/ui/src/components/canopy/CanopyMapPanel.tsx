@@ -1,41 +1,46 @@
 import { useCallback, useState } from 'react';
-import { AlertCircle, Map as MapIcon, RefreshCw } from 'lucide-react';
+import { AlertCircle, Map as MapIcon, RefreshCw, RotateCcw } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
-import { Switch } from '../ui/switch';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useCanopyMap, useRegenerateCanopyMap } from '../../hooks/use-canopy';
 import { formatEpochAbsolute } from '../../lib/format';
 
 /**
- * "Project Map" sub-panel — sibling of Canopy Entries inside the Cortex tab.
+ * Canopy Map sub-panel — sibling of Canopy Entries inside the Cortex Canopy
+ * tab. Surfaces the current map (markdown) read from `GET /canopy/map`, with
+ * two distinct actions:
  *
- * Surfaces the rendered project map (markdown) read from `GET /canopy/map`,
- * with a "Regenerate Map" action that POSTs to `/canopy/map/regenerate`.
- * The regenerate task runs asynchronously on the daemon; on mutation success
- * the hook invalidates the query so the panel refetches the freshly written
- * row.
+ *   - **Refresh** — incremental update (`force_cold_start: false`). Default
+ *     action when a map already exists.
+ *   - **Rebuild** — full regeneration (`force_cold_start: true`). Discards
+ *     the prior draft and re-renders from scratch.
+ *
+ * The daemon contract (`force_cold_start` boolean) is unchanged; the UI just
+ * maps the user's button choice to the right value behind the scenes.
  */
-export function ProjectMapPanel() {
+export function CanopyMapPanel() {
   const mapQuery = useCanopyMap();
   const regenerate = useRegenerateCanopyMap();
 
-  const [forceColdStart, setForceColdStart] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [pendingMode, setPendingMode] = useState<'refresh' | 'rebuild' | null>(null);
 
-  const handleRegenerate = useCallback(() => {
+  const triggerRegenerate = useCallback((mode: 'refresh' | 'rebuild') => {
     setRegenerateError(null);
+    setPendingMode(mode);
     regenerate.mutate(
-      { force_cold_start: forceColdStart },
+      { force_cold_start: mode === 'rebuild' },
       {
+        onSettled: () => setPendingMode(null),
         onError: (err) => {
           setRegenerateError(err instanceof Error ? err.message : 'Regenerate failed');
         },
       },
     );
-  }, [forceColdStart, regenerate]);
+  }, [regenerate]);
 
   const isPending = regenerate.isPending;
   const map = mapQuery.data;
@@ -59,12 +64,13 @@ export function ProjectMapPanel() {
           </div>
           <div className="space-y-1">
             <p className="font-sans text-sm font-medium text-on-surface">
-              The narrative map agents read on demand via canopy_map().
+              The Canopy Map is a guided tour of your project's architecture.
             </p>
             <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
-              A LLM-rendered tour of the codebase, regenerated on demand from the
-              canopy index. Use "Force cold start" to discard the prior draft and
-              re-render from scratch instead of an incremental update.
+              The Myco agent regenerates it as the codebase shifts, so connected
+              agents can pull a current overview before exploring with Glob or
+              Grep. Use <strong>Rebuild</strong> to start over from scratch instead
+              of refreshing the existing draft.
             </p>
           </div>
         </div>
@@ -89,36 +95,43 @@ export function ProjectMapPanel() {
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-2">
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-xs text-on-surface-variant select-none">
-                <Switch
-                  checked={forceColdStart}
-                  onCheckedChange={setForceColdStart}
+          {!isEmpty ? (
+            <div className="flex flex-col items-end gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => triggerRegenerate('refresh')}
                   disabled={isPending}
-                />
-                <span>Force cold start</span>
-              </label>
-              <Button
-                variant={isEmpty ? 'default' : 'outline'}
-                size="sm"
-                onClick={handleRegenerate}
-                disabled={isPending}
-                className="gap-2"
-                data-testid="project-map-regenerate"
-              >
-                <RefreshCw
-                  className={isPending ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'}
-                />
-                {isPending ? 'Generating…' : 'Regenerate Map'}
-              </Button>
+                  className="gap-2"
+                  data-testid="canopy-map-refresh"
+                >
+                  <RefreshCw
+                    className={pendingMode === 'refresh' ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'}
+                  />
+                  {pendingMode === 'refresh' ? 'Refreshing…' : 'Refresh'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => triggerRegenerate('rebuild')}
+                  disabled={isPending}
+                  className="gap-2"
+                  data-testid="canopy-map-rebuild"
+                >
+                  <RotateCcw
+                    className={pendingMode === 'rebuild' ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'}
+                  />
+                  {pendingMode === 'rebuild' ? 'Rebuilding…' : 'Rebuild'}
+                </Button>
+              </div>
+              {regenerateError ? (
+                <span className="font-sans text-xs text-tertiary" role="alert">
+                  {regenerateError}
+                </span>
+              ) : null}
             </div>
-            {regenerateError ? (
-              <span className="font-sans text-xs text-tertiary" role="alert">
-                {regenerateError}
-              </span>
-            ) : null}
-          </div>
+          ) : null}
         </div>
       </Surface>
 
@@ -156,21 +169,27 @@ export function ProjectMapPanel() {
               {map?.message ?? 'No Canopy Map yet.'}
             </p>
             <p className="max-w-md font-sans text-xs text-on-surface-variant">
-              Generate the first map to give agents a high-level tour of the
-              codebase. Subsequent runs update incrementally unless "Force cold
-              start" is checked.
+              Generate the first map to give connected agents a high-level tour
+              of your codebase. Future runs refresh incrementally; use{' '}
+              <strong>Rebuild</strong> to start over.
             </p>
+            {/* Cold start ≡ refresh on the empty path — single button. */}
             <Button
               variant="default"
               size="sm"
-              onClick={handleRegenerate}
+              onClick={() => triggerRegenerate('rebuild')}
               disabled={isPending}
               className="gap-2 mt-1"
-              data-testid="project-map-regenerate-empty"
+              data-testid="canopy-map-generate"
             >
               <RefreshCw className={isPending ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
-              {isPending ? 'Generating…' : 'Regenerate Map'}
+              {isPending ? 'Generating…' : 'Generate Map'}
             </Button>
+            {regenerateError ? (
+              <span className="font-sans text-xs text-tertiary" role="alert">
+                {regenerateError}
+              </span>
+            ) : null}
           </div>
         </Surface>
       ) : (
@@ -183,3 +202,7 @@ export function ProjectMapPanel() {
     </div>
   );
 }
+
+// Old name kept as an alias so consumers migrate at their own pace. The
+// Cortex page already imports CanopyMapPanel via the new export above.
+export { CanopyMapPanel as ProjectMapPanel };

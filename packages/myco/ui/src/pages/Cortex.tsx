@@ -17,7 +17,7 @@ import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
 import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
-import { ProjectMapPanel } from '../components/canopy/ProjectMapPanel';
+import { CanopyMapPanel } from '../components/canopy/CanopyMapPanel';
 import { TabSwitcher } from '../components/ui/tab-switcher';
 import {
   Select,
@@ -357,7 +357,7 @@ function CanopyTabUnified({ section, onSectionChange, searchParams }: CanopyTabU
           );
         })()
       ) : section === 'map' ? (
-        <ProjectMapPanel />
+        <CanopyMapPanel />
       ) : (
         <CanopyTab />
       )}
