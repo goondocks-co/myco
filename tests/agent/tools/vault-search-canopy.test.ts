@@ -11,6 +11,7 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
+import { hydrateCanopyDescription, parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 
 const TEST_AGENT_ID = 'test-agent';
 const TEST_RUN_ID = 'run-test-canopy';
@@ -114,7 +115,7 @@ describe('vault_search_canopy', () => {
     expect(typeof data.results[0].score).toBe('number');
   });
 
-  it('passes language and path_prefix filters to searchVectors when set', async () => {
+  it('passes the language filter to searchVectors when set', async () => {
     seedCanopyRow({
       project_id: 'p',
       path: 'src/auth/login.ts',
@@ -143,10 +144,10 @@ describe('vault_search_canopy', () => {
 
     const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
-    await t.handler({ query: 'auth', language: 'typescript', path_prefix: 'src/auth/' }, undefined);
+    await t.handler({ query: 'auth', language: 'typescript' }, undefined);
 
     expect(capturedNamespace).toBe('canopy_entries');
-    expect(capturedFilters).toEqual({ language: 'typescript', path_prefix: 'src/auth/' });
+    expect(capturedFilters).toEqual({ language: 'typescript' });
   });
 
   it('omits filters when none of the optional inputs are provided', async () => {
@@ -165,6 +166,16 @@ describe('vault_search_canopy', () => {
     await t.handler({ query: 'anything' }, undefined);
 
     expect(capturedFilters).toBeUndefined();
+  });
+
+  it('returns null for malformed synthesized ids', () => {
+    expect(hydrateCanopyDescription('no-colon')).toBeNull();
+    expect(hydrateCanopyDescription(':leading-colon')).toBeNull();
+    expect(hydrateCanopyDescription('trailing:')).toBeNull();
+    expect(parseCanopyRecordId('no-colon')).toBeNull();
+    expect(parseCanopyRecordId(':leading-colon')).toBeNull();
+    expect(parseCanopyRecordId('trailing:')).toBeNull();
+    expect(parseCanopyRecordId('proj:path/with:colon.ts')).toEqual({ projectId: 'proj', path: 'path/with:colon.ts' });
   });
 
   it('returns null llm_description when the canopy_entries row is missing', async () => {

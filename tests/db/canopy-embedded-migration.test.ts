@@ -66,18 +66,23 @@ describe('canopy_entries in embeddable allowlist', () => {
 
   it('getUnembedded(canopy_entries) only returns rows with non-null llm_description', () => {
     const db = getDatabase();
-    const now = Math.floor(Date.now() / 1000);
+    const mechanicalAt = 1_700_000_000;
+    const llmAt = 1_700_000_500;
     db.prepare(
       `INSERT INTO canopy_entries (project_id, machine_id, path, content_hash, size_bytes,
-        token_estimate, line_count, mechanical_updated_at, llm_description, embedded)
-       VALUES ('proj', 'local', 'a.ts', 'h1', 100, 20, 5, ?, 'described file a', 0),
-              ('proj', 'local', 'b.ts', 'h2', 100, 20, 5, ?, NULL, 0)`,
-    ).run(now, now);
+        token_estimate, line_count, mechanical_updated_at, llm_description, llm_updated_at, embedded)
+       VALUES ('proj', 'local', 'a.ts', 'h1', 100, 20, 5, ?, 'described file a', ?, 0),
+              ('proj', 'local', 'b.ts', 'h2', 100, 20, 5, ?, NULL, NULL, 0)`,
+    ).run(mechanicalAt, llmAt, mechanicalAt);
 
     const rows = getUnembedded('canopy_entries', 10);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe('proj:a.ts');
     expect(rows[0].text).toBe('described file a');
+    // Lock the contract: created_at on the returned shape is the mechanical
+    // timestamp, not llm_updated_at. A future "fix" that swaps in the LLM
+    // timestamp will fail here.
+    expect(rows[0].created_at).toBe(mechanicalAt);
   });
 
   it('getEmbeddingQueueDepth includes canopy_entries pending count', () => {

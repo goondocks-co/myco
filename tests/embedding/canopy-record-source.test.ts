@@ -50,6 +50,8 @@ describe('SqliteRecordSource — canopy_entries', () => {
   it('markEmbedded flips the relational flag using the synthesized id', () => {
     source.markEmbedded('canopy_entries', 'proj:a.ts');
     expect(source.getPendingCount('canopy_entries')).toBe(0);
+    const remaining = source.getEmbeddableRows('canopy_entries', 10);
+    expect(remaining.find((r) => r.id === 'proj:a.ts')).toBeUndefined();
   });
 
   it('clearEmbedded resets the flag using the synthesized id', () => {

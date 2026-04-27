@@ -106,7 +106,6 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
           since?: number;
           until?: number;
           language?: string;
-          path_prefix?: string;
         };
         const result = await handleMycoSearch(searchInput, client);
         logActivity(TOOL_SEARCH, { query: searchInput.query, matches: result.length, duration_ms: Date.now() - start });

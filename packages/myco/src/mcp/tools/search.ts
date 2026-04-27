@@ -23,8 +23,6 @@ interface SearchInput {
   until?: number;
   /** Canopy-only: optional language filter (e.g. "typescript"). */
   language?: string;
-  /** Canopy-only: optional repo-relative path prefix filter. */
-  path_prefix?: string;
 }
 
 /**
@@ -76,7 +74,6 @@ export async function handleMycoSearch(
     since: input.since,
     until: input.until,
     language: input.language,
-    path_prefix: input.path_prefix,
   });
   const result = await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];

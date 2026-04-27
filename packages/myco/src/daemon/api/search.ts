@@ -101,7 +101,6 @@ export function createSearchHandler(deps: SearchDeps) {
       }
       const canopyFilters: Record<string, unknown> = {
         ...(req.query.language ? { language: req.query.language } : {}),
-        ...(req.query.path_prefix ? { path_prefix: req.query.path_prefix } : {}),
       };
       const canopyVectorFilters = Object.keys(canopyFilters).length > 0 ? canopyFilters : undefined;
       const rawCanopy = deps.embeddingManager.searchVectors(queryVector, {

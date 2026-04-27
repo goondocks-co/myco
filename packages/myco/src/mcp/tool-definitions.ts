@@ -98,7 +98,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
         language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
-        path_prefix: { type: 'string', description: 'Canopy-only: optional repo-relative path prefix filter (e.g. "src/auth/")' },
       },
       required: ['query'],
     },

@@ -378,7 +378,6 @@ export function createReadTools(deps: VaultToolDeps) {
       query: z.string().describe('Natural-language query describing the behavior or concern you are looking for.'),
       limit: z.number().optional().describe('Maximum results to return.'),
       language: z.string().optional().describe('Optional language filter (e.g. "typescript").'),
-      path_prefix: z.string().optional().describe('Optional repo-relative path prefix filter (e.g. "src/auth/").'),
     },
     async (args) => {
       if (!embeddingManager) {
@@ -392,7 +391,6 @@ export function createReadTools(deps: VaultToolDeps) {
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
         const filters: Record<string, unknown> = {
           ...(args.language !== undefined ? { language: args.language } : {}),
-          ...(args.path_prefix !== undefined ? { path_prefix: args.path_prefix } : {}),
         };
         const vectorFilters = Object.keys(filters).length > 0 ? filters : undefined;
 

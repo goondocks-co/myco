@@ -16,6 +16,7 @@ import {
   EMBEDDABLE_TEXT_COLUMNS,
   type EmbeddableTable,
 } from '@myco/db/queries/embeddings.js';
+import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import type { DomainMetadata, EmbeddableRecordSource } from '@myco/daemon/embedding/types.js';
 
 // ---------------------------------------------------------------------------
@@ -209,11 +210,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     const textCol = EMBEDDABLE_TEXT_COLUMNS[namespace as EmbeddableTable];
 
     if (namespace === 'canopy_entries') {
-      const placeholders = ids.map(() => '(?, ?)').join(', ');
-      const args = ids.flatMap((id) => {
-        const idx = id.indexOf(':');
-        return [id.slice(0, idx), id.slice(idx + 1)];
-      });
+      const parsedIds = ids
+        .map((id) => parseCanopyRecordId(id))
+        .filter((p): p is { projectId: string; path: string } => p !== null);
+      if (parsedIds.length === 0) return [];
+      const placeholders = parsedIds.map(() => '(?, ?)').join(', ');
+      const args = parsedIds.flatMap((p) => [p.projectId, p.path]);
       const rows = db.prepare(
         `SELECT *, (project_id || ':' || path) AS id, ${textCol} AS text
            FROM canopy_entries
@@ -242,12 +244,11 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   /** Mark a record as embedded. Delegates to existing helper. */
   markEmbedded(namespace: string, id: string): void {
     if (namespace === 'canopy_entries') {
-      const idx = id.indexOf(':');
-      const projectId = id.slice(0, idx);
-      const path = id.slice(idx + 1);
+      const parsed = parseCanopyRecordId(id);
+      if (parsed === null) return;
       getDatabase().prepare(
         `UPDATE canopy_entries SET embedded = 1 WHERE project_id = ? AND path = ?`,
-      ).run(projectId, path);
+      ).run(parsed.projectId, parsed.path);
       return;
     }
     dbMarkEmbedded(namespace, id);
@@ -256,12 +257,11 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   /** Clear the embedded flag on a record. Delegates to existing helper. */
   clearEmbedded(namespace: string, id: string): void {
     if (namespace === 'canopy_entries') {
-      const idx = id.indexOf(':');
-      const projectId = id.slice(0, idx);
-      const path = id.slice(idx + 1);
+      const parsed = parseCanopyRecordId(id);
+      if (parsed === null) return;
       getDatabase().prepare(
         `UPDATE canopy_entries SET embedded = 0 WHERE project_id = ? AND path = ?`,
-      ).run(projectId, path);
+      ).run(parsed.projectId, parsed.path);
       return;
     }
     dbClearEmbedded(namespace, id);
@@ -273,6 +273,8 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
    * If namespace is omitted, clears all embeddable tables.
    */
   clearAllEmbedded(namespace?: string): void {
+    // canopy_entries is intentionally handled by the generic loop below — it has no
+    // composite-key concerns at this layer because the UPDATE applies to all rows.
     const db = getDatabase();
 
     if (namespace !== undefined) {
