@@ -508,6 +508,20 @@ export function incrementSessionToolCount(id: string): void {
 }
 
 /**
+ * Atomically increment `canopy_map_tool_calls` for a session.
+ *
+ * No-op when the session id does not exist — callers invoke this from MCP
+ * tool dispatch and may pass an unknown / synthetic id when no in-flight
+ * session is associated with the call.
+ */
+export function incrementCanopyMapToolCalls(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE sessions SET canopy_map_tool_calls = canopy_map_tool_calls + 1 WHERE id = ?`,
+  ).run(id);
+}
+
+/**
  * Close a session — set status to 'completed' and record the end time.
  *
  * @returns the updated row, or null if the session does not exist.

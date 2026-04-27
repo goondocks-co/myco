@@ -72,6 +72,7 @@ export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
 export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 export const TOOL_RUNS = 'myco_runs';
+export const TOOL_CANOPY_MAP = 'canopy_map';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -290,6 +291,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
       },
     },
+  },
+  {
+    name: TOOL_CANOPY_MAP,
+    description: "Returns the project's architectural overview (directory skeleton + key files + golden paths) — a 1.5K–3K-token markdown document maintained by the canopy-map background task. Call this when you need to understand an unfamiliar part of the codebase before reaching for Glob or Grep. Returns { content, generated_at, token_estimate, is_empty? }; an empty-state shape ({ content: '', is_empty: true, message }) is returned when no map has been generated yet.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use to orient on an unfamiliar part of the codebase before reaching for Glob/Grep. The map is a small, high-signal architectural overview — directory skeleton, key files, golden paths.',
+      priority: 35,
+    },
+    inputSchema: { type: 'object' as const, properties: {} },
   },
 ];
 

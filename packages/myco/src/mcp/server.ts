@@ -24,9 +24,13 @@ import {
   handleCollectiveSettings,
 } from './tools/collective.js';
 import { handleMycoRuns } from './tools/runs.js';
+import { handleCanopyMap } from './tools/canopy-map.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { initDatabase, vaultDbPath } from '../db/client.js';
+import { resolveCanopyProjectId } from '../canopy/identity.js';
+import { incrementCanopyMapToolCalls } from '../db/queries/sessions.js';
 
 import {
   TOOL_DEFINITIONS,
@@ -35,6 +39,7 @@ import {
   TOOL_CONTEXT, TOOL_SKILLS,
   TOOL_COLLECTIVE_SEARCH, TOOL_COLLECTIVE_PROJECTS, TOOL_COLLECTIVE_PROJECT, TOOL_COLLECTIVE_SETTINGS,
   TOOL_RUNS,
+  TOOL_CANOPY_MAP,
   COLLECTIVE_TOOL_DEFINITIONS,
 } from './tool-definitions.js';
 
@@ -49,6 +54,24 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
     { name: 'myco', version: getPluginVersion() },
     { capabilities: { tools: {} } },
   );
+
+  /**
+   * Lazy SQLite handle for tools that read straight from the vault DB
+   * (canopy_map). The MCP process otherwise proxies through the daemon, so
+   * we only open a connection when one of these direct-access tools is
+   * called. Returns true when the handle is ready.
+   */
+  let dbReady = false;
+  function ensureDb(): boolean {
+    if (dbReady) return true;
+    try {
+      initDatabase(vaultDbPath(vaultDir));
+      dbReady = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const teamStatus = await client.get('/api/team/status');
@@ -253,6 +276,35 @@ export function createMycoServer(vaultDir: string, client: DaemonClient): MycoSe
           op: runsInput.op ?? 'list',
           id: runsInput.id,
           ok: result.ok,
+          duration_ms: Date.now() - start,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      case TOOL_CANOPY_MAP: {
+        // Direct DB access — opens a private SQLite handle on first call.
+        // project_id derives from vaultDir (canonical canopy identity).
+        // session_id is best-effort from MYCO_SESSION_ID; absent in
+        // non-symbiont MCP launches, in which case the per-call counter
+        // stays at zero rather than throwing.
+        if (!ensureDb()) {
+          const empty = {
+            content: '',
+            is_empty: true,
+            message: 'Vault database is not available; the canopy map cannot be read right now.',
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(empty) }] };
+        }
+        const projectId = resolveCanopyProjectId(vaultDir);
+        const machineId = process.env.MYCO_MACHINE_ID ?? 'local';
+        const sessionId = process.env.MYCO_SESSION_ID ?? null;
+        const result = await handleCanopyMap({ projectId, machineId });
+        if (sessionId) {
+          try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+        }
+        logActivity(TOOL_CANOPY_MAP, {
+          is_empty: result.is_empty === true,
+          token_estimate: result.token_estimate,
+          session_id: sessionId,
           duration_ms: Date.now() - start,
         });
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
