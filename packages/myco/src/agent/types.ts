@@ -286,6 +286,7 @@ export interface RunOptions {
   runContext?: {
     candidate_id?: string;
     cortex_instruction_input_hash?: string;
+    canopy_map_inputs_hash?: string;
   };
   resumeMode?: 'manual' | 'scheduled';
   /**

@@ -82,6 +82,41 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     }
   },
   {
+    "name": "canopy-map",
+    "displayName": "Canopy Map",
+    "description": "Produce a markdown architectural overview of the project (directory skeleton + key files / golden paths) and store it in canopy_maps. Refines the prior map diff-style when one exists.",
+    "agent": "myco-agent",
+    "prompt": "Produce a markdown architectural overview of this project. The gather phase pre-assembles the inputs (canopy_entries + rules files); the render phase shapes them into the final map. The map is persisted via vault_report with action \"canopy_map\".",
+    "isDefault": false,
+    "reasoningLevel": "low",
+    "maxTurns": 30,
+    "timeoutSeconds": 600,
+    "phases": [
+      {
+        "name": "render",
+        "prompt": "You produce a compact markdown architectural overview of this\nproject. The instruction payload contains every input you need:\nthe prior map (when one exists), the full set of described\ncanopy_entries (path, content_hash, llm_description), and the\nfilenames of the project's rules files.\n\nRequired structure for the final markdown:\n\n## Directory skeleton\nOne line per top-level directory, plus a brief note on what\nlives there. Aim for shape, not exhaustiveness — collapse deep\nbranches the way a senior engineer would describe the project\nto a new hire.\n\n## Key files / golden paths\n4–8 domain clusters. Each cluster is a short heading (e.g.\n\"Capture pipeline\", \"Agent harness\") followed by 2–4 file\nbullets. Each bullet is `path — annotation`, where the\nannotation is grounded in the file's llm_description (do not\ninvent purpose).\n\nRefinement rules when a prior map is present:\n- Preserve sections that still apply.\n- Update sections whose underlying files have drifted.\n- Remove clusters whose files no longer exist or no longer\n  belong together.\n- Do NOT rewrite the whole thing if the change is incremental.\n\nOutput budget: 1500–3000 tokens of markdown. Stay terse.\nProse only where it earns its keep — bullets carry the weight.\n\nUse the supplied tools sparingly:\n- `vault_search_canopy` / `vault_search_fts` to disambiguate a\n  cluster boundary when the canopy entries are ambiguous.\n- `fs_read` to confirm a file's role when its llm_description\n  is missing or doesn't match its imports/exports.\n- `vault_spores` to surface an architectural decision worth\n  citing inline.\n\nWhen the map is ready, call `vault_report` with:\n- action: \"canopy_map\"\n- summary: one short sentence on what changed vs. the prior map\n  (or \"initial map\" on the first run)\n- details.content: the final markdown (the entire map, not a diff)\n\nDo not call vault_report more than once. Stop after the report.\n",
+        "tools": [
+          "vault_search_canopy",
+          "vault_search_fts",
+          "vault_spores",
+          "fs_read",
+          "vault_report"
+        ],
+        "maxTurns": 20,
+        "reasoningLevel": "low",
+        "required": true
+      }
+    ],
+    "schedule": {
+      "enabled": false,
+      "intervalSeconds": 21600,
+      "runIn": [
+        "idle",
+        "sleep"
+      ]
+    }
+  },
+  {
     "name": "cortex-instructions",
     "displayName": "Cortex Instructions",
     "description": "Author compact session-start instructions that teach downstream agents how to use Myco tool behavior correctly, especially retrieval and plan persistence.\n",

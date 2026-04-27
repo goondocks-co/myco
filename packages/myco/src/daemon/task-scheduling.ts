@@ -38,7 +38,11 @@ const SCHEDULED_JOB_PREFIX = 'scheduled:';
 // skips insertRun when resuming), erasing failure history and making the
 // task impossible to tune. Opt them out of getLatestResumableRunForTask
 // so each scheduled fire inserts a new row.
-const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe']);
+// canopy-map: each scheduled fire reuses the inputs_hash short-circuit in
+// buildCanopyMapInstruction. Resuming a failed run would replay the LLM phase
+// against potentially stale inputs and erase the failure history we use to
+// tune turn budgets. Re-fire with a fresh agent_runs row instead.
+const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canopy-map']);
 
 // ---------------------------------------------------------------------------
 // Types

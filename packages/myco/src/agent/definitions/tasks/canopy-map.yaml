@@ -1,0 +1,102 @@
+# =============================================================================
+# Built-in Task: Canopy Map (Tier 3)
+# =============================================================================
+# Produces a markdown architectural overview of the project — a directory
+# skeleton plus 4–8 domain clusters of representative files annotated from
+# canopy_entries.llm_description. Stored atomically in canopy_maps and
+# refined diff-style across runs.
+#
+# Two phases:
+#   - gather (deterministic, in-process): pre-assembled by
+#     buildCanopyMapInstruction(). Reads canopy_entries + rules files,
+#     computes inputs_hash, short-circuits via prior canopy_maps row
+#     when nothing changed (no LLM call). force_cold_start=true skips
+#     the prior-map refinement to regenerate from scratch.
+#   - render (LLM): writes the final markdown via vault_report with
+#     action "canopy_map". finalizeOnTaskSuccess persists it atomically
+#     into canopy_maps.
+#
+# Schedule is opt-in. Each run is independent (no resume) because the
+# inputs_hash gate already short-circuits idempotent re-fires.
+# =============================================================================
+
+name: canopy-map
+displayName: Canopy Map
+description: >-
+  Produce a markdown architectural overview of the project (directory
+  skeleton + key files / golden paths) and store it in canopy_maps.
+  Refines the prior map diff-style when one exists.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 30
+timeoutSeconds: 600
+schedule:
+  enabled: false
+  intervalSeconds: 21600
+  runIn:
+    - idle
+    - sleep
+prompt: >-
+  Produce a markdown architectural overview of this project. The gather
+  phase pre-assembles the inputs (canopy_entries + rules files); the
+  render phase shapes them into the final map. The map is persisted via
+  vault_report with action "canopy_map".
+phases:
+  - name: render
+    reasoningLevel: low
+    maxTurns: 20
+    required: true
+    tools:
+      - vault_search_canopy
+      - vault_search_fts
+      - vault_spores
+      - fs_read
+      - vault_report
+    prompt: |
+      You produce a compact markdown architectural overview of this
+      project. The instruction payload contains every input you need:
+      the prior map (when one exists), the full set of described
+      canopy_entries (path, content_hash, llm_description), and the
+      filenames of the project's rules files.
+
+      Required structure for the final markdown:
+
+      ## Directory skeleton
+      One line per top-level directory, plus a brief note on what
+      lives there. Aim for shape, not exhaustiveness — collapse deep
+      branches the way a senior engineer would describe the project
+      to a new hire.
+
+      ## Key files / golden paths
+      4–8 domain clusters. Each cluster is a short heading (e.g.
+      "Capture pipeline", "Agent harness") followed by 2–4 file
+      bullets. Each bullet is `path — annotation`, where the
+      annotation is grounded in the file's llm_description (do not
+      invent purpose).
+
+      Refinement rules when a prior map is present:
+      - Preserve sections that still apply.
+      - Update sections whose underlying files have drifted.
+      - Remove clusters whose files no longer exist or no longer
+        belong together.
+      - Do NOT rewrite the whole thing if the change is incremental.
+
+      Output budget: 1500–3000 tokens of markdown. Stay terse.
+      Prose only where it earns its keep — bullets carry the weight.
+
+      Use the supplied tools sparingly:
+      - `vault_search_canopy` / `vault_search_fts` to disambiguate a
+        cluster boundary when the canopy entries are ambiguous.
+      - `fs_read` to confirm a file's role when its llm_description
+        is missing or doesn't match its imports/exports.
+      - `vault_spores` to surface an architectural decision worth
+        citing inline.
+
+      When the map is ready, call `vault_report` with:
+      - action: "canopy_map"
+      - summary: one short sentence on what changed vs. the prior map
+        (or "initial map" on the first run)
+      - details.content: the final markdown (the entire map, not a diff)
+
+      Do not call vault_report more than once. Stop after the report.
