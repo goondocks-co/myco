@@ -56,7 +56,8 @@ const SELECT_PENDING_SQL = `
 const UPDATE_DESCRIPTION_SQL = `
   UPDATE canopy_entries
   SET llm_description = ?,
-      llm_updated_at  = ?
+      llm_updated_at  = ?,
+      embedded        = 0
   WHERE project_id = ? AND path = ?
 `;
 

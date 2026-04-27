@@ -258,4 +258,37 @@ describe('canopy_describe_write', () => {
     expect(out.ok).toBe(true);
     expect(out.description.length).toBeLessThanOrEqual(180);
   });
+
+  it('resets embedded=0 when llm_description is rewritten (description drift)', async () => {
+    // Arrange: seed a canopy_entries row with embedded=1 (already embedded)
+    upsertCanopyEntry(getDatabase(), makeEntry({
+      path: 'src/foo.ts',
+      llm_description: 'old description',
+      llm_updated_at: 1_700_000_000,
+    }));
+    // Manually set embedded=1 to simulate that the row has been embedded
+    getDatabase()
+      .prepare('UPDATE canopy_entries SET embedded = 1 WHERE path = ?')
+      .run('src/foo.ts');
+
+    // Verify the initial state
+    let row = getDatabase()
+      .prepare('SELECT embedded FROM canopy_entries WHERE path = ?')
+      .get('src/foo.ts') as { embedded: number };
+    expect(row.embedded).toBe(1);
+
+    // Act: invoke the write path (simulate description drift by rewriting)
+    const tool = findTool(createTools(), 'canopy_describe_write');
+    const out = parseResult(await tool.handler({
+      path: 'src/foo.ts',
+      description: 'new description after content drift',
+    }, {} as any));
+    expect(out.ok).toBe(true);
+
+    // Assert: embedded should now be 0 so the embedding queue picks it up again
+    row = getDatabase()
+      .prepare('SELECT embedded FROM canopy_entries WHERE path = ?')
+      .get('src/foo.ts') as { embedded: number };
+    expect(row.embedded).toBe(0);
+  });
 });
