@@ -87,6 +87,7 @@ export function scanFile(opts: ScanFileOptions): ScanFileResult {
     mechanical_updated_at: opts.now,
     llm_description: null,
     llm_updated_at: null,
+    embedded: 0,
   };
 
   return { ok: true, entry };
