@@ -534,6 +534,7 @@ export const CANOPY_ENTRIES_TABLE = `
     mechanical_updated_at  INTEGER NOT NULL,
     llm_description        TEXT,
     llm_updated_at         INTEGER,
+    embedded               INTEGER DEFAULT 0,
     PRIMARY KEY (project_id, path)
   ) WITHOUT ROWID`;
 
