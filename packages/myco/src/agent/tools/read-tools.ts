@@ -18,6 +18,7 @@ import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
+import { hydrateCanopyDescription } from '@myco/canopy/hydrate.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
@@ -47,23 +48,6 @@ const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_EDGES_LIMIT = 50;
 /** Default projection mode for read tools. */
 const DEFAULT_INCLUDE_METADATA = false;
-
-/**
- * Resolve `(project_id, path)` from a synthesized canopy record id of the form
- * `<project_id>:<path>` (split on the FIRST colon — paths may contain colons
- * on some platforms, project_ids do not). Returns the row's llm_description or
- * null when the row is missing.
- */
-function hydrateCanopyDescription(syntheticId: string): string | null {
-  const idx = syntheticId.indexOf(':');
-  if (idx <= 0) return null;
-  const projectId = syntheticId.slice(0, idx);
-  const path = syntheticId.slice(idx + 1);
-  const row = getDatabase().prepare(
-    `SELECT llm_description FROM canopy_entries WHERE project_id = ? AND path = ?`,
-  ).get(projectId, path) as { llm_description: string | null } | undefined;
-  return row?.llm_description ?? null;
-}
 
 function projectToolRows<T>(
   rows: T[],
