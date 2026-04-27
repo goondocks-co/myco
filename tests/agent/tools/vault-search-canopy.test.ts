@@ -9,7 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { createVaultTools } from '@myco/agent/tools.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { hydrateCanopyDescription, parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 
@@ -32,12 +32,18 @@ function seedCanopyRow(opts: {
   description: string;
 }): void {
   const now = epochNow();
-  getDatabase().prepare(
-    `INSERT INTO canopy_entries
-       (project_id, machine_id, path, content_hash, size_bytes, token_estimate, line_count,
-        language, mechanical_updated_at, llm_description, llm_updated_at, embedded)
-     VALUES (?, 'local', ?, 'h', 100, 20, 10, ?, ?, ?, ?, 1)`,
-  ).run(opts.project_id, opts.path, opts.language ?? null, now, opts.description, now);
+  seedCanopyEntry(getDatabase(), {
+    project_id: opts.project_id,
+    path: opts.path,
+    size_bytes: 100,
+    token_estimate: 20,
+    line_count: 10,
+    language: opts.language ?? null,
+    mechanical_updated_at: now,
+    llm_description: opts.description,
+    llm_updated_at: now,
+    embedded: 1,
+  });
 }
 
 function findTool(

@@ -241,6 +241,12 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
   const getHandler: RouteHandler = async (req) => {
     const path = extractEntryPath(req.pathname, '/api/canopy/entries/');
     if (!path) return badRequest('missing_path');
+    // Guard the reembed suffix explicitly. A GET to `/foo.ts/reembed` would
+    // otherwise fall through to a row lookup that would 404 for the wrong
+    // reason — make the wrong-method case visible to the caller.
+    if (path.endsWith(reembedSuffix)) {
+      return notFound('Use POST for reembed action');
+    }
     try {
       const row = await handleCanopyEntryGet({ project_id: deps.resolveProjectId(), path });
       return { body: row };

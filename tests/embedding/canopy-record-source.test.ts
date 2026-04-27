@@ -1,18 +1,22 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { getDatabase } from '@myco/db/client.js';
 import { SqliteRecordSource } from '@myco/daemon/embedding/record-source.js';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../helpers/db.js';
 
 function seedCanopy() {
   const db = getDatabase();
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `INSERT INTO canopy_entries (project_id, machine_id, path, content_hash, size_bytes,
-      token_estimate, line_count, language, mechanical_updated_at, llm_description, llm_updated_at, embedded)
-     VALUES ('proj', 'local', 'a.ts', 'h1', 100, 20, 5, 'typescript', ?, 'desc a', ?, 0),
-            ('proj', 'local', 'b.ts', 'h2', 100, 20, 5, 'typescript', ?, 'desc b', ?, 1),
-            ('proj', 'local', 'c.ts', 'h3', 100, 20, 5, 'typescript', ?, NULL,     NULL, 0)`,
-  ).run(now, now, now, now, now);
+  const base = {
+    project_id: 'proj',
+    size_bytes: 100,
+    token_estimate: 20,
+    line_count: 5,
+    language: 'typescript',
+    mechanical_updated_at: now,
+  } as const;
+  seedCanopyEntry(db, { ...base, path: 'a.ts', content_hash: 'h1', llm_description: 'desc a', llm_updated_at: now, embedded: 0 });
+  seedCanopyEntry(db, { ...base, path: 'b.ts', content_hash: 'h2', llm_description: 'desc b', llm_updated_at: now, embedded: 1 });
+  seedCanopyEntry(db, { ...base, path: 'c.ts', content_hash: 'h3', llm_description: null,     llm_updated_at: null, embedded: 0 });
 }
 
 describe('SqliteRecordSource — canopy_entries', () => {

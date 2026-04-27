@@ -14,7 +14,7 @@ import {
   TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
-import { hydrateCanopyDescription } from '@myco/canopy/hydrate.js';
+import { searchCanopy } from '@myco/canopy/search.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -92,33 +92,17 @@ export function createSearchHandler(deps: SearchDeps) {
     // (`canopy_entries`), per-file row shape (`{project_id, path,
     // llm_description, language, score}`), and llm_description hydrated from
     // the canopy_entries row instead of vector metadata. Local-only — canopy
-    // is per-machine and not synced to team, so no team-client merge here
-    // (parity with the harness `vault_search_canopy` tool).
+    // is per-machine and not synced to team, so no team-client merge here.
     if (type === 'canopy') {
-      const queryVector = await deps.embeddingManager.embedQuery(query);
-      if (queryVector === null) {
-        return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
-      }
-      const canopyFilters: Record<string, unknown> = {
-        ...(req.query.language ? { language: req.query.language } : {}),
-      };
-      const canopyVectorFilters = Object.keys(canopyFilters).length > 0 ? canopyFilters : undefined;
-      const rawCanopy = deps.embeddingManager.searchVectors(queryVector, {
-        namespace: 'canopy_entries',
+      const canopyResults = await searchCanopy(deps.embeddingManager, {
+        query,
         limit,
         threshold: SEARCH_SIMILARITY_THRESHOLD,
-        filters: canopyVectorFilters,
+        language: req.query.language || undefined,
       });
-      const canopyResults = rawCanopy.map((r) => {
-        const meta = (r.metadata ?? {}) as { project_id?: unknown; path?: unknown; language?: unknown };
-        return {
-          project_id: typeof meta.project_id === 'string' ? meta.project_id : null,
-          path: typeof meta.path === 'string' ? meta.path : null,
-          llm_description: hydrateCanopyDescription(r.id),
-          language: typeof meta.language === 'string' ? meta.language : null,
-          score: r.similarity,
-        };
-      });
+      if (canopyResults === null) {
+        return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
+      }
       return { body: { mode: 'semantic', results: canopyResults } };
     }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Trees } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { CanopyEntriesList } from './CanopyEntriesList';
@@ -6,11 +6,12 @@ import { CanopyEntryDetail } from './CanopyEntryDetail';
 
 interface CanopyEntriesPanelProps {
   /**
-   * Optional path to pre-select when the panel mounts. Sourced from a URL
-   * param (e.g. `?tab=canopy-entries&path=…`) so deep-links from universal
-   * search land directly on the entry detail.
+   * Optional path to seed the selection when the panel first mounts.
+   * Treated as a default, not a controlled value — to switch to a different
+   * URL-supplied path the parent must remount the component (use a `key`
+   * prop tied to the URL param).
    */
-  initialPath?: string;
+  defaultPath?: string;
 }
 
 /**
@@ -22,14 +23,8 @@ interface CanopyEntriesPanelProps {
  * the entry detail tends to be short (description + metadata + a few
  * symbols) and users browse by skimming.
  */
-export function CanopyEntriesPanel({ initialPath }: CanopyEntriesPanelProps = {}) {
-  const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
-
-  // Re-seed when the URL-supplied path changes (e.g. user clicks a different
-  // file from the universal search while the panel is already mounted).
-  useEffect(() => {
-    if (initialPath) setSelectedPath(initialPath);
-  }, [initialPath]);
+export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}) {
+  const [selectedPath, setSelectedPath] = useState<string | undefined>(defaultPath);
 
   return (
     <div className="space-y-6">

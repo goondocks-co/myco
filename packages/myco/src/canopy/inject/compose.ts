@@ -27,6 +27,7 @@
  */
 
 import type { CanopyEntry } from '../../db/schema.js';
+import { parseJsonStringArray } from '../../utils/parse-json-array.js';
 
 const META_WITH_SUMMARY =
   '[meta] File summary from Myco. If this already answers your question, skipping the full read may be appropriate.';
@@ -44,16 +45,6 @@ interface ComposeFields {
   imports: string[];
   topComment: string | null;
   summary: string | null;
-}
-
-function parseJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
 }
 
 function buildBlob(entry: CanopyEntry, fields: ComposeFields): string {
@@ -88,8 +79,8 @@ function freshDescription(entry: CanopyEntry): string | null {
  */
 export function composeBlob(entry: CanopyEntry): string {
   const fields: ComposeFields = {
-    exports: parseJsonArray(entry.exports_json),
-    imports: parseJsonArray(entry.imports_json),
+    exports: parseJsonStringArray(entry.exports_json),
+    imports: parseJsonStringArray(entry.imports_json),
     topComment: entry.top_comment,
     summary: freshDescription(entry),
   };

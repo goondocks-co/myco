@@ -18,7 +18,7 @@ import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
-import { hydrateCanopyDescription } from '@myco/canopy/hydrate.js';
+import { searchCanopy } from '@myco/canopy/search.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
@@ -57,6 +57,25 @@ function projectToolRows<T>(
   return includeMetadata
     ? textResult(rows)
     : textResult(rows.map(project));
+}
+
+/**
+ * Map a thrown embedding-provider error message to a short remediation hint
+ * surfaced alongside the failed-search envelope. Shared by the semantic and
+ * canopy search tools — both wrap the same provider/store and produce the
+ * same family of failures.
+ */
+function classifyEmbeddingProviderError(message: string): string | undefined {
+  if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
+    return 'Embedding provider timed out. Retry once or reduce query length.';
+  }
+  if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
+    return 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
+  }
+  if (/no such table|no such column/i.test(message)) {
+    return 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,14 +371,7 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ results: merged });
       } catch (err) {
         const message = errorMessage(err);
-        let hint: string | undefined;
-        if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
-          hint = 'Embedding provider timed out. Retry once or reduce query length.';
-        } else if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
-          hint = 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
-        } else if (/no such table|no such column/i.test(message)) {
-          hint = 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
-        }
+        const hint = classifyEmbeddingProviderError(message);
         return textResult({
           error: `vault_search_semantic failed: ${message}${hint ? ` — ${hint}` : ''}`,
           results: [],
@@ -384,49 +396,20 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ results: [], message: 'Embedding provider unavailable' });
       }
       try {
-        const queryVector = await embeddingManager.embedQuery(args.query);
-        if (!queryVector) {
+        // Local-only: canopy is per-machine and not synced to team — no team-client merge here.
+        const results = await searchCanopy(embeddingManager, {
+          query: args.query,
+          limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          threshold: SEARCH_SIMILARITY_THRESHOLD,
+          language: args.language,
+        });
+        if (results === null) {
           return textResult({ results: [], message: 'Embedding provider unavailable' });
         }
-        const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
-        const filters: Record<string, unknown> = {
-          ...(args.language !== undefined ? { language: args.language } : {}),
-        };
-        const vectorFilters = Object.keys(filters).length > 0 ? filters : undefined;
-
-        // Local-only: canopy is per-machine and not synced to team — no team-client merge here.
-        const rawResults = embeddingManager.searchVectors(queryVector, {
-          namespace: 'canopy_entries',
-          limit: searchLimit,
-          threshold: SEARCH_SIMILARITY_THRESHOLD,
-          filters: vectorFilters,
-        });
-
-        const results = rawResults.map((r) => {
-          const meta = (r.metadata ?? {}) as { project_id?: unknown; path?: unknown; language?: unknown };
-          const projectId = typeof meta.project_id === 'string' ? meta.project_id : null;
-          const path = typeof meta.path === 'string' ? meta.path : null;
-          const language = typeof meta.language === 'string' ? meta.language : null;
-          return {
-            project_id: projectId,
-            path,
-            llm_description: hydrateCanopyDescription(r.id),
-            language,
-            score: r.similarity,
-          };
-        });
-
         return textResult({ results });
       } catch (err) {
         const message = errorMessage(err);
-        let hint: string | undefined;
-        if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
-          hint = 'Embedding provider timed out. Retry once or reduce query length.';
-        } else if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
-          hint = 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
-        } else if (/no such table|no such column/i.test(message)) {
-          hint = 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
-        }
+        const hint = classifyEmbeddingProviderError(message);
         return textResult({
           error: `vault_search_canopy failed: ${message}${hint ? ` — ${hint}` : ''}`,
           results: [],

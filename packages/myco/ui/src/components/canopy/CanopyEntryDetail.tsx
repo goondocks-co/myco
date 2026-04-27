@@ -10,20 +10,9 @@ import {
   type CanopyEntryRow,
 } from '../../hooks/use-canopy';
 import { formatEpochAbsolute } from '../../lib/format';
+import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 
 /* ---------- Helpers ---------- */
-
-function safeParseStringArray(json: string | null): string[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
-      : [];
-  } catch {
-    return [];
-  }
-}
 
 function shortHash(hash: string): string {
   return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash;
@@ -107,11 +96,11 @@ export function CanopyEntryDetail({ path, onBack }: CanopyEntryDetailProps) {
   const [reembedSuccess, setReembedSuccess] = useState(false);
 
   const exportsList = useMemo(
-    () => safeParseStringArray(entry?.exports_json ?? null),
+    () => parseJsonStringArray(entry?.exports_json ?? null),
     [entry?.exports_json],
   );
   const importsList = useMemo(
-    () => safeParseStringArray(entry?.imports_json ?? null),
+    () => parseJsonStringArray(entry?.imports_json ?? null),
     [entry?.imports_json],
   );
 

@@ -37,3 +37,38 @@ export function hydrateCanopyDescription(syntheticId: string): string | null {
   ).get(parsed.projectId, parsed.path) as { llm_description: string | null } | undefined;
   return row?.llm_description ?? null;
 }
+
+/**
+ * Batched companion to `hydrateCanopyDescription` — given a list of synthesized
+ * canopy record ids, fetch all matching `llm_description` values in a single
+ * SQL query. Returns a Map keyed by the synthetic id.
+ *
+ * Used by canopy search paths to avoid the N+1 query pattern of per-row
+ * hydration. Malformed ids are silently dropped from the result; missing rows
+ * (or rows with NULL llm_description) are absent from the Map. Callers should
+ * default missing keys to null.
+ */
+export function hydrateCanopyDescriptionsBatch(ids: string[]): Map<string, string> {
+  if (ids.length === 0) return new Map();
+  const parsed: Array<{ id: string; projectId: string; path: string }> = [];
+  for (const id of ids) {
+    const r = parseCanopyRecordId(id);
+    if (r) parsed.push({ id, projectId: r.projectId, path: r.path });
+  }
+  if (parsed.length === 0) return new Map();
+  const placeholders = parsed.map(() => '(?, ?)').join(', ');
+  const args = parsed.flatMap((p) => [p.projectId, p.path]);
+  const rows = getDatabase().prepare(
+    `SELECT project_id, path, llm_description
+       FROM canopy_entries
+      WHERE (project_id, path) IN (VALUES ${placeholders})`,
+  ).all(...args) as Array<{ project_id: string; path: string; llm_description: string | null }>;
+  const lookup = new Map<string, string | null>();
+  for (const row of rows) lookup.set(`${row.project_id}:${row.path}`, row.llm_description);
+  const out = new Map<string, string>();
+  for (const p of parsed) {
+    const desc = lookup.get(p.id);
+    if (typeof desc === 'string') out.set(p.id, desc);
+  }
+  return out;
+}

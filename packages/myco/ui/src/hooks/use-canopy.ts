@@ -203,7 +203,15 @@ function buildEntriesQueryString(args: CanopyEntriesQuery): string {
 /** Fetches the paginated list of canopy entries with optional filters. */
 export function useCanopyEntries(args: CanopyEntriesQuery) {
   return useQuery<CanopyEntriesListResponse>({
-    queryKey: ['canopy-entries', args],
+    queryKey: [
+      'canopy-entries',
+      args.limit ?? null,
+      args.offset ?? null,
+      args.language ?? null,
+      args.described ?? null,
+      args.embedded ?? null,
+      args.path_prefix ?? null,
+    ],
     queryFn: ({ signal }) =>
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
     staleTime: ENTRIES_STALE_TIME,

@@ -6,6 +6,7 @@
  * `teardownTestDb()` closes the database after all tests.
  */
 
+import type { Database } from 'bun:sqlite';
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 
@@ -108,4 +109,63 @@ export function cleanTestDb() {
  */
 export function teardownTestDb() {
   closeDatabase();
+}
+
+/* ---------- canopy_entries seed helper ---------- */
+
+/**
+ * Inputs for `seedCanopyEntry`. All fields are optional except `path` so
+ * tests can assert against minimal fixtures. Sensible defaults match what
+ * the real canopy scanner writes for a typical row (project_id='p',
+ * machine_id='local', content_hash='h', etc.).
+ */
+export interface CanopyEntrySeed {
+  project_id?: string;
+  machine_id?: string;
+  path: string;
+  content_hash?: string;
+  size_bytes?: number;
+  token_estimate?: number;
+  line_count?: number;
+  language?: string | null;
+  exports_json?: string | null;
+  imports_json?: string | null;
+  top_comment?: string | null;
+  mechanical_updated_at?: number;
+  llm_description?: string | null;
+  llm_updated_at?: number | null;
+  embedded?: 0 | 1;
+}
+
+/**
+ * Insert a single row into `canopy_entries` with sensible defaults. Keeps
+ * the four canopy test files from drifting on column order or default
+ * values. Migration tests in `tests/db/canopy-embedded-migration.test.ts`
+ * deliberately bypass this helper because they exercise the schema chain
+ * directly.
+ */
+export function seedCanopyEntry(db: Database, seed: CanopyEntrySeed): void {
+  db.prepare(
+    `INSERT INTO canopy_entries
+       (project_id, machine_id, path, content_hash, size_bytes, token_estimate,
+        line_count, language, exports_json, imports_json, top_comment,
+        mechanical_updated_at, llm_description, llm_updated_at, embedded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    seed.project_id ?? 'p',
+    seed.machine_id ?? 'local',
+    seed.path,
+    seed.content_hash ?? 'h',
+    seed.size_bytes ?? 1,
+    seed.token_estimate ?? 1,
+    seed.line_count ?? 1,
+    seed.language ?? null,
+    seed.exports_json ?? null,
+    seed.imports_json ?? null,
+    seed.top_comment ?? null,
+    seed.mechanical_updated_at ?? 1,
+    seed.llm_description ?? null,
+    seed.llm_updated_at ?? null,
+    seed.embedded ?? 0,
+  );
 }

@@ -21,6 +21,7 @@ import type { CanopyEntry } from '@myco/db/schema.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
+import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { textResult, type VaultToolDeps } from './types.js';
 
 // Number of leading file lines included in the per-row payload. Local
@@ -60,16 +61,6 @@ const UPDATE_DESCRIPTION_SQL = `
       embedded        = 0
   WHERE project_id = ? AND path = ?
 `;
-
-function parseJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}
 
 async function readFirstLines(absolutePath: string, limit: number): Promise<string> {
   let content: string;
@@ -122,8 +113,8 @@ export function createCanopyTools(deps: VaultToolDeps) {
       const entries = await Promise.all(safeRows.map(async (row) => ({
         path: row.path,
         language: row.language ?? 'unknown',
-        exports: parseJsonArray(row.exports_json),
-        imports: parseJsonArray(row.imports_json),
+        exports: parseJsonStringArray(row.exports_json),
+        imports: parseJsonStringArray(row.imports_json),
         top_comment: row.top_comment?.trim() || null,
         first_lines: await readFirstLines(path.join(projectRoot, row.path), FIRST_LINES),
       })));
@@ -153,7 +144,7 @@ export function createCanopyTools(deps: VaultToolDeps) {
         return textResult({ ok: false, reason: 'unknown_path' });
       }
 
-      const exportsList = parseJsonArray(row.exports_json);
+      const exportsList = parseJsonStringArray(row.exports_json);
       const trimmed = args.description.trim();
       if (!trimmed) {
         return textResult({ ok: false, reason: 'empty' });

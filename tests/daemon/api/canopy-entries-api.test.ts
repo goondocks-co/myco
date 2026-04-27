@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import {
   handleCanopyEntriesList,
@@ -28,23 +28,20 @@ interface SeedOpts {
 
 function seedEntry(opts: SeedOpts) {
   const now = epochNow();
-  getDatabase()
-    .prepare(`
-      INSERT INTO canopy_entries (
-        project_id, machine_id, path, content_hash, size_bytes, token_estimate,
-        line_count, language, exports_json, imports_json, top_comment,
-        mechanical_updated_at, llm_description, llm_updated_at, embedded
-      ) VALUES (?, 'local', ?, 'h', 0, 0, 0, ?, '[]', '[]', NULL, ?, ?, ?, ?)
-    `)
-    .run(
-      PROJECT_ID,
-      opts.path,
-      opts.language ?? null,
-      now,
-      opts.description ?? null,
-      opts.description ? now : null,
-      opts.embedded ?? 0,
-    );
+  seedCanopyEntry(getDatabase(), {
+    project_id: PROJECT_ID,
+    path: opts.path,
+    size_bytes: 0,
+    token_estimate: 0,
+    line_count: 0,
+    language: opts.language ?? null,
+    exports_json: '[]',
+    imports_json: '[]',
+    mechanical_updated_at: now,
+    llm_description: opts.description ?? null,
+    llm_updated_at: opts.description ? now : null,
+    embedded: opts.embedded ?? 0,
+  });
 }
 
 function seedTrio() {
@@ -127,15 +124,18 @@ describe('handleCanopyEntriesList', () => {
 
   it('does not leak rows from other projects', async () => {
     seedTrio();
-    getDatabase()
-      .prepare(`
-        INSERT INTO canopy_entries (
-          project_id, machine_id, path, content_hash, size_bytes, token_estimate,
-          line_count, language, exports_json, imports_json, top_comment,
-          mechanical_updated_at, llm_description, llm_updated_at, embedded
-        ) VALUES ('/repo/other', 'local', 'a.ts', 'h', 0, 0, 0, 'typescript', '[]', '[]', NULL, ?, NULL, NULL, 0)
-      `)
-      .run(epochNow());
+    seedCanopyEntry(getDatabase(), {
+      project_id: '/repo/other',
+      path: 'a.ts',
+      size_bytes: 0,
+      token_estimate: 0,
+      line_count: 0,
+      language: 'typescript',
+      exports_json: '[]',
+      imports_json: '[]',
+      mechanical_updated_at: epochNow(),
+      embedded: 0,
+    });
     const res = await handleCanopyEntriesList({ project_id: PROJECT_ID });
     expect(res.total).toBe(3);
   });
