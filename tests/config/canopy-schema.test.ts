@@ -7,7 +7,7 @@ describe('Canopy config defaults', () => {
   it('applies canopy collection defaults', () => {
     const cfg = MycoConfigSchema.parse(minimal);
     expect(cfg.canopy.refresh.background_enabled).toBe(true);
-    expect(cfg.canopy.refresh.background_period).toBe('1h');
+    expect(cfg.canopy.refresh.background_period_minutes).toBe(60);
     // The user-custom layer is empty by default; the scanner now sources
     // baseline exclusions from `.gitignore` and the symbiont manifests.
     expect(cfg.canopy.exclude.patterns).toEqual([]);
@@ -22,10 +22,10 @@ describe('Canopy config defaults', () => {
   it('accepts partial overrides and merges with defaults', () => {
     const cfg = MycoConfigSchema.parse({
       version: 3,
-      canopy: { refresh: { background_period: '30m' } },
+      canopy: { refresh: { background_period_minutes: 30 } },
       cortex: { canopy: { injection: { enabled: false } } },
     });
-    expect(cfg.canopy.refresh.background_period).toBe('30m');
+    expect(cfg.canopy.refresh.background_period_minutes).toBe(30);
     expect(cfg.canopy.refresh.background_enabled).toBe(true); // preserved default
     expect(cfg.cortex.canopy.injection.enabled).toBe(false);
     expect(cfg.cortex.canopy.injection.size_threshold).toBe(800); // preserved default

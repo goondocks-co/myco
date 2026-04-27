@@ -927,17 +927,17 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'canopy.refresh.background_period', string>
-            path="canopy.refresh.background_period"
-            label="Period (e.g. 1h, 30m, 6h)"
+          <ScopedField<'canopy.refresh.background_period_minutes', number>
+            path="canopy.refresh.background_period_minutes"
+            label="Period (minutes)"
             defaultScope="project"
           >
             {({ value, onChange }) => (
               <Input
-                type="text"
-                placeholder="1h"
-                value={value ?? '1h'}
-                onChange={(event) => onChange(event.target.value)}
+                type="number"
+                min={1}
+                value={String(value ?? 60)}
+                onChange={(event) => onChange(Number(event.target.value))}
               />
             )}
           </ScopedField>

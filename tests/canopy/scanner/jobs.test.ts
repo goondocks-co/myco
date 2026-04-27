@@ -5,15 +5,12 @@ import os from 'node:os';
 import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema } from '@myco/config/schema';
-import { runCanopyScan } from '@myco/daemon/jobs/canopy-scan';
+import { runCanopyScan, runInitialCanopyPopulate } from '@myco/daemon/jobs/canopy-scan';
 import {
   CanopyDeltaScanRunner,
   CANOPY_DELTA_DEBOUNCE_MS,
 } from '@myco/daemon/jobs/canopy-delta-scan';
-import {
-  CanopyBackgroundScan,
-  parseDuration,
-} from '@myco/daemon/jobs/canopy-background-scan';
+import { CanopyBackgroundScan } from '@myco/daemon/jobs/canopy-background-scan';
 
 function buildLogger() {
   const calls: Array<{ level: string; kind: string; msg: string; meta?: unknown }> = [];
@@ -64,6 +61,31 @@ describe('runCanopyScan', () => {
     });
     expect(calls.some((c) => c.kind === 'canopy.scan' && c.level === 'info')).toBe(true);
   });
+
+  it('initial populate skips the full scan when rows already exist', async () => {
+    write('a.ts', 'export const a = 1;\n');
+    const { logger, calls } = buildLogger();
+    await runCanopyScan({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+    });
+    calls.length = 0;
+
+    await runInitialCanopyPopulate({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+    });
+
+    expect(calls.some((c) => c.kind === 'canopy.scan')).toBe(false);
+  });
 });
 
 describe('CanopyDeltaScanRunner', () => {
@@ -108,7 +130,7 @@ describe('CanopyBackgroundScan', () => {
     const fakeDelta = { run: async () => { runs++; } };
     const cfg = { current: MycoConfigSchema.parse({
       version: 3,
-      canopy: { refresh: { background_period: '60s' } },
+      canopy: { refresh: { background_period_minutes: 1 } },
     }) };
     const { logger } = buildLogger();
     const bg = new CanopyBackgroundScan({ liveConfig: cfg, delta: fakeDelta as unknown as CanopyDeltaScanRunner, logger });
@@ -131,20 +153,3 @@ describe('CanopyBackgroundScan', () => {
   });
 });
 
-describe('parseDuration', () => {
-  it('parses the standard humanised forms', () => {
-    expect(parseDuration('30s')).toBe(30);
-    expect(parseDuration('5m')).toBe(300);
-    expect(parseDuration('1h')).toBe(3600);
-    expect(parseDuration('1d')).toBe(86_400);
-  });
-
-  it('treats a bare number as seconds', () => {
-    expect(parseDuration('45')).toBe(45);
-  });
-
-  it('returns 0 for unparseable input', () => {
-    expect(parseDuration('forever')).toBe(0);
-    expect(parseDuration('')).toBe(0);
-  });
-});

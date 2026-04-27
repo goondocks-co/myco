@@ -189,8 +189,8 @@ const SymbiontEntrySchema = z.object({
 const CanopyRefreshSchema = z.object({
   /** Whether the PowerManager-scheduled background rescan runs at all. */
   background_enabled: z.boolean().default(true),
-  /** Human-readable period consumed by PowerManager's duration parser. */
-  background_period: z.string().default('1h'),
+  /** Period between background rescans, in minutes. */
+  background_period_minutes: z.number().int().min(1).default(60),
 });
 
 const CanopyExcludeSchema = z.object({
