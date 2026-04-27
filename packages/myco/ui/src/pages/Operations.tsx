@@ -35,13 +35,13 @@ const EMBEDDABLE_NAMESPACES = [
 ] as const;
 
 /**
- * Display labels for embeddable namespaces. The canopy_entries namespace is
- * surfaced as "Files" to match the universal-search facet for cross-surface
- * consistency. All other namespaces fall back to their raw name.
+ * The Operations namespace breakdown shows raw namespace identifiers across
+ * the board (`sessions`, `spores`, `plans`, `artifacts`, `skill_records`,
+ * `canopy_entries`) so what's visible matches what the daemon stores. The
+ * universal-search facet keeps "Files" because that surface is end-user
+ * copy, not a namespace breakdown — different audience, different rules.
  */
-const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {
-  canopy_entries: 'Files',
-};
+const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {};
 
 const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DATABASE_LOG_CATEGORY = 'database';
