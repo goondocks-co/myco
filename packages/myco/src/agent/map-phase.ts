@@ -63,17 +63,25 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     });
     const tools = surface.tools.map((t) => (t.name === phase.sink!.tool ? sinkWrapped : t));
 
-    await runtime.execute({
-      prompt: itemPrompt,
-      systemPrompt,
-      model: phase.model ?? '',
-      maxTurns: phase.perItemMaxTurns ?? 1,
-      // Pass the materialized tools alongside the standard toolSurface fields.
-      // Task 10 (the dispatch adapter) is responsible for ensuring the real
-      // runtime adapters can consume this. Stub runtimes in tests use this
-      // field directly.
-      toolSurface: { agentId, runId, toolNames: tools.map((t) => t.name), tools } as any,
-    } as any);
+    try {
+      await runtime.execute({
+        prompt: itemPrompt,
+        systemPrompt,
+        model: phase.model ?? '',
+        maxTurns: phase.perItemMaxTurns ?? 1,
+        // Pass the materialized tools alongside the standard toolSurface fields.
+        // Task 10 (the dispatch adapter) is responsible for ensuring the real
+        // runtime adapters can consume this. Stub runtimes in tests use this
+        // field directly.
+        toolSurface: { agentId, runId, toolNames: tools.map((t) => t.name), tools } as any,
+      } as any);
+    } catch (err) {
+      if ((phase.onItemError ?? 'skip') === 'abort') {
+        throw err;
+      }
+      result.failed += 1;
+      continue;
+    }
 
     if (sinkOutcome?.ok === true) {
       result.written += 1;
