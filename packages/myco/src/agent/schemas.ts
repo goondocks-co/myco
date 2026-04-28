@@ -141,6 +141,26 @@ export const TaskScheduleSchema = z.object({
   accelerator: AcceleratorConfigSchema.optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Map phase sub-schemas
+// ---------------------------------------------------------------------------
+
+const MapPhaseSourceSchema = z.object({
+  tool: z.string().min(1),
+  args: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  itemsPath: z.string().min(1),
+});
+
+const MapPhaseItemSchema = z.object({
+  prompt: z.string().min(1),
+  readTools: z.array(z.string()).optional(),
+});
+
+const MapPhaseSinkSchema = z.object({
+  tool: z.string().min(1),
+  argMap: z.record(z.string(), z.string()).default({}),
+});
+
 /** Schema for a single phase within a phased task pipeline. */
 export const PhaseDefinitionSchema = z.object({
   name: z.string(),
@@ -154,7 +174,19 @@ export const PhaseDefinitionSchema = z.object({
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
-});
+
+  // --- Map mode -------------------------------------------------------------
+  mode: z.enum(['agent', 'map']).optional(),
+  perItemMaxTurns: z.number().int().positive().optional(),
+  perItemTimeoutSeconds: z.number().int().positive().optional(),
+  onItemError: z.enum(['skip', 'abort']).optional().default('skip'),
+  source: MapPhaseSourceSchema.optional(),
+  item: MapPhaseItemSchema.optional(),
+  sink: MapPhaseSinkSchema.optional(),
+}).refine(
+  (p) => p.mode !== 'map' || (p.source && p.item && p.sink),
+  { message: 'mode: map requires source, item, and sink blocks' },
+);
 
 /** Schema for task YAML files in tasks/. */
 export const AgentTaskSchema = z.object({
