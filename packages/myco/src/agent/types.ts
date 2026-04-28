@@ -135,6 +135,14 @@ export interface MapPhaseResult {
   failed: number;
   abandoned: number;
   skipReasons: Record<string, number>;
+  /**
+   * Aggregated runtime usage across all per-item invocations. Token counts
+   * sum across items; durations sum; cost sums where the runtime reports
+   * one. Map-mode runs were previously synthesizing zeros here, leaving
+   * dashboards/cost-tracking blind. The aggregation happens inside
+   * executeMapPhase so callers receive the real numbers.
+   */
+  usage: RuntimeUsage;
 }
 
 /** Context query that runs before task execution to gather vault state. */

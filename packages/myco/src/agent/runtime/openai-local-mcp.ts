@@ -17,6 +17,21 @@ class LocalVaultMcpServer implements MCPServer {
   readonly name = 'myco-vault';
 
   constructor(toolSurface: RuntimeToolSurface) {
+    // Map-phase fast path: when the caller has pre-materialized the tool
+    // list (e.g. with argMap-stripped sink schemas and outcome-capture
+    // wrappers), use those directly instead of rebuilding from scratch.
+    // Rebuilding via createVaultTools() would discard those modifications
+    // — see executeMapPhase in agent/map-phase.ts and the design spec
+    // (docs/superpowers/specs/2026-04-28-map-phase-mode-design.md, "Why
+    // this shape") for why the materialized tools must flow through.
+    const materialized = (toolSurface as RuntimeToolSurface & {
+      tools?: LocalMcpTool[];
+    }).tools;
+    if (materialized && materialized.length > 0) {
+      this.tools = materialized;
+      return;
+    }
+
     const nameSet = toolSurface.toolNames ? new Set(toolSurface.toolNames) : null;
     const allTools = createVaultTools(toolSurface.agentId, toolSurface.runId, {
       onlyNames: toolSurface.toolNames ? new Set(toolSurface.toolNames) : undefined,

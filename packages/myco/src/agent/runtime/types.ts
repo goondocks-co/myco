@@ -20,6 +20,16 @@ export interface RuntimeToolSurface {
    * RunOptions.dryRun.
    */
   dryRun?: boolean;
+  /**
+   * Pre-materialized tool list. When set, the runtime adapter MUST use
+   * these tools as-is rather than rebuilding from `toolNames` via
+   * createVaultTools. Required for map-phase mode, which builds a
+   * constrained per-item surface (argMap-stripped sink schema +
+   * outcome-capture wrapper) that would be lost if the adapter rebuilt.
+   * Typed as `unknown[]` here to keep the runtime/agent type boundary
+   * loose; adapters cast to their adapter-specific tool shape.
+   */
+  tools?: unknown[];
 }
 
 export interface RuntimeExecuteInput {

@@ -237,7 +237,11 @@ describe('executeMapPhase — abort + source-failure', () => {
       phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
-    expect(result).toEqual({ itemCount: 0, written: 0, skipped: 0, failed: 0, abandoned: 0, skipReasons: {} });
+    expect(result).toMatchObject({
+      itemCount: 0, written: 0, skipped: 0, failed: 0, abandoned: 0,
+      skipReasons: {},
+      usage: { requests: 0, totalTokens: 0 },
+    });
     expect(stubRuntime.execute).not.toHaveBeenCalled();
   });
 });

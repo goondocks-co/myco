@@ -83,11 +83,12 @@ phases:
 
     item:
       prompt: |
-        Write one sentence describing this file's architectural purpose at
-        the system level. Style: exactly one sentence, max 180 chars, no
-        markdown, no quotes, no preamble. If the file is configuration,
-        generated, or trivial, say so. Do not narrate exports already
-        visible in the metadata.
+        Call the canopy_describe_write tool with one sentence describing
+        this file's architectural purpose at the system level. Style:
+        exactly one sentence, max 180 chars, no markdown, no quotes, no
+        preamble. If the file is configuration, generated, or trivial,
+        say so. Do not narrate exports already visible in the metadata.
+        You MUST emit the tool call — text-only responses are discarded.
 
         File: {{ item.path }}
         Language: {{ item.language }}

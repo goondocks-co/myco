@@ -31,6 +31,12 @@ import { textResult, type VaultToolDeps } from './types.js';
 // from blowing out the model's context.
 const FIRST_LINES = 60;
 
+// Hard character cap for the first-lines payload. Generated files
+// (templates.generated.ts and similar) often have very long single
+// lines — 60 lines × 1000+ chars is enough to overflow a 32K-token
+// context window once the system prompt and tool schemas are added.
+const FIRST_LINES_MAX_CHARS = 8000;
+
 // 10 is the largest value that has been observed to drain reliably on
 // 26B-class local models — see canopy-describe.yaml for the per-turn
 // tool-emission ceiling that bounds this. The MAX is generous so a
@@ -82,7 +88,9 @@ async function readFirstLines(absolutePath: string, limit: number): Promise<stri
   } catch {
     return '';
   }
-  return content.split(/\r?\n/).slice(0, limit).join('\n');
+  const sliced = content.split(/\r?\n/).slice(0, limit).join('\n');
+  if (sliced.length <= FIRST_LINES_MAX_CHARS) return sliced;
+  return `${sliced.slice(0, FIRST_LINES_MAX_CHARS)}\n... [truncated; first ${limit} lines exceed ${FIRST_LINES_MAX_CHARS} chars]`;
 }
 
 function resolveProjectId(deps: VaultToolDeps): string | null {

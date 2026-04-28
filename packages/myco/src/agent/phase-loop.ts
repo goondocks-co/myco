@@ -281,13 +281,26 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       logger,
     });
     logger?.debug('agent.map.end', `Map phase "${phase.name}" completed`, {
-      runId: ctx.runId, phase: phase.name, ...mapResult,
+      runId: ctx.runId, phase: phase.name,
+      itemCount: mapResult.itemCount,
+      written: mapResult.written,
+      skipped: mapResult.skipped,
+      failed: mapResult.failed,
+      tokensUsed: mapResult.usage.totalTokens ?? 0,
+      costUsd: mapResult.usage.costUsd ?? null,
+    });
+    const costData = await resolveCost({
+      runtime: ctx.config.runtime,
+      provider,
+      model: phaseModel,
+      usage: mapResult.usage,
     });
     return buildPhaseResult({
       name: phase.name,
       status: 'completed',
       summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}`,
-      usage: { totalTokens: 0, requests: mapResult.itemCount, costUsd: null } as any,
+      usage: mapResult.usage,
+      costData,
     });
   } catch (err) {
     const reason = toErrorMessage(err);

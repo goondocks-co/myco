@@ -14,9 +14,10 @@ import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { interpolateArgs } from '@myco/utils/interpolate-args.js';
 import { interpolate } from '@myco/utils/interpolate.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
+import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
-import type { AgentRuntime } from './runtime/types.js';
-import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger } from './types.js';
+import type { AgentRuntime, RuntimeExecuteResult } from './runtime/types.js';
+import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger, RuntimeUsage } from './types.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 export interface ExecuteMapPhaseInput {
@@ -55,6 +56,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     runId, phase: phase.name, itemCount: items.length, source: phase.source.tool,
   });
 
+  const itemUsages: RuntimeUsage[] = [];
   const result: MapPhaseResult = {
     itemCount: items.length,
     written: 0,
@@ -62,6 +64,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     failed: 0,
     abandoned: 0,
     skipReasons: {},
+    usage: {},
   };
 
   for (const item of items) {
@@ -91,28 +94,26 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         )
       : null;
     try {
-      await runtime.execute({
+      const itemResult: RuntimeExecuteResult = await runtime.execute({
         prompt: itemPrompt,
         systemPrompt,
         model: phaseModel ?? '',
         maxTurns: phase.perItemMaxTurns ?? 1,
         provider,
-        // Pass the materialized tools alongside the standard toolSurface fields.
-        // Real runtime adapters today rebuild tools from `toolNames` (see
-        // openai-local-mcp.ts), which throws away our argMap-stripping and
-        // outcome-capture wrappers — they still must receive the real deps
-        // (vaultDir/projectRoot/embeddingManager) so the rebuilt tools work.
-        // The `tools` field is here for stub runtimes in tests and for a
-        // future enhancement where adapters consume our materialized list.
         toolSurface: {
           agentId, runId,
           toolNames: tools.map((t) => t.name),
           projectRoot, vaultDir, embeddingManager,
+          // Materialized tools — runtime adapters that honor this field
+          // (openai-local-mcp.ts) skip the rebuild path and use these
+          // directly, preserving the argMap-stripped sink schema and the
+          // outcome-capture wrapper.
           tools,
-        } as any,
+        },
         abortController: controller,
         logger,
-      } as any);
+      });
+      if (itemResult.usage) itemUsages.push(itemResult.usage);
     } catch (err) {
       const reason = toErrorMessage(err);
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
@@ -141,6 +142,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     }
   }
 
+  result.usage = aggregateUsage(itemUsages);
   return result;
 }
 
