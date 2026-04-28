@@ -52,7 +52,7 @@ function parseLiteral(raw: string): unknown {
   if (raw === 'false') return false;
   if (/^-?\d+$/.test(raw)) return Number.parseInt(raw, 10);
   if (/^-?\d*\.\d+$/.test(raw)) return Number.parseFloat(raw);
-  const quoted = raw.match(/^['"](.*)['"]$/);
+  const quoted = raw.match(/^['"](.*?)['"]$/);
   if (quoted) return quoted[1];
   throw new Error(`interpolateArgs: unsupported default literal "${raw}"`);
 }

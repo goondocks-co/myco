@@ -97,15 +97,15 @@ function resolveProjectRoot(deps: VaultToolDeps): string | null {
 }
 
 export function createCanopyTools(deps: VaultToolDeps) {
-  // Per-run single-call gate. The canopy-describe task instructs the model
-  // to call canopy_describe_next exactly once per run, then drain the
-  // returned entries via canopy_describe_write. Local 26B-class models
-  // (gemma, qwen, llama-3.x) sometimes fall back to the easier action of
-  // re-fetching instead of emitting follow-up write calls — observed as a
-  // turn-burning fetch-loop with zero writes. Enforcing the cap in the
-  // tool (gates, not prompts) makes a second fetch a no-op that nudges
-  // the model toward writes. Closure-scoped because createCanopyTools is
-  // called once per run from agent/tools.ts.
+  // Per-run single-call gate. The fetch-loop failure mode (canopy_describe_next
+  // called repeatedly with zero canopy_describe_write calls) is now blocked
+  // structurally by map-phase mode in canopy-describe.yaml — the harness calls
+  // the source tool from harness code with the source absent from the per-item
+  // tool surface, so the model has no fetch tool to loop on. This gate remains
+  // as defense-in-depth for any free-form caller that would re-fetch — without
+  // it, a misconfigured task or a future free-form regression could bring the
+  // loop back. Closure-scoped because createCanopyTools is called once per run
+  // from agent/tools.ts.
   let describeNextIssued = false;
 
   const canopyDescribeNext = tool(

@@ -116,7 +116,9 @@ export interface MapPhaseItem {
  * Sink-block config for a map phase. Names the terminal write tool the
  * model is allowed to call. `argMap` pins harness-owned fields per item;
  * those fields are stripped from the tool's input schema before per-item
- * invocation so the model literally cannot supply them wrong.
+ * invocation so the model literally cannot supply them wrong. argMap
+ * values are template strings rendered against `{ item, params }` via
+ * interpolateArgs.
  */
 export interface MapPhaseSink {
   tool: string;
