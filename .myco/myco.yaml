@@ -82,7 +82,9 @@ agent:
           high: google/gemma-4-31b
       runtime: openai-agents
       schedule:
-        enabled: true
+        enabled: false
+      params:
+        batch_size: 10
     canopy-map:
       provider:
         runtime: claude-sdk

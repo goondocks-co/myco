@@ -19,10 +19,10 @@ The Canopy code intelligence system provides contextual file awareness and injec
 ## Prerequisites
 
 - Myco project with `.myco/` vault directory initialized
-- Understanding of agent harness task patterns (`src/agent/tasks/`)
+- Understanding of agent harness task patterns in the codebase
 - Familiarity with symbiont manifest structure (`.agents/symbionts/`)
 - SQLite schema knowledge for local aggregation columns
-- Access to `canopy/` directory structure and core modules
+- Access to `canopy/` directory structure and core modules (when available)
 
 ## Procedure 1: Agent Harness Task Standardization
 
@@ -33,7 +33,7 @@ Convert canopy operations from bespoke executors to standard harness tasks for u
 1. **Remove dedicated schedulers/executors**:
 ```typescript
 // Before: Custom executor in src/daemon/schedulers/
-// After: Standard task in src/agent/tasks/
+// After: Standard task in agent task directory
 export const canopyDescribeTask: AgentTask = {
   name: 'canopy-describe',
   description: 'Generate file descriptions for code intelligence',
@@ -73,24 +73,47 @@ agents:
 
 Remove legacy canopy-specific scheduler configuration blocks.
 
+### Two-Mode Operation Pattern
+
+`canopy-describe` supports both single-row and batch modes:
+
+**Mode 1 — Single-row** (manual UI trigger or per-row events):
+```typescript
+// Process specific file
+await processCanopyEntry(projectId, contentHash);
+```
+
+**Mode 2 — Batch** (scheduled task, bulk operations):
+```typescript
+// Process multiple files in transaction
+const batch = await findPendingEntries(batchSize);
+await processBatch(batch);
+```
+
+**Critical Gotcha**: Local models require batch_size tuning based on tool-call limits, not context windows. Batch size is a **tool-emission ceiling**, not a context budget.
+
 ## Procedure 2: Three-Layer File Exclusion Configuration
 
 Implement the hierarchical exclusion model: Layer 1 (gitignore automatic), Layer 2 (Myco-managed), Layer 3 (user custom).
 
 ### Layer 1: Automatic Gitignore Integration
 
-The `canopy/gitignore.ts` module automatically parses and applies gitignore patterns:
+Implement gitignore pattern parsing and application automatically:
 
 ```typescript
-// Layer 1 is handled automatically by canopy/gitignore.ts
-import { isIgnored } from '../canopy/gitignore.js';
+// Create gitignore integration module when implementing
+function isGitIgnored(filePath: string): boolean {
+  // Parse .gitignore files from project root upward
+  // Apply standard gitignore pattern matching
+  // Return true if file matches any ignore pattern
+}
 
-const shouldIndex = !isIgnored(filePath);
+const shouldIndex = !isGitIgnored(filePath);
 ```
 
 ### Layer 2: Myco-Managed Fixed Set
 
-Configure system exclusions in `src/config/canopy-exclusions.ts`:
+Configure system exclusions in canopy exclusion configuration:
 
 ```typescript
 export const MYCO_MANAGED_EXCLUSIONS = [
@@ -129,7 +152,7 @@ canopy:
 ```typescript
 function shouldExcludeFile(filePath: string): boolean {
   // Layer 1: gitignore (automatic)
-  if (isIgnored(filePath)) return true;
+  if (isGitIgnored(filePath)) return true;
   
   // Layer 2: Myco-managed
   if (matchesPatterns(filePath, MYCO_MANAGED_EXCLUSIONS)) return true;
@@ -211,6 +234,31 @@ const canonicalPaths = injectedPaths.map(canonicalPath);
 
 **Critical Gotcha**: Relative vs absolute path mismatches cause attribution loss in multi-stage pipelines. Always use canonical paths for attribution tracking.
 
+### Per-Turn Aggregation Pattern
+
+Update aggregates on each Stop (prompt-response cycle), not just SessionEnd:
+
+```typescript
+async function updatePerTurnAggregates(sessionId: string, toolUseId: string) {
+  // Capture metrics after each Read tool completion
+  const injection = await getInjectionMetrics(toolUseId);
+  
+  await vault.query(`
+    UPDATE sessions 
+    SET 
+      canopy_injection_offered = ?,
+      canopy_injection_tokens = ?,
+      canopy_files_count = ?
+    WHERE id = ?
+  `, [
+    injection.offered,
+    injection.tokenCount,
+    injection.fileCount,
+    sessionId
+  ]);
+}
+```
+
 ## Procedure 4: Hook Response Shape Integration
 
 Handle agent-specific response formats and manifest-driven hook response mapping.
@@ -236,6 +284,25 @@ export async function claudeCodePreToolUse(context: HookContext) {
 ```
 
 **Critical Gotcha**: Claude Code PreToolUse hooks must return `hookSpecificOutput` JSON object. Stdout fallback doesn't work for PreToolUse timing.
+
+### Manifest Matcher Field Requirement
+
+Claude Code PreToolUse entries silently drop without `matcher` field:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": {
+      "command": "node .myco/hooks/canopy-inject.cjs",
+      "matcher": "Read"
+    }
+  }
+}
+```
+
+**Symptom**: `canopy_injection_tokens=NULL` for every Read despite valid hook configuration.
+
+**Root Cause**: Missing or empty `matcher` field causes hook entry to be silently ignored during hook registration.
 
 ### Manifest-Driven Response Mapping
 
@@ -288,7 +355,7 @@ ALTER TABLE sessions ADD COLUMN canopy_last_injection_at INTEGER;
 
 ### Team Sync Boundary Management
 
-Configure sync exclusions in `src/team-sync/sync-config.ts`:
+Configure sync exclusions in team sync configuration:
 
 ```typescript
 export const SYNC_EXCLUSIONS = {
@@ -452,6 +519,59 @@ async function updateFileIndex(filePath: string) {
 }
 ```
 
+## Procedure 7: Injection Failure Diagnostic Patterns
+
+Systematic approaches to diagnose common Canopy injection failures discovered during Phase 0-1 implementation.
+
+### Three-Layer Diagnostic Reference
+
+**Layer 1: Hook Registration Failures**
+- **Symptom**: `canopy_injection_tokens=NULL` consistently
+- **Check**: Verify `matcher` field presence in manifest
+- **Common cause**: Missing or empty `matcher: "Read"` in `.agents/symbionts/*/manifest.json`
+
+**Layer 2: Path Resolution Mismatches**  
+- **Symptom**: Attribution loss despite successful injection
+- **Check**: Compare absolute vs relative path handling
+- **Common cause**: Canonicalization inconsistencies in multi-stage pipelines
+
+**Layer 3: Response Shape Incompatibility**
+- **Symptom**: Hook executes but agent doesn't receive context
+- **Check**: Verify `hookSpecificOutput` JSON structure
+- **Common cause**: Agent-specific response format requirements not met
+
+### Verbatim Transparency Validation
+
+Ensure displayed injection content matches what agent receives:
+
+```typescript
+// Validate blob composition doesn't alter content
+function validateVerbatimTransparency(originalBlob: string, displayBlob: string) {
+  if (originalBlob !== displayBlob) {
+    throw new Error('Verbatim transparency violation in Canopy display');
+  }
+}
+```
+
+**Critical Gotcha**: `composeBlobStructured()` can break verbatim transparency if it reformats content differently than what the agent actually sees.
+
+### Per-Turn Attribution Verification
+
+Verify attribution tracking works across prompt-response cycles:
+
+```typescript
+// Check attribution completeness after each tool use
+async function verifyAttributionCompleteness(sessionId: string) {
+  const pendingCount = await vault.get(`
+    SELECT COUNT(*) as count FROM pending_attributions WHERE session_id = ?
+  `, [sessionId]);
+  
+  if (pendingCount.count > 0) {
+    console.warn(`${pendingCount.count} pending attributions not processed`);
+  }
+}
+```
+
 ## Cross-Cutting Patterns
 
 ### Error Recovery
@@ -501,3 +621,14 @@ function validateCanopyConfig(config: CanopyConfig): void {
   }
 }
 ```
+
+### Phase 0 Foundation Architecture
+
+The Phase 0 foundation establishes:
+
+1. **Schema v25**: `canopy_entries` table with PK (project_id, content_hash)
+2. **Scanner refresh**: Incremental file discovery and hash-based change detection
+3. **Local aggregation**: Session-level metrics that never sync to D1
+4. **Agent harness integration**: Standard task patterns replacing bespoke executors
+
+**Mission**: Code intelligence for project comprehension, not token optimization. Focus on semantic understanding over cost reduction.
