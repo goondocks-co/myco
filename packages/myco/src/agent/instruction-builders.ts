@@ -1135,6 +1135,5 @@ export function isInstructionRequiredTask(taskName: string): boolean {
     || taskName === SKILL_EVOLVE_TASK
     || taskName === SKILL_SURVEY_TASK
     || taskName === CORTEX_INSTRUCTIONS_TASK
-    || taskName === CANOPY_DESCRIBE_TASK
     || taskName === CANOPY_MAP_TASK;
 }
