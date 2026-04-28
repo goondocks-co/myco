@@ -50,6 +50,8 @@ import type {
 } from './types.js';
 import { aggregateUsage } from './executor-state.js';
 import { summarizePhaseCosts } from './run-accounting.js';
+import { executeMapPhase } from './map-phase.js';
+import { createVaultTools } from './tools.js';
 
 // ---------------------------------------------------------------------------
 // PhaseLoopContext — parameter object carrying orchestrator state into the
@@ -122,6 +124,11 @@ export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
   const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
+
+  if (phase.mode === 'map') {
+    return runMapPhaseAdapter(input);
+  }
+
   const logger = ctx.options?.logger;
   const runtime = getAgentRuntime(ctx.config.runtime);
   logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
@@ -234,6 +241,45 @@ export async function executePhase(
       usage: telemetry?.usage,
       costData,
       sessionRef: telemetry?.sessionRef,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Map-phase adapter
+// ---------------------------------------------------------------------------
+
+async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
+  const { ctx, phase } = input;
+  const runtime = getAgentRuntime(ctx.config.runtime);
+  const allTools = createVaultTools(ctx.agentId, ctx.runId, {
+    embeddingManager: ctx.embeddingManager,
+    projectRoot: ctx.projectRoot,
+    vaultDir: ctx.vaultDir,
+    dryRun: ctx.options?.dryRun ?? false,
+  });
+
+  try {
+    const mapResult = await executeMapPhase({
+      phase,
+      allTools,
+      runtime,
+      params: ((ctx.config.taskParams ?? {}) as Record<string, unknown>),
+      systemPrompt: ctx.systemPrompt,
+      runId: ctx.runId,
+      agentId: ctx.agentId,
+    });
+    return buildPhaseResult({
+      name: phase.name,
+      status: 'completed',
+      summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}`,
+      usage: { totalTokens: 0, requests: mapResult.itemCount, costUsd: null } as any,
+    });
+  } catch (err) {
+    return buildPhaseResult({
+      name: phase.name,
+      status: 'failed',
+      summary: `Error: ${(err as Error).message}`,
     });
   }
 }
