@@ -59,38 +59,36 @@ function getIsolatedPluginCacheDir(): string {
 }
 
 /**
- * Translate Myco's per-provider reasoning conventions into Claude SDK
- * `query()` options.
+ * Suppress the Claude SDK's `effort` default leaking to providers that
+ * use a different reasoning enum.
  *
- * Myco encodes "how much should the model think" via MODEL CHOICE — the
- * `reasoning_map` in agent config picks a different model name for each
- * level. The SDK's `effort`/`thinking` options are separate per-request
- * knobs that providers expose differently:
+ * Unrelated to Myco's `reasoningLevel` (which is a model-selection
+ * concept, applied at config time via reasoning_map). This is purely
+ * about the SDK shipping a request param that the receiving endpoint
+ * doesn't accept:
  *
- *   - Anthropic-hosted Claude models: native `thinking` config + `effort`
- *     enum ('low'|'medium'|'high'|...). The SDK defaults `effort: 'high'`,
- *     which is correct for capable Anthropic models.
- *   - LM Studio (Anthropic-compatible endpoint): expects a `reasoning`
- *     field with values 'on' or 'off'. The SDK's `effort: 'high'` default
- *     leaks through as an unsupported value and triggers a server-side
- *     warning. LM Studio understands `thinking: { type: 'disabled' }` as
- *     "reasoning off."
- *   - Ollama / generic openai-compatible endpoints: per-model behavior
- *     varies; safest default is to disable extended thinking entirely.
+ *   - The SDK defaults `effort: 'high'` (its own enum).
+ *   - LM Studio's Anthropic-compat endpoint expects a reasoning enum
+ *     of 'on'/'off' and rejects 'high' with a server-side warning
+ *     "Reasoning setting 'high' is not supported. Supported: 'on',
+ *     'off'."
  *
- * For local providers we explicitly DISABLE thinking. Myco's reasoning
- * level was already applied at model selection time — we don't need (or
- * want) the SDK adding its own thinking budget on top.
+ * To stop sending a value the endpoint won't accept, we explicitly set
+ * `thinking: { type: 'enabled' }` for local providers — matching LM
+ * Studio's natural default (reasoning on) and overriding the SDK's
+ * effort default cleanly. A future Myco config option
+ * (`provider.reasoning: 'on' | 'off'`) is the proper way to make this
+ * an operator choice; until then, this just stops the leak.
  */
-function buildReasoningOptions(
+function suppressEffortLeakForLocalProvider(
   provider?: RuntimeExecuteInput['provider'],
-): { thinking?: { type: 'disabled' } } {
+): { thinking?: { type: 'enabled' } } {
   if (!provider) return {};
   switch (provider.type) {
     case 'lmstudio':
     case 'ollama':
     case 'openai-compatible':
-      return { thinking: { type: 'disabled' as const } };
+      return { thinking: { type: 'enabled' as const } };
     default:
       return {};
   }
@@ -197,9 +195,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     // re-introducing every developer plugin we meant to exclude. Per the
     // SDK docs: "When omitted or empty, no filesystem settings are
     // loaded (SDK isolation mode)."
-    const isLocalProvider = input.provider?.type === 'lmstudio'
-      || input.provider?.type === 'ollama'
-      || input.provider?.type === 'openai-compatible';
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
@@ -214,7 +209,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         allowDangerouslySkipPermissions: true,
         persistSession: true,
         env,
-        ...buildReasoningOptions(input.provider),
+        ...suppressEffortLeakForLocalProvider(input.provider),
         ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
         ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
         ...(input.abortController ? { abortController: input.abortController } : {}),
@@ -289,9 +284,8 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       CLAUDE_CODE_PLUGIN_CACHE_DIR:
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
-    // Provider type is fixed for the scope's lifetime, so compute the
-    // local-provider flag once and reuse for both effort capping and
-    // cost suppression below. See claude.ts execute() for the rationale.
+    // Used below to suppress the SDK's Anthropic-pricing cost number when
+    // the request is actually being routed to a local endpoint.
     const isLocalProvider = setup.provider?.type === 'lmstudio'
       || setup.provider?.type === 'ollama'
       || setup.provider?.type === 'openai-compatible';
@@ -346,7 +340,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
             allowDangerouslySkipPermissions: true,
             persistSession: false,
             env,
-            ...buildReasoningOptions(setup.provider),
+            ...suppressEffortLeakForLocalProvider(setup.provider),
             ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
             ...(input.abortController ? { abortController: input.abortController } : {}),
           },
