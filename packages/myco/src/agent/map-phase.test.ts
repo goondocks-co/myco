@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, mock } from 'bun:test';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { executeMapPhase } from './map-phase.js';
@@ -55,7 +55,7 @@ describe('executeMapPhase — happy path', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async (input: any) => {
+      execute: mock(async (input: any) => {
         const sinkInSurface = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
         const itemPath = input.prompt.match(/item is (\S+)/)![1];
         await sinkInSurface.handler({ description: `summary of ${itemPath}` });
@@ -91,7 +91,7 @@ describe('executeMapPhase — skip modes', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async () => ({ finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } })),
+      execute: mock(async () => ({ finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } })),
     };
     const result = await executeMapPhase({
       phase: happyPhase,
@@ -116,7 +116,7 @@ describe('executeMapPhase — skip modes', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async (input: any) => {
+      execute: mock(async (input: any) => {
         const s = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
         await s.handler({ description: 'x' });
         return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } };
@@ -138,7 +138,7 @@ describe('executeMapPhase — skip modes', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async (input: any) => {
+      execute: mock(async (input: any) => {
         n += 1;
         if (n === 2) throw new Error('runtime exploded');
         const s = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
@@ -163,7 +163,7 @@ describe('executeMapPhase — per-item timeout', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async (input: any) => {
+      execute: mock(async (input: any) => {
         const itemPath = input.prompt.match(/item is (\S+)/)![1];
         if (itemPath === 'slow.ts') {
           // Block until the per-item AbortController fires.
@@ -194,7 +194,7 @@ describe('executeMapPhase — abort + source-failure', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(async () => {
+      execute: mock(async () => {
         calls += 1;
         if (calls === 2) throw new Error('boom');
         return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } };
@@ -216,7 +216,7 @@ describe('executeMapPhase — abort + source-failure', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(),
+      execute: mock(() => Promise.resolve({ finalText: "", turnsUsed: 0, usage: { totalTokens: 0, requests: 0 } })),
     };
     await expect(executeMapPhase({
       phase: happyPhase, allTools: [errSource, sink], runtime: stubRuntime as any,
@@ -231,7 +231,7 @@ describe('executeMapPhase — abort + source-failure', () => {
     const stubRuntime = {
       id: 'claude-sdk' as const,
       supports: () => false,
-      execute: vi.fn(),
+      execute: mock(() => Promise.resolve({ finalText: "", turnsUsed: 0, usage: { totalTokens: 0, requests: 0 } })),
     };
     const result = await executeMapPhase({
       phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,

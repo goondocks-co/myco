@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { PhaseDefinitionSchema } from './schemas.js';
 
 describe('PhaseDefinitionSchema — map mode', () => {
