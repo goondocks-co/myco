@@ -358,31 +358,48 @@
     <div class="canopy-grid">
       <div class="canopy-copy">
         <span class="eyebrow">Cortex</span>
-        <h2 class="sec-title" style="margin-top: 16px;">Your agent's <em>map of the codebase</em> — beneath every session.</h2>
-        <p class="sec-lede">Cortex is the surface where Myco's code intelligence lives. Powered by <strong>Canopy</strong> — a living per-file index of exports, imports, top-line summaries, and architectural shape — Cortex hands that orientation to your agent automatically, or on demand.</p>
+        <h2 class="sec-title" style="margin-top: 16px;">The <em>brain of Myco</em> — context, instructions, and a map of your code.</h2>
+        <p class="sec-lede">Cortex is where everything Myco knows about this project becomes context your agent can use — an operating brief written from your team's accumulated knowledge, plus a living map of the codebase your agent can navigate before opening a single file.</p>
 
         <ul class="canopy-bullets">
-          <li><span class="mark">✓</span><span><strong>Anatomy on every Read</strong> — exports, imports, and top comment injected before the file opens. Most reads end early because the summary already answered.</span></li>
-          <li><span class="mark">✓</span><span><strong>Project map on demand</strong> — one MCP call returns the directory shape and golden paths. New agents orient in a single tool call instead of a dozen blind <code>Glob</code> and <code>Grep</code> probes.</span></li>
-          <li><span class="mark">✓</span><span><strong>Search by behavior, not keyword</strong> — find files by what they <em>do</em>. "Where does session capture happen?" returns the right file even if those words appear nowhere in it.</span></li>
-          <li><span class="mark">✓</span><span><strong>Browse, refresh, rebuild</strong> — the Cortex tab in your dashboard lets you sort the index, refresh single files, regenerate the project map, and watch token-savings tick up as your agents stop reading blind.</span></li>
+          <li><span class="mark">✓</span><span><strong>Operating instructions, written for this project</strong> — auto-generated from your spores, sessions, and plans. Surfaced at session start so agents arrive oriented, refreshed as the project evolves.</span></li>
+          <li><span class="mark">✓</span><span><strong>Anatomy on every Read</strong> — Canopy injects exports, imports, and top comment before each file opens. Most reads end early because the summary already answered.</span></li>
+          <li><span class="mark">✓</span><span><strong>Project map + behavior search</strong> — one MCP call returns the directory shape and golden paths; another finds files by what they <em>do</em>, not what they're named.</span></li>
+          <li><span class="mark">✓</span><span><strong>Cortex command deck</strong> — the dashboard tab where you read the brief, browse the index, regenerate the map, and watch token-savings tick up.</span></li>
         </ul>
 
         <div style="margin-top: 28px; display:flex; gap: 14px;">
-          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/canopy.md" target="_blank" rel="noopener">Cortex &amp; Canopy guide<span class="chev">→</span></a>
+          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/canopy.md" target="_blank" rel="noopener">Canopy guide<span class="chev">→</span></a>
           <a class="btn btn-ghost" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">MCP tools →</a>
         </div>
       </div>
 
       <div class="canopy-frame">
-        <span class="diag-label">Cortex · canopy</span>
-        <span class="diag-meta">3 surfaces · 1 index</span>
+        <span class="diag-label">Cortex</span>
+        <span class="diag-meta">brief · canopy · search</span>
 
         <div class="canopy-card sage">
           <div class="canopy-card-head">
             <span class="canopy-mark">01</span>
             <div>
-              <div class="canopy-card-name">Read injection</div>
+              <div class="canopy-card-name">Operating brief</div>
+              <div class="canopy-card-sub">Session start · auto-written</div>
+            </div>
+          </div>
+          <div class="canopy-snippet">
+            <span class="cs-line"><span class="cs-key">## Stack &amp; conventions</span></span>
+            <span class="cs-line cs-mute">- TypeScript strict, no any</span>
+            <span class="cs-line cs-mute">- Test with Vitest</span>
+            <span class="cs-line"><span class="cs-key">## Active work</span></span>
+            <span class="cs-line cs-mute">- Canopy Phase 1 integration</span>
+          </div>
+        </div>
+
+        <div class="canopy-card ochre">
+          <div class="canopy-card-head">
+            <span class="canopy-mark">02</span>
+            <div>
+              <div class="canopy-card-name">Read injection · canopy</div>
               <div class="canopy-card-sub">PreToolUse · automatic</div>
             </div>
           </div>
@@ -393,27 +410,12 @@
           </div>
         </div>
 
-        <div class="canopy-card ochre">
-          <div class="canopy-card-head">
-            <span class="canopy-mark">02</span>
-            <div>
-              <div class="canopy-card-name">canopy_map()</div>
-              <div class="canopy-card-sub">MCP · on demand</div>
-            </div>
-          </div>
-          <div class="canopy-snippet">
-            <span class="cs-line"><span class="cs-key">## Capture pipeline</span></span>
-            <span class="cs-line cs-mute">capture/buffer.ts — JSONL buffer</span>
-            <span class="cs-line cs-mute">capture/transcript.ts — reconciler</span>
-          </div>
-        </div>
-
         <div class="canopy-card terra">
           <div class="canopy-card-head">
             <span class="canopy-mark">03</span>
             <div>
-              <div class="canopy-card-name">myco_search · canopy</div>
-              <div class="canopy-card-sub">MCP · semantic</div>
+              <div class="canopy-card-name">canopy_map() · myco_search</div>
+              <div class="canopy-card-sub">MCP · on demand</div>
             </div>
           </div>
           <div class="canopy-snippet">
