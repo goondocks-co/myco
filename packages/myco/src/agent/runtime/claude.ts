@@ -58,28 +58,7 @@ function getIsolatedPluginCacheDir(): string {
   return dir;
 }
 
-/**
- * Suppress the Claude SDK's `effort` default leaking to providers that
- * use a different reasoning enum.
- *
- * Unrelated to Myco's `reasoningLevel` (which is a model-selection
- * concept, applied at config time via reasoning_map). This is purely
- * about the SDK shipping a request param that the receiving endpoint
- * doesn't accept:
- *
- *   - The SDK defaults `effort: 'high'` (its own enum).
- *   - LM Studio's Anthropic-compat endpoint expects a reasoning enum
- *     of 'on'/'off' and rejects 'high' with a server-side warning
- *     "Reasoning setting 'high' is not supported. Supported: 'on',
- *     'off'."
- *
- * To stop sending a value the endpoint won't accept, we explicitly set
- * `thinking: { type: 'enabled' }` for local providers — matching LM
- * Studio's natural default (reasoning on) and overriding the SDK's
- * effort default cleanly. A future Myco config option
- * (`provider.reasoning: 'on' | 'off'`) is the proper way to make this
- * an operator choice; until then, this just stops the leak.
- */
+/** Override the SDK's effort default with a thinking value local provider endpoints accept. */
 function suppressEffortLeakForLocalProvider(
   provider?: RuntimeExecuteInput['provider'],
 ): { thinking?: { type: 'enabled' } } {
@@ -180,6 +159,9 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let costUsd = 0;
     let assistantMessages = 0;
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
+    const isLocalProvider = input.provider?.type === 'lmstudio'
+      || input.provider?.type === 'ollama'
+      || input.provider?.type === 'openai-compatible';
 
     // Always pass `strictMcpConfig: true`, even when the phase wants no
     // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
@@ -243,7 +225,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
           turnsUsed = message.num_turns ?? assistantMessages;
           inputTokens = message.usage?.input_tokens ?? 0;
           outputTokens = message.usage?.output_tokens ?? 0;
-          costUsd = message.total_cost_usd ?? 0;
+          costUsd = isLocalProvider ? 0 : (message.total_cost_usd ?? 0);
           if (message.subtype === 'success') {
             finalText = message.result;
           }
@@ -269,12 +251,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
   }
 
   async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
-    // One-time setup: build the MCP tool server and resolve the
-    // claude-code executable path. These were previously rebuilt per
-    // execute() call — for map-phase batches that's N rebuilds of the
-    // same MCP server, which is wasteful and (when the materialized
-    // tools path is used) confusing because the wrapped sink would be
-    // re-instantiated each time.
     const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
     const baseEnv = buildPhaseEnv(setup.provider);
@@ -284,8 +260,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       CLAUDE_CODE_PLUGIN_CACHE_DIR:
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
-    // Used below to suppress the SDK's Anthropic-pricing cost number when
-    // the request is actually being routed to a local endpoint.
     const isLocalProvider = setup.provider?.type === 'lmstudio'
       || setup.provider?.type === 'ollama'
       || setup.provider?.type === 'openai-compatible';
@@ -315,17 +289,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         let costUsd = 0;
         let assistantMessages = 0;
 
-        // persistSession: FALSE for map-phase. The free-form path keeps a
-        // single conversation alive across turns, but map-phase items are
-        // independent invocations — each one is meant to start fresh.
-        // With persistSession: true and no explicit sessionId, the SDK
-        // auto-creates a session and reuses it across query() calls,
-        // leaking prior items' conversation into subsequent items. That
-        // produced ~2.4× token bloat on canopy-describe (LM Studio saw
-        // 4-message conversations growing every item instead of fresh
-        // 2-message ones). Disabling session persistence per call gives
-        // map-phase the per-item isolation it needs, mirroring how
-        // openai-agents' scope.run uses a fresh PersistedSession per call.
         const messageStream: AsyncIterable<SDKMessage> = query({
           prompt: input.prompt,
           options: {
@@ -357,13 +320,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
             : [],
         });
 
-        // The Claude SDK calculates total_cost_usd from its Anthropic
-        // pricing table even when the request was actually routed to a
-        // local endpoint (lmstudio, ollama). Reporting that number for
-        // a local-model run produces false billing — the canopy-describe
-        // batch above showed $0.48 for what was free local compute.
-        // Suppress cost on local providers; only trust it for genuine
-        // anthropic-typed calls. (`isLocalProvider` defined at scope open.)
         try {
           for await (const message of messageStream) {
             if (message.type === 'assistant') {
