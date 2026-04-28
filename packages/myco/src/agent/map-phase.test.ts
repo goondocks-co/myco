@@ -185,3 +185,59 @@ describe('executeMapPhase — per-item timeout', () => {
     expect(result.failed).toBe(1);
   });
 });
+
+describe('executeMapPhase — abort + source-failure', () => {
+  it('onItemError: abort throws on first item failure and stops iteration', async () => {
+    const { sink } = makeSinkSpy();
+    const source = makeSource([{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }]);
+    let calls = 0;
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: vi.fn(async () => {
+        calls += 1;
+        if (calls === 2) throw new Error('boom');
+        return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } };
+      }),
+    };
+    const phase = { ...happyPhase, onItemError: 'abort' as const };
+    await expect(executeMapPhase({
+      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    })).rejects.toThrow('boom');
+    expect(calls).toBe(2); // item 3 was never reached
+  });
+
+  it('throws when source tool errors during fetch', async () => {
+    const errSource = tool('test_source', 'src', { limit: z.number().optional() },
+      async () => { throw new Error('db blown'); },
+      { annotations: { readOnlyHint: true } });
+    const { sink } = makeSinkSpy();
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: vi.fn(),
+    };
+    await expect(executeMapPhase({
+      phase: happyPhase, allTools: [errSource, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    })).rejects.toThrow('db blown');
+    expect(stubRuntime.execute).not.toHaveBeenCalled();
+  });
+
+  it('returns instantly with itemCount: 0 when source returns empty', async () => {
+    const source = makeSource([]);
+    const { sink } = makeSinkSpy();
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: vi.fn(),
+    };
+    const result = await executeMapPhase({
+      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    });
+    expect(result).toEqual({ itemCount: 0, written: 0, skipped: 0, failed: 0, abandoned: 0, skipReasons: {} });
+    expect(stubRuntime.execute).not.toHaveBeenCalled();
+  });
+});
