@@ -14,6 +14,15 @@ export interface SearchResult {
   preview: string;
   score: number;
   session_id?: string;
+  // Canopy-specific fields populated when `type === 'canopy'` (a hit from the
+  // unified All branch routed through `hydrateSearchResults`). Keeping them on
+  // the shared shape lets the existing CanopyResultRow render canopy hits
+  // coming from BOTH the dedicated Canopy facet and the All facet without
+  // branching.
+  project_id?: string | null;
+  path?: string | null;
+  language?: string | null;
+  llm_description?: string | null;
 }
 
 /**
