@@ -3,6 +3,7 @@ config_version: 6
 embedding:
   provider: ollama
   model: bge-m3:latest
+  run_in_deep_sleep: true
 daemon:
   port: 21039
   log_level: info
@@ -68,7 +69,7 @@ agent:
           maxTurns: 30
       schedule:
         enabled: true
-        intervalSeconds: 1800
+        intervalSeconds: 3200
     canopy-describe:
       provider:
         runtime: openai-agents
@@ -80,6 +81,18 @@ agent:
           default: google/gemma-4-31b
           high: google/gemma-4-31b
       runtime: openai-agents
+      schedule:
+        enabled: true
+    canopy-map:
+      provider:
+        runtime: claude-sdk
+        type: anthropic
+        model: claude-haiku-4-5-20251001
+        reasoning_map:
+          low: claude-haiku-4-5-20251001
+          default: claude-sonnet-4-6
+          high: claude-opus-4-6
+      runtime: claude-sdk
       schedule:
         enabled: true
 context:
