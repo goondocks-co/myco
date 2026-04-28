@@ -285,6 +285,31 @@ export function useReembedCanopyEntry() {
   });
 }
 
+/**
+ * Enqueues a single-row canopy-describe run for the given entry by POSTing
+ * to its `/redescribe` endpoint. Returns the dispatched run id so callers
+ * can correlate audit-log rows. On success, invalidates list and detail
+ * caches so the new description shows up after the next refetch.
+ *
+ * Note: `ok: true` means the run was started, not that the description is
+ * regenerated yet — the LLM round-trip is fire-and-forget on the daemon.
+ */
+export function useRedescribeCanopyEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (path: string) => {
+      return postJson<{ ok: true; run_id?: string }>(
+        `/canopy/entries/${encodeURIComponent(path)}/redescribe`,
+        {},
+      );
+    },
+    onSuccess: (_data, path) => {
+      void qc.invalidateQueries({ queryKey: ['canopy-entries'] });
+      void qc.invalidateQueries({ queryKey: ['canopy-entry', path] });
+    },
+  });
+}
+
 /* ---------- Canopy Project Map ---------- */
 
 /**

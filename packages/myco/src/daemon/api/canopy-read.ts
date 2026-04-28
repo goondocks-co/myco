@@ -235,6 +235,42 @@ export async function handleCanopyEntryReembed(
   return { ok: true };
 }
 
+/**
+ * Runner contract for handleCanopyEntryRedescribe. The route registration
+ * supplies a real implementation that builds a single-row canopy-describe
+ * instruction (params.canopy_entry_id = path) and dispatches via the agent
+ * executor — same shape as runCanopyMapTask. Tests inject a stub so they
+ * don't need to stand up the executor.
+ */
+export interface CanopyEntryRedescribeTaskRunner {
+  runner: (input: {
+    task: 'canopy-describe';
+    params: { canopy_entry_id: string };
+    project_id: string;
+  }) => Promise<{ run_id: string }>;
+}
+
+/**
+ * Enqueue a single-row canopy-describe run for the given path. We confirm
+ * the row exists before dispatching so the caller gets a clean 404 instead
+ * of an opaque agent failure when the path is wrong.
+ */
+export async function handleCanopyEntryRedescribe(
+  args: { project_id: string; path: string },
+  deps: CanopyEntryRedescribeTaskRunner,
+): Promise<{ ok: true; run_id: string }> {
+  const row = findCanopyEntry(args.project_id, args.path);
+  if (!row) throw new Error(`Canopy entry not found: ${args.path}`);
+  const { run_id } = await deps.runner({
+    task: 'canopy-describe',
+    // The single-row instruction builder uses the row's `path` as its
+    // canopy_entry_id (see loadCanopyRow in instruction-builders.ts).
+    params: { canopy_entry_id: args.path },
+    project_id: args.project_id,
+  });
+  return { ok: true, run_id };
+}
+
 // ---------------------------------------------------------------------------
 // Route adapters for /canopy/entries
 // ---------------------------------------------------------------------------
@@ -280,7 +316,15 @@ function extractEntryPath(pathname: string, prefix: string): string | null {
  * projectId at registration time — matching the createCanopyInjectHandler
  * pattern used elsewhere in this file's neighborhood.
  */
-function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
+function makeEntriesRouteHandlers(deps: {
+  resolveProjectId: () => string;
+  /**
+   * Optional runner for per-entry `/redescribe`. Tests that don't need the
+   * action route (list/get/reembed only) can omit this; the redescribe
+   * route is registered only when the runner is supplied.
+   */
+  runCanopyDescribeTask?: CanopyEntryRedescribeTaskRunner['runner'];
+}) {
   const listHandler: RouteHandler = async (req) => {
     const sortByRaw = parseStringQuery(req.query.sort_by);
     if (sortByRaw !== undefined && !(CANOPY_ENTRIES_SORT_BY as readonly string[]).includes(sortByRaw)) {
@@ -306,17 +350,24 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
   };
 
   // The entry path may contain '/', which the param router can't capture in
-  // a single segment. We mount the get/reembed routes as `/api/canopy/entries/*`
-  // prefix routes and recover the rest of the URL from the pathname.
+  // a single segment. We mount the get/reembed/redescribe routes as
+  // `/api/canopy/entries/*` prefix routes and recover the rest of the URL
+  // from the pathname. The action suffix list is checked in the get handler
+  // so a wrong-method GET surfaces as a clear 404 instead of an opaque lookup
+  // miss.
   const reembedSuffix = '/reembed';
+  const redescribeSuffix = '/redescribe';
+  const actionSuffixes = [reembedSuffix, redescribeSuffix];
   const getHandler: RouteHandler = async (req) => {
     const path = extractEntryPath(req.pathname, '/api/canopy/entries/');
     if (!path) return badRequest('missing_path');
-    // Guard the reembed suffix explicitly. A GET to `/foo.ts/reembed` would
+    // Guard action suffixes explicitly. A GET to `/foo.ts/reembed` would
     // otherwise fall through to a row lookup that would 404 for the wrong
     // reason — make the wrong-method case visible to the caller.
-    if (path.endsWith(reembedSuffix)) {
-      return notFound('Use POST for reembed action');
+    for (const suffix of actionSuffixes) {
+      if (path.endsWith(suffix)) {
+        return notFound(`Use POST for ${suffix.slice(1)} action`);
+      }
     }
     try {
       const row = await handleCanopyEntryGet({ project_id: deps.resolveProjectId(), path });
@@ -326,19 +377,41 @@ function makeEntriesRouteHandlers(deps: { resolveProjectId: () => string }) {
     }
   };
 
-  const reembedHandler: RouteHandler = async (req) => {
+  // Single POST handler for both action suffixes — the action lives in the
+  // URL suffix so the dispatch happens here. Keeps the prefix-route
+  // registration simple (one POST `/api/canopy/entries/*`).
+  const actionHandler: RouteHandler = async (req) => {
     const raw = extractEntryPath(req.pathname, '/api/canopy/entries/');
-    if (!raw || !raw.endsWith(reembedSuffix)) return badRequest('missing_path');
-    const path = raw.slice(0, -reembedSuffix.length);
-    if (!path) return badRequest('missing_path');
-    try {
-      return { body: await handleCanopyEntryReembed({ project_id: deps.resolveProjectId(), path }) };
-    } catch (e) {
-      return notFound((e as Error).message);
+    if (!raw) return badRequest('missing_path');
+    if (raw.endsWith(reembedSuffix)) {
+      const path = raw.slice(0, -reembedSuffix.length);
+      if (!path) return badRequest('missing_path');
+      try {
+        return { body: await handleCanopyEntryReembed({ project_id: deps.resolveProjectId(), path }) };
+      } catch (e) {
+        return notFound((e as Error).message);
+      }
     }
+    if (raw.endsWith(redescribeSuffix)) {
+      const path = raw.slice(0, -redescribeSuffix.length);
+      if (!path) return badRequest('missing_path');
+      const runner = deps.runCanopyDescribeTask;
+      if (!runner) return notFound('redescribe action not available');
+      try {
+        return {
+          body: await handleCanopyEntryRedescribe(
+            { project_id: deps.resolveProjectId(), path },
+            { runner },
+          ),
+        };
+      } catch (e) {
+        return notFound((e as Error).message);
+      }
+    }
+    return badRequest('unknown_action');
   };
 
-  return { listHandler, getHandler, reembedHandler };
+  return { listHandler, getHandler, actionHandler };
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +516,12 @@ export interface CanopyReadRouteDeps {
    * can register the get-only route by omitting this.
    */
   runCanopyMapTask?: CanopyMapTaskRunner['runner'];
+  /**
+   * Optional runner for per-entry `/redescribe`. Same dispatch shape as
+   * runCanopyMapTask, but for canopy-describe single-row mode. Tests that
+   * don't exercise the action can omit this.
+   */
+  runCanopyDescribeTask?: CanopyEntryRedescribeTaskRunner['runner'];
 }
 
 export function registerCanopyReadRoutes(server: {
@@ -460,14 +539,17 @@ export function registerCanopyReadRoutes(server: {
   // canopy-read routes without deps; skip the entries routes when no resolver
   // is supplied to avoid breaking older callers.
   if (deps) {
-    const { listHandler, getHandler, reembedHandler } = makeEntriesRouteHandlers(deps);
+    const { listHandler, getHandler, actionHandler } = makeEntriesRouteHandlers({
+      resolveProjectId: deps.resolveProjectId,
+      runCanopyDescribeTask: deps.runCanopyDescribeTask,
+    });
     server.registerRoute('GET',  '/api/canopy/entries',    listHandler);
     // Wildcard prefix routes. The Router matches `/*` after exact and param
     // routes, and the entry-path may contain '/' which a `:path` param cannot
     // capture in a single segment. Order of registration doesn't matter — the
-    // get vs reembed dispatch happens inside extractEntryPath/the handler
-    // checking for the `/reembed` suffix.
-    server.registerRoute('POST', '/api/canopy/entries/*',  reembedHandler);
+    // get vs action dispatch happens inside the action handler by inspecting
+    // the URL suffix (`/reembed` vs `/redescribe`).
+    server.registerRoute('POST', '/api/canopy/entries/*',  actionHandler);
     server.registerRoute('GET',  '/api/canopy/entries/*',  getHandler);
   }
 

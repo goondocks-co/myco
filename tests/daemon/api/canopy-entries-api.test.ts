@@ -14,6 +14,7 @@ import {
   handleCanopyEntriesList,
   handleCanopyEntryGet,
   handleCanopyEntryReembed,
+  handleCanopyEntryRedescribe,
 } from '@myco/daemon/api/canopy-read.js';
 
 const PROJECT_ID = '/repo/myco';
@@ -300,3 +301,66 @@ describe('handleCanopyEntryReembed', () => {
     expect(row.embedded).toBe(1);
   });
 });
+
+describe('handleCanopyEntryRedescribe', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('enqueues a single-row canopy-describe run and returns ok with run id', async () => {
+    seedTrio();
+    const runner = mockRunner('run-redescribe-1');
+    const res = await handleCanopyEntryRedescribe(
+      { project_id: PROJECT_ID, path: 'a.ts' },
+      { runner },
+    );
+    expect(res).toEqual({ ok: true, run_id: 'run-redescribe-1' });
+
+    expect(runner.calls).toHaveLength(1);
+    const call = runner.calls[0];
+    expect(call.task).toBe('canopy-describe');
+    expect(call.project_id).toBe(PROJECT_ID);
+    // Single-row instruction is keyed by the row's path (used as the
+    // canopy_entry_id by loadCanopyRow in instruction-builders.ts).
+    expect(call.params.canopy_entry_id).toBe('a.ts');
+  });
+
+  it('throws when the entry does not exist (no run dispatched)', async () => {
+    seedTrio();
+    const runner = mockRunner('should-not-fire');
+    await expect(
+      handleCanopyEntryRedescribe(
+        { project_id: PROJECT_ID, path: 'missing.ts' },
+        { runner },
+      ),
+    ).rejects.toThrow(/not found/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it('does not dispatch for rows in other projects', async () => {
+    seedTrio();
+    const runner = mockRunner('should-not-fire');
+    await expect(
+      handleCanopyEntryRedescribe(
+        { project_id: '/repo/other', path: 'a.ts' },
+        { runner },
+      ),
+    ).rejects.toThrow(/not found/i);
+    expect(runner.calls).toHaveLength(0);
+  });
+});
+
+interface MockRunnerCall {
+  task: string;
+  params: { canopy_entry_id: string };
+  project_id: string;
+}
+
+function mockRunner(runId: string) {
+  const calls: MockRunnerCall[] = [];
+  const fn = async (input: MockRunnerCall) => {
+    calls.push(input);
+    return { run_id: runId };
+  };
+  return Object.assign(fn, { calls });
+}

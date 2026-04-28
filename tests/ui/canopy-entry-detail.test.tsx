@@ -135,4 +135,58 @@ describe('CanopyEntryDetail', () => {
       expect(screen.getByText('Queued for re-embed')).toBeInTheDocument();
     });
   });
+
+  it('fires the re-describe POST and shows queued feedback on success', async () => {
+    fetchJsonMock.mockResolvedValue(makeEntry({ embedded: 1 }));
+    postJsonMock.mockResolvedValue({ ok: true, run_id: 'run-123' });
+
+    renderDetail('src/foo.ts');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canopy-entry-redescribe')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('canopy-entry-redescribe'));
+
+    await waitFor(() => {
+      expect(postJsonMock).toHaveBeenCalledTimes(1);
+    });
+
+    const call = postJsonMock.mock.calls[0];
+    // Path is URL-encoded; includes the /redescribe suffix.
+    expect(String(call[0])).toBe('/canopy/entries/src%2Ffoo.ts/redescribe');
+
+    await waitFor(() => {
+      expect(screen.getByText('Queued for re-describe')).toBeInTheDocument();
+    });
+  });
+
+  it('disables the re-describe button while the request is in flight', async () => {
+    fetchJsonMock.mockResolvedValue(makeEntry({ embedded: 1 }));
+    // Hold the postJson promise open so the button stays in the pending state.
+    let resolveDescribe: (value: { ok: true }) => void = () => {};
+    postJsonMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveDescribe = resolve;
+      }),
+    );
+
+    renderDetail('src/foo.ts');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canopy-entry-redescribe')).toBeInTheDocument();
+    });
+
+    const button = screen.getByTestId('canopy-entry-redescribe') as HTMLButtonElement;
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(button.disabled).toBe(true);
+    });
+    expect(button.textContent).toContain('Describing');
+
+    // Release the held promise so React Query can settle and prevent the test
+    // suite leaking pending state into the next case.
+    resolveDescribe({ ok: true });
+  });
 });

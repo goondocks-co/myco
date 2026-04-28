@@ -893,6 +893,47 @@ export async function main(): Promise<void> {
 
       return { run_id: runId ?? '' };
     },
+    runCanopyDescribeTask: async ({ task, params }) => {
+      // Single-row canopy-describe dispatch — same shape as
+      // runCanopyMapTask above. The instruction-builder picks up
+      // params.canopy_entry_id and emits a fixed single-turn prompt
+      // for that one row; no batch drain.
+      const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
+      const { runAgent } = await import('../agent/executor.js');
+      const { getLatestRunId } = await import('../db/queries/runs.js');
+      const { DEFAULT_AGENT_ID } = await import('../constants.js');
+
+      const mycoConfig = liveConfig.current;
+      const projectRoot = path.resolve(vaultDir, '..');
+      const built = await buildTaskInstruction(
+        task,
+        params,
+        DEFAULT_AGENT_ID,
+        projectRoot,
+        embeddingManager,
+        mycoConfig,
+        () => teamSync.getTeamClient(),
+      );
+
+      const resultPromise = runAgent(vaultDir, {
+        task,
+        instruction: built?.instruction,
+        runContext: built?.context,
+        agentId: DEFAULT_AGENT_ID,
+        embeddingManager,
+        logger,
+      });
+
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+
+      resultPromise.catch((err) => {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
+          error: (err as Error).message ?? String(err),
+        });
+      });
+
+      return { run_id: runId ?? '' };
+    },
   });
 
   // --- Skill lifecycle API routes ---

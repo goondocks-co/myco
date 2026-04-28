@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { AlertCircle, ArrowLeft, Check, Copy, RefreshCw, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, Copy, RefreshCw, Sparkles, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
@@ -7,6 +7,7 @@ import { SectionHeader } from '../ui/section-header';
 import {
   useCanopyEntry,
   useReembedCanopyEntry,
+  useRedescribeCanopyEntry,
   type CanopyEntryRow,
 } from '../../hooks/use-canopy';
 import { formatEpochAbsolute } from '../../lib/format';
@@ -130,9 +131,12 @@ export interface CanopyEntryDetailProps {
 export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailProps) {
   const { data: entry, isPending, isError, error } = useCanopyEntry(path);
   const reembed = useReembedCanopyEntry();
+  const redescribe = useRedescribeCanopyEntry();
 
   const [reembedError, setReembedError] = useState<string | null>(null);
   const [reembedSuccess, setReembedSuccess] = useState(false);
+  const [redescribeError, setRedescribeError] = useState<string | null>(null);
+  const [redescribeSuccess, setRedescribeSuccess] = useState(false);
 
   const exportsList = useMemo(
     () => parseJsonStringArray(entry?.exports_json ?? null),
@@ -156,6 +160,20 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
       },
     });
   }, [path, reembed]);
+
+  const handleRedescribe = useCallback(() => {
+    setRedescribeError(null);
+    setRedescribeSuccess(false);
+    redescribe.mutate(path, {
+      onSuccess: () => {
+        setRedescribeSuccess(true);
+        window.setTimeout(() => setRedescribeSuccess(false), 2500);
+      },
+      onError: (err) => {
+        setRedescribeError(err instanceof Error ? err.message : 'Re-describe failed');
+      },
+    });
+  }, [path, redescribe]);
 
   if (isPending) {
     return (
@@ -248,17 +266,42 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
           </div>
 
           <div className="flex flex-col items-end gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleReembed}
-              disabled={reembed.isPending}
-              className="gap-2"
-              data-testid="canopy-entry-reembed"
-            >
-              <RefreshCw className={reembed.isPending ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
-              {reembed.isPending ? 'Queuing...' : 'Re-embed'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRedescribe}
+                disabled={redescribe.isPending}
+                className="gap-2"
+                data-testid="canopy-entry-redescribe"
+                aria-label="Re-run the Myco agent's description for this file."
+                title="Re-run the Myco agent's description for this file."
+              >
+                <Sparkles className={redescribe.isPending ? 'h-3.5 w-3.5 animate-pulse' : 'h-3.5 w-3.5'} />
+                {redescribe.isPending ? 'Describing...' : 'Re-describe'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReembed}
+                disabled={reembed.isPending}
+                className="gap-2"
+                data-testid="canopy-entry-reembed"
+              >
+                <RefreshCw className={reembed.isPending ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
+                {reembed.isPending ? 'Queuing...' : 'Re-embed'}
+              </Button>
+            </div>
+            {redescribeSuccess ? (
+              <span className="font-sans text-xs text-primary" role="status">
+                Queued for re-describe
+              </span>
+            ) : null}
+            {redescribeError ? (
+              <span className="font-sans text-xs text-tertiary" role="alert">
+                {redescribeError}
+              </span>
+            ) : null}
             {reembedSuccess ? (
               <span className="font-sans text-xs text-primary" role="status">
                 Queued for re-embed
