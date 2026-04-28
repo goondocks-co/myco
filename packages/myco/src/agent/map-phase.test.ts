@@ -155,3 +155,33 @@ describe('executeMapPhase — skip modes', () => {
     expect(stubRuntime.execute).toHaveBeenCalledTimes(3); // all 3 items still attempted
   });
 });
+
+describe('executeMapPhase — per-item timeout', () => {
+  it('aborts an item that exceeds perItemTimeoutSeconds and continues', async () => {
+    const { sink } = makeSinkSpy();
+    const source = makeSource([{ path: 'fast.ts' }, { path: 'slow.ts' }, { path: 'fast2.ts' }]);
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: vi.fn(async (input: any) => {
+        const itemPath = input.prompt.match(/item is (\S+)/)![1];
+        if (itemPath === 'slow.ts') {
+          // Block until the per-item AbortController fires.
+          await new Promise((_, reject) => {
+            input.abortController?.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        const s = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
+        await s.handler({ description: 'x' });
+        return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } };
+      }),
+    };
+    const phase = { ...happyPhase, perItemTimeoutSeconds: 0.05 }; // 50ms
+    const result = await executeMapPhase({
+      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    });
+    expect(result.written).toBe(2);
+    expect(result.failed).toBe(1);
+  });
+});

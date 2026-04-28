@@ -63,6 +63,13 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     });
     const tools = surface.tools.map((t) => (t.name === phase.sink!.tool ? sinkWrapped : t));
 
+    const controller = new AbortController();
+    const timer = phase.perItemTimeoutSeconds && phase.perItemTimeoutSeconds > 0
+      ? setTimeout(
+          () => controller.abort(new Error('per-item timeout')),
+          phase.perItemTimeoutSeconds * 1000,
+        )
+      : null;
     try {
       await runtime.execute({
         prompt: itemPrompt,
@@ -74,13 +81,18 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         // runtime adapters can consume this. Stub runtimes in tests use this
         // field directly.
         toolSurface: { agentId, runId, toolNames: tools.map((t) => t.name), tools } as any,
+        abortController: controller,
       } as any);
     } catch (err) {
       if ((phase.onItemError ?? 'skip') === 'abort') {
+        if (timer) clearTimeout(timer);
         throw err;
       }
       result.failed += 1;
+      if (timer) clearTimeout(timer);
       continue;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
 
     if (sinkOutcome?.ok === true) {
