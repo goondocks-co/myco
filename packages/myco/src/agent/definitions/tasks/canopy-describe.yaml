@@ -66,19 +66,22 @@ phases:
   - name: describe
     mode: map
     reasoningLevel: low
-    # 2 turns minimum: the model needs turn 1 to emit canopy_describe_write
-    # and turn 2 to acknowledge the tool result so the runner can terminate.
-    # OpenAI Agents SDK semantics — "strict" means one allowed write tool
-    # in the surface, not one LLM call.
-    perItemMaxTurns: 2
+    # OpenAI Agents SDK turn semantics: one "turn" = one LLM round-trip.
+    # A single tool-emitting flow needs at least 2 (call + post-tool
+    # acknowledgment), but local models occasionally emit a stray text
+    # turn or a duplicate tool call before terminating cleanly. 5 is
+    # generous enough to absorb that without inviting genuine loops —
+    # the source tool is structurally absent from the surface, so the
+    # model can't fetch-loop regardless of turn budget.
+    perItemMaxTurns: 5
     perItemTimeoutSeconds: 30
-    # Items are homogeneous — every row goes through the same prompt and
-    # the same sink tool. A first-item failure is systemic, not row-
-    # specific, so abort the run rather than burning compute on N more
-    # items that will fail the same way. Pending rows stay queued and
-    # the next scheduled tick will retry once the underlying issue is
-    # fixed.
-    onItemError: abort
+    # skip rather than abort: with map-phase's data-side success
+    # detection (sinkOutcome.ok === true counts as written even if the
+    # runtime later throws on max-turns), 'failed' here is genuine —
+    # the model never emitted a successful tool call. Skip lets the
+    # phase continue through the batch since item failures aren't
+    # necessarily systemic (e.g., one weird file vs. all of them).
+    onItemError: skip
     required: true
     maxTurns: 60
     tools: []

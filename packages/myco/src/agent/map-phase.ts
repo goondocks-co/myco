@@ -124,6 +124,22 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       if (err instanceof RuntimeExecutionError && err.telemetry?.usage) {
         itemUsages.push(err.telemetry.usage);
       }
+      // Local models occasionally redundantly emit the same tool call
+      // twice (gemma in particular reads the tool result as evidence
+      // of "previous turn completion" and re-runs the task). The first
+      // emission already wrote to the DB; the SDK throws max-turns on
+      // the second. Treat the data-side success as the source of truth:
+      // if the wrapped sink fired ok=true at any point, count as
+      // written, not failed — the runtime termination glitch is
+      // orthogonal to whether the row got described.
+      if (sinkOutcome?.ok === true) {
+        result.written += 1;
+        logger?.debug('agent.map.item-write-then-throw', `Map phase "${phase.name}" item wrote successfully then runtime threw`, {
+          runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
+        });
+        if (timer) clearTimeout(timer);
+        continue;
+      }
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
         runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
       });
