@@ -245,3 +245,72 @@ describe('executeMapPhase — abort + source-failure', () => {
     expect(stubRuntime.execute).not.toHaveBeenCalled();
   });
 });
+
+describe('executeMapPhase — scoped fast path', () => {
+  it('opens scope once and calls scope.run per item when runtime supports openScope', async () => {
+    const { sink, calls } = makeSinkSpy();
+    const source = makeSource([{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }]);
+    let scopeOpens = 0;
+    let scopeCloses = 0;
+    let scopeRuns = 0;
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(() => Promise.resolve({ finalText: '', turnsUsed: 0, usage: {} } as any)),
+      openScope: mock(async (setup: any) => {
+        scopeOpens += 1;
+        return {
+          run: mock(async (input: any) => {
+            scopeRuns += 1;
+            const sinkInSurface = setup.toolSurface.tools.find((t: any) => t.name === 'test_write');
+            const itemPath = input.prompt.match(/item is (\S+)/)![1];
+            await sinkInSurface.handler({ description: `summary of ${itemPath}` });
+            return { finalText: '', turnsUsed: 1, usage: { totalTokens: 100, requests: 1 } };
+          }),
+          close: mock(async () => { scopeCloses += 1; }),
+        };
+      }),
+    };
+    const result = await executeMapPhase({
+      phase: happyPhase,
+      allTools: [source, sink],
+      runtime: stubRuntime as any,
+      params: {},
+      systemPrompt: 'sys',
+      runId: 'r',
+      agentId: 'a',
+    });
+    expect(scopeOpens).toBe(1);
+    expect(scopeRuns).toBe(3);
+    expect(scopeCloses).toBe(1);
+    expect(result.written).toBe(3);
+    expect(result.usage.totalTokens).toBe(300);
+    // execute() should NOT be called when openScope is implemented.
+    expect(stubRuntime.execute).not.toHaveBeenCalled();
+    // Sink was called via the wrapped sink in the shared surface; harness
+    // pinned `path` from argMap each time.
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toMatchObject({ path: 'a.ts', description: 'summary of a.ts' });
+  });
+
+  it('closes scope even when an item throws under onItemError: abort', async () => {
+    const { sink } = makeSinkSpy();
+    const source = makeSource([{ path: 'a.ts' }, { path: 'b.ts' }]);
+    let scopeCloses = 0;
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(() => Promise.resolve({ finalText: '', turnsUsed: 0, usage: {} } as any)),
+      openScope: mock(async (_setup: any) => ({
+        run: mock(async () => { throw new Error('item exploded'); }),
+        close: mock(async () => { scopeCloses += 1; }),
+      })),
+    };
+    const phase = { ...happyPhase, onItemError: 'abort' as const };
+    await expect(executeMapPhase({
+      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    })).rejects.toThrow('item exploded');
+    expect(scopeCloses).toBe(1);
+  });
+});

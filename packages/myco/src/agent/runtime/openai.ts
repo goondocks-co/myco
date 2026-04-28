@@ -7,7 +7,16 @@ import {
   type AgentInputItem,
   type Session,
 } from '@openai/agents';
-import { RuntimeExecutionError, type AgentRuntime, type RuntimeCapability, type RuntimeExecuteInput, type RuntimeExecuteResult } from './types.js';
+import {
+  RuntimeExecutionError,
+  type AgentRuntime,
+  type RuntimeCapability,
+  type RuntimeExecuteInput,
+  type RuntimeExecuteResult,
+  type RuntimeScope,
+  type RuntimeScopeRunInput,
+  type RuntimeScopeSetup,
+} from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
@@ -323,6 +332,77 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     } finally {
       await mcpServer.close();
     }
+  }
+
+  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+    // One-time setup: prepare provider/model, construct MCP server +
+    // Agent + Runner + provider client. These are shared across every
+    // scope.run() call, eliminating ~10x of SDK setup work that the
+    // map-phase per-item flow used to do via repeated execute() calls.
+    // Conversation state is NOT shared — each scope.run() builds a fresh
+    // PersistedSession so per-item history is isolated (load-bearing
+    // for map-phase's loop fix).
+    const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
+    const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
+    await mcpServer.connect();
+
+    const agent = new Agent({
+      name: 'myco-agent',
+      instructions: setup.systemPrompt ?? 'You are the Myco agent runtime.',
+      model: preparedExecution.model,
+      mcpServers: [mcpServer],
+    });
+    const runner = new Runner({
+      modelProvider: createProvider({
+        provider: preparedExecution.provider,
+      } as RuntimeExecuteInput),
+    });
+
+    let closed = false;
+
+    return {
+      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
+        if (closed) throw new Error('OpenAIAgentsRuntime: scope.run() called after close()');
+        const sessionRef = crypto.randomUUID();
+        let persistedItems: AgentInputItem[] = [];
+        const session = new PersistedSession(sessionRef, persistedItems, (items) => {
+          persistedItems = [...items];
+        });
+        let result;
+        try {
+          result = await runner.run(agent, input.prompt, {
+            maxTurns: input.maxTurns,
+            session,
+            ...(input.abortController ? { signal: input.abortController.signal } : {}),
+          });
+        } catch (err) {
+          const partialRaw = extractPartialRawResponses(err);
+          const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+          throw new RuntimeExecutionError(
+            err instanceof Error ? err.message : String(err),
+            { usage, sessionRef, sessionData: persistedItems },
+            { cause: err instanceof Error ? err : undefined },
+          );
+        }
+        const usage = toOpenAIUsage(result.rawResponses);
+        usage.providerData = { lastResponseId: result.lastResponseId };
+        return {
+          finalText: typeof result.finalOutput === 'string'
+            ? result.finalOutput
+            : JSON.stringify(result.finalOutput ?? ''),
+          turnsUsed: result.rawResponses.length,
+          usage,
+          sessionRef,
+          sessionData: persistedItems,
+          rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
+        };
+      },
+      async close(): Promise<void> {
+        if (closed) return;
+        closed = true;
+        await mcpServer.close();
+      },
+    };
   }
 }
 

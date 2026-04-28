@@ -16,7 +16,12 @@ import { interpolate } from '@myco/utils/interpolate.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
-import { RuntimeExecutionError, type AgentRuntime, type RuntimeExecuteResult } from './runtime/types.js';
+import {
+  RuntimeExecutionError,
+  type AgentRuntime,
+  type RuntimeExecuteResult,
+  type RuntimeScope,
+} from './runtime/types.js';
 import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger, RuntimeUsage } from './types.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
@@ -68,24 +73,64 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     usage: {},
   };
 
-  for (const item of items) {
-    const argMap = interpolateArgs(phase.sink.argMap, { item, params });
-    const surface = buildMapItemToolSurface(allTools, {
+  // ---- Scoped fast path -----------------------------------------------------
+  // If the runtime adapter supports openScope, build the MCP server +
+  // Agent + Runner + provider client ONCE per phase and reuse them across
+  // every item. The wrapped sink reads its per-item argMap and outcome
+  // capture target from a mutable context object that we update before
+  // each scope.run() call.
+  // --------------------------------------------------------------------------
+  const supportsScope = typeof runtime.openScope === 'function';
+  const sharedItemCtx: {
+    argMap: Record<string, unknown>;
+    capture: (outcome: { ok: boolean; reason?: string }) => void;
+  } = {
+    argMap: {},
+    capture: () => undefined,
+  };
+  let scope: RuntimeScope | undefined;
+  if (supportsScope) {
+    // Build the shared tool surface from the FIRST item's argMap shape
+    // (the keys, not the values, drive schema-stripping; values are
+    // rendered per item via sharedItemCtx.argMap and merged inside the
+    // wrapped sink). Read tools and the sink schema are constant across
+    // items.
+    const sharedSurface = buildMapItemToolSurface(allTools, {
       sinkName: phase.sink.tool,
-      argMap,
+      argMap: phase.sink.argMap,
       readToolNames: phase.item.readTools ?? [],
     });
+    const sharedSinkWrapped = wrapSinkWithMutableContext(sharedSurface.sinkTool, sharedItemCtx);
+    const sharedTools = sharedSurface.tools.map((t) =>
+      t.name === phase.sink!.tool ? sharedSinkWrapped : t,
+    );
+    scope = await runtime.openScope!({
+      systemPrompt,
+      model: phaseModel ?? '',
+      provider,
+      toolSurface: {
+        agentId, runId,
+        toolNames: sharedTools.map((t) => t.name),
+        projectRoot, vaultDir, embeddingManager,
+        tools: sharedTools,
+      },
+      logger,
+    });
+  }
 
+  try {
+  for (const item of items) {
+    const argMap = interpolateArgs(phase.sink.argMap, { item, params });
     const itemPrompt = interpolate(
       normalizeTemplateBraces(phase.item.prompt),
       flattenForInterpolate({ item, params }),
     );
 
     let sinkOutcome: { ok: boolean; reason?: string } | undefined;
-    const sinkWrapped = wrapSinkForCapture(surface.sinkTool, argMap, (outcome) => {
-      sinkOutcome = outcome;
-    });
-    const tools = surface.tools.map((t) => (t.name === phase.sink!.tool ? sinkWrapped : t));
+    // Update the shared per-item context so the shared wrapped sink
+    // sees the right argMap + capture target on this iteration.
+    sharedItemCtx.argMap = argMap;
+    sharedItemCtx.capture = (outcome) => { sinkOutcome = outcome; };
 
     const controller = new AbortController();
     const timer = phase.perItemTimeoutSeconds && phase.perItemTimeoutSeconds > 0
@@ -95,25 +140,41 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         )
       : null;
     try {
-      const itemResult: RuntimeExecuteResult = await runtime.execute({
-        prompt: itemPrompt,
-        systemPrompt,
-        model: phaseModel ?? '',
-        maxTurns: phase.perItemMaxTurns ?? 1,
-        provider,
-        toolSurface: {
-          agentId, runId,
-          toolNames: tools.map((t) => t.name),
-          projectRoot, vaultDir, embeddingManager,
-          // Materialized tools — runtime adapters that honor this field
-          // (openai-local-mcp.ts) skip the rebuild path and use these
-          // directly, preserving the argMap-stripped sink schema and the
-          // outcome-capture wrapper.
-          tools,
-        },
-        abortController: controller,
-        logger,
-      });
+      let itemResult: RuntimeExecuteResult;
+      if (scope) {
+        itemResult = await scope.run({
+          prompt: itemPrompt,
+          maxTurns: phase.perItemMaxTurns ?? 1,
+          abortController: controller,
+        });
+      } else {
+        // Fallback: rebuild the per-item surface and call runtime.execute.
+        // Same shape as before scoped fast path existed.
+        const surface = buildMapItemToolSurface(allTools, {
+          sinkName: phase.sink.tool,
+          argMap,
+          readToolNames: phase.item.readTools ?? [],
+        });
+        const sinkWrapped = wrapSinkForCapture(surface.sinkTool, argMap, (outcome) => {
+          sinkOutcome = outcome;
+        });
+        const tools = surface.tools.map((t) => (t.name === phase.sink!.tool ? sinkWrapped : t));
+        itemResult = await runtime.execute({
+          prompt: itemPrompt,
+          systemPrompt,
+          model: phaseModel ?? '',
+          maxTurns: phase.perItemMaxTurns ?? 1,
+          provider,
+          toolSurface: {
+            agentId, runId,
+            toolNames: tools.map((t) => t.name),
+            projectRoot, vaultDir, embeddingManager,
+            tools,
+          },
+          abortController: controller,
+          logger,
+        });
+      }
       if (itemResult.usage) itemUsages.push(itemResult.usage);
     } catch (err) {
       const reason = toErrorMessage(err);
@@ -167,9 +228,47 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       result.skipReasons.no_terminal_tool = (result.skipReasons.no_terminal_tool ?? 0) + 1;
     }
   }
+  } finally {
+    if (scope) await scope.close();
+  }
 
   result.usage = aggregateUsage(itemUsages);
   return result;
+}
+
+/**
+ * Wrap the sink tool with a closure that reads its per-item argMap and
+ * capture target from a mutable context object. Used in scoped mode so
+ * the same wrapped sink instance can be embedded in the shared MCP server
+ * yet still record per-item outcomes correctly when scope.run() is
+ * called serially across N items.
+ */
+function wrapSinkWithMutableContext(
+  sinkTool: SdkMcpToolDefinition<any>,
+  ctx: {
+    argMap: Record<string, unknown>;
+    capture: (outcome: { ok: boolean; reason?: string }) => void;
+  },
+): SdkMcpToolDefinition<any> {
+  return {
+    ...sinkTool,
+    handler: async (modelArgs: Record<string, unknown>) => {
+      const merged = { ...modelArgs, ...ctx.argMap };
+      const response = await (sinkTool as any).handler(merged);
+      const text = (response?.content?.[0] as any)?.text;
+      if (typeof text === 'string') {
+        try {
+          const parsed = JSON.parse(text);
+          ctx.capture({ ok: parsed.ok === true, reason: parsed.reason });
+        } catch {
+          ctx.capture({ ok: false, reason: 'sink_response_unparseable' });
+        }
+      } else {
+        ctx.capture({ ok: false, reason: 'sink_response_missing_text' });
+      }
+      return response;
+    },
+  };
 }
 
 async function fetchSourceItems(input: {

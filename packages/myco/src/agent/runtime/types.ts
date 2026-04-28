@@ -59,6 +59,45 @@ export interface AgentRuntime {
   readonly id: RuntimeId;
   execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult>;
   supports(capability: RuntimeCapability): boolean;
+  /**
+   * Optional. Open a long-lived runtime scope for batch operations
+   * (map-phase). Adapters that implement this construct the SDK-level
+   * machinery (Agent, Runner, MCP server, provider client) once and
+   * reuse it across multiple `scope.run()` calls. Each call still gets
+   * an isolated conversation (PersistedSession or equivalent) so per-
+   * item context doesn't leak — the loop fix in map-phase relies on
+   * conversation isolation being preserved.
+   *
+   * Adapters that don't implement this leave it undefined; map-phase
+   * falls back to N independent `runtime.execute()` calls.
+   */
+  openScope?(setup: RuntimeScopeSetup): Promise<RuntimeScope>;
+}
+
+/** One-time setup state for a runtime scope. */
+export interface RuntimeScopeSetup {
+  systemPrompt?: string;
+  model: string;
+  provider?: ProviderConfig;
+  toolSurface: RuntimeToolSurface;
+  logger?: RunLogger;
+}
+
+/** A long-lived runtime scope that runs N items against shared SDK machinery. */
+export interface RuntimeScope {
+  /** Execute one item against the long-lived scope. Conversation state is
+   *  per-call — the scope shares Agent/Runner/MCP across calls but each
+   *  call gets a fresh PersistedSession so per-item history is isolated. */
+  run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult>;
+  /** Release scope resources (close MCP server, etc.). Idempotent. */
+  close(): Promise<void>;
+}
+
+/** Per-call input for a scope.run() invocation. */
+export interface RuntimeScopeRunInput {
+  prompt: string;
+  maxTurns?: number;
+  abortController?: AbortController;
 }
 
 /**
