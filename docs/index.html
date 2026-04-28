@@ -27,6 +27,7 @@
     <div class="nav-links">
       <a href="#how">How it works</a>
       <a href="#lifecycle">Skills</a>
+      <a href="#cortex">Cortex</a>
       <a href="#team">Team sync</a>
       <a href="#agents">Agents</a>
       <a href="#docs">Docs</a>
@@ -345,6 +346,81 @@
           <span class="metric" style="color: var(--terracotta);">Over time</span>
           <h4>Knowledge compounds</h4>
           <p>Skills rewrite themselves as the code does. Every generation records rationale, content snapshot, and source IDs — a complete audit trail.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== CORTEX =================== -->
+<section class="band canopy-band" id="cortex">
+  <div class="wrap">
+    <div class="canopy-grid">
+      <div class="canopy-copy">
+        <span class="eyebrow">Cortex</span>
+        <h2 class="sec-title" style="margin-top: 16px;">Your agent's <em>map of the codebase</em> — beneath every session.</h2>
+        <p class="sec-lede">Cortex is the surface where Myco's code intelligence lives. Powered by <strong>Canopy</strong> — a living per-file index of exports, imports, top-line summaries, and architectural shape — Cortex hands that orientation to your agent automatically, or on demand.</p>
+
+        <ul class="canopy-bullets">
+          <li><span class="mark">✓</span><span><strong>Anatomy on every Read</strong> — exports, imports, and top comment injected before the file opens. Most reads end early because the summary already answered.</span></li>
+          <li><span class="mark">✓</span><span><strong>Project map on demand</strong> — one MCP call returns the directory shape and golden paths. New agents orient in a single tool call instead of a dozen blind <code>Glob</code> and <code>Grep</code> probes.</span></li>
+          <li><span class="mark">✓</span><span><strong>Search by behavior, not keyword</strong> — find files by what they <em>do</em>. "Where does session capture happen?" returns the right file even if those words appear nowhere in it.</span></li>
+          <li><span class="mark">✓</span><span><strong>Browse, refresh, rebuild</strong> — the Cortex tab in your dashboard lets you sort the index, refresh single files, regenerate the project map, and watch token-savings tick up as your agents stop reading blind.</span></li>
+        </ul>
+
+        <div style="margin-top: 28px; display:flex; gap: 14px;">
+          <a class="btn btn-outline" href="https://github.com/goondocks-co/myco/blob/main/docs/canopy.md" target="_blank" rel="noopener">Cortex &amp; Canopy guide<span class="chev">→</span></a>
+          <a class="btn btn-ghost" href="https://github.com/goondocks-co/myco/blob/main/docs/agent-tools.md" target="_blank" rel="noopener">MCP tools →</a>
+        </div>
+      </div>
+
+      <div class="canopy-frame">
+        <span class="diag-label">Cortex · canopy</span>
+        <span class="diag-meta">3 surfaces · 1 index</span>
+
+        <div class="canopy-card sage">
+          <div class="canopy-card-head">
+            <span class="canopy-mark">01</span>
+            <div>
+              <div class="canopy-card-name">Read injection</div>
+              <div class="canopy-card-sub">PreToolUse · automatic</div>
+            </div>
+          </div>
+          <div class="canopy-snippet">
+            <span class="cs-line"><span class="cs-key">exports</span> Daemon, runDaemon</span>
+            <span class="cs-line"><span class="cs-key">imports</span> ./capture, ./mcp</span>
+            <span class="cs-line cs-mute">// Owns daemon lifecycle …</span>
+          </div>
+        </div>
+
+        <div class="canopy-card ochre">
+          <div class="canopy-card-head">
+            <span class="canopy-mark">02</span>
+            <div>
+              <div class="canopy-card-name">canopy_map()</div>
+              <div class="canopy-card-sub">MCP · on demand</div>
+            </div>
+          </div>
+          <div class="canopy-snippet">
+            <span class="cs-line"><span class="cs-key">## Capture pipeline</span></span>
+            <span class="cs-line cs-mute">capture/buffer.ts — JSONL buffer</span>
+            <span class="cs-line cs-mute">capture/transcript.ts — reconciler</span>
+          </div>
+        </div>
+
+        <div class="canopy-card terra">
+          <div class="canopy-card-head">
+            <span class="canopy-mark">03</span>
+            <div>
+              <div class="canopy-card-name">myco_search · canopy</div>
+              <div class="canopy-card-sub">MCP · semantic</div>
+            </div>
+          </div>
+          <div class="canopy-snippet">
+            <span class="cs-line cs-q">"where does session capture happen?"</span>
+            <span class="cs-line">→ capture/transcript-miner.ts</span>
+            <span class="cs-line">→ capture/buffer.ts</span>
+          </div>
         </div>
       </div>
     </div>

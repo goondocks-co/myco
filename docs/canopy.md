@@ -12,6 +12,8 @@ Token-spend on speculative reads is one of the largest invisible costs in agent 
 
 **Session list — lifetime rollup.** A rollup tile across all sessions shows total tokens saved, average per session, and how often the agent chose to skip after injection.
 
+**Cortex tab — your Canopy command deck.** The dashboard's Cortex tab gives you three views over the same index: an **Overview** with status and savings, an **Entries** browser (sortable, free-text searchable, with a slide-out detail panel and a one-click **Re-describe** for any file), and the **Map** sub-panel that holds the project's architectural overview. Refresh and Rebuild buttons are right there when you want to push the index forward.
+
 The tiles hide themselves on sessions where Canopy wasn't active or the project hadn't been scanned yet — there's no "N/A" placeholder.
 
 ## What it knows
@@ -50,6 +52,20 @@ This is **off by default**. Enable it under Cortex → Canopy when you want it. 
 
 Descriptions stay fresh automatically: when a file changes, its description is regenerated next time the task runs.
 
+## Project map — orient on demand
+
+Beyond the per-file anatomy, Canopy synthesizes a single-page **project map**: a directory skeleton plus 4–8 domain clusters of representative files, each annotated with what it does. The map is the answer to "what is this project, and where do things live?" — the orientation a new contributor would get on day one.
+
+Agents pull it via the `canopy_map()` MCP tool. One call returns the whole map (1.5K–3K tokens of markdown), letting an unfamiliar agent skip a half-dozen `Glob` and `Grep` calls before it even knows where to look. You see and refresh it from **Cortex → Canopy → Map**.
+
+The map refreshes itself when the underlying file descriptions drift — and short-circuits silently when nothing has changed, so it costs nothing to keep on. Use **Rebuild** in the Map sub-panel to regenerate from scratch when you want a fully fresh take.
+
+## Search by behavior, not keyword
+
+Once LLM descriptions are on, every described file is also embedded for semantic search. Agents call `myco_search` with `type=canopy` to find files by what they *do*: "where does session capture happen?" returns the right file even if the words "session capture" appear nowhere in it.
+
+The same results show up in the Cortex Operations page and as a **Canopy** facet in the dashboard's universal search — the agent's view and your view are the same view.
+
 ## Configuration
 
 Everything is configurable at the project, machine, or organization scope through the Cortex settings page:
@@ -68,6 +84,5 @@ Canopy does **not**:
 
 - Block tool calls when something fails — every failure path returns nothing and the agent proceeds normally
 - Synchronize across machines — the index is per-project-per-machine, regenerated cheaply on each one
-- Add new MCP tools — agents see anatomy through the Read hook, not as a callable surface
 - Expand into a corrections layer — wrong injections don't get patched up; the agent sees what was scanned and chooses
 - Run an LLM in the Read hot path — the LLM pass is a separate background task, only its output is read at injection time
