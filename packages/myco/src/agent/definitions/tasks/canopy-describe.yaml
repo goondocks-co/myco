@@ -52,10 +52,12 @@ params:
   # per-turn tool-emission cap. canopy_describe_next returns the whole
   # batch in one tool result (~400 tokens per entry), and 26B-class local
   # models (gemma, qwen, llama-3.x) can only confidently emit follow-up
-  # tool calls against a result of ~10 entries before they fall back to
-  # the easier action of just re-fetching. Symptom is a fetch-loop:
-  # `canopy_describe_next` called repeatedly, zero `canopy_describe_write`
-  # calls. Frontier models could go higher; local stays at 10.
+  # tool calls against a result of ~10 entries before they degrade.
+  # Frontier models could go higher; local stays at 10. The fetch-loop
+  # failure mode (canopy_describe_next called repeatedly with zero
+  # canopy_describe_write calls) is now blocked structurally by the
+  # one-call-per-run gate inside canopy_describe_next itself; this cap
+  # remains as the per-batch sizing knob.
   batch_size: 10
   max_description_chars: 180
   max_attempts: 2
@@ -77,11 +79,12 @@ phases:
       file's architectural purpose, then call canopy_describe_write
       with the row's path and your sentence. Stop.
 
-      Batch mode: call canopy_describe_next to pull a batch of pending
-      rows. For each entry, emit one sentence and call
-      canopy_describe_write({ path, description }). Continue until the
-      batch returns zero entries or you reach the batch_size cap, then
-      stop.
+      Batch mode: call canopy_describe_next ONCE to pull a batch of
+      pending rows. For each entry it returns, emit one sentence and
+      call canopy_describe_write({ path, description }). Then stop. Do
+      NOT call canopy_describe_next a second time — the tool is gated
+      to one call per run, and any leftover pending rows will be picked
+      up by the next scheduled tick.
 
       Style rules (apply to every description):
       - Exactly one sentence.

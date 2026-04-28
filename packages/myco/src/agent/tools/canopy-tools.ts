@@ -90,13 +90,33 @@ function resolveProjectRoot(deps: VaultToolDeps): string | null {
 }
 
 export function createCanopyTools(deps: VaultToolDeps) {
+  // Per-run single-call gate. The canopy-describe task instructs the model
+  // to call canopy_describe_next exactly once per run, then drain the
+  // returned entries via canopy_describe_write. Local 26B-class models
+  // (gemma, qwen, llama-3.x) sometimes fall back to the easier action of
+  // re-fetching instead of emitting follow-up write calls — observed as a
+  // turn-burning fetch-loop with zero writes. Enforcing the cap in the
+  // tool (gates, not prompts) makes a second fetch a no-op that nudges
+  // the model toward writes. Closure-scoped because createCanopyTools is
+  // called once per run from agent/tools.ts.
+  let describeNextIssued = false;
+
   const canopyDescribeNext = tool(
     'canopy_describe_next',
-    'Return up to `limit` canopy_entries rows that need an llm_description (NULL or stale relative to mechanical_updated_at). Returns an empty entries array when the queue is drained — that is the signal to stop.',
+    'Return up to `limit` canopy_entries rows that need an llm_description (NULL or stale relative to mechanical_updated_at). May only be called ONCE per run; a second call returns an empty entries array with reason="already_issued_this_run" — write descriptions for the entries already returned, then stop.',
     {
       limit: z.number().int().positive().optional().describe(`Max rows to return (default ${DEFAULT_BATCH_LIMIT}, ceiling ${MAX_BATCH_LIMIT}).`),
     },
     async (args) => {
+      if (describeNextIssued) {
+        return textResult({
+          entries: [],
+          reason: 'already_issued_this_run',
+          guidance: 'Write canopy_describe_write for each entry from the previous canopy_describe_next result, then stop.',
+        });
+      }
+      describeNextIssued = true;
+
       // No project_id override knob — projectId/projectRoot must move
       // together (path.dirname(vaultDir) is both), and exposing one without
       // the other lets a caller select rows from one project but read
