@@ -17,7 +17,7 @@ import {
   createScopedVaultToolServer,
   createVaultToolServer,
 } from '@myco/agent/tools.js';
-import { buildPhaseEnv } from '@myco/agent/provider.js';
+import { buildPhaseEnv, isLocalProvider } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
@@ -62,15 +62,7 @@ function getIsolatedPluginCacheDir(): string {
 function suppressEffortLeakForLocalProvider(
   provider?: RuntimeExecuteInput['provider'],
 ): { thinking?: { type: 'disabled' } } {
-  if (!provider) return {};
-  switch (provider.type) {
-    case 'lmstudio':
-    case 'ollama':
-    case 'openai-compatible':
-      return { thinking: { type: 'disabled' as const } };
-    default:
-      return {};
-  }
+  return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
 }
 
 function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'] }) {
@@ -80,11 +72,8 @@ function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'
   // would discard the argMap-stripped sink schema and outcome-capture
   // wrapper that map-phase needs. See the design spec under "Why this
   // shape" — materialized tools must flow through unchanged.
-  const materialized = (toolSurface as typeof toolSurface & {
-    tools?: ReadonlyArray<unknown>;
-  }).tools;
-  if (Array.isArray(materialized) && materialized.length > 0) {
-    return createMaterializedVaultToolServer(materialized as Parameters<typeof createMaterializedVaultToolServer>[0]);
+  if (toolSurface.tools && toolSurface.tools.length > 0) {
+    return createMaterializedVaultToolServer(toolSurface.tools);
   }
 
   if (toolSurface.toolNames && toolSurface.toolNames.length === 0) {
@@ -159,9 +148,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let costUsd = 0;
     let assistantMessages = 0;
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
-    const isLocalProvider = input.provider?.type === 'lmstudio'
-      || input.provider?.type === 'ollama'
-      || input.provider?.type === 'openai-compatible';
+    const localProvider = isLocalProvider(input.provider);
 
     // Always pass `strictMcpConfig: true`, even when the phase wants no
     // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
@@ -225,7 +212,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
           turnsUsed = message.num_turns ?? assistantMessages;
           inputTokens = message.usage?.input_tokens ?? 0;
           outputTokens = message.usage?.output_tokens ?? 0;
-          costUsd = isLocalProvider ? 0 : (message.total_cost_usd ?? 0);
+          costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
           if (message.subtype === 'success') {
             finalText = message.result;
           }
@@ -260,9 +247,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       CLAUDE_CODE_PLUGIN_CACHE_DIR:
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
-    const isLocalProvider = setup.provider?.type === 'lmstudio'
-      || setup.provider?.type === 'ollama'
-      || setup.provider?.type === 'openai-compatible';
+    const localProvider = isLocalProvider(setup.provider);
 
     if (setup.logger) {
       const mcpToolNames = setup.toolSurface.toolNames
@@ -330,7 +315,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
               turnsUsed = message.num_turns ?? assistantMessages;
               inputTokens = message.usage?.input_tokens ?? 0;
               outputTokens = message.usage?.output_tokens ?? 0;
-              costUsd = isLocalProvider ? 0 : (message.total_cost_usd ?? 0);
+              costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
               if (message.subtype === 'success') {
                 finalText = message.result;
               }

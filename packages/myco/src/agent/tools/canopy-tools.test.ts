@@ -32,19 +32,15 @@ async function invoke(t: any, args: Record<string, unknown>): Promise<unknown> {
 describe('canopy_describe_next', () => {
   const projectRoot = '/tmp/myco-test-project-canopy-tools';
   const deps = { agentId: 'a', runId: 'r', projectRoot, vaultDir: `${projectRoot}/.myco` } as VaultToolDeps;
+  let db: Database;
 
   beforeEach(() => {
     closeDatabase();
-    const db = initDatabase(':memory:');
+    db = initDatabase(':memory:');
     seedSchema(db);
   });
 
   it('returns up to limit pending rows when canopy_entry_path is unset', async () => {
-    // Call closeDatabase and re-init to get a fresh database for this test
-    closeDatabase();
-    const db = initDatabase(':memory:');
-    seedSchema(db);
-
     db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectRoot, 'a.ts', 100);
     db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectRoot, 'b.ts', 100);
 
@@ -55,12 +51,6 @@ describe('canopy_describe_next', () => {
   });
 
   it('returns the one row matching canopy_entry_path, bypassing pending predicate', async () => {
-    // Call closeDatabase and re-init to get a fresh database for this test
-    closeDatabase();
-    const db = initDatabase(':memory:');
-    seedSchema(db);
-
-    // Already-described row that wouldn't match the pending predicate.
     db.prepare(
       'INSERT INTO canopy_entries (project_id, path, llm_description, llm_updated_at, mechanical_updated_at) VALUES (?, ?, ?, ?, ?)'
     ).run(projectRoot, 'src/foo.ts', 'old description', 200, 100);
@@ -73,11 +63,6 @@ describe('canopy_describe_next', () => {
   });
 
   it('returns empty entries when canopy_entry_path matches no row', async () => {
-    // Call closeDatabase and re-init to get a fresh database for this test
-    closeDatabase();
-    const db = initDatabase(':memory:');
-    seedSchema(db);
-
     const tools = createCanopyTools(deps);
     const next = tools.find((t) => t.name === 'canopy_describe_next')!;
     const result = await invoke(next, { canopy_entry_path: 'does/not/exist.ts' }) as { entries: any[] };

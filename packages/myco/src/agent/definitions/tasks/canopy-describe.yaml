@@ -88,7 +88,9 @@ phases:
     # necessarily systemic (e.g., one weird file vs. all of them).
     onItemError: skip
     required: true
-    maxTurns: 60
+    # maxTurns/tools/prompt are required by PhaseDefinitionSchema but
+    # unused under mode: map (per-item budgets and source/sink replace them).
+    maxTurns: 1
     tools: []
     prompt: ""
 

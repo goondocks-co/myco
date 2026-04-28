@@ -1,3 +1,4 @@
+import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { ProviderConfig, RunLogger, RuntimeId, RuntimeUsage } from '@myco/agent/types.js';
 
@@ -26,10 +27,8 @@ export interface RuntimeToolSurface {
    * createVaultTools. Required for map-phase mode, which builds a
    * constrained per-item surface (argMap-stripped sink schema +
    * outcome-capture wrapper) that would be lost if the adapter rebuilt.
-   * Typed as `unknown[]` here to keep the runtime/agent type boundary
-   * loose; adapters cast to their adapter-specific tool shape.
    */
-  tools?: unknown[];
+  tools?: SdkMcpToolDefinition<any>[];
 }
 
 export interface RuntimeExecuteInput {

@@ -11,6 +11,7 @@
  */
 
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
+import { getAtPath } from '@myco/utils/dot-path.js';
 import { interpolateArgs } from '@myco/utils/interpolate-args.js';
 import { interpolate } from '@myco/utils/interpolate.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
@@ -73,14 +74,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     usage: {},
   };
 
-  // ---- Scoped fast path -----------------------------------------------------
-  // If the runtime adapter supports openScope, build the MCP server +
-  // Agent + Runner + provider client ONCE per phase and reuse them across
-  // every item. The wrapped sink reads its per-item argMap and outcome
-  // capture target from a mutable context object that we update before
-  // each scope.run() call.
-  // --------------------------------------------------------------------------
-  const supportsScope = typeof runtime.openScope === 'function';
+  const normalizedItemPrompt = normalizeTemplateBraces(phase.item.prompt);
   const sharedItemCtx: {
     argMap: Record<string, unknown>;
     capture: (outcome: { ok: boolean; reason?: string }) => void;
@@ -88,32 +82,32 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     argMap: {},
     capture: () => undefined,
   };
+  // The sink schema and read tools are fixed for the phase — only argMap
+  // values change per item. Build the surface once; the wrapped sink reads
+  // per-item state from sharedItemCtx.
+  const sharedSurface = buildMapItemToolSurface(allTools, {
+    sinkName: phase.sink.tool,
+    argMap: phase.sink.argMap,
+    readToolNames: phase.item.readTools ?? [],
+  });
+  const sharedSinkWrapped = wrapSinkWithMutableContext(sharedSurface.sinkTool, sharedItemCtx);
+  const sharedTools = sharedSurface.tools.map((t) =>
+    t.name === phase.sink!.tool ? sharedSinkWrapped : t,
+  );
+  const sharedToolSurface = {
+    agentId, runId,
+    toolNames: sharedTools.map((t) => t.name),
+    projectRoot, vaultDir, embeddingManager,
+    tools: sharedTools,
+  };
+
   let scope: RuntimeScope | undefined;
-  if (supportsScope) {
-    // Build the shared tool surface from the FIRST item's argMap shape
-    // (the keys, not the values, drive schema-stripping; values are
-    // rendered per item via sharedItemCtx.argMap and merged inside the
-    // wrapped sink). Read tools and the sink schema are constant across
-    // items.
-    const sharedSurface = buildMapItemToolSurface(allTools, {
-      sinkName: phase.sink.tool,
-      argMap: phase.sink.argMap,
-      readToolNames: phase.item.readTools ?? [],
-    });
-    const sharedSinkWrapped = wrapSinkWithMutableContext(sharedSurface.sinkTool, sharedItemCtx);
-    const sharedTools = sharedSurface.tools.map((t) =>
-      t.name === phase.sink!.tool ? sharedSinkWrapped : t,
-    );
-    scope = await runtime.openScope!({
+  if (typeof runtime.openScope === 'function') {
+    scope = await runtime.openScope({
       systemPrompt,
       model: phaseModel ?? '',
       provider,
-      toolSurface: {
-        agentId, runId,
-        toolNames: sharedTools.map((t) => t.name),
-        projectRoot, vaultDir, embeddingManager,
-        tools: sharedTools,
-      },
+      toolSurface: sharedToolSurface,
       logger,
     });
   }
@@ -122,13 +116,11 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
   for (const item of items) {
     const argMap = interpolateArgs(phase.sink.argMap, { item, params });
     const itemPrompt = interpolate(
-      normalizeTemplateBraces(phase.item.prompt),
+      normalizedItemPrompt,
       flattenForInterpolate({ item, params }),
     );
 
     let sinkOutcome: { ok: boolean; reason?: string } | undefined;
-    // Update the shared per-item context so the shared wrapped sink
-    // sees the right argMap + capture target on this iteration.
     sharedItemCtx.argMap = argMap;
     sharedItemCtx.capture = (outcome) => { sinkOutcome = outcome; };
 
@@ -140,78 +132,46 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         )
       : null;
     try {
-      let itemResult: RuntimeExecuteResult;
-      if (scope) {
-        itemResult = await scope.run({
-          prompt: itemPrompt,
-          maxTurns: phase.perItemMaxTurns ?? 1,
-          abortController: controller,
-        });
-      } else {
-        // Fallback: rebuild the per-item surface and call runtime.execute.
-        // Same shape as before scoped fast path existed.
-        const surface = buildMapItemToolSurface(allTools, {
-          sinkName: phase.sink.tool,
-          argMap,
-          readToolNames: phase.item.readTools ?? [],
-        });
-        const sinkWrapped = wrapSinkForCapture(surface.sinkTool, argMap, (outcome) => {
-          sinkOutcome = outcome;
-        });
-        const tools = surface.tools.map((t) => (t.name === phase.sink!.tool ? sinkWrapped : t));
-        itemResult = await runtime.execute({
-          prompt: itemPrompt,
-          systemPrompt,
-          model: phaseModel ?? '',
-          maxTurns: phase.perItemMaxTurns ?? 1,
-          provider,
-          toolSurface: {
-            agentId, runId,
-            toolNames: tools.map((t) => t.name),
-            projectRoot, vaultDir, embeddingManager,
-            tools,
-          },
-          abortController: controller,
-          logger,
-        });
-      }
+      const itemResult: RuntimeExecuteResult = scope
+        ? await scope.run({
+            prompt: itemPrompt,
+            maxTurns: phase.perItemMaxTurns ?? 1,
+            abortController: controller,
+          })
+        : await runtime.execute({
+            prompt: itemPrompt,
+            systemPrompt,
+            model: phaseModel ?? '',
+            maxTurns: phase.perItemMaxTurns ?? 1,
+            provider,
+            toolSurface: sharedToolSurface,
+            abortController: controller,
+            logger,
+          });
       if (itemResult.usage) itemUsages.push(itemResult.usage);
     } catch (err) {
       const reason = toErrorMessage(err);
-      // The runtime attaches usage telemetry to the thrown error when the
-      // SDK already burned tokens before failing (max-turns errors hit this
-      // path consistently). Capture that usage so failed items still
-      // contribute to the aggregated MapPhaseResult.usage instead of
-      // silently zeroing out.
       if (err instanceof RuntimeExecutionError && err.telemetry?.usage) {
         itemUsages.push(err.telemetry.usage);
       }
-      // Local models occasionally redundantly emit the same tool call
-      // twice (gemma in particular reads the tool result as evidence
-      // of "previous turn completion" and re-runs the task). The first
-      // emission already wrote to the DB; the SDK throws max-turns on
-      // the second. Treat the data-side success as the source of truth:
-      // if the wrapped sink fired ok=true at any point, count as
-      // written, not failed — the runtime termination glitch is
-      // orthogonal to whether the row got described.
+      // If the wrapped sink already wrote successfully before the runtime
+      // threw, count as written — the data side succeeded, only the SDK
+      // termination glitched.
       if (sinkOutcome?.ok === true) {
         result.written += 1;
         result.writeAfterThrow += 1;
         logger?.debug('agent.map.item-write-then-throw', `Map phase "${phase.name}" item wrote successfully then runtime threw`, {
           runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
         });
-        if (timer) clearTimeout(timer);
         continue;
       }
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
         runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
       });
       if ((phase.onItemError ?? 'skip') === 'abort') {
-        if (timer) clearTimeout(timer);
         throw err;
       }
       result.failed += 1;
-      if (timer) clearTimeout(timer);
       continue;
     } finally {
       if (timer) clearTimeout(timer);
@@ -293,47 +253,13 @@ async function fetchSourceItems(input: {
   } catch (err) {
     throw new Error(`executeMapPhase: source textResult is not JSON: ${(err as Error).message}`);
   }
-  const items = followItemsPath(parsed, phase.source!.itemsPath);
+  const items = getAtPath(parsed, phase.source!.itemsPath);
   if (!Array.isArray(items)) {
     throw new Error(`executeMapPhase: itemsPath "${phase.source!.itemsPath}" did not resolve to an array`);
   }
   return items;
 }
 
-function followItemsPath(payload: unknown, path: string): unknown {
-  let cursor: unknown = payload;
-  for (const part of path.split('.').map((s) => s.trim()).filter(Boolean)) {
-    if (cursor === null || typeof cursor !== 'object') return undefined;
-    cursor = (cursor as Record<string, unknown>)[part];
-  }
-  return cursor;
-}
-
-function wrapSinkForCapture(
-  sinkTool: SdkMcpToolDefinition<any>,
-  argMap: Record<string, unknown>,
-  capture: (outcome: { ok: boolean; reason?: string }) => void,
-): SdkMcpToolDefinition<any> {
-  return {
-    ...sinkTool,
-    handler: async (modelArgs: Record<string, unknown>) => {
-      const merged = { ...modelArgs, ...argMap };
-      const response = await (sinkTool as any).handler(merged);
-      const text = (response?.content?.[0] as any)?.text;
-      if (typeof text === 'string') {
-        try {
-          const parsed = JSON.parse(text);
-          capture({ ok: parsed.ok === true, reason: parsed.reason });
-        } catch {
-          capture({ ok: false, reason: 'sink_response_unparseable' });
-        }
-      } else {
-        capture({ ok: false, reason: 'sink_response_missing_text' });
-      }
-      return response;
-    },
-  };
-}
 
 // `interpolate` (the existing util) takes a flat string-keyed map. Flatten
 // nested vars for compatibility — map-phase prompts use {{ item.path }}-style

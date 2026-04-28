@@ -24,11 +24,8 @@ class LocalVaultMcpServer implements MCPServer {
     // — see executeMapPhase in agent/map-phase.ts and the design spec
     // (docs/superpowers/specs/2026-04-28-map-phase-mode-design.md, "Why
     // this shape") for why the materialized tools must flow through.
-    const materialized = (toolSurface as RuntimeToolSurface & {
-      tools?: LocalMcpTool[];
-    }).tools;
-    if (materialized && materialized.length > 0) {
-      this.tools = materialized;
+    if (toolSurface.tools && toolSurface.tools.length > 0) {
+      this.tools = toolSurface.tools as unknown as LocalMcpTool[];
       return;
     }
 

@@ -800,26 +800,6 @@ export async function buildSkillEvolveInstruction(
 }
 
 // ---------------------------------------------------------------------------
-// canopy-describe
-// ---------------------------------------------------------------------------
-
-/**
- * Build the instruction for a canopy-describe run.
- *
- * Map-phase task: no instruction text needed — the phase reads params
- * directly via source.args templating. Caller wiring still invokes this
- * builder for historical reasons, so return an empty instruction. The
- * preCondition `has-pending-canopy-rows` (declared in canopy-describe.yaml)
- * is the queue-empty gate now.
- */
-export async function buildCanopyDescribeInstruction(
-  _params?: Record<string, string | number | boolean>,
-  _projectRoot?: string,
-): Promise<BuiltTaskInstruction | undefined> {
-  return { instruction: '' };
-}
-
-// ---------------------------------------------------------------------------
 // canopy-map
 // ---------------------------------------------------------------------------
 
@@ -1130,7 +1110,8 @@ export async function buildTaskInstruction(
         : undefined;
     }
     case CANOPY_DESCRIBE_TASK:
-      return buildCanopyDescribeInstruction(taskParams, projectRoot);
+      // Map-phase task — no instruction text; phase reads params via templating.
+      return undefined;
     case CANOPY_MAP_TASK:
       return buildCanopyMapInstruction(taskParams, projectRoot, config);
     default:

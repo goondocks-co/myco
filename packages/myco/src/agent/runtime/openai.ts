@@ -275,10 +275,6 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     const mcpServer = createLocalVaultMcpServer(input.toolSurface);
     await mcpServer.connect();
 
-    // Capture rawResponses progressively so usage telemetry survives a
-    // mid-run throw (max-turns errors fire AFTER the SDK has consumed
-    // tokens). The runner's `state` exposes accumulated responses on the
-    // error; we also defensively peek into the error itself.
     try {
       const agent = new Agent({
         name: 'myco-agent',
@@ -300,10 +296,6 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
           ...(input.abortController ? { signal: input.abortController.signal } : {}),
         });
       } catch (err) {
-        // Best-effort usage extraction. SDK errors from max-turns and tool
-        // failures often carry the partial rawResponses on a `state` or
-        // `result` field; we try the common shapes and fall back to an
-        // empty usage if none match.
         const partialRaw = extractPartialRawResponses(err);
         const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
         throw new RuntimeExecutionError(
@@ -335,13 +327,6 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
   }
 
   async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
-    // One-time setup: prepare provider/model, construct MCP server +
-    // Agent + Runner + provider client. These are shared across every
-    // scope.run() call, eliminating ~10x of SDK setup work that the
-    // map-phase per-item flow used to do via repeated execute() calls.
-    // Conversation state is NOT shared — each scope.run() builds a fresh
-    // PersistedSession so per-item history is isolated (load-bearing
-    // for map-phase's loop fix).
     const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
     const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
     await mcpServer.connect();
