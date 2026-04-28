@@ -60,6 +60,13 @@ const SELECT_PENDING_SQL = `
   LIMIT ?
 `;
 
+const SELECT_BY_PATH_SQL = `
+  SELECT *
+  FROM canopy_entries
+  WHERE project_id = ? AND path = ?
+  LIMIT 1
+`;
+
 const UPDATE_DESCRIPTION_SQL = `
   UPDATE canopy_entries
   SET llm_description = ?,
@@ -103,9 +110,10 @@ export function createCanopyTools(deps: VaultToolDeps) {
 
   const canopyDescribeNext = tool(
     'canopy_describe_next',
-    'Return up to `limit` canopy_entries rows that need an llm_description (NULL or stale relative to mechanical_updated_at). May only be called ONCE per run; a second call returns an empty entries array with reason="already_issued_this_run" — write descriptions for the entries already returned, then stop.',
+    'Return canopy_entries rows that need an llm_description. Pending mode (default): returns up to `limit` pending rows (NULL or stale relative to mechanical_updated_at). Single-row mode (`canopy_entry_path` set): returns that specific row, bypassing the pending predicate. May only be called ONCE per run; a second call returns an empty entries array with reason="already_issued_this_run" — write descriptions for the entries already returned, then stop.',
     {
       limit: z.number().int().positive().optional().describe(`Max rows to return (default ${DEFAULT_BATCH_LIMIT}, ceiling ${MAX_BATCH_LIMIT}).`),
+      canopy_entry_path: z.string().optional().describe('When set, fetch this one row by path bypassing the pending predicate (single-row mode).'),
     },
     async (args) => {
       if (describeNextIssued) {
@@ -130,10 +138,14 @@ export function createCanopyTools(deps: VaultToolDeps) {
         return textResult({ error: 'canopy_describe_next: projectRoot unavailable (no vaultDir/projectRoot on tool deps)' });
       }
 
-      const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
-      const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
-
-      const rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+      let rows: CanopyEntry[];
+      if (args.canopy_entry_path) {
+        rows = getDatabase().prepare(SELECT_BY_PATH_SQL).all(projectId, args.canopy_entry_path) as CanopyEntry[];
+      } else {
+        const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
+        const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
+        rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+      }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
       const entries = await Promise.all(safeRows.map(async (row) => ({
