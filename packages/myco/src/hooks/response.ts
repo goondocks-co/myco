@@ -17,6 +17,11 @@ export function writeHookResponse(
   hookEvent: string,
   response: HookResponse = {},
 ): void {
+  if (symbiont === 'claude-code' && hookEvent === 'pre-tool-use') {
+    process.stdout.write(serializeClaudePreToolUse(response));
+    return;
+  }
+
   const config = resolveHookResponseConfig(symbiont);
   switch (config.format) {
     case 'json':
@@ -50,4 +55,14 @@ function serializeJson(
     body[wire] = value;
   }
   return JSON.stringify(body);
+}
+
+function serializeClaudePreToolUse(response: HookResponse): string {
+  if (!response.additionalContext) return '{}';
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: response.additionalContext,
+    },
+  });
 }

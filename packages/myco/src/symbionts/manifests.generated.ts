@@ -105,6 +105,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".claude/settings.json",
       "settingsFormat": "json",
       "instructionsFile": "CLAUDE.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": true
     }
   },
   {
@@ -253,6 +256,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",
       "settingsFormat": "toml"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -300,6 +306,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".cursor/skills",
       "settingsTarget": ".cursor/settings.json",
       "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -336,6 +345,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".gemini/settings.json",
       "settingsFormat": "json",
       "instructionsFile": "GEMINI.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -372,6 +384,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": "opencode.json",
       "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -404,6 +419,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
       "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -436,6 +454,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsTarget": ".vscode/settings.json",
       "settingsFormat": "json",
       "instructionsFile": ".github/copilot-instructions.md"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   },
   {
@@ -468,6 +489,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".windsurf/settings.json",
       "settingsFormat": "json"
+    },
+    "capabilities": {
+      "preToolUseInjection": false
     }
   }
 ] as const;

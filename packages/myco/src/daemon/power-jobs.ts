@@ -14,6 +14,8 @@ import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
+import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { createBackup } from './backup.js';
 import { resolveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
@@ -45,20 +47,50 @@ export interface PowerJobDeps {
   db: Database;
   machineId: string;
   vaultDir: string;
+  /** Repo root used for canopy scans and any project-rooted job. */
+  projectRoot: string;
   databaseManager: DatabaseMaintenanceManager;
+}
+
+export interface PowerJobsResult {
+  /** Handles for jobs whose runtime is exposed beyond PowerManager (e.g. delta scan from SessionStart). */
+  canopy: CanopyJobsRegistration;
 }
 
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
-export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): void {
-  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, databaseManager } = deps;
+export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
+  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, databaseManager } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
     name: 'embedding-reconcile',
-    runIn: ['active', 'idle'],
+    // The job ticks in active/idle/sleep. `sleep` is the slow tick the
+    // PowerManager uses to drain queues; without it, the loop stalls as
+    // soon as the user steps away. Deep-sleep is reached by exhaustion of
+    // the predicate below, not by the job's runIn list (deep-sleep stops
+    // the timer entirely, so adding it here would be a no-op).
+    runIn: ['active', 'idle', 'sleep'],
+    /**
+     * When the toggle is on AND the embedding queue still has pending work,
+     * hold the daemon in `sleep` state so the slow tick keeps draining the
+     * backlog. Once the queue empties, the predicate returns false and the
+     * machine is free to transition to deep_sleep on the next evaluation.
+     *
+     * The flag defaults to true so out-of-the-box behavior matches the
+     * "queue should drain overnight" expectation operators have. Operators
+     * that want strict deep-sleep can flip the toggle off in Operations.
+     */
+    preventsDeepSleep: () => {
+      if (liveConfig.current.embedding.run_in_deep_sleep === false) return false;
+      try {
+        return embeddingManager.totalPendingCount() > 0;
+      } catch {
+        return false;
+      }
+    },
     fn: async () => {
       if (reconcileRunning) return;
       reconcileRunning = true;
@@ -152,4 +184,16 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       });
     },
   });
+
+  const projectId = resolveCanopyProjectId(vaultDir);
+  const canopy = registerCanopyJobs(powerManager, {
+    db,
+    logger,
+    machineId,
+    projectRoot,
+    projectId,
+    liveConfig,
+  });
+
+  return { canopy };
 }

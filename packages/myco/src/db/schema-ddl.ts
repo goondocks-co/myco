@@ -53,7 +53,8 @@ const SESSIONS_TABLE = `
     canopy_skips_after_injection   INTEGER,
     canopy_reads_after_injection   INTEGER,
     canopy_tokens_saved            INTEGER,
-    canopy_redundant_reads         INTEGER
+    canopy_redundant_reads         INTEGER,
+    canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0
   )`;
 
 const PROMPT_BATCHES_TABLE = `
@@ -534,7 +535,20 @@ export const CANOPY_ENTRIES_TABLE = `
     mechanical_updated_at  INTEGER NOT NULL,
     llm_description        TEXT,
     llm_updated_at         INTEGER,
+    embedded               INTEGER DEFAULT 0,
     PRIMARY KEY (project_id, path)
+  ) WITHOUT ROWID`;
+
+export const CANOPY_MAPS_TABLE = `
+  CREATE TABLE IF NOT EXISTS canopy_maps (
+    project_id           TEXT    NOT NULL,
+    machine_id           TEXT    NOT NULL DEFAULT 'local',
+    content              TEXT    NOT NULL,
+    inputs_hash          TEXT    NOT NULL,
+    generated_at         INTEGER NOT NULL,
+    generated_by_run_id  TEXT,
+    token_estimate       INTEGER NOT NULL,
+    PRIMARY KEY (project_id, machine_id)
   ) WITHOUT ROWID`;
 
 /**
@@ -549,6 +563,7 @@ export const CANOPY_SESSION_COLUMNS: ReadonlyArray<readonly [string, string]> = 
   ['canopy_reads_after_injection', 'INTEGER'],
   ['canopy_tokens_saved', 'INTEGER'],
   ['canopy_redundant_reads', 'INTEGER'],
+  ['canopy_map_tool_calls', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 /** Canopy column on the `activities` (tool-call) table. */
@@ -652,6 +667,8 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_activities_prompt_batch_id ON activities (prompt_batch_id)',
   'CREATE INDEX IF NOT EXISTS idx_activities_tool_name ON activities (tool_name)',
+  // Canopy aggregation skip-resolution: NOT EXISTS over (session_id, tool_name='Read').
+  'CREATE INDEX IF NOT EXISTS idx_activities_session_tool ON activities (session_id, tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON activities (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_activities_processed ON activities (processed)',
 
@@ -807,4 +824,5 @@ export const TABLE_DDLS = [
   DIGEST_EXTRACT_REVISIONS_TABLE,
   // Canopy layer
   CANOPY_ENTRIES_TABLE,
+  CANOPY_MAPS_TABLE,
 ];

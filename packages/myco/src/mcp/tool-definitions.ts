@@ -72,6 +72,7 @@ export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
 export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 export const TOOL_RUNS = 'myco_runs';
+export const TOOL_CANOPY_MAP = 'canopy_map';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -82,21 +83,22 @@ const PROP_TAGS = 'Tags for discoverability — component names, technologies, c
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_SEARCH,
-    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way.',
+    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way. Pass type="canopy" to search the project canopy index — file-level llm_description summaries — when you need to find relevant source files by what they DO, not by keyword; canopy results return one row per file as `{project_id, path, llm_description, language, score}` and are local-only (not synced to team).',
     cortex: {
-      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note.',
+      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note. Pass type="canopy" when you need to find source files by behavior rather than keyword.',
       priority: 20,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Natural language search query — describe what you are looking for' },
-        type: { type: 'string', enum: ['session', 'plan', 'spore', 'all'], description: 'Filter by note type (default: all)' },
+        type: { type: 'string', enum: ['session', 'plan', 'spore', 'canopy', 'all'], description: 'Filter by note type (default: all). "canopy" searches per-file llm_description summaries and returns {project_id, path, llm_description, language, score}.' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
         observation_type: { type: 'string', description: 'Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)' },
         status: { type: 'string', description: 'Optional semantic filter for record status (for example active)' },
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
+        language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
       },
       required: ['query'],
     },
@@ -289,6 +291,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
       },
     },
+  },
+  {
+    name: TOOL_CANOPY_MAP,
+    description: "Returns the project's architectural overview (directory skeleton + key files + golden paths) — a 1.5K–3K-token markdown document maintained by the canopy-map background task. Call this when you need to understand an unfamiliar part of the codebase before reaching for Glob or Grep. Returns { content, generated_at, token_estimate, is_empty? }; an empty-state shape ({ content: '', is_empty: true, message }) is returned when no map has been generated yet.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use to orient on an unfamiliar part of the codebase before reaching for Glob/Grep. The map is a small, high-signal architectural overview — directory skeleton, key files, golden paths.',
+      priority: 35,
+    },
+    inputSchema: { type: 'object' as const, properties: {} },
   },
 ];
 

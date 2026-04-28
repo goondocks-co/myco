@@ -234,4 +234,30 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Pass `source_path` when the plan is also written to disk');
     expect(result.instruction).toContain('do not instruct it to call `myco_skills`');
   });
+
+  it('appends the Project Map blurb to Cortex instructions when Cortex is enabled', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: true } });
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'default-agent',
+      created_at: NOW,
+    });
+
+    const result = await buildCortexInstructionsInput(config);
+    expect(result.instruction).toContain('canopy_map()');
+    expect(result.instruction).toContain('cheaper than exploring with Glob/Grep');
+  });
+
+  it('omits the Project Map blurb when Cortex is disabled', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: false } });
+    registerAgent({
+      id: DEFAULT_AGENT_ID,
+      name: 'default-agent',
+      created_at: NOW,
+    });
+
+    const result = await buildCortexInstructionsInput(config);
+    expect(result.instruction).not.toContain('canopy_map()');
+    expect(result.instruction).not.toContain('cheaper than exploring with Glob/Grep');
+  });
 });

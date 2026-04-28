@@ -14,6 +14,7 @@ import {
   TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
+import { searchCanopy } from '@myco/canopy/search.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -85,6 +86,25 @@ export function createSearchHandler(deps: SearchDeps) {
     const vectorFilters = hasSemanticSearchFilters(metadataFilters) ? metadataFilters : undefined;
 
     const sanitized = sanitizeFtsQuery(query);
+
+    // --- Canopy branch ---
+    // `type=canopy` is its own retrieval surface: a fixed namespace
+    // (`canopy_entries`), per-file row shape (`{project_id, path,
+    // llm_description, language, score}`), and llm_description hydrated from
+    // the canopy_entries row instead of vector metadata. Local-only — canopy
+    // is per-machine and not synced to team, so no team-client merge here.
+    if (type === 'canopy') {
+      const canopyResults = await searchCanopy(deps.embeddingManager, {
+        query,
+        limit,
+        threshold: SEARCH_SIMILARITY_THRESHOLD,
+        language: req.query.language || undefined,
+      });
+      if (canopyResults === null) {
+        return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
+      }
+      return { body: { mode: 'semantic', results: canopyResults } };
+    }
 
     // --- FTS-only mode ---
     if (mode === 'fts') {

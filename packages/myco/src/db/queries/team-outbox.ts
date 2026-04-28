@@ -44,6 +44,19 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
   'cortex_instructions',
 ]);
 
+const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
+  sessions: [
+    'embedded',
+    'canopy_injections_offered',
+    'canopy_injection_total_tokens',
+    'canopy_skips_after_injection',
+    'canopy_reads_after_injection',
+    'canopy_tokens_saved',
+    'canopy_redundant_reads',
+    'canopy_map_tool_calls',
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -111,6 +124,17 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
   };
 }
 
+export function sanitizeSyncPayload(
+  tableName: string,
+  row: object,
+): Record<string, unknown> {
+  const payload = { ...(row as Record<string, unknown>) };
+  for (const column of LOCAL_ONLY_SYNC_COLUMNS[tableName] ?? []) {
+    delete payload[column];
+  }
+  return payload;
+}
+
 // ---------------------------------------------------------------------------
 // Convenience helper — used by query modules
 // ---------------------------------------------------------------------------
@@ -121,12 +145,15 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
  * Centralizes the if-enabled / enqueue / serialize pattern that every
  * write-path query module previously duplicated inline.
  */
-export function syncRow(tableName: string, row: { id: string | number; created_at?: number }): void {
+export function syncRow(
+  tableName: string,
+  row: object & { id: string | number; created_at?: number },
+): void {
   if (!isTeamSyncEnabled()) return;
   enqueueOutbox({
     table_name: tableName,
     row_id: String(row.id),
-    payload: JSON.stringify(row),
+    payload: JSON.stringify(sanitizeSyncPayload(tableName, row)),
     machine_id: getTeamMachineId(),
     created_at: row.created_at ?? Math.floor(Date.now() / 1000),
   });
@@ -414,4 +441,3 @@ export function backfillUnsynced(machineId: string): number {
 
   return total;
 }
-

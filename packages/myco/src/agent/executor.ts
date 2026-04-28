@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { resolve } from 'node:path';
 import {
   epochSeconds,
+  estimateTokens,
   DEFAULT_AGENT_ID,
   MS_PER_SECOND,
   CONTENT_HASH_ALGORITHM,
@@ -14,6 +15,9 @@ import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports } from '@myco/db/queries/reports.js';
+import { writeCanopyMap } from '@myco/canopy/map/store.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -31,9 +35,16 @@ import { loadSystemPrompt } from './loader.js';
 import { buildVaultContext } from './context.js';
 import { resolveRunConfig } from './config-resolver.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
+import { resolveLmStudioContextLoads } from './lmstudio-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
 import { validateTaskPostconditions } from './task-postconditions.js';
-import { CORTEX_INSTRUCTIONS_TASK, SKILL_GENERATE_TASK } from './instruction-builders.js';
+import {
+  CORTEX_INSTRUCTIONS_TASK,
+  SKILL_GENERATE_TASK,
+  CANOPY_MAP_TASK,
+  CANOPY_MAP_REPORT_ACTION,
+  CANOPY_MAP_CONTENT_KEY,
+} from './instruction-builders.js';
 import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
@@ -322,6 +333,30 @@ export async function runAgent(
     }
   }
 
+  // Same shape as the Ollama resolver, but for LM Studio: loads the model
+  // via /api/v1/models/load with the configured context_length. Only runs
+  // when context_length is explicitly set on an lmstudio provider; unset
+  // passes through to whatever the GUI already has loaded.
+  {
+    const resolved = await resolveLmStudioContextLoads(
+      taskProviderOverride,
+      phaseProviderOverrides,
+    );
+    taskProviderOverride = resolved.taskProvider;
+    phaseProviderOverrides = resolved.phaseOverrides;
+    for (const conflict of resolved.conflicts) {
+      options?.logger?.warn(
+        'agent.lmstudio.context-conflict',
+        `LM Studio model "${conflict.model}" referenced with conflicting context_length values — reconciled to ${conflict.resolved}`,
+        {
+          model: conflict.model,
+          values: conflict.values,
+          resolved: conflict.resolved,
+        },
+      );
+    }
+  }
+
   // Task-level timeout enforcement — phased or single query executes below.
   const taskAbortController = new AbortController();
   const timeoutMs = config.timeoutSeconds * MS_PER_SECOND;
@@ -450,6 +485,7 @@ export async function runAgent(
       runContext: options?.runContext,
       instruction: options?.instruction,
       dryRun: options?.dryRun,
+      vaultDir,
     });
     const completedAt = epochSeconds();
     updateRunStatus(runId, STATUS_COMPLETED, {
@@ -627,28 +663,54 @@ export async function finalizeOnTaskSuccess(args: {
   runContext: RunOptions['runContext'];
   instruction?: string;
   dryRun?: boolean;
+  vaultDir?: string;
 }): Promise<void> {
-  if (args.taskName !== CORTEX_INSTRUCTIONS_TASK) return;
   if (args.dryRun) return;
 
-  const reports = listReports(args.runId);
-  let report: typeof reports[number] | undefined;
-  for (let i = reports.length - 1; i >= 0; i -= 1) {
-    if (reports[i]?.action === CORTEX_INSTRUCTIONS_REPORT_ACTION) {
-      report = reports[i];
-      break;
-    }
+  if (args.taskName === CORTEX_INSTRUCTIONS_TASK) {
+    finalizeCortexInstructions(args);
+    return;
   }
-  if (!report) {
-    throw new Error('cortex-instructions completed without a cortex_instructions report');
+  if (args.taskName === CANOPY_MAP_TASK) {
+    finalizeCanopyMap(args);
+    return;
   }
+}
 
+function findLastReportByAction(
+  runId: string,
+  action: string,
+): ReturnType<typeof listReports>[number] | undefined {
+  const reports = listReports(runId);
+  for (let i = reports.length - 1; i >= 0; i -= 1) {
+    if (reports[i]?.action === action) return reports[i];
+  }
+  return undefined;
+}
+
+function extractReportContent(
+  report: ReturnType<typeof listReports>[number],
+  contentKey: string,
+): string | null {
   const parsedDetails = tryParseJson(report.details);
   const details = (parsedDetails && typeof parsedDetails === 'object' && !Array.isArray(parsedDetails))
     ? (parsedDetails as Record<string, unknown>)
     : null;
-  const rawContent = details?.[CORTEX_INSTRUCTIONS_CONTENT_KEY];
-  const content = typeof rawContent === 'string' ? rawContent : null;
+  const rawContent = details?.[contentKey];
+  return typeof rawContent === 'string' ? rawContent : null;
+}
+
+function finalizeCortexInstructions(args: {
+  agentId: string;
+  runId: string;
+  runContext: RunOptions['runContext'];
+  instruction?: string;
+}): void {
+  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION);
+  if (!report) {
+    throw new Error('cortex-instructions completed without a cortex_instructions report');
+  }
+  const content = extractReportContent(report, CORTEX_INSTRUCTIONS_CONTENT_KEY);
   if (!content) {
     throw new Error('cortex-instructions completed without report details.content');
   }
@@ -659,6 +721,44 @@ export async function finalizeOnTaskSuccess(args: {
     input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),
     source_run_id: args.runId,
     generated_at: report.created_at,
+  });
+}
+
+function finalizeCanopyMap(args: {
+  runId: string;
+  runContext: RunOptions['runContext'];
+  vaultDir?: string;
+}): void {
+  if (!args.vaultDir) {
+    throw new Error('canopy-map completed but vaultDir is unavailable — cannot resolve project_id');
+  }
+
+  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION);
+  if (!report) {
+    throw new Error('canopy-map completed without a canopy_map report');
+  }
+  const content = extractReportContent(report, CANOPY_MAP_CONTENT_KEY);
+  if (!content) {
+    throw new Error('canopy-map completed without report details.content');
+  }
+
+  const inputsHash = args.runContext?.canopy_map_inputs_hash;
+  if (!inputsHash) {
+    // Without a gather-phase hash we'd write a row that the next run
+    // can never match against — better to fail loudly than to corrupt
+    // the short-circuit gate.
+    throw new Error('canopy-map completed without runContext.canopy_map_inputs_hash');
+  }
+
+  const projectId = resolveCanopyProjectId(args.vaultDir);
+  const machineId = getMachineId(args.vaultDir);
+  writeCanopyMap({
+    project_id: projectId,
+    machine_id: machineId,
+    content,
+    inputs_hash: inputsHash,
+    token_estimate: estimateTokens(content),
+    generated_by_run_id: args.runId,
   });
 }
 

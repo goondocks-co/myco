@@ -229,6 +229,112 @@ describe('registerPowerJobs — staging-gc', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// embedding-reconcile job (covers the deep-sleep toggle wired to the
+// preventsDeepSleep predicate so the queue keeps draining overnight)
+// ---------------------------------------------------------------------------
+
+describe('embedding-reconcile power job', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pj-embed-')));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function buildEmbeddingDeps(opts: {
+    runInDeepSleep: boolean;
+    pendingCount: number;
+  }): { pm: FakePowerManager; embeddingMock: { totalPendingCount: () => number; reconcile: () => Promise<unknown> } } {
+    const pm = new FakePowerManager();
+    const embeddingMock = {
+      reconcile: async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 }),
+      totalPendingCount: () => opts.pendingCount,
+    };
+    const deps = {
+      embeddingManager: embeddingMock as never,
+      registry: { sessions: new Set<string>() } as never,
+      logger: createMockLogger() as never,
+      liveConfig: {
+        current: {
+          daemon: { log_retention_days: 30 },
+          backup: {},
+          maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 },
+          context: { cortex_enabled: true },
+          embedding: { run_in_deep_sleep: opts.runInDeepSleep },
+        },
+      } as never,
+      db: {} as never,
+      machineId: 'test-machine',
+      vaultDir: tmpDir,
+      databaseManager: {
+        getLastOptimizeAt: async () => null,
+        optimize: async () => undefined,
+      } as never,
+    };
+    registerPowerJobs(pm as never, deps);
+    return { pm, embeddingMock };
+  }
+
+  it('runs in active, idle, and sleep states', () => {
+    const { pm } = buildEmbeddingDeps({ runInDeepSleep: true, pendingCount: 0 });
+    const job = pm.find('embedding-reconcile');
+    expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
+  });
+
+  it('preventsDeepSleep returns true when toggle is on and pending work remains', () => {
+    const { pm } = buildEmbeddingDeps({ runInDeepSleep: true, pendingCount: 5 });
+    const job = pm.find('embedding-reconcile');
+    expect(job.preventsDeepSleep?.()).toBe(true);
+  });
+
+  it('preventsDeepSleep returns false when toggle is on but queue is empty', () => {
+    const { pm } = buildEmbeddingDeps({ runInDeepSleep: true, pendingCount: 0 });
+    const job = pm.find('embedding-reconcile');
+    expect(job.preventsDeepSleep?.()).toBe(false);
+  });
+
+  it('preventsDeepSleep returns false when toggle is off, even with pending work', () => {
+    const { pm } = buildEmbeddingDeps({ runInDeepSleep: false, pendingCount: 50 });
+    const job = pm.find('embedding-reconcile');
+    expect(job.preventsDeepSleep?.()).toBe(false);
+  });
+
+  it('preventsDeepSleep tolerates a thrown totalPendingCount call', () => {
+    const pm = new FakePowerManager();
+    const deps = {
+      embeddingManager: {
+        reconcile: async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 }),
+        totalPendingCount: () => { throw new Error('db offline'); },
+      } as never,
+      registry: { sessions: new Set<string>() } as never,
+      logger: createMockLogger() as never,
+      liveConfig: {
+        current: {
+          daemon: { log_retention_days: 30 },
+          backup: {},
+          maintenance: { auto_optimize: false, auto_optimize_interval_hours: 24 },
+          context: { cortex_enabled: true },
+          embedding: { run_in_deep_sleep: true },
+        },
+      } as never,
+      db: {} as never,
+      machineId: 'test-machine',
+      vaultDir: tmpDir,
+      databaseManager: {
+        getLastOptimizeAt: async () => null,
+        optimize: async () => undefined,
+      } as never,
+    };
+    registerPowerJobs(pm as never, deps);
+    const job = pm.find('embedding-reconcile');
+    expect(job.preventsDeepSleep?.()).toBe(false);
+  });
+});
+
 describe('log-retention power job', () => {
   let tmpDir: string;
   let dbPath: string;

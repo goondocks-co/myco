@@ -91,6 +91,7 @@ const PreConditionSchema = z.enum([
   'has-active-skills',
   'has-approved-candidates',
   'has-skill-survey-evidence',
+  'has-pending-canopy-rows',
 ]);
 
 /** Schedule configuration for automatic task execution via PowerManager. */

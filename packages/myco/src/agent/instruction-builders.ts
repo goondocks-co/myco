@@ -11,10 +11,24 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { sha256Hex } from '@myco/canopy/hash.js';
+import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import {
+  computeInputsHash,
+  MAP_TASK_PROMPT_VERSION,
+  type CanopyEntryInput,
+  type RulesFileInput,
+} from '@myco/canopy/map/inputs-hash.js';
+import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
+import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
+import { getDatabase } from '@myco/db/client.js';
 import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
@@ -44,6 +58,7 @@ export const SKILL_GENERATE_TASK = 'skill-generate';
 export interface TaskRunContext {
   candidate_id?: string;
   cortex_instruction_input_hash?: string;
+  canopy_map_inputs_hash?: string;
 }
 
 /**
@@ -64,6 +79,14 @@ export const SKILL_EVOLVE_TASK = 'skill-evolve';
 export const SKILL_SURVEY_TASK = 'skill-survey';
 /** Task name for the Cortex session-start instructions pipeline step. */
 export const CORTEX_INSTRUCTIONS_TASK = 'cortex-instructions';
+/** Task name for the canopy-describe Tier 2 task. */
+export const CANOPY_DESCRIBE_TASK = 'canopy-describe';
+/** Task name for the canopy-map Tier 3 task. */
+export const CANOPY_MAP_TASK = 'canopy-map';
+/** vault_report action that the render phase uses to persist the final map. */
+export const CANOPY_MAP_REPORT_ACTION = 'canopy_map';
+/** details.content key on the canopy_map vault_report payload. */
+export const CANOPY_MAP_CONTENT_KEY = 'content';
 
 /** Caps for pre-assembled survey context. */
 const SURVEY_MAX_WISDOM_SPORES = 30;
@@ -778,6 +801,399 @@ export async function buildSkillEvolveInstruction(
 }
 
 // ---------------------------------------------------------------------------
+// canopy-describe
+// ---------------------------------------------------------------------------
+
+const CANOPY_DESCRIBE_FIRST_LINES = 60;
+// Sized for local models: not a context-budget cap, a per-turn
+// tool-emission cap. canopy_describe_next returns the whole batch in one
+// tool result; 26B-class local models can only emit follow-up tool calls
+// reliably against ~10 entries at a time before they fall back to
+// re-fetching instead of writing. See canopy-describe.yaml for the full
+// failure-mode notes.
+const CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE = 10;
+
+/** Subset of canopy_entries needed to render a single-row instruction. */
+interface CanopyEntryRow {
+  path: string;
+  language: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  top_comment: string | null;
+}
+
+async function readCanopyFirstLines(absolutePath: string, limit: number): Promise<string> {
+  const fs = await import('node:fs/promises');
+  try {
+    const content = await fs.readFile(absolutePath, 'utf-8');
+    return content.split(/\r?\n/).slice(0, limit).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+interface CanopyPendingRow { count: number }
+
+// Predicate kept in lockstep with SELECT_PENDING_SQL in
+// agent/tools/canopy-tools.ts — both must answer "is there work for
+// canopy_describe_next to drain?" identically, or the precondition gates
+// runs the tool can't satisfy and we burn a turn for nothing.
+const CANOPY_PENDING_PREDICATE =
+  'llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at';
+
+function countPendingCanopyRows(projectId: string | undefined): number {
+  if (!projectId) return 0;
+  try {
+    const row = getDatabase().prepare(
+      `SELECT COUNT(*) AS count FROM canopy_entries
+        WHERE project_id = ?
+          AND (${CANOPY_PENDING_PREDICATE})`,
+    ).get(projectId) as CanopyPendingRow | undefined;
+    return row?.count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function loadCanopyRow(projectId: string | undefined, canopyEntryId: string): CanopyEntryRow | undefined {
+  if (!projectId) return undefined;
+  return getDatabase()
+    .prepare('SELECT path, language, exports_json, imports_json, top_comment FROM canopy_entries WHERE project_id = ? AND path = ? LIMIT 1')
+    .get(projectId, canopyEntryId) as CanopyEntryRow | undefined;
+}
+
+/**
+ * Build the instruction for a canopy-describe run.
+ *
+ * Single-row mode (params.canopy_entry_id present): renders a fixed-context
+ * prompt for that one row and tells the agent to call canopy_describe_write
+ * once. Returns undefined if the row is missing.
+ *
+ * Batch mode (no canopy_entry_id): emits a short directive pointing the
+ * agent at the canopy_describe_next/_write tools. Returns undefined when
+ * the queue is empty so the scheduler can short-circuit.
+ */
+export async function buildCanopyDescribeInstruction(
+  params?: Record<string, string | number | boolean>,
+  projectRoot?: string,
+): Promise<BuiltTaskInstruction | undefined> {
+  const canopyEntryId = typeof params?.canopy_entry_id === 'string' ? params.canopy_entry_id : undefined;
+  // Per canopy/identity.ts the project_id is path.dirname(vaultDir), and
+  // every Canopy call site treats projectRoot and projectId as the same
+  // value — projectRoot here doubles as the project_id used to scope the
+  // canopy_entries lookup so it matches sibling queries.
+  const canopyProjectId = projectRoot;
+
+  if (canopyEntryId) {
+    const row = loadCanopyRow(canopyProjectId, canopyEntryId);
+    if (!row) return undefined;
+
+    const exports = parseJsonStringArray(row.exports_json);
+    const imports = parseJsonStringArray(row.imports_json);
+    const firstLines = projectRoot
+      ? await readCanopyFirstLines(`${projectRoot.replace(/\/$/, '')}/${row.path}`, CANOPY_DESCRIBE_FIRST_LINES)
+      : '';
+
+    const lines = [
+      'Single-row mode. Describe this file in exactly one sentence and call',
+      'canopy_describe_write({ path, description }) with the result. Stop after the write.',
+      '',
+      `File: ${row.path}`,
+      `Language: ${row.language ?? 'unknown'}`,
+      `Exports: ${exports.length > 0 ? exports.join(', ') : '(none)'}`,
+      `Imports: ${imports.length > 0 ? imports.join(', ') : '(none)'}`,
+      `Top comment: ${row.top_comment?.trim() || '(none)'}`,
+      '',
+      `First ${CANOPY_DESCRIBE_FIRST_LINES} lines:`,
+      firstLines || '(empty)',
+    ];
+    return { instruction: lines.join('\n') };
+  }
+
+  if (countPendingCanopyRows(canopyProjectId) === 0) return undefined;
+
+  const batchSize = Number(params?.batch_size ?? CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE);
+  const lines = [
+    `Batch mode. Process exactly ${batchSize} Canopy entries this run.`,
+    '',
+    `Step 1: Call canopy_describe_next({ limit: ${batchSize} }) ONCE.`,
+    'Step 2: For EACH entry it returns, emit one sentence following the',
+    '        style rules in the phase prompt, then call',
+    '        canopy_describe_write({ path, description }) for that entry.',
+    'Step 3: Stop. Do NOT call canopy_describe_next a second time — even',
+    '        if more entries are pending, this run is done. The next',
+    '        scheduled tick will pick up the rest.',
+  ];
+  return { instruction: lines.join('\n') };
+}
+
+// ---------------------------------------------------------------------------
+// canopy-map
+// ---------------------------------------------------------------------------
+
+/**
+ * Canopy entries representative cap. Bounded to keep render-phase prompt
+ * within reasonable token budgets across model providers (Anthropic Sonnet,
+ * local 32K-context models). Larger repos get a representative slice rather
+ * than a degraded prompt. The deterministic alphabetical (path-sorted)
+ * truncation keeps the inputs_hash stable run-over-run.
+ */
+const CANOPY_MAP_MAX_ENTRIES = 300;
+
+/** Default rules-file filenames searched at the project root. */
+const CANOPY_MAP_ROOT_RULES_FILES = ['AGENTS.md', 'CLAUDE.md'];
+/** Directory under which every file is treated as a rules file. */
+const CANOPY_MAP_RULES_DIRS = ['.cursor/rules'];
+
+interface CanopyMapGatherContext {
+  projectId: string;
+  priorMap: CanopyMapRow | null;
+  canopyEntries: CanopyEntryInput[];
+  rulesFiles: RulesFileInput[];
+  inputsHash: string;
+  forceColdStart: boolean;
+}
+
+async function loadRulesFiles(projectRoot: string): Promise<RulesFileInput[]> {
+  const out: RulesFileInput[] = [];
+
+  for (const filename of CANOPY_MAP_ROOT_RULES_FILES) {
+    const absPath = resolve(projectRoot, filename);
+    try {
+      const buf = await fsPromises.readFile(absPath);
+      out.push({ filename, content_hash: sha256Hex(buf) });
+    } catch {
+      // missing file — skip
+    }
+  }
+
+  for (const dir of CANOPY_MAP_RULES_DIRS) {
+    const absDir = resolve(projectRoot, dir);
+    let entries: string[] = [];
+    try {
+      entries = await fsPromises.readdir(absDir);
+    } catch {
+      continue;
+    }
+    for (const name of entries.sort()) {
+      const absPath = resolve(absDir, name);
+      try {
+        const stat = await fsPromises.stat(absPath);
+        if (!stat.isFile()) continue;
+        const buf = await fsPromises.readFile(absPath);
+        out.push({ filename: `${dir}/${name}`, content_hash: sha256Hex(buf) });
+      } catch {
+        // skip unreadable entries
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Cheap COUNT for the no-op gate. Lets gatherCanopyMapContext skip the
+ * full SELECT + hash work when the described-rows pool is empty without
+ * paying for the projection. Mirrors the predicate used by
+ * loadDescribedCanopyEntries so the count and the subsequent SELECT can
+ * never disagree.
+ */
+function countDescribedCanopyEntries(projectId: string): number {
+  const { where, params } = describedCanopyEntriesPredicate(projectId);
+  const row = getDatabase()
+    .prepare(`SELECT COUNT(*) AS n FROM canopy_entries WHERE ${where}`)
+    .get(...params) as { n: number };
+  return row.n;
+}
+
+function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
+  const { where, params } = describedCanopyEntriesPredicate(projectId);
+  const rows = getDatabase().prepare(
+    `SELECT path, content_hash, llm_description
+       FROM canopy_entries
+      WHERE ${where}
+      ORDER BY ${CANOPY_ENTRIES_ORDER_BY}
+      LIMIT ?`,
+  ).all(...params, CANOPY_MAP_MAX_ENTRIES) as Array<{
+    path: string;
+    content_hash: string;
+    llm_description: string | null;
+  }>;
+  return rows.map((r) => ({
+    path: r.path,
+    content_hash: r.content_hash,
+    llm_description: r.llm_description ?? null,
+  }));
+}
+
+/**
+ * Skip envelope returned by gatherCanopyMapContext when the run would be a
+ * no-op. `reason` distinguishes:
+ *   - 'canopy_disabled': cortex.canopy.injection.enabled is false at the
+ *     project level. The whole canopy feature is off; nothing to map.
+ *   - 'no_described_entries': canopy is on but no rows have llm_description
+ *     yet (canopy-describe hasn't drained the queue). Map would be empty.
+ *   - 'inputs_unchanged': the prior canopy_maps row's inputs_hash matches —
+ *     idempotent re-fire, no work to do.
+ *
+ * `inputsHash` is only meaningful for 'inputs_unchanged' (the gate-style
+ * skips short-circuit before the hash is computed).
+ */
+export type CanopyMapGatherSkip =
+  | { skip: true; reason: 'canopy_disabled' | 'no_described_entries' }
+  | { skip: true; reason: 'inputs_unchanged'; inputsHash: string };
+
+/**
+ * Internal — exported only so the canopy-map test suite can assemble the
+ * exact gather context that the render-phase instruction sees.
+ *
+ * Two cheap up-front gates run before any hashing or rules-file IO:
+ *   1. Canopy disabled at the project level → skip with no LLM cost.
+ *   2. Zero described canopy_entries rows → skip; the map would be empty.
+ * Both pair with the `schedule.enabled: true` default on canopy-map.yaml so
+ * users with canopy off don't see scheduled runs.
+ */
+export async function gatherCanopyMapContext(
+  projectRoot: string,
+  forceColdStart: boolean,
+  config?: MycoConfig,
+): Promise<CanopyMapGatherContext | CanopyMapGatherSkip> {
+  const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
+  const projectId = resolveCanopyProjectId(vaultDir);
+
+  // Gate 1: canopy injection master switch. The schedule fires whenever the
+  // task is enabled, so the gate must absorb the disabled-canopy case here.
+  // Defaults to true when config is unavailable (legacy callers, tests),
+  // so omitting the config doesn't accidentally hide work.
+  if (config && !config.cortex.canopy.injection.enabled) {
+    return { skip: true, reason: 'canopy_disabled' };
+  }
+
+  // Gate 2: empty described-row pool. A map with no rows would just be the
+  // directory skeleton — pointless LLM work. Cheap COUNT, same predicate as
+  // the SELECT below so the two can't disagree.
+  if (countDescribedCanopyEntries(projectId) === 0) {
+    return { skip: true, reason: 'no_described_entries' };
+  }
+
+  const canopyEntries = loadDescribedCanopyEntries(projectId);
+  const rulesFiles = await loadRulesFiles(projectRoot);
+  const inputsHash = computeInputsHash({
+    canopyEntries,
+    rulesFiles,
+    promptVersion: MAP_TASK_PROMPT_VERSION,
+  });
+
+  // Prior map lookup is keyed (project_id, machine_id). The map is per-machine
+  // because token_estimate and timing reflect how *this* machine ran the
+  // task — sync between machines is a separate concern.
+  const machineId = getMachineId(vaultDir);
+  const prior = readCanopyMap(projectId, machineId);
+
+  if (!forceColdStart && prior?.inputs_hash === inputsHash) {
+    return { skip: true, reason: 'inputs_unchanged', inputsHash };
+  }
+
+  return {
+    projectId,
+    priorMap: forceColdStart ? null : prior,
+    canopyEntries,
+    rulesFiles,
+    inputsHash,
+    forceColdStart,
+  };
+}
+
+function renderCanopyMapInstruction(ctx: CanopyMapGatherContext): string {
+  const parts: string[] = [];
+
+  parts.push('## Inputs (pre-assembled)');
+  parts.push('');
+  parts.push(`canopy_entries: ${ctx.canopyEntries.length} described file(s)`);
+  parts.push(`rules_files: ${ctx.rulesFiles.length} file(s) — names only`);
+  parts.push(`inputs_hash: ${ctx.inputsHash}`);
+  parts.push(`force_cold_start: ${ctx.forceColdStart}`);
+  parts.push('');
+
+  if (ctx.priorMap) {
+    parts.push('## Prior map (refine, do not rewrite from scratch)');
+    parts.push('Preserve sections that still apply. Update sections whose');
+    parts.push('underlying files have drifted. Remove clusters whose files');
+    parts.push('no longer exist or no longer belong together.');
+    parts.push('');
+    parts.push('```markdown');
+    parts.push(ctx.priorMap.content);
+    parts.push('```');
+    parts.push('');
+  } else {
+    parts.push('## No prior map — produce a fresh one');
+    parts.push('');
+  }
+
+  parts.push('## Rules files (filenames only)');
+  if (ctx.rulesFiles.length === 0) {
+    parts.push('(none)');
+  } else {
+    for (const rf of ctx.rulesFiles) {
+      parts.push(`- ${rf.filename}`);
+    }
+  }
+  parts.push('');
+
+  parts.push('## Canopy entries (path, content_hash, llm_description)');
+  parts.push('');
+  parts.push('```json');
+  parts.push(JSON.stringify(ctx.canopyEntries, null, 2));
+  parts.push('```');
+  parts.push('');
+
+  parts.push('When the map is ready, call vault_report({');
+  parts.push('  action: "canopy_map",');
+  parts.push('  summary: "<one short sentence on what changed vs. the prior map (or initial map)>",');
+  parts.push('  details: { content: "<the final markdown>" }');
+  parts.push('}). Stop after the report.');
+
+  return parts.join('\n');
+}
+
+/**
+ * Build the instruction for a canopy-map run.
+ *
+ * Phase 1 (deterministic): gather canopy entries + rules files, compute
+ * inputs_hash, short-circuit when the prior map is still current.
+ *
+ * Phase 2 (LLM): renderCanopyMapInstruction() produces the prompt the
+ * render phase sees. The LLM emits the final markdown via vault_report
+ * and finalizeOnTaskSuccess persists it to canopy_maps.
+ *
+ * Returns undefined when:
+ *   - projectRoot is missing (no way to find canopy_entries / rules), OR
+ *   - inputs_hash matches the prior map (idempotent re-fire, skip).
+ *
+ * Honors `force_cold_start` (boolean) param — when true, bypasses both
+ * the inputs_hash short-circuit AND prior-map refinement, producing a
+ * fresh map regardless of cached state.
+ */
+export async function buildCanopyMapInstruction(
+  params?: Record<string, string | number | boolean>,
+  projectRoot?: string,
+  config?: MycoConfig,
+): Promise<BuiltTaskInstruction | undefined> {
+  if (!projectRoot) return undefined;
+
+  const forceColdStart = params?.force_cold_start === true;
+  const ctx = await gatherCanopyMapContext(projectRoot, forceColdStart, config);
+
+  if ('skip' in ctx) return undefined;
+
+  const instruction = renderCanopyMapInstruction(ctx);
+  return {
+    instruction,
+    context: { canopy_map_inputs_hash: ctx.inputsHash },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Unified dispatch
 // ---------------------------------------------------------------------------
 
@@ -821,6 +1237,10 @@ export async function buildTaskInstruction(
           }
         : undefined;
     }
+    case CANOPY_DESCRIBE_TASK:
+      return buildCanopyDescribeInstruction(taskParams, projectRoot);
+    case CANOPY_MAP_TASK:
+      return buildCanopyMapInstruction(taskParams, projectRoot, config);
     default:
       return undefined;
   }
@@ -841,5 +1261,7 @@ export function isInstructionRequiredTask(taskName: string): boolean {
   return taskName === SKILL_GENERATE_TASK
     || taskName === SKILL_EVOLVE_TASK
     || taskName === SKILL_SURVEY_TASK
-    || taskName === CORTEX_INSTRUCTIONS_TASK;
+    || taskName === CORTEX_INSTRUCTIONS_TASK
+    || taskName === CANOPY_DESCRIBE_TASK
+    || taskName === CANOPY_MAP_TASK;
 }

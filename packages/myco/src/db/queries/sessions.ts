@@ -87,6 +87,7 @@ export interface SessionRow {
   canopy_reads_after_injection: number | null;
   canopy_tokens_saved: number | null;
   canopy_redundant_reads: number | null;
+  canopy_map_tool_calls: number;
 }
 
 /** Updatable fields for `updateSession`. */
@@ -163,6 +164,7 @@ const SESSION_COLUMNS = [
   'canopy_reads_after_injection',
   'canopy_tokens_saved',
   'canopy_redundant_reads',
+  'canopy_map_tool_calls',
 ] as const;
 
 const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
@@ -205,6 +207,7 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     canopy_reads_after_injection: (row.canopy_reads_after_injection as number) ?? null,
     canopy_tokens_saved: (row.canopy_tokens_saved as number) ?? null,
     canopy_redundant_reads: (row.canopy_redundant_reads as number) ?? null,
+    canopy_map_tool_calls: (row.canopy_map_tool_calls as number) ?? 0,
   };
 }
 
@@ -504,6 +507,20 @@ export function incrementSessionToolCount(id: string): void {
   const db = getDatabase();
   db.prepare(
     `UPDATE sessions SET tool_count = COALESCE(tool_count, 0) + 1 WHERE id = ?`,
+  ).run(id);
+}
+
+/**
+ * Atomically increment `canopy_map_tool_calls` for a session.
+ *
+ * No-op when the session id does not exist — callers invoke this from MCP
+ * tool dispatch and may pass an unknown / synthetic id when no in-flight
+ * session is associated with the call.
+ */
+export function incrementCanopyMapToolCalls(id: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE sessions SET canopy_map_tool_calls = canopy_map_tool_calls + 1 WHERE id = ?`,
   ).run(id);
 }
 

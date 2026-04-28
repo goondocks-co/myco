@@ -1,14 +1,15 @@
 /**
  * Read-only vault tools.
  *
- * 9 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
+ * 10 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
  * vault_spores, vault_sessions, vault_search_fts, vault_search_semantic,
- * vault_state, vault_edges
+ * vault_search_canopy, vault_state, vault_edges
  */
 
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { SEARCH_SIMILARITY_THRESHOLD, TEAM_SOURCE_PREFIX } from '@myco/constants.js';
+import { getDatabase } from '@myco/db/client.js';
 import { getUnprocessedBatches, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
@@ -17,6 +18,7 @@ import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
+import { searchCanopy } from '@myco/canopy/search.js';
 import { textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
@@ -55,6 +57,25 @@ function projectToolRows<T>(
   return includeMetadata
     ? textResult(rows)
     : textResult(rows.map(project));
+}
+
+/**
+ * Map a thrown embedding-provider error message to a short remediation hint
+ * surfaced alongside the failed-search envelope. Shared by the semantic and
+ * canopy search tools — both wrap the same provider/store and produce the
+ * same family of failures.
+ */
+function classifyEmbeddingProviderError(message: string): string | undefined {
+  if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
+    return 'Embedding provider timed out. Retry once or reduce query length.';
+  }
+  if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
+    return 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
+  }
+  if (/no such table|no such column/i.test(message)) {
+    return 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,19 +371,49 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ results: merged });
       } catch (err) {
         const message = errorMessage(err);
-        let hint: string | undefined;
-        if (/timeout|ETIMEDOUT|AbortError/i.test(message)) {
-          hint = 'Embedding provider timed out. Retry once or reduce query length.';
-        } else if (/ECONNREFUSED|fetch failed|network/i.test(message)) {
-          hint = 'Embedding provider unreachable. Check that the configured provider (Ollama/LM Studio/Anthropic) is running.';
-        } else if (/no such table|no such column/i.test(message)) {
-          hint = 'Vector table missing or schema mismatch. Run `myco rebuild` or check migrations.';
-        }
+        const hint = classifyEmbeddingProviderError(message);
         return textResult({
           error: `vault_search_semantic failed: ${message}${hint ? ` — ${hint}` : ''}`,
           results: [],
           query: args.query,
           namespace: args.namespace ?? null,
+        });
+      }
+    },
+    { annotations: { readOnlyHint: true, openWorldHint: true } },
+  );
+
+  const vaultSearchCanopy = tool(
+    'vault_search_canopy',
+    'Semantic similarity search across the project canopy index — i.e. file-level llm_description summaries produced by the canopy-describe task. Pinned to the `canopy_entries` namespace; returns one row per file matching the query, hydrated with `{project_id, path, llm_description, language, score}`. Use this to find relevant source files by what they DO, not by keyword.',
+    {
+      query: z.string().describe('Natural-language query describing the behavior or concern you are looking for.'),
+      limit: z.number().optional().describe('Maximum results to return.'),
+      language: z.string().optional().describe('Optional language filter (e.g. "typescript").'),
+    },
+    async (args) => {
+      if (!embeddingManager) {
+        return textResult({ results: [], message: 'Embedding provider unavailable' });
+      }
+      try {
+        // Local-only: canopy is per-machine and not synced to team — no team-client merge here.
+        const results = await searchCanopy(embeddingManager, {
+          query: args.query,
+          limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+          threshold: SEARCH_SIMILARITY_THRESHOLD,
+          language: args.language,
+        });
+        if (results === null) {
+          return textResult({ results: [], message: 'Embedding provider unavailable' });
+        }
+        return textResult({ results });
+      } catch (err) {
+        const message = errorMessage(err);
+        const hint = classifyEmbeddingProviderError(message);
+        return textResult({
+          error: `vault_search_canopy failed: ${message}${hint ? ` — ${hint}` : ''}`,
+          results: [],
+          query: args.query,
         });
       }
     },
@@ -415,6 +466,7 @@ export function createReadTools(deps: VaultToolDeps) {
     vaultSessions,
     vaultSearchFts,
     vaultSearchSemantic,
+    vaultSearchCanopy,
     vaultState,
     vaultEdges,
   ];

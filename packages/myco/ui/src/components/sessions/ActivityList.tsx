@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CheckCircle2, XCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { useBatchActivities, type ActivityRow } from '../../hooks/use-sessions';
 import { formatDurationMs as formatDuration } from '../../lib/format';
+import { CanopyToolCallIndicator } from './CanopyToolCallIndicator';
 import { cn } from '../../lib/cn';
 
 /* ---------- Constants ---------- */
@@ -21,10 +22,17 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
       'border-l-2 transition-colors',
       expanded ? 'border-l-primary/30' : 'border-transparent hover:border-l-primary/20',
     )}>
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-container/30 transition-all"
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setExpanded((prev) => !prev);
+          }
+        }}
         aria-expanded={expanded}
       >
         {expanded ? (
@@ -41,6 +49,7 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
           </span>
         )}
         <span className="shrink-0 ml-auto" />
+        <CanopyToolCallIndicator sessionId={activity.session_id} activity={activity} />
         <span className="shrink-0 font-mono text-xs text-on-surface-variant">
           {formatDuration(activity.duration_ms)}
         </span>
@@ -49,7 +58,7 @@ function ActivityItem({ activity }: { activity: ActivityRow }) {
         ) : (
           <XCircle className="h-3.5 w-3.5 shrink-0 text-tertiary" />
         )}
-      </button>
+      </div>
 
       {/* Expandable detail — CSS grid for smooth animation */}
       <div

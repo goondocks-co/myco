@@ -12,6 +12,7 @@
  * - Observability (1): vault_report
  * - Skill tools (5): vault_skill_candidates, vault_skill_records, vault_write_skill,
  *                    vault_stage_skill, vault_finalize_skill
+ * - Canopy tools (2): canopy_describe_next, canopy_describe_write
  *
  * `agentId` and `runId` are captured in closures — tools inject them
  * automatically so the agent cannot impersonate another agent.
@@ -28,6 +29,7 @@ import { createWriteTools } from './tools/write-tools.js';
 import { createObservabilityTools } from './tools/observability-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
+import { createCanopyTools } from './tools/canopy-tools.js';
 import { textResult } from './tools/types.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { SdkMcpToolDefinition, VaultToolDeps } from './tools/types.js';
@@ -164,8 +166,8 @@ const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
 
 const READ_TOOL_NAMES = new Set([
   'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
-  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_state',
-  'vault_edges',
+  'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_search_canopy',
+  'vault_state', 'vault_edges',
 ]);
 
 const WRITE_TOOL_NAMES = new Set([
@@ -182,6 +184,10 @@ const SKILL_TOOL_NAMES = new Set([
 
 const EXPLORATION_TOOL_NAMES = new Set([
   'fs_read', 'fs_list', 'fs_tree', 'code_grep',
+]);
+
+const CANOPY_TOOL_NAMES = new Set([
+  'canopy_describe_next', 'canopy_describe_write', 'canopy_list',
 ]);
 
 /** Max chars stored from a tool response in the run audit trail. */
@@ -211,7 +217,8 @@ export const VAULT_TOOL_COUNT =
   WRITE_TOOL_NAMES.size +
   OBSERVABILITY_TOOL_NAMES.size +
   SKILL_TOOL_NAMES.size +
-  EXPLORATION_TOOL_NAMES.size;
+  EXPLORATION_TOOL_NAMES.size +
+  CANOPY_TOOL_NAMES.size;
 
 function setsOverlap(a: Set<string>, b: Set<string>): boolean {
   for (const item of a) { if (b.has(item)) return true; }
@@ -362,6 +369,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     ...(needsAll || setsOverlap(onlyNames!, OBSERVABILITY_TOOL_NAMES) ? createObservabilityTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, SKILL_TOOL_NAMES) ? createSkillTools(deps) : []),
     ...(needsAll || setsOverlap(onlyNames!, EXPLORATION_TOOL_NAMES) ? createExplorationTools(deps) : []),
+    ...(needsAll || setsOverlap(onlyNames!, CANOPY_TOOL_NAMES) ? createCanopyTools(deps) : []),
   ];
 
   return tools.map((toolDef) => {

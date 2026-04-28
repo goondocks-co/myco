@@ -59,10 +59,20 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
-  describe('claude-code / codex / windsurf (no hookResponse block → plain-text default)', () => {
-    it('emits additionalContext as plain text', () => {
+  describe('claude-code / codex / windsurf hook response shapes', () => {
+    it('emits UserPromptSubmit additionalContext as plain text for Claude Code', () => {
       writeHookResponse('claude-code', 'user-prompt-submit', { additionalContext: 'inject this' });
       expect(captured).toBe('inject this');
+    });
+
+    it('emits Claude Code PreToolUse context in hookSpecificOutput JSON', () => {
+      writeHookResponse('claude-code', 'pre-tool-use', { additionalContext: 'inject this' });
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: 'inject this',
+        },
+      });
     });
 
     it('emits nothing when the response has no additionalContext', () => {

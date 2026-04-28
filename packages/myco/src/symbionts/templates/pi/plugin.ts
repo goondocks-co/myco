@@ -586,6 +586,10 @@ async function mycoRuns(
   return getJson(directory, `/api/agent/runs?${query.toString()}`);
 }
 
+async function canopyMap(directory: string): Promise<{ ok: boolean; data?: unknown }> {
+  return getJson(directory, "/api/canopy/map");
+}
+
 async function collectiveProjects(directory: string): Promise<{ ok: boolean; data?: unknown }> {
   return getJson(directory, "/api/collective/projects");
 }
@@ -1246,6 +1250,20 @@ export default function (pi: ExtensionAPI) {
       const result = await mycoRuns(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Run query failed") }], details: result.data ?? {} };
+      }
+      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "canopy_map",
+    label: "Canopy Map",
+    description: "Returns the project's architectural overview (directory skeleton + key files + golden paths) maintained by the canopy-map background task.",
+    parameters: Type.Object({}),
+    async execute() {
+      const result = await canopyMap(currentCwd);
+      if (!result.ok) {
+        return { content: [{ type: "text" as const, text: "Canopy map unavailable." }], details: result.data ?? {} };
       }
       return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },

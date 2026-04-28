@@ -185,7 +185,7 @@ export interface TaskSchedule {
   enabled: boolean;
   intervalSeconds: number;
   runIn: ('active' | 'idle' | 'sleep')[];
-  preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence';
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */
@@ -286,6 +286,7 @@ export interface RunOptions {
   runContext?: {
     candidate_id?: string;
     cortex_instruction_input_hash?: string;
+    canopy_map_inputs_hash?: string;
   };
   resumeMode?: 'manual' | 'scheduled';
   /**

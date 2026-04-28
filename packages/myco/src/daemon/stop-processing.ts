@@ -45,6 +45,7 @@ import type { RouteHandler } from './router.js';
 import type { RegisteredSession } from './lifecycle.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
+import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -527,6 +528,12 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       source: turnSource,
       title: existingSession?.title ?? sessionTitleCache.get(sessionId) ?? '(untitled)',
     });
+
+    // Materialize Canopy aggregates onto the sessions row. Pure SQL over
+    // already-persisted activities — safe to run after every Stop. Internal
+    // failure is swallowed by materializeCanopyAggregates so it never blocks
+    // the rest of the Stop pipeline.
+    materializeCanopyAggregates(sessionId);
   }
 
   const handleStopRoute: RouteHandler = async (req) => {
