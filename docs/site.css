@@ -944,6 +944,183 @@ section.band + section.band { padding-top: 0; }
 }
 
 /* ----------------------------------------------------------------------------
+   Canopy / Cortex section — split layout with stacked context cards
+   ---------------------------------------------------------------------------- */
+
+.canopy-band {
+  background:
+    radial-gradient(ellipse at 85% 40%, rgba(171,207,184,0.05), transparent 45%),
+    radial-gradient(ellipse at 10% 90%, rgba(206,127,113,0.04), transparent 45%);
+  border-top: 1px solid var(--outline-variant);
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+.canopy-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.05fr;
+  gap: 64px;
+  align-items: center;
+}
+
+.canopy-copy .sec-title { font-size: 40px; }
+
+.canopy-bullets {
+  list-style: none;
+  padding: 0;
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.canopy-bullets li {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 12px;
+  align-items: start;
+  font-size: 14px;
+  color: var(--on-surface-variant);
+  line-height: 1.55;
+}
+.canopy-bullets li strong { color: var(--on-surface); font-weight: 500; }
+.canopy-bullets li code {
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--sage);
+  background: var(--surface-container);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.canopy-bullets li em { color: var(--ochre); font-style: italic; }
+.canopy-bullets .mark {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--sage);
+  letter-spacing: 0.08em;
+  padding-top: 2px;
+}
+
+.canopy-frame {
+  position: relative;
+  background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant);
+  border-radius: 16px;
+  padding: 40px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.canopy-frame .diag-label {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--outline);
+}
+.canopy-frame .diag-meta {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--outline);
+}
+.canopy-frame .diag-meta::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sage);
+  box-shadow: 0 0 6px var(--sage);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.canopy-card {
+  background: var(--surface-container-low);
+  border: 1px solid var(--outline-variant);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+.canopy-card:hover {
+  border-color: var(--sage-deep);
+  transform: translateX(2px);
+}
+.canopy-card.ochre:hover { border-color: var(--ochre-deep); }
+.canopy-card.terra:hover { border-color: var(--terracotta-dim); }
+
+.canopy-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.canopy-mark {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  background: var(--surface-container);
+  color: var(--sage);
+  font-family: var(--font-data);
+  font-weight: 600;
+  font-size: 11px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--outline-variant);
+  flex-shrink: 0;
+}
+.canopy-card.ochre .canopy-mark { color: var(--ochre); }
+.canopy-card.terra .canopy-mark { color: var(--terracotta); }
+
+.canopy-card-name {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--on-surface);
+  line-height: 1.2;
+}
+.canopy-card-sub {
+  font-family: var(--font-data);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--outline);
+  margin-top: 2px;
+}
+
+.canopy-snippet {
+  font-family: var(--font-data);
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.5;
+}
+.canopy-snippet .cs-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.canopy-snippet .cs-key { color: var(--sage); }
+.canopy-card.ochre .canopy-snippet .cs-key { color: var(--ochre); }
+.canopy-card.terra .canopy-snippet .cs-key { color: var(--terracotta); }
+.canopy-snippet .cs-mute { color: var(--outline); }
+.canopy-snippet .cs-q { color: var(--on-surface); font-style: italic; }
+
+@media (max-width: 900px) {
+  .canopy-grid { grid-template-columns: 1fr; gap: 36px; }
+}
+
+/* ----------------------------------------------------------------------------
    Team sync section — split layout with "mycelial" diagram
    ---------------------------------------------------------------------------- */
 

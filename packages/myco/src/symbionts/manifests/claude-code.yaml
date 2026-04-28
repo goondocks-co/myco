@@ -124,3 +124,9 @@ registration:
   skillsTarget: .claude/skills
   settingsTarget: .claude/settings.json
   instructionsFile: CLAUDE.md
+capabilities:
+  # Claude Code threads PreToolUse hookSpecificOutput.additionalContext into
+  # the agent's context window before the tool fires. This unlocks Cortex's
+  # Canopy injection. Other symbionts flip this on as their hook surfaces
+  # gain equivalent pre-call injection.
+  preToolUseInjection: true

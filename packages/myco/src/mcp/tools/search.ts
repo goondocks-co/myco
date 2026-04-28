@@ -21,19 +21,33 @@ interface SearchInput {
   status?: string;
   since?: number;
   until?: number;
+  /** Canopy-only: optional language filter (e.g. "typescript"). */
+  language?: string;
 }
 
+/**
+ * Result row shape. Canopy results carry `project_id`, `path`, and
+ * `llm_description` instead of `id`/`content`; we expose a single union
+ * here and let the daemon decide which fields to populate.
+ */
 interface SearchResult {
-  id: string;
-  type: string;
-  content: string;
+  id?: string;
+  type?: string;
+  content?: string;
   score: number;
   observation_type?: string;
   status?: string;
   tags?: string;
+  // Canopy-specific
+  project_id?: string | null;
+  path?: string | null;
+  llm_description?: string | null;
+  language?: string | null;
 }
 
 function requiresSemanticMode(input: SearchInput): boolean {
+  // Canopy is its own retrieval surface — always semantic, never FTS-fallback.
+  if (input.type === 'canopy') return true;
   return input.observation_type !== undefined
     || input.status !== undefined
     || input.since !== undefined
@@ -59,6 +73,7 @@ export async function handleMycoSearch(
     status: input.status,
     since: input.since,
     until: input.until,
+    language: input.language,
   });
   const result = await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];

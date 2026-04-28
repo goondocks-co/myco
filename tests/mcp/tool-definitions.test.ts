@@ -118,9 +118,9 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('every tool name starts with myco_ or collective_', () => {
+  it('every tool name starts with myco_, collective_, or canopy_', () => {
     for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
-      expect(tool.name).toMatch(/^(myco_|collective_)/);
+      expect(tool.name).toMatch(/^(myco_|collective_|canopy_)/);
     }
   });
 

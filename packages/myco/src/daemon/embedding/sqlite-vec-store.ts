@@ -49,6 +49,9 @@ const FILTERABLE_DOMAIN_METADATA_KEYS = new Set([
   'name',
   'source_path',
   'created_at',
+  'project_id',
+  'path',
+  'language',
 ]);
 const FILTER_SUFFIX_TO_OPERATOR: Record<string, string> = {
   _gte: '>=',

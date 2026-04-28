@@ -13,13 +13,13 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-11 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/mcp/tool-definitions.ts`.
+12 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/mcp/tool-definitions.ts`.
 
 ### Search & recall
 
 | Tool | Purpose |
 |------|---------|
-| `myco_search` | Semantic + keyword search across sessions, spores, and plans. Fans out to the connected team's D1 and merges results by score. |
+| `myco_search` | Semantic + keyword search across sessions, spores, and plans. Pass `type=canopy` to search the project's per-file code intelligence — finds files by what they do, not by keyword. Fans out to the connected team's D1 and merges results by score. |
 | `myco_recall` | Look up a specific note by ID. Falls back to the connected team's D1 when the record isn't local. |
 | `myco_context` | On-demand digest extract at a specific token tier (1500, 5000, or 10000). |
 
@@ -45,6 +45,12 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 | Tool | Purpose |
 |------|---------|
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
+
+### Code intelligence
+
+| Tool | Purpose |
+|------|---------|
+| `canopy_map` | Returns the project's architectural overview — directory skeleton plus key files and golden paths. One call instead of a half-dozen `Glob` and `Grep` calls when an unfamiliar agent needs to orient. See the [Canopy guide](canopy.md). |
 
 ## Cloud MCP tools
 

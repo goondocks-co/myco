@@ -73,8 +73,11 @@ import {
 import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
+import { createCanopyInjectHandler } from './api/canopy-inject.js';
+import { resolveCanopyProjectId } from '../canopy/identity.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
+import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
@@ -614,10 +617,13 @@ export async function main(): Promise<void> {
   });
 
   // --- Session routes ---
-  const sessionLifecycle = createSessionLifecycleHandlers({
+  // The deps object is mutated after registerPowerJobs so the canopy delta
+  // runner becomes visible to SessionStart triggers.
+  const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor,
     server, powerManager, machineId, logger, liveConfig, vaultDir,
-  });
+  };
+  const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
   server.registerRoute('POST', '/sessions/unregister', sessionLifecycle.handleUnregister);
 
@@ -653,6 +659,13 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/context', createSessionContextHandler(contextDeps));
   server.registerRoute('POST', '/context/resume', createResumeContextHandler(contextDeps));
   server.registerRoute('POST', '/context/prompt', createPromptContextHandler(contextDeps));
+
+  // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
+  server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
+    liveConfig,
+    vaultDir,
+    getDatabase,
+  }));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
@@ -827,6 +840,101 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/batches/:id/activities', handleGetBatchActivities);
   server.registerRoute('GET', '/api/sessions/:id/attachments', handleGetSessionAttachments);
   server.registerRoute('GET', '/api/sessions/:id/plans', handleGetSessionPlans);
+
+  // --- Canopy read-side API routes ---
+  registerCanopyReadRoutes(server, {
+    resolveProjectId: () => resolveCanopyProjectId(vaultDir),
+    resolveMachineId: () => getMachineId(vaultDir),
+    runCanopyMapTask: async ({ task, params }) => {
+      // Mirror the dispatch shape used by /api/agent/run (see
+      // createAgentRunHandlers.handleRun): build the instruction, fire
+      // runAgent, then look up the run id that runAgent inserted
+      // synchronously before its first await. This matches how the
+      // scheduler enqueues canopy-map and keeps a single source of truth
+      // for instruction assembly.
+      const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
+      const { runAgent } = await import('../agent/executor.js');
+      const { getLatestRunId } = await import('../db/queries/runs.js');
+      const { DEFAULT_AGENT_ID } = await import('../constants.js');
+
+      const mycoConfig = liveConfig.current;
+      const projectRoot = path.resolve(vaultDir, '..');
+      const built = await buildTaskInstruction(
+        task,
+        params,
+        DEFAULT_AGENT_ID,
+        projectRoot,
+        embeddingManager,
+        mycoConfig,
+        () => teamSync.getTeamClient(),
+      );
+
+      const resultPromise = runAgent(vaultDir, {
+        task,
+        instruction: built?.instruction,
+        runContext: built?.context,
+        agentId: DEFAULT_AGENT_ID,
+        embeddingManager,
+        logger,
+      });
+
+      // runAgent inserts the agent_runs row synchronously before its first
+      // await. Capture the id before letting the promise run unsupervised.
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+
+      // Fire-and-forget — caller already has the run id; we don't block
+      // the HTTP response on the LLM round-trip. Errors are logged so
+      // they don't vanish.
+      resultPromise.catch((err) => {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-map regenerate threw', {
+          error: (err as Error).message ?? String(err),
+        });
+      });
+
+      return { run_id: runId ?? '' };
+    },
+    runCanopyDescribeTask: async ({ task, params }) => {
+      // Single-row canopy-describe dispatch — same shape as
+      // runCanopyMapTask above. The instruction-builder picks up
+      // params.canopy_entry_id and emits a fixed single-turn prompt
+      // for that one row; no batch drain.
+      const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
+      const { runAgent } = await import('../agent/executor.js');
+      const { getLatestRunId } = await import('../db/queries/runs.js');
+      const { DEFAULT_AGENT_ID } = await import('../constants.js');
+
+      const mycoConfig = liveConfig.current;
+      const projectRoot = path.resolve(vaultDir, '..');
+      const built = await buildTaskInstruction(
+        task,
+        params,
+        DEFAULT_AGENT_ID,
+        projectRoot,
+        embeddingManager,
+        mycoConfig,
+        () => teamSync.getTeamClient(),
+      );
+
+      const resultPromise = runAgent(vaultDir, {
+        task,
+        instruction: built?.instruction,
+        runContext: built?.context,
+        agentId: DEFAULT_AGENT_ID,
+        embeddingManager,
+        logger,
+      });
+
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+
+      resultPromise.catch((err) => {
+        logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
+          error: (err as Error).message ?? String(err),
+        });
+      });
+
+      return { run_id: runId ?? '' };
+    },
+  });
 
   // --- Skill lifecycle API routes ---
   server.registerRoute('GET', '/api/skill-candidates', handleListCandidates);
@@ -1090,7 +1198,7 @@ export async function main(): Promise<void> {
   });
 
   // --- Register power-managed jobs ---
-  registerPowerJobs(powerManager, {
+  const powerJobs = registerPowerJobs(powerManager, {
     embeddingManager,
     registry,
     logger,
@@ -1098,9 +1206,22 @@ export async function main(): Promise<void> {
     db,
     machineId,
     vaultDir,
+    projectRoot,
     databaseManager,
   });
   teamSync.registerFlushJob(powerManager);
+
+  // Wire the canopy delta runner into the session-register path so each
+  // SessionStart triggers a fire-and-forget refresh. The runner debounces.
+  (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
+
+  // Initial canopy populate runs in the background only when the table is
+  // empty. The delta scan handles steady-state refresh.
+  powerJobs.canopy.runInitialPopulate().catch((err) => {
+    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
+      error: (err as Error).message,
+    });
+  });
 
   // -- Dynamic task scheduling --
   await registerScheduledTasks(powerManager, {

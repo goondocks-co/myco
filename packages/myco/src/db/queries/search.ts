@@ -14,6 +14,7 @@ import {
   SEARCH_PREVIEW_CHARS,
 } from '@myco/constants.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
+import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,9 +28,19 @@ export type SearchResultType =
   | 'artifact'
   | 'prompt_batch'
   | 'activity'
-  | 'skill';
+  | 'skill'
+  | 'canopy';
 
-/** A single result returned from full-text or semantic search. */
+/**
+ * A single result returned from full-text or semantic search.
+ *
+ * The `canopy` variant carries extra per-file fields (`project_id`, `path`,
+ * `language`, `llm_description`) so the unified search renderer can display
+ * canopy hits the same way as the dedicated Canopy facet without a separate
+ * code path. The shared fields (`title`, `preview`) are populated for the
+ * generic renderer; canopy-specific fields are mirrored alongside them so
+ * the canopy result row can read them directly.
+ */
 export interface SearchResult {
   id: string;
   type: SearchResultType;
@@ -37,6 +48,11 @@ export interface SearchResult {
   preview: string;
   score: number;
   session_id?: string;
+  // Canopy-specific fields (populated when `type === 'canopy'`).
+  project_id?: string | null;
+  path?: string | null;
+  language?: string | null;
+  llm_description?: string | null;
 }
 
 /** Options for fullTextSearch. */
@@ -418,6 +434,53 @@ export function hydrateSearchResults(
         preview: (row.content ?? '').slice(0, SEARCH_PREVIEW_CHARS),
         score: vr.similarity,
       });
+    }
+  }
+
+  // --- canopy_entries ---
+  // Canopy vector rows carry the synthesized id `${project_id}:${path}` (split
+  // on the first colon — paths may contain colons, project_ids cannot). We
+  // parse each id back into `(project_id, path)` and look up the matching row
+  // in `canopy_entries` using a single composite-key WHERE IN VALUES query so
+  // the unified `All` facet can return canopy hits alongside sessions/spores
+  // without an N+1 round trip.
+  const canopyResults = byNamespace.get('canopy_entries');
+  if (canopyResults && canopyResults.length > 0) {
+    const parsed: Array<{ id: string; projectId: string; path: string; vr: VectorSearchResult }> = [];
+    for (const vr of canopyResults) {
+      const p = parseCanopyRecordId(vr.id);
+      if (p) parsed.push({ id: vr.id, projectId: p.projectId, path: p.path, vr });
+    }
+    if (parsed.length > 0) {
+      const placeholders = parsed.map(() => '(?, ?)').join(', ');
+      const args = parsed.flatMap((p) => [p.projectId, p.path]);
+      const rows = db.prepare(
+        `SELECT project_id, path, language, llm_description
+           FROM canopy_entries
+          WHERE (project_id, path) IN (VALUES ${placeholders})`,
+      ).all(...args) as Array<{
+        project_id: string;
+        path: string;
+        language: string | null;
+        llm_description: string | null;
+      }>;
+
+      const rowMap = new Map(rows.map((r) => [`${r.project_id}:${r.path}`, r]));
+      for (const p of parsed) {
+        const row = rowMap.get(p.id);
+        if (!row) continue;
+        results.push({
+          id: p.id,
+          type: 'canopy',
+          title: row.path,
+          preview: (row.llm_description ?? '').slice(0, SEARCH_PREVIEW_CHARS),
+          score: p.vr.similarity,
+          project_id: row.project_id,
+          path: row.path,
+          language: row.language,
+          llm_description: row.llm_description,
+        });
+      }
     }
   }
 

@@ -88,6 +88,11 @@ export const LOG_KINDS = {
   MAINTENANCE_EMBEDDING: 'maintenance.embedding',
   MAINTENANCE_STAGING_GC: 'maintenance.staging-gc',
 
+  // Canopy code intelligence
+  CANOPY_SCAN: 'canopy.scan',
+  CANOPY_RESCAN: 'canopy.rescan',
+  CANOPY_ERROR: 'canopy.error',
+
   // API operations
   API_SESSION_DELETE: 'api.session-delete',
   API_SESSION_COMPLETE: 'api.session-complete',

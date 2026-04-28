@@ -16,7 +16,12 @@ const mycoPackageJson = JSON.parse(
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
-  base: './',
+  // Absolute base. Relative ('./') breaks deep-route hard-refresh — the
+  // browser resolves './assets/foo' against /sessions/<id>/, producing
+  // /sessions/<id>/assets/foo (404). It also bypasses the hub's
+  // path-rewriting regex in packages/myco-hub/src/proxy.ts which only
+  // rewrites src/href starting with '/', not './'.
+  base: '/',
   define: {
     __MYCO_UI_VERSION__: JSON.stringify(mycoPackageJson.version),
   },

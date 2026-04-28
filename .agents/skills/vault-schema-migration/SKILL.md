@@ -1,7 +1,7 @@
 ---
 name: myco:vault-schema-migration
 description: |
-  Use this skill whenever you need to add, modify, or remove tables, columns, or indexes in the Myco vault SQLite schema — even if the user just asks to "add a column" or "create a new table." The vault uses a versioned createSchema migration chain where each schema version is a numbered step that builds on the previous one. Because user vaults accumulate real data across machines, any schema change that breaks the migration chain can corrupt or destroy vault data. This skill covers how to add a new version to the chain, write safe migration SQL, handle backfill steps, bump the schema version constant, and verify the migration works end-to-end before shipping.
+  Use this skill whenever you need to add, modify, or remove tables, columns, or indexes in the Myco vault SQLite schema — even if the user just asks to "add a column" or "create a new table." The vault uses a versioned createSchema migration chain where each schema version is a numbered step that builds on the previous one. Because user vaults accumulate real data across machines, any schema change that breaks the migration chain can corrupt or destroy vault data. This skill covers how to add a new version to the chain, write safe migration SQL, handle backfill steps, bump the schema version constant, sync D1 databases, and verify the migration works end-to-end before shipping.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -126,7 +126,63 @@ db.pragma(`user_version = ${SCHEMA_VERSION}`);
 
 Make sure the final `PRAGMA user_version = N` assignment uses the constant, not a hardcoded number.
 
-### 6. Test the migration locally
+### 6. Sync Cloudflare D1 schema changes
+
+**Critical:** Deployed Cloudflare D1 databases do NOT auto-receive local migrations. After local schema changes that affect D1-backed tables (typically team sync tables), you must manually update the D1 database.
+
+#### 6a. Identify D1-backed tables
+
+Check which tables replicate to D1:
+
+```bash
+grep -r "D1\|BACKFILL_TABLES" packages/myco/src --include="*.ts"
+```
+
+Common D1 tables include: `team_outbox`, `notifications`, `agent_runs`, and `sessions` (if team sync is enabled).
+
+#### 6b. Generate D1 migration SQL
+
+Extract the SQL statements from your migration block that affect D1 tables:
+
+```sql
+-- Example: if your migration added notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  payload TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+```
+
+Save this to a temporary file like `d1-migration-v9.sql`.
+
+#### 6c. Apply to D1 via wrangler
+
+Execute each statement against the D1 database:
+
+```bash
+# For team-sync database
+wrangler d1 execute myco-team-sync --file=d1-migration-v9.sql
+
+# Or individual statements
+wrangler d1 execute myco-team-sync --command="CREATE TABLE IF NOT EXISTS notifications (...);"
+```
+
+#### 6d. Verify D1 schema sync
+
+Confirm the schema applied correctly:
+
+```bash
+wrangler d1 execute myco-team-sync --command=".schema notifications"
+```
+
+**Common D1 migration failures:**
+- **Syntax differences**: D1 may not support all SQLite features. Test statements separately.
+- **Constraint violations**: D1 enforces foreign keys differently than local SQLite.
+- **Timeout on large migrations**: Split complex migrations into smaller batches.
+
+### 7. Test the migration locally
 
 Run the daemon against a fresh vault to verify the schema creates correctly from zero:
 
@@ -144,7 +200,7 @@ sqlite3 .myco/myco.db "PRAGMA user_version; .schema your_new_table"
 
 Confirm the version advanced and the new table/column exists.
 
-### 7. Update schema documentation
+### 8. Update schema documentation
 
 If the project has a schema changelog or version reference file, add an entry:
 
@@ -177,4 +233,4 @@ db.transaction(() => {
 })();
 ```
 
-**D1 sync deduplication.** If the project uses Cloudflare D1 for team sync, schema changes on the local vault may not automatically propagate to D1. Check whether the sync layer has its own schema management (it typically does) and update it separately.
+**D1 schema drift causes team sync failures.** Always sync D1 schema changes using the procedures in step 6. Sessions 6193f54f, 0440b9ac, and 4ee6eeec hit D1 drift failures from missing this step.

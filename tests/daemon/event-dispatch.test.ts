@@ -33,7 +33,10 @@ function makeHandler() {
     powerManager,
     logger,
     machineId: 'local',
-    liveConfig: { current: { agent: { summary_batch_interval: 20 } } as never },
+    liveConfig: { current: {
+      agent: { summary_batch_interval: 20 },
+      canopy: { exclude: { patterns: [] } },
+    } as never },
     vaultDir,
     reconcileSession: () => {},
     planWatchConfig: { watchDirs: [], projectRoot: vaultDir },

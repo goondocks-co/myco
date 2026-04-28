@@ -113,7 +113,7 @@ describe('SqliteVecVectorStore', () => {
 
       const stats = store.stats();
       expect(stats.total).toBe(4);
-      expect(Object.keys(stats.by_namespace)).toHaveLength(5);
+      expect(Object.keys(stats.by_namespace)).toHaveLength(6);
     });
 
     it('stores metadata with default values when metadata is omitted', () => {

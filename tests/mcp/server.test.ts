@@ -18,7 +18,7 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated 11-tool core surface', () => {
+  it('registers the consolidated 12-tool core surface', () => {
     const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
@@ -32,7 +32,8 @@ describe('MCP Server', () => {
     expect(tools).toContain('myco_context');
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_runs');
-    expect(tools).toHaveLength(11);
+    expect(tools).toContain('canopy_map');
+    expect(tools).toHaveLength(12);
   });
 
   it('no longer registers the retired MCP surfaces', () => {

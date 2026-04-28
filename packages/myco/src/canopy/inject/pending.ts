@@ -1,0 +1,85 @@
+/**
+ * In-memory registry of pending Canopy injections, keyed on
+ * (sessionId, filePath). PreToolUse populates an entry whenever an injection
+ * is offered; the PostToolUse activity-insert path consumes the entry and
+ * writes the recorded token count onto the new activities row's
+ * `canopy_injection_tokens` column.
+ *
+ * The registry is purely process-local and lossy by design — a daemon
+ * restart between PreToolUse and PostToolUse loses the linkage, the
+ * activities row is inserted with NULL canopy tokens, and aggregation
+ * treats it as "no injection" for that call. The
+ * spec's daemon-restart contract permits this: Canopy is observability,
+ * not auditability.
+ *
+ * Entries auto-expire after PENDING_TTL_MS (60s) so an interrupted Read
+ * (no PostToolUse fires) never leaks indefinitely.
+ */
+
+const PENDING_TTL_MS = 60_000;
+const PENDING_MAX_ENTRIES = 4096;
+const PENDING_KEY_SEPARATOR = '\u0000';
+
+interface PendingEntry {
+  injectionTokens: number;
+  expiresAt: number;
+}
+
+const pending = new Map<string, PendingEntry>();
+
+function key(sessionId: string, filePath: string): string {
+  return `${sessionId}${PENDING_KEY_SEPARATOR}${filePath}`;
+}
+
+function sweepExpired(now: number): void {
+  if (pending.size < PENDING_MAX_ENTRIES) return;
+  for (const [k, v] of pending) {
+    if (v.expiresAt <= now) pending.delete(k);
+  }
+}
+
+/**
+ * Record an injection offered for a (sessionId, filePath) pair. Overwrites
+ * any prior pending entry for the same key (the most recent injection is
+ * the one that matters for the next PostToolUse).
+ */
+export function recordPendingInjection(
+  sessionId: string,
+  filePath: string,
+  injectionTokens: number,
+  now: number = Date.now(),
+): void {
+  sweepExpired(now);
+  pending.set(key(sessionId, filePath), {
+    injectionTokens,
+    expiresAt: now + PENDING_TTL_MS,
+  });
+}
+
+/**
+ * Consume the pending injection for a (sessionId, filePath) pair. Returns
+ * the token count if present and unexpired; otherwise null. Always removes
+ * the entry — pending injections are one-shot.
+ */
+export function consumePendingInjection(
+  sessionId: string,
+  filePath: string,
+  now: number = Date.now(),
+): number | null {
+  const k = key(sessionId, filePath);
+  const entry = pending.get(k);
+  if (!entry) return null;
+  pending.delete(k);
+  if (entry.expiresAt <= now) return null;
+  return entry.injectionTokens;
+}
+
+/** Test-only: clear all pending entries. */
+export function _resetPendingInjections(): void {
+  pending.clear();
+}
+
+/** Test-only: read pending size. */
+export function _pendingSize(): number {
+  return pending.size;
+}

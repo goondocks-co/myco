@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Brain, Check, Copy, Database, Sparkles } from 'lucide-react';
+import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { useAgentRuns } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
@@ -16,6 +16,9 @@ import { Switch } from '../components/ui/switch';
 import { MarkdownContent } from '../components/ui/markdown-content';
 import { ScopedField } from '../components/config/ScopedField';
 import { DigestView } from '../components/mycelium/DigestView';
+import { CanopyEntriesPanel } from '../components/canopy/CanopyEntriesPanel';
+import { CanopyMapPanel } from '../components/canopy/CanopyMapPanel';
+import { TabSwitcher } from '../components/ui/tab-switcher';
 import {
   Select,
   SelectContent,
@@ -38,7 +41,16 @@ import {
 } from '../lib/constants';
 import { formatDuration, formatEpochAbsolute, formatEpochRelative, shortSession, truncate } from '../lib/format';
 
-type ActiveTab = 'instructions' | 'builder' | 'digest';
+type ActiveTab = 'instructions' | 'builder' | 'digest' | 'canopy';
+type CanopySection = 'overview' | 'entries' | 'map';
+
+const CANOPY_SECTIONS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'entries', label: 'Entries' },
+  { id: 'map', label: 'Map' },
+] as const;
+const VALID_CANOPY_SECTIONS = new Set<CanopySection>(CANOPY_SECTIONS.map((s) => s.id));
+const CANOPY_SECTION_PARAM = 'section';
 
 interface CortexInstructionsResponse {
   content: string;
@@ -85,6 +97,7 @@ const CORTEX_TABS = [
   { id: 'instructions', label: 'Instructions' },
   { id: 'builder', label: 'Builder' },
   { id: 'digest', label: 'Digest' },
+  { id: 'canopy', label: 'Canopy' },
 ] as const;
 const VALID_TABS = new Set<ActiveTab>(CORTEX_TABS.map((tab) => tab.id));
 const CORTEX_TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
@@ -99,7 +112,16 @@ const DIGEST_TIERS = [
 function resolveActiveTab(search: string): ActiveTab {
   const params = new URLSearchParams(search);
   const raw = params.get(CONFIG_FOCUS_TAB_PARAM);
-  return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
+  if (!raw) return 'instructions';
+  return VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'instructions';
+}
+
+function resolveCanopySection(search: string): CanopySection {
+  const params = new URLSearchParams(search);
+  const raw = params.get(CANOPY_SECTION_PARAM);
+  return raw && VALID_CANOPY_SECTIONS.has(raw as CanopySection)
+    ? (raw as CanopySection)
+    : 'overview';
 }
 
 function formatTimestamp(epochSeconds: number | null): string {
@@ -205,6 +227,8 @@ export default function Cortex() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = resolveActiveTab(location.search);
+  const canopySection = resolveCanopySection(location.search);
+
   const handleTabChange = useCallback((tabId: string) => {
     if (!VALID_TABS.has(tabId as ActiveTab)) return;
     const params = new URLSearchParams(location.search);
@@ -212,6 +236,22 @@ export default function Cortex() {
       params.delete(CONFIG_FOCUS_TAB_PARAM);
     } else {
       params.set(CONFIG_FOCUS_TAB_PARAM, tabId);
+    }
+    // Switching tabs always drops the section param — sections only make
+    // sense within the Canopy tab and they default to 'overview' anyway.
+    if (tabId !== 'canopy') params.delete(CANOPY_SECTION_PARAM);
+    const search = params.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  const handleCanopySectionChange = useCallback((sectionId: string) => {
+    if (!VALID_CANOPY_SECTIONS.has(sectionId as CanopySection)) return;
+    const params = new URLSearchParams(location.search);
+    params.set(CONFIG_FOCUS_TAB_PARAM, 'canopy');
+    if (sectionId === 'overview') {
+      params.delete(CANOPY_SECTION_PARAM);
+    } else {
+      params.set(CANOPY_SECTION_PARAM, sectionId);
     }
     const search = params.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : '' }, { replace: true });
@@ -227,7 +267,53 @@ export default function Cortex() {
         onTabChange={handleTabChange}
       />
 
-      {activeTab === 'digest' ? <DigestTab /> : activeTab === 'builder' ? <BuilderTab /> : <InstructionsTab />}
+      {activeTab === 'digest' ? (
+        <DigestTab />
+      ) : activeTab === 'builder' ? (
+        <BuilderTab />
+      ) : activeTab === 'canopy' ? (
+        <CanopyTabUnified
+          section={canopySection}
+          onSectionChange={handleCanopySectionChange}
+          searchParams={location.search}
+        />
+      ) : (
+        <InstructionsTab />
+      )}
+    </div>
+  );
+}
+
+interface CanopyTabUnifiedProps {
+  section: CanopySection;
+  onSectionChange: (section: string) => void;
+  searchParams: string;
+}
+
+function CanopyTabUnified({ section, onSectionChange, searchParams }: CanopyTabUnifiedProps) {
+  return (
+    <div className="space-y-6">
+      <TabSwitcher
+        tabs={CANOPY_SECTIONS.map((s) => ({ id: s.id, label: s.label }))}
+        activeTab={section}
+        onTabChange={onSectionChange}
+      />
+
+      {section === 'entries' ? (
+        (() => {
+          const pathFromUrl = new URLSearchParams(searchParams).get('path') ?? undefined;
+          return (
+            <CanopyEntriesPanel
+              key={pathFromUrl ?? 'no-path'}
+              defaultPath={pathFromUrl}
+            />
+          );
+        })()
+      ) : section === 'map' ? (
+        <CanopyMapPanel />
+      ) : (
+        <CanopyTab />
+      )}
     </div>
   );
 }
@@ -365,7 +451,7 @@ function InstructionsTab() {
           </Badge>
         </div>
 
-        <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
+        <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5">
           {instructionsQuery.isLoading ? (
             <p className="font-sans text-sm text-on-surface-variant">Loading instructions...</p>
           ) : instructions?.content ? (
@@ -581,7 +667,7 @@ function BuilderTab() {
         {builderRunsQuery.isLoading ? (
           <p className="font-sans text-sm text-on-surface-variant">Loading recent builds...</p>
         ) : builderRuns.length === 0 ? (
-          <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5">
+          <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5">
             <p className="font-sans text-sm text-on-surface-variant">
               No builder runs yet. Start one above and Cortex will keep the prompt artifact here.
             </p>
@@ -589,7 +675,7 @@ function BuilderTab() {
         ) : (
           <div className="space-y-3">
             {builderRuns.map(({ run, parsed }) => (
-              <Surface key={run.id} level="base" className="rounded-lg border border-outline-variant/20 p-4 space-y-3">
+              <Surface key={run.id} level="default" className="rounded-lg border border-outline-variant/20 p-4 space-y-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -743,7 +829,7 @@ function BuilderRunDetail({
         </div>
       </div>
 
-      <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-2">
+      <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5 space-y-2">
         <p className="font-sans text-sm font-medium text-on-surface">Generated Prompt</p>
         {result?.prompt ? (
           <pre className="whitespace-pre-wrap font-mono text-sm text-on-surface">{result.prompt}</pre>
@@ -757,7 +843,7 @@ function BuilderRunDetail({
       </Surface>
 
       {result?.reports?.length ? (
-        <Surface level="base" className="rounded-lg border border-outline-variant/20 p-5 space-y-3">
+        <Surface level="default" className="rounded-lg border border-outline-variant/20 p-5 space-y-3">
           <p className="font-sans text-sm font-medium text-on-surface">Task Reports</p>
           <div className="space-y-2">
             {result.reports.map((report) => (
@@ -822,6 +908,175 @@ function DigestTab() {
       </Surface>
 
       <DigestView />
+    </div>
+  );
+}
+
+function CanopyTab() {
+  const { effective, isLoading } = useScopedConfig();
+  if (isLoading || !effective) {
+    return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <Surface level="low" className="rounded-lg border border-primary/15 p-5">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="rounded-md bg-primary/10 p-2 text-primary">
+            <Trees className="h-4 w-4" />
+          </div>
+          <div className="space-y-1">
+            <p className="font-sans text-sm font-medium text-on-surface">
+              Canopy is your project's live code index.
+            </p>
+            <p className="max-w-3xl font-sans text-sm text-on-surface-variant">
+              It tracks what every file does so connected agents can answer
+              codebase questions and skip redundant Reads. The Myco agent
+              describes files in the background — opt-in, configurable below.
+            </p>
+          </div>
+        </div>
+      </Surface>
+
+      <Surface
+        id="config-section-cortex-canopy-collection"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+      >
+        <div className="space-y-1">
+          <SectionHeader>Collection</SectionHeader>
+          <p className="font-sans text-sm text-on-surface-variant">
+            The scanner automatically skips anything matched by this project's
+            {' '}<code className="font-mono text-xs">.gitignore</code>{' '}
+            plus directories that Myco and your installed symbionts manage
+            ({' '}<code className="font-mono text-xs">.myco/</code>,
+            {' '}<code className="font-mono text-xs">.agents/</code>,
+            {' '}<code className="font-mono text-xs">.claude/</code>,
+            {' '}<code className="font-mono text-xs">.cursor/</code>, etc.).
+            Add patterns below to exclude additional paths.
+          </p>
+        </div>
+
+        <ScopedField<'canopy.exclude.patterns', string[]>
+          path="canopy.exclude.patterns"
+          label="Extra exclude patterns"
+          defaultScope="project"
+          commitOn="blur"
+        >
+          {({ value, onChange }) => {
+            const lines = (value ?? []).join('\n');
+            return (
+              <textarea
+                className="min-h-[120px] w-full rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
+                placeholder={"# one glob per line, e.g.\nfixtures/large/**\n**/*.snap"}
+                value={lines}
+                onChange={(event) => {
+                  const next = event.target.value
+                    .split('\n')
+                    .map((line) => line.trim())
+                    .filter((line) => line.length > 0 && !line.startsWith('#'));
+                  onChange(next);
+                }}
+              />
+            );
+          }}
+        </ScopedField>
+
+        <div className="space-y-1 pt-2">
+          <p className="font-sans text-xs uppercase tracking-wide text-on-surface-variant">
+            Background refresh
+          </p>
+          <p className="font-sans text-sm text-on-surface-variant">
+            Session start and the Write/Edit tool already keep the index fresh during
+            sessions. The background sweep is the safety net for changes made outside
+            sessions ({' '}<code className="font-mono text-xs">git pull</code>, edits
+            via non-Myco tools).
+          </p>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'canopy.refresh.background_enabled', boolean>
+            path="canopy.refresh.background_enabled"
+            label="Periodic background scan"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? true} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+
+          <ScopedField<'canopy.refresh.background_period_minutes', number>
+            path="canopy.refresh.background_period_minutes"
+            label="Period (minutes)"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="number"
+                min={1}
+                value={String(value ?? 60)}
+                onChange={(event) => onChange(Number(event.target.value))}
+              />
+            )}
+          </ScopedField>
+        </div>
+      </Surface>
+
+      <Surface
+        id="config-section-cortex-canopy-injection"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-5"
+      >
+        <SectionHeader>Injection</SectionHeader>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScopedField<'cortex.canopy.injection.enabled', boolean>
+            path="cortex.canopy.injection.enabled"
+            label="Inject canopy on Read"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Switch checked={value ?? true} onCheckedChange={onChange} />
+            )}
+          </ScopedField>
+
+          <ScopedField<'cortex.canopy.injection.size_threshold', number>
+            path="cortex.canopy.injection.size_threshold"
+            label="Minimum file size (bytes)"
+            defaultScope="project"
+          >
+            {({ value, onChange }) => (
+              <Input
+                type="number"
+                min={0}
+                value={String(value ?? 800)}
+                onChange={(event) => onChange(Number(event.target.value))}
+              />
+            )}
+          </ScopedField>
+        </div>
+      </Surface>
+
+      <Surface
+        id="config-section-cortex-canopy-llm"
+        level="low"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-2"
+      >
+        <SectionHeader>Myco-generated file descriptions</SectionHeader>
+        <p className="font-sans text-sm text-on-surface-variant">
+          One-sentence summaries the Myco agent writes for each file. They
+          power semantic search across your codebase and ride along with
+          Canopy injection on Read. Configure the schedule and reasoning
+          level on the{' '}
+          <Link
+            to="/agent?tab=tasks&task=canopy-describe"
+            className="text-primary underline underline-offset-2 hover:text-primary/80"
+          >
+            canopy-describe task
+          </Link>
+          .
+        </p>
+      </Surface>
     </div>
   );
 }

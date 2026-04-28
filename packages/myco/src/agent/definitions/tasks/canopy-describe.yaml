@@ -1,0 +1,88 @@
+# =============================================================================
+# Built-in Task: Canopy Describe (Tier 2)
+# =============================================================================
+# Generates one-sentence file summaries for canopy_entries.llm_description.
+#
+# Two invocation modes (both run through the standard agent harness):
+#   - Single-row: runTask('canopy-describe', { params: { canopy_entry_id } })
+#     builds a fixed single-turn instruction; no tools needed.
+#   - Batch (the schedule): runTask('canopy-describe') with no row id; the
+#     agent drains pending rows via canopy_describe_next + canopy_describe_write.
+#
+# The schedule is opt-in — flip per project via myco.yaml under
+# `agent.tasks['canopy-describe'].schedule.enabled`. Reasoning tier and
+# per-row caps are also driven from `agent.tasks['canopy-describe']` so a
+# single config location governs both modes.
+# =============================================================================
+
+name: canopy-describe
+displayName: Canopy Describe
+description: >-
+  Generate one-sentence file summaries to populate llm_description on
+  canopy_entries. Local-first; runs as a background trickle.
+agent: myco-agent
+isDefault: false
+reasoningLevel: low
+maxTurns: 60
+timeoutSeconds: 1800
+schedule:
+  enabled: false
+  # Cadence math at batch_size: 10 — 900s drains ~40 rows/hour while idle.
+  # A repo with 1k files and rapid churn keeps up; a fresh small project
+  # drains in one tick. has-pending-canopy-rows gates the run, so empty
+  # queues cost nothing per tick. Drop to 600/300 for a one-time backlog
+  # burn-down; raise back to 3600 if you'd rather pay the cost slowly.
+  # task-scheduler.ts already prevents overlap, so ticks fired while a
+  # prior run is in flight are silently skipped.
+  intervalSeconds: 900
+  runIn:
+    - idle
+    - sleep
+  preCondition: has-pending-canopy-rows
+prompt: >-
+  Either describe a single canopy_entries row (single-row mode) or drain
+  a batch of pending rows using canopy_describe_next + canopy_describe_write
+  (batch mode). The instruction tells you which mode you are in.
+params:
+  # Sized for local models. The cap is not a context-budget cap — it's a
+  # per-turn tool-emission cap. canopy_describe_next returns the whole
+  # batch in one tool result (~400 tokens per entry), and 26B-class local
+  # models (gemma, qwen, llama-3.x) can only confidently emit follow-up
+  # tool calls against a result of ~10 entries before they fall back to
+  # the easier action of just re-fetching. Symptom is a fetch-loop:
+  # `canopy_describe_next` called repeatedly, zero `canopy_describe_write`
+  # calls. Frontier models could go higher; local stays at 10.
+  batch_size: 10
+  max_description_chars: 180
+  max_attempts: 2
+phases:
+  - name: describe
+    reasoningLevel: low
+    maxTurns: 60
+    required: true
+    tools:
+      - canopy_describe_next
+      - canopy_describe_write
+    prompt: |
+      You write one-sentence summaries of source files for a code
+      intelligence system. The instruction payload contains the data
+      you need.
+
+      Single-row mode: the payload contains one file's metadata and a
+      head-of-file excerpt. Reply with one sentence describing the
+      file's architectural purpose, then call canopy_describe_write
+      with the row's path and your sentence. Stop.
+
+      Batch mode: call canopy_describe_next to pull a batch of pending
+      rows. For each entry, emit one sentence and call
+      canopy_describe_write({ path, description }). Continue until the
+      batch returns zero entries or you reach the batch_size cap, then
+      stop.
+
+      Style rules (apply to every description):
+      - Exactly one sentence.
+      - Maximum 180 characters.
+      - No markdown, no quotes, no preamble.
+      - Describe the file's purpose at the architectural level — do not
+        narrate exports already visible in the metadata.
+      - If the file is configuration, generated, or trivial, say so.

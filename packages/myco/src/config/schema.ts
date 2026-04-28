@@ -7,6 +7,14 @@ const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
   model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
+  /**
+   * When true, the embedding reconcile loop continues running in the deep-sleep
+   * power state — the daemon stays in `sleep` (with a longer tick interval)
+   * instead of entering deep sleep, as long as embedding work is pending.
+   * Recommended for projects with large embedding backlogs so the queue keeps
+   * draining when the machine sits idle long enough to deep-sleep.
+   */
+  run_in_deep_sleep: z.boolean().default(true),
 });
 
 const DaemonSchema = z.object({
@@ -63,7 +71,7 @@ const ScheduleOverrideSchema = z.object({
   enabled: z.boolean().optional(),
   intervalSeconds: z.number().int().positive().optional(),
   runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).optional(),
-  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills', 'has-approved-candidates', 'has-skill-survey-evidence']).optional(),
+  preCondition: z.enum(['has-unprocessed-batches', 'has-active-skills', 'has-approved-candidates', 'has-skill-survey-evidence', 'has-pending-canopy-rows']).optional(),
 }).optional();
 
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
@@ -189,16 +197,19 @@ const SymbiontEntrySchema = z.object({
 const CanopyRefreshSchema = z.object({
   /** Whether the PowerManager-scheduled background rescan runs at all. */
   background_enabled: z.boolean().default(true),
-  /** Human-readable period consumed by PowerManager's duration parser. */
-  background_period: z.string().default('1h'),
+  /** Period between background rescans, in minutes. */
+  background_period_minutes: z.number().int().min(1).default(60),
 });
 
 const CanopyExcludeSchema = z.object({
-  /** Glob/segment patterns skipped during scans. */
-  patterns: z.array(z.string()).default([
-    'node_modules', '.git', 'dist', 'build', '.next', '.turbo',
-    '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
-  ]),
+  /**
+   * Extra glob/segment patterns the scanner should skip on top of the
+   * project's `.gitignore` and Myco's managed segments (handled inside
+   * the scanner). Empty by default — almost every project's `.gitignore`
+   * already declares the right things, and adding patterns here means
+   * "exclude this in addition to what gitignore says".
+   */
+  patterns: z.array(z.string()).default([]),
 });
 
 const CanopySchema = z.object({
@@ -218,22 +229,8 @@ const CortexCanopyInjectionSchema = z.object({
   size_threshold: z.number().int().default(800),
 });
 
-const CortexCanopyLlmSchema = z.object({
-  /** Enable the Tier 2 `canopy-describe` task. Default off — opt in. */
-  enabled: z.boolean().default(false),
-  /** Reasoning tier hint passed to the provider selector. */
-  reasoning_tier: z.enum(['low', 'medium', 'high']).default('low'),
-  /** Prompt ref resolved under packages/myco/src/prompts/. */
-  prompt_ref: z.string().default('canopy-describe'),
-  /** Hard cap on post-processed description length. */
-  max_description_chars: z.number().int().default(180),
-  /** Retry budget before leaving llm_description NULL. */
-  max_attempts: z.number().int().default(2),
-});
-
 const CortexCanopySchema = z.object({
   injection: CortexCanopyInjectionSchema.default(() => CortexCanopyInjectionSchema.parse({})),
-  llm: CortexCanopyLlmSchema.default(() => CortexCanopyLlmSchema.parse({})),
 });
 
 const CortexSchema = z.object({

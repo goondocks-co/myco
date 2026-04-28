@@ -58,7 +58,12 @@ export class EmbeddingManager {
     return createHash(CONTENT_HASH_ALGORITHM).update(text).digest('hex');
   }
 
-  private totalPendingCount(): number {
+  /**
+   * Sum of pending (unembedded) row counts across every embeddable namespace.
+   * Public so the PowerManager `preventsDeepSleep` predicate can short-circuit
+   * the deep-sleep transition while the embedding queue still has work to do.
+   */
+  totalPendingCount(): number {
     return EMBEDDABLE_NAMESPACES.reduce(
       (sum, namespace) => sum + this.recordSource.getPendingCount(namespace),
       0,

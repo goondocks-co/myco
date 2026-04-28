@@ -100,20 +100,32 @@ export function PhaseConfigRow({
               }}
               onLocalBackendChange={(localBackend) => onChange({
                 ...override,
-                provider: override.provider ? { ...override.provider, local_backend: localBackend || undefined } : undefined,
+                provider: {
+                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  local_backend: localBackend || undefined,
+                },
               })}
               onModelChange={(m) => onChange({
                 ...override,
-                provider: override.provider ? { ...override.provider, model: m } : undefined,
-                model: override.provider ? undefined : m,
+                provider: {
+                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  model: m,
+                },
+                model: undefined,
               })}
               onBaseUrlChange={(url) => onChange({
                 ...override,
-                provider: override.provider ? { ...override.provider, base_url: url } : undefined,
+                provider: {
+                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  base_url: url,
+                },
               })}
               onContextLengthChange={(ctx) => onChange({
                 ...override,
-                provider: override.provider ? { ...override.provider, context_length: ctx ? Number(ctx) : undefined } : undefined,
+                provider: {
+                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  context_length: ctx ? Number(ctx) : undefined,
+                },
               })}
             />
           </div>

@@ -3,11 +3,14 @@ config_version: 6
 embedding:
   provider: ollama
   model: bge-m3:latest
+  run_in_deep_sleep: true
 daemon:
   port: 21039
   log_level: info
   log_retention_days: 30
   stale_session_threshold_ms: 3600000
+hub:
+  url: http://127.0.0.1:21000
 capture:
   transcript_paths: []
   plan_dirs:
@@ -66,7 +69,32 @@ agent:
           maxTurns: 30
       schedule:
         enabled: true
-        intervalSeconds: 1800
+        intervalSeconds: 3200
+    canopy-describe:
+      provider:
+        runtime: openai-agents
+        type: lmstudio
+        base_url: http://localhost:1234
+        model: google/gemma-4-26b-a4b
+        reasoning_map:
+          low: google/gemma-4-26b-a4b
+          default: google/gemma-4-31b
+          high: google/gemma-4-31b
+      runtime: openai-agents
+      schedule:
+        enabled: true
+    canopy-map:
+      provider:
+        runtime: claude-sdk
+        type: anthropic
+        model: claude-haiku-4-5-20251001
+        reasoning_map:
+          low: claude-haiku-4-5-20251001
+          default: claude-sonnet-4-6
+          high: claude-opus-4-6
+      runtime: claude-sdk
+      schedule:
+        enabled: true
 context:
   digest_tier: 5000
   session_start_digest_enabled: false
@@ -102,6 +130,27 @@ notifications:
     settings:
       enabled: true
       mode: banner
+canopy:
+  refresh:
+    background_enabled: true
+    background_period_minutes: 60
+  exclude:
+    patterns:
+      - node_modules
+      - .git
+      - dist
+      - build
+      - .next
+      - .turbo
+      - "**/*.lock"
+      - "**/package-lock.json"
+      - "**/pnpm-lock.yaml"
+      - "**/yarn.lock"
+cortex:
+  canopy:
+    injection:
+      enabled: true
+      size_threshold: 800
 appearance:
   theme: sage
   mode: dark

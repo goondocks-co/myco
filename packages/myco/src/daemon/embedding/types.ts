@@ -20,6 +20,9 @@ export interface DomainMetadata {
   name?: string;
   source_path?: string;
   created_at?: number;
+  project_id?: string;
+  path?: string;
+  language?: string;
 }
 
 /** Full metadata stored per vector in the VectorStore. */
@@ -38,6 +41,9 @@ export interface EmbeddingMetadata {
   name?: string;
   source_path?: string;
   created_at?: number;
+  project_id?: string;
+  path?: string;
+  language?: string;
 }
 
 /** Result from similarity search. */

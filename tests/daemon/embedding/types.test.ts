@@ -20,12 +20,12 @@ import {
 
 describe('Embedding types', () => {
   describe('EMBEDDABLE_NAMESPACES', () => {
-    it('contains exactly the five embeddable namespaces', () => {
-      expect(EMBEDDABLE_NAMESPACES).toEqual(['sessions', 'spores', 'plans', 'artifacts', 'skill_records']);
+    it('contains exactly the six embeddable namespaces', () => {
+      expect(EMBEDDABLE_NAMESPACES).toEqual(['sessions', 'spores', 'plans', 'artifacts', 'skill_records', 'canopy_entries']);
     });
 
-    it('has length 5', () => {
-      expect(EMBEDDABLE_NAMESPACES).toHaveLength(5);
+    it('has length 6', () => {
+      expect(EMBEDDABLE_NAMESPACES).toHaveLength(6);
     });
   });
 

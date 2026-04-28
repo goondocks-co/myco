@@ -13,10 +13,12 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { insertActivity } from '@myco/db/queries/activities.js';
-import { fullTextSearch } from '@myco/db/queries/search.js';
+import { fullTextSearch, hydrateSearchResults } from '@myco/db/queries/search.js';
+import { getDatabase } from '@myco/db/client.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
+import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -166,5 +168,128 @@ describe('fullTextSearch', () => {
     // Insert session but no batches or activities
     const results = fullTextSearch('anything');
     expect(results).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hydrateSearchResults — vector → SearchResult hydration
+// ---------------------------------------------------------------------------
+
+/** Insert a canopy_entries row directly. The dedicated public helper lives
+ *  inside the scanner module and pulls in pieces we don't need here. */
+function insertCanopyEntry(row: {
+  project_id: string;
+  path: string;
+  llm_description?: string | null;
+  language?: string | null;
+}): void {
+  const now = epochNow();
+  getDatabase().prepare(
+    `INSERT INTO canopy_entries (
+       project_id, machine_id, path, content_hash, size_bytes, token_estimate,
+       line_count, language, mechanical_updated_at, llm_description, llm_updated_at
+     ) VALUES (?, 'local', ?, 'h', 0, 0, 0, ?, ?, ?, ?)`,
+  ).run(
+    row.project_id,
+    row.path,
+    row.language ?? null,
+    now,
+    row.llm_description ?? null,
+    row.llm_description ? now : null,
+  );
+}
+
+describe('hydrateSearchResults', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('hydrates canopy_entries vector hits using the synthesized id', () => {
+    insertCanopyEntry({
+      project_id: 'proj-1',
+      path: 'packages/myco/src/canopy/scanner/index.ts',
+      llm_description: 'Walks the project tree to harvest canopy entries.',
+      language: 'typescript',
+    });
+
+    const vectorResults: VectorSearchResult[] = [
+      {
+        id: 'proj-1:packages/myco/src/canopy/scanner/index.ts',
+        namespace: 'canopy_entries',
+        similarity: 0.91,
+        metadata: {},
+      },
+    ];
+
+    const hydrated = hydrateSearchResults(vectorResults);
+
+    expect(hydrated).toHaveLength(1);
+    const hit = hydrated[0];
+    expect(hit.type).toBe('canopy');
+    expect(hit.id).toBe('proj-1:packages/myco/src/canopy/scanner/index.ts');
+    expect(hit.title).toBe('packages/myco/src/canopy/scanner/index.ts');
+    expect(hit.preview).toBe('Walks the project tree to harvest canopy entries.');
+    expect(hit.score).toBeCloseTo(0.91, 5);
+    expect(hit.path).toBe('packages/myco/src/canopy/scanner/index.ts');
+    expect(hit.project_id).toBe('proj-1');
+    expect(hit.language).toBe('typescript');
+    expect(hit.llm_description).toBe('Walks the project tree to harvest canopy entries.');
+  });
+
+  it('hydrates a mixed batch of session and canopy hits in one call', () => {
+    const session = makeSession({ title: 'How embeddings reconcile' });
+    upsertSession(session);
+
+    insertCanopyEntry({
+      project_id: 'proj-1',
+      path: 'src/foo.ts',
+      llm_description: 'Foo module description.',
+      language: 'typescript',
+    });
+
+    const vectorResults: VectorSearchResult[] = [
+      {
+        id: session.id,
+        namespace: 'sessions',
+        similarity: 0.85,
+        metadata: {},
+      },
+      {
+        id: 'proj-1:src/foo.ts',
+        namespace: 'canopy_entries',
+        similarity: 0.72,
+        metadata: {},
+      },
+    ];
+
+    const hydrated = hydrateSearchResults(vectorResults);
+
+    expect(hydrated).toHaveLength(2);
+    const types = hydrated.map((r) => r.type).sort();
+    expect(types).toEqual(['canopy', 'session']);
+    // Order is by score DESC; session 0.85 > canopy 0.72
+    expect(hydrated[0].type).toBe('session');
+    expect(hydrated[1].type).toBe('canopy');
+    expect(hydrated[1].path).toBe('src/foo.ts');
+  });
+
+  it('drops malformed canopy ids without throwing', () => {
+    insertCanopyEntry({
+      project_id: 'proj-1',
+      path: 'src/foo.ts',
+      llm_description: 'Real row.',
+      language: 'typescript',
+    });
+
+    const vectorResults: VectorSearchResult[] = [
+      // Missing colon — malformed
+      { id: 'no-colon-here', namespace: 'canopy_entries', similarity: 0.9, metadata: {} },
+      // Real id
+      { id: 'proj-1:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
+    ];
+
+    const hydrated = hydrateSearchResults(vectorResults);
+    expect(hydrated).toHaveLength(1);
+    expect(hydrated[0].path).toBe('src/foo.ts');
   });
 });

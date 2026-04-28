@@ -12,6 +12,7 @@ import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { SessionPlans } from './SessionPlans';
+import { CanopyEfficiencyTile } from './CanopyEfficiencyTile';
 import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
@@ -261,11 +262,14 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </div>
       </div>
 
-      {/* Key stats (compact row) */}
-      <div className="grid grid-cols-3 gap-4">
+      {/* Key stats (compact row). Canopy tile renders for every session
+          (including non-Claude / pre-feature) with zeros where data is
+          absent — fits the four-column row regardless of agent. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
         <StatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
         <StatCard label="Plans" value={String(plans?.length ?? 0)} accent="outline" />
+        <CanopyEfficiencyTile sessionId={id} />
       </div>
 
       {/* Metadata details (collapsible-style row) */}

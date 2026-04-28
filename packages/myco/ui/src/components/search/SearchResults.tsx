@@ -1,6 +1,6 @@
-import { type SearchResult } from '../../hooks/use-search';
+import { type AnySearchResult, type CanopySearchResult, type SearchResult } from '../../hooks/use-search';
 import { Badge } from '../ui/badge';
-import { MessageSquare, Sparkles, ClipboardList, Activity, FileText } from 'lucide-react';
+import { MessageSquare, Sparkles, ClipboardList, Activity, FileText, FileCode } from 'lucide-react';
 
 /** Maximum characters shown in a result preview line. */
 const PREVIEW_MAX_CHARS = 120;
@@ -11,10 +11,15 @@ const TYPE_META: Record<string, { label: string; icon: React.ElementType }> = {
   plan: { label: 'Plans', icon: ClipboardList },
   prompt_batch: { label: 'Prompt Batches', icon: Activity },
   activity: { label: 'Activities', icon: Activity },
+  canopy: { label: 'Canopy', icon: FileCode },
 };
 
 function getTypeMeta(type: string) {
   return TYPE_META[type] ?? { label: type, icon: FileText };
+}
+
+function isCanopyResult(result: AnySearchResult): result is CanopySearchResult {
+  return result.type === 'canopy';
 }
 
 function truncate(text: string, max: number): string {
@@ -32,12 +37,61 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 interface ResultRowProps {
-  result: SearchResult;
-  onSelect: (result: SearchResult) => void;
+  result: AnySearchResult;
+  onSelect: (result: AnySearchResult) => void;
   isHighlighted: boolean;
 }
 
+function CanopyResultRow({
+  result,
+  onSelect,
+  isHighlighted,
+}: {
+  result: CanopySearchResult;
+  onSelect: (result: AnySearchResult) => void;
+  isHighlighted: boolean;
+}) {
+  const { icon: Icon } = getTypeMeta('canopy');
+  const path = result.path ?? '(unknown path)';
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(result)}
+      data-testid="search-result-canopy"
+      className={[
+        'w-full flex items-start gap-3 px-3 py-2 text-left rounded-md transition-colors',
+        isHighlighted
+          ? 'bg-surface-container-high text-on-surface'
+          : 'hover:bg-surface-container-high hover:text-on-surface',
+      ].join(' ')}
+    >
+      <Icon className="h-4 w-4 mt-0.5 shrink-0 text-on-surface-variant" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-mono truncate">{path}</span>
+          {result.language && (
+            <Badge variant="secondary" className="shrink-0 text-[10px] uppercase tracking-wider">
+              {result.language}
+            </Badge>
+          )}
+        </div>
+        {result.llm_description && (
+          <p className="text-xs text-on-surface-variant mt-0.5 truncate">
+            {truncate(result.llm_description, PREVIEW_MAX_CHARS)}
+          </p>
+        )}
+      </div>
+      <ScoreBadge score={result.score} />
+    </button>
+  );
+}
+
 function ResultRow({ result, onSelect, isHighlighted }: ResultRowProps) {
+  if (isCanopyResult(result)) {
+    return (
+      <CanopyResultRow result={result} onSelect={onSelect} isHighlighted={isHighlighted} />
+    );
+  }
   const { icon: Icon } = getTypeMeta(result.type);
 
   return (
@@ -68,14 +122,21 @@ function ResultRow({ result, onSelect, isHighlighted }: ResultRowProps) {
 }
 
 interface SearchResultsProps {
-  results: SearchResult[];
-  onSelect: (result: SearchResult) => void;
+  results: AnySearchResult[];
+  onSelect: (result: AnySearchResult) => void;
   highlightedIndex: number;
+}
+
+function resultKey(result: AnySearchResult, index: number): string {
+  if (isCanopyResult(result)) {
+    return `canopy:${result.path ?? index}`;
+  }
+  return (result as SearchResult).id ?? String(index);
 }
 
 export function SearchResults({ results, onSelect, highlightedIndex }: SearchResultsProps) {
   // Group by type
-  const grouped = results.reduce<Record<string, SearchResult[]>>((acc, r) => {
+  const grouped = results.reduce<Record<string, AnySearchResult[]>>((acc, r) => {
     const key = r.type ?? 'unknown';
     (acc[key] ??= []).push(r);
     return acc;
@@ -100,7 +161,7 @@ export function SearchResults({ results, onSelect, highlightedIndex }: SearchRes
             </div>
             {items.map((result, i) => (
               <ResultRow
-                key={result.id}
+                key={resultKey(result, groupStart + i)}
                 result={result}
                 onSelect={onSelect}
                 isHighlighted={highlightedIndex === groupStart + i}

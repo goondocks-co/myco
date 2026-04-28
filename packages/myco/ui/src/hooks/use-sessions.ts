@@ -104,6 +104,7 @@ export interface ActivityRow {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  canopy_injection_tokens: number | null;
 }
 
 export interface AttachmentRow {

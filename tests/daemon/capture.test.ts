@@ -23,6 +23,7 @@ import {
   listActivities,
   countActivities,
 } from '@myco/db/queries/activities.js';
+import { recordPendingInjection, _resetPendingInjections } from '@myco/canopy/inject/pending.js';
 import {
   handleUserPrompt,
   handleToolUse,
@@ -41,7 +42,10 @@ const epochNow = () => Math.floor(Date.now() / 1000);
 describe('daemon capture flow', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
-  beforeEach(() => { cleanTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    _resetPendingInjections();
+  });
 
   it('tracks batches and activities through a full session lifecycle', async () => {
     const sessionId = 'test-session-capture-001';
@@ -164,6 +168,27 @@ describe('daemon capture flow', () => {
     const activities = listActivities({ session_id: sessionId });
     expect(activities.length).toBe(1);
     expect(activities[0].file_path).toBe('/tmp/opencode.ts');
+  });
+
+  it('stamps Canopy injection tokens for absolute Read paths under the project root', async () => {
+    const sessionId = 'test-session-canopy-absolute';
+    const now = epochNow();
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+    });
+
+    const absolute = `${process.cwd()}/src/file.ts`;
+    recordPendingInjection(sessionId, 'src/file.ts', 123);
+
+    handleToolUse(sessionId, 'Read', { file_path: absolute }, 'contents');
+
+    const activities = listActivities({ session_id: sessionId });
+    expect(activities).toHaveLength(1);
+    expect(activities[0].file_path).toBe('src/file.ts');
+    expect(activities[0].canopy_injection_tokens).toBe(123);
   });
 
   it('handles stop with no open batch — session stays active', async () => {

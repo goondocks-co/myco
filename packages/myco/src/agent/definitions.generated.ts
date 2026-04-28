@@ -44,6 +44,79 @@ export const BUNDLED_AGENT_DEFINITION: AgentDefinition = {
 
 export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
   {
+    "name": "canopy-describe",
+    "displayName": "Canopy Describe",
+    "description": "Generate one-sentence file summaries to populate llm_description on canopy_entries. Local-first; runs as a background trickle.",
+    "agent": "myco-agent",
+    "prompt": "Either describe a single canopy_entries row (single-row mode) or drain a batch of pending rows using canopy_describe_next + canopy_describe_write (batch mode). The instruction tells you which mode you are in.",
+    "isDefault": false,
+    "reasoningLevel": "low",
+    "maxTurns": 60,
+    "timeoutSeconds": 1800,
+    "phases": [
+      {
+        "name": "describe",
+        "prompt": "You write one-sentence summaries of source files for a code\nintelligence system. The instruction payload contains the data\nyou need.\n\nSingle-row mode: the payload contains one file's metadata and a\nhead-of-file excerpt. Reply with one sentence describing the\nfile's architectural purpose, then call canopy_describe_write\nwith the row's path and your sentence. Stop.\n\nBatch mode: call canopy_describe_next to pull a batch of pending\nrows. For each entry, emit one sentence and call\ncanopy_describe_write({ path, description }). Continue until the\nbatch returns zero entries or you reach the batch_size cap, then\nstop.\n\nStyle rules (apply to every description):\n- Exactly one sentence.\n- Maximum 180 characters.\n- No markdown, no quotes, no preamble.\n- Describe the file's purpose at the architectural level — do not\n  narrate exports already visible in the metadata.\n- If the file is configuration, generated, or trivial, say so.\n",
+        "tools": [
+          "canopy_describe_next",
+          "canopy_describe_write"
+        ],
+        "maxTurns": 60,
+        "reasoningLevel": "low",
+        "required": true
+      }
+    ],
+    "schedule": {
+      "enabled": false,
+      "intervalSeconds": 900,
+      "runIn": [
+        "idle",
+        "sleep"
+      ],
+      "preCondition": "has-pending-canopy-rows"
+    },
+    "params": {
+      "batch_size": 10,
+      "max_description_chars": 180,
+      "max_attempts": 2
+    }
+  },
+  {
+    "name": "canopy-map",
+    "displayName": "Canopy Map",
+    "description": "Build the Canopy Map — a guided tour of your project's architecture that connected agents can pull on demand to orient before exploring with Glob or Grep. Refreshes incrementally as the codebase shifts.",
+    "agent": "myco-agent",
+    "prompt": "Produce a markdown architectural overview of this project. The gather phase pre-assembles the inputs (canopy_entries + rules files); the render phase shapes them into the final map. The map is persisted via vault_report with action \"canopy_map\".",
+    "isDefault": false,
+    "reasoningLevel": "low",
+    "maxTurns": 30,
+    "timeoutSeconds": 600,
+    "phases": [
+      {
+        "name": "render",
+        "prompt": "You produce a compact markdown architectural overview of this\nproject. The instruction payload contains every input you need:\nthe prior map (when one exists), the full set of described\ncanopy_entries (path, content_hash, llm_description), and the\nfilenames of the project's rules files.\n\nRequired structure for the final markdown:\n\n## Directory skeleton\nOne line per top-level directory, plus a brief note on what\nlives there. Aim for shape, not exhaustiveness — collapse deep\nbranches the way a senior engineer would describe the project\nto a new hire.\n\n## Key files / golden paths\n4–8 domain clusters. Each cluster is a short heading (e.g.\n\"Capture pipeline\", \"Agent harness\") followed by 2–4 file\nbullets. Each bullet is `path — annotation`, where the\nannotation is grounded in the file's llm_description (do not\ninvent purpose).\n\nRefinement rules when a prior map is present:\n- Preserve sections that still apply.\n- Update sections whose underlying files have drifted.\n- Remove clusters whose files no longer exist or no longer\n  belong together.\n- Do NOT rewrite the whole thing if the change is incremental.\n\nOutput budget: 1500–3000 tokens of markdown. Stay terse.\nProse only where it earns its keep — bullets carry the weight.\n\nUse the supplied tools sparingly:\n- `vault_search_canopy` / `vault_search_fts` to disambiguate a\n  cluster boundary when the canopy entries are ambiguous.\n- `fs_read` to confirm a file's role when its llm_description\n  is missing or doesn't match its imports/exports.\n- `vault_spores` to surface an architectural decision worth\n  citing inline.\n\nWhen the map is ready, call `vault_report` with:\n- action: \"canopy_map\"\n- summary: one short sentence on what changed vs. the prior map\n  (or \"initial map\" on the first run)\n- details.content: the final markdown (the entire map, not a diff)\n\nDo not call vault_report more than once. Stop after the report.\n",
+        "tools": [
+          "vault_search_canopy",
+          "vault_search_fts",
+          "vault_spores",
+          "fs_read",
+          "vault_report"
+        ],
+        "maxTurns": 20,
+        "reasoningLevel": "low",
+        "required": true
+      }
+    ],
+    "schedule": {
+      "enabled": true,
+      "intervalSeconds": 21600,
+      "runIn": [
+        "idle",
+        "sleep"
+      ]
+    }
+  },
+  {
     "name": "cortex-instructions",
     "displayName": "Cortex Instructions",
     "description": "Author compact session-start instructions that teach downstream agents how to use Myco tool behavior correctly, especially retrieval and plan persistence.\n",

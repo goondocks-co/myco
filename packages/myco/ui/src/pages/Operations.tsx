@@ -25,7 +25,24 @@ import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
 
-const EMBEDDABLE_NAMESPACES = ['sessions', 'spores', 'plans', 'artifacts', 'skill_records'] as const;
+const EMBEDDABLE_NAMESPACES = [
+  'sessions',
+  'spores',
+  'plans',
+  'artifacts',
+  'skill_records',
+  'canopy_entries',
+] as const;
+
+/**
+ * The Operations namespace breakdown shows raw namespace identifiers across
+ * the board (`sessions`, `spores`, `plans`, `artifacts`, `skill_records`,
+ * `canopy_entries`) so what's visible matches what the daemon stores. The
+ * universal-search facet uses "Canopy" because that surface is end-user
+ * copy, not a namespace breakdown — different audience, different rules.
+ */
+const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {};
+
 const EMBEDDING_LOG_CATEGORY = 'embedding';
 const DATABASE_LOG_CATEGORY = 'database';
 
@@ -119,7 +136,7 @@ function NamespaceTable({ data }: { data: EmbeddingDetails }) {
                   idx % 2 === 1 ? 'bg-surface-container-low/30' : '',
                 )}
               >
-                <td className="py-2.5 pr-4">{ns}</td>
+                <td className="py-2.5 pr-4">{NAMESPACE_LABELS[ns] ?? ns}</td>
                 <td className="py-2.5 pr-4 text-right">{embedded}</td>
                 <td className="py-2.5 pr-4 text-right">
                   {pending > 0 ? (
@@ -564,6 +581,31 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
       <Surface level="low" className="p-6 space-y-4">
         <SectionHeader>Namespace Breakdown</SectionHeader>
         <NamespaceTable data={data} />
+      </Surface>
+
+      {/* Reconcile policy */}
+      <Surface level="low" className="p-6 space-y-3">
+        <SectionHeader>Reconcile Policy</SectionHeader>
+        <ScopedField<'embedding.run_in_deep_sleep', boolean>
+          path="embedding.run_in_deep_sleep"
+          label="Continue embedding in deep sleep"
+          defaultScope="local"
+        >
+          {({ value, onChange }) => (
+            <div className="flex items-start gap-3">
+              <Switch
+                checked={value ?? true}
+                onCheckedChange={onChange}
+                aria-label="Continue embedding in deep sleep"
+              />
+              <p className="font-sans text-xs text-on-surface-variant max-w-xl">
+                Keep the queue draining when the machine is idle long enough to
+                deep sleep — recommended for repos with large embedding
+                backlogs.
+              </p>
+            </div>
+          )}
+        </ScopedField>
       </Surface>
 
       {/* Action toolbar */}

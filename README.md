@@ -90,6 +90,10 @@ Extracts refresh in the background as new knowledge arrives. When the project go
 
 Every record is indexed for both keyword search and semantic similarity. Use [Ollama](https://ollama.com) locally for embeddings, or [OpenRouter](https://openrouter.ai) / [OpenAI](https://platform.openai.com) in the cloud. The index is fully rebuildable from the database.
 
+### Canopy — code intelligence for your agent
+
+Myco keeps a fresh per-file index of your project — exports, imports, top comment, optional one-line summary — and hands the agent that anatomy *before* it opens a file. Most reads end early because the summary already answered. A single `canopy_map()` MCP call returns the project's architectural overview, so a new agent can orient in one tool call instead of a dozen `Glob`s. Manage all of it from the dashboard's **Cortex** tab. See the [Canopy docs](docs/canopy.md).
+
 ### Context injection
 
 Two automatic injection points ensure agents always have relevant intelligence:
