@@ -991,6 +991,21 @@ async function loadRulesFiles(projectRoot: string): Promise<RulesFileInput[]> {
   return out;
 }
 
+/**
+ * Cheap COUNT for the no-op gate. Lets gatherCanopyMapContext skip the
+ * full SELECT + hash work when the described-rows pool is empty without
+ * paying for the projection. Mirrors the predicate used by
+ * loadDescribedCanopyEntries so the count and the subsequent SELECT can
+ * never disagree.
+ */
+function countDescribedCanopyEntries(projectId: string): number {
+  const { where, params } = describedCanopyEntriesPredicate(projectId);
+  const row = getDatabase()
+    .prepare(`SELECT COUNT(*) AS n FROM canopy_entries WHERE ${where}`)
+    .get(...params) as { n: number };
+  return row.n;
+}
+
 function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
   const { where, params } = describedCanopyEntriesPredicate(projectId);
   const rows = getDatabase().prepare(
@@ -1012,15 +1027,55 @@ function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
 }
 
 /**
+ * Skip envelope returned by gatherCanopyMapContext when the run would be a
+ * no-op. `reason` distinguishes:
+ *   - 'canopy_disabled': cortex.canopy.injection.enabled is false at the
+ *     project level. The whole canopy feature is off; nothing to map.
+ *   - 'no_described_entries': canopy is on but no rows have llm_description
+ *     yet (canopy-describe hasn't drained the queue). Map would be empty.
+ *   - 'inputs_unchanged': the prior canopy_maps row's inputs_hash matches —
+ *     idempotent re-fire, no work to do.
+ *
+ * `inputsHash` is only meaningful for 'inputs_unchanged' (the gate-style
+ * skips short-circuit before the hash is computed).
+ */
+export type CanopyMapGatherSkip =
+  | { skip: true; reason: 'canopy_disabled' | 'no_described_entries' }
+  | { skip: true; reason: 'inputs_unchanged'; inputsHash: string };
+
+/**
  * Internal — exported only so the canopy-map test suite can assemble the
  * exact gather context that the render-phase instruction sees.
+ *
+ * Two cheap up-front gates run before any hashing or rules-file IO:
+ *   1. Canopy disabled at the project level → skip with no LLM cost.
+ *   2. Zero described canopy_entries rows → skip; the map would be empty.
+ * Both pair with the `schedule.enabled: true` default on canopy-map.yaml so
+ * users with canopy off don't see scheduled runs.
  */
 export async function gatherCanopyMapContext(
   projectRoot: string,
   forceColdStart: boolean,
-): Promise<CanopyMapGatherContext | { skip: true; inputsHash: string }> {
+  config?: MycoConfig,
+): Promise<CanopyMapGatherContext | CanopyMapGatherSkip> {
   const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
   const projectId = resolveCanopyProjectId(vaultDir);
+
+  // Gate 1: canopy injection master switch. The schedule fires whenever the
+  // task is enabled, so the gate must absorb the disabled-canopy case here.
+  // Defaults to true when config is unavailable (legacy callers, tests),
+  // so omitting the config doesn't accidentally hide work.
+  if (config && !config.cortex.canopy.injection.enabled) {
+    return { skip: true, reason: 'canopy_disabled' };
+  }
+
+  // Gate 2: empty described-row pool. A map with no rows would just be the
+  // directory skeleton — pointless LLM work. Cheap COUNT, same predicate as
+  // the SELECT below so the two can't disagree.
+  if (countDescribedCanopyEntries(projectId) === 0) {
+    return { skip: true, reason: 'no_described_entries' };
+  }
+
   const canopyEntries = loadDescribedCanopyEntries(projectId);
   const rulesFiles = await loadRulesFiles(projectRoot);
   const inputsHash = computeInputsHash({
@@ -1036,7 +1091,7 @@ export async function gatherCanopyMapContext(
   const prior = readCanopyMap(projectId, machineId);
 
   if (!forceColdStart && prior?.inputs_hash === inputsHash) {
-    return { skip: true, inputsHash };
+    return { skip: true, reason: 'inputs_unchanged', inputsHash };
   }
 
   return {
@@ -1122,11 +1177,12 @@ function renderCanopyMapInstruction(ctx: CanopyMapGatherContext): string {
 export async function buildCanopyMapInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
+  config?: MycoConfig,
 ): Promise<BuiltTaskInstruction | undefined> {
   if (!projectRoot) return undefined;
 
   const forceColdStart = params?.force_cold_start === true;
-  const ctx = await gatherCanopyMapContext(projectRoot, forceColdStart);
+  const ctx = await gatherCanopyMapContext(projectRoot, forceColdStart, config);
 
   if ('skip' in ctx) return undefined;
 
@@ -1184,7 +1240,7 @@ export async function buildTaskInstruction(
     case CANOPY_DESCRIBE_TASK:
       return buildCanopyDescribeInstruction(taskParams, projectRoot);
     case CANOPY_MAP_TASK:
-      return buildCanopyMapInstruction(taskParams, projectRoot);
+      return buildCanopyMapInstruction(taskParams, projectRoot, config);
     default:
       return undefined;
   }

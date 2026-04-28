@@ -170,6 +170,12 @@ describe('harness properties', () => {
       // Self-gated by buildScheduledCortexInstruction(), which compares the
       // stored input hash against the newly assembled payload before dispatch.
       'cortex-instructions',
+      // Self-gated by gatherCanopyMapContext(): skips when canopy injection
+      // is disabled, when no rows have llm_description, or when the
+      // inputs_hash matches the prior canopy_maps row. The schedule fires
+      // unconditionally; the gather phase absorbs the no-op cases before
+      // any LLM cost.
+      'canopy-map',
     ];
 
     for (const file of yamlFiles) {

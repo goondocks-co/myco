@@ -35,10 +35,21 @@ import {
   buildCanopyMapInstruction,
   buildTaskInstruction,
   CANOPY_MAP_TASK,
+  gatherCanopyMapContext,
   isInstructionRequiredTask,
 } from '@myco/agent/instruction-builders.js';
 import { finalizeOnTaskSuccess } from '@myco/agent/executor.js';
+import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
+import { BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { epochSeconds } from '@myco/constants.js';
+
+function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
+  const enabled = overrides.canopyEnabled ?? true;
+  return MycoConfigSchema.parse({
+    version: 3,
+    cortex: { canopy: { injection: { enabled } } },
+  });
+}
 
 const TEST_AGENT_ID = 'test-agent';
 
@@ -108,6 +119,78 @@ describe('canopy-map task', () => {
     it('returns undefined when projectRoot is missing', async () => {
       const built = await buildCanopyMapInstruction(undefined, undefined);
       expect(built).toBeUndefined();
+    });
+
+    it('canopy-map ships with schedule.enabled = true by default', () => {
+      const def = BUNDLED_AGENT_TASKS.find(t => t.name === CANOPY_MAP_TASK);
+      expect(def).toBeDefined();
+      expect(def!.schedule).toBeDefined();
+      expect(def!.schedule!.enabled).toBe(true);
+      expect(def!.schedule!.intervalSeconds).toBe(21600);
+      expect(def!.schedule!.runIn).toEqual(['idle', 'sleep']);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // mechanical no-op gates (paired with `schedule.enabled: true`)
+  // -----------------------------------------------------------------------
+
+  describe('no-op gates', () => {
+    it('skips with reason "canopy_disabled" when canopy injection is off', async () => {
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+      const ctx = await gatherCanopyMapContext(
+        projectRoot,
+        false,
+        makeConfig({ canopyEnabled: false }),
+      );
+      expect('skip' in ctx).toBe(true);
+      expect(ctx).toEqual({ skip: true, reason: 'canopy_disabled' });
+    });
+
+    it('buildCanopyMapInstruction returns undefined when canopy is disabled', async () => {
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+      const built = await buildCanopyMapInstruction(
+        undefined,
+        projectRoot,
+        makeConfig({ canopyEnabled: false }),
+      );
+      expect(built).toBeUndefined();
+    });
+
+    it('skips with reason "no_described_entries" when no rows have llm_description', async () => {
+      // Seed an entry without an llm_description — passes mechanical_updated_at
+      // but not the described predicate.
+      seedCanopyEntry(getDatabase(), {
+        project_id: projectId,
+        machine_id: machineId,
+        path: 'src/undescribed.ts',
+        content_hash: 'h',
+        llm_description: null,
+        llm_updated_at: null,
+        mechanical_updated_at: epochSeconds(),
+      });
+
+      const ctx = await gatherCanopyMapContext(projectRoot, false, makeConfig());
+      expect('skip' in ctx).toBe(true);
+      expect(ctx).toEqual({ skip: true, reason: 'no_described_entries' });
+    });
+
+    it('canopy-disabled gate fires before the no-described-entries gate', async () => {
+      // No rows at all — both gates would skip. The canopy-disabled gate is
+      // checked first; ordering matters because it lets users with canopy off
+      // avoid even cheap COUNT queries.
+      const ctx = await gatherCanopyMapContext(
+        projectRoot,
+        false,
+        makeConfig({ canopyEnabled: false }),
+      );
+      expect(ctx).toEqual({ skip: true, reason: 'canopy_disabled' });
+    });
+
+    it('proceeds normally when canopy is enabled and described rows exist', async () => {
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+      const ctx = await gatherCanopyMapContext(projectRoot, false, makeConfig());
+      expect('skip' in ctx).toBe(false);
     });
   });
 
