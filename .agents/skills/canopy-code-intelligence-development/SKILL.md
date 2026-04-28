@@ -33,7 +33,7 @@ Convert canopy operations from bespoke executors to standard harness tasks for u
 1. **Remove dedicated schedulers/executors**:
 ```typescript
 // Before: Custom executor in src/daemon/schedulers/
-// After: Standard task in agent task directory
+// After: Standard task in src/agent/definitions/tasks/
 export const canopyDescribeTask: AgentTask = {
   name: 'canopy-describe',
   description: 'Generate file descriptions for code intelligence',
