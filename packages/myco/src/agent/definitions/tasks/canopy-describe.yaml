@@ -3,11 +3,13 @@
 # =============================================================================
 # Generates one-sentence file summaries for canopy_entries.llm_description.
 #
-# Two invocation modes (both run through the standard agent harness):
-#   - Single-row: runTask('canopy-describe', { params: { canopy_entry_id } })
-#     builds a fixed single-turn instruction; no tools needed.
-#   - Batch (the schedule): runTask('canopy-describe') with no row id; the
-#     agent drains pending rows via canopy_describe_next + canopy_describe_write.
+# Map-mode: the harness drives per-item fan-out via source/item/sink blocks.
+#   - source: calls canopy_describe_next to pull a batch of pending rows.
+#   - item:   the per-file prompt rendered for each entry.
+#   - sink:   calls canopy_describe_write to persist each description.
+#
+# Single-row re-describe (params.canopy_entry_path present): source passes the
+# path through so canopy_describe_next returns just that one entry.
 #
 # The schedule is opt-in — flip per project via myco.yaml under
 # `agent.tasks['canopy-describe'].schedule.enabled`. Reasoning tier and
@@ -44,9 +46,8 @@ schedule:
       steady: 50
       accelerated: 500
 prompt: >-
-  Either describe a single canopy_entries row (single-row mode) or drain
-  a batch of pending rows using canopy_describe_next + canopy_describe_write
-  (batch mode). The instruction tells you which mode you are in.
+  Map-mode task: the harness fans out per-item prompts for each pending
+  canopy_entries row. No manual tool orchestration needed.
 params:
   # Sized for local models. The cap is not a context-budget cap — it's a
   # per-turn tool-emission cap. canopy_describe_next returns the whole
@@ -63,33 +64,40 @@ params:
   max_attempts: 2
 phases:
   - name: describe
+    mode: map
     reasoningLevel: low
-    maxTurns: 60
+    perItemMaxTurns: 1
+    perItemTimeoutSeconds: 30
+    onItemError: skip
     required: true
-    tools:
-      - canopy_describe_next
-      - canopy_describe_write
-    prompt: |
-      You write one-sentence summaries of source files for a code
-      intelligence system. The instruction payload contains the data
-      you need.
+    maxTurns: 60
+    tools: []
+    prompt: ""
 
-      Single-row mode: the payload contains one file's metadata and a
-      head-of-file excerpt. Reply with one sentence describing the
-      file's architectural purpose, then call canopy_describe_write
-      with the row's path and your sentence. Stop.
+    source:
+      tool: canopy_describe_next
+      args:
+        canopy_entry_path: "{{ params.canopy_entry_path | default(null) }}"
+        limit: "{{ params.batch_size | default(10) }}"
+      itemsPath: entries
 
-      Batch mode: call canopy_describe_next ONCE to pull a batch of
-      pending rows. For each entry it returns, emit one sentence and
-      call canopy_describe_write({ path, description }). Then stop. Do
-      NOT call canopy_describe_next a second time — the tool is gated
-      to one call per run, and any leftover pending rows will be picked
-      up by the next scheduled tick.
+    item:
+      prompt: |
+        Write one sentence describing this file's architectural purpose at
+        the system level. Style: exactly one sentence, max 180 chars, no
+        markdown, no quotes, no preamble. If the file is configuration,
+        generated, or trivial, say so. Do not narrate exports already
+        visible in the metadata.
 
-      Style rules (apply to every description):
-      - Exactly one sentence.
-      - Maximum 180 characters.
-      - No markdown, no quotes, no preamble.
-      - Describe the file's purpose at the architectural level — do not
-        narrate exports already visible in the metadata.
-      - If the file is configuration, generated, or trivial, say so.
+        File: {{ item.path }}
+        Language: {{ item.language }}
+        Exports: {{ item.exports }}
+        Imports: {{ item.imports }}
+        Top comment: {{ item.top_comment }}
+        First lines:
+        {{ item.first_lines }}
+
+    sink:
+      tool: canopy_describe_write
+      argMap:
+        path: "{{ item.path }}"

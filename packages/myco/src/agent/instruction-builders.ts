@@ -14,7 +14,6 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
-import { parseJsonStringArray } from '@myco/utils/parse-json-array.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import {
   computeInputsHash,
@@ -804,127 +803,20 @@ export async function buildSkillEvolveInstruction(
 // canopy-describe
 // ---------------------------------------------------------------------------
 
-const CANOPY_DESCRIBE_FIRST_LINES = 60;
-// Sized for local models: not a context-budget cap, a per-turn
-// tool-emission cap. canopy_describe_next returns the whole batch in one
-// tool result; 26B-class local models can only emit follow-up tool calls
-// reliably against ~10 entries at a time before they fall back to
-// re-fetching instead of writing. See canopy-describe.yaml for the full
-// failure-mode notes.
-const CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE = 10;
-
-/** Subset of canopy_entries needed to render a single-row instruction. */
-interface CanopyEntryRow {
-  path: string;
-  language: string | null;
-  exports_json: string | null;
-  imports_json: string | null;
-  top_comment: string | null;
-}
-
-async function readCanopyFirstLines(absolutePath: string, limit: number): Promise<string> {
-  const fs = await import('node:fs/promises');
-  try {
-    const content = await fs.readFile(absolutePath, 'utf-8');
-    return content.split(/\r?\n/).slice(0, limit).join('\n');
-  } catch {
-    return '';
-  }
-}
-
-interface CanopyPendingRow { count: number }
-
-// Predicate kept in lockstep with SELECT_PENDING_SQL in
-// agent/tools/canopy-tools.ts — both must answer "is there work for
-// canopy_describe_next to drain?" identically, or the precondition gates
-// runs the tool can't satisfy and we burn a turn for nothing.
-const CANOPY_PENDING_PREDICATE =
-  'llm_updated_at IS NULL OR llm_updated_at < mechanical_updated_at';
-
-function countPendingCanopyRows(projectId: string | undefined): number {
-  if (!projectId) return 0;
-  try {
-    const row = getDatabase().prepare(
-      `SELECT COUNT(*) AS count FROM canopy_entries
-        WHERE project_id = ?
-          AND (${CANOPY_PENDING_PREDICATE})`,
-    ).get(projectId) as CanopyPendingRow | undefined;
-    return row?.count ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-function loadCanopyRow(projectId: string | undefined, canopyEntryId: string): CanopyEntryRow | undefined {
-  if (!projectId) return undefined;
-  return getDatabase()
-    .prepare('SELECT path, language, exports_json, imports_json, top_comment FROM canopy_entries WHERE project_id = ? AND path = ? LIMIT 1')
-    .get(projectId, canopyEntryId) as CanopyEntryRow | undefined;
-}
-
 /**
  * Build the instruction for a canopy-describe run.
  *
- * Single-row mode (params.canopy_entry_id present): renders a fixed-context
- * prompt for that one row and tells the agent to call canopy_describe_write
- * once. Returns undefined if the row is missing.
- *
- * Batch mode (no canopy_entry_id): emits a short directive pointing the
- * agent at the canopy_describe_next/_write tools. Returns undefined when
- * the queue is empty so the scheduler can short-circuit.
+ * Map-phase task: no instruction text needed — the phase reads params
+ * directly via source.args templating. Caller wiring still invokes this
+ * builder for historical reasons, so return an empty instruction. The
+ * preCondition `has-pending-canopy-rows` (declared in canopy-describe.yaml)
+ * is the queue-empty gate now.
  */
 export async function buildCanopyDescribeInstruction(
-  params?: Record<string, string | number | boolean>,
-  projectRoot?: string,
+  _params?: Record<string, string | number | boolean>,
+  _projectRoot?: string,
 ): Promise<BuiltTaskInstruction | undefined> {
-  const canopyEntryId = typeof params?.canopy_entry_id === 'string' ? params.canopy_entry_id : undefined;
-  // Per canopy/identity.ts the project_id is path.dirname(vaultDir), and
-  // every Canopy call site treats projectRoot and projectId as the same
-  // value — projectRoot here doubles as the project_id used to scope the
-  // canopy_entries lookup so it matches sibling queries.
-  const canopyProjectId = projectRoot;
-
-  if (canopyEntryId) {
-    const row = loadCanopyRow(canopyProjectId, canopyEntryId);
-    if (!row) return undefined;
-
-    const exports = parseJsonStringArray(row.exports_json);
-    const imports = parseJsonStringArray(row.imports_json);
-    const firstLines = projectRoot
-      ? await readCanopyFirstLines(`${projectRoot.replace(/\/$/, '')}/${row.path}`, CANOPY_DESCRIBE_FIRST_LINES)
-      : '';
-
-    const lines = [
-      'Single-row mode. Describe this file in exactly one sentence and call',
-      'canopy_describe_write({ path, description }) with the result. Stop after the write.',
-      '',
-      `File: ${row.path}`,
-      `Language: ${row.language ?? 'unknown'}`,
-      `Exports: ${exports.length > 0 ? exports.join(', ') : '(none)'}`,
-      `Imports: ${imports.length > 0 ? imports.join(', ') : '(none)'}`,
-      `Top comment: ${row.top_comment?.trim() || '(none)'}`,
-      '',
-      `First ${CANOPY_DESCRIBE_FIRST_LINES} lines:`,
-      firstLines || '(empty)',
-    ];
-    return { instruction: lines.join('\n') };
-  }
-
-  if (countPendingCanopyRows(canopyProjectId) === 0) return undefined;
-
-  const batchSize = Number(params?.batch_size ?? CANOPY_DESCRIBE_DEFAULT_BATCH_SIZE);
-  const lines = [
-    `Batch mode. Process exactly ${batchSize} Canopy entries this run.`,
-    '',
-    `Step 1: Call canopy_describe_next({ limit: ${batchSize} }) ONCE.`,
-    'Step 2: For EACH entry it returns, emit one sentence following the',
-    '        style rules in the phase prompt, then call',
-    '        canopy_describe_write({ path, description }) for that entry.',
-    'Step 3: Stop. Do NOT call canopy_describe_next a second time — even',
-    '        if more entries are pending, this run is done. The next',
-    '        scheduled tick will pick up the rest.',
-  ];
-  return { instruction: lines.join('\n') };
+  return { instruction: '' };
 }
 
 // ---------------------------------------------------------------------------

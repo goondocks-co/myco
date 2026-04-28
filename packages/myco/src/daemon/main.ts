@@ -895,9 +895,8 @@ export async function main(): Promise<void> {
     },
     runCanopyDescribeTask: async ({ task, params }) => {
       // Single-row canopy-describe dispatch — same shape as
-      // runCanopyMapTask above. The instruction-builder picks up
-      // params.canopy_entry_id and emits a fixed single-turn prompt
-      // for that one row; no batch drain.
+      // runCanopyMapTask above. Map-phase source.args uses
+      // params.canopy_entry_path to filter to that one entry.
       const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
       const { runAgent } = await import('../agent/executor.js');
       const { getLatestRunId } = await import('../db/queries/runs.js');
