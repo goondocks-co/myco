@@ -58,6 +58,44 @@ function getIsolatedPluginCacheDir(): string {
   return dir;
 }
 
+/**
+ * Translate Myco's per-provider reasoning conventions into Claude SDK
+ * `query()` options.
+ *
+ * Myco encodes "how much should the model think" via MODEL CHOICE — the
+ * `reasoning_map` in agent config picks a different model name for each
+ * level. The SDK's `effort`/`thinking` options are separate per-request
+ * knobs that providers expose differently:
+ *
+ *   - Anthropic-hosted Claude models: native `thinking` config + `effort`
+ *     enum ('low'|'medium'|'high'|...). The SDK defaults `effort: 'high'`,
+ *     which is correct for capable Anthropic models.
+ *   - LM Studio (Anthropic-compatible endpoint): expects a `reasoning`
+ *     field with values 'on' or 'off'. The SDK's `effort: 'high'` default
+ *     leaks through as an unsupported value and triggers a server-side
+ *     warning. LM Studio understands `thinking: { type: 'disabled' }` as
+ *     "reasoning off."
+ *   - Ollama / generic openai-compatible endpoints: per-model behavior
+ *     varies; safest default is to disable extended thinking entirely.
+ *
+ * For local providers we explicitly DISABLE thinking. Myco's reasoning
+ * level was already applied at model selection time — we don't need (or
+ * want) the SDK adding its own thinking budget on top.
+ */
+function buildReasoningOptions(
+  provider?: RuntimeExecuteInput['provider'],
+): { thinking?: { type: 'disabled' } } {
+  if (!provider) return {};
+  switch (provider.type) {
+    case 'lmstudio':
+    case 'ollama':
+    case 'openai-compatible':
+      return { thinking: { type: 'disabled' as const } };
+    default:
+      return {};
+  }
+}
+
 function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'] }) {
   const { toolSurface } = input;
   // Map-phase fast path: pre-materialized tool list. Bypasses both
@@ -159,6 +197,9 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     // re-introducing every developer plugin we meant to exclude. Per the
     // SDK docs: "When omitted or empty, no filesystem settings are
     // loaded (SDK isolation mode)."
+    const isLocalProvider = input.provider?.type === 'lmstudio'
+      || input.provider?.type === 'ollama'
+      || input.provider?.type === 'openai-compatible';
     const messageStream: AsyncIterable<SDKMessage> = query({
       prompt: input.prompt,
       options: {
@@ -173,6 +214,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         allowDangerouslySkipPermissions: true,
         persistSession: true,
         env,
+        ...buildReasoningOptions(input.provider),
         ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
         ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
         ...(input.abortController ? { abortController: input.abortController } : {}),
@@ -247,6 +289,12 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       CLAUDE_CODE_PLUGIN_CACHE_DIR:
         process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
     };
+    // Provider type is fixed for the scope's lifetime, so compute the
+    // local-provider flag once and reuse for both effort capping and
+    // cost suppression below. See claude.ts execute() for the rationale.
+    const isLocalProvider = setup.provider?.type === 'lmstudio'
+      || setup.provider?.type === 'ollama'
+      || setup.provider?.type === 'openai-compatible';
 
     if (setup.logger) {
       const mcpToolNames = setup.toolSurface.toolNames
@@ -273,6 +321,17 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         let costUsd = 0;
         let assistantMessages = 0;
 
+        // persistSession: FALSE for map-phase. The free-form path keeps a
+        // single conversation alive across turns, but map-phase items are
+        // independent invocations — each one is meant to start fresh.
+        // With persistSession: true and no explicit sessionId, the SDK
+        // auto-creates a session and reuses it across query() calls,
+        // leaking prior items' conversation into subsequent items. That
+        // produced ~2.4× token bloat on canopy-describe (LM Studio saw
+        // 4-message conversations growing every item instead of fresh
+        // 2-message ones). Disabling session persistence per call gives
+        // map-phase the per-item isolation it needs, mirroring how
+        // openai-agents' scope.run uses a fresh PersistedSession per call.
         const messageStream: AsyncIterable<SDKMessage> = query({
           prompt: input.prompt,
           options: {
@@ -285,8 +344,9 @@ export class ClaudeSdkRuntime implements AgentRuntime {
             maxTurns: input.maxTurns,
             permissionMode: 'bypassPermissions',
             allowDangerouslySkipPermissions: true,
-            persistSession: true,
+            persistSession: false,
             env,
+            ...buildReasoningOptions(setup.provider),
             ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
             ...(input.abortController ? { abortController: input.abortController } : {}),
           },
@@ -303,6 +363,13 @@ export class ClaudeSdkRuntime implements AgentRuntime {
             : [],
         });
 
+        // The Claude SDK calculates total_cost_usd from its Anthropic
+        // pricing table even when the request was actually routed to a
+        // local endpoint (lmstudio, ollama). Reporting that number for
+        // a local-model run produces false billing — the canopy-describe
+        // batch above showed $0.48 for what was free local compute.
+        // Suppress cost on local providers; only trust it for genuine
+        // anthropic-typed calls. (`isLocalProvider` defined at scope open.)
         try {
           for await (const message of messageStream) {
             if (message.type === 'assistant') {
@@ -313,7 +380,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
               turnsUsed = message.num_turns ?? assistantMessages;
               inputTokens = message.usage?.input_tokens ?? 0;
               outputTokens = message.usage?.output_tokens ?? 0;
-              costUsd = message.total_cost_usd ?? 0;
+              costUsd = isLocalProvider ? 0 : (message.total_cost_usd ?? 0);
               if (message.subtype === 'success') {
                 finalText = message.result;
               }
