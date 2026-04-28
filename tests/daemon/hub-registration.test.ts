@@ -34,6 +34,34 @@ describe('daemon hub registration metadata', () => {
     }
   });
 
+  it('falls back to process.execPath when runtime.command is missing', () => {
+    const projectRoot = '/tmp/myco-hub-reg-fallback';
+    const vaultDir = path.join(projectRoot, '.myco');
+    const readFileSync = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath) => {
+      if (filePath === path.join(vaultDir, 'runtime.command')) {
+        const err = new Error('ENOENT') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      if (filePath === path.join(vaultDir, 'daemon.json')) return '{}';
+      throw new Error(`Unexpected read: ${String(filePath)}`);
+    });
+
+    try {
+      const metadata = buildHubProjectMetadata({
+        projectRoot,
+        vaultDir,
+        machineId: 'chris_12345678',
+        port: 21039,
+        version: '0.22.3',
+      });
+
+      expect(metadata.runtimeCommand).toBe(process.execPath);
+    } finally {
+      readFileSync.mockRestore();
+    }
+  });
+
   it('registers with the configured hub URL using JSON metadata', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
     vi.stubGlobal('fetch', fetchMock);

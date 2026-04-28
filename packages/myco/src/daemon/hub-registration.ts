@@ -33,7 +33,7 @@ export function buildHubProjectMetadata(args: {
     pid: process.pid,
     version: args.version,
     startedAt: readStartedAt(args.vaultDir),
-    runtimeCommand: readProjectRuntimeCommand(args.vaultDir),
+    runtimeCommand: readProjectRuntimeCommand(args.vaultDir) ?? process.execPath,
   };
 }
 

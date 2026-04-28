@@ -294,7 +294,7 @@ export class DaemonServer {
     const info = {
       pid: process.pid,
       port: this.port,
-      command: process.argv[1] ?? null,
+      command: process.execPath,
       started: new Date().toISOString(),
       sessions: [] as string[],
     };
