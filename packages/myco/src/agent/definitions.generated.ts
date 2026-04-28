@@ -68,12 +68,20 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     ],
     "schedule": {
       "enabled": false,
-      "intervalSeconds": 900,
+      "intervalSeconds": 120,
       "runIn": [
+        "active",
         "idle",
         "sleep"
       ],
-      "preCondition": "has-pending-canopy-rows"
+      "preCondition": "has-pending-canopy-rows",
+      "accelerator": {
+        "name": "canopy-pending-describe",
+        "thresholds": {
+          "steady": 50,
+          "accelerated": 500
+        }
+      }
     },
     "params": {
       "batch_size": 10,
@@ -678,7 +686,14 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "idle",
         "sleep"
       ],
-      "preCondition": "has-unprocessed-batches"
+      "preCondition": "has-unprocessed-batches",
+      "accelerator": {
+        "name": "unprocessed-settled-batches",
+        "thresholds": {
+          "steady": 5,
+          "accelerated": 25
+        }
+      }
     }
   },
   {

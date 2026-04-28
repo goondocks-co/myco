@@ -180,12 +180,25 @@ export interface OrchestratorConfig {
   maxTurns?: number;
 }
 
+// AcceleratorName and AcceleratorConfig are exported from agent/schemas.ts
+// (z.infer'd from the Zod schemas) so the enum and shape have one source
+// of truth. Imported here for use in TaskSchedule below.
+import type { AcceleratorConfig, AcceleratorName } from './schemas.js';
+export type { AcceleratorConfig, AcceleratorName };
+
 /** Schedule configuration for automatic task execution via PowerManager. */
 export interface TaskSchedule {
   enabled: boolean;
   intervalSeconds: number;
   runIn: ('active' | 'idle' | 'sleep')[];
   preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
+  /**
+   * Adaptive cadence: when present, the scheduler queries the named
+   * accelerator's count function and shortens the effective interval
+   * during backlog according to the declared thresholds. Optional and
+   * additive — tasks without an accelerator use intervalSeconds verbatim.
+   */
+  accelerator?: AcceleratorConfig;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */

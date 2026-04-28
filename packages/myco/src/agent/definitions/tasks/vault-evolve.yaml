@@ -28,6 +28,13 @@ schedule:
     - idle
     - sleep
   preCondition: has-unprocessed-batches
+  # Each unprocessed batch is ~30–60s of multi-stage LLM work, so the
+  # thresholds are an order of magnitude lower than canopy-describe's.
+  accelerator:
+    name: unprocessed-settled-batches
+    thresholds:
+      steady: 5
+      accelerated: 25
 
 orchestrator:
   enabled: true

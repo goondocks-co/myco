@@ -344,6 +344,31 @@ export function describedCanopyEntriesPredicate(
   };
 }
 
+/**
+ * Count canopy_entries rows that need an llm_description (NULL or stale
+ * relative to mechanical_updated_at). Owned by the canopy domain — the
+ * predicate must stay in lock-step with SELECT_PENDING_SQL in
+ * agent/tools/canopy-tools.ts and the boolean has-pending-canopy-rows
+ * precondition in daemon/task-scheduling.ts. Co-located with the rest of
+ * the canopy queries so the scheduler doesn't have to import schema
+ * knowledge it doesn't own.
+ */
+export function countPendingCanopyDescribe(
+  db: Database | null,
+  projectId: string,
+): number {
+  const conn = db ?? getDatabase();
+  const row = conn.prepare(
+    `SELECT COUNT(*) AS n FROM canopy_entries
+      WHERE project_id = ?
+        AND (
+          llm_updated_at IS NULL
+          OR llm_updated_at < mechanical_updated_at
+        )`,
+  ).get(projectId) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Per-session Read activities (with canopy column) for the UI
 // ---------------------------------------------------------------------------

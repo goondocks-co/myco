@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { buildScheduledJobs } from '@myco/daemon/task-scheduler.js';
-import type { AgentTask } from '@myco/agent/types.js';
+import { buildScheduledJobs, computeEffectiveInterval } from '@myco/daemon/task-scheduler.js';
+import type { AcceleratorConfig, AgentTask } from '@myco/agent/types.js';
 import type { ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 
 function makeTask(name: string, schedule: AgentTask['schedule']): AgentTask {
@@ -34,7 +34,7 @@ describe('buildScheduledJobs', () => {
       makeTask('task-c', undefined),
     ];
 
-    const jobs = buildScheduledJobs(tasks, {});
+    const { jobs } = buildScheduledJobs(tasks, {});
     expect(jobs).toHaveLength(1);
     expect(jobs[0].name).toBe('scheduled:task-a');
     expect(jobs[0].runIn).toEqual(['active', 'idle']);
@@ -48,7 +48,7 @@ describe('buildScheduledJobs', () => {
       'skill-survey': { schedule: { enabled: true } },
     };
 
-    const jobs = buildScheduledJobs(tasks, overrides);
+    const { jobs } = buildScheduledJobs(tasks, overrides);
     expect(jobs).toHaveLength(1);
     expect(jobs[0].name).toBe('scheduled:skill-survey');
   });
@@ -61,7 +61,7 @@ describe('buildScheduledJobs', () => {
       'vault-evolve': { schedule: { enabled: false } },
     };
 
-    const jobs = buildScheduledJobs(tasks, overrides);
+    const { jobs } = buildScheduledJobs(tasks, overrides);
     expect(jobs).toHaveLength(0);
   });
 
@@ -74,7 +74,7 @@ describe('buildScheduledJobs', () => {
     };
     const ctx = makeContext();
 
-    const jobs = buildScheduledJobs(tasks, overrides, ctx);
+    const { jobs } = buildScheduledJobs(tasks, overrides, ctx);
     expect(jobs).toHaveLength(1);
 
     // Run once — should execute
@@ -94,7 +94,7 @@ describe('buildScheduledJobs', () => {
     const preCheck = vi.fn().mockReturnValue(false);
     const ctx = makeContext({ preConditions: { 'has-unprocessed-batches': preCheck } });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
     expect(preCheck).toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe('buildScheduledJobs', () => {
     const preCheck = vi.fn().mockReturnValue(true);
     const ctx = makeContext({ preConditions: { 'has-unprocessed-batches': preCheck } });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
     expect(ctx.runTask).toHaveBeenCalledWith('fi');
@@ -120,7 +120,7 @@ describe('buildScheduledJobs', () => {
     ];
     const ctx = makeContext({ isTaskRunning: (name) => name === 'task-a' });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
     expect(ctx.runTask).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ describe('buildScheduledJobs', () => {
     const now = Date.now();
 
     // Seed with a recent run — should be throttled
-    const jobs = buildScheduledJobs(tasks, {}, ctx, { 'task-a': now - 1000 });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx, { 'task-a': now - 1000 });
     await jobs[0].fn();
     expect(ctx.runTask).not.toHaveBeenCalled();
   });
@@ -146,7 +146,7 @@ describe('buildScheduledJobs', () => {
     const setRunning = vi.fn();
     const ctx = makeContext({ setTaskRunning: setRunning });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
 
     // `true` fires synchronously before dispatch.
@@ -169,7 +169,7 @@ describe('buildScheduledJobs', () => {
       runTask: vi.fn().mockReturnValue(taskPromise),
     });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
     // Job fn must resolve even while runTask is still pending —
     // otherwise a multi-minute agent task would block the PowerManager
@@ -193,7 +193,7 @@ describe('buildScheduledJobs', () => {
       onTaskError,
     });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
@@ -211,11 +211,330 @@ describe('buildScheduledJobs', () => {
       onTaskError: () => {},
     });
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
     expect(setRunning).toHaveBeenCalledWith('failing', true);
     expect(setRunning).toHaveBeenCalledWith('failing', false);
+  });
+});
+
+describe('computeEffectiveInterval (adaptive cadence tier function)', () => {
+  // canopy-describe shape: thresholds declared in YAML. PowerManager's
+  // tick rate is the real lower bound on actual fire rate; the tier
+  // function only computes the gate value.
+  const canopyCfg: AcceleratorConfig = {
+    name: 'canopy-pending-describe',
+    thresholds: { steady: 50, accelerated: 500 },
+  };
+
+  it('returns the YAML interval at zero/empty backlog (steady)', () => {
+    expect(computeEffectiveInterval(120, 0, canopyCfg.thresholds)).toBe(120);
+  });
+
+  it('returns the YAML interval just below the steady threshold', () => {
+    expect(computeEffectiveInterval(120, 25, canopyCfg.thresholds)).toBe(120);
+    expect(computeEffectiveInterval(120, 50, canopyCfg.thresholds)).toBe(120);
+  });
+
+  it('quarters the interval in the accelerated tier', () => {
+    expect(computeEffectiveInterval(120, 51, canopyCfg.thresholds)).toBe(30);
+    expect(computeEffectiveInterval(120, 250, canopyCfg.thresholds)).toBe(30);
+    expect(computeEffectiveInterval(120, 500, canopyCfg.thresholds)).toBe(30);
+  });
+
+  it('twelfths the interval in the burst tier (no artificial floor)', () => {
+    // 120 / 12 = 10. PowerManager's tick is the real bound — anything
+    // below the tick just means "fire every tick."
+    expect(computeEffectiveInterval(120, 501, canopyCfg.thresholds)).toBe(10);
+    expect(computeEffectiveInterval(120, 2000, canopyCfg.thresholds)).toBe(10);
+  });
+
+  it('honors a longer YAML interval proportionally (cost-conscious user)', () => {
+    expect(computeEffectiveInterval(600, 0, canopyCfg.thresholds)).toBe(600);
+    expect(computeEffectiveInterval(600, 250, canopyCfg.thresholds)).toBe(150);
+    expect(computeEffectiveInterval(600, 1000, canopyCfg.thresholds)).toBe(50);
+  });
+
+  // vault-evolve shape: lower thresholds.
+  const vaultCfg: AcceleratorConfig = {
+    name: 'unprocessed-settled-batches',
+    thresholds: { steady: 5, accelerated: 25 },
+  };
+
+  it('applies the same divisors with task-specific thresholds', () => {
+    expect(computeEffectiveInterval(21600, 3, vaultCfg.thresholds)).toBe(21600);   // steady
+    expect(computeEffectiveInterval(21600, 10, vaultCfg.thresholds)).toBe(5400);   // accelerated
+    expect(computeEffectiveInterval(21600, 50, vaultCfg.thresholds)).toBe(1800);   // burst (21600/12)
+    expect(computeEffectiveInterval(3600, 50, vaultCfg.thresholds)).toBe(300);     // burst (3600/12)
+  });
+});
+
+describe('buildScheduledJobs adaptive cadence', () => {
+  it('uses YAML interval verbatim when no accelerator is declared (regression)', async () => {
+    const tasks = [
+      makeTask('plain', { enabled: true, intervalSeconds: 1000, runIn: ['active'] }),
+    ];
+    let calls = 0;
+    const ctx = makeContext({
+      runTask: vi.fn().mockImplementation(async () => { calls++; }),
+      // count fns registered but the task doesn't reference them.
+      accelerators: {
+        'canopy-pending-describe': () => 999,
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();         // first call seeds lastRun
+    await new Promise((r) => setImmediate(r));
+    await jobs[0].fn();         // 100ms later — still within YAML interval (1000s)
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toBe(1);      // accelerator did not affect this task
+  });
+
+  it('shrinks the effective interval when the count crosses the burst threshold', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    const ctx = makeContext({
+      accelerators: { 'canopy-pending-describe': () => 1000 },  // burst tier
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    expect(jobs).toHaveLength(1);
+
+    // Pure-function check on the YAML config — the scheduler reads
+    // exactly the same config when computing effective interval.
+    expect(
+      computeEffectiveInterval(120, 1000, tasks[0].schedule!.accelerator!.thresholds),
+    ).toBe(10);
+  });
+
+  it('kick(taskName) bypasses the interval gate on the next tick', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 999_999,    // huge interval — would never fire normally
+        runIn: ['idle'],
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({ runTask });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    // First tick — interval gate blocks (lastRun=0, but the gate test is
+    // `Date.now() - lastRun < intervalMs`, and lastRun starts at 0 so the
+    // gate passes the first time).  The first call always seeds lastRun
+    // and dispatches once, so to exercise the kick we tick twice.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+
+    // Second tick — without the kick, the interval gate would block.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);   // gate still blocks
+
+    // Kick + tick — runs immediately.
+    kicker.kick('canopy-describe');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(2);
+
+    // Kick is one-shot: the next tick is gated again.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('multiple kicks before the next tick collapse to a single run (idempotent)', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 999_999,
+        runIn: ['idle'],
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({ runTask });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    // Seed lastRun so the interval gate would block subsequent ticks.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(1);
+
+    // Multiple kicks before the next tick.
+    kicker.kick('canopy-describe');
+    kicker.kick('canopy-describe');
+    kicker.kick('canopy-describe');
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(2);   // one extra run, not three
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).toHaveBeenCalledTimes(2);   // kick consumed
+  });
+
+  it('kick still respects the in-flight overlap guard', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 100,
+        runIn: ['idle'],
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      isTaskRunning: () => true,    // already in flight
+      runTask,
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    kicker.kick('canopy-describe');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('kick still respects the precondition gate', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 100,
+        runIn: ['idle'],
+        preCondition: 'has-pending-canopy-rows',
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      runTask,
+      preConditions: { 'has-pending-canopy-rows': () => false },   // no work
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    kicker.kick('canopy-describe');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+    // The kick was consumed even though it didn't fire — otherwise it'd
+    // re-fire forever once the precondition flips back. Verify by ticking
+    // again with the precondition still false: should still not fire.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('declares preventsDeepSleep when accelerator count > 0', () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['active', 'idle', 'sleep'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    const ctx = makeContext({
+      accelerators: { 'canopy-pending-describe': () => 25 },  // pending work
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    expect(jobs[0].preventsDeepSleep).toBeDefined();
+    expect(jobs[0].preventsDeepSleep!()).toBe(true);
+  });
+
+  it('releases the hold once the accelerator count drains to zero', () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['active', 'idle', 'sleep'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    let count = 25;
+    const ctx = makeContext({
+      accelerators: { 'canopy-pending-describe': () => count },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    expect(jobs[0].preventsDeepSleep!()).toBe(true);
+    count = 0;
+    expect(jobs[0].preventsDeepSleep!()).toBe(false);
+  });
+
+  it('omits preventsDeepSleep when no accelerator is declared', () => {
+    const tasks = [
+      makeTask('plain', { enabled: true, intervalSeconds: 600, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext();
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    expect(jobs[0].preventsDeepSleep).toBeUndefined();
+  });
+
+  it('preventsDeepSleep returns false when the count function throws', () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    const ctx = makeContext({
+      accelerators: {
+        'canopy-pending-describe': () => { throw new Error('db unavailable'); },
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    // A failing count must not prevent deep sleep — defensive default
+    // matching the embedding reconciler's hold pattern.
+    expect(jobs[0].preventsDeepSleep!()).toBe(false);
+  });
+
+  it('skips the run when the in-flight overlap guard is active, even at burst rate', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    const runTask = vi.fn().mockResolvedValue(undefined);
+    const ctx = makeContext({
+      isTaskRunning: () => true,    // already in flight
+      runTask,
+      accelerators: { 'canopy-pending-describe': () => 9999 },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(runTask).not.toHaveBeenCalled();
   });
 });

@@ -27,18 +27,22 @@ maxTurns: 60
 timeoutSeconds: 1800
 schedule:
   enabled: false
-  # Cadence math at batch_size: 10 — 900s drains ~40 rows/hour while idle.
-  # A repo with 1k files and rapid churn keeps up; a fresh small project
-  # drains in one tick. has-pending-canopy-rows gates the run, so empty
-  # queues cost nothing per tick. Drop to 600/300 for a one-time backlog
-  # burn-down; raise back to 3600 if you'd rather pay the cost slowly.
-  # task-scheduler.ts already prevents overlap, so ticks fired while a
-  # prior run is in flight are silently skipped.
-  intervalSeconds: 900
+  # runIn includes 'active' deliberately: canopy-describe is lightweight
+  # (~3–23s per batch) and often routed to a different model from the
+  # foreground agent. Running it during active sessions keeps
+  # descriptions fresh while the user is generating new pending rows.
+  # Override in myco.yaml on shared-model setups where contention matters.
+  intervalSeconds: 120
   runIn:
+    - active
     - idle
     - sleep
   preCondition: has-pending-canopy-rows
+  accelerator:
+    name: canopy-pending-describe
+    thresholds:
+      steady: 50
+      accelerated: 500
 prompt: >-
   Either describe a single canopy_entries row (single-row mode) or drain
   a batch of pending rows using canopy_describe_next + canopy_describe_write

@@ -311,7 +311,15 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  const projectRoot = process.cwd();
+  // Anchor projectRoot to the resolved vault, not the daemon's cwd. The
+  // daemon may be launched from any working directory (hub-spawned children,
+  // monorepo subdirs, scripts), but vaultDir already runs through the
+  // worktree-aware walk in resolveVaultDir(). Sourcing projectRoot from cwd
+  // diverged from the canonical project_id (path.dirname(vaultDir)) and
+  // caused a Canopy mass-tombstone when a daemon launched inside
+  // packages/myco-hub: the scanner walked only the package's tree while
+  // deleteMissingEntries ran scoped by the canonical project_id.
+  const projectRoot = path.dirname(vaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
@@ -595,7 +603,7 @@ export async function main(): Promise<void> {
   const bufferDir = path.join(vaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
-  const reconciler = createReconciler({ bufferDir, logger });
+  const reconciler = createReconciler({ bufferDir, logger, projectRoot });
   reconciler.runStartupReconciliation();
 
   // Runtime migration tasks (vector reindex, file rewrites, etc.) — idempotent,
@@ -1215,22 +1223,36 @@ export async function main(): Promise<void> {
   // SessionStart triggers a fire-and-forget refresh. The runner debounces.
   (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
 
-  // Initial canopy populate runs in the background only when the table is
-  // empty. The delta scan handles steady-state refresh.
-  powerJobs.canopy.runInitialPopulate().catch((err) => {
-    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
-      error: (err as Error).message,
-    });
-  });
-
   // -- Dynamic task scheduling --
-  await registerScheduledTasks(powerManager, {
+  const taskKicker = await registerScheduledTasks(powerManager, {
     definitionsDir,
     vaultDir,
     embeddingManager,
     logger,
     liveConfig,
     getTeamClient: () => teamSync.getTeamClient(),
+  });
+
+  // Wire the canopy mass-add hook to kick canopy-describe imperatively.
+  // Two trigger sites (initial populate, delta scan with added > N) call
+  // this callback; the kicker defers to the next compatible PowerManager
+  // tick — respecting runIn (idle/sleep) and the in-flight overlap guard.
+  // Without this, a fresh populate or recovery from a scanner wipe would
+  // wait up to one full canopy-describe interval before draining.
+  // Wired BEFORE runInitialPopulate so the callback is in place when the
+  // populate's runCanopyScan completes.
+  powerJobs.canopy.setOnMassAdd(() => taskKicker.kick('canopy-describe'));
+
+  // Initial canopy populate runs in the background only when the table is
+  // empty. The delta scan handles steady-state refresh. On a fresh vault
+  // the scan adds every file (well above the mass-add threshold), so the
+  // callback above kicks canopy-describe immediately when populate
+  // finishes — fresh vaults start describing on the next tick instead of
+  // waiting one full interval.
+  powerJobs.canopy.runInitialPopulate().catch((err) => {
+    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
+      error: (err as Error).message,
+    });
   });
 
   powerManager.start();

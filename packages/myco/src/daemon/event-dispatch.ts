@@ -91,7 +91,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     triggerTitleSummary,
   } = deps;
 
-  const projectRoot = process.cwd();
+  // Derive projectRoot from the resolved vault, not the daemon's cwd —
+  // see the matching note in daemon/main.ts. cwd-sourced projectRoot
+  // diverges from the canonical project_id when the daemon is launched
+  // from anywhere other than the project root (hub-spawned children, etc.).
+  const projectRoot = path.dirname(vaultDir);
   const manifests = loadManifests();
   const planTagsByAgent = new Map(
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
@@ -357,6 +361,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
+          projectRoot,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });

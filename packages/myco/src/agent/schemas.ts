@@ -94,6 +94,35 @@ const PreConditionSchema = z.enum([
   'has-pending-canopy-rows',
 ]);
 
+/**
+ * Accelerator names dispatch into domain-owned count functions in
+ * daemon/task-scheduling.ts. Naming convention: `<domain>-<entity>`.
+ * Adding a new accelerator: register a count function in the domain
+ * package, add to the dispatch table, add the name here.
+ */
+export const AcceleratorNameSchema = z.enum([
+  'canopy-pending-describe',
+  'unprocessed-settled-batches',
+]);
+export type AcceleratorName = z.infer<typeof AcceleratorNameSchema>;
+
+/**
+ * Adaptive accelerator config. Tier divisors are 1× / 4× / 12×
+ * applied to intervalSeconds; PowerManager's tick rate is the real
+ * lower bound on actual fire rate, so effective intervals below the
+ * tick just mean "gate clears every tick." Thresholds live in YAML
+ * per-task because work-unit semantics differ (50 canopy rows ≪ 50
+ * unprocessed prompt batches in real cost).
+ */
+export const AcceleratorConfigSchema = z.object({
+  name: AcceleratorNameSchema,
+  thresholds: z.object({
+    steady: z.number().int().nonnegative(),
+    accelerated: z.number().int().nonnegative(),
+  }),
+});
+export type AcceleratorConfig = z.infer<typeof AcceleratorConfigSchema>;
+
 /** Schedule configuration for automatic task execution via PowerManager. */
 export const TaskScheduleSchema = z.object({
   /** Whether auto-run is enabled for this task. */
@@ -104,6 +133,12 @@ export const TaskScheduleSchema = z.object({
   runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).min(1),
   /** Optional pre-condition check before running. */
   preCondition: PreConditionSchema.optional(),
+  /**
+   * Optional adaptive accelerator. When declared, the scheduler queries
+   * the registered count function and shortens the effective interval
+   * during backlog according to the declared thresholds.
+   */
+  accelerator: AcceleratorConfigSchema.optional(),
 });
 
 /** Schema for a single phase within a phased task pipeline. */

@@ -289,8 +289,8 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
     },
   });
 
-  const [sortBy, setSortBy] = useState<CanopyEntriesSortBy>('path');
-  const [sortDir, setSortDir] = useState<CanopyEntriesSortDir>('asc');
+  const [sortBy, setSortBy] = useState<CanopyEntriesSortBy>('llm_updated_at');
+  const [sortDir, setSortDir] = useState<CanopyEntriesSortDir>('desc');
   const handleSort = (key: CanopyEntriesSortBy) => {
     if (key === sortBy) {
       // Same column — toggle direction.

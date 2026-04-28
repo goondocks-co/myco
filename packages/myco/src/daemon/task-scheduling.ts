@@ -12,7 +12,7 @@ import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
-import type { ScheduledJobContext } from './task-scheduler.js';
+import type { ScheduledJobContext, ScheduledJobKicker } from './task-scheduler.js';
 import { buildScheduledJobs } from './task-scheduler.js';
 import {
   buildTaskInstruction,
@@ -22,6 +22,8 @@ import {
 } from '@myco/agent/instruction-builders.js';
 import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
+import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
+import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
@@ -66,13 +68,15 @@ export interface TaskSchedulingDeps {
 export async function registerScheduledTasks(
   powerManager: PowerManager,
   deps: TaskSchedulingDeps,
-): Promise<void> {
+): Promise<ScheduledJobKicker> {
   const { definitionsDir, vaultDir, embeddingManager, logger, liveConfig, getTeamClient } = deps;
   const runningTasks = new Set<string>();
 
   if (!definitionsDir) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping dynamic task scheduling — definitions directory unavailable');
-    return;
+    // Return a no-op kicker so callers can wire the same shape regardless
+    // of whether scheduling actually started.
+    return { kick: () => {} };
   }
 
   // Jobs always register. The scheduled_tasks_enabled gate lives inside
@@ -234,48 +238,25 @@ export async function registerScheduledTasks(
       }
     },
     preConditions: {
-      'has-unprocessed-batches': () => {
-        // Only count unprocessed batches from sessions that have settled
-        // (status != 'active'). Otherwise vault-evolve fires on every
-        // live prompt and then filters everything out — wasted agent runs.
-        const row = getDatabase().prepare(
-          `SELECT 1 FROM prompt_batches pb
-           WHERE pb.processed = 0
-             AND EXISTS (
-               SELECT 1 FROM sessions s
-               WHERE s.id = pb.session_id AND s.status != 'active'
-             )
-           LIMIT 1`,
-        ).get();
-        return row !== undefined;
-      },
-      'has-active-skills': () => {
-        return countSkillRecords({ status: 'active' }) > 0;
-      },
-      'has-approved-candidates': () => {
-        return countCandidates({ status: 'approved' }) > 0;
-      },
-      'has-skill-survey-evidence': () => {
-        return getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible;
-      },
-      'has-pending-canopy-rows': () => {
-        // Predicate must match SELECT_PENDING_SQL in agent/tools/canopy-tools.ts —
-        // both must answer "is there work for canopy_describe_next to drain?"
-        // identically, otherwise the precondition fires runs the tool can't
-        // satisfy. Scoped by project_id for the same reason every other
-        // canopy_entries query is.
-        const projectId = resolveCanopyProjectId(vaultDir);
-        const row = getDatabase().prepare(
-          `SELECT 1 FROM canopy_entries
-            WHERE project_id = ?
-              AND (
-                llm_updated_at IS NULL
-                OR llm_updated_at < mechanical_updated_at
-              )
-            LIMIT 1`,
-        ).get(projectId);
-        return row !== undefined;
-      },
+      // Boolean preconditions delegate to the same domain-owned count
+      // helpers as the accelerator dispatch, so there's a single
+      // source of truth for "is there work pending?" per work unit.
+      'has-unprocessed-batches': () => countUnprocessedSettledBatches() > 0,
+      'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)) > 0,
+      'has-active-skills': () => countSkillRecords({ status: 'active' }) > 0,
+      'has-approved-candidates': () => countCandidates({ status: 'approved' }) > 0,
+      'has-skill-survey-evidence': () => getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible,
+    },
+    // Dispatch table mapping accelerator names declared in YAML to the
+    // domain-owned count functions. Each domain (canopy, batches, …)
+    // owns its own SQL — this map is purely the scheduler-side seam, with
+    // no schema knowledge. Adding a new accelerator is three small steps
+    // in three different files: add a count fn to its domain package,
+    // add the name to AcceleratorNameSchema, and add one line here.
+    accelerators: {
+      'canopy-pending-describe': () =>
+        countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)),
+      'unprocessed-settled-batches': () => countUnprocessedSettledBatches(),
     },
     onTaskError: (taskName, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {
@@ -284,14 +265,15 @@ export async function registerScheduledTasks(
     },
   };
 
-  const scheduledJobs = buildScheduledJobs(
+  const { jobs, kicker } = buildScheduledJobs(
     allTasks,
     liveConfig.current.agent.tasks ?? {},
     scheduledContext,
     initialLastRuns,
   );
-  powerManager.replaceGroup(SCHEDULED_JOB_PREFIX, scheduledJobs);
-  logger.info(LOG_KINDS.DAEMON_START, `Synced ${scheduledJobs.length} scheduled task(s)`, {
-    tasks: scheduledJobs.map((j) => j.name),
+  powerManager.replaceGroup(SCHEDULED_JOB_PREFIX, jobs);
+  logger.info(LOG_KINDS.DAEMON_START, `Synced ${jobs.length} scheduled task(s)`, {
+    tasks: jobs.map((j) => j.name),
   });
+  return kicker;
 }
