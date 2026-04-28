@@ -32,12 +32,12 @@ type SemanticNamespace = 'all' | 'spores' | 'sessions' | 'plans' | 'artifacts' |
 type SporeObservationType = 'all' | 'decision' | 'gotcha' | 'discovery' | 'bug_fix' | 'trade_off' | 'cross-cutting';
 
 /**
- * Facet — the user-visible scope toggle. "Files" routes through `type=canopy`
+ * Facet — the user-visible scope toggle. "Canopy" routes through `type=canopy`
  * (canopy code-intel index) and uses a different result shape than the other
  * facets. Everything else flows through the general semantic/FTS path with
  * the corresponding `namespace`.
  */
-type SearchFacet = 'all' | 'sessions' | 'spores' | 'plans' | 'skills' | 'files';
+type SearchFacet = 'all' | 'sessions' | 'spores' | 'plans' | 'skills' | 'canopy';
 
 const FACET_OPTIONS: Array<{ value: SearchFacet; label: string }> = [
   { value: 'all', label: 'All' },
@@ -45,7 +45,7 @@ const FACET_OPTIONS: Array<{ value: SearchFacet; label: string }> = [
   { value: 'spores', label: 'Spores' },
   { value: 'plans', label: 'Plans' },
   { value: 'skills', label: 'Skills' },
-  { value: 'files', label: 'Files' },
+  { value: 'canopy', label: 'Canopy' },
 ];
 
 /** Map a facet to the semantic-namespace value the daemon expects. */
@@ -128,7 +128,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const isFilesFacet = facet === 'files';
+  const isCanopyFacet = facet === 'canopy';
   const namespace = facetToNamespace(facet);
 
   // Debounce the query
@@ -161,7 +161,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
       }
     : undefined;
 
-  // Files facet routes through canopy retrieval (a separate result shape);
+  // Canopy facet routes through canopy retrieval (a separate result shape);
   // every other facet shares the unified semantic/FTS path. We keep both
   // hooks mounted but disable the inactive one so cache doesn't churn.
   const { data: generalData, isLoading: generalLoading } = useSearch(
@@ -172,18 +172,18 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const { data: canopyData, isLoading: canopyLoading } = useCanopySearch(
     debouncedQuery,
     undefined,
-    isFilesFacet,
+    isCanopyFacet,
   );
 
-  const data = isFilesFacet ? canopyData : generalData;
-  const isLoading = isFilesFacet ? canopyLoading : generalLoading;
+  const data = isCanopyFacet ? canopyData : generalData;
+  const isLoading = isCanopyFacet ? canopyLoading : generalLoading;
 
   const results: AnySearchResult[] = useMemo(() => {
-    if (isFilesFacet) {
+    if (isCanopyFacet) {
       return (canopyData?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
     }
     return (generalData?.results ?? []).slice(0, SEARCH_RESULTS_LIMIT);
-  }, [isFilesFacet, canopyData, generalData]);
+  }, [isCanopyFacet, canopyData, generalData]);
 
   // Reset highlight when results change
   useEffect(() => {
@@ -262,7 +262,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
           </div>
         </div>
 
-        {(mode === 'semantic' || isFilesFacet) && (
+        {(mode === 'semantic' || isCanopyFacet) && (
           <div className="flex flex-wrap items-center gap-2 border-b border-[var(--ghost-border)] px-4 py-2 bg-surface-container-lowest/30">
             <div className="w-[132px]">
               <Select
@@ -279,7 +279,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
                 </SelectContent>
               </Select>
             </div>
-            {!isFilesFacet && (
+            {!isCanopyFacet && (
               <div className="w-[132px]">
                 <Select value={recentWindow} onValueChange={(value) => setRecentWindow(value as SemanticRecentWindow)}>
                   <SelectTrigger className="h-8 text-xs">
@@ -293,7 +293,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
                 </Select>
               </div>
             )}
-            {!isFilesFacet && (namespace === 'all' || namespace === 'spores') && (
+            {!isCanopyFacet && (namespace === 'all' || namespace === 'spores') && (
               <div className="w-[156px]">
                 <Select value={observationType} onValueChange={(value) => setObservationType(value as SporeObservationType)}>
                   <SelectTrigger className="h-8 text-xs">

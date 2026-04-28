@@ -28,7 +28,7 @@ export interface SearchResult {
 /**
  * Canopy results have a different shape than the generic SearchResult — the
  * daemon returns per-file rows (path, llm_description, language, score)
- * keyed by project_id rather than vault id. The "Files" facet routes through
+ * keyed by project_id rather than vault id. The "Canopy" facet routes through
  * `type=canopy` and renders these rows directly. See `daemon/api/search.ts`
  * for the backend branch.
  */
@@ -137,7 +137,7 @@ export function useSearch(
 }
 
 /**
- * Hook for the "Files" facet — fetches canopy entries by semantic similarity
+ * Hook for the "Canopy" facet — fetches canopy entries by semantic similarity
  * to the user's query. The daemon returns per-file rows; we tag each with
  * `type: 'canopy'` so the unified results renderer can dispatch on it.
  */

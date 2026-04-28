@@ -38,7 +38,7 @@ const EMBEDDABLE_NAMESPACES = [
  * The Operations namespace breakdown shows raw namespace identifiers across
  * the board (`sessions`, `spores`, `plans`, `artifacts`, `skill_records`,
  * `canopy_entries`) so what's visible matches what the daemon stores. The
- * universal-search facet keeps "Files" because that surface is end-user
+ * universal-search facet uses "Canopy" because that surface is end-user
  * copy, not a namespace breakdown — different audience, different rules.
  */
 const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {};

@@ -120,7 +120,7 @@ describe('Operations — canopy_entries namespace', () => {
 
     // Operations uses the raw namespace identifier for cross-row consistency
     // (every other row already shows its raw name). The "Files" override was
-    // dropped — universal search keeps "Files" since that surface is
+    // dropped — universal search uses "Canopy" since that surface is
     // end-user copy, not a namespace breakdown.
     const rowText = table.textContent ?? '';
     expect(rowText).toContain('canopy_entries');

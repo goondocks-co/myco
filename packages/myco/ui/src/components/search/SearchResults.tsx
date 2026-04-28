@@ -11,7 +11,7 @@ const TYPE_META: Record<string, { label: string; icon: React.ElementType }> = {
   plan: { label: 'Plans', icon: ClipboardList },
   prompt_batch: { label: 'Prompt Batches', icon: Activity },
   activity: { label: 'Activities', icon: Activity },
-  canopy: { label: 'Files', icon: FileCode },
+  canopy: { label: 'Canopy', icon: FileCode },
 };
 
 function getTypeMeta(type: string) {

@@ -56,7 +56,7 @@ if (typeof _g.Element !== 'undefined') {
 
 /* ---------- Mocks ---------- */
 
-// Capture navigation calls so we can assert that selecting a Files result
+// Capture navigation calls so we can assert that selecting a Canopy result
 // routes into the Cortex canopy-entries detail. We override only useNavigate
 // in the react-router-dom module — the factory must NOT re-enter
 // `import('react-router-dom')` (that deadlocks bun's mock loader). We
@@ -70,7 +70,7 @@ mock.module('react-router-dom', () => ({
 }));
 
 // fetchJson is the lowest-level hook the search request flows through. We
-// intercept it so we can assert the URL the Files facet builds and return a
+// intercept it so we can assert the URL the Canopy facet builds and return a
 // canned canopy result.
 const fetchJsonMock = vi.fn();
 
@@ -110,22 +110,22 @@ function renderSearch() {
 
 /* ---------- Tests ---------- */
 
-describe('GlobalSearch — Files facet', () => {
+describe('GlobalSearch — Canopy facet', () => {
   beforeEach(() => {
     fetchJsonMock.mockReset();
     navigateMock.mockReset();
   });
 
-  it('renders a "Files" facet option in the scope dropdown', async () => {
+  it('renders a "Canopy" facet option in the scope dropdown', async () => {
     fetchJsonMock.mockResolvedValue({ mode: 'semantic', results: [] });
     renderSearch();
     // Open the facet select
     const facetTrigger = await screen.findByLabelText('Facet');
     fireEvent.click(facetTrigger);
-    expect(await screen.findByText('Files')).toBeInTheDocument();
+    expect(await screen.findByText('Canopy')).toBeInTheDocument();
   });
 
-  it('routes the search through type=canopy when Files facet is selected', async () => {
+  it('routes the search through type=canopy when the Canopy facet is selected', async () => {
     fetchJsonMock.mockResolvedValue({
       mode: 'semantic',
       results: [
@@ -141,11 +141,11 @@ describe('GlobalSearch — Files facet', () => {
 
     renderSearch();
 
-    // Select "Files" facet
+    // Select "Canopy" facet
     const facetTrigger = await screen.findByLabelText('Facet');
     fireEvent.click(facetTrigger);
-    const filesOption = await screen.findByText('Files');
-    fireEvent.click(filesOption);
+    const canopyOption = await screen.findByRole('option', { name: 'Canopy' });
+    fireEvent.click(canopyOption);
 
     // Type a query (>2 chars to clear the SEARCH_MIN_LENGTH gate)
     const input = screen.getByPlaceholderText('Search sessions, spores, plans…');
@@ -177,9 +177,9 @@ describe('GlobalSearch — Files facet', () => {
 
     renderSearch();
 
-    // Switch to Files facet
+    // Switch to Canopy facet
     fireEvent.click(await screen.findByLabelText('Facet'));
-    fireEvent.click(await screen.findByText('Files'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Canopy' }));
 
     fireEvent.change(screen.getByPlaceholderText('Search sessions, spores, plans…'), {
       target: { value: 'scanner' },
@@ -210,7 +210,7 @@ describe('GlobalSearch — Files facet', () => {
     renderSearch();
 
     fireEvent.click(await screen.findByLabelText('Facet'));
-    fireEvent.click(await screen.findByText('Files'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Canopy' }));
     fireEvent.change(screen.getByPlaceholderText('Search sessions, spores, plans…'), {
       target: { value: 'scanner' },
     });
