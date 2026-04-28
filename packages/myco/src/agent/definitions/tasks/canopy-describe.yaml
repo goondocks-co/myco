@@ -74,7 +74,12 @@ phases:
     # the source tool is structurally absent from the surface, so the
     # model can't fetch-loop regardless of turn budget.
     perItemMaxTurns: 5
-    perItemTimeoutSeconds: 30
+    # 60s budget per item: gemma-4-26b on lmstudio takes ~10-20s per LLM
+    # round-trip; with up to 5 turns to accommodate redundant tool calls,
+    # 30s was too tight and caused a real "Request was aborted." failure
+    # on a slow file. 60s gives ample headroom while still bounding a
+    # genuinely stuck item.
+    perItemTimeoutSeconds: 60
     # skip rather than abort: with map-phase's data-side success
     # detection (sinkOutcome.ok === true counts as written even if the
     # runtime later throws on max-turns), 'failed' here is genuine —

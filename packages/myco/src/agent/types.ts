@@ -136,6 +136,14 @@ export interface MapPhaseResult {
   abandoned: number;
   skipReasons: Record<string, number>;
   /**
+   * Items where the wrapped sink fired ok:true but the runtime later
+   * threw (typically max-turns from a chatty local model that emitted
+   * the tool call redundantly). Counted in `written`, not `failed` —
+   * surfaced separately so chronic model-confusion is observable
+   * without conflating it with genuine failures.
+   */
+  writeAfterThrow: number;
+  /**
    * Aggregated runtime usage across all per-item invocations. Token counts
    * sum across items; durations sum; cost sums where the runtime reports
    * one. Map-mode runs were previously synthesizing zeros here, leaving

@@ -295,10 +295,13 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       model: phaseModel,
       usage: mapResult.usage,
     });
+    const writeAfterThrowPart = mapResult.writeAfterThrow > 0
+      ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
+      : '';
     return buildPhaseResult({
       name: phase.name,
       status: 'completed',
-      summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}`,
+      summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
       usage: mapResult.usage,
       costData,
     });

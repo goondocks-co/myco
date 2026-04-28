@@ -64,6 +64,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     failed: 0,
     abandoned: 0,
     skipReasons: {},
+    writeAfterThrow: 0,
     usage: {},
   };
 
@@ -134,6 +135,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       // orthogonal to whether the row got described.
       if (sinkOutcome?.ok === true) {
         result.written += 1;
+        result.writeAfterThrow += 1;
         logger?.debug('agent.map.item-write-then-throw', `Map phase "${phase.name}" item wrote successfully then runtime threw`, {
           runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
         });
