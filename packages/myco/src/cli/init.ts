@@ -1,6 +1,6 @@
 import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
@@ -100,7 +100,7 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Symbiont selection and registration ---
 
-  const projectRoot = path.dirname(vaultDir);
+  const projectRoot = resolveProjectRoot(vaultDir);
   const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);
   const detectedNames = new Set(detected.map((d) => d.manifest.name));

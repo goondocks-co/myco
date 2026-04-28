@@ -16,7 +16,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -311,15 +311,7 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  // Anchor projectRoot to the resolved vault, not the daemon's cwd. The
-  // daemon may be launched from any working directory (hub-spawned children,
-  // monorepo subdirs, scripts), but vaultDir already runs through the
-  // worktree-aware walk in resolveVaultDir(). Sourcing projectRoot from cwd
-  // diverged from the canonical project_id (path.dirname(vaultDir)) and
-  // caused a Canopy mass-tombstone when a daemon launched inside
-  // packages/myco-hub: the scanner walked only the package's tree while
-  // deleteMissingEntries ran scoped by the canonical project_id.
-  const projectRoot = path.dirname(vaultDir);
+  const projectRoot = resolveProjectRoot(vaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
@@ -722,7 +714,7 @@ export async function main(): Promise<void> {
   // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
   // or symbiont enablement change. The reconcile has no other config inputs.
   reactions.on(['capture', 'symbionts'], (ctx) => {
-    reconcileConfiguredSymbionts(path.dirname(vaultDir), vaultDir, ctx);
+    reconcileConfiguredSymbionts(resolveProjectRoot(vaultDir), vaultDir, ctx);
   });
 
   // Refresh the in-memory plan-watch list on capture changes.
@@ -815,7 +807,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
 
   // --- Update routes ---
-  const updateProjectRoot = path.dirname(vaultDir);
+  const updateProjectRoot = resolveProjectRoot(vaultDir);
   const updateHandlers = createUpdateHandlers({
     vaultDir,
     projectRoot: updateProjectRoot,
@@ -866,7 +858,7 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = path.resolve(vaultDir, '..');
+      const projectRoot = resolveProjectRoot(vaultDir);
       const built = await buildTaskInstruction(
         task,
         params,
@@ -912,7 +904,7 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = path.resolve(vaultDir, '..');
+      const projectRoot = resolveProjectRoot(vaultDir);
       const built = await buildTaskInstruction(
         task,
         params,
@@ -1205,7 +1197,22 @@ export async function main(): Promise<void> {
     });
   });
 
+  // -- Dynamic task scheduling --
+  // Registered first so its kicker is available as a normal dep when
+  // power jobs register below.
+  const taskKicker = await registerScheduledTasks(powerManager, {
+    definitionsDir,
+    vaultDir,
+    embeddingManager,
+    logger,
+    liveConfig,
+    getTeamClient: () => teamSync.getTeamClient(),
+  });
+
   // --- Register power-managed jobs ---
+  // The canopy mass-add callback feeds the scheduler kicker so a fresh
+  // populate or recovery scan drains immediately on the next compatible
+  // tick instead of waiting one full canopy-describe interval.
   const powerJobs = registerPowerJobs(powerManager, {
     embeddingManager,
     registry,
@@ -1216,6 +1223,7 @@ export async function main(): Promise<void> {
     vaultDir,
     projectRoot,
     databaseManager,
+    onCanopyMassAdd: () => taskKicker.kick('canopy-describe'),
   });
   teamSync.registerFlushJob(powerManager);
 
@@ -1223,32 +1231,10 @@ export async function main(): Promise<void> {
   // SessionStart triggers a fire-and-forget refresh. The runner debounces.
   (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
 
-  // -- Dynamic task scheduling --
-  const taskKicker = await registerScheduledTasks(powerManager, {
-    definitionsDir,
-    vaultDir,
-    embeddingManager,
-    logger,
-    liveConfig,
-    getTeamClient: () => teamSync.getTeamClient(),
-  });
-
-  // Wire the canopy mass-add hook to kick canopy-describe imperatively.
-  // Two trigger sites (initial populate, delta scan with added > N) call
-  // this callback; the kicker defers to the next compatible PowerManager
-  // tick — respecting runIn (idle/sleep) and the in-flight overlap guard.
-  // Without this, a fresh populate or recovery from a scanner wipe would
-  // wait up to one full canopy-describe interval before draining.
-  // Wired BEFORE runInitialPopulate so the callback is in place when the
-  // populate's runCanopyScan completes.
-  powerJobs.canopy.setOnMassAdd(() => taskKicker.kick('canopy-describe'));
-
   // Initial canopy populate runs in the background only when the table is
-  // empty. The delta scan handles steady-state refresh. On a fresh vault
-  // the scan adds every file (well above the mass-add threshold), so the
-  // callback above kicks canopy-describe immediately when populate
-  // finishes — fresh vaults start describing on the next tick instead of
-  // waiting one full interval.
+  // empty. On a fresh vault the scan adds every file (well above the
+  // mass-add threshold), so onCanopyMassAdd kicks canopy-describe and
+  // descriptions start draining on the next tick.
   powerJobs.canopy.runInitialPopulate().catch((err) => {
     logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
       error: (err as Error).message,

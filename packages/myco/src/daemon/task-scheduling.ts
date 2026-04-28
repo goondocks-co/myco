@@ -7,7 +7,7 @@
  * PowerManager.
  */
 
-import { resolve } from 'node:path';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
@@ -156,7 +156,7 @@ export async function registerScheduledTasks(
       }
 
       const taskConfig = config.agent.tasks?.[taskName];
-      const projectRoot = resolve(vaultDir, '..');
+      const projectRoot = resolveProjectRoot(vaultDir);
       const built = await buildTaskInstruction(
         taskName,
         taskConfig?.params,

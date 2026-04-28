@@ -1,4 +1,4 @@
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
@@ -52,7 +52,7 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Update symbiont registration ---
 
-  const resolvedProjectRoot = projectRoot ?? path.dirname(vaultDir);
+  const resolvedProjectRoot = projectRoot ?? resolveProjectRoot(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
 

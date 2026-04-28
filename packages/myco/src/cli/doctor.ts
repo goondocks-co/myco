@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
@@ -130,7 +131,7 @@ async function checkAgents(vaultDir: string, config: import('../config/schema.js
   try {
     const { detectSymbionts } = await import('../symbionts/detect.js');
     const { getEnabledSymbiontNames } = await import('../config/loader.js');
-    const projectRoot = path.dirname(vaultDir);
+    const projectRoot = resolveProjectRoot(vaultDir);
     const detected = detectSymbionts(projectRoot);
 
     const enabledNames = config ? getEnabledSymbiontNames(config) : null;

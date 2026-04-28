@@ -27,6 +27,7 @@ mock.module('@myco/symbionts/installer.js', () => {
 let testVaultDir = '';
 mock.module('@myco/vault/resolve.js', () => ({
   resolveVaultDir: vi.fn(() => testVaultDir),
+  resolveProjectRoot: vi.fn((vaultDir: string) => path.dirname(vaultDir)),
 }));
 
 describe('myco remove --symbiont', () => {

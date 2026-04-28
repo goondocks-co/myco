@@ -35,6 +35,7 @@ import {
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
@@ -91,11 +92,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     triggerTitleSummary,
   } = deps;
 
-  // Derive projectRoot from the resolved vault, not the daemon's cwd —
-  // see the matching note in daemon/main.ts. cwd-sourced projectRoot
-  // diverges from the canonical project_id when the daemon is launched
-  // from anywhere other than the project root (hub-spawned children, etc.).
-  const projectRoot = path.dirname(vaultDir);
+  const projectRoot = resolveProjectRoot(vaultDir);
   const manifests = loadManifests();
   const planTagsByAgent = new Map(
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),

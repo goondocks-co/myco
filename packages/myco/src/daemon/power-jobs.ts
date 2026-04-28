@@ -50,6 +50,13 @@ export interface PowerJobDeps {
   /** Repo root used for canopy scans and any project-rooted job. */
   projectRoot: string;
   databaseManager: DatabaseMaintenanceManager;
+  /**
+   * Optional callback fired when a canopy scan adds many rows in one
+   * pass (initial populate or recovery). Called from the canopy delta
+   * runner and the full scan; null on early-boot paths that don't have
+   * a scheduled-task kicker yet.
+   */
+  onCanopyMassAdd?: () => void;
 }
 
 export interface PowerJobsResult {
@@ -62,7 +69,7 @@ export interface PowerJobsResult {
 // ---------------------------------------------------------------------------
 
 export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
-  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, databaseManager } = deps;
+  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, databaseManager, onCanopyMassAdd } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
@@ -193,6 +200,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     projectRoot,
     projectId,
     liveConfig,
+    onCanopyMassAdd,
   });
 
   return { canopy };

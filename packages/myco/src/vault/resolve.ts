@@ -16,6 +16,19 @@ export function resolveVaultDir(cwd: string = process.cwd()): string {
 }
 
 /**
+ * Canonical project root from a vault directory.
+ *
+ * Always derive `projectRoot` from `vaultDir` via this helper; sourcing
+ * from `process.cwd()` is the divergence pattern that caused the Canopy
+ * mass-tombstone bug. `vaultDir` already runs through the worktree-aware
+ * walk in `resolveVaultDir`, so it survives any cwd the daemon inherits
+ * from its launch context (hub-spawned children, monorepo subdirs).
+ */
+export function resolveProjectRoot(vaultDir: string): string {
+  return path.dirname(vaultDir);
+}
+
+/**
  * Find the main repo root, even from a git worktree.
  *
  * `git rev-parse --git-common-dir` returns the shared .git directory:

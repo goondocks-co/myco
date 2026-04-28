@@ -26,15 +26,11 @@ export interface CanopyJobContext {
   projectId: string;
   liveConfig: { current: MycoConfig };
   /**
-   * Optional callback invoked after a scan that added a non-trivial
-   * number of new canopy_entries rows (above
-   * DELTA_SCAN_MASS_ADD_KICK_THRESHOLD). Used to imperatively kick
-   * canopy-describe so newly-NULL descriptions start draining
+   * Optional callback invoked after a scan that added more than
+   * DELTA_SCAN_MASS_ADD_KICK_THRESHOLD new rows. Used to imperatively
+   * kick canopy-describe so newly-NULL descriptions start draining
    * immediately instead of waiting for the next scheduled tick.
-   *
-   * Wired by main.ts after registerScheduledTasks returns the kicker;
-   * absent during early boot, in tests, and when scheduled tasks are
-   * unavailable. Implementations must be cheap and synchronous-safe.
+   * Implementations must be cheap and synchronous-safe.
    */
   onCanopyMassAdd?: () => void;
 }
@@ -53,13 +49,6 @@ export interface CanopyJobsRegistration {
   runFullScan: () => Promise<void>;
   /** Initial populate trigger; no-ops when the project already has canopy rows. */
   runInitialPopulate: () => Promise<void>;
-  /**
-   * Late-binding setter for the mass-add callback. The scheduled-task
-   * kicker isn't available at canopy-jobs registration time (the
-   * scheduler is registered later in main.ts), so the callback is
-   * injected after the fact. Calls before this is set are no-ops.
-   */
-  setOnMassAdd: (cb: () => void) => void;
 }
 
 /**
@@ -90,7 +79,6 @@ export function registerCanopyJobs(
     delta,
     runFullScan: () => runCanopyScan(ctx),
     runInitialPopulate: () => runInitialCanopyPopulate(ctx),
-    setOnMassAdd: (cb) => { ctx.onCanopyMassAdd = cb; },
   };
 }
 

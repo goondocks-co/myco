@@ -1,7 +1,7 @@
 /** Agent executor — orchestrates a single agent run end to end. */
 
 import crypto from 'node:crypto';
-import { resolve } from 'node:path';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   epochSeconds,
   estimateTokens,
@@ -395,7 +395,7 @@ export async function runAgent(
       }));
     };
 
-    const projectRoot = resolve(vaultDir, '..');
+    const projectRoot = resolveProjectRoot(vaultDir);
 
     // Assemble the PhaseLoopContext once. `checkpointState` is mutable by
     // reference — the loop updates it in place and we read back its final
