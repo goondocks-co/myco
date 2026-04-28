@@ -58,16 +58,16 @@ function getIsolatedPluginCacheDir(): string {
   return dir;
 }
 
-/** Override the SDK's effort default with a thinking value local provider endpoints accept. */
+/** Disable thinking on local providers whose endpoints don't accept the SDK's reasoning enum. */
 function suppressEffortLeakForLocalProvider(
   provider?: RuntimeExecuteInput['provider'],
-): { thinking?: { type: 'enabled' } } {
+): { thinking?: { type: 'disabled' } } {
   if (!provider) return {};
   switch (provider.type) {
     case 'lmstudio':
     case 'ollama':
     case 'openai-compatible':
-      return { thinking: { type: 'enabled' as const } };
+      return { thinking: { type: 'disabled' as const } };
     default:
       return {};
   }
