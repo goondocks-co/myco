@@ -341,6 +341,8 @@ export async function runAgent(
     const resolved = await resolveLmStudioContextLoads(
       taskProviderOverride,
       phaseProviderOverrides,
+      undefined,
+      config.execution?.reasoningLevel ?? config.reasoningLevel,
     );
     taskProviderOverride = resolved.taskProvider;
     phaseProviderOverrides = resolved.phaseOverrides;
