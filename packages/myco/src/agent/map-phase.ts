@@ -10,11 +10,13 @@
  * model cannot call a tool that isn't in the surface.
  */
 
+import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { interpolateArgs } from '@myco/utils/interpolate-args.js';
 import { interpolate } from '@myco/utils/interpolate.js';
+import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
 import type { AgentRuntime } from './runtime/types.js';
-import type { MapPhaseResult, PhaseDefinition } from './types.js';
+import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger } from './types.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 export interface ExecuteMapPhaseInput {
@@ -25,15 +27,33 @@ export interface ExecuteMapPhaseInput {
   systemPrompt: string;
   runId: string;
   agentId: string;
+  /** Resolved phase model (from outer phase resolution). Required for the runtime adapter to pick the right model. Optional for stub-runtime tests. */
+  phaseModel?: string;
+  /** Resolved provider config (task/phase override aware). Required for the runtime adapter to pick the right backend. */
+  provider?: ProviderConfig;
+  /** Vault dir threaded into per-item toolSurface so freshly-built tools resolve project_id correctly. */
+  vaultDir?: string;
+  /** Project root threaded into per-item toolSurface (mirrors free-form path). */
+  projectRoot?: string;
+  /** Embedding manager threaded through so RAG-enabled tools work in flexible mode. */
+  embeddingManager?: EmbeddingManager;
+  /** Run-level logger. Per-item failures emit debug entries through this. */
+  logger?: RunLogger;
 }
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
-  const { phase, allTools, runtime, params, systemPrompt, runId, agentId } = input;
+  const {
+    phase, allTools, runtime, params, systemPrompt, runId, agentId,
+    phaseModel, provider, vaultDir, projectRoot, embeddingManager, logger,
+  } = input;
   if (phase.mode !== 'map' || !phase.source || !phase.item || !phase.sink) {
     throw new Error(`executeMapPhase: phase "${phase.name}" is not a complete map phase`);
   }
 
   const items = await fetchSourceItems({ phase, allTools, params });
+  logger?.debug('agent.map.fetched', `Map phase "${phase.name}" fetched ${items.length} items`, {
+    runId, phase: phase.name, itemCount: items.length, source: phase.source.tool,
+  });
 
   const result: MapPhaseResult = {
     itemCount: items.length,
@@ -74,16 +94,30 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       await runtime.execute({
         prompt: itemPrompt,
         systemPrompt,
-        model: phase.model ?? '',
+        model: phaseModel ?? '',
         maxTurns: phase.perItemMaxTurns ?? 1,
+        provider,
         // Pass the materialized tools alongside the standard toolSurface fields.
-        // Task 10 (the dispatch adapter) is responsible for ensuring the real
-        // runtime adapters can consume this. Stub runtimes in tests use this
-        // field directly.
-        toolSurface: { agentId, runId, toolNames: tools.map((t) => t.name), tools } as any,
+        // Real runtime adapters today rebuild tools from `toolNames` (see
+        // openai-local-mcp.ts), which throws away our argMap-stripping and
+        // outcome-capture wrappers — they still must receive the real deps
+        // (vaultDir/projectRoot/embeddingManager) so the rebuilt tools work.
+        // The `tools` field is here for stub runtimes in tests and for a
+        // future enhancement where adapters consume our materialized list.
+        toolSurface: {
+          agentId, runId,
+          toolNames: tools.map((t) => t.name),
+          projectRoot, vaultDir, embeddingManager,
+          tools,
+        } as any,
         abortController: controller,
+        logger,
       } as any);
     } catch (err) {
+      const reason = toErrorMessage(err);
+      logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
+        runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
+      });
       if ((phase.onItemError ?? 'skip') === 'abort') {
         if (timer) clearTimeout(timer);
         throw err;

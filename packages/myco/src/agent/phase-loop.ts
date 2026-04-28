@@ -250,13 +250,18 @@ export async function executePhase(
 // ---------------------------------------------------------------------------
 
 async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
-  const { ctx, phase } = input;
+  const { ctx, phase, phaseModel, provider } = input;
+  const logger = ctx.options?.logger;
   const runtime = getAgentRuntime(ctx.config.runtime);
   const allTools = createVaultTools(ctx.agentId, ctx.runId, {
     embeddingManager: ctx.embeddingManager,
     projectRoot: ctx.projectRoot,
     vaultDir: ctx.vaultDir,
     dryRun: ctx.options?.dryRun ?? false,
+  });
+
+  logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
+    runId: ctx.runId, phase: phase.name, model: phaseModel, providerType: provider?.type ?? null,
   });
 
   try {
@@ -268,6 +273,15 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       systemPrompt: ctx.systemPrompt,
       runId: ctx.runId,
       agentId: ctx.agentId,
+      phaseModel,
+      provider,
+      vaultDir: ctx.vaultDir,
+      projectRoot: ctx.projectRoot,
+      embeddingManager: ctx.embeddingManager,
+      logger,
+    });
+    logger?.debug('agent.map.end', `Map phase "${phase.name}" completed`, {
+      runId: ctx.runId, phase: phase.name, ...mapResult,
     });
     return buildPhaseResult({
       name: phase.name,
@@ -276,10 +290,14 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       usage: { totalTokens: 0, requests: mapResult.itemCount, costUsd: null } as any,
     });
   } catch (err) {
+    const reason = toErrorMessage(err);
+    logger?.error('agent.map.error', `Map phase "${phase.name}" threw`, {
+      runId: ctx.runId, phase: phase.name, error: reason,
+    });
     return buildPhaseResult({
       name: phase.name,
       status: 'failed',
-      summary: `Error: ${(err as Error).message}`,
+      summary: `Error: ${reason}`,
     });
   }
 }
