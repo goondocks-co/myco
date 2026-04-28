@@ -7,7 +7,7 @@ import {
   type AgentInputItem,
   type Session,
 } from '@openai/agents';
-import type { AgentRuntime, RuntimeCapability, RuntimeExecuteInput, RuntimeExecuteResult } from './types.js';
+import { RuntimeExecutionError, type AgentRuntime, type RuntimeCapability, type RuntimeExecuteInput, type RuntimeExecuteResult } from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
@@ -266,6 +266,10 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     const mcpServer = createLocalVaultMcpServer(input.toolSurface);
     await mcpServer.connect();
 
+    // Capture rawResponses progressively so usage telemetry survives a
+    // mid-run throw (max-turns errors fire AFTER the SDK has consumed
+    // tokens). The runner's `state` exposes accumulated responses on the
+    // error; we also defensively peek into the error itself.
     try {
       const agent = new Agent({
         name: 'myco-agent',
@@ -279,11 +283,26 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
           provider: preparedExecution.provider,
         }),
       });
-      const result = await runner.run(agent, input.prompt, {
-        maxTurns: input.maxTurns,
-        session,
-        ...(input.abortController ? { signal: input.abortController.signal } : {}),
-      });
+      let result;
+      try {
+        result = await runner.run(agent, input.prompt, {
+          maxTurns: input.maxTurns,
+          session,
+          ...(input.abortController ? { signal: input.abortController.signal } : {}),
+        });
+      } catch (err) {
+        // Best-effort usage extraction. SDK errors from max-turns and tool
+        // failures often carry the partial rawResponses on a `state` or
+        // `result` field; we try the common shapes and fall back to an
+        // empty usage if none match.
+        const partialRaw = extractPartialRawResponses(err);
+        const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+        throw new RuntimeExecutionError(
+          err instanceof Error ? err.message : String(err),
+          { usage, sessionRef, sessionData: persistedItems },
+          { cause: err instanceof Error ? err : undefined },
+        );
+      }
       const usage = toOpenAIUsage(result.rawResponses);
       usage.providerData = {
         lastResponseId: result.lastResponseId,
@@ -305,4 +324,23 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
       await mcpServer.close();
     }
   }
+}
+
+/**
+ * Try to pull `rawResponses` (the accumulated LLM round-trips) off a
+ * thrown SDK error so the caller still gets usage telemetry on failure.
+ * The shape varies across SDK versions and error types — we check the
+ * common ones and return undefined if none match.
+ */
+function extractPartialRawResponses(err: unknown): Array<Parameters<typeof toOpenAIUsage>[0][number]> | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const candidates: unknown[] = [
+    (err as { rawResponses?: unknown }).rawResponses,
+    (err as { state?: { rawResponses?: unknown } }).state?.rawResponses,
+    (err as { result?: { rawResponses?: unknown } }).result?.rawResponses,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c as Array<Parameters<typeof toOpenAIUsage>[0][number]>;
+  }
+  return undefined;
 }

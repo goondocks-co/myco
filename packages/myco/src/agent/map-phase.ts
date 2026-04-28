@@ -16,7 +16,7 @@ import { interpolate } from '@myco/utils/interpolate.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
-import type { AgentRuntime, RuntimeExecuteResult } from './runtime/types.js';
+import { RuntimeExecutionError, type AgentRuntime, type RuntimeExecuteResult } from './runtime/types.js';
 import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger, RuntimeUsage } from './types.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
@@ -116,6 +116,14 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       if (itemResult.usage) itemUsages.push(itemResult.usage);
     } catch (err) {
       const reason = toErrorMessage(err);
+      // The runtime attaches usage telemetry to the thrown error when the
+      // SDK already burned tokens before failing (max-turns errors hit this
+      // path consistently). Capture that usage so failed items still
+      // contribute to the aggregated MapPhaseResult.usage instead of
+      // silently zeroing out.
+      if (err instanceof RuntimeExecutionError && err.telemetry?.usage) {
+        itemUsages.push(err.telemetry.usage);
+      }
       logger?.debug('agent.map.item-failed', `Map phase "${phase.name}" item failed`, {
         runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
       });

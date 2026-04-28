@@ -66,9 +66,19 @@ phases:
   - name: describe
     mode: map
     reasoningLevel: low
-    perItemMaxTurns: 1
+    # 2 turns minimum: the model needs turn 1 to emit canopy_describe_write
+    # and turn 2 to acknowledge the tool result so the runner can terminate.
+    # OpenAI Agents SDK semantics — "strict" means one allowed write tool
+    # in the surface, not one LLM call.
+    perItemMaxTurns: 2
     perItemTimeoutSeconds: 30
-    onItemError: skip
+    # Items are homogeneous — every row goes through the same prompt and
+    # the same sink tool. A first-item failure is systemic, not row-
+    # specific, so abort the run rather than burning compute on N more
+    # items that will fail the same way. Pending rows stay queued and
+    # the next scheduled tick will retry once the underlying issue is
+    # fixed.
+    onItemError: abort
     required: true
     maxTurns: 60
     tools: []
