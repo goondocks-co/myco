@@ -13,6 +13,8 @@ export interface RescanSingleOptions {
   projectRoot: string;
   /** Repo-relative or absolute path; absolute is normalised against projectRoot. */
   filePath: string;
+  /** Myco baseline from `canopy.exclude.default_patterns`; falls back to none. */
+  defaultExcludePatterns?: string[];
   /** Optional `canopy.exclude.patterns` list; falls back to none. */
   excludePatterns?: string[];
   maxBytes?: number;
@@ -38,6 +40,7 @@ export function rescanSingle(opts: RescanSingleOptions): RescanSingleResult {
   // into canopy_entries that the next full scan would just tombstone.
   const isExcluded = createLayeredExcludeMatcher({
     projectRoot: opts.projectRoot,
+    defaultPatterns: opts.defaultExcludePatterns ?? [],
     userPatterns: opts.excludePatterns ?? [],
   });
   if (isExcluded(rel, false)) {

@@ -901,8 +901,8 @@ function loadDescribedCanopyEntries(projectId: string): CanopyEntryInput[] {
 /**
  * Skip envelope returned by gatherCanopyMapContext when the run would be a
  * no-op. `reason` distinguishes:
- *   - 'canopy_disabled': cortex.canopy.injection.enabled is false at the
- *     project level. The whole canopy feature is off; nothing to map.
+ *   - 'canopy_disabled': cortex.canopy.inject_on_pre_tool_use is false at
+ *     the project level. The whole canopy feature is off; nothing to map.
  *   - 'no_described_entries': canopy is on but no rows have llm_description
  *     yet (canopy-describe hasn't drained the queue). Map would be empty.
  *   - 'inputs_unchanged': the prior canopy_maps row's inputs_hash matches —
@@ -937,7 +937,7 @@ export async function gatherCanopyMapContext(
   // task is enabled, so the gate must absorb the disabled-canopy case here.
   // Defaults to true when config is unavailable (legacy callers, tests),
   // so omitting the config doesn't accidentally hide work.
-  if (config && !config.cortex.canopy.injection.enabled) {
+  if (config && !config.cortex.canopy.inject_on_pre_tool_use) {
     return { skip: true, reason: 'canopy_disabled' };
   }
 
@@ -1135,8 +1135,9 @@ export async function buildTaskInstruction(
       return instruction ? { instruction } : undefined;
     }
     case CORTEX_INSTRUCTIONS_TASK: {
-      if (!config) return undefined;
-      const built = await buildScheduledCortexInstruction(config, getTeamClient);
+      if (!config || !projectRoot) return undefined;
+      const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
+      const built = await buildScheduledCortexInstruction(config, vaultDir, getTeamClient);
       return built
         ? {
             instruction: built.instruction,

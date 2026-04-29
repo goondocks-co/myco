@@ -3,7 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
-import { useAgentRuns } from '../hooks/use-agent';
+import { CORTEX_PATHS } from '@myco/config/paths';
+import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { PageHeader } from '../components/ui/page-header';
@@ -370,7 +371,7 @@ function InstructionsTab() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
-            path="context.cortex_enabled"
+            path={CORTEX_PATHS.instructions.injectOnSessionStart}
             label="Inject session-start instructions"
             defaultScope="project"
           >
@@ -380,7 +381,7 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
-            path="context.session_start_digest_enabled"
+            path={CORTEX_PATHS.digest.injectOnSessionStart}
             label="Inject preferred digest"
             defaultScope="project"
           >
@@ -392,7 +393,7 @@ function InstructionsTab() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
-            path="context.prompt_search"
+            path={CORTEX_PATHS.spores.injectOnPromptSubmit}
             label="Prompt-time spore retrieval"
             defaultScope="project"
           >
@@ -402,7 +403,7 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
-            path="context.prompt_max_spores"
+            path={CORTEX_PATHS.spores.maxPerPrompt}
             label="Max spores per prompt"
             defaultScope="project"
           >
@@ -886,7 +887,7 @@ function DigestTab() {
         </div>
 
         <ScopedField
-          path="context.digest_tier"
+          path={CORTEX_PATHS.digest.tier}
           label="Preferred digest tier"
           defaultScope="project"
         >
@@ -912,8 +913,111 @@ function DigestTab() {
   );
 }
 
+/**
+ * Chip-list editor for `cortex.canopy.exclude.patterns`. Add via Enter (or the
+ * "Add" button); remove via the × on each chip. Each commit fires
+ * `onChange` with the new list, which the surrounding ScopedField
+ * persists through the scoped patch endpoint.
+ */
+function ExcludePatternsEditor({
+  patterns,
+  onChange,
+}: {
+  patterns: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const commitDraft = useCallback(() => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    if (patterns.includes(trimmed)) {
+      setDraft('');
+      return;
+    }
+    onChange([...patterns, trimmed]);
+    setDraft('');
+  }, [draft, patterns, onChange]);
+
+  const removeAt = useCallback(
+    (index: number) => {
+      onChange(patterns.filter((_, i) => i !== index));
+    },
+    [patterns, onChange],
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 min-h-[44px]">
+        {patterns.length === 0 ? (
+          <p className="font-sans text-xs italic text-on-surface-variant">
+            No custom patterns yet — the Myco baseline above already covers
+            common noise.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {patterns.map((p, idx) => (
+              <span
+                key={`${p}-${idx}`}
+                className="inline-flex items-center gap-1 rounded bg-surface-container px-2 py-0.5 font-mono text-xs text-on-surface"
+              >
+                {p}
+                <button
+                  type="button"
+                  onClick={() => removeAt(idx)}
+                  aria-label={`Remove pattern ${p}`}
+                  className="rounded text-on-surface-variant hover:text-on-surface focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commitDraft();
+            }
+          }}
+          placeholder="e.g. fixtures/large/** or **/*.snap"
+          className="font-mono text-xs"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={commitDraft}
+          disabled={draft.trim().length === 0}
+        >
+          Add
+        </Button>
+      </div>
+      <p className="font-sans text-xs text-on-surface-variant">
+        Press Enter or click Add. Glob syntax: <code className="font-mono">**</code>{' '}
+        any depth, <code className="font-mono">*</code> any chars in one segment.
+      </p>
+    </div>
+  );
+}
+
 function CanopyTab() {
   const { effective, isLoading } = useScopedConfig();
+  const { data: tasksData } = useAgentTasks();
+  // Effective schedule = user override (from myco.yaml) ?? YAML default
+  // (from /agent/tasks). The /agent/tasks API only reads YAML files; it
+  // does not merge in agent.tasks.<name>.schedule overrides from the
+  // live config, so a project that flipped the schedule on via myco.yaml
+  // will have a `false` API row and a `true` config override.
+  const describeTask = tasksData?.tasks.find((t) => t.name === 'canopy-describe');
+  const describeOverride = (effective?.agent?.tasks as Record<string, { schedule?: { enabled?: boolean } } | undefined> | undefined)?.['canopy-describe'];
+  const describeEnabled =
+    describeOverride?.schedule?.enabled ?? describeTask?.schedule?.enabled ?? false;
   if (isLoading || !effective) {
     return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
   }
@@ -948,38 +1052,55 @@ function CanopyTab() {
           <p className="font-sans text-sm text-on-surface-variant">
             The scanner automatically skips anything matched by this project's
             {' '}<code className="font-mono text-xs">.gitignore</code>{' '}
-            plus directories that Myco and your installed symbionts manage
+            files (root and nested), the Myco baseline below, and directories
+            that Myco and your installed symbionts manage
             ({' '}<code className="font-mono text-xs">.myco/</code>,
             {' '}<code className="font-mono text-xs">.agents/</code>,
             {' '}<code className="font-mono text-xs">.claude/</code>,
             {' '}<code className="font-mono text-xs">.cursor/</code>, etc.).
-            Add patterns below to exclude additional paths.
+            Add your own patterns at the bottom to exclude additional paths.
           </p>
         </div>
 
-        <ScopedField<'canopy.exclude.patterns', string[]>
-          path="canopy.exclude.patterns"
-          label="Extra exclude patterns"
+        <ScopedField<typeof CORTEX_PATHS.canopy.exclude.defaultPatterns, string[]>
+          path={CORTEX_PATHS.canopy.exclude.defaultPatterns}
+          label="Myco baseline (read-only)"
           defaultScope="project"
-          commitOn="blur"
         >
-          {({ value, onChange }) => {
-            const lines = (value ?? []).join('\n');
+          {({ value }) => {
+            const patterns = value ?? [];
             return (
-              <textarea
-                className="min-h-[120px] w-full rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-                placeholder={"# one glob per line, e.g.\nfixtures/large/**\n**/*.snap"}
-                value={lines}
-                onChange={(event) => {
-                  const next = event.target.value
-                    .split('\n')
-                    .map((line) => line.trim())
-                    .filter((line) => line.length > 0 && !line.startsWith('#'));
-                  onChange(next);
-                }}
-              />
+              <div className="rounded-md border border-outline-variant/20 bg-surface-container-low/50 px-3 py-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {patterns.map((p) => (
+                    <code
+                      key={p}
+                      className="inline-block rounded bg-surface-container px-2 py-0.5 font-mono text-xs text-on-surface-variant"
+                    >
+                      {p}
+                    </code>
+                  ))}
+                </div>
+                <p className="pt-2 font-sans text-xs text-on-surface-variant">
+                  Maintained by Myco. Filesystem and toolchain noise that
+                  shouldn't be indexed regardless of project setup.
+                </p>
+              </div>
             );
           }}
+        </ScopedField>
+
+        <ScopedField<typeof CORTEX_PATHS.canopy.exclude.patterns, string[]>
+          path={CORTEX_PATHS.canopy.exclude.patterns}
+          label="Your patterns"
+          defaultScope="project"
+        >
+          {({ value, onChange }) => (
+            <ExcludePatternsEditor
+              patterns={value ?? []}
+              onChange={onChange}
+            />
+          )}
         </ScopedField>
 
         <div className="space-y-1 pt-2">
@@ -995,8 +1116,8 @@ function CanopyTab() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'canopy.refresh.background_enabled', boolean>
-            path="canopy.refresh.background_enabled"
+          <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundEnabled, boolean>
+            path={CORTEX_PATHS.canopy.refresh.backgroundEnabled}
             label="Periodic background scan"
             defaultScope="project"
           >
@@ -1005,8 +1126,8 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'canopy.refresh.background_period_minutes', number>
-            path="canopy.refresh.background_period_minutes"
+          <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes, number>
+            path={CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes}
             label="Period (minutes)"
             defaultScope="project"
           >
@@ -1030,8 +1151,8 @@ function CanopyTab() {
         <SectionHeader>Injection</SectionHeader>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'cortex.canopy.injection.enabled', boolean>
-            path="cortex.canopy.injection.enabled"
+          <ScopedField<typeof CORTEX_PATHS.canopy.injectOnPreToolUse, boolean>
+            path={CORTEX_PATHS.canopy.injectOnPreToolUse}
             label="Inject canopy on Read"
             defaultScope="project"
           >
@@ -1040,8 +1161,8 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'cortex.canopy.injection.size_threshold', number>
-            path="cortex.canopy.injection.size_threshold"
+          <ScopedField<typeof CORTEX_PATHS.canopy.minFileBytes, number>
+            path={CORTEX_PATHS.canopy.minFileBytes}
             label="Minimum file size (bytes)"
             defaultScope="project"
           >
@@ -1060,26 +1181,63 @@ function CanopyTab() {
       <Surface
         id="config-section-cortex-canopy-llm"
         level="low"
-        className="rounded-lg border border-outline-variant/20 p-6 space-y-2"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-4"
       >
-        <SectionHeader>Myco-generated file descriptions</SectionHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionHeader>Intelligence</SectionHeader>
+          <span
+            className={
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-sans text-xs font-medium ' +
+              (describeEnabled
+                ? 'border-primary/30 bg-primary/10 text-primary'
+                : 'border-outline-variant/40 bg-surface-container text-on-surface-variant')
+            }
+          >
+            <span
+              className={
+                'h-1.5 w-1.5 rounded-full ' +
+                (describeEnabled ? 'bg-primary' : 'bg-on-surface-variant/60')
+              }
+              aria-hidden
+            />
+            {describeEnabled ? 'Descriptions on' : 'Descriptions off'}
+          </span>
+        </div>
         <p className="font-sans text-sm text-on-surface-variant">
           One-sentence summaries the Myco agent writes for each file. They
           power semantic search across your codebase, ride along with Canopy
-          injection on Read, and feed the Canopy Map.
+          injection on Read, and feed the Canopy Map — the highest-leverage
+          piece of Canopy once it&rsquo;s on.
         </p>
         <p className="font-sans text-sm text-on-surface-variant">
-          The{' '}
-          <Link
-            to="/agent?tab=tasks&task=canopy-describe"
-            className="text-primary underline underline-offset-2 hover:text-primary/80"
-          >
-            canopy-describe task
-          </Link>{' '}
-          ships <strong>opt-in</strong> — its schedule is off by default so
-          new projects don&rsquo;t spend tokens unprompted. Enable it on the
-          task page to start filling in descriptions; the Canopy Map needs
-          at least one described file before it can build.
+          {describeEnabled ? (
+            <>
+              The{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>{' '}
+              is enabled and filling in descriptions on schedule. Visit the
+              task page to change the model, schedule, or token budget.
+            </>
+          ) : (
+            <>
+              The{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>{' '}
+              ships <strong>opt-in</strong> — its schedule is off by default so
+              new projects don&rsquo;t spend tokens unprompted. Enable it on the
+              task page (where you can also pick a model and schedule) to start
+              filling in descriptions; the Canopy Map needs at least one
+              described file before it can build.
+            </>
+          )}
         </p>
       </Surface>
     </div>

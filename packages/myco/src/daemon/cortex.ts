@@ -139,7 +139,7 @@ function getLatestReportForAction(runId: string, action: string): ReportRow | un
 // ---------------------------------------------------------------------------
 
 export function getCortexInstructionsSnapshot(
-  config: Pick<MycoConfig, 'context'>,
+  config: Pick<MycoConfig, 'cortex'>,
 ): CortexInstructionsSnapshot {
   const row = getCortexInstructions(DEFAULT_AGENT_ID);
 
@@ -147,7 +147,7 @@ export function getCortexInstructionsSnapshot(
     content: row?.content ?? '',
     generatedAt: row?.generated_at ?? null,
     sourceRunId: row?.source_run_id ?? null,
-    enabled: config.context.cortex_enabled,
+    enabled: config.cortex.enabled && config.cortex.instructions.inject_on_session_start,
     stored: Boolean(row),
   };
 }
@@ -170,7 +170,7 @@ export async function buildCortexPrompt(
   requestedSymbiont?: string,
 ): Promise<CortexPromptBuilderStartResult> {
   const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestedSymbiont);
-  const delivery = resolveInstructionDelivery(deps.config.context, targetSymbiont);
+  const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
   const instructions = delivery.inlineInstructions
     ? getCortexInstructions(DEFAULT_AGENT_ID)
     : null;
@@ -297,7 +297,7 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const built = await buildCortexInstructionsInput(config, getTeamClient);
+    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
     const resultPromise = runAgentFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,

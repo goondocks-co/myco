@@ -48,7 +48,7 @@ function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
   return MycoConfigSchema.parse({
     version: 3,
-    cortex: { canopy: { injection: { enabled } } },
+    cortex: { canopy: { inject_on_pre_tool_use: enabled } },
   });
 }
 

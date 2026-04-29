@@ -42,10 +42,17 @@ const baseConfig: MycoConfig = {
   agent: {
     summary_batch_interval: 5,
   },
-  context: {
-    digest_tier: 5000,
-    prompt_search: true,
-    prompt_max_spores: 3,
+  cortex: {
+    enabled: true,
+    instructions: { inject_on_session_start: true },
+    digest: { tier: 5000, inject_on_session_start: false },
+    spores: { inject_on_prompt_submit: true, max_per_prompt: 3 },
+    canopy: {
+      refresh: { background_enabled: true, background_period_minutes: 60 },
+      exclude: { default_patterns: [], patterns: [] },
+      inject_on_pre_tool_use: true,
+      min_file_bytes: 800,
+    },
   },
   backup: {},
   appearance: {
@@ -80,7 +87,7 @@ describe('ScopedField scope badges', () => {
 
   it('shows a project badge when a field has no local override', () => {
     render(
-      <ScopedField path="context.prompt_search" label="Prompt Search" defaultScope="project">
+      <ScopedField path="cortex.spores.inject_on_prompt_submit" label="Prompt Search" defaultScope="project">
         {() => <div>control</div>}
       </ScopedField>,
     );
@@ -93,13 +100,14 @@ describe('ScopedField scope badges', () => {
     useScopedConfigMock.mockReturnValue({
       effective: {
         ...baseConfig,
-        context: {
-          prompt_search: false,
+        cortex: {
+          ...baseConfig.cortex,
+          spores: { ...baseConfig.cortex.spores, inject_on_prompt_submit: false },
         },
       },
       local: {
-        context: {
-          prompt_search: false,
+        cortex: {
+          spores: { inject_on_prompt_submit: false },
         },
       },
       setField: vi.fn().mockResolvedValue(undefined),
@@ -108,7 +116,7 @@ describe('ScopedField scope badges', () => {
     });
 
     render(
-      <ScopedField path="context.prompt_search" label="Prompt Search" defaultScope="project">
+      <ScopedField path="cortex.spores.inject_on_prompt_submit" label="Prompt Search" defaultScope="project">
         {() => <div>control</div>}
       </ScopedField>,
     );

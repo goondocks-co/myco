@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { MycoConfigSchema } from '@myco/config/schema';
 import type { MycoConfig } from '@myco/config/schema';
-import { withValue, withEmbedding, withTaskConfig, withContext } from '@myco/config/updates';
+import { withValue, withEmbedding, withTaskConfig } from '@myco/config/updates';
 
 function baseConfig(): MycoConfig {
   return MycoConfigSchema.parse({ version: 3 });
@@ -239,41 +239,10 @@ describe('withTaskConfig', () => {
   });
 });
 
-describe('withContext', () => {
-  it('sets digest_tier', () => {
-    const result = withContext(baseConfig(), { digest_tier: 10000 });
-    expect(result.context.digest_tier).toBe(10000);
-  });
-
-  it('sets session_start_digest_enabled', () => {
-    const result = withContext(baseConfig(), { session_start_digest_enabled: true });
-    expect(result.context.session_start_digest_enabled).toBe(true);
-  });
-
-  it('sets prompt_search', () => {
-    const result = withContext(baseConfig(), { prompt_search: false });
-    expect(result.context.prompt_search).toBe(false);
-  });
-
-  it('sets prompt_max_spores', () => {
-    const result = withContext(baseConfig(), { prompt_max_spores: 5 });
-    expect(result.context.prompt_max_spores).toBe(5);
-  });
-
-  it('preserves other context fields when updating one', () => {
-    const config = withContext(baseConfig(), { digest_tier: 1500 });
-    const result = withContext(config, { prompt_search: false });
-    expect(result.context.digest_tier).toBe(1500);
-    expect(result.context.prompt_search).toBe(false);
-    expect(result.context.prompt_max_spores).toBe(3);
-  });
-
-  it('does not mutate the input config', () => {
-    const config = baseConfig();
-    withContext(config, { digest_tier: 1500 });
-    expect(config.context.digest_tier).toBe(5000);
-  });
-});
+// `withContext` was removed in config_version 8 along with the root
+// `context:` block. All Cortex settings now live under `cortex.*` and
+// flow through the scoped-settings patch endpoint or `updateConfig`
+// directly — no bespoke helper or accompanying test block.
 
 describe('unknown-key rejection (regression for canopy-describe params save)', () => {
   it('withTaskConfig persists params and round-trips them on disk shape', () => {
@@ -316,10 +285,4 @@ describe('unknown-key rejection (regression for canopy-describe params save)', (
     ).toThrow(/unknown field 'providerz'/);
   });
 
-  it('withContext throws on an unknown key', () => {
-    expect(() =>
-      // @ts-expect-error — runtime guard test
-      withContext(baseConfig(), { digestTier: 1500 }),
-    ).toThrow(/unknown field 'digestTier'/);
-  });
 });

@@ -6,35 +6,40 @@ describe('Canopy config defaults', () => {
 
   it('applies canopy collection defaults', () => {
     const cfg = MycoConfigSchema.parse(minimal);
-    expect(cfg.canopy.refresh.background_enabled).toBe(true);
-    expect(cfg.canopy.refresh.background_period_minutes).toBe(60);
-    // The user-custom layer is empty by default; the scanner now sources
-    // baseline exclusions from `.gitignore` and the symbiont manifests.
-    expect(cfg.canopy.exclude.patterns).toEqual([]);
+    expect(cfg.cortex.canopy.refresh.background_enabled).toBe(true);
+    expect(cfg.cortex.canopy.refresh.background_period_minutes).toBe(60);
+    // The user-custom layer is empty by default; the scanner sources
+    // baseline exclusions from `.gitignore`, the Myco baseline default
+    // patterns, and symbiont manifests.
+    expect(cfg.cortex.canopy.exclude.patterns).toEqual([]);
   });
 
   it('applies cortex.canopy injection defaults', () => {
     const cfg = MycoConfigSchema.parse(minimal);
-    expect(cfg.cortex.canopy.injection.enabled).toBe(true);
-    expect(cfg.cortex.canopy.injection.size_threshold).toBe(800);
+    expect(cfg.cortex.canopy.inject_on_pre_tool_use).toBe(true);
+    expect(cfg.cortex.canopy.min_file_bytes).toBe(800);
   });
 
   it('accepts partial overrides and merges with defaults', () => {
     const cfg = MycoConfigSchema.parse({
       version: 3,
-      canopy: { refresh: { background_period_minutes: 30 } },
-      cortex: { canopy: { injection: { enabled: false } } },
+      cortex: {
+        canopy: {
+          refresh: { background_period_minutes: 30 },
+          inject_on_pre_tool_use: false,
+        },
+      },
     });
-    expect(cfg.canopy.refresh.background_period_minutes).toBe(30);
-    expect(cfg.canopy.refresh.background_enabled).toBe(true); // preserved default
-    expect(cfg.cortex.canopy.injection.enabled).toBe(false);
-    expect(cfg.cortex.canopy.injection.size_threshold).toBe(800); // preserved default
+    expect(cfg.cortex.canopy.refresh.background_period_minutes).toBe(30);
+    expect(cfg.cortex.canopy.refresh.background_enabled).toBe(true); // preserved default
+    expect(cfg.cortex.canopy.inject_on_pre_tool_use).toBe(false);
+    expect(cfg.cortex.canopy.min_file_bytes).toBe(800); // preserved default
   });
 
-  it('rejects non-integer size_threshold', () => {
+  it('rejects non-integer min_file_bytes', () => {
     const result = MycoConfigSchema.safeParse({
       version: 3,
-      cortex: { canopy: { injection: { size_threshold: 1.5 } } },
+      cortex: { canopy: { min_file_bytes: 1.5 } },
     });
     expect(result.success).toBe(false);
   });

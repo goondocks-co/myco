@@ -478,7 +478,7 @@ async function mycoPostStop(
 /**
  * Fetch the session-start context for a new opencode session. Hits the daemon's
  * config-aware `POST /context` endpoint, which selects the digest tier the user
- * has configured (`config.context.digest_tier`, default 5000) and returns the
+ * has configured (`config.cortex.digest.tier`, default 5000) and returns the
  * full session context (digest + branch + session ID lines).
  *
  * This is the same endpoint Claude Code's session-start hook uses, so opencode

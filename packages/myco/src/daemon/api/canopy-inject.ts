@@ -99,7 +99,7 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
 
     const projectRoot = resolveProjectRoot(deps.vaultDir);
     const projectId = resolveCanopyProjectId(deps.vaultDir);
-    const config = deps.liveConfig.current.cortex.canopy.injection;
+    const config = deps.liveConfig.current.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');
 
@@ -122,7 +122,7 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
         limit: toolInput.limit,
       },
       entry,
-      config: { enabled: config.enabled, sizeThreshold: config.size_threshold },
+      config: { enabled: config.inject_on_pre_tool_use, sizeThreshold: config.min_file_bytes },
       capabilityOn,
     });
 

@@ -1,5 +1,5 @@
 version: 3
-config_version: 6
+config_version: 8
 embedding:
   provider: ollama
   model: bge-m3:latest
@@ -98,12 +98,6 @@ agent:
       runtime: claude-sdk
       schedule:
         enabled: true
-context:
-  digest_tier: 5000
-  session_start_digest_enabled: false
-  cortex_enabled: true
-  prompt_search: true
-  prompt_max_spores: 3
 backup:
   dir: ~/myco_backups/myco
 maintenance:
@@ -133,27 +127,50 @@ notifications:
     settings:
       enabled: true
       mode: banner
-canopy:
-  refresh:
-    background_enabled: true
-    background_period_minutes: 60
-  exclude:
-    patterns:
-      - node_modules
-      - .git
-      - dist
-      - build
-      - .next
-      - .turbo
-      - "**/*.lock"
-      - "**/package-lock.json"
-      - "**/pnpm-lock.yaml"
-      - "**/yarn.lock"
 cortex:
+  enabled: true
+  instructions:
+    inject_on_session_start: true
+  digest:
+    tier: 5000
+    inject_on_session_start: false
+  spores:
+    inject_on_prompt_submit: true
+    max_per_prompt: 3
   canopy:
-    injection:
-      enabled: true
-      size_threshold: 800
+    refresh:
+      background_enabled: true
+      background_period_minutes: 60
+    exclude:
+      default_patterns:
+        - .git
+        - .DS_Store
+        - node_modules
+        - __pycache__
+        - .venv
+        - venv
+        - env
+        - ENV
+        - .pytest_cache
+        - .ruff_cache
+        - .mypy_cache
+        - .tox
+        - dist
+        - build
+        - target
+        - .gradle
+        - .cache
+        - .next
+        - .nuxt
+        - .turbo
+        - .svelte-kit
+        - "**/*.lock"
+        - "**/package-lock.json"
+        - "**/pnpm-lock.yaml"
+        - "**/yarn.lock"
+      patterns: []
+    inject_on_pre_tool_use: true
+    min_file_bytes: 800
 appearance:
   theme: sage
   mode: dark

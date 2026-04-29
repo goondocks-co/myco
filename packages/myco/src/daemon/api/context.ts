@@ -79,8 +79,8 @@ export function createSessionContextHandler(deps: ContextDeps) {
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Session context query', { session_id });
 
     try {
-      const cortexEnabled = shouldInjectCortex(config.context);
-      const digestEnabled = shouldInjectSessionStartDigest(config.context);
+      const cortexEnabled = shouldInjectCortex(config.cortex);
+      const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
       if (!cortexEnabled && !digestEnabled) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'Session-start context disabled', { session_id });
         return { body: { text: '' } };
@@ -103,13 +103,13 @@ export function createSessionContextHandler(deps: ContextDeps) {
       const composed = composeSessionStartContext(config, cortexContent);
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
-        p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.context.digest_tier}`,
+        p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,
       );
 
       if (digestEnabled && !composed.parts.some((p) => p.kind === 'digest')) {
         logger.debug(LOG_KINDS.CONTEXT_SESSION, 'No preferred digest extract available for session start', {
           session_id,
-          preferred_tier: config.context.digest_tier,
+          preferred_tier: config.cortex.digest.tier,
         });
       }
 
@@ -245,7 +245,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig, embeddingManager } = deps;
     const config = liveConfig.current;
-    if (!config.context.prompt_search) {
+    if (!config.cortex.spores.inject_on_prompt_submit) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt search disabled by config', { session_id });
       return { body: { text: '' } };
     }
@@ -259,7 +259,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       return { body: { text: '' } };
     }
 
-    const maxSpores = config.context.prompt_max_spores;
+    const maxSpores = config.cortex.spores.max_per_prompt;
     if (maxSpores === 0) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt spore injection disabled (max_spores=0)', { session_id });
       return { body: { text: '' } };

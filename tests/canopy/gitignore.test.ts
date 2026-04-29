@@ -94,4 +94,47 @@ describe('loadProjectGitignoreMatcher', () => {
     expect(m('node_modules/foo.js', false)).toBe(false);
     expect(m('anything', false)).toBe(false);
   });
+
+  it('honors a nested .gitignore in a subdirectory', () => {
+    // Mimics what Python venv generates: `.venv/.gitignore` containing `*`
+    // to ignore everything inside the venv. Real git defers to it; the
+    // root .gitignore in this fixture lists only `venv/`, not `.venv/`.
+    fs.writeFileSync(path.join(tmp, '.gitignore'), 'venv\n');
+    fs.mkdirSync(path.join(tmp, '.venv'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.venv', '.gitignore'), '*\n');
+    const m = loadProjectGitignoreMatcher(tmp);
+    expect(m('.venv/bin/alembic', false)).toBe(true);
+    expect(m('.venv/lib/python3.13/site.py', false)).toBe(true);
+    // Untouched parts of the tree still pass through.
+    expect(m('src/index.ts', false)).toBe(false);
+  });
+
+  it('inner .gitignore can re-include a path the root excluded', () => {
+    fs.writeFileSync(path.join(tmp, '.gitignore'), 'logs/*.log\n');
+    fs.mkdirSync(path.join(tmp, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'logs', '.gitignore'), '!keep.log\n');
+    const m = loadProjectGitignoreMatcher(tmp);
+    expect(m('logs/transient.log', false)).toBe(true);
+    expect(m('logs/keep.log', false)).toBe(false);
+  });
+
+  it('does not consult .gitignore inside an already-ignored directory', () => {
+    // Root excludes `secrets/`. A `secrets/.gitignore` saying `!plain.txt`
+    // must not re-include the path — git wouldn't read that file at all.
+    fs.writeFileSync(path.join(tmp, '.gitignore'), 'secrets/\n');
+    fs.mkdirSync(path.join(tmp, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'secrets', '.gitignore'), '!plain.txt\n');
+    const m = loadProjectGitignoreMatcher(tmp);
+    expect(m('secrets/plain.txt', false)).toBe(true);
+  });
+
+  it('rules in deeper .gitignores override outer rules (read-later semantics)', () => {
+    // Root says ignore *.tmp; nested says re-include this subtree.
+    fs.writeFileSync(path.join(tmp, '.gitignore'), '*.tmp\n');
+    fs.mkdirSync(path.join(tmp, 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'cache', '.gitignore'), '!*.tmp\n');
+    const m = loadProjectGitignoreMatcher(tmp);
+    expect(m('foo.tmp', false)).toBe(true);
+    expect(m('cache/foo.tmp', false)).toBe(false);
+  });
 });

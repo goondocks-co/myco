@@ -25,7 +25,7 @@ export class CanopyBackgroundScan {
 
   /** PowerManager job entry point. */
   async tick(): Promise<void> {
-    const cfg = this.ctx.liveConfig.current.canopy.refresh;
+    const cfg = this.ctx.liveConfig.current.cortex.canopy.refresh;
     if (!cfg.background_enabled) return;
     const periodSeconds = cfg.background_period_minutes * SECONDS_PER_MINUTE;
     if (periodSeconds <= 0) return;

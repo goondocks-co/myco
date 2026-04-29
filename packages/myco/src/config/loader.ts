@@ -88,14 +88,9 @@ export function loadConfig(vaultDir: string): MycoConfig {
     process.stderr.write(`[myco migration] ${msg}\n`);
   });
 
-  // Deprecation warning for legacy context.operating_brief_enabled →
-  // context.cortex_enabled (rewrite happens inside ContextSchema.preprocess).
-  const ctx = parsed.context as Record<string, unknown> | undefined;
-  if (ctx && 'operating_brief_enabled' in ctx && !('cortex_enabled' in ctx)) {
-    process.stderr.write(
-      '[myco config] context.operating_brief_enabled is deprecated; rename to context.cortex_enabled\n',
-    );
-  }
+  // (Legacy context.operating_brief_enabled and context.cortex_enabled are
+  // rewritten by migration v8 — see migrations.ts:migrateV7ToV8. No
+  // separate warning here; the migration log line covers the rename.)
 
   // Parse with Zod to fill in defaults for new config sections
   const config = MycoConfigSchema.parse(parsed);
@@ -168,7 +163,15 @@ export function updateTeamConfig(
   }));
 }
 
-/** Return raw local overrides, or `{}` if the file is missing, empty, malformed, or not a mapping. */
+/**
+ * Return raw local overrides, or `{}` if the file is missing, empty,
+ * malformed, or not a mapping. Runs the same migration chain as
+ * `loadConfig` against the partial doc — local.yaml is a valid Myco
+ * config file (just sparse), so when paths get renamed in the schema,
+ * user overrides need to follow. Seed-style migrations are skipped via
+ * each migration's `appliesToLocal` flag so a sparse local.yaml stays
+ * sparse. The file is written back when migrations modified it.
+ */
 export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
   const filePath = localConfigPath(vaultDir);
   if (!fs.existsSync(filePath)) return {};
@@ -188,7 +191,26 @@ export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
     return {};
   }
 
-  return parsed as Partial<MycoConfig>;
+  const doc = parsed as Record<string, unknown>;
+  const before = YAML.stringify(doc);
+  runMigrations(
+    doc,
+    vaultDir,
+    (msg) => process.stderr.write(`[myco migration] ${msg}\n`),
+    'local',
+  );
+  const after = YAML.stringify(doc);
+
+  // Only write back when the migration actually mutated content. The
+  // chain reports `ran=true` for any version > current (even when the
+  // migration body was a structural no-op against a sparse local.yaml),
+  // which would otherwise stamp legacy files with `config_version` for
+  // no semantic reason.
+  if (before !== after) {
+    fs.writeFileSync(filePath, after, 'utf-8');
+  }
+
+  return doc as Partial<MycoConfig>;
 }
 
 /** Load project config and overlay local overrides on top (leaf-level deep merge). */

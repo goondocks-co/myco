@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildCortexInstructionsInput,
   buildRetrievalGuidanceLines,
@@ -14,7 +17,23 @@ import { upsertPlan } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { buildPlanId } from '@myco/plans/identity.js';
+import { writeCanopyMap } from '@myco/canopy/map/store.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+
+/**
+ * Helper: build a temp vault dir with a pre-seeded machine_id so
+ * `buildCortexInstructionsInput` can derive (project_id, machine_id)
+ * deterministically without writing to the real filesystem.
+ */
+function makeVaultDir(): { vaultDir: string; machineId: string; cleanup: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cortex-brief-'));
+  const vaultDir = path.join(dir, '.myco');
+  fs.mkdirSync(vaultDir, { recursive: true });
+  const machineId = 'test-machine';
+  fs.writeFileSync(path.join(vaultDir, 'machine_id'), machineId, 'utf-8');
+  return { vaultDir, machineId, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -92,39 +111,39 @@ describe('RETRIEVAL_GUIDANCE', () => {
 });
 
 describe('resolveInstructionDelivery', () => {
-  const enabledContext = MycoConfigSchema.parse({ version: 3 }).context;
-  const disabledContext = MycoConfigSchema.parse({
+  const enabledCortex = MycoConfigSchema.parse({ version: 3 }).cortex;
+  const disabledCortex = MycoConfigSchema.parse({
     version: 3,
-    context: { cortex_enabled: false },
-  }).context;
+    cortex: { instructions: { inject_on_session_start: false } },
+  }).cortex;
 
   const cases: Array<{
     label: string;
-    context: typeof enabledContext;
+    cortex: typeof enabledCortex;
     symbiont: { supportsSessionStartInjection: boolean } | null;
     expected: ReturnType<typeof resolveInstructionDelivery>;
   }> = [
     {
       label: 'null symbiont → inline with missing-symbiont reason',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: null,
       expected: { inlineInstructions: true, reason: 'missing-symbiont' },
     },
     {
       label: 'cortex disabled → inline regardless of symbiont support',
-      context: disabledContext,
+      cortex: disabledCortex,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: true, reason: 'session-start-disabled' },
     },
     {
       label: 'symbiont supports injection → NOT inline',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: false, reason: 'session-start-supported' },
     },
     {
       label: 'symbiont lacks injection support → inline with no-session-start',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: { supportsSessionStartInjection: false },
       expected: { inlineInstructions: true, reason: 'no-session-start' },
     },
@@ -132,7 +151,7 @@ describe('resolveInstructionDelivery', () => {
 
   for (const testCase of cases) {
     it(testCase.label, () => {
-      expect(resolveInstructionDelivery(testCase.context, testCase.symbiont))
+      expect(resolveInstructionDelivery(testCase.cortex, testCase.symbiont))
         .toEqual(testCase.expected);
     });
   }
@@ -178,7 +197,7 @@ describe('buildCortexInstructionsInput', () => {
 
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
-      tier: config.context.digest_tier,
+      tier: config.cortex.digest.tier,
       content: 'Current digest says the Cortex rollout is in progress and focused on session-start guidance.',
       generated_at: NOW,
     });
@@ -220,7 +239,9 @@ describe('buildCortexInstructionsInput', () => {
       session_id: 'sess-cortex-1',
     });
 
-    const result = await buildCortexInstructionsInput(config);
+    const { vaultDir, cleanup } = makeVaultDir();
+    const result = await buildCortexInstructionsInput(config, vaultDir);
+    cleanup();
 
     expect(result.instruction).toContain('## Current digest excerpt');
     expect(result.instruction).toContain('Current digest says the Cortex rollout is in progress');
@@ -228,36 +249,78 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Cortex instructions follow-up');
     expect(result.instruction).toContain('## Recent decision spores');
     expect(result.instruction).toContain('static retrieval boilerplate');
-    expect(result.instruction).toContain('## Active plans');
+    expect(result.instruction).toContain('## Recent plans');
+    expect(result.instruction).toContain('not a task list for this session');
     expect(result.instruction).toContain('Finish Cortex instruction refresh');
     expect(result.instruction).toContain('`myco_save_plan`');
     expect(result.instruction).toContain('Pass `source_path` when the plan is also written to disk');
     expect(result.instruction).toContain('do not instruct it to call `myco_skills`');
   });
 
-  it('appends the Project Map blurb to Cortex instructions when Cortex is enabled', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: true } });
-    registerAgent({
-      id: DEFAULT_AGENT_ID,
-      name: 'default-agent',
-      created_at: NOW,
+  it('emits the canopy_map() directive only when a populated map exists for the project', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
+
+    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    writeCanopyMap({
+      project_id: resolveCanopyProjectId(vaultDir),
+      machine_id: machineId,
+      content: '## Directory skeleton\n- src/ — application code\n',
+      inputs_hash: 'h-test-1',
+      token_estimate: 25,
+      generated_by_run_id: null,
     });
 
-    const result = await buildCortexInstructionsInput(config);
+    const result = await buildCortexInstructionsInput(config, vaultDir);
+    cleanup();
     expect(result.instruction).toContain('canopy_map()');
-    expect(result.instruction).toContain('cheaper than exploring with Glob/Grep');
+    expect(result.instruction).toContain('default opener');
   });
 
-  it('omits the Project Map blurb when Cortex is disabled', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: false } });
-    registerAgent({
-      id: DEFAULT_AGENT_ID,
-      name: 'default-agent',
-      created_at: NOW,
-    });
+  it('omits the canopy_map() directive when the project has no map yet', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
-    const result = await buildCortexInstructionsInput(config);
+    const { vaultDir, cleanup } = makeVaultDir();
+    // No writeCanopyMap — the map row is missing.
+    const result = await buildCortexInstructionsInput(config, vaultDir);
+    cleanup();
     expect(result.instruction).not.toContain('canopy_map()');
-    expect(result.instruction).not.toContain('cheaper than exploring with Glob/Grep');
+  });
+
+  it('omits the canopy_map() directive when the stored map is empty', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
+
+    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    writeCanopyMap({
+      project_id: resolveCanopyProjectId(vaultDir),
+      machine_id: machineId,
+      content: '',
+      inputs_hash: 'h-empty',
+      token_estimate: 0,
+      generated_by_run_id: null,
+    });
+    const result = await buildCortexInstructionsInput(config, vaultDir);
+    cleanup();
+    expect(result.instruction).not.toContain('canopy_map()');
+  });
+
+  it('omits the canopy_map() directive when Cortex is disabled, even with a populated map', async () => {
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: false } } });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
+
+    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    writeCanopyMap({
+      project_id: resolveCanopyProjectId(vaultDir),
+      machine_id: machineId,
+      content: '## Map\n',
+      inputs_hash: 'h-disabled',
+      token_estimate: 10,
+      generated_by_run_id: null,
+    });
+    const result = await buildCortexInstructionsInput(config, vaultDir);
+    cleanup();
+    expect(result.instruction).not.toContain('canopy_map()');
   });
 });

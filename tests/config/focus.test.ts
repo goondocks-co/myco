@@ -8,39 +8,39 @@ import {
 } from '@myco/config/focus';
 
 describe('config focus helpers', () => {
-  it('resolves context.prompt_search to the Cortex instructions section', () => {
-    const target = resolveConfigFocusTarget('context.prompt_search');
+  it('resolves cortex.spores.inject_on_prompt_submit to the Cortex instructions section', () => {
+    const target = resolveConfigFocusTarget('cortex.spores.inject_on_prompt_submit');
 
     expect(target).toEqual({
       page: '/cortex',
       sectionId: CONFIG_SECTION_IDS.cortexInstructions,
       sectionLabel: 'Instructions',
-      fieldPath: 'context.prompt_search',
-      fieldLabel: 'Prompt Search',
+      fieldPath: 'cortex.spores.inject_on_prompt_submit',
+      fieldLabel: 'Prompt-Submit Spore Injection',
     });
   });
 
   it('builds a focus link with section and field params', () => {
-    const target = resolveConfigFocusTarget('context.prompt_search');
+    const target = resolveConfigFocusTarget('cortex.spores.inject_on_prompt_submit');
     expect(target).not.toBeNull();
     expect(buildConfigFocusLink(target!)).toBe(
-      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=context.prompt_search`,
+      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=cortex.spores.inject_on_prompt_submit`,
     );
   });
 
   it('formats settings save notifications with an exact field label and link', () => {
-    const summary = buildScopedConfigSaveNotification('project', ['context.prompt_search']);
+    const summary = buildScopedConfigSaveNotification('project', ['cortex.spores.inject_on_prompt_submit']);
 
-    expect(summary.title).toBe('Prompt Search saved');
-    expect(summary.message).toBe('Instructions · Prompt Search · Project');
+    expect(summary.title).toBe('Prompt-Submit Spore Injection saved');
+    expect(summary.message).toBe('Instructions · Prompt-Submit Spore Injection · Project');
     expect(summary.link).toBe(
-      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=context.prompt_search`,
+      `/cortex?configSection=${CONFIG_SECTION_IDS.cortexInstructions}&configField=cortex.spores.inject_on_prompt_submit`,
     );
     expect(summary.metadata.focus_target).toEqual({
       page: '/cortex',
       section_id: CONFIG_SECTION_IDS.cortexInstructions,
-      field_path: 'context.prompt_search',
-      field_label: 'Prompt Search',
+      field_path: 'cortex.spores.inject_on_prompt_submit',
+      field_label: 'Prompt-Submit Spore Injection',
     });
   });
 
