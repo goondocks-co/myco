@@ -72,28 +72,30 @@ describe('MycoConfigSchema v3', () => {
     expect(raw.pipeline).toBeUndefined();
   });
 
-  it('applies context injection defaults', () => {
+  it('applies cortex feature defaults', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
-    expect(config.context.digest_tier).toBe(5000);
-    expect(config.context.session_start_digest_enabled).toBe(false);
-    expect(config.context.prompt_search).toBe(true);
-    expect(config.context.prompt_max_spores).toBe(3);
+    expect(config.cortex.enabled).toBe(true);
+    expect(config.cortex.instructions.inject_on_session_start).toBe(true);
+    expect(config.cortex.digest.tier).toBe(5000);
+    expect(config.cortex.digest.inject_on_session_start).toBe(false);
+    expect(config.cortex.spores.inject_on_prompt_submit).toBe(true);
+    expect(config.cortex.spores.max_per_prompt).toBe(3);
   });
 
-  it('accepts custom context injection config', () => {
+  it('accepts custom cortex feature config', () => {
     const config = MycoConfigSchema.parse({
       version: 3,
-      context: {
-        digest_tier: 10000,
-        session_start_digest_enabled: true,
-        prompt_search: false,
-        prompt_max_spores: 5,
+      cortex: {
+        instructions: { inject_on_session_start: false },
+        digest: { tier: 10000, inject_on_session_start: true },
+        spores: { inject_on_prompt_submit: false, max_per_prompt: 5 },
       },
     });
-    expect(config.context.digest_tier).toBe(10000);
-    expect(config.context.session_start_digest_enabled).toBe(true);
-    expect(config.context.prompt_search).toBe(false);
-    expect(config.context.prompt_max_spores).toBe(5);
+    expect(config.cortex.instructions.inject_on_session_start).toBe(false);
+    expect(config.cortex.digest.tier).toBe(10000);
+    expect(config.cortex.digest.inject_on_session_start).toBe(true);
+    expect(config.cortex.spores.inject_on_prompt_submit).toBe(false);
+    expect(config.cortex.spores.max_per_prompt).toBe(5);
   });
 
   it('accepts openrouter embedding provider', () => {

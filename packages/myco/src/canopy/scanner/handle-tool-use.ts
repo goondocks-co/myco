@@ -23,6 +23,8 @@ export interface HandleToolUseOptions {
   projectId: string;
   toolName: string;
   toolInput: unknown;
+  /** Myco baseline from `canopy.exclude.default_patterns`. */
+  defaultExcludePatterns?: string[];
   /** User-custom exclude patterns from `canopy.exclude.patterns`. */
   excludePatterns?: string[];
 }
@@ -43,6 +45,7 @@ export function handleCanopyToolUse(opts: HandleToolUseOptions): void {
       machineId: opts.machineId,
       projectRoot: opts.projectRoot,
       filePath,
+      defaultExcludePatterns: opts.defaultExcludePatterns,
       excludePatterns: opts.excludePatterns,
     });
     if (result.ok) {

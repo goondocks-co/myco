@@ -109,7 +109,7 @@ describe('triggerCortexInstructions', () => {
       started: true,
       runId: 'run-cortex-1',
     });
-    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), getTeamClient);
+    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), '/tmp/myco', getTeamClient);
     expect(runAgent).toHaveBeenCalledWith('/tmp/myco', {
       task: 'cortex-instructions',
       agentId: 'myco-agent',

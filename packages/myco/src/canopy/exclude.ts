@@ -77,17 +77,29 @@ export function isExcluded(relPath: string, patterns: string[]): boolean {
 }
 
 export interface ExcludeMatcherConfig {
-  /** Absolute project root, used to read `.gitignore`. */
+  /** Absolute project root, used to read `.gitignore` (root + nested). */
   projectRoot: string;
-  /** Patterns from `canopy.exclude.patterns` — the user-custom layer. */
+  /**
+   * Myco-maintained baseline patterns from `canopy.exclude.default_patterns`.
+   * Treated identically to `userPatterns` by the matcher; kept structurally
+   * separate so the UI can show users what's baseline vs. what they added.
+   */
+  defaultPatterns: string[];
+  /** Patterns from `canopy.exclude.patterns` — the user-additive layer. */
   userPatterns: string[];
 }
 
 /**
- * Build the three-layer scanner matcher. Composition is checked in order
- * but every layer is consulted (we don't short-circuit between layers
- * because all three are cheap closures). Each layer is compiled exactly
- * once at construction time so the hot walk path stays O(rules) per file.
+ * Build the layered scanner matcher. Layers consulted (any layer saying
+ * "exclude" wins):
+ *   1. Project `.gitignore` (root + nested `.gitignore` files at any depth)
+ *   2. Myco baseline (`canopy.exclude.default_patterns`)
+ *   3. Myco-managed segments from symbiont manifests
+ *   4. Sensitive-path basenames (`.env`, keys, etc.)
+ *   5. User-additive patterns (`canopy.exclude.patterns`)
+ *
+ * Each layer is compiled exactly once at construction time so the hot
+ * walk path stays O(rules) per file.
  *
  * Note on the `isDir` argument: `walkProject` calls the matcher both for
  * directory entries (where it enables pruning the walk) and for files.
@@ -100,11 +112,13 @@ export function createLayeredExcludeMatcher(
 ): (relPath: string, isDir?: boolean) => boolean {
   const gitignore = loadProjectGitignoreMatcher(config.projectRoot);
   const managedSegments = new Set(getManagedExcludeSegments());
+  const defaultMatcher = createExcludeMatcher(config.defaultPatterns);
   const userMatcher = createExcludeMatcher(config.userPatterns);
 
   return (relPath, isDir = false) => {
     const normalized = relPath.replace(/\\/g, '/');
     if (gitignore(normalized, isDir)) return true;
+    if (defaultMatcher(normalized)) return true;
     // Managed layer: any path segment that names a managed dir excludes
     // the entry. Cheap O(segments) check; no regex needed.
     for (const seg of normalized.split('/')) {

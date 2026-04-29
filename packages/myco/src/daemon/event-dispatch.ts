@@ -375,7 +375,8 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             projectId: resolveCanopyProjectId(vaultDir),
             toolName,
             toolInput: event.tool_input,
-            excludePatterns: liveConfig.current.canopy.exclude.patterns,
+            defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,
+            excludePatterns: liveConfig.current.cortex.canopy.exclude.patterns,
           });
         } catch {
           // The deferred scanner is observability-only; capture already succeeded.

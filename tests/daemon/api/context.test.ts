@@ -51,10 +51,40 @@ function makeDeps(overrides: Partial<ContextDeps> & { config?: MycoConfig } = {}
   };
 }
 
-function makeConfig(overrides: Partial<MycoConfig['context']> = {}): MycoConfig {
+interface LegacyContextOverride {
+  cortex_enabled?: boolean;
+  session_start_digest_enabled?: boolean;
+  digest_tier?: number;
+  prompt_search?: boolean;
+  prompt_max_spores?: number;
+}
+
+/**
+ * Tests still author overrides in the pre-v8 vocabulary (cortex_enabled,
+ * prompt_search, etc.) for readability. Map them to the new shape on the
+ * way into MycoConfigSchema.parse so each test stays focused on its
+ * behavior, not the schema migration.
+ */
+function makeConfig(overrides: LegacyContextOverride = {}): MycoConfig {
+  const cortex: Record<string, Record<string, unknown>> = {};
+  if ('cortex_enabled' in overrides) {
+    cortex.instructions = { inject_on_session_start: overrides.cortex_enabled };
+  }
+  if ('session_start_digest_enabled' in overrides || 'digest_tier' in overrides) {
+    cortex.digest = {};
+    if ('digest_tier' in overrides) cortex.digest.tier = overrides.digest_tier;
+    if ('session_start_digest_enabled' in overrides) {
+      cortex.digest.inject_on_session_start = overrides.session_start_digest_enabled;
+    }
+  }
+  if ('prompt_search' in overrides || 'prompt_max_spores' in overrides) {
+    cortex.spores = {};
+    if ('prompt_search' in overrides) cortex.spores.inject_on_prompt_submit = overrides.prompt_search;
+    if ('prompt_max_spores' in overrides) cortex.spores.max_per_prompt = overrides.prompt_max_spores;
+  }
   return MycoConfigSchema.parse({
     version: 3,
-    context: overrides,
+    cortex,
   });
 }
 

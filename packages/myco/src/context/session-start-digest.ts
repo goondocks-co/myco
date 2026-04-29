@@ -7,13 +7,13 @@ export interface SessionStartDigestPayload {
   tier: number | null;
 }
 
-export function shouldInjectSessionStartDigest(config: MycoConfig['context']): boolean {
-  return config.session_start_digest_enabled === true;
+export function shouldInjectSessionStartDigest(digest: MycoConfig['cortex']['digest']): boolean {
+  return digest.inject_on_session_start === true;
 }
 
-export function getSessionStartDigestPayload(config: MycoConfig['context']): SessionStartDigestPayload {
+export function getSessionStartDigestPayload(digest: MycoConfig['cortex']['digest']): SessionStartDigestPayload {
   const extract =
-    getDigestExtract(DEFAULT_AGENT_ID, config.digest_tier) ??
+    getDigestExtract(DEFAULT_AGENT_ID, digest.tier) ??
     getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER);
 
   return {

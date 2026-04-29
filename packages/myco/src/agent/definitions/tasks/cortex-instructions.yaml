@@ -85,25 +85,40 @@ phases:
     prompt: |
       Write the final session-start markdown from the research brief.
 
-      Required structure:
-      - `## Myco-Enabled Project` heading, then one sentence explaining
-        that Myco provides project memory, prior decisions, plans, and
-        retrieval tools for this repository.
-      - A retrieval paragraph naming the highest-priority tools from the
-        tool guidance list (typically `myco_search`, `myco_recall`,
-        `myco_context`). Describe when each is useful, not what each
-        argument does.
-      - A plan-persistence paragraph naming `myco_plans` and
-        `myco_save_plan`.
-      - A `### Current workstreams` section that MUST cite at least
-        one active plan or recent session BY TITLE from the research
-        brief. If the research brief contains zero hotspots, write
-        "No active workstreams worth flagging right now." verbatim —
-        do not invent, recycle, or pad with stale items.
-      - A closing paragraph on `myco_remember` for saving discoveries.
+      Required structure (emit sections in EXACTLY this order — the
+      ordering is load-bearing, last-section primacy is intentional):
+
+      1. `## Myco-Enabled Project` heading, then one sentence
+         explaining that Myco provides project memory, prior decisions,
+         plans, and retrieval tools for this repository.
+
+      2. A retrieval paragraph naming the highest-priority tools from
+         the tool guidance list (typically `myco_search`, `myco_recall`,
+         `myco_context`). Describe when each is useful, not what each
+         argument does.
+
+      3. A plan-persistence paragraph naming `myco_plans` and
+         `myco_save_plan`.
+
+      4. A `### Recent workstreams` section that MUST cite at least
+         one active plan or recent session BY TITLE from the research
+         brief. Frame these as background context — work the project
+         has on file, not a task list for the incoming session. The
+         new agent is launching to do something else; this section
+         helps it avoid duplicating effort or contradicting in-flight
+         work when its actual task happens to overlap. If the research
+         brief contains zero hotspots, write "No recent workstreams
+         worth flagging right now." verbatim — do not invent, recycle,
+         or pad with stale items.
+
+      5. A closing paragraph on `myco_remember` for saving discoveries
+         during this session. This is the call-to-action — it lands
+         last on purpose so the freshest impression is "as you work,
+         capture surprising things," not the background plan list.
 
       Keep the output compact and ready for direct injection. Do not
-      restate AGENTS.md. Do not mention `myco_skills`.
+      restate AGENTS.md. Do not mention `myco_skills`. Do not reorder
+      the five sections.
 
       Report the final markdown via `vault_report` with:
       - action: "cortex_instructions"

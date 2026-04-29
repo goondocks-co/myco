@@ -1,4 +1,4 @@
-import type { MycoConfig, EmbeddingProviderConfig, ContextConfig, TaskProviderOverride, PhaseOverride } from './schema.js';
+import type { MycoConfig, EmbeddingProviderConfig, TaskProviderOverride, PhaseOverride } from './schema.js';
 import { setAtPath } from '../utils/dot-path.js';
 
 /**
@@ -251,36 +251,8 @@ export function withEmbedding(
   };
 }
 
-/**
- * Allowlist for `withContext`. Mirrors `ContextSchema` — keep in sync
- * when adding fields. The legacy `operating_brief_enabled` key is
- * accepted because the schema preprocesses it into `cortex_enabled`;
- * dropping it from the allowlist would reject older payloads that the
- * schema migration is specifically there to handle.
- */
-const CONTEXT_UPDATE_KEYS: ReadonlySet<keyof ContextConfig | 'operating_brief_enabled'> = new Set([
-  'digest_tier',
-  'session_start_digest_enabled',
-  'cortex_enabled',
-  'prompt_search',
-  'prompt_max_spores',
-  'operating_brief_enabled',
-] as const);
-
-/**
- * Merge partial context injection updates into config, returning a new config object.
- */
-export function withContext(
-  config: MycoConfig,
-  updates: Partial<ContextConfig>,
-): MycoConfig {
-  assertKnownKeys<ContextConfig>(
-    'withContext',
-    updates,
-    CONTEXT_UPDATE_KEYS as ReadonlySet<keyof ContextConfig>,
-  );
-  return {
-    ...config,
-    context: { ...config.context, ...updates },
-  };
-}
+// `withContext` was removed in config_version 8 — all Cortex settings
+// (instructions, digest, spores, canopy) now live under `cortex.*`.
+// Use the scoped-settings patch endpoint or `updateConfig` directly to
+// modify any cortex.* field; tests can build patches inline rather than
+// going through a bespoke helper.

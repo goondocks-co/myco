@@ -22,6 +22,9 @@ import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listSpores } from '@myco/db/queries/spores.js';
+import { readCanopyMap } from '@myco/canopy/map/store.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
   TOOL_DEFINITIONS,
@@ -113,14 +116,16 @@ export async function resolveCortexCapabilities(
   };
 }
 
-export function shouldInjectCortex(
-  config: MycoConfig['context'],
-): boolean {
-  return config.cortex_enabled;
+/**
+ * Whether Cortex should inject session-start instructions for this
+ * config. Combines the Cortex master-kill with the per-event toggle.
+ */
+export function shouldInjectCortex(cortex: MycoConfig['cortex']): boolean {
+  return cortex.enabled && cortex.instructions.inject_on_session_start;
 }
 
 export function resolveInstructionDelivery(
-  config: MycoConfig['context'],
+  cortex: MycoConfig['cortex'],
   symbiont: {
     supportsSessionStartInjection: boolean;
   } | null,
@@ -128,7 +133,7 @@ export function resolveInstructionDelivery(
   if (!symbiont) {
     return { inlineInstructions: true, reason: 'missing-symbiont' };
   }
-  if (!config.cortex_enabled) {
+  if (!shouldInjectCortex(cortex)) {
     return { inlineInstructions: true, reason: 'session-start-disabled' };
   }
   if (symbiont.supportsSessionStartInjection) {
@@ -242,7 +247,7 @@ function formatRecentPlans(): string {
 }
 
 function formatDigestExcerpt(config: MycoConfig): string {
-  const preferredTier = config.context.digest_tier;
+  const preferredTier = config.cortex.digest.tier;
   const extract =
     getDigestExtract(DEFAULT_AGENT_ID, preferredTier) ??
     getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER);
@@ -261,8 +266,21 @@ export interface CortexInstructionPayload {
 
 export async function buildCortexInstructionsInput(
   config: MycoConfig,
+  vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload> {
+  // Probe the Canopy Map state once at build time so the prompt can branch
+  // deterministically. We only emit the canopy_map() directive when a
+  // populated map exists for this project — that way agents downstream
+  // never see guidance for a tool that would return empty. The chain
+  // also covers describe state implicitly: the map task can't produce a
+  // non-empty row without described files, so a populated map proves
+  // canopy-describe has run successfully.
+  const projectId = resolveCanopyProjectId(vaultDir);
+  const machineId = getMachineId(vaultDir);
+  const mapRow = readCanopyMap(projectId, machineId);
+  const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
+
   const capabilities = await resolveCortexCapabilities(config, getTeamClient);
   const capabilitySummary = buildCapabilitySummary(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
@@ -273,11 +291,13 @@ export async function buildCortexInstructionsInput(
   const recentPlans = formatRecentPlans();
   const digestExcerpt = formatDigestExcerpt(config);
   const input = {
-    context: {
-      digest_tier: config.context.digest_tier,
-      cortex_enabled: config.context.cortex_enabled,
-      prompt_search: config.context.prompt_search,
-      prompt_max_spores: config.context.prompt_max_spores,
+    cortex: {
+      enabled: config.cortex.enabled,
+      instructions_inject_on_session_start: config.cortex.instructions.inject_on_session_start,
+      digest_tier: config.cortex.digest.tier,
+      digest_inject_on_session_start: config.cortex.digest.inject_on_session_start,
+      spores_inject_on_prompt_submit: config.cortex.spores.inject_on_prompt_submit,
+      spores_max_per_prompt: config.cortex.spores.max_per_prompt,
     },
     capabilities,
     digestExcerpt,
@@ -295,7 +315,7 @@ export async function buildCortexInstructionsInput(
     'Do not restate AGENTS.md or static installation details.',
     '',
     '## Runtime config',
-    JSON.stringify(input.context, null, JSON_INDENT),
+    JSON.stringify(input.cortex, null, JSON_INDENT),
     '',
     '## Authoring requirements',
     '- Start with the heading `## Myco-Enabled Project`.',
@@ -305,11 +325,24 @@ export async function buildCortexInstructionsInput(
     `- ${CORTEX_SKILLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
+    // The recent-plans section is background context, not a task list for
+    // the incoming session. The session is launching to do something else;
+    // these plans tell the agent what shape of work the project has on file
+    // so it can avoid duplicating effort or contradicting in-flight work.
+    // Frame the section accordingly — never imply the new agent should
+    // pick these plans up.
+    '- When you mention recent plans, label the section "Recent plans" or "Recent workstreams" (NOT "Current workstreams" — that implies the new session is going to work on them). Treat them as background: prior or in-flight work the agent should be aware of when its actual task happens to overlap, not a directive to engage.',
   ];
 
-  if (input.context.cortex_enabled) {
+  if (shouldInjectCortex(config.cortex) && hasCanopyMap) {
+    // Emitted only when a non-empty Canopy Map exists for this project.
+    // That gate makes the directive trustworthy unconditionally — there
+    // is no empty-state caveat to hedge with — so the generated downstream
+    // copy can be a default action rather than a conditional. If the map
+    // is missing or empty, this directive is omitted entirely and the
+    // session-start instructions stay silent about canopy_map().
     instructionParts.push(
-      '- When mentioning code exploration, suggest agents call `canopy_map()` first to get the architectural overview — it\'s cheaper than exploring with Glob/Grep.',
+      '- Teach `canopy_map()` as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action ("call canopy_map() first"), not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
     );
   }
 
@@ -336,7 +369,7 @@ export async function buildCortexInstructionsInput(
     '## Recent discovery spores',
     recentDiscoverySpores,
     '',
-    '## Active plans',
+    '## Recent plans (background context — not a task list for this session)',
     recentPlans,
   );
 
@@ -348,9 +381,10 @@ export async function buildCortexInstructionsInput(
 
 export async function buildScheduledCortexInstruction(
   config: MycoConfig,
+  vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload | undefined> {
-  const built = await buildCortexInstructionsInput(config, getTeamClient);
+  const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
   const existing = getCortexInstructions(DEFAULT_AGENT_ID);
   if (existing?.input_hash === built.inputHash) {
     return undefined;

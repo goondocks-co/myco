@@ -10,6 +10,11 @@ export interface CollectiveSettingDefinition {
 
 const DIGEST_TIERS = [1500, 3000, 5000, 7500, 10000] as const;
 
+// NOTE: keep these key strings in sync with `CORTEX_PATHS` and friends in
+// `packages/myco/src/config/paths.ts`. The Cloudflare worker ships as a
+// standalone package and can't import from the daemon source tree, so the
+// path strings are inlined. A future cross-package paths module would
+// remove the duplication; for now the rename pattern is pinned here.
 export const COLLECTIVE_SETTING_DEFINITIONS: CollectiveSettingDefinition[] = [
   {
     key: 'agent.scheduled_tasks_enabled',
@@ -24,22 +29,22 @@ export const COLLECTIVE_SETTING_DEFINITIONS: CollectiveSettingDefinition[] = [
     example: true,
   },
   {
-    key: 'context.prompt_search',
-    description: 'Control whether prompt-time semantic search is enabled for node context injection.',
+    key: 'cortex.spores.inject_on_prompt_submit',
+    description: 'Control whether prompt-submit spore injection is enabled for node context.',
     value_type: 'boolean',
     example: true,
   },
   {
-    key: 'context.prompt_max_spores',
-    description: 'Bound the number of spores injected into prompt-time context.',
+    key: 'cortex.spores.max_per_prompt',
+    description: 'Bound the number of spores injected per user prompt.',
     value_type: 'integer',
     example: 3,
     minimum: 0,
     maximum: 10,
   },
   {
-    key: 'context.digest_tier',
-    description: 'Select which digest tier should be injected into node context.',
+    key: 'cortex.digest.tier',
+    description: 'Select which digest tier should be used by myco_context() and session-start digest injection.',
     value_type: 'integer',
     example: 5000,
   },
@@ -117,7 +122,7 @@ export function validateCollectiveSetting(
       if (!Number.isInteger(value)) {
         return { ok: false, error: `${key} must be an integer` };
       }
-      if (key === 'context.digest_tier' && !DIGEST_TIERS.includes(value as (typeof DIGEST_TIERS)[number])) {
+      if (key === 'cortex.digest.tier' && !DIGEST_TIERS.includes(value as (typeof DIGEST_TIERS)[number])) {
         return { ok: false, error: `${key} must be one of ${DIGEST_TIERS.join(', ')}` };
       }
       if (definition.minimum !== undefined && (value as number) < definition.minimum) {

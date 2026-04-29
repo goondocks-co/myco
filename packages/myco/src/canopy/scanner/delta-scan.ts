@@ -17,6 +17,9 @@ export interface DeltaScanOptions {
   projectId: string;
   machineId: string;
   projectRoot: string;
+  /** Myco-maintained baseline from `canopy.exclude.default_patterns`. */
+  defaultExcludePatterns: string[];
+  /** User-additive list from `canopy.exclude.patterns`. */
   excludePatterns: string[];
   maxBytes?: number;
 }
@@ -37,6 +40,7 @@ export function deltaScan(opts: DeltaScanOptions): CanopyScanResult {
   const now = epochSeconds();
   const isExcluded = createLayeredExcludeMatcher({
     projectRoot: opts.projectRoot,
+    defaultPatterns: opts.defaultExcludePatterns,
     userPatterns: opts.excludePatterns,
   });
   const existing = listExistingHashes(opts.db, opts.projectId);

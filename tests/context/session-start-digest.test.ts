@@ -30,17 +30,17 @@ describe('session-start-digest', () => {
     });
   });
 
-  const context = MycoConfigSchema.parse({
+  const digest = MycoConfigSchema.parse({
     version: 3,
-    context: { session_start_digest_enabled: true },
-  }).context;
+    cortex: { digest: { inject_on_session_start: true } },
+  }).cortex.digest;
 
   it('shouldInjectSessionStartDigest honors the config toggle', () => {
-    expect(shouldInjectSessionStartDigest(context)).toBe(true);
+    expect(shouldInjectSessionStartDigest(digest)).toBe(true);
     const disabled = MycoConfigSchema.parse({
       version: 3,
-      context: { session_start_digest_enabled: false },
-    }).context;
+      cortex: { digest: { inject_on_session_start: false } },
+    }).cortex.digest;
     expect(shouldInjectSessionStartDigest(disabled)).toBe(false);
   });
 
@@ -48,14 +48,14 @@ describe('session-start-digest', () => {
     const now = Math.floor(Date.now() / 1000);
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
-      tier: context.digest_tier,
+      tier: digest.tier,
       content: 'Preferred-tier digest body',
       generated_at: now,
     });
 
-    const payload = getSessionStartDigestPayload(context);
+    const payload = getSessionStartDigestPayload(digest);
     expect(payload.content).toBe('Preferred-tier digest body');
-    expect(payload.tier).toBe(context.digest_tier);
+    expect(payload.tier).toBe(digest.tier);
   });
 
   it('falls back to DIGEST_FALLBACK_TIER when the preferred tier is missing', () => {
@@ -67,13 +67,13 @@ describe('session-start-digest', () => {
       generated_at: now,
     });
 
-    const payload = getSessionStartDigestPayload(context);
+    const payload = getSessionStartDigestPayload(digest);
     expect(payload.content).toBe('Fallback-tier digest body');
     expect(payload.tier).toBe(DIGEST_FALLBACK_TIER);
   });
 
   it('returns empty payload when both the preferred and fallback tiers are missing', () => {
-    const payload = getSessionStartDigestPayload(context);
+    const payload = getSessionStartDigestPayload(digest);
     expect(payload).toEqual({ content: '', tier: null });
   });
 });

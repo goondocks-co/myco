@@ -47,6 +47,7 @@ const baseOpts = () => ({
   projectId: PROJECT_ID,
   machineId: 'local',
   projectRoot,
+  defaultExcludePatterns: [] as string[],
   excludePatterns: DEFAULT_PATTERNS,
 });
 

@@ -7,7 +7,7 @@ import {
 describe('collective setting definitions', () => {
   it('exposes a schema-backed allowlist of supported keys', () => {
     expect(COLLECTIVE_SETTING_DEFINITIONS.length).toBeGreaterThan(0);
-    expect(COLLECTIVE_SETTING_DEFINITIONS.map((entry) => entry.key)).toContain('context.digest_tier');
+    expect(COLLECTIVE_SETTING_DEFINITIONS.map((entry) => entry.key)).toContain('cortex.digest.tier');
     expect(COLLECTIVE_SETTING_DEFINITIONS.map((entry) => entry.key)).not.toContain('totally.unsupported.key');
   });
 
@@ -22,10 +22,10 @@ describe('collective setting definitions', () => {
 
   it('validates allowed values by type and bounds', () => {
     expect(validateCollectiveSetting('agent.scheduled_tasks_enabled', true).ok).toBe(true);
-    expect(validateCollectiveSetting('context.prompt_max_spores', 3).ok).toBe(true);
-    expect(validateCollectiveSetting('context.prompt_max_spores', 11).ok).toBe(false);
-    expect(validateCollectiveSetting('context.digest_tier', 5000).ok).toBe(true);
-    expect(validateCollectiveSetting('context.digest_tier', 1234).ok).toBe(false);
+    expect(validateCollectiveSetting('cortex.spores.max_per_prompt', 3).ok).toBe(true);
+    expect(validateCollectiveSetting('cortex.spores.max_per_prompt', 11).ok).toBe(false);
+    expect(validateCollectiveSetting('cortex.digest.tier', 5000).ok).toBe(true);
+    expect(validateCollectiveSetting('cortex.digest.tier', 1234).ok).toBe(false);
     expect(validateCollectiveSetting('notifications.default_mode', 'banner').ok).toBe(true);
     expect(validateCollectiveSetting('notifications.default_mode', 'toast').ok).toBe(false);
   });
