@@ -20,3 +20,5 @@ registration:
   # mcpTarget is omitted; tools are wired in the extension itself.
   skillsTarget: .agents/skills
   # No instructionsFile — pi reads AGENTS.md natively via context files
+capabilities:
+  sessionStartInjection: true

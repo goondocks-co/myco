@@ -107,7 +107,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "instructionsFile": "CLAUDE.md"
     },
     "capabilities": {
-      "preToolUseInjection": true
+      "preToolUseInjection": true,
+      "sessionStartInjection": true
     }
   },
   {
@@ -258,7 +259,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "toml"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -308,7 +310,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -347,7 +350,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "instructionsFile": "GEMINI.md"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -386,7 +390,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -421,7 +426,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -456,7 +462,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "instructionsFile": ".github/copilot-instructions.md"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": true
     }
   },
   {
@@ -491,7 +498,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "json"
     },
     "capabilities": {
-      "preToolUseInjection": false
+      "preToolUseInjection": false,
+      "sessionStartInjection": false
     }
   }
 ] as const;

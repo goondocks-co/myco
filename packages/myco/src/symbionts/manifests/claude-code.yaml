@@ -130,3 +130,6 @@ capabilities:
   # Canopy injection. Other symbionts flip this on as their hook surfaces
   # gain equivalent pre-call injection.
   preToolUseInjection: true
+  # Hook template registers a session-start hook that fetches Cortex context
+  # and emits it as additional system context.
+  sessionStartInjection: true

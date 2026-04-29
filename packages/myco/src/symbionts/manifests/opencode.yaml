@@ -31,3 +31,5 @@ registration:
   settingsTarget: opencode.json
   skillsTarget: .agents/skills
   # No instructionsFile — opencode reads AGENTS.md natively
+capabilities:
+  sessionStartInjection: true
