@@ -11,11 +11,11 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { initDatabase, closeDatabase } from '../db/client.js';
-import { loadAgentTasks, resolveDefinitionsDir } from './loader.js';
-import { executeMapPhase } from './map-phase.js';
-import { createVaultTools } from './tools.js';
-import type { PhaseDefinition } from './types.js';
+import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { loadAgentTasks, resolveDefinitionsDir } from '@myco/agent/loader.js';
+import { executeMapPhase } from '@myco/agent/map-phase.js';
+import { createVaultTools } from '@myco/agent/tools.js';
+import type { PhaseDefinition } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

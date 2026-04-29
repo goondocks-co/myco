@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { interpolateArgs } from './interpolate-args.js';
+import { interpolateArgs } from '@myco/utils/interpolate-args.js';
 
 describe('interpolateArgs', () => {
   it('substitutes simple {{ key }} placeholders against vars', () => {

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { initDatabase, closeDatabase } from '../../db/client.js';
-import { createCanopyTools } from './canopy-tools.js';
-import type { VaultToolDeps } from './types.js';
+import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { createCanopyTools } from '@myco/agent/tools/canopy-tools.js';
+import type { VaultToolDeps } from '@myco/agent/tools/types.js';
 
 function seedSchema(db: Database) {
   // Schema seed: hardcoded, no untrusted input

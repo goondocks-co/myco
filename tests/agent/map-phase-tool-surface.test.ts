@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
+import { buildMapItemToolSurface } from '@myco/agent/map-phase-tool-surface.js';
 
 function makeFakeTool(name: string, inputs: Record<string, z.ZodTypeAny>, readOnly = false) {
   return tool(name, `${name} tool`, inputs, async () => ({ content: [{ type: 'text', text: '{}' }] }), {
