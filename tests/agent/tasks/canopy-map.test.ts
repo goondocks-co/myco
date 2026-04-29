@@ -33,6 +33,7 @@ import { getMachineId } from '@myco/daemon/machine-id.js';
 import { computeInputsHash, MAP_TASK_PROMPT_VERSION } from '@myco/canopy/map/inputs-hash.js';
 import {
   buildCanopyMapInstruction,
+  buildCanopyMapInstructionDetailed,
   buildTaskInstruction,
   CANOPY_MAP_TASK,
   gatherCanopyMapContext,
@@ -119,6 +120,26 @@ describe('canopy-map task', () => {
     it('returns undefined when projectRoot is missing', async () => {
       const built = await buildCanopyMapInstruction(undefined, undefined);
       expect(built).toBeUndefined();
+    });
+
+    it('buildCanopyMapInstructionDetailed surfaces the skip reason for the regenerate path', async () => {
+      // Pins the contract the daemon's /canopy/map/regenerate runner relies on:
+      // every short-circuit branch must come back as a typed skip rather than
+      // collapsing to undefined (which lets the agent run with no instruction
+      // and crash in finalizeCanopyMap — the production bug this guards).
+      const noRoot = await buildCanopyMapInstructionDetailed(undefined, undefined);
+      expect(noRoot).toEqual({ kind: 'skip', reason: 'no_project_root' });
+
+      seedDescribed('src/a.ts', 'ah', 'A module.');
+      const disabled = await buildCanopyMapInstructionDetailed(
+        undefined,
+        projectRoot,
+        makeConfig({ canopyEnabled: false }),
+      );
+      expect(disabled).toEqual({ kind: 'skip', reason: 'canopy_disabled' });
+
+      const built = await buildCanopyMapInstructionDetailed(undefined, projectRoot);
+      expect(built.kind).toBe('built');
     });
 
     it('canopy-map ships with schedule.enabled = true by default', () => {

@@ -42,8 +42,11 @@ const TRISTATE_OPTIONS = [
  * misleading (you'd never see languages outside the current filter slice).
  * This is the canonical set the scanner emits.
  */
+// "All" rather than "All languages" — the inline LANGUAGE label already
+// names the column, so the long form duplicated context and forced the
+// trigger wider than every other filter.
 const LANGUAGE_OPTIONS = [
-  { value: FILTER_ALL,    label: 'All languages' },
+  { value: FILTER_ALL,    label: 'All' },
   { value: 'typescript',  label: 'TypeScript' },
   { value: 'javascript',  label: 'JavaScript' },
   { value: 'tsx',         label: 'TSX' },
@@ -101,18 +104,22 @@ function FilterDropdown({
   value,
   options,
   onValueChange,
+  triggerClassName = 'w-32',
 }: {
   label: string;
   value: string;
   options: { value: string; label: string }[];
   onValueChange: (value: string) => void;
+  /** Tailwind width class for the trigger. Override when the longest label
+   *  wraps or truncates at the default 128px (e.g. "All languages"). */
+  triggerClassName?: string;
 }) {
   return (
     <label className="flex items-center gap-2 text-on-surface-variant">
       <span className="font-sans text-xs uppercase tracking-wider">
         {label}
       </span>
-      <div className="w-32 shrink-0">
+      <div className={`${triggerClassName} shrink-0`}>
         <Select value={value} onValueChange={onValueChange}>
           <SelectTrigger>
             <SelectValue />
@@ -282,10 +289,13 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
     handleFilterChange,
     activeFilter,
   } = useListFilters({
+    // Embedded was a third tristate filter; pulled because there's no user
+    // action it gates — embedding follows description automatically. The
+    // Embedded column on the table still surfaces per-row state for the
+    // rare drift case.
     initialFilters: {
       language: FILTER_ALL,
       described: FILTER_ALL,
-      embedded: FILTER_ALL,
     },
   });
 
@@ -306,7 +316,6 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
     offset,
     language: activeFilter('language'),
     described: tristateToBool(activeFilter('described')),
-    embedded: tristateToBool(activeFilter('embedded')),
     // Free-text search across path AND llm_description.
     q: debouncedSearch,
     sort_by: sortBy,
@@ -339,12 +348,6 @@ export function CanopyEntriesList({ selectedPath, onSelectPath }: CanopyEntriesL
         value={filterValues.described ?? FILTER_ALL}
         options={TRISTATE_OPTIONS}
         onValueChange={(v) => handleFilterChange('described', v)}
-      />
-      <FilterDropdown
-        label="Embedded"
-        value={filterValues.embedded ?? FILTER_ALL}
-        options={TRISTATE_OPTIONS}
-        onValueChange={(v) => handleFilterChange('embedded', v)}
       />
     </Surface>
   );

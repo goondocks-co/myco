@@ -16,7 +16,7 @@ Myco's UI spans multiple contexts (daemon, collective, marketing) that must main
 - Myco project with `.myco/` vault directory
 - Node.js environment with npm workspaces
 - Access to `packages/myco/ui/` and related UI directories
-- Understanding of Myco's config overlay pattern (`.myco/local.yaml` over `myco.yaml`)
+- Understanding of Myco's config overlay pattern (`.myco/local.yaml` over `.myco/myco.yaml`)
 
 ## Procedure A: React Component Architecture Patterns
 
@@ -355,7 +355,7 @@ appearance:
   dark_mode: true
   density: "compact"
 
-# myco.yaml (project, shared)
+# .myco/myco.yaml (project, shared)
 # No appearance section - uses defaults
 ```
 

@@ -442,7 +442,17 @@ export interface CanopyMapRegenerateArgs {
 
 export interface CanopyMapRegenerateResult {
   ok: true;
-  run_id: string;
+  /** Present when a run was enqueued. */
+  run_id?: string;
+  /** True when the regenerate was a no-op — see `reason` for why. */
+  skipped?: boolean;
+  /**
+   * Machine-readable skip reason from buildCanopyMapInstructionDetailed:
+   * 'no_project_root' | 'canopy_disabled' | 'no_described_entries' |
+   * 'inputs_unchanged'. Kept as a free-form string in the wire shape so
+   * future skip reasons don't require a coordinated UI deploy.
+   */
+  reason?: string;
 }
 
 /**
@@ -451,6 +461,12 @@ export interface CanopyMapRegenerateResult {
  * and dispatches via the agent executor (mirroring the
  * /api/agent/run path); tests inject a stub so they don't need to stand
  * up the executor.
+ *
+ * The runner returns a skip envelope when the build short-circuits (no
+ * described entries, canopy disabled, inputs unchanged) so the handler
+ * can surface the reason to the UI instead of running the LLM phase
+ * with no instruction — which would crash in finalizeCanopyMap because
+ * runContext.canopy_map_inputs_hash never got set.
  */
 export interface CanopyMapTaskRunner {
   runner: (input: {
@@ -458,7 +474,7 @@ export interface CanopyMapTaskRunner {
     params: { force_cold_start: boolean };
     project_id: string;
     machine_id: string;
-  }) => Promise<{ run_id: string }>;
+  }) => Promise<{ run_id: string } | { skipped: true; reason: string }>;
 }
 
 export async function handleCanopyMapGet(args: CanopyMapGetArgs): Promise<CanopyMapGetResult> {
@@ -482,13 +498,16 @@ export async function handleCanopyMapRegenerate(
   args: CanopyMapRegenerateArgs,
   deps: CanopyMapTaskRunner,
 ): Promise<CanopyMapRegenerateResult> {
-  const { run_id } = await deps.runner({
+  const result = await deps.runner({
     task: 'canopy-map',
     params: { force_cold_start: args.force_cold_start === true },
     project_id: args.project_id,
     machine_id: args.machine_id,
   });
-  return { ok: true, run_id };
+  if ('skipped' in result) {
+    return { ok: true, skipped: true, reason: result.reason };
+  }
+  return { ok: true, run_id: result.run_id };
 }
 
 // ---------------------------------------------------------------------------

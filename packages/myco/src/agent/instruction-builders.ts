@@ -1029,6 +1029,53 @@ function renderCanopyMapInstruction(ctx: CanopyMapGatherContext): string {
 }
 
 /**
+ * Discriminated reasons buildCanopyMapInstructionDetailed surfaces when it
+ * skips. Daemon callers translate these into a user-facing message; the
+ * thin `buildCanopyMapInstruction` wrapper collapses them all to undefined
+ * for the dispatcher path.
+ */
+export type CanopyMapBuildSkipReason =
+  | 'no_project_root'
+  | 'canopy_disabled'
+  | 'no_described_entries'
+  | 'inputs_unchanged';
+
+export type CanopyMapBuildResult =
+  | { kind: 'built'; instruction: string; context: TaskRunContext }
+  | { kind: 'skip'; reason: CanopyMapBuildSkipReason };
+
+/**
+ * Detailed canopy-map build that preserves the skip reason. The daemon's
+ * /canopy/map/regenerate path uses this directly so it can return a
+ * structured "skipped" envelope to the UI instead of running the agent
+ * with no instruction (which would succeed at the LLM phase but throw in
+ * finalizeCanopyMap because runContext.canopy_map_inputs_hash is unset).
+ *
+ * Honors `force_cold_start` (boolean) param — when true, bypasses both
+ * the inputs_hash short-circuit AND prior-map refinement, producing a
+ * fresh map regardless of cached state.
+ */
+export async function buildCanopyMapInstructionDetailed(
+  params?: Record<string, string | number | boolean>,
+  projectRoot?: string,
+  config?: MycoConfig,
+): Promise<CanopyMapBuildResult> {
+  if (!projectRoot) return { kind: 'skip', reason: 'no_project_root' };
+
+  const forceColdStart = params?.force_cold_start === true;
+  const ctx = await gatherCanopyMapContext(projectRoot, forceColdStart, config);
+
+  if ('skip' in ctx) return { kind: 'skip', reason: ctx.reason };
+
+  const instruction = renderCanopyMapInstruction(ctx);
+  return {
+    kind: 'built',
+    instruction,
+    context: { canopy_map_inputs_hash: ctx.inputsHash },
+  };
+}
+
+/**
  * Build the instruction for a canopy-map run.
  *
  * Phase 1 (deterministic): gather canopy entries + rules files, compute
@@ -1038,31 +1085,19 @@ function renderCanopyMapInstruction(ctx: CanopyMapGatherContext): string {
  * render phase sees. The LLM emits the final markdown via vault_report
  * and finalizeOnTaskSuccess persists it to canopy_maps.
  *
- * Returns undefined when:
- *   - projectRoot is missing (no way to find canopy_entries / rules), OR
- *   - inputs_hash matches the prior map (idempotent re-fire, skip).
- *
- * Honors `force_cold_start` (boolean) param — when true, bypasses both
- * the inputs_hash short-circuit AND prior-map refinement, producing a
- * fresh map regardless of cached state.
+ * Returns undefined when the detailed builder reports a skip — see
+ * `buildCanopyMapInstructionDetailed` for the reasons. Dispatcher callers
+ * combine this with `isInstructionRequiredTask` to skip the run cleanly.
  */
 export async function buildCanopyMapInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
   config?: MycoConfig,
 ): Promise<BuiltTaskInstruction | undefined> {
-  if (!projectRoot) return undefined;
-
-  const forceColdStart = params?.force_cold_start === true;
-  const ctx = await gatherCanopyMapContext(projectRoot, forceColdStart, config);
-
-  if ('skip' in ctx) return undefined;
-
-  const instruction = renderCanopyMapInstruction(ctx);
-  return {
-    instruction,
-    context: { canopy_map_inputs_hash: ctx.inputsHash },
-  };
+  const result = await buildCanopyMapInstructionDetailed(params, projectRoot, config);
+  return result.kind === 'built'
+    ? { instruction: result.instruction, context: result.context }
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
