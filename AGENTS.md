@@ -72,4 +72,5 @@ Myco captures project memory in a local vault and serves it back through context
 
 - When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.
 - Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
+- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — call `canopy_map()` (Myco MCP) for an architectural overview before falling back to Glob/Grep.
 <!-- myco:managed:end -->
