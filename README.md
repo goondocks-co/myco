@@ -186,4 +186,4 @@ Contributions welcome. See the [Contributing Guide](CONTRIBUTING.md) for develop
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
