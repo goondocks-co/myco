@@ -95,11 +95,16 @@ phases:
         argument does.
       - A plan-persistence paragraph naming `myco_plans` and
         `myco_save_plan`.
-      - A `### Current workstreams` section that MUST cite at least
+      - A `### Recent workstreams` section that MUST cite at least
         one active plan or recent session BY TITLE from the research
-        brief. If the research brief contains zero hotspots, write
-        "No active workstreams worth flagging right now." verbatim —
-        do not invent, recycle, or pad with stale items.
+        brief. Frame these as background context — work the project
+        has on file, not a task list for the incoming session. The
+        new agent is launching to do something else; this section
+        helps it avoid duplicating effort or contradicting in-flight
+        work when its actual task happens to overlap. If the research
+        brief contains zero hotspots, write "No recent workstreams
+        worth flagging right now." verbatim — do not invent, recycle,
+        or pad with stale items.
       - A closing paragraph on `myco_remember` for saving discoveries.
 
       Keep the output compact and ready for direct injection. Do not

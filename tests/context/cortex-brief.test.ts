@@ -249,7 +249,8 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Cortex instructions follow-up');
     expect(result.instruction).toContain('## Recent decision spores');
     expect(result.instruction).toContain('static retrieval boilerplate');
-    expect(result.instruction).toContain('## Active plans');
+    expect(result.instruction).toContain('## Recent plans');
+    expect(result.instruction).toContain('not a task list for this session');
     expect(result.instruction).toContain('Finish Cortex instruction refresh');
     expect(result.instruction).toContain('`myco_save_plan`');
     expect(result.instruction).toContain('Pass `source_path` when the plan is also written to disk');

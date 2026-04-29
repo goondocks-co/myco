@@ -321,6 +321,13 @@ export async function buildCortexInstructionsInput(
     `- ${CORTEX_SKILLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
+    // The recent-plans section is background context, not a task list for
+    // the incoming session. The session is launching to do something else;
+    // these plans tell the agent what shape of work the project has on file
+    // so it can avoid duplicating effort or contradicting in-flight work.
+    // Frame the section accordingly — never imply the new agent should
+    // pick these plans up.
+    '- When you mention recent plans, label the section "Recent plans" or "Recent workstreams" (NOT "Current workstreams" — that implies the new session is going to work on them). Treat them as background: prior or in-flight work the agent should be aware of when its actual task happens to overlap, not a directive to engage.',
   ];
 
   if (input.context.cortex_enabled && hasCanopyMap) {
@@ -358,7 +365,7 @@ export async function buildCortexInstructionsInput(
     '## Recent discovery spores',
     recentDiscoverySpores,
     '',
-    '## Active plans',
+    '## Recent plans (background context — not a task list for this session)',
     recentPlans,
   );
 
