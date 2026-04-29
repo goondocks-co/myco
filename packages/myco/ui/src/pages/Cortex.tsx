@@ -912,11 +912,111 @@ function DigestTab() {
   );
 }
 
+/**
+ * Chip-list editor for `canopy.exclude.patterns`. Add via Enter (or the
+ * "Add" button); remove via the × on each chip. Each commit fires
+ * `onChange` with the new list, which the surrounding ScopedField
+ * persists through the scoped patch endpoint.
+ */
+function ExcludePatternsEditor({
+  patterns,
+  onChange,
+}: {
+  patterns: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const commitDraft = useCallback(() => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed.startsWith('#')) return;
+    if (patterns.includes(trimmed)) {
+      setDraft('');
+      return;
+    }
+    onChange([...patterns, trimmed]);
+    setDraft('');
+  }, [draft, patterns, onChange]);
+
+  const removeAt = useCallback(
+    (index: number) => {
+      onChange(patterns.filter((_, i) => i !== index));
+    },
+    [patterns, onChange],
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 min-h-[44px]">
+        {patterns.length === 0 ? (
+          <p className="font-sans text-xs italic text-on-surface-variant">
+            No custom patterns yet — the Myco baseline above already covers
+            common noise.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {patterns.map((p, idx) => (
+              <span
+                key={`${p}-${idx}`}
+                className="inline-flex items-center gap-1 rounded bg-surface-container px-2 py-0.5 font-mono text-xs text-on-surface"
+              >
+                {p}
+                <button
+                  type="button"
+                  onClick={() => removeAt(idx)}
+                  aria-label={`Remove pattern ${p}`}
+                  className="rounded text-on-surface-variant hover:text-on-surface focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commitDraft();
+            }
+          }}
+          placeholder="e.g. fixtures/large/** or **/*.snap"
+          className="font-mono text-xs"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={commitDraft}
+          disabled={draft.trim().length === 0}
+        >
+          Add
+        </Button>
+      </div>
+      <p className="font-sans text-xs text-on-surface-variant">
+        Press Enter or click Add. Glob syntax: <code className="font-mono">**</code>{' '}
+        any depth, <code className="font-mono">*</code> any chars in one segment.
+      </p>
+    </div>
+  );
+}
+
 function CanopyTab() {
   const { effective, isLoading } = useScopedConfig();
   const { data: tasksData } = useAgentTasks();
+  // Effective schedule = user override (from myco.yaml) ?? YAML default
+  // (from /agent/tasks). The /agent/tasks API only reads YAML files; it
+  // does not merge in agent.tasks.<name>.schedule overrides from the
+  // live config, so a project that flipped the schedule on via myco.yaml
+  // will have a `false` API row and a `true` config override.
   const describeTask = tasksData?.tasks.find((t) => t.name === 'canopy-describe');
-  const describeEnabled = describeTask?.schedule?.enabled ?? false;
+  const describeOverride = (effective?.agent?.tasks as Record<string, { schedule?: { enabled?: boolean } } | undefined> | undefined)?.['canopy-describe'];
+  const describeEnabled =
+    describeOverride?.schedule?.enabled ?? describeTask?.schedule?.enabled ?? false;
   if (isLoading || !effective) {
     return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
   }
@@ -993,25 +1093,13 @@ function CanopyTab() {
           path="canopy.exclude.patterns"
           label="Your patterns"
           defaultScope="project"
-          commitOn="blur"
         >
-          {({ value, onChange }) => {
-            const lines = (value ?? []).join('\n');
-            return (
-              <textarea
-                className="min-h-[120px] w-full rounded-md border border-outline-variant/30 bg-surface-container-low px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-                placeholder={"# one glob per line, e.g.\nfixtures/large/**\n**/*.snap"}
-                value={lines}
-                onChange={(event) => {
-                  const next = event.target.value
-                    .split('\n')
-                    .map((line) => line.trim())
-                    .filter((line) => line.length > 0 && !line.startsWith('#'));
-                  onChange(next);
-                }}
-              />
-            );
-          }}
+          {({ value, onChange }) => (
+            <ExcludePatternsEditor
+              patterns={value ?? []}
+              onChange={onChange}
+            />
+          )}
         </ScopedField>
 
         <div className="space-y-1 pt-2">

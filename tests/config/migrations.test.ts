@@ -219,8 +219,8 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 6', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(6);
+  it('is 7', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(7);
   });
 });
 
@@ -328,7 +328,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(6);
+    expect(doc.config_version).toBe(7);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -350,7 +350,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(6);
+    expect(doc.config_version).toBe(7);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
@@ -364,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(6);
+    expect(doc.config_version).toBe(7);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -374,29 +374,78 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs only v6 when config_version is 5', () => {
+  it('runs v6 and v7 when config_version is 5', () => {
     const doc: Record<string, unknown> = {
       config_version: 5,
       agent: { tasks: { 'full-intelligence': { model: 'claude-sonnet-4-6' } } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(6);
+    expect(doc.config_version).toBe(7);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
     expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
   });
 
-  it('skips all migrations when config_version is already 6', () => {
+  it('runs only v7 when config_version is 6', () => {
     const doc: Record<string, unknown> = {
       config_version: 6,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
-    expect(ran).toBe(false);
-    // auto_run and cloud should NOT have been touched
+    expect(ran).toBe(true);
+    expect(doc.config_version).toBe(7);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
+  });
+
+  it('skips all migrations when config_version is already 7', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 7,
+      agent: { auto_run: true, provider: { type: 'cloud' } },
+    };
+    const ran = runMigrations(doc, '/tmp');
+    expect(ran).toBe(false);
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.auto_run).toBe(true);
+    expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
+  });
+});
+
+describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => {
+  it('strips entries that exactly match the new Myco baseline', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 6,
+      canopy: {
+        exclude: {
+          patterns: [
+            'node_modules', '.git', 'dist', 'build', '.next', '.turbo',
+            '**/*.lock', '**/package-lock.json',
+            'fixtures/large/**', '**/*.snap',
+          ],
+        },
+      },
+    };
+    runMigrations(doc, '/tmp');
+    const patterns = ((doc.canopy as Record<string, unknown>).exclude as Record<string, unknown>).patterns;
+    // Only the user-genuine extras survive.
+    expect(patterns).toEqual(['fixtures/large/**', '**/*.snap']);
+  });
+
+  it('leaves the array alone when no entries match the baseline', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 6,
+      canopy: { exclude: { patterns: ['fixtures/large/**', '**/*.snap'] } },
+    };
+    runMigrations(doc, '/tmp');
+    const patterns = ((doc.canopy as Record<string, unknown>).exclude as Record<string, unknown>).patterns;
+    expect(patterns).toEqual(['fixtures/large/**', '**/*.snap']);
+  });
+
+  it('is a no-op when canopy.exclude is missing', () => {
+    const doc: Record<string, unknown> = { config_version: 6 };
+    expect(() => runMigrations(doc, '/tmp')).not.toThrow();
+    expect(doc.config_version).toBe(7);
   });
 });

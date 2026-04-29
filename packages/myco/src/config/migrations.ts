@@ -241,6 +241,49 @@ export const MIGRATIONS: Migration[] = [
       delete tasks['full-intelligence'];
     },
   },
+  {
+    version: 7,
+    name: 'dedupe-canopy-exclude-patterns-against-baseline',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      // Pre-v7, projects had to hand-list `.git`, `node_modules`, etc. in
+      // `canopy.exclude.patterns` because the scanner had no baseline.
+      // The Myco-maintained baseline (`canopy.exclude.default_patterns`)
+      // now covers those by default — entries duplicated in user
+      // patterns are pure noise. Strip exact-match duplicates so the
+      // "Your patterns" UI list shows only what the user genuinely
+      // added on top of the baseline.
+      const canopy = doc.canopy as Record<string, unknown> | undefined;
+      if (!canopy) return;
+      const exclude = canopy.exclude as Record<string, unknown> | undefined;
+      if (!exclude) return;
+      const patterns = exclude.patterns;
+      if (!Array.isArray(patterns)) return;
+
+      // Keep this list in sync with CANOPY_DEFAULT_EXCLUDE_PATTERNS in
+      // packages/myco/src/config/schema.ts. Inlined here so the migration
+      // is frozen at the v7 contract — future baseline additions don't
+      // retroactively rewrite older user configs.
+      const V7_BASELINE = new Set([
+        '.git', '.DS_Store',
+        'node_modules',
+        '__pycache__',
+        '.venv', 'venv', 'env', 'ENV',
+        '.pytest_cache', '.ruff_cache', '.mypy_cache', '.tox',
+        'dist', 'build', 'target', '.gradle', '.cache',
+        '.next', '.nuxt', '.turbo', '.svelte-kit',
+        '**/*.lock',
+        '**/package-lock.json',
+        '**/pnpm-lock.yaml',
+        '**/yarn.lock',
+      ]);
+      const filtered = (patterns as unknown[]).filter(
+        (p) => typeof p !== 'string' || !V7_BASELINE.has(p),
+      );
+      if (filtered.length !== patterns.length) {
+        exclude.patterns = filtered;
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
