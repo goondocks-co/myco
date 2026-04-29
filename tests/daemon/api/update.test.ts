@@ -8,8 +8,11 @@
  * - handleUpdateChannel: writes config + clears cache, 400 for invalid channel
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------
@@ -647,5 +650,95 @@ describe('handleUpdateStatus — restart_required', () => {
     expect(scheduleShutdown).not.toHaveBeenCalled();
     expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
     expect(result.body).toMatchObject({ exempt: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleUpdateStatus — runLocalUpdate gating against the stamp file
+//
+// The stamp file (`<vaultDir>/last-update-version`) records the version that
+// last ran `myco update` for THIS project. The version_sync restart path must
+// run `myco update --project` whenever the stamp does not already match the
+// version we are upgrading TO (the on-disk installed version) — not the
+// version we are leaving behind. The earlier predicate compared the stamp to
+// `currentVersion` (the running daemon's version), which made sibling daemons
+// silently skip the post-install sync of gitignore/symbiont/hook templates
+// after another project's daemon installed the global update first.
+// ---------------------------------------------------------------------------
+
+describe('handleUpdateStatus — runLocalUpdate stamp gating', () => {
+  let tmpVaultDir: string;
+
+  beforeEach(() => {
+    tmpVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-stamp-'));
+    vi.mocked(isUpdateExempt).mockReturnValue(false);
+    vi.mocked(readCachedCheck).mockReturnValue(null);
+    vi.mocked(readUpdateConfig).mockReturnValue({ channel: 'stable', check_interval_hours: 6 });
+    vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
+    vi.mocked(isCacheStale).mockReturnValue(false);
+    vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
+    vi.mocked(getInstalledVersion).mockReset();
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(spawnRestartScript).mockReset();
+    vi.mocked(spawnRestartScript).mockReturnValue('/tmp/myco-restart-stamp.sh');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpVaultDir, { recursive: true, force: true });
+  });
+
+  function writeStamp(version: string): void {
+    fs.writeFileSync(path.join(tmpVaultDir, 'last-update-version'), version, 'utf-8');
+  }
+
+  // Regression: pre-fix this returned runLocalUpdate=false because the stamp
+  // matched the running version (`currentVersion`), so sibling daemons that
+  // had previously synced their stamp to the now-outgoing version would skip
+  // `myco update --project` on every subsequent global upgrade.
+  it('runs myco update when the stamp matches the running version but not the installed version', async () => {
+    writeStamp('1.0.0');
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ vaultDir: tmpVaultDir, currentVersion: '1.0.0', globalPrefix: '/usr/local' }),
+    );
+
+    await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnRestartScript).mock.calls[0][0]).toMatchObject({
+      runLocalUpdate: true,
+      fromVersion: '1.0.0',
+      toVersion: '1.1.0',
+    });
+  });
+
+  it('skips myco update when the stamp already matches the installed (target) version', async () => {
+    writeStamp('1.1.0');
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ vaultDir: tmpVaultDir, currentVersion: '1.0.0', globalPrefix: '/usr/local' }),
+    );
+
+    await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnRestartScript).mock.calls[0][0]).toMatchObject({
+      runLocalUpdate: false,
+    });
+  });
+
+  it('runs myco update when the stamp file is missing (fresh install)', async () => {
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ vaultDir: tmpVaultDir, currentVersion: '1.0.0', globalPrefix: '/usr/local' }),
+    );
+
+    await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnRestartScript).mock.calls[0][0]).toMatchObject({
+      runLocalUpdate: true,
+    });
   });
 });
