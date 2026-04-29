@@ -45,7 +45,7 @@ const outfile = path.join(outputDir, binaryName);
 process.stdout.write(`[build:binary] ${target} -> ${outfile} (version ${mycoVersion})\n`);
 const result = spawnSync(
   'bun',
-  ['build', '--compile', `--target=bun-${target}`, entry, '--outfile', outfile],
+  ['build', '--compile', '--minify', `--target=bun-${target}`, entry, '--outfile', outfile],
   { stdio: 'inherit', cwd: pkgRoot, env: process.env },
 );
 process.exit(result.status ?? 1);
