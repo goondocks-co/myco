@@ -321,7 +321,22 @@ export function getUnprocessedBatches(
  * the batches/sessions domain so the scheduler doesn't have to reason
  * about prompt_batches schema.
  */
-export function countUnprocessedSettledBatches(): number {
+export function countUnprocessedSettledBatches(limit?: number): number {
+  if (limit !== undefined) {
+    const boundedLimit = Math.max(1, Math.floor(limit));
+    const row = getDatabase().prepare(
+      `SELECT COUNT(*) AS n FROM (
+        SELECT 1 FROM prompt_batches pb
+        WHERE pb.processed = 0
+          AND EXISTS (
+            SELECT 1 FROM sessions s
+            WHERE s.id = pb.session_id AND s.status != 'active'
+          )
+        LIMIT ?
+      )`,
+    ).get(boundedLimit) as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
   const row = getDatabase().prepare(
     `SELECT COUNT(*) AS n FROM prompt_batches pb
      WHERE pb.processed = 0

@@ -1,8 +1,8 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
-import { executeMapPhase } from './map-phase.js';
-import type { PhaseDefinition } from './types.js';
+import { executeMapPhase } from '@myco/agent/map-phase.js';
+import type { PhaseDefinition } from '@myco/agent/types.js';
 
 function makeSinkSpy() {
   const calls: any[] = [];
@@ -57,6 +57,7 @@ describe('executeMapPhase — happy path', () => {
       supports: () => false,
       execute: mock(async (input: any) => {
         const sinkInSurface = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
+        expect(Object.keys(sinkInSurface.inputSchema).sort()).toEqual(['description']);
         const itemPath = input.prompt.match(/item is (\S+)/)![1];
         await sinkInSurface.handler({ description: `summary of ${itemPath}` });
         return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 }, sessionRef: undefined };
@@ -131,6 +132,43 @@ describe('executeMapPhase — skip modes', () => {
     expect(result.skipReasons.boilerplate).toBe(1);
   });
 
+  it('keeps a successful sink outcome when a later duplicate call fails', async () => {
+    let calls = 0;
+    const sink = tool('test_write', 'sink', { path: z.string(), description: z.string() },
+      async () => {
+        calls += 1;
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(calls === 1
+              ? { ok: true }
+              : { ok: false, reason: 'duplicate_rejected' }),
+          }],
+        };
+      },
+      { annotations: {} });
+    const source = makeSource([{ path: 'a.ts' }]);
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(async (input: any) => {
+        const s = input.toolSurface.tools.find((t: any) => t.name === 'test_write');
+        await s.handler({ description: 'first' });
+        await s.handler({ description: 'second' });
+        return { finalText: '', turnsUsed: 1, usage: { totalTokens: 0, requests: 1 } };
+      }),
+    };
+
+    const result = await executeMapPhase({
+      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.skipReasons.duplicate_rejected).toBeUndefined();
+  });
+
   it('records failed when runtime throws and onItemError is skip', async () => {
     const { sink } = makeSinkSpy();
     const source = makeSource([{ path: 'a.ts' }, { path: 'b.ts' }, { path: 'c.ts' }]);
@@ -183,6 +221,40 @@ describe('executeMapPhase — per-item timeout', () => {
     });
     expect(result.written).toBe(2);
     expect(result.failed).toBe(1);
+  });
+});
+
+describe('executeMapPhase — run abort', () => {
+  it('aborts the current item and stops later items when the run controller aborts', async () => {
+    const { sink } = makeSinkSpy();
+    const source = makeSource([{ path: 'a.ts' }, { path: 'b.ts' }]);
+    const runAbortController = new AbortController();
+    const stubRuntime = {
+      id: 'claude-sdk' as const,
+      supports: () => false,
+      execute: mock(async (input: any) => {
+        runAbortController.abort(new Error('task timeout'));
+        if (input.abortController?.signal.aborted) {
+          throw input.abortController.signal.reason;
+        }
+        await new Promise((_, reject) => {
+          input.abortController?.signal.addEventListener('abort', () => reject(input.abortController.signal.reason));
+        });
+      }),
+    };
+
+    await expect(executeMapPhase({
+      phase: happyPhase,
+      allTools: [source, sink],
+      runtime: stubRuntime as any,
+      params: {},
+      systemPrompt: 's',
+      runId: 'r',
+      agentId: 'a',
+      runAbortController,
+    })).rejects.toThrow('task timeout');
+
+    expect(stubRuntime.execute).toHaveBeenCalledTimes(1);
   });
 });
 

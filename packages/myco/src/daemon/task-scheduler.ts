@@ -60,7 +60,7 @@ export interface ScheduledJobContext {
    * unaffected. The thresholds and floor come from the task's YAML
    * config, not from here.
    */
-  accelerators?: Record<string, () => number>;
+  accelerators?: Record<string, (limit?: number) => number>;
   /**
    * Optional error sink for detached task runs. Because scheduled tasks are
    * kicked off without awaiting (so the PowerManager tick loop stays
@@ -142,7 +142,7 @@ export function buildScheduledJobs(
             const countFn = context.accelerators[effective.accelerator!.name];
             if (!countFn) return false;
             try {
-              return countFn() > 0;
+              return countFn(1) > 0;
             } catch {
               return false;
             }
@@ -168,9 +168,10 @@ export function buildScheduledJobs(
           if (effective.accelerator && context.accelerators) {
             const countFn = context.accelerators[effective.accelerator.name];
             if (countFn) {
+              const countLimit = effective.accelerator.thresholds.accelerated + 1;
               effectiveIntervalSeconds = computeEffectiveInterval(
                 effective.intervalSeconds,
-                countFn(),
+                countFn(countLimit),
                 effective.accelerator.thresholds,
               );
             }

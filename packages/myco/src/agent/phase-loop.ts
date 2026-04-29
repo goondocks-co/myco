@@ -279,6 +279,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       projectRoot: ctx.projectRoot,
       embeddingManager: ctx.embeddingManager,
       logger,
+      runAbortController: ctx.abortController,
     });
     logger?.debug('agent.map.end', `Map phase "${phase.name}" completed`, {
       runId: ctx.runId, phase: phase.name,

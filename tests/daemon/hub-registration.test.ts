@@ -34,7 +34,7 @@ describe('daemon hub registration metadata', () => {
     }
   });
 
-  it('falls back to process.execPath when runtime.command is missing', () => {
+  it('leaves runtimeCommand null when runtime.command is missing', () => {
     const projectRoot = '/tmp/myco-hub-reg-fallback';
     const vaultDir = path.join(projectRoot, '.myco');
     const readFileSync = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath) => {
@@ -56,7 +56,7 @@ describe('daemon hub registration metadata', () => {
         version: '0.22.3',
       });
 
-      expect(metadata.runtimeCommand).toBe(process.execPath);
+      expect(metadata.runtimeCommand).toBeNull();
     } finally {
       readFileSync.mockRestore();
     }

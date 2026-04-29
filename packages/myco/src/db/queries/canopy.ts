@@ -356,8 +356,24 @@ export function describedCanopyEntriesPredicate(
 export function countPendingCanopyDescribe(
   db: Database | null,
   projectId: string,
+  limit?: number,
 ): number {
   const conn = db ?? getDatabase();
+  if (limit !== undefined) {
+    const boundedLimit = Math.max(1, Math.floor(limit));
+    const row = conn.prepare(
+      `SELECT COUNT(*) AS n FROM (
+        SELECT 1 FROM canopy_entries
+        WHERE project_id = ?
+          AND (
+            llm_updated_at IS NULL
+            OR llm_updated_at < mechanical_updated_at
+          )
+        LIMIT ?
+      )`,
+    ).get(projectId, boundedLimit) as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
   const row = conn.prepare(
     `SELECT COUNT(*) AS n FROM canopy_entries
       WHERE project_id = ?

@@ -60,6 +60,22 @@ interface PhaseInput {
   maxTurns?: number | null;
 }
 
+interface ScheduleAcceleratorInput {
+  name: 'canopy-pending-describe' | 'unprocessed-settled-batches';
+  thresholds: {
+    steady: number;
+    accelerated: number;
+  };
+}
+
+interface ScheduleInput {
+  enabled?: boolean;
+  intervalSeconds?: number;
+  runIn?: ('active' | 'idle' | 'sleep')[];
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
+  accelerator?: ScheduleAcceleratorInput | null;
+}
+
 /** Input shape for task config updates. Null values mean "delete this field". */
 export interface TaskConfigUpdate {
   provider?: ProviderInput | null;
@@ -68,7 +84,7 @@ export interface TaskConfigUpdate {
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
   phases?: Record<string, PhaseInput | null> | null;
-  schedule?: { enabled?: boolean; intervalSeconds?: number; runIn?: ('active' | 'idle' | 'sleep')[] } | null;
+  schedule?: ScheduleInput | null;
   params?: Record<string, string | number | boolean> | null;
 }
 
@@ -138,7 +154,13 @@ export function withTaskConfig(
     if (update.schedule === null) {
       delete entry.schedule;
     } else if (update.schedule !== undefined) {
-      entry.schedule = { ...entry.schedule, ...update.schedule };
+      const { accelerator, ...scheduleUpdate } = update.schedule;
+      const schedule = { ...entry.schedule, ...scheduleUpdate };
+      if ('accelerator' in update.schedule) {
+        if (accelerator === null) delete schedule.accelerator;
+        else if (accelerator !== undefined) schedule.accelerator = accelerator;
+      }
+      entry.schedule = schedule;
     }
   }
 

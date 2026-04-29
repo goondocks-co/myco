@@ -172,12 +172,12 @@ async function spawnProjectDaemon(project: ProjectRecord): Promise<SpawnResult> 
   });
 }
 
-function resolveProjectRuntimeCommand(project: ProjectRecord): string | null {
+export function resolveProjectRuntimeCommand(project: ProjectRecord): string | null {
   const fileCommand = readRuntimeCommand(project.vaultDir);
-  if (fileCommand && isExecutable(fileCommand)) return fileCommand;
+  if (fileCommand && isReplayableMycoCommand(fileCommand)) return fileCommand;
 
   const registered = project.runtimeCommand;
-  if (registered && isExecutable(registered)) return registered;
+  if (registered && isReplayableMycoCommand(registered)) return registered;
 
   for (const candidate of fallbackBinaryCandidates()) {
     if (isExecutable(candidate)) return candidate;
@@ -259,6 +259,21 @@ function isExecutable(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isReplayableMycoCommand(filePath: string): boolean {
+  if (isGenericJsRuntime(filePath)) return false;
+  if (!looksLikePath(filePath)) return true;
+  return isExecutable(filePath);
+}
+
+function isGenericJsRuntime(filePath: string): boolean {
+  const base = path.basename(filePath).replace(/\.exe$/i, '').toLowerCase();
+  return base === 'node' || base === 'bun';
+}
+
+function looksLikePath(value: string): boolean {
+  return path.isAbsolute(value) || value.includes('/') || value.includes('\\');
 }
 
 function findProjectPortOwners(project: ProjectRecord): PortOwner[] {

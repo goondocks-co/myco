@@ -254,9 +254,9 @@ export async function registerScheduledTasks(
     // in three different files: add a count fn to its domain package,
     // add the name to AcceleratorNameSchema, and add one line here.
     accelerators: {
-      'canopy-pending-describe': () =>
-        countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)),
-      'unprocessed-settled-batches': () => countUnprocessedSettledBatches(),
+      'canopy-pending-describe': (limit) =>
+        countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir), limit),
+      'unprocessed-settled-batches': (limit) => countUnprocessedSettledBatches(limit),
     },
     onTaskError: (taskName, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {

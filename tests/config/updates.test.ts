@@ -197,6 +197,38 @@ describe('withTaskConfig', () => {
     expect(updated.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
   });
 
+  it('withTaskConfig persists schedule accelerator override', () => {
+    const updated = withTaskConfig(baseConfig(), 'canopy-describe', {
+      schedule: {
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 25, accelerated: 250 },
+        },
+      },
+    });
+    expect(updated.agent.tasks?.['canopy-describe']?.schedule?.accelerator).toEqual({
+      name: 'canopy-pending-describe',
+      thresholds: { steady: 25, accelerated: 250 },
+    });
+  });
+
+  it('withTaskConfig clears schedule accelerator with null', () => {
+    let config = withTaskConfig(baseConfig(), 'canopy-describe', {
+      schedule: {
+        enabled: true,
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 25, accelerated: 250 },
+        },
+      },
+    });
+    config = withTaskConfig(config, 'canopy-describe', {
+      schedule: { accelerator: null },
+    });
+    expect(config.agent.tasks?.['canopy-describe']?.schedule?.enabled).toBe(true);
+    expect(config.agent.tasks?.['canopy-describe']?.schedule?.accelerator).toBeUndefined();
+  });
+
   it('withTaskConfig clears schedule with null', () => {
     const base = MycoConfigSchema.parse({
       version: 3,

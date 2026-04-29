@@ -46,18 +46,23 @@ export interface ExecuteMapPhaseInput {
   embeddingManager?: EmbeddingManager;
   /** Run-level logger. Per-item failures emit debug entries through this. */
   logger?: RunLogger;
+  /** Run-level abort controller. Aborting it stops current and future map items. */
+  runAbortController?: AbortController;
 }
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
   const {
     phase, allTools, runtime, params, systemPrompt, runId, agentId,
     phaseModel, provider, vaultDir, projectRoot, embeddingManager, logger,
+    runAbortController,
   } = input;
   if (phase.mode !== 'map' || !phase.source || !phase.item || !phase.sink) {
     throw new Error(`executeMapPhase: phase "${phase.name}" is not a complete map phase`);
   }
 
+  throwIfRunAborted(runAbortController);
   const items = await fetchSourceItems({ phase, allTools, params });
+  throwIfRunAborted(runAbortController);
   logger?.debug('agent.map.fetched', `Map phase "${phase.name}" fetched ${items.length} items`, {
     runId, phase: phase.name, itemCount: items.length, source: phase.source.tool,
   });
@@ -90,7 +95,15 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     argMap: phase.sink.argMap,
     readToolNames: phase.item.readTools ?? [],
   });
-  const sharedSinkWrapped = wrapSinkWithMutableContext(sharedSurface.sinkTool, sharedItemCtx);
+  const strippedSink = sharedSurface.tools.find((t) => t.name === phase.sink!.tool);
+  if (!strippedSink) {
+    throw new Error(`map-phase: stripped sink tool "${phase.sink.tool}" missing from per-item surface`);
+  }
+  const sharedSinkWrapped = wrapSinkWithMutableContext(
+    sharedSurface.sinkTool,
+    strippedSink,
+    sharedItemCtx,
+  );
   const sharedTools = sharedSurface.tools.map((t) =>
     t.name === phase.sink!.tool ? sharedSinkWrapped : t,
   );
@@ -114,6 +127,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
 
   try {
   for (const item of items) {
+    throwIfRunAborted(runAbortController);
     const argMap = interpolateArgs(phase.sink.argMap, { item, params });
     const itemPrompt = interpolate(
       normalizedItemPrompt,
@@ -122,9 +136,13 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
 
     let sinkOutcome: { ok: boolean; reason?: string } | undefined;
     sharedItemCtx.argMap = argMap;
-    sharedItemCtx.capture = (outcome) => { sinkOutcome = outcome; };
+    sharedItemCtx.capture = (outcome) => {
+      if (sinkOutcome?.ok === true && outcome.ok !== true) return;
+      sinkOutcome = outcome;
+    };
 
     const controller = new AbortController();
+    const detachRunAbort = linkRunAbort(runAbortController, controller);
     const timer = phase.perItemTimeoutSeconds && phase.perItemTimeoutSeconds > 0
       ? setTimeout(
           () => controller.abort(new Error('per-item timeout')),
@@ -150,6 +168,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
           });
       if (itemResult.usage) itemUsages.push(itemResult.usage);
     } catch (err) {
+      if (runAbortController?.signal.aborted) throw toAbortError(runAbortController.signal.reason);
       const reason = toErrorMessage(err);
       if (err instanceof RuntimeExecutionError && err.telemetry?.usage) {
         itemUsages.push(err.telemetry.usage);
@@ -175,6 +194,7 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
       continue;
     } finally {
       if (timer) clearTimeout(timer);
+      detachRunAbort();
     }
 
     if (sinkOutcome?.ok === true) {
@@ -205,13 +225,14 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
  */
 function wrapSinkWithMutableContext(
   sinkTool: SdkMcpToolDefinition<any>,
+  exposedTool: SdkMcpToolDefinition<any>,
   ctx: {
     argMap: Record<string, unknown>;
     capture: (outcome: { ok: boolean; reason?: string }) => void;
   },
 ): SdkMcpToolDefinition<any> {
   return {
-    ...sinkTool,
+    ...exposedTool,
     handler: async (modelArgs: Record<string, unknown>) => {
       const merged = { ...modelArgs, ...ctx.argMap };
       const response = await (sinkTool as any).handler(merged);
@@ -290,4 +311,37 @@ function stringify(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   return JSON.stringify(v);
+}
+
+function throwIfRunAborted(runAbortController?: AbortController): void {
+  if (!runAbortController?.signal.aborted) return;
+  throw toAbortError(runAbortController.signal.reason);
+}
+
+function toAbortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  if (typeof reason === 'string' && reason.length > 0) return new Error(reason);
+  return new Error('Agent run aborted');
+}
+
+function linkRunAbort(
+  runAbortController: AbortController | undefined,
+  itemController: AbortController,
+): () => void {
+  const signal = runAbortController?.signal;
+  if (!signal) return () => undefined;
+
+  const abortItem = () => {
+    if (!itemController.signal.aborted) {
+      itemController.abort(signal.reason ?? new Error('Agent run aborted'));
+    }
+  };
+
+  if (signal.aborted) {
+    abortItem();
+    return () => undefined;
+  }
+
+  signal.addEventListener('abort', abortItem, { once: true });
+  return () => signal.removeEventListener('abort', abortItem);
 }

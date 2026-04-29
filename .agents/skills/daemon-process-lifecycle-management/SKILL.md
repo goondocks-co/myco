@@ -58,6 +58,29 @@ SELECT task_name, completed_at FROM migration_tasks;
 - Failed tasks can be retried by removing the completion record
 - Critical for schema updates and configuration migrations
 
+### Runtime Command File Management
+
+Runtime dispatch is pinned by `.myco/runtime.command` when a project needs
+something other than the machine-global `myco` lookup:
+
+```typescript
+// Constants for runtime command handling
+import { PROJECT_RUNTIME_COMMAND_FILENAME } from '../constants';
+
+// Reading runtime command
+const runtimeCommandPath = path.join(vaultDir, PROJECT_RUNTIME_COMMAND_FILENAME);
+const runtimeCommand = fs.readFileSync(runtimeCommandPath, 'utf-8').trim();
+
+// Missing file means "fall back to the installed myco binary".
+```
+
+**Runtime command file patterns:**
+- **Location**: `.myco/runtime.command` (via `PROJECT_RUNTIME_COMMAND_FILENAME`)
+- **Content**: PATH command name or absolute path to a replayable Myco launcher
+- **Purpose**: Lets project-local, dogfood, and managed runtimes be relaunched consistently
+- **Lifecycle**: Written by install/update/dev-link flows, read by daemon/hub/update operations
+- **Guardrail**: Absence is valid; never replace a missing file with `process.execPath` (`node`/`bun` is not a replayable `myco daemon` command)
+
 ### Cross-Runtime Takeover Guard
 
 When binary paths change but daemon remains healthy, implement graceful handoff:
@@ -66,10 +89,13 @@ When binary paths change but daemon remains healthy, implement graceful handoff:
 # Current daemon binary
 CURRENT_BIN=$(jq -r '.binaryPath' .myco/daemon.json)
 
+# Runtime command from file
+RUNTIME_CMD=$(cat .myco/runtime.command 2>/dev/null || echo "")
+
 # New binary path
 NEW_BIN=$(which myco)
 
-if [ "$CURRENT_BIN" != "$NEW_BIN" ] && daemon_healthy; then
+if [ "$CURRENT_BIN" != "$NEW_BIN" ] && [ "$RUNTIME_CMD" != "$NEW_BIN" ] && daemon_healthy; then
   echo "Different runtime detected - stepping aside for takeover"
   # Let new binary handle the transition
 fi
@@ -82,23 +108,24 @@ This prevents conflicts between Node and Bun runtimes or different Myco installa
 Guard against restart loops caused by runtime command dispatch mismatches:
 
 ```typescript
-// Version-sync must validate dispatch contract invariant  
+// Version-sync must validate dispatch contract invariant
 if (currentVersion !== runningVersion) {
-  // Check if runtime.command matches expected binary
+  // Check if runtime.command is either absent or matches the expected binary
   const expectedBinary = resolveRuntimeCommand(currentVersion);
   const runningBinary = daemonState.binaryPath;
-  
-  if (expectedBinary !== runningBinary) {
+  const runtimeCommandBinary = readRuntimeCommand(vaultDir);
+
+  if (expectedBinary !== runningBinary || (runtimeCommandBinary && expectedBinary !== runtimeCommandBinary)) {
     // Step aside - different binary should handle this version
     return { action: 'step_aside', reason: 'dispatch_contract_mismatch' };
   }
-  
+
   // Safe to restart for version sync
   await gracefulRestart();
 }
 ```
 
-**Critical invariant**: The `runtime.command` in config must match the binary performing the version-sync operation. Mismatches cause infinite restart loops where each restart returns control to a different binary.
+**Critical invariant**: When present, the runtime command file must point at the same replayable Myco runtime family as the binary performing version-sync operations. A missing runtime command is valid and should fall back to machine install discovery; a generic JS runtime is not valid.
 
 ## Procedure B: Unified Eviction and Restart
 
@@ -202,6 +229,27 @@ if (currentBinary !== daemonBinary && daemonHealthy) {
 }
 ```
 
+### Runtime Command Coordination
+
+Coordinate between daemon.json binaryPath and runtime.command file without manufacturing pins:
+
+```typescript
+// Validate runtime command consistency
+const daemonBinary = daemonState.binaryPath;
+const runtimeCommand = readRuntimeCommand(vaultDir);
+
+if (daemonBinary !== runtimeCommand) {
+  console.warn('Runtime command mismatch detected', {
+    daemon: daemonBinary,
+    runtime: runtimeCommand
+  });
+
+  // Do not auto-write process.execPath here. Missing runtime.command is valid,
+  // and generic runtimes such as node/bun are not replayable Myco commands.
+  return { action: 'step_aside', reason: 'runtime_command_mismatch' };
+}
+```
+
 ## Procedure D: Multi-Instance Coordination
 
 ### Process Discovery
@@ -213,7 +261,7 @@ Use `findPidsListeningOn()` to discover daemon processes:
 const listeningPids = findPidsListeningOn([3720, 3721, 3722]);
 
 // Cross-reference with known daemon states
-const activeDaemons = listeningPids.map(pid => 
+const activeDaemons = listeningPids.map(pid =>
   findDaemonStateByPid(pid)
 ).filter(Boolean);
 ```
@@ -429,3 +477,5 @@ NEW_BIN=$(readlink -f $(which myco))
 **Port scanning scope:** When scanning for daemon processes, use appropriate port ranges and timeouts to avoid false positives from other applications using nearby ports.
 
 **Version-Sync Loop Hazard:** Prevent infinite restart loops by ensuring `runtime.command` in configuration matches the binary performing version-sync operations. Mismatches cause each restart to hand control to a different binary, creating an endless cycle.
+
+**Runtime Command File Synchronization:** The runtime command file (`.myco/runtime.command`) must stay synchronized with daemon.json binaryPath. Drift between these two sources can cause update coordination failures and version-sync instability. Always validate consistency and repair mismatches during daemon health checks.

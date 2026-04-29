@@ -167,6 +167,28 @@ describe('MycoConfigSchema v3', () => {
     expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
   });
 
+  it('accepts task schedule accelerator overrides in agent.tasks', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      agent: {
+        tasks: {
+          'canopy-describe': {
+            schedule: {
+              accelerator: {
+                name: 'canopy-pending-describe',
+                thresholds: { steady: 25, accelerated: 250 },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(config.agent.tasks?.['canopy-describe']?.schedule?.accelerator).toEqual({
+      name: 'canopy-pending-describe',
+      thresholds: { steady: 25, accelerated: 250 },
+    });
+  });
+
   it('fills in default appearance section when absent', () => {
     const parsed = MycoConfigSchema.parse({ version: 3 });
     expect(parsed.appearance).toEqual({

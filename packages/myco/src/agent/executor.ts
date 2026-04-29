@@ -168,6 +168,7 @@ export async function runAgent(
     definitionsDir,
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
+    taskParams: resolvedTaskParams,
   } = resolveRunConfig(agentId, requestedTask, vaultDir);
 
   // Build an effective config for this run by layering per-run overrides
@@ -179,9 +180,13 @@ export async function runAgent(
   const overrideRuntime = options?.executionOverrides?.runtime;
   const overrideReasoning = options?.executionOverrides?.reasoningLevel;
   const overrideModel = options?.executionOverrides?.model;
+  const taskParams = options?.taskParams
+    ? { ...(resolvedTaskParams ?? {}), ...options.taskParams }
+    : resolvedTaskParams;
   const config: EffectiveConfig = {
     ...resolvedConfig,
     dryRun: options?.dryRun ?? false,
+    ...(taskParams ? { taskParams } : {}),
     ...(overrideRuntime ? { runtime: overrideRuntime } : {}),
     ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
     ...(overrideModel ? { model: overrideModel } : {}),

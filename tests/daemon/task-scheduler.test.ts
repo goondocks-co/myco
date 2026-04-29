@@ -456,6 +456,35 @@ describe('buildScheduledJobs adaptive cadence', () => {
     expect(jobs[0].preventsDeepSleep!()).toBe(true);
   });
 
+  it('passes bounded count limits to accelerator checks', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['active', 'idle', 'sleep'],
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 50, accelerated: 500 },
+        },
+      }),
+    ];
+    const limits: Array<number | undefined> = [];
+    const ctx = makeContext({
+      accelerators: {
+        'canopy-pending-describe': (limit) => {
+          limits.push(limit);
+          return 1000;
+        },
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    expect(jobs[0].preventsDeepSleep!()).toBe(true);
+    await jobs[0].fn();
+
+    expect(limits).toEqual([1, 501]);
+  });
+
   it('releases the hold once the accelerator count drains to zero', () => {
     const tasks = [
       makeTask('canopy-describe', {

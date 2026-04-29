@@ -92,7 +92,7 @@ npm rebuild
 
 1. **Platform-specific gotchas**:
    - macOS: may require different native binaries
-   - Linux: ensure glibc compatibility  
+   - Linux: ensure glibc compatibility
    - Windows: handle path separators and executable extensions
 
 2. **Native binary handling patterns**:
@@ -102,7 +102,7 @@ npm rebuild
 
 ## Procedure 3: Workspace Dependency Management
 
-Manage npm workspace dependencies, lockfile synchronization, and audit fixes without mutations.
+Manage npm workspace dependencies, lockfile synchronization, audit fixes without mutations, and Dependabot PR batching.
 
 ### Root vs Nested Package Installs
 
@@ -148,9 +148,32 @@ diff before_audit.txt after_audit.txt
    - Regenerate nested lockfiles only when absolutely necessary
    - Use `npm ci` in CI to ensure lockfile compliance
 
+### Dependabot PR Batching
+
+When multiple Dependabot PRs accumulate, use the batching workflow:
+
+1. **Batch all open PRs locally**:
+```bash
+# Collect all Dependabot branches
+git fetch origin
+git branch -r | grep dependabot | head -5  # Process in batches
+```
+
+2. **Run tests on combined changes**:
+```bash
+# Create temporary branch with all updates
+git checkout -b deps/batch-update
+for branch in $(git branch -r | grep dependabot | head -5); do
+  git merge $branch --no-edit
+done
+npm test
+```
+
+3. **Merge successful batches** instead of individual PRs
+
 ## Procedure 4: Release Workflow Hardening
 
-Harden release workflows against common failure modes and ensure idempotency.
+Harden release workflows against common failure modes including multi-package publish pitfalls and OIDC auth issues.
 
 ### Package Version Management
 
@@ -168,6 +191,56 @@ expect(version).toBe('0.22.0')
 // GOOD: Dynamic version reading
 import { version } from '../package.json'
 expect(version).toMatch(/^\d+\.\d+\.\d+/)
+```
+
+### Multi-Package Publish Pipeline Hardening
+
+Four hidden failure modes affect monorepo package publishing:
+
+1. **Workspace build order dependencies**:
+   - Shared packages must build before consumers
+   - Verify workspace build sequence in package.json scripts
+   - Use `npm ls --depth=0` to validate workspace linking
+
+2. **Tag-based workflow triggering**:
+   - Use specific package tag patterns: `myco-package/v*.*.*`
+   - Verify workflow triggers at HEAD match tagged commit
+   - Check for workflow file presence in tagged commit
+
+3. **Package dependency resolution**:
+   - Validate all workspace packages resolve correctly
+   - Use `npm pack --dry-run` to preview package contents
+   - Check for missing dependencies with `npm ls --production`
+
+4. **Publication auth and registry consistency**:
+   - Ensure consistent registry configuration across packages
+   - Handle scoped package permissions correctly
+   - Test publish permissions with dry-run before actual release
+
+### OIDC Authentication Hardening
+
+GitHub Actions `setup-node@v6` can hijack npm OIDC authentication:
+
+1. **Detect OIDC override**:
+```bash
+# Check for _authToken injection in .npmrc
+cat .npmrc | grep _authToken
+```
+
+2. **Fix OIDC hijacking**:
+```yaml
+# In GitHub Actions workflow, after setup-node:
+- name: Strip authToken for OIDC
+  run: |
+    # Remove injected _authToken line to enable OIDC
+    sed -i '/_authToken=/d' .npmrc
+    cat .npmrc  # Verify removal
+```
+
+3. **Verify OIDC functionality**:
+```bash
+# Test npm authentication without tokens
+npm whoami  # Should work with OIDC, not token auth
 ```
 
 ### npm Publish Safety
@@ -193,7 +266,7 @@ npm run build
 
 ## Procedure 5: CI/CD Pipeline Robustness
 
-Strengthen CI/CD pipelines against failures and ensure reliable artifact publication.
+Strengthen CI/CD pipelines against npm publish failures, OIDC issues, and npm self-corruption.
 
 ### Pipeline Error Patterns
 
@@ -216,6 +289,28 @@ trap 'echo "Error on line $LINENO. Exit code: $?"' ERR
 which npm
 npm --version
 ```
+
+### npm Publish CI Pitfalls
+
+Three independent failure modes affect `npm publish` in GitHub Actions:
+
+1. **OIDC auth hijacking**:
+   - `setup-node@v6` injects `_authToken=${NODE_AUTH_TOKEN}` into `.npmrc`
+   - This overrides npm's native OIDC trusted publisher flow
+   - Symptoms: 401 Unauthorized even with correct OIDC setup
+   - Fix: Remove `_authToken` line from `.npmrc` before publish
+
+2. **npm self-corruption**:
+   - `npm install -g npm@latest` in CI corrupts npm's own dependencies
+   - Node's bundled npm already supports needed features (OIDC)
+   - Symptoms: npm commands fail with module resolution errors
+   - Fix: Never upgrade npm globally in CI environments
+
+3. **Package propagation delays**:
+   - npm registry may have eventual consistency delays
+   - Dependent installs may fail immediately after publish
+   - Symptoms: 404 errors on `npm install` right after successful publish
+   - Fix: Add retry logic or brief delays for dependent installs
 
 ### Bun Test Integration
 
@@ -269,8 +364,10 @@ grep -r "@goondocks/myco" packages/*/package.json
 - **npm global installations in CI**: Never `npm install -g npm@latest` - corrupts npm's dependencies
 - **Cross-compile assumptions**: Verify all target binaries are created and functional before release
 - **Version string testing**: Hardcoded version assertions break on every release - use pattern matching
+- **OIDC auth hijacking**: `setup-node@v6` overrides OIDC with token auth - strip `_authToken` from `.npmrc`
 
 ### Workspace Management Hazards
 - **Lockfile drift**: Nested UI workspaces can create lockfile synchronization issues in git worktrees
 - **Audit fix mutations**: `npm audit fix` can introduce unexpected dependency changes - track with git status
 - **Build order dependencies**: Shared packages must build before consumers - verify workspace build sequence
+- **Dependabot PR accumulation**: Batch multiple Dependabot PRs to reduce testing overhead and merge conflicts

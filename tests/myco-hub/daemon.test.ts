@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { vi } from '../helpers/vi-shim.js';
 
-import { getRuntime, stopProject } from '@myco-hub/daemon.js';
+import { getRuntime, resolveProjectRuntimeCommand, stopProject } from '@myco-hub/daemon.js';
 import type { ProjectRecord } from '@myco-hub/discovery.js';
 
 describe('myco-hub daemon runtime', () => {
@@ -74,6 +75,27 @@ describe('myco-hub daemon runtime', () => {
     expect(fs.existsSync(path.join(project.vaultDir, 'daemon.json'))).toBe(false);
     expect(upstream.killed || upstream.exitCode !== null || upstream.signalCode !== null).toBe(true);
     upstream = null;
+  });
+
+  it('does not replay a registered generic Node runtime as a Myco CLI command', () => {
+    project.runtimeCommand = process.execPath;
+    const accessSync = vi.spyOn(fs, 'accessSync').mockImplementation((filePath) => {
+      if (filePath === process.execPath) return undefined;
+      const err = new Error('ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    });
+
+    try {
+      expect(resolveProjectRuntimeCommand(project)).toBeNull();
+    } finally {
+      accessSync.mockRestore();
+    }
+  });
+
+  it('replays registered command names through PATH resolution', () => {
+    project.runtimeCommand = 'myco-dev';
+    expect(resolveProjectRuntimeCommand(project)).toBe('myco-dev');
   });
 });
 

@@ -367,6 +367,8 @@ export interface RunOptions {
   agentId?: string;
   task?: string;
   instruction?: string;
+  /** Per-run task params layered over YAML/myco.yaml task params. */
+  taskParams?: Record<string, string | number | boolean>;
   /** Resume a previous run by its ID (re-uses existing session state). */
   resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */

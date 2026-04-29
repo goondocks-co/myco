@@ -733,8 +733,10 @@ export async function main(): Promise<void> {
     }
   });
 
+  let scheduledTaskKicker: { kick: (taskName: string) => void } = { kick: () => {} };
+
   async function syncScheduledTasks() {
-    await registerScheduledTasks(powerManager, {
+    scheduledTaskKicker = await registerScheduledTasks(powerManager, {
       definitionsDir,
       vaultDir,
       embeddingManager,
@@ -873,6 +875,7 @@ export async function main(): Promise<void> {
         task,
         instruction: built?.instruction,
         runContext: built?.context,
+        taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
         logger,
@@ -918,6 +921,7 @@ export async function main(): Promise<void> {
         task,
         instruction: built?.instruction,
         runContext: built?.context,
+        taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
         logger,
@@ -1199,14 +1203,7 @@ export async function main(): Promise<void> {
   // -- Dynamic task scheduling --
   // Registered first so its kicker is available as a normal dep when
   // power jobs register below.
-  const taskKicker = await registerScheduledTasks(powerManager, {
-    definitionsDir,
-    vaultDir,
-    embeddingManager,
-    logger,
-    liveConfig,
-    getTeamClient: () => teamSync.getTeamClient(),
-  });
+  await syncScheduledTasks();
 
   // --- Register power-managed jobs ---
   // The canopy mass-add callback feeds the scheduler kicker so a fresh
@@ -1222,7 +1219,7 @@ export async function main(): Promise<void> {
     vaultDir,
     projectRoot,
     databaseManager,
-    onCanopyMassAdd: () => taskKicker.kick('canopy-describe'),
+    onCanopyMassAdd: () => scheduledTaskKicker.kick('canopy-describe'),
   });
   teamSync.registerFlushJob(powerManager);
 
