@@ -17,6 +17,7 @@ Systematic procedures for analyzing, optimizing, and monitoring LLM costs and pe
 - Access to task logs and cost telemetry data
 - Familiarity with model provider APIs (Claude SDK, OpenAI, local models)
 - Knowledge of turn budget configuration in task definitions
+- Understanding of map-phase architecture and accelerator systems
 
 ## Procedure A: LLM Cost Analysis & Budget Calibration
 
@@ -180,6 +181,46 @@ Implement systematic cost control and budget management.
    - Model total cost of ownership including infrastructure
    - Optimize model selection based on workload characteristics
 
+## Procedure F: Map-Phase Cost Optimization
+
+Optimize costs specifically for map-phase architectures with accelerator systems.
+
+1. **Agent scoping optimization**:
+   - Implement runtime agent scoping to minimize context overhead
+   - Use scoped tool surfaces to reduce unnecessary API calls
+   - Cache agent configurations across map-phase iterations
+
+2. **Adaptive scheduling with accelerator awareness**:
+   ```typescript
+   // Configure tick-rate reality for accelerator systems
+   const tickRate = acceleratorConfig.enabled 
+     ? acceleratorConfig.tickMs 
+     : DEFAULT_TICK_RATE;
+   
+   // Adjust scheduling based on accelerator capacity
+   if (acceleratorQueue.length > THRESHOLD) {
+     scheduleConfig.backoffMs *= 2; // Reduce pressure
+   }
+   ```
+
+3. **Prompt caching benefits in map-phase**:
+   - Leverage shared context across map iterations
+   - Cache expensive system prompts and skill definitions
+   - Implement context deduplication for repeated map operations
+   - Use prompt caching to reduce token costs for similar operations
+
+4. **Cost-aware map-phase execution**:
+   - Monitor per-iteration costs in map operations
+   - Implement early termination for low-value iterations
+   - Balance parallelism vs cost in map-phase scheduling
+   - Use cost thresholds to gate expensive map expansions
+
+5. **Accelerator system cost modeling**:
+   - Track costs per accelerator type and configuration
+   - Model cost impact of different map-phase patterns
+   - Optimize accelerator usage based on cost-effectiveness metrics
+   - Implement cost-aware accelerator selection policies
+
 ## Cross-Cutting Gotchas
 
 - **Never ignore settingSources overhead** — Claude SDK makes expensive config calls unless explicitly disabled with `settingSources: []`
@@ -189,3 +230,6 @@ Implement systematic cost control and budget management.
 - **No-op detection prevents cost burn** — Always check if work is actually needed before starting expensive operations
 - **KV-cache reuse patterns vary by SDK** — OpenAI SDK can be 15× faster than Claude SDK for similar workloads due to better caching
 - **Mechanical drift detection beats expensive verification** — File fingerprinting and structural analysis costs cents vs. dollars for LLM verification phases
+- **Map-phase context sharing is cost-critical** — Proper prompt caching in map architectures can reduce costs by 60-80% for repeated operations
+- **Accelerator tick-rate reality affects cost modeling** — Real-world accelerator performance varies significantly from configuration; measure actual costs not theoretical ones
+- **Agent scoping overhead scales with map size** — Large map operations require careful agent scope management to prevent context bloat
