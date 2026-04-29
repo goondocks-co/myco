@@ -1514,11 +1514,16 @@ function pathMatchesV28Baseline(p: string): boolean {
 function migrateV27ToV28(db: Database): void {
   db.prepare('BEGIN').run();
   try {
-    // Pull every (project_id, path) pair and delete the ones matching the
-    // frozen v28 baseline. canopy_entries has FK-cascading rows in
-    // canopy_entry_fts and (post-v26) embedding-vector storage; SQLite's
-    // ON DELETE CASCADE handles them. Untouched rows keep all prior work
-    // (descriptions, embeddings, hashes).
+    // Pull every (project_id, path) pair and delete the ones matching
+    // the frozen v28 baseline. Untouched rows keep all prior work
+    // (descriptions, hashes, embedded flag).
+    //
+    // Embeddings note: vectors live in a separate vectors.db opened by
+    // the daemon's embedding subsystem — this migration cannot touch
+    // them directly. The EmbeddingManager's existing orphan sweep
+    // (Phase 3 of each reconcile cycle, see daemon/embedding/manager.ts)
+    // detects vectors whose record_id no longer matches an active
+    // canopy_entries row and removes them on the next cycle.
     const rows = db
       .prepare('SELECT project_id, path FROM canopy_entries')
       .all() as Array<{ project_id: string; path: string }>;
