@@ -178,13 +178,7 @@ jobs:
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
           TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
-        run: |
-          case "$TAG_PREFIX" in
-            myco) export MYCO_VERSION="$VERSION" ;;
-            myco-team) export MYCO_TEAM_VERSION="$VERSION" ;;
-            myco-collective) export MYCO_COLLECTIVE_VERSION="$VERSION" ;;
-          esac
-          node scripts/sync-package-versions.mjs
+        run: node scripts/sync-package-versions.mjs --target "$TAG_PREFIX" --version "$VERSION"
 
       # The target's sqlite-vec native extension must be present in
       # node_modules for the per-target entry's import to resolve. npm ci on
@@ -308,13 +302,7 @@ jobs:
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
           TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
-        run: |
-          case "$TAG_PREFIX" in
-            myco) export MYCO_VERSION="$VERSION" ;;
-            myco-team) export MYCO_TEAM_VERSION="$VERSION" ;;
-            myco-collective) export MYCO_COLLECTIVE_VERSION="$VERSION" ;;
-          esac
-          node scripts/sync-package-versions.mjs
+        run: node scripts/sync-package-versions.mjs --target "$TAG_PREFIX" --version "$VERSION"
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -386,7 +374,40 @@ jobs:
 
       - name: Pack npm tarball
         working-directory: ${{ needs.validate-tag.outputs.package_dir }}
-        run: npm pack
+        run: |
+          PACK_JSON="$(npm pack --json)"
+          printf '%s\n' "$PACK_JSON" > npm-pack.json
+
+      - name: Verify packed package version
+        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
+        env:
+          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+
+          const expectedName = process.env.PACKAGE_NAME;
+          const expectedVersion = process.env.VERSION;
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+          const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
+
+          if (pkg.name !== expectedName) {
+            throw new Error(`package.json name ${pkg.name} did not match ${expectedName}`);
+          }
+
+          if (pkg.version !== expectedVersion) {
+            throw new Error(`package.json version ${pkg.version} did not match ${expectedVersion}`);
+          }
+
+          if (pack.name !== expectedName) {
+            throw new Error(`packed name ${pack.name} did not match ${expectedName}`);
+          }
+
+          if (pack.version !== expectedVersion) {
+            throw new Error(`packed version ${pack.version} did not match ${expectedVersion}`);
+          }
+          NODE
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

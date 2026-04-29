@@ -722,13 +722,9 @@
 </footer>
 
 <script>
-  // Versions read directly from each workspace's package.json on main —
-  // that's the source of truth. The previous implementation used the GitHub
-  // "latest release" endpoint, but with releases now cut for sibling
-  // packages (myco-hub, myco-shared, myco-team, myco-collective) the
-  // last-shipped tag wins, which can shadow the main @goondocks/myco
-  // version. Reading package.json keeps the headline version pinned to the
-  // main package regardless of sibling release cadence.
+  // Versions come from npm dist-tags. Committed package.json versions are
+  // development metadata; release CI writes the tag version into the package
+  // only while building the tarball.
   (function() {
     function setText(id, txt) { var el = document.getElementById(id); if (el) el.textContent = txt; }
     function fmtStars(n) {
@@ -736,17 +732,26 @@
       if (n >= 1000) return '★ ' + (n/1000).toFixed(1).replace(/\.0$/, '') + 'k';
       return '★ ' + n;
     }
-    fetch('https://raw.githubusercontent.com/goondocks-co/myco/main/packages/myco/package.json')
-      .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(pkg) {
-        var v = pkg && pkg.version;
+
+    function registryUrl(name) {
+      return 'https://registry.npmjs.org/' + encodeURIComponent(name);
+    }
+
+    function fetchPackageInfo(name) {
+      return fetch(registryUrl(name)).then(function(r) { return r.ok ? r.json() : null; });
+    }
+
+    fetchPackageInfo('@goondocks/myco')
+      .then(function(data) {
+        var tags = data && data['dist-tags'];
+        var v = tags && (tags.latest || tags.beta);
         if (!v) {
           setText('nav-version', 'beta');
           setText('hero-version', 'Beta');
           setText('footer-version', 'v—');
           return;
         }
-        var isBeta = /-/.test(v);
+        var isBeta = tags && !tags.latest && tags.beta;
         setText('nav-version',    (isBeta ? 'beta · ' : '') + 'v' + v);
         setText('hero-version',   (isBeta ? 'Beta · ' : 'Stable · ') + 'v' + v);
         setText('footer-version', 'v' + v);
@@ -765,16 +770,17 @@
       })
       .catch(function(){});
 
-    function pkgVersionFor(path, elId) {
-      fetch('https://raw.githubusercontent.com/goondocks-co/myco/main/packages/' + path + '/package.json')
-        .then(function(r) { return r.ok ? r.json() : null; })
-        .then(function(pkg) {
-          setText(elId, pkg && pkg.version ? 'v' + pkg.version : '—');
+    function pkgVersionFor(name, elId) {
+      fetchPackageInfo(name)
+        .then(function(data) {
+          var tags = data && data['dist-tags'];
+          var version = tags && (tags.latest || tags.beta);
+          setText(elId, version ? 'v' + version : '—');
         })
         .catch(function(){ setText(elId, '—'); });
     }
-    pkgVersionFor('myco-team', 'pkg-team');
-    pkgVersionFor('myco-collective', 'pkg-collective');
+    pkgVersionFor('@goondocks/myco-team', 'pkg-team');
+    pkgVersionFor('@goondocks/myco-collective', 'pkg-collective');
   })();
 
   // Install tabs
