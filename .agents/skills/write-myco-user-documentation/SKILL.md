@@ -79,7 +79,25 @@ If you catch yourself writing "now supports," "we've added," or "previously," re
 
 > **Gotcha — commit message creep**: It's easy to write docs that read like a commit message, especially immediately after implementing a feature. Step back and describe the tool as if the user is encountering it for the first time.
 
-### 6. Apply the voice checklist
+### 6. Ensure legal/IP clarity in public messaging
+
+When writing public-facing content that references Myco's relationship to other tools or projects, be precise about intellectual property boundaries:
+
+```
+❌ "OAK is now Myco" or "OAK became Myco"
+    (implies continuity/transfer that may have legal implications)
+
+✅ "Myco is a project intelligence system" or "Myco captures your development work"
+    (describes Myco independently without claiming lineage)
+```
+
+If mentioning predecessor tools is necessary for context, frame it as user migration rather than project evolution:
+
+```
+✅ "Users migrating from OAK can import their activity history with `myco migrate`"
+```
+
+### 7. Apply the voice checklist
 
 After drafting, read each paragraph through this gate:
 
@@ -89,8 +107,9 @@ After drafting, read each paragraph through this gate:
 | Is every term user-vocabulary (appears in UI/CLI output)? | ✅ | Replace with user term or remove |
 | Does this describe current state, not past changes? | ✅ | Rewrite in present tense |
 | Could a user act on this information directly? | ✅ | Consider removing |
+| Are any IP/legal claims clear and accurate? | ✅ | Clarify relationships and boundaries |
 
-### 7. Add docs to the PR as the final step
+### 8. Add docs to the PR as the final step
 
 Documentation is a merge gate, not a mid-implementation artifact. Write docs after implementation is complete and review them with fresh eyes — ideally after stepping away from the implementation context.
 
