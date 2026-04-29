@@ -51,6 +51,43 @@ const PACKAGE_TARGETS = [
   },
 ];
 
+function usage() {
+  return [
+    'Usage:',
+    '  node scripts/sync-package-versions.mjs',
+    '  node scripts/sync-package-versions.mjs --target <tag-prefix> --version <version>',
+    '',
+    'Without arguments, syncs every known package from explicit env vars or latest git tags.',
+    'With --target/--version, syncs only the package family for the release tag.',
+  ].join('\n');
+}
+
+function readArg(name) {
+  const exact = process.argv.indexOf(name);
+  if (exact !== -1) return process.argv[exact + 1] ?? '';
+
+  const prefix = `${name}=`;
+  const match = process.argv.find((arg) => arg.startsWith(prefix));
+  return match ? match.slice(prefix.length) : '';
+}
+
+function releaseTargetFromArgs() {
+  const tagPrefix = readArg('--target').trim();
+  const version = readArg('--version').trim();
+
+  if (!tagPrefix && !version) return null;
+  if (!tagPrefix || !version) {
+    throw new Error(`--target and --version must be provided together\n\n${usage()}`);
+  }
+
+  const target = PACKAGE_TARGETS.find((candidate) => candidate.tagPrefix === tagPrefix);
+  if (!target) {
+    throw new Error(`Unknown target: ${tagPrefix}\n\n${usage()}`);
+  }
+
+  return { target, version };
+}
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
@@ -100,10 +137,12 @@ function resolveVersion(target) {
 }
 
 function syncTargetVersions() {
+  const releaseTarget = releaseTargetFromArgs();
+  const targets = releaseTarget ? [releaseTarget.target] : PACKAGE_TARGETS;
   const applied = [];
 
-  for (const target of PACKAGE_TARGETS) {
-    const nextVersion = resolveVersion(target);
+  for (const target of targets) {
+    const nextVersion = releaseTarget ? releaseTarget.version : resolveVersion(target);
     if (!nextVersion) continue;
 
     for (const relativePath of target.files) {
