@@ -1,4 +1,4 @@
-import { resolveVaultDir } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive, parseStringFlag } from './shared.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
@@ -36,7 +36,7 @@ export async function run(args: string[]): Promise<void> {
       process.exit(1);
     }
 
-    const projectRoot = path.dirname(vaultDir);
+    const projectRoot = resolveProjectRoot(vaultDir);
     const pkgRoot = resolvePackageRoot();
     const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
     const removed = uninstallLabels(installer.uninstall());
@@ -60,7 +60,7 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Full removal ---
 
-  const projectRoot = path.dirname(vaultDir);
+  const projectRoot = resolveProjectRoot(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
   const removeVault = args.includes('--remove-vault');

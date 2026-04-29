@@ -663,3 +663,21 @@ export function createScopedVaultToolServer(
     tools: scopedTools,
   });
 }
+
+/**
+ * Build a vault MCP tool server from a pre-materialized tool list.
+ *
+ * Used by map-phase mode (in both runtime adapters) when the harness has
+ * already constructed a constrained per-item surface — argMap-pinned
+ * fields stripped from the sink schema, outcome-capture wrapper applied.
+ * Rebuilding via createVaultTools() would discard those modifications,
+ * so map-phase passes the materialized tools through `toolSurface.tools`
+ * and the runtime adapter calls this entrypoint instead.
+ */
+export function createMaterializedVaultToolServer(tools: SdkMcpToolDefinition<any>[]) {
+  return createSdkMcpServer({
+    name: 'myco-vault',
+    version: getPluginVersion(),
+    tools,
+  });
+}

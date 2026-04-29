@@ -54,9 +54,9 @@ function extractToolFilePath(toolInput: unknown): string | null {
   return null;
 }
 
-function relativizeToolPath(filePath: string): string {
+function relativizeToolPath(filePath: string, projectRoot: string): string {
   if (!path.isAbsolute(filePath)) return filePath;
-  const rel = path.relative(process.cwd(), filePath);
+  const rel = path.relative(projectRoot, filePath);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return filePath;
   return rel.split(path.sep).join('/');
 }
@@ -136,11 +136,12 @@ export function handleToolUse(
   toolName: string,
   toolInput: unknown,
   toolOutput: string | undefined,
+  projectRoot: string,
 ): void {
   const now = epochSeconds();
 
   const filePath = extractToolFilePath(toolInput);
-  const activityFilePath = filePath ? relativizeToolPath(filePath) : null;
+  const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,

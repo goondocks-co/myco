@@ -315,6 +315,40 @@ export function getUnprocessedBatches(
 }
 
 /**
+ * Count unprocessed batches from settled (non-active) sessions. Mirrors
+ * the boolean has-unprocessed-batches predicate used by vault-evolve's
+ * scheduler precondition — both must answer the same question. Owned by
+ * the batches/sessions domain so the scheduler doesn't have to reason
+ * about prompt_batches schema.
+ */
+export function countUnprocessedSettledBatches(limit?: number): number {
+  if (limit !== undefined) {
+    const boundedLimit = Math.max(1, Math.floor(limit));
+    const row = getDatabase().prepare(
+      `SELECT COUNT(*) AS n FROM (
+        SELECT 1 FROM prompt_batches pb
+        WHERE pb.processed = 0
+          AND EXISTS (
+            SELECT 1 FROM sessions s
+            WHERE s.id = pb.session_id AND s.status != 'active'
+          )
+        LIMIT ?
+      )`,
+    ).get(boundedLimit) as { n: number } | undefined;
+    return row?.n ?? 0;
+  }
+  const row = getDatabase().prepare(
+    `SELECT COUNT(*) AS n FROM prompt_batches pb
+     WHERE pb.processed = 0
+       AND EXISTS (
+         SELECT 1 FROM sessions s
+         WHERE s.id = pb.session_id AND s.status != 'active'
+       )`,
+  ).get() as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
  * Increment the activity_count for a batch by 1.
  *
  * @returns the updated row, or null if the batch does not exist.

@@ -43,6 +43,8 @@ const REPLAYABLE_EVENT_TYPES: ReadonlySet<string> = new Set([
 export interface ReconcilerDeps {
   bufferDir: string;
   logger: DaemonLogger;
+  /** Canonical project root — derived from vaultDir, never cwd. */
+  projectRoot: string;
 }
 
 export interface Reconciler {
@@ -65,7 +67,7 @@ export interface Reconciler {
  * `reconciledSessions` set so that each session is only reconciled once
  * per daemon lifetime.
  */
-export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconciler {
+export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerDeps): Reconciler {
   // Track sessions already reconciled this daemon lifetime to avoid
   // redundant file reads (startup scan + register + event can all fire).
   const reconciledSessions = new Set<string>();
@@ -90,6 +92,7 @@ export function createReconciler({ bufferDir, logger }: ReconcilerDeps): Reconci
         String(event.tool_name ?? ''),
         event.tool_input,
         typeof event.output_preview === 'string' ? event.output_preview : undefined,
+        projectRoot,
       );
       return 'activity';
     }

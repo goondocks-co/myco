@@ -48,6 +48,22 @@ export interface PhaseDefinition {
   skipPriorContext?: boolean;
   /** If true, the scoped tool server only includes read-only tools (readOnlyHint === true). */
   readOnly?: boolean;
+
+  // --- Map mode (mode === 'map') -------------------------------------------
+  /** Phase execution mode. Unset/`agent` = free-form (existing). `map` = drain mode. */
+  mode?: 'agent' | 'map';
+  /** Map mode: per-item turn budget. Default 1 (strict). */
+  perItemMaxTurns?: number;
+  /** Map mode: per-item timeout in seconds. */
+  perItemTimeoutSeconds?: number;
+  /** Map mode: how to handle per-item runtime errors. Default `skip`. */
+  onItemError?: MapPhaseItemErrorPolicy;
+  /** Map mode: source-block config (required when mode === 'map'). */
+  source?: MapPhaseSource;
+  /** Map mode: per-item config (required when mode === 'map'). */
+  item?: MapPhaseItem;
+  /** Map mode: sink-block config (required when mode === 'map'). */
+  sink?: MapPhaseSink;
 }
 
 /** Result of a single phase execution within a phased run. */
@@ -62,6 +78,79 @@ export interface PhaseResult {
   summary: string; // last assistant message or error
   usage?: RuntimeUsage;
   sessionRef?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Map-phase types
+// ---------------------------------------------------------------------------
+
+/**
+ * Source-block config for a map phase. Names a tool in the agent registry
+ * that the harness calls ONCE (no model) to fetch the batch of items.
+ *
+ * `args` values are templated via interpolate-args; null/undefined renders
+ * as "arg absent" rather than "arg = null".
+ *
+ * `itemsPath` is the JSON path inside the tool's textResult payload to the
+ * items array. Map phase parses textResult JSON and follows the path; the
+ * resolved value MUST be an array.
+ */
+export interface MapPhaseSource {
+  tool: string;
+  args: Record<string, string | number | boolean | null>;
+  itemsPath: string;
+}
+
+/**
+ * Per-item config for a map phase. The prompt is templated against
+ * { item, params }. `readTools` is an optional list of read-only tools
+ * (must have readOnlyHint: true) available alongside the sink when
+ * perItemMaxTurns > 1.
+ */
+export interface MapPhaseItem {
+  prompt: string;
+  readTools?: string[];
+}
+
+/**
+ * Sink-block config for a map phase. Names the terminal write tool the
+ * model is allowed to call. `argMap` pins harness-owned fields per item;
+ * those fields are stripped from the tool's input schema before per-item
+ * invocation so the model literally cannot supply them wrong. argMap
+ * values are template strings rendered against `{ item, params }` via
+ * interpolateArgs.
+ */
+export interface MapPhaseSink {
+  tool: string;
+  argMap: Record<string, string>;
+}
+
+export type MapPhaseItemErrorPolicy = 'skip' | 'abort';
+
+/** Result payload for a completed map phase. */
+export interface MapPhaseResult {
+  itemCount: number;
+  written: number;
+  skipped: number;
+  failed: number;
+  abandoned: number;
+  skipReasons: Record<string, number>;
+  /**
+   * Items where the wrapped sink fired ok:true but the runtime later
+   * threw (typically max-turns from a chatty local model that emitted
+   * the tool call redundantly). Counted in `written`, not `failed` —
+   * surfaced separately so chronic model-confusion is observable
+   * without conflating it with genuine failures.
+   */
+  writeAfterThrow: number;
+  /**
+   * Aggregated runtime usage across all per-item invocations. Token counts
+   * sum across items; durations sum; cost sums where the runtime reports
+   * one. Map-mode runs were previously synthesizing zeros here, leaving
+   * dashboards/cost-tracking blind. The aggregation happens inside
+   * executeMapPhase so callers receive the real numbers.
+   */
+  usage: RuntimeUsage;
 }
 
 /** Context query that runs before task execution to gather vault state. */
@@ -180,12 +269,25 @@ export interface OrchestratorConfig {
   maxTurns?: number;
 }
 
+// AcceleratorName and AcceleratorConfig are exported from agent/schemas.ts
+// (z.infer'd from the Zod schemas) so the enum and shape have one source
+// of truth. Imported here for use in TaskSchedule below.
+import type { AcceleratorConfig, AcceleratorName } from './schemas.js';
+export type { AcceleratorConfig, AcceleratorName };
+
 /** Schedule configuration for automatic task execution via PowerManager. */
 export interface TaskSchedule {
   enabled: boolean;
   intervalSeconds: number;
   runIn: ('active' | 'idle' | 'sleep')[];
   preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
+  /**
+   * Adaptive cadence: when present, the scheduler queries the named
+   * accelerator's count function and shortens the effective interval
+   * during backlog according to the declared thresholds. Optional and
+   * additive — tasks without an accelerator use intervalSeconds verbatim.
+   */
+  accelerator?: AcceleratorConfig;
 }
 
 /** Shape of each task YAML file (e.g., `tasks/vault-evolve.yaml`). */
@@ -265,6 +367,8 @@ export interface RunOptions {
   agentId?: string;
   task?: string;
   instruction?: string;
+  /** Per-run task params layered over YAML/myco.yaml task params. */
+  taskParams?: Record<string, string | number | boolean>;
   /** Resume a previous run by its ID (re-uses existing session state). */
   resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */

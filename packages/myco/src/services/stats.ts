@@ -3,6 +3,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
@@ -162,7 +163,7 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
     },
     vault: {
       path: vaultDir,
-      name: path.basename(path.dirname(vaultDir)),
+      name: path.basename(resolveProjectRoot(vaultDir)),
       session_count,
       batch_count,
       spore_count,

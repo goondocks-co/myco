@@ -364,7 +364,7 @@ done
 
 ## Binary Entry Point Dispatch
 
-Myco supports runtime resolution via `.myco/runtime.command` with automatic collision detection through the hook guard system.
+Myco supports runtime resolution via `.myco/runtime.command` with automatic collision detection through the hook guard system and critical dispatch contract enforcement to prevent version-sync loops.
 
 ### Use the hook guard dispatch pattern
 
@@ -458,6 +458,90 @@ export function resolveBinary(name: string): string | null {
   }
   
   return null;
+}
+```
+
+### Implement runtime.command dispatch contract
+
+**Critical dispatch contract invariant**: The binary referenced by `runtime.command` must match the binary performing version-sync operations, otherwise infinite restart loops occur.
+
+```typescript
+// Version-sync dispatch contract validation
+export function validateDispatchContract(currentBinary: string, runtimeCommand: string): boolean {
+  // Resolve both paths to canonical forms for comparison
+  const currentResolved = path.resolve(currentBinary);
+  const commandResolved = path.resolve(runtimeCommand);
+  
+  // Contract satisfied if they point to the same binary
+  return currentResolved === commandResolved;
+}
+
+// Three runtime modes requiring different dispatch strategies
+export type RuntimeMode = 'global' | 'linked' | 'development';
+
+export function detectRuntimeMode(): RuntimeMode {
+  const currentBinary = process.execPath;
+  
+  // Development mode: running from source via Bun/Node
+  if (currentBinary.includes('bun') || currentBinary.includes('node')) {
+    return 'development';
+  }
+  
+  // Linked mode: npm link or local binary
+  if (currentBinary.includes(os.homedir()) || currentBinary.includes('.local')) {
+    return 'linked';
+  }
+  
+  // Global mode: system-wide install
+  return 'global';
+}
+
+// Version-sync loop prevention during runtime transitions
+export async function safeVersionSync(targetVersion: string): Promise<void> {
+  const currentBinary = getCurrentBinary();
+  const runtimeCommand = readRuntimeCommand();
+  
+  // Prevent loops: ensure dispatch contract holds
+  if (!validateDispatchContract(currentBinary, runtimeCommand)) {
+    console.warn(`Dispatch contract violation - stepping aside for binary: ${runtimeCommand}`);
+    return; // Let the correct binary handle version sync
+  }
+  
+  // Safe to proceed with version sync
+  await performVersionSync(targetVersion);
+}
+```
+
+### Handle runtime mode transitions
+
+Different runtime modes require coordination during updates:
+
+```typescript
+// Coordinate handoff between runtime modes
+export async function coordinateRuntimeTransition(
+  fromMode: RuntimeMode, 
+  toMode: RuntimeMode
+): Promise<void> {
+  switch (`${fromMode}->${toMode}`) {
+    case 'development->global':
+      // Update runtime.command to point to global binary
+      await updateRuntimeCommand('myco');
+      break;
+      
+    case 'global->development':  
+      // Update runtime.command to point to development binary
+      const devBinary = path.join(getProjectRoot(), 'vendor', getHostTarget(), 'myco');
+      await updateRuntimeCommand(devBinary);
+      break;
+      
+    case 'linked->global':
+      // Remove runtime.command override to use global default
+      await removeRuntimeCommand();
+      break;
+  }
+  
+  // Restart daemon with new runtime mode
+  await restartDaemonWithNewRuntime();
 }
 ```
 

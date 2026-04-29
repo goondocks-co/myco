@@ -274,6 +274,11 @@ mock.module('@myco/agent/tools.js', () => ({
     name: 'myco-vault',
     instance: {},
   }),
+  createMaterializedVaultToolServer: (_tools: unknown[]) => ({
+    type: 'sdk' as const,
+    name: 'myco-vault',
+    instance: {},
+  }),
   createScopedVaultToolServer: (agentId: string, runId: string, toolNames: string[], options?: Record<string, unknown>) => {
     scopedToolCalls.push({ agentId, runId, toolNames, options });
     return {

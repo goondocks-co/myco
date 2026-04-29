@@ -47,8 +47,8 @@ export function upsertProjectRegistration(
   const registration = RegistrationSchema.parse(raw);
   const now = new Date().toISOString();
   const file = readProjectsFile();
-  const id = projectId(registration);
-  const existing = file.projects.find((project) => project.id === id);
+  const existing = file.projects.find((project) => sameVault(project.vaultDir, registration.vaultDir));
+  const id = existing?.id ?? projectId(registration);
 
   const record: ProjectRecord = {
     id,
@@ -66,11 +66,23 @@ export function upsertProjectRegistration(
   if (existing && recordsEquivalent(existing, record)) return existing;
 
   file.projects = [
-    ...file.projects.filter((project) => project.id !== id),
+    ...file.projects.filter((project) => !sameVault(project.vaultDir, registration.vaultDir)),
     record,
   ].sort((a, b) => a.name.localeCompare(b.name) || a.projectRoot.localeCompare(b.projectRoot));
   writeProjectsFile(file);
   return record;
+}
+
+function sameVault(a: string, b: string): boolean {
+  return normalizeVaultPath(a) === normalizeVaultPath(b);
+}
+
+function normalizeVaultPath(value: string): string {
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
 }
 
 function recordsEquivalent(a: ProjectRecord, b: ProjectRecord): boolean {
@@ -87,17 +99,28 @@ function recordsEquivalent(a: ProjectRecord, b: ProjectRecord): boolean {
 
 export function listKnownProjects(): ProjectRecord[] {
   const file = readProjectsFile();
-  const projects = file.projects.filter((project) => isVault(project.vaultDir));
-  if (projects.length !== file.projects.length) {
-    writeProjectsFile({ ...file, projects });
+  const validProjects = file.projects.filter((project) => isVault(project.vaultDir));
+  const deduped = dedupByVault(validProjects);
+  if (deduped.length !== file.projects.length) {
+    writeProjectsFile({ ...file, projects: deduped });
   }
-  return projects
+  return deduped
     .map((project) => ({
       ...project,
       source: project.source ?? 'unknown',
       preferredPort: readDaemonJson(project.vaultDir)?.port ?? project.preferredPort,
       runtimeCommand: readRuntimeCommand(project.vaultDir) ?? project.runtimeCommand,
     }));
+}
+
+function dedupByVault(projects: ProjectRecord[]): ProjectRecord[] {
+  const byVault = new Map<string, ProjectRecord>();
+  for (const project of projects) {
+    const key = normalizeVaultPath(project.vaultDir);
+    const existing = byVault.get(key);
+    if (!existing || project.lastSeenAt > existing.lastSeenAt) byVault.set(key, project);
+  }
+  return [...byVault.values()];
 }
 
 export function getKnownProject(id: string): ProjectRecord | null {

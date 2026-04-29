@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 import { z } from 'zod';
+import { resolveProjectRoot } from '../../vault/resolve.js';
 import { resolveCliEntryPath } from '../../hooks/client.js';
 import type { RouteResponse } from '../router.js';
 import type { ProgressTracker } from './progress.js';
@@ -39,7 +39,7 @@ export async function handleRestart(
   const entryPart = cliEntry !== null ? ` ${cliEntry}` : '';
   const shellCmd = `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon`;
 
-  const projectRoot = path.dirname(deps.vaultDir);
+  const projectRoot = resolveProjectRoot(deps.vaultDir);
   const child = spawn('/bin/sh', ['-c', shellCmd], {
     detached: true,
     stdio: 'ignore',

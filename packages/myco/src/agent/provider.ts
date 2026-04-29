@@ -19,6 +19,14 @@ const LMSTUDIO_AUTH_TOKEN = 'lmstudio';
 // Public API
 // ---------------------------------------------------------------------------
 
+/** True for provider types that route to a locally-hosted LLM endpoint. */
+export function isLocalProvider(provider?: ProviderConfig): boolean {
+  if (!provider) return false;
+  return provider.type === 'lmstudio'
+    || provider.type === 'ollama'
+    || provider.type === 'openai-compatible';
+}
+
 /**
  * Build an env object for a phase's query() call.
  *

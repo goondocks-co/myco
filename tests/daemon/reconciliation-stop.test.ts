@@ -47,7 +47,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'recovered summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger });
+    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop');
@@ -66,7 +66,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'buffered summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger });
+    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop');
@@ -82,7 +82,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: '', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger });
+    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop');
@@ -101,7 +101,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
       JSON.stringify({ type: 'stop', last_assistant_message: 'late summary', timestamp: new Date().toISOString() }) + '\n',
     );
 
-    const reconciler = createReconciler({ bufferDir, logger: silentLogger });
+    const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
     const batches = listBatchesBySession('s-stop');

@@ -1,6 +1,7 @@
 import { deltaScan } from '@myco/canopy/scanner/delta-scan.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { CanopyJobContext } from './canopy-scan.js';
+import { DELTA_SCAN_MASS_ADD_KICK_THRESHOLD } from './canopy-scan.js';
 
 /** Coalesce delta-scan triggers fired within this window into one run. */
 export const CANOPY_DELTA_DEBOUNCE_MS = 30_000;
@@ -51,6 +52,15 @@ export class CanopyDeltaScanRunner {
       this.ctx.logger.info(LOG_KINDS.CANOPY_SCAN, 'Canopy delta scan complete', {
         ...result,
       });
+      // Mass-add detection: a delta scan that re-adds many rows means
+      // either initial populate just landed or something earlier wiped
+      // rows that have now been restored. New rows have NULL
+      // llm_description; kick canopy-describe so the queue starts
+      // draining immediately instead of waiting up to one full
+      // scheduled interval.
+      if (result.added > DELTA_SCAN_MASS_ADD_KICK_THRESHOLD) {
+        this.ctx.onCanopyMassAdd?.();
+      }
     } catch (err) {
       this.ctx.logger.error(LOG_KINDS.CANOPY_ERROR, 'Canopy delta scan failed', {
         error: (err as Error).message,

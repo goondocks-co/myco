@@ -111,6 +111,120 @@ like and what the sentinel string in the output summary should be.
 
 ---
 
+## Procedure 1.1: Map-Phase Architecture
+
+When you need to process a large batch of items with identical per-item logic, use the `mode: map` phase type. This is a harness primitive where the harness owns the batch fetch and iteration, and the model invokes once per item with a constrained tool surface.
+
+### When to use map mode
+
+**Ideal for:**
+- Bulk operations with identical per-item processing (e.g., canopy-describe, file analysis)
+- Cost-sensitive batch work where model context reuse is wasteful
+- Operations where the harness can efficiently control iteration
+
+**Not suitable for:**
+- Cross-item reasoning or synthesis (use standard judgment phases)
+- Operations requiring dynamic tool selection based on item content
+- Phases where the model needs to see the full batch for decision-making
+
+### Map-phase configuration
+
+```ts
+{
+  name: 'process_items',
+  mode: 'map',
+  systemPrompt: ITEM_PROCESSING_PROMPT,
+  turnBudget: 3,           // Per-item budget, keep tight
+  tools: ITEM_TOOLS,       // Constrained surface per item
+  fetchConfig: {
+    tool: 'canopy_get_entries',
+    params: {
+      limit: 20,           // Batch size for efficiency
+      types: ['file']
+    },
+    itemField: 'entries',  // Array field in tool response
+    emptySkip: true,       // Skip phase if no items
+  },
+}
+```
+
+### Cost model and efficiency
+
+**Token efficiency**: Map mode resets the conversation for each item, eliminating context accumulation. For 20-item batches, this typically saves 60-80% tokens compared to standard phases that process all items in one conversation.
+
+**Performance characteristics:**
+- **Setup cost**: ~200-300 tokens per item (system prompt reset)
+- **Processing cost**: actual per-item work (varies by task)
+- **Break-even point**: ~10-15 items (above this, map mode is more efficient)
+
+**Batch sizing**: Start with 12-20 items per phase. Smaller batches increase overhead; larger batches risk timeout or memory pressure.
+
+### Map-phase output patterns
+
+The harness collects per-item results and summarizes them:
+
+```
+map: written=18 skipped=1 failed=1
+```
+
+**Standard output fields:**
+- `written`: successful item processing count
+- `skipped`: items intentionally not processed
+- `failed`: items that caused errors
+
+Structure your system prompt to ensure each item invocation produces a clear success/skip/fail outcome that the harness can categorize.
+
+### Tool surface design for map phases
+
+Keep the tool surface minimal and item-focused:
+
+```ts
+const MAP_ITEM_TOOLS = {
+  canopy: ['canopy_describe_file'],    // Single focused tool
+  vault: ['vault_create_spore'],       // Write results
+  // No batch tools, no cross-item tools
+};
+```
+
+**Anti-patterns:**
+- Tools that query for other items (breaks isolation)
+- Tools that require full batch context
+- Heavy read tools (search, large file reads)
+
+### Integration with standard phases
+
+Map phases work best in multi-phase sequences:
+
+```ts
+phases: [
+  {
+    name: 'discover',
+    // Standard phase: gather batch context, validate prerequisites
+    systemPrompt: DISCOVER_PROMPT,
+    turnBudget: 8,
+    readOnly: true,
+  },
+  {
+    name: 'process_batch',
+    mode: 'map',
+    // Map phase: process items efficiently
+    systemPrompt: ITEM_PROMPT,
+    turnBudget: 3,
+    fetchConfig: { /* ... */ },
+  },
+  {
+    name: 'consolidate',
+    // Standard phase: synthesize results, handle exceptions
+    systemPrompt: CONSOLIDATE_PROMPT,
+    turnBudget: 12,
+  },
+]
+```
+
+This pattern gives you the efficiency of map mode for bulk work while preserving judgment phases for synthesis and exception handling.
+
+---
+
 ## Procedure 2: Write the Task Config
 
 Tasks live in `packages/myco/src/agent/definitions/tasks/`. Each task is defined as a TypeScript
@@ -199,10 +313,11 @@ padding. Calibrate before deploying.
 ### Starting values
 
 | Phase type | Cloud budget | Local budget |
-|------------|-------------|-------------|
+|------------|-------------|--------------|
 | Discovery / read-only | 8–12 | 25–40 |
 | Write / consolidation | 10–20 | 30–60 |
 | Validation / QA | 5–8 | 15–25 |
+| Map-phase (per item) | 2–4 | 6–12 |
 
 ### The static-budget-under-backlog problem
 
@@ -462,7 +577,7 @@ LIMIT 20;
 ### Silent failure patterns
 
 | Symptom | Likely cause |
-|---------|-------------|
+|---------|--------------|
 | `exit_reason = 'complete'` but no state change | Sentinel triggered incorrectly; review short-circuit condition |
 | `turn_count = 1`, empty `tool_output_summary` | LLM never called tools; malformed prompt or injected context |
 | `turn_count = budget` with incomplete work | Budget exhaustion; cap the input |
@@ -508,3 +623,9 @@ rows — the harness reads the schema at startup.
 - **Partial gate implementation** → If only some vault read surfaces honor
   `requireSettledSessions`, the task sees split-brain data. All read surfaces
   must respect the gate consistently.
+- **Map-phase tool surface bloat** → Giving map phases access to batch or
+  cross-item tools breaks the isolation model and eliminates cost savings.
+  Keep map tool surfaces minimal and item-focused.
+- **Map-phase batch sizing** → Batches that are too large risk timeout; too
+  small increase per-item overhead. Start with 12-20 items and tune based
+  on actual performance.

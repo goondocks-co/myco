@@ -11,6 +11,37 @@ export function withValue(config: MycoConfig, dotPath: string, value: unknown): 
   return clone as MycoConfig;
 }
 
+/**
+ * Reject patch payloads that contain keys outside the helper's known set.
+ *
+ * Why this exists: Zod's default object mode strips unknown keys silently.
+ * A `withX` helper that spreads `{ ...current, ...updates }` will pass
+ * unknown keys to the schema, which strips them, and the writer returns
+ * 200 OK with the unknown field silently discarded. The UI then refreshes
+ * and shows the original value with no error — the canopy-describe params
+ * save bug. This guard turns silent drops into loud 400s at the helper
+ * boundary, before Zod ever sees the payload.
+ *
+ * Pattern: every patch-shaped helper (`withTaskConfig`, `withEmbedding`,
+ * `withContext`, future ones) declares its known keys and calls this
+ * before applying the patch. New fields require updating both the helper
+ * and its allowlist together — the allowlist is the source of truth for
+ * what the helper supports.
+ */
+export function assertKnownKeys<T extends object>(
+  helperName: string,
+  update: object,
+  allowed: ReadonlySet<keyof T>,
+): void {
+  for (const key of Object.keys(update)) {
+    if (!allowed.has(key as keyof T)) {
+      throw new Error(
+        `${helperName}: unknown field '${key}'. Allowed: ${[...allowed].join(', ')}`,
+      );
+    }
+  }
+}
+
 /** Provider override shape used in task config updates. Null means delete. */
 interface ProviderInput {
   runtime?: 'claude-sdk' | 'openai-agents';
@@ -29,6 +60,22 @@ interface PhaseInput {
   maxTurns?: number | null;
 }
 
+interface ScheduleAcceleratorInput {
+  name: 'canopy-pending-describe' | 'unprocessed-settled-batches';
+  thresholds: {
+    steady: number;
+    accelerated: number;
+  };
+}
+
+interface ScheduleInput {
+  enabled?: boolean;
+  intervalSeconds?: number;
+  runIn?: ('active' | 'idle' | 'sleep')[];
+  preCondition?: 'has-unprocessed-batches' | 'has-active-skills' | 'has-approved-candidates' | 'has-skill-survey-evidence' | 'has-pending-canopy-rows';
+  accelerator?: ScheduleAcceleratorInput | null;
+}
+
 /** Input shape for task config updates. Null values mean "delete this field". */
 export interface TaskConfigUpdate {
   provider?: ProviderInput | null;
@@ -37,8 +84,27 @@ export interface TaskConfigUpdate {
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
   phases?: Record<string, PhaseInput | null> | null;
-  schedule?: { enabled?: boolean; intervalSeconds?: number; runIn?: ('active' | 'idle' | 'sleep')[] } | null;
+  schedule?: ScheduleInput | null;
+  params?: Record<string, string | number | boolean> | null;
 }
+
+/**
+ * Fields handled by `withTaskConfig`. Every entry here must have a matching
+ * branch in withTaskConfig and a corresponding optional field on
+ * TaskProviderOverrideSchema. Used by withTaskConfig itself to detect and
+ * reject unknown keys at the boundary, so a stale UI payload (or a renamed
+ * field) fails loudly instead of silently dropping the value to disk.
+ */
+const TASK_CONFIG_UPDATE_KEYS: ReadonlySet<keyof TaskConfigUpdate> = new Set([
+  'provider',
+  'runtime',
+  'model',
+  'maxTurns',
+  'timeoutSeconds',
+  'phases',
+  'schedule',
+  'params',
+]);
 
 /**
  * Apply partial task config updates, returning a new config object.
@@ -49,6 +115,8 @@ export function withTaskConfig(
   taskId: string,
   update: TaskConfigUpdate,
 ): MycoConfig {
+  assertKnownKeys<TaskConfigUpdate>('withTaskConfig', update, TASK_CONFIG_UPDATE_KEYS);
+
   const tasks = { ...(config.agent.tasks ?? {}) };
   const entry: TaskProviderOverride = { ...(tasks[taskId] ?? {}) };
 
@@ -86,7 +154,22 @@ export function withTaskConfig(
     if (update.schedule === null) {
       delete entry.schedule;
     } else if (update.schedule !== undefined) {
-      entry.schedule = { ...entry.schedule, ...update.schedule };
+      const { accelerator, ...scheduleUpdate } = update.schedule;
+      const schedule = { ...entry.schedule, ...scheduleUpdate };
+      if ('accelerator' in update.schedule) {
+        if (accelerator === null) delete schedule.accelerator;
+        else if (accelerator !== undefined) schedule.accelerator = accelerator;
+      }
+      entry.schedule = schedule;
+    }
+  }
+
+  // Handle params (per-task scalar overrides like batch_size)
+  if ('params' in update) {
+    if (update.params === null) {
+      delete entry.params;
+    } else if (update.params !== undefined) {
+      entry.params = { ...entry.params, ...update.params };
     }
   }
 
@@ -144,17 +227,45 @@ export function withTaskConfig(
 }
 
 /**
+ * Allowlist for `withEmbedding`. Mirrors `EmbeddingProviderSchema` —
+ * keep in sync when adding fields.
+ */
+const EMBEDDING_UPDATE_KEYS: ReadonlySet<keyof EmbeddingProviderConfig> = new Set([
+  'provider',
+  'model',
+  'base_url',
+  'run_in_deep_sleep',
+]);
+
+/**
  * Merge partial embedding updates into config, returning a new config object.
  */
 export function withEmbedding(
   config: MycoConfig,
   updates: Partial<EmbeddingProviderConfig>,
 ): MycoConfig {
+  assertKnownKeys<EmbeddingProviderConfig>('withEmbedding', updates, EMBEDDING_UPDATE_KEYS);
   return {
     ...config,
     embedding: { ...config.embedding, ...updates },
   };
 }
+
+/**
+ * Allowlist for `withContext`. Mirrors `ContextSchema` — keep in sync
+ * when adding fields. The legacy `operating_brief_enabled` key is
+ * accepted because the schema preprocesses it into `cortex_enabled`;
+ * dropping it from the allowlist would reject older payloads that the
+ * schema migration is specifically there to handle.
+ */
+const CONTEXT_UPDATE_KEYS: ReadonlySet<keyof ContextConfig | 'operating_brief_enabled'> = new Set([
+  'digest_tier',
+  'session_start_digest_enabled',
+  'cortex_enabled',
+  'prompt_search',
+  'prompt_max_spores',
+  'operating_brief_enabled',
+] as const);
 
 /**
  * Merge partial context injection updates into config, returning a new config object.
@@ -163,6 +274,11 @@ export function withContext(
   config: MycoConfig,
   updates: Partial<ContextConfig>,
 ): MycoConfig {
+  assertKnownKeys<ContextConfig>(
+    'withContext',
+    updates,
+    CONTEXT_UPDATE_KEYS as ReadonlySet<keyof ContextConfig>,
+  );
   return {
     ...config,
     context: { ...config.context, ...updates },

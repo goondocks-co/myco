@@ -16,6 +16,17 @@ export function resolveVaultDir(cwd: string = process.cwd()): string {
 }
 
 /**
+ * Canonical project root from a vault directory.
+ *
+ * Always derive `projectRoot` from `vaultDir` via this helper. `vaultDir`
+ * already runs through the worktree-aware walk in `resolveVaultDir`, so
+ * daemon callers share one project-root identity regardless of launch cwd.
+ */
+export function resolveProjectRoot(vaultDir: string): string {
+  return path.dirname(vaultDir);
+}
+
+/**
  * Find the main repo root, even from a git worktree.
  *
  * `git rev-parse --git-common-dir` returns the shared .git directory:

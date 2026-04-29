@@ -5,8 +5,8 @@
  * for the /api/agent/run and /api/agent/runs/* endpoints.
  */
 
-import { resolve } from 'node:path';
 import { z } from 'zod';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
@@ -153,10 +153,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       let built;
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
-        const projectRoot = resolve(vaultDir, '..');
+        const projectRoot = resolveProjectRoot(vaultDir);
         built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
       } catch {
-        const projectRoot = resolve(vaultDir, '..');
+        const projectRoot = resolveProjectRoot(vaultDir);
         built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
       }
       instruction = built?.instruction;

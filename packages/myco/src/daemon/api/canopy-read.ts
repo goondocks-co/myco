@@ -238,14 +238,14 @@ export async function handleCanopyEntryReembed(
 /**
  * Runner contract for handleCanopyEntryRedescribe. The route registration
  * supplies a real implementation that builds a single-row canopy-describe
- * instruction (params.canopy_entry_id = path) and dispatches via the agent
+ * instruction (params.canopy_entry_path = path) and dispatches via the agent
  * executor — same shape as runCanopyMapTask. Tests inject a stub so they
  * don't need to stand up the executor.
  */
 export interface CanopyEntryRedescribeTaskRunner {
   runner: (input: {
     task: 'canopy-describe';
-    params: { canopy_entry_id: string };
+    params: { canopy_entry_path: string };
     project_id: string;
   }) => Promise<{ run_id: string }>;
 }
@@ -264,8 +264,8 @@ export async function handleCanopyEntryRedescribe(
   const { run_id } = await deps.runner({
     task: 'canopy-describe',
     // The single-row instruction builder uses the row's `path` as its
-    // canopy_entry_id (see loadCanopyRow in instruction-builders.ts).
-    params: { canopy_entry_id: args.path },
+    // canopy_entry_path is the row path used by map-phase source.args templating.
+    params: { canopy_entry_path: args.path },
     project_id: args.project_id,
   });
   return { ok: true, run_id };

@@ -116,7 +116,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
       preConditions: {},
     };
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
     // First run — should attempt and fail (error propagates to PowerManager)
     await jobs[0].fn().catch(() => {});
@@ -141,7 +141,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
       preConditions: {},
     };
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
     // Simulate task 'a' running
     runningTasks.add('a');
@@ -159,7 +159,7 @@ describe('P1 #4: Scheduler retry behavior', () => {
       preConditions: {},
     };
 
-    const jobs = buildScheduledJobs(tasks, {}, ctx);
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
     expect(ctx.runTask).not.toHaveBeenCalled();
   });

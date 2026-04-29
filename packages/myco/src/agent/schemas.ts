@@ -94,6 +94,35 @@ const PreConditionSchema = z.enum([
   'has-pending-canopy-rows',
 ]);
 
+/**
+ * Accelerator names dispatch into domain-owned count functions in
+ * daemon/task-scheduling.ts. Naming convention: `<domain>-<entity>`.
+ * Adding a new accelerator: register a count function in the domain
+ * package, add to the dispatch table, add the name here.
+ */
+export const AcceleratorNameSchema = z.enum([
+  'canopy-pending-describe',
+  'unprocessed-settled-batches',
+]);
+export type AcceleratorName = z.infer<typeof AcceleratorNameSchema>;
+
+/**
+ * Adaptive accelerator config. Tier divisors are 1× / 4× / 12×
+ * applied to intervalSeconds; PowerManager's tick rate is the real
+ * lower bound on actual fire rate, so effective intervals below the
+ * tick just mean "gate clears every tick." Thresholds live in YAML
+ * per-task because work-unit semantics differ (50 canopy rows ≪ 50
+ * unprocessed prompt batches in real cost).
+ */
+export const AcceleratorConfigSchema = z.object({
+  name: AcceleratorNameSchema,
+  thresholds: z.object({
+    steady: z.number().int().nonnegative(),
+    accelerated: z.number().int().nonnegative(),
+  }),
+});
+export type AcceleratorConfig = z.infer<typeof AcceleratorConfigSchema>;
+
 /** Schedule configuration for automatic task execution via PowerManager. */
 export const TaskScheduleSchema = z.object({
   /** Whether auto-run is enabled for this task. */
@@ -104,6 +133,32 @@ export const TaskScheduleSchema = z.object({
   runIn: z.array(z.enum([...SCHEDULABLE_POWER_STATES])).min(1),
   /** Optional pre-condition check before running. */
   preCondition: PreConditionSchema.optional(),
+  /**
+   * Optional adaptive accelerator. When declared, the scheduler queries
+   * the registered count function and shortens the effective interval
+   * during backlog according to the declared thresholds.
+   */
+  accelerator: AcceleratorConfigSchema.optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Map phase sub-schemas
+// ---------------------------------------------------------------------------
+
+const MapPhaseSourceSchema = z.object({
+  tool: z.string().min(1),
+  args: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  itemsPath: z.string().min(1),
+});
+
+const MapPhaseItemSchema = z.object({
+  prompt: z.string().min(1),
+  readTools: z.array(z.string()).optional(),
+});
+
+const MapPhaseSinkSchema = z.object({
+  tool: z.string().min(1),
+  argMap: z.record(z.string(), z.string()).default({}),
 });
 
 /** Schema for a single phase within a phased task pipeline. */
@@ -119,7 +174,19 @@ export const PhaseDefinitionSchema = z.object({
   provider: ProviderConfigSchema.optional(),
   skipPriorContext: z.boolean().optional(),
   readOnly: z.boolean().optional(),
-});
+
+  // --- Map mode -------------------------------------------------------------
+  mode: z.enum(['agent', 'map']).optional(),
+  perItemMaxTurns: z.number().int().positive().optional(),
+  perItemTimeoutSeconds: z.number().int().positive().optional(),
+  onItemError: z.enum(['skip', 'abort']).optional().default('skip'),
+  source: MapPhaseSourceSchema.optional(),
+  item: MapPhaseItemSchema.optional(),
+  sink: MapPhaseSinkSchema.optional(),
+}).refine(
+  (p) => p.mode !== 'map' || (p.source && p.item && p.sink),
+  { message: 'mode: map requires source, item, and sink blocks' },
+);
 
 /** Schema for task YAML files in tasks/. */
 export const AgentTaskSchema = z.object({

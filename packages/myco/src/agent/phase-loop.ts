@@ -50,6 +50,8 @@ import type {
 } from './types.js';
 import { aggregateUsage } from './executor-state.js';
 import { summarizePhaseCosts } from './run-accounting.js';
+import { executeMapPhase } from './map-phase.js';
+import { createVaultTools } from './tools.js';
 
 // ---------------------------------------------------------------------------
 // PhaseLoopContext — parameter object carrying orchestrator state into the
@@ -122,6 +124,11 @@ export async function executePhase(
   input: ExecutePhaseInput,
 ): Promise<PhaseResult & { sessionData?: unknown }> {
   const { ctx, phasePrompt, phaseModel, phase, toolSurface, provider, sessionId, sessionData } = input;
+
+  if (phase.mode === 'map') {
+    return runMapPhaseAdapter(input);
+  }
+
   const logger = ctx.options?.logger;
   const runtime = getAgentRuntime(ctx.config.runtime);
   logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
@@ -234,6 +241,80 @@ export async function executePhase(
       usage: telemetry?.usage,
       costData,
       sessionRef: telemetry?.sessionRef,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Map-phase adapter
+// ---------------------------------------------------------------------------
+
+async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
+  const { ctx, phase, phaseModel, provider } = input;
+  const logger = ctx.options?.logger;
+  const runtime = getAgentRuntime(ctx.config.runtime);
+  const allTools = createVaultTools(ctx.agentId, ctx.runId, {
+    embeddingManager: ctx.embeddingManager,
+    projectRoot: ctx.projectRoot,
+    vaultDir: ctx.vaultDir,
+    dryRun: ctx.options?.dryRun ?? false,
+  });
+
+  logger?.debug('agent.map.start', `Map phase "${phase.name}" starting`, {
+    runId: ctx.runId, phase: phase.name, model: phaseModel, providerType: provider?.type ?? null,
+  });
+
+  try {
+    const mapResult = await executeMapPhase({
+      phase,
+      allTools,
+      runtime,
+      params: ((ctx.config.taskParams ?? {}) as Record<string, unknown>),
+      systemPrompt: ctx.systemPrompt,
+      runId: ctx.runId,
+      agentId: ctx.agentId,
+      phaseModel,
+      provider,
+      vaultDir: ctx.vaultDir,
+      projectRoot: ctx.projectRoot,
+      embeddingManager: ctx.embeddingManager,
+      logger,
+      runAbortController: ctx.abortController,
+    });
+    logger?.debug('agent.map.end', `Map phase "${phase.name}" completed`, {
+      runId: ctx.runId, phase: phase.name,
+      itemCount: mapResult.itemCount,
+      written: mapResult.written,
+      skipped: mapResult.skipped,
+      failed: mapResult.failed,
+      tokensUsed: mapResult.usage.totalTokens ?? 0,
+      costUsd: mapResult.usage.costUsd ?? null,
+    });
+    const costData = await resolveCost({
+      runtime: ctx.config.runtime,
+      provider,
+      model: phaseModel,
+      usage: mapResult.usage,
+    });
+    const writeAfterThrowPart = mapResult.writeAfterThrow > 0
+      ? ` writeAfterThrow=${mapResult.writeAfterThrow}`
+      : '';
+    return buildPhaseResult({
+      name: phase.name,
+      status: 'completed',
+      summary: `map: written=${mapResult.written} skipped=${mapResult.skipped} failed=${mapResult.failed}${writeAfterThrowPart}`,
+      usage: mapResult.usage,
+      costData,
+    });
+  } catch (err) {
+    const reason = toErrorMessage(err);
+    logger?.error('agent.map.error', `Map phase "${phase.name}" threw`, {
+      runId: ctx.runId, phase: phase.name, error: reason,
+    });
+    return buildPhaseResult({
+      name: phase.name,
+      status: 'failed',
+      summary: `Error: ${reason}`,
     });
   }
 }

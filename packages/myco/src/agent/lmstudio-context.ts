@@ -31,9 +31,10 @@
  *     200 → { models: [{ key, max_context_length, loaded_instances: [{ config: { context_length } }], ... }] }
  */
 
-import type { ProviderConfig } from './types.js';
+import type { ProviderConfig, ReasoningLevel } from './types.js';
 import { DEFAULT_LMSTUDIO_URL } from './provider.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from './context-windows.js';
+import { resolveReasoningModel } from './reasoning-levels.js';
 
 /** Timeout for an LM Studio model load request (ms). */
 const LMSTUDIO_LOAD_TIMEOUT_MS = 60_000;
@@ -155,6 +156,7 @@ export async function ensureLmStudioModelLoaded(
 export interface PhaseProviderOverride {
   provider?: ProviderConfig;
   maxTurns?: number;
+  reasoningLevel?: ReasoningLevel;
 }
 
 /**
@@ -180,6 +182,7 @@ export async function resolveLmStudioContextLoads(
     contextLength: number,
     baseUrl: string,
   ) => Promise<boolean> = ensureLmStudioModelLoaded,
+  taskReasoningLevel?: ReasoningLevel,
 ): Promise<{
   taskProvider: ProviderConfig | undefined;
   phaseOverrides: Record<string, PhaseProviderOverride>;
@@ -191,19 +194,25 @@ export async function resolveLmStudioContextLoads(
   const makeKey = (model: string, baseUrl: string): Key => `${baseUrl}\0${model}`;
   const seen = new Map<Key, { model: string; baseUrl: string; values: Set<number> }>();
 
-  const recordLmStudio = (p: ProviderConfig | undefined): void => {
-    if (p?.type !== 'lmstudio' || !p.model) return;
+  const recordLmStudio = (p: ProviderConfig | undefined, level: ReasoningLevel | undefined): void => {
+    if (p?.type !== 'lmstudio') return;
+    // Resolve the actual model that will be used at run time, not the
+    // static provider.model field. With reasoning_map configured, the
+    // run uses reasoningMap[level], NOT provider.model — pre-loading
+    // provider.model wastes a load on a model the run never invokes.
+    const model = resolveReasoningModel(level, p, p.model ?? '');
+    if (!model) return;
     const ctx = p.contextLength ?? DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS;
     const baseUrl = p.baseUrl ?? DEFAULT_LMSTUDIO_URL;
-    const key = makeKey(p.model, baseUrl);
-    const entry = seen.get(key) ?? { model: p.model, baseUrl, values: new Set<number>() };
+    const key = makeKey(model, baseUrl);
+    const entry = seen.get(key) ?? { model, baseUrl, values: new Set<number>() };
     entry.values.add(ctx);
     seen.set(key, entry);
   };
 
-  recordLmStudio(taskProvider);
+  recordLmStudio(taskProvider, taskReasoningLevel);
   for (const override of Object.values(phaseOverrides)) {
-    recordLmStudio(override.provider);
+    recordLmStudio(override.provider, override.reasoningLevel ?? taskReasoningLevel);
   }
 
   if (seen.size === 0) {
@@ -236,26 +245,33 @@ export async function resolveLmStudioContextLoads(
   );
 
   // Pass 4: rewrite providers so downstream code sees the reconciled
-  // context length. Crucial difference from Ollama: model name is unchanged.
-  const rewriteProvider = (p: ProviderConfig | undefined): ProviderConfig | undefined => {
+  // context length. Looks up by the reasoning-resolved model, mirroring
+  // Pass 1's keying.
+  const rewriteProvider = (
+    p: ProviderConfig | undefined,
+    level: ReasoningLevel | undefined,
+  ): ProviderConfig | undefined => {
     if (!p) return p;
-    if (p.type !== 'lmstudio' || !p.model) return p;
+    if (p.type !== 'lmstudio') return p;
+    const model = resolveReasoningModel(level, p, p.model ?? '');
+    if (!model) return p;
     const baseUrl = p.baseUrl ?? DEFAULT_LMSTUDIO_URL;
-    const ctx = resolvedContext.get(makeKey(p.model, baseUrl));
+    const ctx = resolvedContext.get(makeKey(model, baseUrl));
     if (ctx === undefined) return p;
     return { ...p, contextLength: ctx };
   };
 
   const rewrittenPhaseOverrides: Record<string, PhaseProviderOverride> = {};
   for (const [name, override] of Object.entries(phaseOverrides)) {
+    const level = override.reasoningLevel ?? taskReasoningLevel;
     rewrittenPhaseOverrides[name] = {
       ...override,
-      ...(override.provider ? { provider: rewriteProvider(override.provider) } : {}),
+      ...(override.provider ? { provider: rewriteProvider(override.provider, level) } : {}),
     };
   }
 
   return {
-    taskProvider: rewriteProvider(taskProvider),
+    taskProvider: rewriteProvider(taskProvider, taskReasoningLevel),
     phaseOverrides: rewrittenPhaseOverrides,
     conflicts,
   };

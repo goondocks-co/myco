@@ -7,6 +7,16 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { CanopyDeltaScanRunner } from './canopy-delta-scan.js';
 import { CanopyBackgroundScan } from './canopy-background-scan.js';
 
+/**
+ * Threshold above which a delta-scan's `added` count counts as a "mass
+ * re-add" and triggers an imperative kick of canopy-describe. Tuned to
+ * be high enough that a normal session of edits doesn't trigger but low
+ * enough that a recovery from a project_root divergence (or a fresh
+ * clone) does. The natural baseline of mechanical churn from one
+ * working session adds ~1–5 rows; ten is comfortably above that.
+ */
+const DELTA_SCAN_MASS_ADD_KICK_THRESHOLD = 10;
+
 export interface CanopyJobContext {
   db: Database;
   logger: DaemonLogger;
@@ -15,7 +25,17 @@ export interface CanopyJobContext {
   /** Stable identifier for the canopy project_id column. */
   projectId: string;
   liveConfig: { current: MycoConfig };
+  /**
+   * Optional callback invoked after a scan that added more than
+   * DELTA_SCAN_MASS_ADD_KICK_THRESHOLD new rows. Used to imperatively
+   * kick canopy-describe so newly-NULL descriptions start draining
+   * immediately instead of waiting for the next scheduled tick.
+   * Implementations must be cheap and synchronous-safe.
+   */
+  onCanopyMassAdd?: () => void;
 }
+
+export { DELTA_SCAN_MASS_ADD_KICK_THRESHOLD };
 
 /**
  * One-shot full project scan. Used for initial populate on first daemon boot
@@ -88,6 +108,9 @@ export async function runCanopyScan(ctx: CanopyJobContext): Promise<void> {
     ctx.logger.info(LOG_KINDS.CANOPY_SCAN, 'Canopy full scan complete', {
       ...result,
     });
+    if (result.added > DELTA_SCAN_MASS_ADD_KICK_THRESHOLD) {
+      ctx.onCanopyMassAdd?.();
+    }
   } catch (err) {
     ctx.logger.error(LOG_KINDS.CANOPY_ERROR, 'Canopy full scan failed', {
       error: (err as Error).message,

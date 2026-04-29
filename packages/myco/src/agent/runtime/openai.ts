@@ -7,7 +7,16 @@ import {
   type AgentInputItem,
   type Session,
 } from '@openai/agents';
-import type { AgentRuntime, RuntimeCapability, RuntimeExecuteInput, RuntimeExecuteResult } from './types.js';
+import {
+  RuntimeExecutionError,
+  type AgentRuntime,
+  type RuntimeCapability,
+  type RuntimeExecuteInput,
+  type RuntimeExecuteResult,
+  type RuntimeScope,
+  type RuntimeScopeRunInput,
+  type RuntimeScopeSetup,
+} from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
@@ -279,11 +288,22 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
           provider: preparedExecution.provider,
         }),
       });
-      const result = await runner.run(agent, input.prompt, {
-        maxTurns: input.maxTurns,
-        session,
-        ...(input.abortController ? { signal: input.abortController.signal } : {}),
-      });
+      let result;
+      try {
+        result = await runner.run(agent, input.prompt, {
+          maxTurns: input.maxTurns,
+          session,
+          ...(input.abortController ? { signal: input.abortController.signal } : {}),
+        });
+      } catch (err) {
+        const partialRaw = extractPartialRawResponses(err);
+        const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+        throw new RuntimeExecutionError(
+          err instanceof Error ? err.message : String(err),
+          { usage, sessionRef, sessionData: persistedItems },
+          { cause: err instanceof Error ? err : undefined },
+        );
+      }
       const usage = toOpenAIUsage(result.rawResponses);
       usage.providerData = {
         lastResponseId: result.lastResponseId,
@@ -305,4 +325,87 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
       await mcpServer.close();
     }
   }
+
+  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+    const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
+    const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
+    await mcpServer.connect();
+
+    const agent = new Agent({
+      name: 'myco-agent',
+      instructions: setup.systemPrompt ?? 'You are the Myco agent runtime.',
+      model: preparedExecution.model,
+      mcpServers: [mcpServer],
+    });
+    const runner = new Runner({
+      modelProvider: createProvider({
+        provider: preparedExecution.provider,
+      } as RuntimeExecuteInput),
+    });
+
+    let closed = false;
+
+    return {
+      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
+        if (closed) throw new Error('OpenAIAgentsRuntime: scope.run() called after close()');
+        const sessionRef = crypto.randomUUID();
+        let persistedItems: AgentInputItem[] = [];
+        const session = new PersistedSession(sessionRef, persistedItems, (items) => {
+          persistedItems = [...items];
+        });
+        let result;
+        try {
+          result = await runner.run(agent, input.prompt, {
+            maxTurns: input.maxTurns,
+            session,
+            ...(input.abortController ? { signal: input.abortController.signal } : {}),
+          });
+        } catch (err) {
+          const partialRaw = extractPartialRawResponses(err);
+          const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+          throw new RuntimeExecutionError(
+            err instanceof Error ? err.message : String(err),
+            { usage, sessionRef, sessionData: persistedItems },
+            { cause: err instanceof Error ? err : undefined },
+          );
+        }
+        const usage = toOpenAIUsage(result.rawResponses);
+        usage.providerData = { lastResponseId: result.lastResponseId };
+        return {
+          finalText: typeof result.finalOutput === 'string'
+            ? result.finalOutput
+            : JSON.stringify(result.finalOutput ?? ''),
+          turnsUsed: result.rawResponses.length,
+          usage,
+          sessionRef,
+          sessionData: persistedItems,
+          rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
+        };
+      },
+      async close(): Promise<void> {
+        if (closed) return;
+        closed = true;
+        await mcpServer.close();
+      },
+    };
+  }
+}
+
+/**
+ * Try to pull `rawResponses` (the accumulated LLM round-trips) off a
+ * thrown SDK error so the caller still gets usage telemetry on failure.
+ * The shape varies across SDK versions and error types — we check the
+ * common ones and return undefined if none match.
+ */
+function extractPartialRawResponses(err: unknown): Array<Parameters<typeof toOpenAIUsage>[0][number]> | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const candidates: unknown[] = [
+    (err as { rawResponses?: unknown }).rawResponses,
+    (err as { state?: { rawResponses?: unknown } }).state?.rawResponses,
+    (err as { result?: { rawResponses?: unknown } }).result?.rawResponses,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c as Array<Parameters<typeof toOpenAIUsage>[0][number]>;
+  }
+  return undefined;
 }

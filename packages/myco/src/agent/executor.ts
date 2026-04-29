@@ -1,7 +1,7 @@
 /** Agent executor — orchestrates a single agent run end to end. */
 
 import crypto from 'node:crypto';
-import { resolve } from 'node:path';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   epochSeconds,
   estimateTokens,
@@ -168,6 +168,7 @@ export async function runAgent(
     definitionsDir,
     taskProviderOverride: resolvedTaskProvider,
     phaseProviderOverrides: resolvedPhaseOverrides,
+    taskParams: resolvedTaskParams,
   } = resolveRunConfig(agentId, requestedTask, vaultDir);
 
   // Build an effective config for this run by layering per-run overrides
@@ -179,9 +180,13 @@ export async function runAgent(
   const overrideRuntime = options?.executionOverrides?.runtime;
   const overrideReasoning = options?.executionOverrides?.reasoningLevel;
   const overrideModel = options?.executionOverrides?.model;
+  const taskParams = options?.taskParams
+    ? { ...(resolvedTaskParams ?? {}), ...options.taskParams }
+    : resolvedTaskParams;
   const config: EffectiveConfig = {
     ...resolvedConfig,
     dryRun: options?.dryRun ?? false,
+    ...(taskParams ? { taskParams } : {}),
     ...(overrideRuntime ? { runtime: overrideRuntime } : {}),
     ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
     ...(overrideModel ? { model: overrideModel } : {}),
@@ -341,6 +346,8 @@ export async function runAgent(
     const resolved = await resolveLmStudioContextLoads(
       taskProviderOverride,
       phaseProviderOverrides,
+      undefined,
+      config.execution?.reasoningLevel ?? config.reasoningLevel,
     );
     taskProviderOverride = resolved.taskProvider;
     phaseProviderOverrides = resolved.phaseOverrides;
@@ -395,7 +402,7 @@ export async function runAgent(
       }));
     };
 
-    const projectRoot = resolve(vaultDir, '..');
+    const projectRoot = resolveProjectRoot(vaultDir);
 
     // Assemble the PhaseLoopContext once. `checkpointState` is mutable by
     // reference — the loop updates it in place and we read back its final
