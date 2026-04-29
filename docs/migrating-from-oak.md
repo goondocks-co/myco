@@ -41,7 +41,17 @@ Imported sessions, prompts, and activities are flagged as **unprocessed** so Myc
 
 ## Running the import
 
-> **Status:** the migration script ships with a future Myco release. Until then, see the [Myco repo](https://github.com/goondocks-co/myco) for status.
+The migration script lives in the Myco repo. You don't need to clone it — fetch it directly with `curl` and run it with [Bun](https://bun.sh) (which Myco uses internally and is already on your machine after `myco init`).
+
+### Step 1 — Download the script
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/goondocks-co/myco/main/scripts/migrate-from-oak-to-myco.ts \
+  -o /tmp/migrate-from-oak-to-myco.ts
+```
+
+### Step 2 — Run it
 
 The script picks its source automatically:
 
@@ -50,23 +60,25 @@ The script picks its source automatically:
 3. You can override either with `--source <path>` (live SQLite DB) or `--backup <path>` (SQL file).
 
 ```bash
-# Auto-detect source
-bun scripts/migrate-from-oak-to-myco.ts --target /path/to/<project>/.myco/myco.db
+# Auto-detect source — run from inside your project
+bun /tmp/migrate-from-oak-to-myco.ts --target ./.myco/myco.db
 
 # Explicit live database
-bun scripts/migrate-from-oak-to-myco.ts \
-  --source /path/to/<project>/.oak/ci/activities.db \
-  --target /path/to/<project>/.myco/myco.db
+bun /tmp/migrate-from-oak-to-myco.ts \
+  --source ./.oak/ci/activities.db \
+  --target ./.myco/myco.db
 
 # Explicit backup file
-bun scripts/migrate-from-oak-to-myco.ts \
-  --backup /path/to/<project>/oak/history/<machine-id>.sql \
-  --target /path/to/<project>/.myco/myco.db
+bun /tmp/migrate-from-oak-to-myco.ts \
+  --backup ./oak/history/<machine-id>.sql \
+  --target ./.myco/myco.db
 ```
+
+A `--dry-run` flag is available to preview row counts without writing.
 
 The import is **idempotent** — running it twice on the same source produces zero new rows the second time. Safe to re-run if interrupted.
 
-A `--dry-run` flag is available to preview row counts without writing.
+When you're done, delete `/tmp/migrate-from-oak-to-myco.ts`.
 
 ---
 
