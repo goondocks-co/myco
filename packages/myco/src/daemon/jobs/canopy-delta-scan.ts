@@ -40,7 +40,7 @@ export class CanopyDeltaScanRunner {
 
   private async execute(): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const exclude = this.ctx.liveConfig.current.canopy.exclude;
+    const exclude = this.ctx.liveConfig.current.cortex.canopy.exclude;
     try {
       const result = deltaScan({
         db: this.ctx.db,

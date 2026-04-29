@@ -52,14 +52,14 @@ function seed(projectId: string, entries: SeedEntry[]): void {
   }
 }
 
-function makeConfig(overrides: Partial<MycoConfig['cortex']['canopy']['injection']> = {}): MycoConfig {
+function makeConfig(overrides: Partial<{ inject_on_pre_tool_use: boolean; min_file_bytes: number }> = {}): MycoConfig {
   const cfg = MycoConfigSchema.parse({ version: 3 });
-  cfg.cortex.canopy.injection = {
-    enabled: true,
-    size_threshold: 800,
-    ...cfg.cortex.canopy.injection,
-    ...overrides,
-  };
+  if ('inject_on_pre_tool_use' in overrides) {
+    cfg.cortex.canopy.inject_on_pre_tool_use = overrides.inject_on_pre_tool_use!;
+  }
+  if ('min_file_bytes' in overrides) {
+    cfg.cortex.canopy.min_file_bytes = overrides.min_file_bytes!;
+  }
   return cfg;
 }
 
@@ -121,8 +121,8 @@ describe('POST /canopy/inject — handler', () => {
     expect(res.body).toMatchObject({ inject: false, reason: 'capability_off' });
   });
 
-  it('returns disabled when cortex.canopy.injection.enabled is false', async () => {
-    const cfg = makeConfig({ enabled: false });
+  it('returns disabled when cortex.canopy.inject_on_pre_tool_use is false', async () => {
+    const cfg = makeConfig({ inject_on_pre_tool_use: false });
     const handler = createCanopyInjectHandler({
       liveConfig: { current: cfg },
       vaultDir: path.join(tmpVault, '.myco'),

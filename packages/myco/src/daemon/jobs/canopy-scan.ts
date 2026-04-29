@@ -96,7 +96,7 @@ export async function runInitialCanopyPopulate(ctx: CanopyJobContext): Promise<v
 }
 
 export async function runCanopyScan(ctx: CanopyJobContext): Promise<void> {
-  const exclude = ctx.liveConfig.current.canopy.exclude;
+  const exclude = ctx.liveConfig.current.cortex.canopy.exclude;
   try {
     const result = scanProject({
       db: ctx.db,

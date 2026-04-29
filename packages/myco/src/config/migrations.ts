@@ -18,6 +18,16 @@ export interface Migration {
   version: number;
   name: string;
   migrate: (doc: Record<string, unknown>, vaultDir: string) => void;
+  /**
+   * Whether this migration applies to `local.yaml` (Partial<MycoConfig>) too.
+   * Defaults to `true` for renames and moves — those should run on both
+   * project and local configs so user overrides keep working after a path
+   * rename. Set to `false` for migrations that *seed defaults* (auto-create
+   * parent keys to populate values), since local.yaml is meant to stay
+   * sparse and only carry overrides — silently expanding it would force
+   * the seeded values to win the merge.
+   */
+  appliesToLocal?: boolean;
 }
 
 /** Regex matching both quoted and unquoted YAML: type: memory, type: "memory", type: 'memory' */
@@ -163,8 +173,11 @@ export const MIGRATIONS: Migration[] = [
       if (Object.keys(tasks).length > 0) {
         agent.tasks = tasks;
       }
-      doc.agent = agent;
-      doc.skills = skills;
+      // Only re-attach `agent`/`skills` when they have content. Sparse
+      // local.yaml docs would otherwise gain empty `agent: {}` / `skills: {}`
+      // blocks just from running this migration with nothing to do.
+      if (Object.keys(agent).length > 0) doc.agent = agent;
+      if (Object.keys(skills).length > 0) doc.skills = skills;
     },
   },
   {
@@ -209,6 +222,11 @@ export const MIGRATIONS: Migration[] = [
   {
     version: 5,
     name: 'seed-settings-notification-domain-default',
+    // Seeder: auto-creates notifications.domains.settings on bare configs.
+    // Skipped for local.yaml — that file is meant to stay sparse, and
+    // injecting a seeded settings block here would override the project
+    // config's value via the merge layer.
+    appliesToLocal: false,
     migrate(doc: Record<string, unknown>, _vaultDir: string): void {
       const notifications = (doc.notifications ??= {}) as Record<string, unknown>;
       const domains = (notifications.domains ??= {}) as Record<string, unknown>;
@@ -284,35 +302,197 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 8,
+    name: 'unify-cortex-config-shape',
+    /**
+     * Pre-v8, Cortex's settings were scattered across:
+     *   - `context.cortex_enabled` / `context.session_start_digest_enabled`
+     *     / `context.digest_tier` / `context.prompt_search` / `context.prompt_max_spores`
+     *     (root `context:` block, mixed-purpose: injection toggles + retrieval defaults)
+     *   - `canopy.refresh` / `canopy.exclude` (root `canopy:` data plane)
+     *   - `cortex.canopy.injection.enabled` / `cortex.canopy.injection.size_threshold`
+     *
+     * v8 unifies everything under `cortex.*` organized by feature
+     * (instructions/digest/spores/canopy) with `inject_on_<event>`
+     * toggles standardized on lifecycle events (session_start,
+     * prompt_submit, pre_tool_use). The root `context:` and root
+     * `canopy:` blocks are dropped.
+     *
+     * Tolerant of sparse docs (runs on local.yaml too) — every read
+     * checks for the parent before assuming it exists, and we never
+     * auto-seed empty parents.
+     */
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      const ctx = doc.context as Record<string, unknown> | undefined;
+      const rootCanopy = doc.canopy as Record<string, unknown> | undefined;
+      const cortex = (doc.cortex ??= {}) as Record<string, unknown>;
+
+      // --- context.* → cortex.*  ---
+      if (ctx) {
+        if ('cortex_enabled' in ctx) {
+          // Today this single flag gates session-start instruction
+          // injection. v8 splits master enable from the per-event
+          // toggle; since there's no UX to disable Cortex entirely
+          // (and never has been), map the legacy flag exclusively to
+          // instructions.inject_on_session_start. cortex.enabled
+          // stays at its Zod default of true.
+          const instructions = (cortex.instructions ??= {}) as Record<string, unknown>;
+          instructions.inject_on_session_start = ctx.cortex_enabled;
+          delete ctx.cortex_enabled;
+        }
+        if ('digest_tier' in ctx || 'session_start_digest_enabled' in ctx) {
+          const digest = (cortex.digest ??= {}) as Record<string, unknown>;
+          if ('digest_tier' in ctx) {
+            digest.tier = ctx.digest_tier;
+            delete ctx.digest_tier;
+          }
+          if ('session_start_digest_enabled' in ctx) {
+            digest.inject_on_session_start = ctx.session_start_digest_enabled;
+            delete ctx.session_start_digest_enabled;
+          }
+        }
+        if ('prompt_search' in ctx || 'prompt_max_spores' in ctx) {
+          const spores = (cortex.spores ??= {}) as Record<string, unknown>;
+          if ('prompt_search' in ctx) {
+            spores.inject_on_prompt_submit = ctx.prompt_search;
+            delete ctx.prompt_search;
+          }
+          if ('prompt_max_spores' in ctx) {
+            spores.max_per_prompt = ctx.prompt_max_spores;
+            delete ctx.prompt_max_spores;
+          }
+        }
+        // operating_brief_enabled was the legacy alias the old
+        // ContextSchema preprocessor handled. Apply the same rename
+        // here so any forgotten config still migrates.
+        if ('operating_brief_enabled' in ctx) {
+          const instructions = (cortex.instructions ??= {}) as Record<string, unknown>;
+          if (!('inject_on_session_start' in instructions)) {
+            instructions.inject_on_session_start = ctx.operating_brief_enabled;
+          }
+          delete ctx.operating_brief_enabled;
+        }
+        if (Object.keys(ctx).length === 0) {
+          delete doc.context;
+        }
+      }
+
+      // --- root canopy.* → cortex.canopy.* (data plane) ---
+      if (rootCanopy) {
+        const cortexCanopy = (cortex.canopy ??= {}) as Record<string, unknown>;
+        if ('refresh' in rootCanopy && !('refresh' in cortexCanopy)) {
+          cortexCanopy.refresh = rootCanopy.refresh;
+        }
+        if ('exclude' in rootCanopy && !('exclude' in cortexCanopy)) {
+          cortexCanopy.exclude = rootCanopy.exclude;
+        }
+        delete doc.canopy;
+      }
+
+      // --- cortex.canopy.injection.* → flat fields on cortex.canopy ---
+      const cortexCanopy = cortex.canopy as Record<string, unknown> | undefined;
+      const injection = cortexCanopy?.injection as Record<string, unknown> | undefined;
+      if (cortexCanopy && injection) {
+        if ('enabled' in injection && !('inject_on_pre_tool_use' in cortexCanopy)) {
+          cortexCanopy.inject_on_pre_tool_use = injection.enabled;
+        }
+        if ('size_threshold' in injection && !('min_file_bytes' in cortexCanopy)) {
+          cortexCanopy.min_file_bytes = injection.size_threshold;
+        }
+        delete cortexCanopy.injection;
+      }
+
+      // Tidy up: don't leave an empty `cortex: {}` if nothing migrated.
+      if (Object.keys(cortex).length === 0) {
+        delete doc.cortex;
+      }
+    },
+  },
 ];
 
 /** Current migration version — the highest version in MIGRATIONS. */
 export const CURRENT_MIGRATION_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
 
 /**
+ * Identifies which config doc is being migrated. `project` is the canonical
+ * `myco.yaml`; `local` is the sparse override file `local.yaml`. Used to
+ * skip `appliesToLocal: false` migrations (typically default-seeders) when
+ * walking a `local.yaml` doc.
+ */
+export type MigrationTarget = 'project' | 'local';
+
+/**
+ * Cheap structural fingerprint used to detect whether a migration body
+ * actually changed the doc. We compare JSON.stringify output (key order
+ * is stable for object-literal mutation patterns the migrations use), so
+ * a no-op migration on a sparse local.yaml doesn't tick the version
+ * counter and force a write-back of an otherwise-identical file.
+ */
+function fingerprint(doc: Record<string, unknown>): string {
+  return JSON.stringify(doc);
+}
+
+/**
  * Run all pending migrations on the raw config doc.
- * Returns true if any migrations ran (caller should reindex).
+ * Returns true if any migrations actually mutated the doc.
+ *
+ * `target` defaults to `'project'` to preserve the legacy single-file
+ * call signature. Pass `'local'` from `loadLocalConfig` so seed-style
+ * migrations are skipped — local.yaml is meant to stay sparse, and
+ * silently injecting seeded values would override the project config
+ * through the merge layer.
+ *
+ * For project myco.yaml: every pending migration is run; version
+ * counter advances even on no-ops because the canonical config is
+ * always brought up to the current shape.
+ *
+ * For local.yaml: a migration that runs but doesn't mutate the doc
+ * does NOT advance the version counter. This keeps legacy sparse
+ * local.yaml files (predating the migration system) from gaining a
+ * `config_version` stamp on the first load that triggers a no-op
+ * write-back.
  */
 export function runMigrations(
   doc: Record<string, unknown>,
   vaultDir: string,
   log?: (message: string) => void,
+  target: MigrationTarget = 'project',
 ): boolean {
   const currentVersion = (doc.config_version as number) ?? 0;
   let ran = false;
 
   for (const migration of MIGRATIONS) {
     if (migration.version <= currentVersion) continue;
+    if (target === 'local' && migration.appliesToLocal === false) {
+      // Skip seed-style migrations on local.yaml. Don't stamp
+      // config_version either — that would force a no-op write-back of
+      // a pre-existing sparse local.yaml that the user never asked us
+      // to mutate.
+      continue;
+    }
 
-    migration.migrate(doc, vaultDir);
-    doc.config_version = migration.version;
-    ran = true;
+    if (target === 'local') {
+      // No-op detection: only stamp + flip `ran` when the migration
+      // body actually mutated the doc.
+      const before = fingerprint(doc);
+      migration.migrate(doc, vaultDir);
+      if (fingerprint(doc) !== before) {
+        doc.config_version = migration.version;
+        ran = true;
+      }
+    } else {
+      migration.migrate(doc, vaultDir);
+      doc.config_version = migration.version;
+      ran = true;
+    }
   }
 
   if (ran) {
     const from = currentVersion;
-    const to = (doc.config_version as number) ?? 0;
-    log?.(`Migrated config from v${from} to v${to}`);
+    const to = (doc.config_version as number) ?? currentVersion;
+    const label = target === 'local' ? 'local config' : 'config';
+    log?.(`Migrated ${label} from v${from} to v${to}`);
   }
 
   return ran;

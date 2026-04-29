@@ -144,7 +144,7 @@ describe('CanopyBackgroundScan', () => {
     const fakeDelta = { run: async () => { runs++; } };
     const cfg = { current: MycoConfigSchema.parse({
       version: 3,
-      canopy: { refresh: { background_enabled: false } },
+      cortex: { canopy: { refresh: { background_enabled: false } } },
     }) };
     const { logger } = buildLogger();
     const bg = new CanopyBackgroundScan({ liveConfig: cfg, delta: fakeDelta as unknown as CanopyDeltaScanRunner, logger });

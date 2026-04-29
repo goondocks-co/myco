@@ -14,7 +14,7 @@ mock.module('@tanstack/react-query', () => ({
     data: queryKey[1] === 'merged'
       ? {
           notifications: { enabled: true, system_notifications: false, default_mode: 'summary', domains: {} },
-          context: { prompt_search: true },
+          cortex: { spores: { inject_on_prompt_submit: true } },
         }
       : {},
     isLoading: false,
@@ -44,11 +44,11 @@ describe('useScopedConfig', () => {
     const { result } = renderHook(() => useScopedConfig());
 
     await act(async () => {
-      await result.current.setField('context.prompt_search', false, 'project');
+      await result.current.setField('cortex.spores.inject_on_prompt_submit', false, 'project');
     });
 
     expect(writeScopedConfigMock).toHaveBeenCalledWith('project', {
-      context: { prompt_search: false },
+      cortex: { spores: { inject_on_prompt_submit: false } },
     });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ['notifications'] });
   });

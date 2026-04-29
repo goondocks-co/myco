@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
+import { CORTEX_PATHS } from '@myco/config/paths';
 import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
@@ -370,7 +371,7 @@ function InstructionsTab() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
-            path="context.cortex_enabled"
+            path={CORTEX_PATHS.instructions.injectOnSessionStart}
             label="Inject session-start instructions"
             defaultScope="project"
           >
@@ -380,7 +381,7 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
-            path="context.session_start_digest_enabled"
+            path={CORTEX_PATHS.digest.injectOnSessionStart}
             label="Inject preferred digest"
             defaultScope="project"
           >
@@ -392,7 +393,7 @@ function InstructionsTab() {
 
         <div className="grid gap-4 lg:grid-cols-2">
           <ScopedField
-            path="context.prompt_search"
+            path={CORTEX_PATHS.spores.injectOnPromptSubmit}
             label="Prompt-time spore retrieval"
             defaultScope="project"
           >
@@ -402,7 +403,7 @@ function InstructionsTab() {
           </ScopedField>
 
           <ScopedField
-            path="context.prompt_max_spores"
+            path={CORTEX_PATHS.spores.maxPerPrompt}
             label="Max spores per prompt"
             defaultScope="project"
           >
@@ -886,7 +887,7 @@ function DigestTab() {
         </div>
 
         <ScopedField
-          path="context.digest_tier"
+          path={CORTEX_PATHS.digest.tier}
           label="Preferred digest tier"
           defaultScope="project"
         >
@@ -913,7 +914,7 @@ function DigestTab() {
 }
 
 /**
- * Chip-list editor for `canopy.exclude.patterns`. Add via Enter (or the
+ * Chip-list editor for `cortex.canopy.exclude.patterns`. Add via Enter (or the
  * "Add" button); remove via the × on each chip. Each commit fires
  * `onChange` with the new list, which the surrounding ScopedField
  * persists through the scoped patch endpoint.
@@ -1061,8 +1062,8 @@ function CanopyTab() {
           </p>
         </div>
 
-        <ScopedField<'canopy.exclude.default_patterns', string[]>
-          path="canopy.exclude.default_patterns"
+        <ScopedField<typeof CORTEX_PATHS.canopy.exclude.defaultPatterns, string[]>
+          path={CORTEX_PATHS.canopy.exclude.defaultPatterns}
           label="Myco baseline (read-only)"
           defaultScope="project"
         >
@@ -1089,8 +1090,8 @@ function CanopyTab() {
           }}
         </ScopedField>
 
-        <ScopedField<'canopy.exclude.patterns', string[]>
-          path="canopy.exclude.patterns"
+        <ScopedField<typeof CORTEX_PATHS.canopy.exclude.patterns, string[]>
+          path={CORTEX_PATHS.canopy.exclude.patterns}
           label="Your patterns"
           defaultScope="project"
         >
@@ -1115,8 +1116,8 @@ function CanopyTab() {
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'canopy.refresh.background_enabled', boolean>
-            path="canopy.refresh.background_enabled"
+          <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundEnabled, boolean>
+            path={CORTEX_PATHS.canopy.refresh.backgroundEnabled}
             label="Periodic background scan"
             defaultScope="project"
           >
@@ -1125,8 +1126,8 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'canopy.refresh.background_period_minutes', number>
-            path="canopy.refresh.background_period_minutes"
+          <ScopedField<typeof CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes, number>
+            path={CORTEX_PATHS.canopy.refresh.backgroundPeriodMinutes}
             label="Period (minutes)"
             defaultScope="project"
           >
@@ -1150,8 +1151,8 @@ function CanopyTab() {
         <SectionHeader>Injection</SectionHeader>
 
         <div className="grid gap-4 lg:grid-cols-2">
-          <ScopedField<'cortex.canopy.injection.enabled', boolean>
-            path="cortex.canopy.injection.enabled"
+          <ScopedField<typeof CORTEX_PATHS.canopy.injectOnPreToolUse, boolean>
+            path={CORTEX_PATHS.canopy.injectOnPreToolUse}
             label="Inject canopy on Read"
             defaultScope="project"
           >
@@ -1160,8 +1161,8 @@ function CanopyTab() {
             )}
           </ScopedField>
 
-          <ScopedField<'cortex.canopy.injection.size_threshold', number>
-            path="cortex.canopy.injection.size_threshold"
+          <ScopedField<typeof CORTEX_PATHS.canopy.minFileBytes, number>
+            path={CORTEX_PATHS.canopy.minFileBytes}
             label="Minimum file size (bytes)"
             defaultScope="project"
           >

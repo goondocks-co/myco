@@ -88,32 +88,8 @@ const TaskProviderOverrideSchema = z.object({
   params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
-/**
- * Raw context shape inside zod preprocess — accepts the legacy
- * `operating_brief_enabled` key and rewrites it to `cortex_enabled`.
- * Loader emits a deprecation warning once per load (see `loader.ts`).
- */
-const ContextSchema = z.preprocess((raw) => {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const input = raw as Record<string, unknown>;
-    if ('operating_brief_enabled' in input && !('cortex_enabled' in input)) {
-      const { operating_brief_enabled, ...rest } = input;
-      return { ...rest, cortex_enabled: operating_brief_enabled };
-    }
-  }
-  return raw;
-}, z.object({
-  /** Preferred digest tier when a user or agent explicitly requests Myco context. */
-  digest_tier: z.number().int().default(5000),
-  /** Append the preferred digest extract at session start after Cortex instructions. */
-  session_start_digest_enabled: z.boolean().default(false),
-  /** Master switch for Cortex session-start instruction injection. */
-  cortex_enabled: z.boolean().default(true),
-  /** Enable semantic spore search on each user prompt. */
-  prompt_search: z.boolean().default(true),
-  /** Max spores to inject per prompt (0-10). */
-  prompt_max_spores: z.number().int().min(0).max(10).default(3),
-}));
+// (Legacy `context.*` and root `canopy.*` blocks unified into `cortex.*`
+// in config_version 8. See migrations.ts:migrateV7ToV8.)
 
 const AgentSchema = z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */
@@ -191,9 +167,10 @@ const SymbiontEntrySchema = z.object({
 });
 
 /**
- * Canopy — the project-local data plane for code intelligence.
- * Controls collection (scanning, exclusion, refresh cadence). Separate from
- * what Cortex does with the collected data (see CortexSchema below).
+ * Canopy data plane — collection knobs (scanning cadence + exclusion).
+ * Lives under `cortex.canopy:` alongside `cortex.canopy.inject_on_pre_tool_use`
+ * because Canopy is a Cortex feature; the data plane and the consumer
+ * toggle being siblings keeps everything Canopy-related in one block.
  */
 const CanopyRefreshSchema = z.object({
   /** Whether the PowerManager-scheduled background rescan runs at all. */
@@ -249,28 +226,54 @@ const CanopyExcludeSchema = z.object({
   patterns: z.array(z.string()).default([]),
 });
 
-const CanopySchema = z.object({
-  refresh: CanopyRefreshSchema.default(() => CanopyRefreshSchema.parse({})),
-  exclude: CanopyExcludeSchema.default(() => CanopyExcludeSchema.parse({})),
+/**
+ * Cortex — Myco's session-aware injection surface. Organized by feature
+ * to mirror the Settings UI: instructions, digest, spores, canopy. Each
+ * feature exposes one or more `inject_on_<lifecycle_event>` toggles
+ * naming the hook point at which Cortex acts (session_start,
+ * prompt_submit, pre_tool_use). `inject_on_*` is always a flat boolean;
+ * tuning lives at the same level beside it (e.g.
+ * `spores.max_per_prompt`, `canopy.min_file_bytes`).
+ */
+const CortexInstructionsSchema = z.object({
+  /** Inject Cortex-built session-start instructions at SessionStart. */
+  inject_on_session_start: z.boolean().default(true),
 });
 
-/**
- * Cortex controls — what Cortex does with collected data.
- * Nested because the scoped-settings surface groups consumer-side
- * configuration separately from the data plane.
- */
-const CortexCanopyInjectionSchema = z.object({
-  /** Master switch for PreToolUse Canopy injection on Read. */
-  enabled: z.boolean().default(true),
-  /** Minimum size_bytes before injection is offered. */
-  size_threshold: z.number().int().default(800),
+const CortexDigestSchema = z.object({
+  /**
+   * Default digest tier — used both at session-start injection time AND
+   * as the default tier returned by `myco_context()` retrievals.
+   */
+  tier: z.number().int().default(5000),
+  /** Append the preferred digest extract at session start. */
+  inject_on_session_start: z.boolean().default(false),
+});
+
+const CortexSporesSchema = z.object({
+  /** Run semantic spore search on each user prompt and inject hits. */
+  inject_on_prompt_submit: z.boolean().default(true),
+  /** Max spores to inject per prompt (0-10). */
+  max_per_prompt: z.number().int().min(0).max(10).default(3),
 });
 
 const CortexCanopySchema = z.object({
-  injection: CortexCanopyInjectionSchema.default(() => CortexCanopyInjectionSchema.parse({})),
+  /** When/how the Canopy index is rebuilt (data plane). */
+  refresh: CanopyRefreshSchema.default(() => CanopyRefreshSchema.parse({})),
+  /** What the scanner skips (data plane). */
+  exclude: CanopyExcludeSchema.default(() => CanopyExcludeSchema.parse({})),
+  /** Inject Canopy entry anatomy on Read at PreToolUse (consumer plane). */
+  inject_on_pre_tool_use: z.boolean().default(true),
+  /** Minimum file size in bytes before injection is offered. */
+  min_file_bytes: z.number().int().default(800),
 });
 
 const CortexSchema = z.object({
+  /** Master kill for the entire Cortex layer. */
+  enabled: z.boolean().default(true),
+  instructions: CortexInstructionsSchema.default(() => CortexInstructionsSchema.parse({})),
+  digest: CortexDigestSchema.default(() => CortexDigestSchema.parse({})),
+  spores: CortexSporesSchema.default(() => CortexSporesSchema.parse({})),
   canopy: CortexCanopySchema.default(() => CortexCanopySchema.parse({})),
 });
 
@@ -314,14 +317,12 @@ export const MycoConfigSchema = z.preprocess(
     hub: HubSchema.default(() => HubSchema.parse({})),
     capture: CaptureSchema.default(() => CaptureSchema.parse({})),
     agent: AgentSchema.default(() => AgentSchema.parse({})),
-    context: ContextSchema.default(() => ContextSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
     update: UpdateSchema.default(() => UpdateSchema.parse({})),
     team: TeamSchema.default(() => TeamSchema.parse({})),
     skills: SkillsSchema.default(() => SkillsSchema.parse({})),
     notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
-    canopy: CanopySchema.default(() => CanopySchema.parse({})),
     cortex: CortexSchema.default(() => CortexSchema.parse({})),
     appearance: AppearanceConfigSchema,
     symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
@@ -333,12 +334,13 @@ export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
-export type ContextConfig = z.infer<typeof ContextSchema>;
+// ContextSchema removed in config_version 8 (unified into CortexSchema).
 export type BackupConfig = z.infer<typeof BackupSchema>;
 export type HubConfig = z.infer<typeof HubSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;
-export type CanopyConfig = z.infer<typeof CanopySchema>;
+// CanopyConfig removed in config_version 8 — Canopy now lives under
+// `cortex.canopy`. Use `MycoConfig['cortex']['canopy']` for the slice.
 export type CortexConfig = z.infer<typeof CortexSchema>;
 export type SymbiontEntry = z.infer<typeof SymbiontEntrySchema>;

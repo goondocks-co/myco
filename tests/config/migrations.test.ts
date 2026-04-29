@@ -219,8 +219,8 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 7', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(7);
+  it('is 8', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(8);
   });
 });
 
@@ -321,14 +321,14 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
 });
 
 describe('runMigrations', () => {
-  it('runs v3 through v6 when config_version is 2', () => {
+  it('runs v3 through v8 when config_version is 2', () => {
     const doc: Record<string, unknown> = {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -343,19 +343,19 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v4 onward when config_version is 3', () => {
+  it('runs v4 onward when config_version is 3 (target v8)', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
 
-  it('runs v5 onward when config_version is 4', () => {
+  it('runs v5 onward when config_version is 4 (target v8)', () => {
     const doc: Record<string, unknown> = {
       config_version: 4,
       notifications: {
@@ -364,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -374,35 +374,35 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v6 and v7 when config_version is 5', () => {
+  it('runs v6 through v8 when config_version is 5', () => {
     const doc: Record<string, unknown> = {
       config_version: 5,
       agent: { tasks: { 'full-intelligence': { model: 'claude-sonnet-4-6' } } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
     expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
   });
 
-  it('runs only v7 when config_version is 6', () => {
+  it('runs v7 and v8 when config_version is 6', () => {
     const doc: Record<string, unknown> = {
       config_version: 6,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 
-  it('skips all migrations when config_version is already 7', () => {
+  it('skips all migrations when config_version is already 8', () => {
     const doc: Record<string, unknown> = {
-      config_version: 7,
+      config_version: 8,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
@@ -413,6 +413,11 @@ describe('runMigrations', () => {
   });
 });
 
+/**
+ * v7 strips baseline duplicates from canopy.exclude.patterns. v8 then
+ * moves the canopy block under cortex.canopy. Tests run the full chain
+ * and assert on the post-v8 location.
+ */
 describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => {
   it('strips entries that exactly match the new Myco baseline', () => {
     const doc: Record<string, unknown> = {
@@ -428,8 +433,9 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
       },
     };
     runMigrations(doc, '/tmp');
-    const patterns = ((doc.canopy as Record<string, unknown>).exclude as Record<string, unknown>).patterns;
-    // Only the user-genuine extras survive.
+    // After v8, canopy.exclude lives under cortex.canopy.exclude.
+    const patterns = (((doc.cortex as Record<string, unknown>).canopy as Record<string, unknown>)
+      .exclude as Record<string, unknown>).patterns;
     expect(patterns).toEqual(['fixtures/large/**', '**/*.snap']);
   });
 
@@ -439,13 +445,124 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
       canopy: { exclude: { patterns: ['fixtures/large/**', '**/*.snap'] } },
     };
     runMigrations(doc, '/tmp');
-    const patterns = ((doc.canopy as Record<string, unknown>).exclude as Record<string, unknown>).patterns;
+    const patterns = (((doc.cortex as Record<string, unknown>).canopy as Record<string, unknown>)
+      .exclude as Record<string, unknown>).patterns;
     expect(patterns).toEqual(['fixtures/large/**', '**/*.snap']);
   });
 
   it('is a no-op when canopy.exclude is missing', () => {
     const doc: Record<string, unknown> = { config_version: 6 };
     expect(() => runMigrations(doc, '/tmp')).not.toThrow();
-    expect(doc.config_version).toBe(7);
+    expect(doc.config_version).toBe(8);
+  });
+});
+
+const v8 = MIGRATIONS.find((m) => m.version === 8)!;
+
+describe('Migration v8: unify-cortex-config-shape', () => {
+  it('moves context.* injection settings under cortex.*', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 7,
+      context: {
+        cortex_enabled: false,
+        digest_tier: 1500,
+        session_start_digest_enabled: true,
+        prompt_search: false,
+        prompt_max_spores: 7,
+      },
+    };
+    v8.migrate(doc, '/tmp');
+    expect(doc.context).toBeUndefined();
+    const cortex = doc.cortex as Record<string, Record<string, unknown>>;
+    expect(cortex.instructions).toEqual({ inject_on_session_start: false });
+    expect(cortex.digest).toEqual({ tier: 1500, inject_on_session_start: true });
+    expect(cortex.spores).toEqual({ inject_on_prompt_submit: false, max_per_prompt: 7 });
+  });
+
+  it('moves root canopy.* (refresh + exclude) under cortex.canopy.*', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 7,
+      canopy: {
+        refresh: { background_enabled: false, background_period_minutes: 15 },
+        exclude: { patterns: ['custom/**'] },
+      },
+    };
+    v8.migrate(doc, '/tmp');
+    expect(doc.canopy).toBeUndefined();
+    const canopy = (doc.cortex as Record<string, Record<string, unknown>>).canopy;
+    expect(canopy.refresh).toEqual({ background_enabled: false, background_period_minutes: 15 });
+    expect((canopy.exclude as Record<string, unknown>).patterns).toEqual(['custom/**']);
+  });
+
+  it('flattens cortex.canopy.injection.* onto cortex.canopy', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 7,
+      cortex: { canopy: { injection: { enabled: false, size_threshold: 1200 } } },
+    };
+    v8.migrate(doc, '/tmp');
+    const canopy = (doc.cortex as Record<string, Record<string, unknown>>).canopy;
+    expect(canopy.injection).toBeUndefined();
+    expect(canopy.inject_on_pre_tool_use).toBe(false);
+    expect(canopy.min_file_bytes).toBe(1200);
+  });
+
+  it('handles a sparse local.yaml-style doc without throwing', () => {
+    // local.yaml might have ONLY a single override under context. The
+    // migration must tolerate every parent being missing.
+    const doc: Record<string, unknown> = {
+      context: { prompt_max_spores: 10 },
+    };
+    expect(() => v8.migrate(doc, '/tmp')).not.toThrow();
+    expect(doc.context).toBeUndefined();
+    const cortex = doc.cortex as Record<string, Record<string, unknown>>;
+    expect(cortex.spores).toEqual({ max_per_prompt: 10 });
+  });
+
+  it('rewrites the legacy operating_brief_enabled key', () => {
+    const doc: Record<string, unknown> = {
+      context: { operating_brief_enabled: false },
+    };
+    v8.migrate(doc, '/tmp');
+    expect(doc.context).toBeUndefined();
+    const cortex = doc.cortex as Record<string, Record<string, unknown>>;
+    expect(cortex.instructions).toEqual({ inject_on_session_start: false });
+  });
+
+  it('is a no-op on a doc that already uses the new shape', () => {
+    const doc: Record<string, unknown> = {
+      cortex: {
+        enabled: true,
+        digest: { tier: 5000 },
+      },
+    };
+    expect(() => v8.migrate(doc, '/tmp')).not.toThrow();
+    const cortex = doc.cortex as Record<string, Record<string, unknown>>;
+    expect((cortex.digest as Record<string, unknown>).tier).toBe(5000);
+  });
+});
+
+describe('runMigrations on local.yaml: appliesToLocal flag', () => {
+  it('skips v5 (notification-default seeder) when target = local without injecting defaults', () => {
+    // Sparse local.yaml with no notifications block. Running the chain
+    // with target='local' must NOT inject the notifications.domains.settings
+    // defaults — that would override project-level config via merge.
+    const doc: Record<string, unknown> = { appearance: { theme: 'sage' } };
+    runMigrations(doc, '/tmp', undefined, 'local');
+    expect(doc.notifications).toBeUndefined();
+    // config_version stays untouched because no migration body actually
+    // mutated this sparse doc — a stamp here would force a no-op
+    // write-back of pre-existing legacy local.yaml files.
+    expect(doc.config_version).toBeUndefined();
+  });
+
+  it('runs v8 (path rename) on a local.yaml with context overrides', () => {
+    const doc: Record<string, unknown> = {
+      context: { cortex_enabled: false, prompt_max_spores: 1 },
+    };
+    runMigrations(doc, '/tmp', undefined, 'local');
+    expect(doc.context).toBeUndefined();
+    const cortex = doc.cortex as Record<string, Record<string, unknown>>;
+    expect(cortex.instructions).toEqual({ inject_on_session_start: false });
+    expect(cortex.spores).toEqual({ max_per_prompt: 1 });
   });
 });

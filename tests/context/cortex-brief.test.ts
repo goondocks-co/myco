@@ -111,39 +111,39 @@ describe('RETRIEVAL_GUIDANCE', () => {
 });
 
 describe('resolveInstructionDelivery', () => {
-  const enabledContext = MycoConfigSchema.parse({ version: 3 }).context;
-  const disabledContext = MycoConfigSchema.parse({
+  const enabledCortex = MycoConfigSchema.parse({ version: 3 }).cortex;
+  const disabledCortex = MycoConfigSchema.parse({
     version: 3,
-    context: { cortex_enabled: false },
-  }).context;
+    cortex: { instructions: { inject_on_session_start: false } },
+  }).cortex;
 
   const cases: Array<{
     label: string;
-    context: typeof enabledContext;
+    cortex: typeof enabledCortex;
     symbiont: { supportsSessionStartInjection: boolean } | null;
     expected: ReturnType<typeof resolveInstructionDelivery>;
   }> = [
     {
       label: 'null symbiont → inline with missing-symbiont reason',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: null,
       expected: { inlineInstructions: true, reason: 'missing-symbiont' },
     },
     {
       label: 'cortex disabled → inline regardless of symbiont support',
-      context: disabledContext,
+      cortex: disabledCortex,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: true, reason: 'session-start-disabled' },
     },
     {
       label: 'symbiont supports injection → NOT inline',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: { supportsSessionStartInjection: true },
       expected: { inlineInstructions: false, reason: 'session-start-supported' },
     },
     {
       label: 'symbiont lacks injection support → inline with no-session-start',
-      context: enabledContext,
+      cortex: enabledCortex,
       symbiont: { supportsSessionStartInjection: false },
       expected: { inlineInstructions: true, reason: 'no-session-start' },
     },
@@ -151,7 +151,7 @@ describe('resolveInstructionDelivery', () => {
 
   for (const testCase of cases) {
     it(testCase.label, () => {
-      expect(resolveInstructionDelivery(testCase.context, testCase.symbiont))
+      expect(resolveInstructionDelivery(testCase.cortex, testCase.symbiont))
         .toEqual(testCase.expected);
     });
   }
@@ -197,7 +197,7 @@ describe('buildCortexInstructionsInput', () => {
 
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
-      tier: config.context.digest_tier,
+      tier: config.cortex.digest.tier,
       content: 'Current digest says the Cortex rollout is in progress and focused on session-start guidance.',
       generated_at: NOW,
     });
@@ -258,7 +258,7 @@ describe('buildCortexInstructionsInput', () => {
   });
 
   it('emits the canopy_map() directive only when a populated map exists for the project', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: true } });
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
     const { vaultDir, machineId, cleanup } = makeVaultDir();
@@ -278,7 +278,7 @@ describe('buildCortexInstructionsInput', () => {
   });
 
   it('omits the canopy_map() directive when the project has no map yet', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: true } });
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
     const { vaultDir, cleanup } = makeVaultDir();
@@ -289,7 +289,7 @@ describe('buildCortexInstructionsInput', () => {
   });
 
   it('omits the canopy_map() directive when the stored map is empty', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: true } });
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
     const { vaultDir, machineId, cleanup } = makeVaultDir();
@@ -307,7 +307,7 @@ describe('buildCortexInstructionsInput', () => {
   });
 
   it('omits the canopy_map() directive when Cortex is disabled, even with a populated map', async () => {
-    const config = MycoConfigSchema.parse({ version: 3, context: { cortex_enabled: false } });
+    const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: false } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
     const { vaultDir, machineId, cleanup } = makeVaultDir();

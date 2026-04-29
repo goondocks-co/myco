@@ -40,17 +40,17 @@ export function composeSessionStartContext(
   config: MycoConfig,
   cortexContent: string,
 ): ComposedSessionStartContext {
-  const cortexEnabled = shouldInjectCortex(config.context);
-  const digestEnabled = shouldInjectSessionStartDigest(config.context);
+  const cortexEnabled = shouldInjectCortex(config.cortex);
+  const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
   const parts: SessionStartContextPart[] = [];
 
   if (cortexEnabled && cortexContent) {
     parts.push({ kind: 'cortex', text: cortexContent });
   }
   if (digestEnabled) {
-    const digest = getSessionStartDigestPayload(config.context);
+    const digest = getSessionStartDigestPayload(config.cortex.digest);
     if (digest.content) {
-      const tier = digest.tier ?? config.context.digest_tier;
+      const tier = digest.tier ?? config.cortex.digest.tier;
       parts.push({
         kind: 'digest',
         text: `## Preferred Digest (Tier ${tier})\n${digest.content}`,

@@ -116,14 +116,16 @@ export async function resolveCortexCapabilities(
   };
 }
 
-export function shouldInjectCortex(
-  config: MycoConfig['context'],
-): boolean {
-  return config.cortex_enabled;
+/**
+ * Whether Cortex should inject session-start instructions for this
+ * config. Combines the Cortex master-kill with the per-event toggle.
+ */
+export function shouldInjectCortex(cortex: MycoConfig['cortex']): boolean {
+  return cortex.enabled && cortex.instructions.inject_on_session_start;
 }
 
 export function resolveInstructionDelivery(
-  config: MycoConfig['context'],
+  cortex: MycoConfig['cortex'],
   symbiont: {
     supportsSessionStartInjection: boolean;
   } | null,
@@ -131,7 +133,7 @@ export function resolveInstructionDelivery(
   if (!symbiont) {
     return { inlineInstructions: true, reason: 'missing-symbiont' };
   }
-  if (!config.cortex_enabled) {
+  if (!shouldInjectCortex(cortex)) {
     return { inlineInstructions: true, reason: 'session-start-disabled' };
   }
   if (symbiont.supportsSessionStartInjection) {
@@ -245,7 +247,7 @@ function formatRecentPlans(): string {
 }
 
 function formatDigestExcerpt(config: MycoConfig): string {
-  const preferredTier = config.context.digest_tier;
+  const preferredTier = config.cortex.digest.tier;
   const extract =
     getDigestExtract(DEFAULT_AGENT_ID, preferredTier) ??
     getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER);
@@ -289,11 +291,13 @@ export async function buildCortexInstructionsInput(
   const recentPlans = formatRecentPlans();
   const digestExcerpt = formatDigestExcerpt(config);
   const input = {
-    context: {
-      digest_tier: config.context.digest_tier,
-      cortex_enabled: config.context.cortex_enabled,
-      prompt_search: config.context.prompt_search,
-      prompt_max_spores: config.context.prompt_max_spores,
+    cortex: {
+      enabled: config.cortex.enabled,
+      instructions_inject_on_session_start: config.cortex.instructions.inject_on_session_start,
+      digest_tier: config.cortex.digest.tier,
+      digest_inject_on_session_start: config.cortex.digest.inject_on_session_start,
+      spores_inject_on_prompt_submit: config.cortex.spores.inject_on_prompt_submit,
+      spores_max_per_prompt: config.cortex.spores.max_per_prompt,
     },
     capabilities,
     digestExcerpt,
@@ -311,7 +315,7 @@ export async function buildCortexInstructionsInput(
     'Do not restate AGENTS.md or static installation details.',
     '',
     '## Runtime config',
-    JSON.stringify(input.context, null, JSON_INDENT),
+    JSON.stringify(input.cortex, null, JSON_INDENT),
     '',
     '## Authoring requirements',
     '- Start with the heading `## Myco-Enabled Project`.',
@@ -330,7 +334,7 @@ export async function buildCortexInstructionsInput(
     '- When you mention recent plans, label the section "Recent plans" or "Recent workstreams" (NOT "Current workstreams" — that implies the new session is going to work on them). Treat them as background: prior or in-flight work the agent should be aware of when its actual task happens to overlap, not a directive to engage.',
   ];
 
-  if (input.context.cortex_enabled && hasCanopyMap) {
+  if (shouldInjectCortex(config.cortex) && hasCanopyMap) {
     // Emitted only when a non-empty Canopy Map exists for this project.
     // That gate makes the directive trustworthy unconditionally — there
     // is no empty-state caveat to hedge with — so the generated downstream
