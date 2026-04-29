@@ -161,3 +161,6 @@ registration:
   skillsTarget: .agents/skills
   settingsTarget: .codex/config.toml
   settingsFormat: toml
+capabilities:
+  # Hook template registers a session-start hook that fetches Cortex context.
+  sessionStartInjection: true

@@ -18,3 +18,5 @@ registration:
   skillsTarget: .agents/skills
   settingsTarget: .gemini/settings.json
   instructionsFile: GEMINI.md
+capabilities:
+  sessionStartInjection: true

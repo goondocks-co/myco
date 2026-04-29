@@ -29,3 +29,6 @@ registration:
   mcpTarget: .cursor/mcp.json
   skillsTarget: .cursor/skills
   settingsTarget: .cursor/settings.json
+capabilities:
+  # Hook template registers a session-start hook that fetches Cortex context.
+  sessionStartInjection: true
