@@ -9,7 +9,7 @@ description: >
   to use Myco tool behavior correctly, especially retrieval and plan persistence.
 agent: myco-agent
 isDefault: false
-reasoningLevel: low
+reasoningLevel: default
 maxTurns: 12
 timeoutSeconds: 180
 schedule:
@@ -39,7 +39,6 @@ prompt: |
 
 phases:
   - name: research
-    reasoningLevel: default
     prompt: |
       Produce a compact situation brief. DO NOT write the final markdown
       — that is the author phase's job.
@@ -96,6 +95,17 @@ phases:
          the tool guidance list (typically `myco_search`, `myco_recall`,
          `myco_context`). Describe when each is useful, not what each
          argument does.
+
+         If the tool guidance flags `canopy_map()` as a default opener,
+         frame it as a default action in this paragraph — phrasing like
+         "Call `canopy_map()` first whenever you need to find a feature,
+         locate the right file before editing, or orient in this
+         codebase." Never frame it as a condition the agent self-evaluates
+         ("when you need to explore unfamiliar code", "if you're new to
+         the project") — the directive exists precisely because that
+         conditional framing causes agents to skip the tool. Preserve
+         the default-action wording exactly; do not paraphrase it back
+         into a conditional.
 
       3. A plan-persistence paragraph naming `myco_plans` and
          `myco_save_plan`.

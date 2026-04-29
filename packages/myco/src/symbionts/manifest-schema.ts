@@ -166,7 +166,14 @@ const CapabilitiesSchema = z.object({
    * other symbionts flip this on as their hook surfaces mature.
    */
   preToolUseInjection: z.boolean().default(false),
-}).default(() => ({ preToolUseInjection: false }));
+  /**
+   * Whether this symbiont's hook template wires a session-start hook that
+   * fetches Cortex context. Source of truth for the inline-vs-session-start
+   * delivery decision in `cortex-brief.ts`. The legacy template-scan in
+   * `injection-support.ts` is retained as a drift check.
+   */
+  sessionStartInjection: z.boolean().default(false),
+}).default(() => ({ preToolUseInjection: false, sessionStartInjection: false }));
 
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
 

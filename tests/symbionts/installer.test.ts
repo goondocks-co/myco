@@ -1868,6 +1868,7 @@ describe('AGENTS.md managed guidance', () => {
     const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
     expect(content).toContain('myco:managed:start');
     expect(content).toContain('capture.ignore_plan_dirs_in_git');
+    expect(content).toContain('canopy_map()');
     expect(content).toContain('Keep tests current.');
   });
 

@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 import { loadManifests } from '@myco/symbionts/detect.js';
-import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
+import { detectSymbiontInjectionSupport, SESSION_START_SIGNALS } from '@myco/symbionts/injection-support.js';
 
 /**
  * Expected support map per symbiont, keyed by manifest.name. When a new
@@ -79,6 +79,35 @@ describe('detectSymbiontInjectionSupport', () => {
         support.supportsSessionStartInjection,
         `${manifest.name} template has "hook session-start" but detector reports false`,
       ).toBe(true);
+    }
+  });
+
+  // Drift check: now that sessionStartInjection is a declared manifest
+  // capability, ensure each manifest's declared value matches what the
+  // legacy template scan would conclude. If a hooks template gains or
+  // loses a session-start registration without a corresponding manifest
+  // edit (or vice versa), this test fails and points at the offender.
+  it('manifest sessionStartInjection matches the template scan for every symbiont', () => {
+    for (const manifest of manifests) {
+      const templateFile = manifest.registration?.hooksFormat === 'plugin-file'
+        ? 'plugin.ts'
+        : 'hooks.json';
+      const templatePath = path.resolve(
+        import.meta.dirname,
+        '..',
+        '..',
+        'packages/myco/src/symbionts/templates',
+        manifest.name,
+        templateFile,
+      );
+      if (!fs.existsSync(templatePath)) continue;
+      const template = fs.readFileSync(templatePath, 'utf-8');
+      const templateHasSignal = SESSION_START_SIGNALS.some((signal) => template.includes(signal));
+      const declared = manifest.capabilities?.sessionStartInjection ?? false;
+      expect(
+        declared,
+        `${manifest.name}: manifest declares sessionStartInjection=${declared} but template scan = ${templateHasSignal}`,
+      ).toBe(templateHasSignal);
     }
   });
 });

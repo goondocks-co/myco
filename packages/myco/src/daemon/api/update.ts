@@ -90,12 +90,18 @@ export function createUpdateHandlers(deps: UpdateDeps) {
   /** Prevents multiple restart scripts from racing during the shutdown window. */
   let restartInitiated = false;
 
-  /** Returns true when the stamp file matches the current running version. */
-  function isStampCurrent(): boolean {
+  /**
+   * Returns true when the stamp file matches `version`. The stamp records the
+   * version that last ran `myco update` for this project, so callers should
+   * compare it against the version the daemon is upgrading to (the on-disk
+   * installed version) — not the running version, which is the version we are
+   * leaving behind.
+   */
+  function isStampMatching(version: string): boolean {
     try {
       const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
       const stamp = fs.readFileSync(stampPath, 'utf-8').trim();
-      return stamp === currentVersion;
+      return stamp === version;
     } catch {
       return false;
     }
@@ -134,7 +140,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
         semver.gt(installedVersion, currentVersion)
       ) {
         restartInitiated = true;
-        const runLocalUpdate = !isStampCurrent();
+        const runLocalUpdate = !isStampMatching(installedVersion);
         spawnRestartScript({
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
