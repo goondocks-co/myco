@@ -96,14 +96,15 @@ export async function runInitialCanopyPopulate(ctx: CanopyJobContext): Promise<v
 }
 
 export async function runCanopyScan(ctx: CanopyJobContext): Promise<void> {
-  const patterns = ctx.liveConfig.current.canopy.exclude.patterns;
+  const exclude = ctx.liveConfig.current.canopy.exclude;
   try {
     const result = scanProject({
       db: ctx.db,
       projectId: ctx.projectId,
       machineId: ctx.machineId,
       projectRoot: ctx.projectRoot,
-      excludePatterns: patterns,
+      defaultExcludePatterns: exclude.default_patterns,
+      excludePatterns: exclude.patterns,
     });
     ctx.logger.info(LOG_KINDS.CANOPY_SCAN, 'Canopy full scan complete', {
       ...result,

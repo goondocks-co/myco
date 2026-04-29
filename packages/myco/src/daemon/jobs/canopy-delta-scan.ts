@@ -40,14 +40,15 @@ export class CanopyDeltaScanRunner {
 
   private async execute(): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const patterns = this.ctx.liveConfig.current.canopy.exclude.patterns;
+    const exclude = this.ctx.liveConfig.current.canopy.exclude;
     try {
       const result = deltaScan({
         db: this.ctx.db,
         projectId: this.ctx.projectId,
         machineId: this.ctx.machineId,
         projectRoot: this.ctx.projectRoot,
-        excludePatterns: patterns,
+        defaultExcludePatterns: exclude.default_patterns,
+        excludePatterns: exclude.patterns,
       });
       this.ctx.logger.info(LOG_KINDS.CANOPY_SCAN, 'Canopy delta scan complete', {
         ...result,

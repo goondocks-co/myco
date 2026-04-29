@@ -68,6 +68,7 @@ mock.module('../../packages/myco/ui/src/hooks/use-symbionts', () => ({
 
 mock.module('../../packages/myco/ui/src/hooks/use-agent', () => ({
   useAgentRuns: () => ({ data: { runs: [] }, isFetching: false, refetch: vi.fn() }),
+  useAgentTasks: () => ({ data: { tasks: [] }, isLoading: false }),
 }));
 
 mock.module('../../packages/myco/ui/src/components/mycelium/DigestView', () => ({

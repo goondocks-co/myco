@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Check, Copy, Database, Sparkles, Trees } from 'lucide-react';
 import { CONFIG_FOCUS_TAB_PARAM, CONFIG_SECTION_IDS } from '@myco/config/focus';
-import { useAgentRuns } from '../hooks/use-agent';
+import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { PageHeader } from '../components/ui/page-header';
@@ -914,6 +914,9 @@ function DigestTab() {
 
 function CanopyTab() {
   const { effective, isLoading } = useScopedConfig();
+  const { data: tasksData } = useAgentTasks();
+  const describeTask = tasksData?.tasks.find((t) => t.name === 'canopy-describe');
+  const describeEnabled = describeTask?.schedule?.enabled ?? false;
   if (isLoading || !effective) {
     return <p className="font-sans text-sm text-on-surface-variant">Loading...</p>;
   }
@@ -948,18 +951,47 @@ function CanopyTab() {
           <p className="font-sans text-sm text-on-surface-variant">
             The scanner automatically skips anything matched by this project's
             {' '}<code className="font-mono text-xs">.gitignore</code>{' '}
-            plus directories that Myco and your installed symbionts manage
+            files (root and nested), the Myco baseline below, and directories
+            that Myco and your installed symbionts manage
             ({' '}<code className="font-mono text-xs">.myco/</code>,
             {' '}<code className="font-mono text-xs">.agents/</code>,
             {' '}<code className="font-mono text-xs">.claude/</code>,
             {' '}<code className="font-mono text-xs">.cursor/</code>, etc.).
-            Add patterns below to exclude additional paths.
+            Add your own patterns at the bottom to exclude additional paths.
           </p>
         </div>
 
+        <ScopedField<'canopy.exclude.default_patterns', string[]>
+          path="canopy.exclude.default_patterns"
+          label="Myco baseline (read-only)"
+          defaultScope="project"
+        >
+          {({ value }) => {
+            const patterns = value ?? [];
+            return (
+              <div className="rounded-md border border-outline-variant/20 bg-surface-container-low/50 px-3 py-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {patterns.map((p) => (
+                    <code
+                      key={p}
+                      className="inline-block rounded bg-surface-container px-2 py-0.5 font-mono text-xs text-on-surface-variant"
+                    >
+                      {p}
+                    </code>
+                  ))}
+                </div>
+                <p className="pt-2 font-sans text-xs text-on-surface-variant">
+                  Maintained by Myco. Filesystem and toolchain noise that
+                  shouldn't be indexed regardless of project setup.
+                </p>
+              </div>
+            );
+          }}
+        </ScopedField>
+
         <ScopedField<'canopy.exclude.patterns', string[]>
           path="canopy.exclude.patterns"
-          label="Extra exclude patterns"
+          label="Your patterns"
           defaultScope="project"
           commitOn="blur"
         >
@@ -1060,26 +1092,63 @@ function CanopyTab() {
       <Surface
         id="config-section-cortex-canopy-llm"
         level="low"
-        className="rounded-lg border border-outline-variant/20 p-6 space-y-2"
+        className="rounded-lg border border-outline-variant/20 p-6 space-y-4"
       >
-        <SectionHeader>Myco-generated file descriptions</SectionHeader>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionHeader>Intelligence</SectionHeader>
+          <span
+            className={
+              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-sans text-xs font-medium ' +
+              (describeEnabled
+                ? 'border-primary/30 bg-primary/10 text-primary'
+                : 'border-outline-variant/40 bg-surface-container text-on-surface-variant')
+            }
+          >
+            <span
+              className={
+                'h-1.5 w-1.5 rounded-full ' +
+                (describeEnabled ? 'bg-primary' : 'bg-on-surface-variant/60')
+              }
+              aria-hidden
+            />
+            {describeEnabled ? 'Descriptions on' : 'Descriptions off'}
+          </span>
+        </div>
         <p className="font-sans text-sm text-on-surface-variant">
           One-sentence summaries the Myco agent writes for each file. They
           power semantic search across your codebase, ride along with Canopy
-          injection on Read, and feed the Canopy Map.
+          injection on Read, and feed the Canopy Map — the highest-leverage
+          piece of Canopy once it&rsquo;s on.
         </p>
         <p className="font-sans text-sm text-on-surface-variant">
-          The{' '}
-          <Link
-            to="/agent?tab=tasks&task=canopy-describe"
-            className="text-primary underline underline-offset-2 hover:text-primary/80"
-          >
-            canopy-describe task
-          </Link>{' '}
-          ships <strong>opt-in</strong> — its schedule is off by default so
-          new projects don&rsquo;t spend tokens unprompted. Enable it on the
-          task page to start filling in descriptions; the Canopy Map needs
-          at least one described file before it can build.
+          {describeEnabled ? (
+            <>
+              The{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>{' '}
+              is enabled and filling in descriptions on schedule. Visit the
+              task page to change the model, schedule, or token budget.
+            </>
+          ) : (
+            <>
+              The{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>{' '}
+              ships <strong>opt-in</strong> — its schedule is off by default so
+              new projects don&rsquo;t spend tokens unprompted. Enable it on the
+              task page (where you can also pick a model and schedule) to start
+              filling in descriptions; the Canopy Map needs at least one
+              described file before it can build.
+            </>
+          )}
         </p>
       </Surface>
     </div>

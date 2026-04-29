@@ -202,13 +202,49 @@ const CanopyRefreshSchema = z.object({
   background_period_minutes: z.number().int().min(1).default(60),
 });
 
+/**
+ * Myco-maintained baseline of paths the scanner should always skip,
+ * regardless of what the project's `.gitignore` says. These cover
+ * filesystem conventions (`.git/`, `.DS_Store`), build outputs, and
+ * dependency caches that aren't useful Canopy entries even when
+ * accidentally tracked. Edited via schema migrations, not user config —
+ * the UI surfaces them read-only so users can see what's already covered.
+ */
+const CANOPY_DEFAULT_EXCLUDE_PATTERNS: readonly string[] = [
+  // Source control + filesystem noise
+  '.git',
+  '.DS_Store',
+  // Dependency trees
+  'node_modules',
+  // Python: bytecode, venvs, test/lint caches
+  '__pycache__',
+  '.venv', 'venv', 'env', 'ENV',
+  '.pytest_cache', '.ruff_cache', '.mypy_cache', '.tox',
+  // Build/output dirs (JS, Rust, Java)
+  'dist', 'build', 'target', '.gradle', '.cache',
+  // Framework caches
+  '.next', '.nuxt', '.turbo', '.svelte-kit',
+  // Lockfiles — checked-in but not useful to describe/embed
+  '**/*.lock',
+  '**/package-lock.json',
+  '**/pnpm-lock.yaml',
+  '**/yarn.lock',
+];
+
 const CanopyExcludeSchema = z.object({
   /**
+   * Myco-maintained baseline patterns. Defaulted from
+   * `CANOPY_DEFAULT_EXCLUDE_PATTERNS` so existing projects pick up new
+   * baseline entries automatically on the next config load. Users
+   * shouldn't edit this array directly — the UI renders it read-only and
+   * surfaces `patterns` for additions.
+   */
+  default_patterns: z.array(z.string()).default(() => [...CANOPY_DEFAULT_EXCLUDE_PATTERNS]),
+  /**
    * Extra glob/segment patterns the scanner should skip on top of the
-   * project's `.gitignore` and Myco's managed segments (handled inside
-   * the scanner). Empty by default — almost every project's `.gitignore`
-   * already declares the right things, and adding patterns here means
-   * "exclude this in addition to what gitignore says".
+   * baseline, the project's `.gitignore`, and Myco's managed segments.
+   * Empty by default — most projects' `.gitignore` plus the baseline
+   * already cover what matters; this is the user-additive layer.
    */
   patterns: z.array(z.string()).default([]),
 });

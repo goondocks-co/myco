@@ -68,6 +68,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 25, migrate: (db) => migrateV24ToV25(db) },
   { version: 26, migrate: (db) => migrateV25ToV26(db) },
   { version: 27, migrate: (db) => migrateV26ToV27(db) },
+  { version: 28, migrate: (db) => migrateV27ToV28(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1466,82 @@ function migrateV26ToV27(db: Database): void {
        ON CONFLICT (version) DO NOTHING`,
     ).run(27, epochSeconds());
     db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 28 cleans up `canopy_entries` rows that the new layered exclude
+ * matcher would now reject. Earlier scans had no baseline of "obvious noise"
+ * (`.git/`, `node_modules/`, `__pycache__/`, virtualenvs, build outputs,
+ * lockfiles), and they only honored the project root's `.gitignore`, not
+ * nested `.gitignore` files. Vaults that ran older Canopy scans accumulated
+ * stale rows for those paths.
+ *
+ * The patterns below are inlined (not imported from
+ * `CANOPY_DEFAULT_EXCLUDE_PATTERNS`) so the migration stays self-contained
+ * and frozen at the v28 contract — future additions to the live baseline
+ * won't retroactively change what this migration deleted. Pure path-string
+ * matching, no fs access required.
+ */
+const V28_CANOPY_BASELINE_SEGMENTS: readonly string[] = [
+  '.git', '.DS_Store',
+  'node_modules',
+  '__pycache__', '.venv', 'venv', 'env', 'ENV',
+  '.pytest_cache', '.ruff_cache', '.mypy_cache', '.tox',
+  'dist', 'build', 'target', '.gradle', '.cache',
+  '.next', '.nuxt', '.turbo', '.svelte-kit',
+];
+
+const V28_CANOPY_BASELINE_BASENAMES: readonly string[] = [
+  'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock',
+];
+
+function pathMatchesV28Baseline(p: string): boolean {
+  const normalized = p.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  for (const seg of segments) {
+    if (V28_CANOPY_BASELINE_SEGMENTS.includes(seg)) return true;
+  }
+  const basename = segments[segments.length - 1] ?? '';
+  if (V28_CANOPY_BASELINE_BASENAMES.includes(basename)) return true;
+  if (basename.endsWith('.lock')) return true;
+  return false;
+}
+
+function migrateV27ToV28(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // Pull every (project_id, path) pair and delete the ones matching the
+    // frozen v28 baseline. canopy_entries has FK-cascading rows in
+    // canopy_entry_fts and (post-v26) embedding-vector storage; SQLite's
+    // ON DELETE CASCADE handles them. Untouched rows keep all prior work
+    // (descriptions, embeddings, hashes).
+    const rows = db
+      .prepare('SELECT project_id, path FROM canopy_entries')
+      .all() as Array<{ project_id: string; path: string }>;
+    const del = db.prepare(
+      'DELETE FROM canopy_entries WHERE project_id = ? AND path = ?',
+    );
+    let deleted = 0;
+    for (const row of rows) {
+      if (pathMatchesV28Baseline(row.path)) {
+        del.run(row.project_id, row.path);
+        deleted++;
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(28, epochSeconds());
+    db.prepare('COMMIT').run();
+    if (deleted > 0) {
+      console.log(`[migration v28] purged ${deleted} canopy_entries rows matching new exclude baseline`);
+    }
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;

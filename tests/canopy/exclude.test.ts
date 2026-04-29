@@ -80,7 +80,7 @@ describe('createLayeredExcludeMatcher', () => {
 
   it('excludes paths matched by .gitignore', () => {
     fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules\ndist\n');
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     expect(m('node_modules/foo.js')).toBe(true);
     expect(m('dist/app.js')).toBe(true);
     expect(m('src/index.ts')).toBe(false);
@@ -88,7 +88,7 @@ describe('createLayeredExcludeMatcher', () => {
 
   it('excludes Myco-managed segments without needing .gitignore entries', () => {
     // No .gitignore; the managed layer alone should ban these.
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     expect(m('.myco/myco.db')).toBe(true);
     expect(m('.agents/skills/foo/SKILL.md')).toBe(true);
     expect(m('.claude/settings.json')).toBe(true);
@@ -99,14 +99,32 @@ describe('createLayeredExcludeMatcher', () => {
   it('excludes paths matched by user-custom patterns', () => {
     const m = createLayeredExcludeMatcher({
       projectRoot: tmp,
+      defaultPatterns: [],
       userPatterns: ['secret-stuff'],
     });
     expect(m('secret-stuff/file.ts')).toBe(true);
     expect(m('src/index.ts')).toBe(false);
   });
 
+  it('excludes paths matched by Myco-baseline default_patterns', () => {
+    // No .gitignore, no user patterns — only the Myco-maintained baseline
+    // should ban these. This is the regression guard for the screenshot
+    // bug: `.git/` was leaking because nothing claimed authority over it.
+    const m = createLayeredExcludeMatcher({
+      projectRoot: tmp,
+      defaultPatterns: ['.git', 'node_modules', '__pycache__', '.venv'],
+      userPatterns: [],
+    });
+    expect(m('.git/HEAD')).toBe(true);
+    expect(m('.git/objects/ab/cdef')).toBe(true);
+    expect(m('.venv/bin/python')).toBe(true);
+    expect(m('apps/api/src/__pycache__/foo.pyc')).toBe(true);
+    expect(m('packages/a/node_modules/foo/index.js')).toBe(true);
+    expect(m('src/index.ts')).toBe(false);
+  });
+
   it('excludes common secret-bearing files even without gitignore entries', () => {
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     expect(m('.env')).toBe(true);
     expect(m('.env.local')).toBe(true);
     expect(m('src/private.key')).toBe(true);
@@ -117,7 +135,7 @@ describe('createLayeredExcludeMatcher', () => {
   it('honors gitignore negation within the gitignore layer only', () => {
     // gitignore: `build` excluded except `build/keep.txt`.
     fs.writeFileSync(path.join(tmp, '.gitignore'), 'build\n!build/keep.txt\n');
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     expect(m('build/other.txt')).toBe(true);
     expect(m('build/keep.txt')).toBe(false);
   });
@@ -126,6 +144,7 @@ describe('createLayeredExcludeMatcher', () => {
     fs.writeFileSync(path.join(tmp, '.gitignore'), '!build/keep.txt\n');
     const m = createLayeredExcludeMatcher({
       projectRoot: tmp,
+      defaultPatterns: [],
       userPatterns: ['build'],
     });
     // The user listed `build` — gitignore negation in another layer does
@@ -135,7 +154,7 @@ describe('createLayeredExcludeMatcher', () => {
 
   it('passes through normal source files', () => {
     fs.writeFileSync(path.join(tmp, '.gitignore'), 'node_modules\n');
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     expect(m('src/index.ts')).toBe(false);
     expect(m('packages/myco/src/db/schema.ts')).toBe(false);
     expect(m('README.md')).toBe(false);
@@ -143,7 +162,7 @@ describe('createLayeredExcludeMatcher', () => {
 
   it('respects directory-only gitignore rules via isDir flag', () => {
     fs.writeFileSync(path.join(tmp, '.gitignore'), 'logs/\n');
-    const m = createLayeredExcludeMatcher({ projectRoot: tmp, userPatterns: [] });
+    const m = createLayeredExcludeMatcher({ projectRoot: tmp, defaultPatterns: [], userPatterns: [] });
     // A file literally named `logs` should NOT be excluded by a dir-only rule.
     expect(m('logs', false)).toBe(false);
     // Directory `logs` is excluded.
