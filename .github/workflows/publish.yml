@@ -409,6 +409,22 @@ jobs:
           }
           NODE
 
+      - name: Verify packed package size
+        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+
+          const maxBytes = 200_000_000;
+          const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
+
+          if (pack.size > maxBytes) {
+            const sizeMb = (pack.size / 1_000_000).toFixed(1);
+            const maxMb = (maxBytes / 1_000_000).toFixed(1);
+            throw new Error(`packed tarball is ${sizeMb} MB, above npm publish guardrail ${maxMb} MB`);
+          }
+          NODE
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
