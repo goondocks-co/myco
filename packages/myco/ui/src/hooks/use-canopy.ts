@@ -340,18 +340,32 @@ export function useCanopyMap() {
 }
 
 /**
+ * Wire shape for `POST /canopy/map/regenerate`. The daemon either
+ * enqueues a run (returns `run_id`) or short-circuits with `skipped:
+ * true` and a machine-readable reason — see CanopyMapBuildSkipReason in
+ * `packages/myco/src/agent/instruction-builders.ts`.
+ */
+export type CanopyMapRegenerateResponse =
+  | { ok: true; run_id: string }
+  | { ok: true; skipped: true; reason: string };
+
+/**
  * Kicks off a regenerate by POSTing to `/canopy/map/regenerate`. On success,
  * invalidates the map query so the panel refetches the freshly written row.
  *
  * Note: the regenerate endpoint dispatches the canopy-map task asynchronously
  * — `ok: true` means the run was started, not that the map is ready.
  * Consumers may want to poll or rely on the next manual refresh.
+ *
+ * The response can also be a skip envelope (`skipped: true`) when the
+ * gather phase reports there's nothing to do — e.g. canopy-describe is
+ * off, no rows have descriptions yet, or the map is already current.
  */
 export function useRegenerateCanopyMap() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { force_cold_start?: boolean }) => {
-      return postJson<{ ok: true; run_id: string }>('/canopy/map/regenerate', {
+      return postJson<CanopyMapRegenerateResponse>('/canopy/map/regenerate', {
         force_cold_start: vars.force_cold_start === true,
       });
     },

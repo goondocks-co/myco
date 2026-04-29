@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import type { CanopyMapResponse } from '../../packages/myco/ui/src/hooks/use-canopy';
 
 /* ---------- API mock ---------- */
@@ -43,7 +44,9 @@ function renderPanel() {
   const client = makeQueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <CanopyMapPanel />
+      <MemoryRouter>
+        <CanopyMapPanel />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

@@ -260,7 +260,10 @@ export async function reconcileExistingDaemon(
       if (res.ok) {
         const data = await res.json() as { myco?: boolean; version?: string };
         const existingCommand = info.command ?? null;
-        const currentCommand = process.argv[1] ?? null;
+        // Use process.execPath, not process.argv[1]: under the bun-compiled
+        // standalone, argv[1] is a virtual /$bunfs/... path that never
+        // matches what daemon.json stores (the on-disk binary path).
+        const currentCommand = process.execPath ?? null;
         const runtimeMismatch = Boolean(existingCommand && currentCommand && existingCommand !== currentCommand);
         if (data.myco && (data.version === getPluginVersion() || runtimeMismatch)) {
           logger.info(LOG_KINDS.DAEMON_START, 'Sibling daemon already healthy — stepping aside', {
@@ -370,9 +373,17 @@ export async function main(): Promise<void> {
   // are exempted and any restart/update shell script uses the dev binary
   // as its restart target (baked in at script-generation time — no env var
   // propagation required).
+  //
+  // Use process.execPath, not process.argv[1]: under the bun-compiled
+  // standalone binary, argv[1] is a virtual /$bunfs/... path (the embedded
+  // entry script), not the on-disk binary path. realpath() throws on it,
+  // detectDevBuild silently returns null, and dogfood/symlink installs
+  // stop being recognised — re-introducing the "Update available" banner
+  // on every dev daemon. process.execPath always points at the real
+  // standalone binary on disk regardless of compile mode.
   const devCliEntry = detectDevBuild(
     globalPrefix,
-    process.argv[1],
+    process.execPath,
     fs.realpathSync,
   );
   if (devCliEntry) {
@@ -854,27 +865,31 @@ export async function main(): Promise<void> {
       // synchronously before its first await. This matches how the
       // scheduler enqueues canopy-map and keeps a single source of truth
       // for instruction assembly.
-      const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
+      //
+      // Use the *detailed* builder so we keep the skip reason: the
+      // /api/agent/run dispatcher path collapses skips to undefined and
+      // short-circuits via isInstructionRequiredTask, but this regenerate
+      // route has no such guard — running the agent without instruction
+      // or runContext makes the render phase succeed (default YAML prompt
+      // + fs_read) and then finalizeCanopyMap crashes because
+      // runContext.canopy_map_inputs_hash is unset.
+      const { buildCanopyMapInstructionDetailed } = await import('../agent/instruction-builders.js');
       const { runAgent } = await import('../agent/executor.js');
       const { getLatestRunId } = await import('../db/queries/runs.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
       const projectRoot = resolveProjectRoot(vaultDir);
-      const built = await buildTaskInstruction(
-        task,
-        params,
-        DEFAULT_AGENT_ID,
-        projectRoot,
-        embeddingManager,
-        mycoConfig,
-        () => teamSync.getTeamClient(),
-      );
+      const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
+
+      if (built.kind === 'skip') {
+        return { skipped: true, reason: built.reason };
+      }
 
       const resultPromise = runAgent(vaultDir, {
         task,
-        instruction: built?.instruction,
-        runContext: built?.context,
+        instruction: built.instruction,
+        runContext: built.context,
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,

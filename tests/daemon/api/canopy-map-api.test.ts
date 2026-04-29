@@ -98,4 +98,22 @@ describe('handleCanopyMapRegenerate', () => {
     expect(res.run_id).toBe('run-xyz');
     expect(calls[0].params?.force_cold_start).toBe(true);
   });
+
+  it('relays a skip envelope when the runner reports no work', async () => {
+    // Mirrors the production bug where buildTaskInstruction returned
+    // undefined (no described entries) and the runner used to fall through
+    // to runAgent with no instruction/runContext, then crashed in
+    // finalizeCanopyMap. Now the runner must surface the skip up to the
+    // handler so the UI can show a friendly explanation.
+    const res = await handleCanopyMapRegenerate(
+      { project_id: PROJECT_ID, machine_id: MACHINE_ID, force_cold_start: false },
+      {
+        runner: async () => ({ skipped: true, reason: 'no_described_entries' }),
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toBe('no_described_entries');
+    expect(res.run_id).toBeUndefined();
+  });
 });

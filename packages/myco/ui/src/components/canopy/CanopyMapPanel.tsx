@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
-import { AlertCircle, Map as MapIcon, RefreshCw, RotateCcw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { AlertCircle, Info, Map as MapIcon, RefreshCw, RotateCcw } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
@@ -7,6 +8,51 @@ import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useCanopyMap, useRegenerateCanopyMap } from '../../hooks/use-canopy';
 import { formatEpochAbsolute } from '../../lib/format';
+
+/**
+ * Friendly copy for each skip reason the daemon can emit. Anything
+ * unrecognized falls through to a generic message — the wire shape leaves
+ * `reason` as a free-form string so the daemon can add reasons without a
+ * lockstep UI deploy.
+ */
+const SKIP_REASON_COPY: Record<string, { title: string; detail: React.ReactNode }> = {
+  canopy_disabled: {
+    title: 'Canopy injection is turned off.',
+    detail: (
+      <>
+        Enable canopy injection on the{' '}
+        <Link to="/cortex?tab=canopy" className="text-primary underline underline-offset-2 hover:text-primary/80">
+          Cortex → Canopy
+        </Link>{' '}
+        page before regenerating the map.
+      </>
+    ),
+  },
+  no_described_entries: {
+    title: 'No described files yet.',
+    detail: (
+      <>
+        The map is built from per-file descriptions written by the{' '}
+        <Link
+          to="/agent?tab=tasks&task=canopy-describe"
+          className="text-primary underline underline-offset-2 hover:text-primary/80"
+        >
+          canopy-describe task
+        </Link>
+        , which is opt-in. Enable its schedule (or run it once) so files get
+        described, then regenerate the map.
+      </>
+    ),
+  },
+  inputs_unchanged: {
+    title: 'The map is already current.',
+    detail: <>No described files have changed since the last run. Use Rebuild to regenerate from scratch.</>,
+  },
+  no_project_root: {
+    title: 'Project root unavailable.',
+    detail: <>The daemon can&rsquo;t resolve a project directory for this vault.</>,
+  },
+};
 
 /**
  * Canopy Map sub-panel — sibling of Canopy Entries inside the Cortex Canopy
@@ -26,21 +72,30 @@ export function CanopyMapPanel() {
   const regenerate = useRegenerateCanopyMap();
 
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [skipNotice, setSkipNotice] = useState<string | null>(null);
   const [pendingMode, setPendingMode] = useState<'refresh' | 'rebuild' | null>(null);
 
   const triggerRegenerate = useCallback((mode: 'refresh' | 'rebuild') => {
     setRegenerateError(null);
+    setSkipNotice(null);
     setPendingMode(mode);
     regenerate.mutate(
       { force_cold_start: mode === 'rebuild' },
       {
         onSettled: () => setPendingMode(null),
+        onSuccess: (data) => {
+          if ('skipped' in data && data.skipped) {
+            setSkipNotice(data.reason);
+          }
+        },
         onError: (err) => {
           setRegenerateError(err instanceof Error ? err.message : 'Regenerate failed');
         },
       },
     );
   }, [regenerate]);
+
+  const skipDetail = skipNotice ? (SKIP_REASON_COPY[skipNotice] ?? null) : null;
 
   const isPending = regenerate.isPending;
   const map = mapQuery.data;
@@ -133,6 +188,24 @@ export function CanopyMapPanel() {
             </div>
           ) : null}
         </div>
+
+        {skipNotice ? (
+          <div
+            className="mt-4 flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 p-3 text-xs text-on-surface"
+            role="status"
+            data-testid="canopy-map-skip-notice"
+          >
+            <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-primary" />
+            <div className="space-y-1">
+              <p className="font-sans font-medium">
+                {skipDetail?.title ?? 'Regenerate skipped.'}
+              </p>
+              <p className="font-sans text-on-surface-variant">
+                {skipDetail?.detail ?? <>Reason: <code className="font-mono">{skipNotice}</code></>}
+              </p>
+            </div>
+          </div>
+        ) : null}
       </Surface>
 
       {/* Body */}
@@ -173,6 +246,17 @@ export function CanopyMapPanel() {
               of your codebase. Future runs refresh incrementally; use{' '}
               <strong>Rebuild</strong> to start over.
             </p>
+            <p className="max-w-md font-sans text-xs text-on-surface-variant">
+              The map needs at least one described file to build from. Enable
+              the{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>{' '}
+              (opt-in by default) so files get described in the background.
+            </p>
             {/* Cold start ≡ refresh on the empty path — single button. */}
             <Button
               variant="default"
@@ -189,6 +273,16 @@ export function CanopyMapPanel() {
               <span className="font-sans text-xs text-tertiary" role="alert">
                 {regenerateError}
               </span>
+            ) : null}
+            {skipNotice ? (
+              <div className="max-w-md space-y-1 text-xs text-on-surface-variant">
+                <p className="font-sans font-medium text-on-surface">
+                  {skipDetail?.title ?? 'Regenerate skipped.'}
+                </p>
+                <p className="font-sans">
+                  {skipDetail?.detail ?? <>Reason: <code className="font-mono">{skipNotice}</code></>}
+                </p>
+              </div>
             ) : null}
           </div>
         </Surface>

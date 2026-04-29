@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev
+.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 build:
 	$(MAKE) check
@@ -42,6 +42,19 @@ watch:
 
 clean:
 	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist packages/myco-shared/dist
+
+# Build every UI bundle (myco daemon UI + collective UI) without running the
+# rest of the quality gate or the host-target compile. Useful when iterating
+# on frontend changes that ship inside the daemon binary — re-run after
+# editing UI source so `bun packages/myco/src/entries/cli.ts daemon` picks up
+# the freshly built `dist/`.
+ui: ui-myco ui-collective
+
+ui-myco:
+	cd packages/myco/ui && npx vite build
+
+ui-collective:
+	cd packages/myco-collective/ui && npx vite build
 
 install:
 	npm install

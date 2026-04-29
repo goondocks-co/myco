@@ -22,7 +22,7 @@ The Canopy code intelligence system provides contextual file awareness and injec
 - Understanding of agent harness task patterns in the codebase
 - Familiarity with symbiont manifest structure (`.agents/symbionts/`)
 - SQLite schema knowledge for local aggregation columns
-- Access to `canopy/` directory structure and core modules (when available)
+- Access to canopy implementation modules (when available)
 
 ## Procedure 1: Agent Harness Task Standardization
 
@@ -33,7 +33,7 @@ Convert canopy operations from bespoke executors to standard harness tasks for u
 1. **Remove dedicated schedulers/executors**:
 ```typescript
 // Before: Custom executor in src/daemon/schedulers/
-// After: Standard task in src/agent/definitions/tasks/
+// After: Standard task in agent task definitions
 export const canopyDescribeTask: AgentTask = {
   name: 'canopy-describe',
   description: 'Generate file descriptions for code intelligence',
@@ -113,7 +113,7 @@ const shouldIndex = !isGitIgnored(filePath);
 
 ### Layer 2: Myco-Managed Fixed Set
 
-Configure system exclusions in canopy exclusion configuration:
+Configure system exclusions in canopy exclusion configuration module:
 
 ```typescript
 export const MYCO_MANAGED_EXCLUSIONS = [

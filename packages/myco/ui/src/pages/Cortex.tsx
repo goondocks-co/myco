@@ -1065,16 +1065,21 @@ function CanopyTab() {
         <SectionHeader>Myco-generated file descriptions</SectionHeader>
         <p className="font-sans text-sm text-on-surface-variant">
           One-sentence summaries the Myco agent writes for each file. They
-          power semantic search across your codebase and ride along with
-          Canopy injection on Read. Configure the schedule and reasoning
-          level on the{' '}
+          power semantic search across your codebase, ride along with Canopy
+          injection on Read, and feed the Canopy Map.
+        </p>
+        <p className="font-sans text-sm text-on-surface-variant">
+          The{' '}
           <Link
             to="/agent?tab=tasks&task=canopy-describe"
             className="text-primary underline underline-offset-2 hover:text-primary/80"
           >
             canopy-describe task
-          </Link>
-          .
+          </Link>{' '}
+          ships <strong>opt-in</strong> — its schedule is off by default so
+          new projects don&rsquo;t spend tokens unprompted. Enable it on the
+          task page to start filling in descriptions; the Canopy Map needs
+          at least one described file before it can build.
         </p>
       </Surface>
     </div>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Trees } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { CanopyEntriesList } from './CanopyEntriesList';
@@ -39,6 +40,18 @@ export function CanopyEntriesPanel({ defaultPath }: CanopyEntriesPanelProps = {}
               Click a row to see what the Myco agent recorded — the file's
               description, exports, imports, and top comment. Re-embed any
               row whose description has drifted from the latest content.
+            </p>
+            <p className="max-w-3xl font-sans text-xs text-on-surface-variant">
+              Descriptions come from the{' '}
+              <Link
+                to="/agent?tab=tasks&task=canopy-describe"
+                className="text-primary underline underline-offset-2 hover:text-primary/80"
+              >
+                canopy-describe task
+              </Link>
+              , which is opt-in by default. If this list is empty (or
+              <em> Described</em> shows zero), enable the task&rsquo;s
+              schedule so it can fill in descriptions in the background.
             </p>
           </div>
         </div>

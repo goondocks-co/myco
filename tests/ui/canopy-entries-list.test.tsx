@@ -4,6 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import type {
   CanopyEntriesListResponse,
   CanopyEntryRow,
@@ -138,16 +139,17 @@ describe('CanopyEntriesList', () => {
     });
   });
 
-  it('renders visible Described and Embedded labels next to the dropdowns', async () => {
+  it('renders visible Language and Described labels next to the dropdowns', async () => {
     fetchJsonMock.mockResolvedValue({ rows: [], total: 0, limit: 50, offset: 0 });
     renderList({});
     await waitFor(() => {
       expect(screen.getByTestId('canopy-entries-empty')).toBeInTheDocument();
     });
-    // The toolbar renders Described and Embedded as visible inline labels —
-    // not just as the placeholder text inside the dropdown.
+    // The toolbar renders Language and Described as visible inline labels —
+    // not just as the placeholder text inside the dropdown. Embedded is no
+    // longer a top-level filter (no user action it gates), so it's not in
+    // the toolbar — the per-row Embedded column still shows status.
     expect(screen.getByText('Described')).toBeInTheDocument();
-    expect(screen.getByText('Embedded')).toBeInTheDocument();
     expect(screen.getByText('Language')).toBeInTheDocument();
   });
 
@@ -203,7 +205,9 @@ function renderPanel() {
   const client = makeQueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <CanopyEntriesPanel />
+      <MemoryRouter>
+        <CanopyEntriesPanel />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
