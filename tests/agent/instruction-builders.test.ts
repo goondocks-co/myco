@@ -670,7 +670,14 @@ describe('buildTaskInstruction', () => {
   it('returns undefined for cortex-instructions when stored input is already current', async () => {
     createAgent(DEFAULT_AGENT_ID);
     const config = MycoConfigSchema.parse({ version: 3 });
-    const built = await buildCortexInstructionsInput(config);
+    // buildCortexInstructionsInput now requires a vaultDir for the
+    // canopy-map gate. Use a tmp dir with a pre-seeded machine_id so the
+    // build is deterministic without writing to a real vault.
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'myco-task-instr-'));
+    const vaultDir = join(tmpRoot, '.myco');
+    mkdirSync(vaultDir, { recursive: true });
+    writeFileSync(join(vaultDir, 'machine_id'), 'test-machine', 'utf-8');
+    const built = await buildCortexInstructionsInput(config, vaultDir);
 
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
@@ -679,7 +686,8 @@ describe('buildTaskInstruction', () => {
       generated_at: epochSeconds(),
     });
 
-    const result = await buildTaskInstruction(CORTEX_INSTRUCTIONS_TASK, undefined, undefined, undefined, undefined, config);
+    const result = await buildTaskInstruction(CORTEX_INSTRUCTIONS_TASK, undefined, undefined, tmpRoot, undefined, config);
     expect(result).toBeUndefined();
+    rmSync(tmpRoot, { recursive: true, force: true });
   });
 });

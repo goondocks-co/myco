@@ -297,7 +297,7 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const built = await buildCortexInstructionsInput(config, getTeamClient);
+    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
     const resultPromise = runAgentFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,

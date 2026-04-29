@@ -1,5 +1,5 @@
 version: 3
-config_version: 6
+config_version: 7
 embedding:
   provider: ollama
   model: bge-m3:latest
@@ -138,17 +138,33 @@ canopy:
     background_enabled: true
     background_period_minutes: 60
   exclude:
-    patterns:
-      - node_modules
+    default_patterns:
       - .git
+      - .DS_Store
+      - node_modules
+      - __pycache__
+      - .venv
+      - venv
+      - env
+      - ENV
+      - .pytest_cache
+      - .ruff_cache
+      - .mypy_cache
+      - .tox
       - dist
       - build
+      - target
+      - .gradle
+      - .cache
       - .next
+      - .nuxt
       - .turbo
+      - .svelte-kit
       - "**/*.lock"
       - "**/package-lock.json"
       - "**/pnpm-lock.yaml"
       - "**/yarn.lock"
+    patterns: []
 cortex:
   canopy:
     injection:

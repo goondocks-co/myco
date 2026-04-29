@@ -1135,8 +1135,9 @@ export async function buildTaskInstruction(
       return instruction ? { instruction } : undefined;
     }
     case CORTEX_INSTRUCTIONS_TASK: {
-      if (!config) return undefined;
-      const built = await buildScheduledCortexInstruction(config, getTeamClient);
+      if (!config || !projectRoot) return undefined;
+      const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
+      const built = await buildScheduledCortexInstruction(config, vaultDir, getTeamClient);
       return built
         ? {
             instruction: built.instruction,

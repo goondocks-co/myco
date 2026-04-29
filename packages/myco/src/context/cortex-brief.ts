@@ -22,6 +22,9 @@ import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listSpores } from '@myco/db/queries/spores.js';
+import { readCanopyMap } from '@myco/canopy/map/store.js';
+import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
   TOOL_DEFINITIONS,
@@ -261,8 +264,21 @@ export interface CortexInstructionPayload {
 
 export async function buildCortexInstructionsInput(
   config: MycoConfig,
+  vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload> {
+  // Probe the Canopy Map state once at build time so the prompt can branch
+  // deterministically. We only emit the canopy_map() directive when a
+  // populated map exists for this project — that way agents downstream
+  // never see guidance for a tool that would return empty. The chain
+  // also covers describe state implicitly: the map task can't produce a
+  // non-empty row without described files, so a populated map proves
+  // canopy-describe has run successfully.
+  const projectId = resolveCanopyProjectId(vaultDir);
+  const machineId = getMachineId(vaultDir);
+  const mapRow = readCanopyMap(projectId, machineId);
+  const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
+
   const capabilities = await resolveCortexCapabilities(config, getTeamClient);
   const capabilitySummary = buildCapabilitySummary(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
@@ -307,9 +323,15 @@ export async function buildCortexInstructionsInput(
     '- Keep the output compact and ready for direct injection.',
   ];
 
-  if (input.context.cortex_enabled) {
+  if (input.context.cortex_enabled && hasCanopyMap) {
+    // Emitted only when a non-empty Canopy Map exists for this project.
+    // That gate makes the directive trustworthy unconditionally — there
+    // is no empty-state caveat to hedge with — so the generated downstream
+    // copy can be a default action rather than a conditional. If the map
+    // is missing or empty, this directive is omitted entirely and the
+    // session-start instructions stay silent about canopy_map().
     instructionParts.push(
-      '- When mentioning code exploration, suggest agents call `canopy_map()` first to get the architectural overview — it\'s cheaper than exploring with Glob/Grep.',
+      '- Teach `canopy_map()` as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action ("call canopy_map() first"), not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
     );
   }
 
@@ -348,9 +370,10 @@ export async function buildCortexInstructionsInput(
 
 export async function buildScheduledCortexInstruction(
   config: MycoConfig,
+  vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload | undefined> {
-  const built = await buildCortexInstructionsInput(config, getTeamClient);
+  const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
   const existing = getCortexInstructions(DEFAULT_AGENT_ID);
   if (existing?.input_hash === built.inputHash) {
     return undefined;
