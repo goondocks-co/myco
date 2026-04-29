@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import type { RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';
@@ -99,7 +100,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       id: session_id,
       agent: agent ?? 'claude-code',
       user: null,
-      project_root: process.cwd(),
+      project_root: resolveProjectRoot(vaultDir),
       branch: branch ?? null,
       started_at: startedEpoch,
       created_at: now,

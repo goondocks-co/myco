@@ -48,7 +48,7 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "displayName": "Canopy Describe",
     "description": "Generate one-sentence file summaries to populate llm_description on canopy_entries. Local-first; runs as a background trickle.",
     "agent": "myco-agent",
-    "prompt": "Either describe a single canopy_entries row (single-row mode) or drain a batch of pending rows using canopy_describe_next + canopy_describe_write (batch mode). The instruction tells you which mode you are in.",
+    "prompt": "Map-mode task: the harness fans out per-item prompts for each pending canopy_entries row. No manual tool orchestration needed.",
     "isDefault": false,
     "reasoningLevel": "low",
     "maxTurns": 60,
@@ -56,24 +56,50 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
     "phases": [
       {
         "name": "describe",
-        "prompt": "You write one-sentence summaries of source files for a code\nintelligence system. The instruction payload contains the data\nyou need.\n\nSingle-row mode: the payload contains one file's metadata and a\nhead-of-file excerpt. Reply with one sentence describing the\nfile's architectural purpose, then call canopy_describe_write\nwith the row's path and your sentence. Stop.\n\nBatch mode: call canopy_describe_next to pull a batch of pending\nrows. For each entry, emit one sentence and call\ncanopy_describe_write({ path, description }). Continue until the\nbatch returns zero entries or you reach the batch_size cap, then\nstop.\n\nStyle rules (apply to every description):\n- Exactly one sentence.\n- Maximum 180 characters.\n- No markdown, no quotes, no preamble.\n- Describe the file's purpose at the architectural level — do not\n  narrate exports already visible in the metadata.\n- If the file is configuration, generated, or trivial, say so.\n",
-        "tools": [
-          "canopy_describe_next",
-          "canopy_describe_write"
-        ],
-        "maxTurns": 60,
+        "prompt": "",
+        "tools": [],
+        "maxTurns": 1,
         "reasoningLevel": "low",
-        "required": true
+        "required": true,
+        "mode": "map",
+        "perItemMaxTurns": 5,
+        "perItemTimeoutSeconds": 60,
+        "onItemError": "skip",
+        "source": {
+          "tool": "canopy_describe_next",
+          "args": {
+            "canopy_entry_path": "{{ params.canopy_entry_path | default(null) }}",
+            "limit": "{{ params.batch_size | default(10) }}"
+          },
+          "itemsPath": "entries"
+        },
+        "item": {
+          "prompt": "Call the canopy_describe_write tool with one sentence describing\nthis file's architectural purpose at the system level. Style:\nexactly one sentence, max 180 chars, no markdown, no quotes, no\npreamble. If the file is configuration, generated, or trivial,\nsay so. Do not narrate exports already visible in the metadata.\nYou MUST emit the tool call — text-only responses are discarded.\n\nFile: {{ item.path }}\nLanguage: {{ item.language }}\nExports: {{ item.exports }}\nImports: {{ item.imports }}\nTop comment: {{ item.top_comment }}\nFirst lines:\n{{ item.first_lines }}\n"
+        },
+        "sink": {
+          "tool": "canopy_describe_write",
+          "argMap": {
+            "path": "{{ item.path }}"
+          }
+        }
       }
     ],
     "schedule": {
       "enabled": false,
-      "intervalSeconds": 900,
+      "intervalSeconds": 120,
       "runIn": [
+        "active",
         "idle",
         "sleep"
       ],
-      "preCondition": "has-pending-canopy-rows"
+      "preCondition": "has-pending-canopy-rows",
+      "accelerator": {
+        "name": "canopy-pending-describe",
+        "thresholds": {
+          "steady": 50,
+          "accelerated": 500
+        }
+      }
     },
     "params": {
       "batch_size": 10,
@@ -104,7 +130,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 20,
         "reasoningLevel": "low",
-        "required": true
+        "required": true,
+        "onItemError": "skip"
       }
     ],
     "schedule": {
@@ -141,7 +168,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 10,
         "reasoningLevel": "default",
         "required": true,
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "author",
@@ -153,7 +181,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "research"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ],
     "schedule": {
@@ -189,7 +218,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "vault_report"
         ],
         "maxTurns": 18,
-        "required": true
+        "required": true,
+        "onItemError": "skip"
       }
     ]
   },
@@ -286,7 +316,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 8,
         "reasoningLevel": "low",
         "required": true,
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "assess",
@@ -305,7 +336,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "inventory"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "act",
@@ -322,7 +354,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "assess"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ],
     "schedule": {
@@ -357,7 +390,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "vault_stage_skill"
         ],
         "maxTurns": 10,
-        "required": true
+        "required": true,
+        "onItemError": "skip"
       },
       {
         "name": "validate",
@@ -376,7 +410,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "draft"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ],
     "schedule": {
@@ -411,7 +446,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         ],
         "maxTurns": 15,
         "required": true,
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "synthesize-evaluate",
@@ -427,7 +463,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "explore"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ],
     "schedule": {
@@ -500,7 +537,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 20,
         "reasoningLevel": "low",
         "required": true,
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "extract",
@@ -521,7 +559,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "read-state"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "summarize",
@@ -538,7 +577,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "read-state"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "consolidate",
@@ -555,7 +595,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "extract"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-assess",
@@ -572,7 +613,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "consolidate"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-10000",
@@ -588,7 +630,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "digest-assess"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-5000",
@@ -604,7 +647,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "digest-assess"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-1500",
@@ -619,7 +663,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "digest-assess"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "report",
@@ -638,7 +683,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "digest-10000",
           "digest-5000",
           "digest-1500"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ],
     "contextQueries": {
@@ -678,7 +724,14 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "idle",
         "sleep"
       ],
-      "preCondition": "has-unprocessed-batches"
+      "preCondition": "has-unprocessed-batches",
+      "accelerator": {
+        "name": "unprocessed-settled-batches",
+        "thresholds": {
+          "steady": 5,
+          "accelerated": 25
+        }
+      }
     }
   },
   {
@@ -704,7 +757,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "maxTurns": 25,
         "reasoningLevel": "default",
         "required": true,
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "explore-themes",
@@ -722,7 +776,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "dependsOn": [
           "orient"
         ],
-        "readOnly": true
+        "readOnly": true,
+        "onItemError": "skip"
       },
       {
         "name": "seed-spores",
@@ -737,7 +792,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": true,
         "dependsOn": [
           "explore-themes"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-10000",
@@ -754,7 +810,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "seed-spores"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-5000",
@@ -770,7 +827,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "seed-spores"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "digest-1500",
@@ -786,7 +844,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
         "required": false,
         "dependsOn": [
           "seed-spores"
-        ]
+        ],
+        "onItemError": "skip"
       },
       {
         "name": "report",
@@ -802,7 +861,8 @@ export const BUNDLED_AGENT_TASKS: readonly AgentTask[] = [
           "digest-10000",
           "digest-5000",
           "digest-1500"
-        ]
+        ],
+        "onItemError": "skip"
       }
     ]
   }

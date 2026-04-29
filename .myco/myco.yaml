@@ -77,12 +77,15 @@ agent:
         base_url: http://localhost:1234
         model: google/gemma-4-26b-a4b
         reasoning_map:
-          low: google/gemma-4-26b-a4b
-          default: google/gemma-4-31b
+          low: openai/gpt-oss-20b
+          default: google/gemma-4-26b-a4b
           high: google/gemma-4-31b
+        context_length: 16384
       runtime: openai-agents
       schedule:
         enabled: true
+      params:
+        batch_size: 10
     canopy-map:
       provider:
         runtime: claude-sdk

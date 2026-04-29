@@ -18,6 +18,7 @@ import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import {
   listCandidatesWithCount,
   getCandidate,
@@ -249,7 +250,7 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
       if (record.name) {
-        const projectRoot = path.resolve(vaultDir, '..');
+        const projectRoot = resolveProjectRoot(vaultDir);
         const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
         try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });

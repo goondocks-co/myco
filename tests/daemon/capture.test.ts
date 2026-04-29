@@ -39,6 +39,13 @@ import {
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
 
+/**
+ * Project root used by handleToolUse to relativize tool file paths. Tests
+ * use process.cwd() — same value the production code now derives from
+ * vaultDir (which during tests is created under the test cwd).
+ */
+const TEST_PROJECT_ROOT = process.cwd();
+
 describe('daemon capture flow', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
@@ -65,9 +72,9 @@ describe('daemon capture flow', () => {
     expect(result1.promptNumber).toBe(1);
 
     // --- PostToolUse × 3 ---
-    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.ts' }, 'File written');
-    handleToolUse(sessionId, 'Bash', { command: 'npm run build' }, 'Build succeeded');
-    handleToolUse(sessionId, 'Read', { file_path: '/tmp/hello.ts' }, 'export function...');
+    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.ts' }, 'File written', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'Bash', { command: 'npm run build' }, 'Build succeeded', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'Read', { file_path: '/tmp/hello.ts' }, 'export function...', TEST_PROJECT_ROOT);
 
     // --- UserPromptSubmit #2 (closes batch 1, opens batch 2) ---
     const result2 = handleUserPrompt(sessionId, 'Now add tests');
@@ -75,7 +82,7 @@ describe('daemon capture flow', () => {
     expect(result2.promptNumber).toBe(2);
 
     // --- PostToolUse × 1 ---
-    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.test.ts' }, 'Test file written');
+    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.test.ts' }, 'Test file written', TEST_PROJECT_ROOT);
 
     // --- Stop (closes batches, NOT the session) ---
     handleStopBatches(sessionId);
@@ -144,7 +151,7 @@ describe('daemon capture flow', () => {
     });
 
     // Tool use without a prior user prompt — should still record activity
-    handleToolUse(sessionId, 'Read', { file_path: '/tmp/file.ts' }, 'contents');
+    handleToolUse(sessionId, 'Read', { file_path: '/tmp/file.ts' }, 'contents', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId });
     expect(activities.length).toBe(1);
@@ -163,7 +170,7 @@ describe('daemon capture flow', () => {
       created_at: now,
     });
 
-    handleToolUse(sessionId, 'edit', { filePath: '/tmp/opencode.ts' }, 'updated');
+    handleToolUse(sessionId, 'edit', { filePath: '/tmp/opencode.ts' }, 'updated', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId });
     expect(activities.length).toBe(1);
@@ -183,7 +190,7 @@ describe('daemon capture flow', () => {
     const absolute = `${process.cwd()}/src/file.ts`;
     recordPendingInjection(sessionId, 'src/file.ts', 123);
 
-    handleToolUse(sessionId, 'Read', { file_path: absolute }, 'contents');
+    handleToolUse(sessionId, 'Read', { file_path: absolute }, 'contents', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId });
     expect(activities).toHaveLength(1);
@@ -246,7 +253,7 @@ describe('daemon capture flow', () => {
 
     // Send a very large tool input
     const largeInput = { file_path: '/tmp/file.ts', content: 'x'.repeat(10000) };
-    handleToolUse(sessionId, 'Write', largeInput, undefined);
+    handleToolUse(sessionId, 'Write', largeInput, undefined, TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId });
     expect(activities.length).toBe(1);

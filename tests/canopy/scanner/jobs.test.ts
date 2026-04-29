@@ -153,3 +153,80 @@ describe('CanopyBackgroundScan', () => {
   });
 });
 
+describe('mass-add kick (Change 3 trigger)', () => {
+  it('runCanopyScan calls onCanopyMassAdd when added > threshold', async () => {
+    // Threshold is 10. Write 12 files so the populate adds 12 > 10.
+    for (let i = 0; i < 12; i++) write(`f${i}.ts`, `export const x${i} = ${i};\n`);
+    const { logger } = buildLogger();
+    let kicks = 0;
+    await runCanopyScan({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+      onCanopyMassAdd: () => { kicks++; },
+    });
+    expect(kicks).toBe(1);
+  });
+
+  it('runCanopyScan does NOT call onCanopyMassAdd when added is small (steady churn)', async () => {
+    // Write 3 files — comfortably under the threshold of 10. A normal
+    // working session adds 1–5 rows; the kick must not fire.
+    for (let i = 0; i < 3; i++) write(`f${i}.ts`, `export const x${i} = ${i};\n`);
+    const { logger } = buildLogger();
+    let kicks = 0;
+    await runCanopyScan({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+      onCanopyMassAdd: () => { kicks++; },
+    });
+    expect(kicks).toBe(0);
+  });
+
+  it('runInitialCanopyPopulate kicks via onCanopyMassAdd on a fresh vault', async () => {
+    // Initial populate runs runCanopyScan internally — fresh table, all
+    // files added, count > threshold. The recovery-from-wipe scenario
+    // exercises the same code path.
+    for (let i = 0; i < 15; i++) write(`f${i}.ts`, `export const x${i} = ${i};\n`);
+    const { logger } = buildLogger();
+    let kicks = 0;
+    await runInitialCanopyPopulate({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+      onCanopyMassAdd: () => { kicks++; },
+    });
+    expect(kicks).toBe(1);
+  });
+
+  it('CanopyDeltaScanRunner kicks via onCanopyMassAdd when delta scan adds many rows', async () => {
+    // Set up: write 12 files, run a delta scan against an empty table
+    // (so all 12 register as "added"), confirm the kick fires.
+    for (let i = 0; i < 12; i++) write(`f${i}.ts`, `export const x${i} = ${i};\n`);
+    const { logger } = buildLogger();
+    let kicks = 0;
+    const runner = new CanopyDeltaScanRunner({
+      db: getDatabase(),
+      logger,
+      machineId: 'local',
+      projectRoot,
+      projectId: projectRoot,
+      liveConfig,
+      onCanopyMassAdd: () => { kicks++; },
+    });
+    await runner.run();
+    // Drain the microtask queue used by setTimeout(0) inside execute().
+    await new Promise((r) => setTimeout(r, 5));
+    expect(kicks).toBe(1);
+  });
+});
+

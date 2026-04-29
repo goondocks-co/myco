@@ -320,9 +320,10 @@ describe('handleCanopyEntryRedescribe', () => {
     const call = runner.calls[0];
     expect(call.task).toBe('canopy-describe');
     expect(call.project_id).toBe(PROJECT_ID);
-    // Single-row instruction is keyed by the row's path (used as the
-    // canopy_entry_id by loadCanopyRow in instruction-builders.ts).
-    expect(call.params.canopy_entry_id).toBe('a.ts');
+    // Single-row mode: the row's path is passed as canopy_entry_path,
+    // which canopy_describe_next uses to fetch that one row bypassing
+    // the pending predicate.
+    expect(call.params.canopy_entry_path).toBe('a.ts');
   });
 
   it('throws when the entry does not exist (no run dispatched)', async () => {
@@ -352,7 +353,7 @@ describe('handleCanopyEntryRedescribe', () => {
 
 interface MockRunnerCall {
   task: string;
-  params: { canopy_entry_id: string };
+  params: { canopy_entry_path: string };
   project_id: string;
 }
 

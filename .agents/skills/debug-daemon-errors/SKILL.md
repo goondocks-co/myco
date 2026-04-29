@@ -52,6 +52,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Session lifecycle** | Two sessions created for one conversation; session ID missing mid-run; `sessionStart` fires twice |
 | **Session maintenance** | Active sessions vanish mid-run; sessions deleted with no explicit error; real sessions treated as dead |
 | **Executor (phased tasks)** | Task status transitions to `complete` or `failed` silently; no error thrown; output is empty |
+| **Timeout cascade failure** | Task shows *"Claude Code process aborted by user"* or similar abort messages when no user action occurred; executor timeout in one phase affects subsequent phases |
 
 Map your log output to one of these categories. If you're unsure, search the daemon source for the log prefix:
 
@@ -182,66 +183,6 @@ WHERE abs(strftime('%s', s1.created_at) - strftime('%s', s2.created_at)) < 10
 ORDER BY s1.created_at DESC;"
 ```
 
-**Investigation markers:**
-- Sub-agent sessions have `parentId` pointing to a user session
-- User fork sessions have `parentId = NULL`  
-- Both may arrive within seconds but through different hook paths
-- Sub-agent sessions often have prefixed titles like `"[Sub-agent] ..."`
-
-**Fix pattern:** Distinguish session creation context in hook handling:
-```typescript
-// In the hook payload processor
-if (payload.parentSessionId) {
-  // This is a sub-agent spawn - validate parent exists
-  const parent = await db.select().from(sessions).where(eq(sessions.id, payload.parentSessionId)).get();
-  if (!parent) {
-    logger.warn(`[Session] Sub-agent session references non-existent parent: ${payload.parentSessionId}`);
-    return;
-  }
-  logger.info(`[Session] Creating sub-agent session under parent ${payload.parentSessionId}`);
-} else {
-  // This is a user fork - independent session
-  logger.info(`[Session] Creating independent user session`);
-}
-```
-
----
-
-### Session Re-Registration After Worktree-to-Main Handoff
-
-**When:** Working in a detached worktree, copying changes to a local feature branch in the main checkout, and the daemon loses track of the session context during the branch switch.
-
-**Symptom:** After copying changes from a worktree to the main repo and switching branches, the daemon may show session ID mismatches, create phantom duplicate sessions, lose session history, or fail to capture subsequent activity.
-
-**Root Cause:** The daemon session registry is tied to the git context where it was originally registered. When you copy work from a detached worktree to a different branch in the main checkout, the session remains registered to the old context.
-
-**Fix Pattern:**
-```typescript
-// Session re-registration API pattern
-export async function reRegisterSessionToCurrentBranch(sessionId: string) {
-  const currentGitContext = await getCurrentGitContext();
-
-  await db.update(sessions)
-    .set({
-      gitBranch: currentGitContext.branch,
-      gitCommit: currentGitContext.commit,
-      workingDirectory: process.cwd(),
-      updated_at: new Date()
-    })
-    .where(eq(sessions.id, sessionId));
-
-  sessionRegistry.clearContext(sessionId);
-  sessionRegistry.register(sessionId, currentGitContext);
-
-  logger.info(`[Session] Re-registered session ${sessionId} to branch ${currentGitContext.branch}`);
-}
-```
-
-**Manual Recovery:**
-1. Restart daemon: `myco daemon:restart`
-2. Or use re-registration: `myco session:reregister <session-id>`
-3. Verify: `myco daemon:status` and `git branch`
-
 ---
 
 ### Session Maintenance — Over-Aggressive Dead-Session Cleanup
@@ -360,6 +301,61 @@ try {
 
 ---
 
+### Executor — AbortController Wiring Gaps in Single-Query Tasks
+
+**When:** Single-query tasks run indefinitely despite `timeoutSeconds` being configured in agent config. This is distinct from the phased executor timeout cascade above — the issue is that timeout signals never reach the execution layer at all.
+
+**Symptom:** Long-running single-query tasks (like skill generation) that should timeout after N minutes continue running for hours with no termination mechanism.
+
+**Root Cause:** The `executeSingleQuery` entry point lacks timeout signal wiring. While phased tasks properly pass `AbortController` signals through the executor pipeline, single-query execution bypasses this and connects directly to the SDK without timeout enforcement.
+
+**Trace:** Check timeout signal flow in single-query execution:
+```bash
+grep -rn "executeSingleQuery\|timeoutSeconds\|AbortController" packages/myco/src/agent/ --include="*.ts"
+```
+
+Look for:
+- Whether `timeoutSeconds` from agent config reaches the SDK call
+- Whether `executeSingleQuery` creates or receives an `AbortController`
+- Whether the SDK runtime receives timeout signals in single-query mode
+
+**Fix pattern:** Wire timeout signals through the single-query execution path:
+```typescript
+// In single-query executor
+export async function executeSingleQuery(
+  runtime: Runtime,
+  query: string,
+  options: { timeoutSeconds?: number }
+) {
+  const controller = new AbortController();
+  
+  // Set up timeout if configured
+  let timeoutId: NodeJS.Timeout | undefined;
+  if (options.timeoutSeconds) {
+    timeoutId = setTimeout(() => {
+      controller.abort();
+    }, options.timeoutSeconds * 1000);
+  }
+
+  try {
+    // Pass abort signal to runtime
+    const result = await runtime.execute(query, {
+      signal: controller.signal
+    });
+    
+    return result;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+```
+
+**Gotcha:** This requires parallel fixes in both the executor layer (creating the controller) AND the runtime layer (honoring the signal). Missing either piece leaves timeouts non-functional.
+
+---
+
 ### Executor — Status Swallowing
 
 If an executor task transitions to a terminal status (`complete`, `failed`) without producing output or logging an error, the executor is catching an exception and recording "success" rather than propagating the failure.
@@ -447,46 +443,6 @@ function createSessionWithDiagnostics(payload: SessionPayload) {
 }
 ```
 
-### Diagnostic Query Patterns
-
-Add structured queries that help diagnose session relationship issues:
-
-```typescript
-// Query for sessions with suspicious timing patterns
-export async function findSuspiciousSessionTiming(withinSeconds: number = 30) {
-  return db.select({
-    id: sessions.id,
-    parentId: sessions.parentId,
-    title: sessions.title,
-    created_at: sessions.created_at,
-  })
-  .from(sessions)
-  .where(
-    sql`EXISTS (
-      SELECT 1 FROM sessions s2 
-      WHERE s2.id != ${sessions.id} 
-      AND abs(strftime('%s', s2.created_at) - strftime('%s', ${sessions.created_at})) < ${withinSeconds}
-    )`
-  )
-  .orderBy(desc(sessions.created_at));
-}
-
-// Query for orphaned child sessions
-export async function findOrphanedChildSessions() {
-  return db.select()
-    .from(sessions)
-    .where(
-      and(
-        isNotNull(sessions.parentId),
-        sql`NOT EXISTS (
-          SELECT 1 FROM sessions parent 
-          WHERE parent.id = ${sessions.parentId}
-        )`
-      )
-    );
-}
-```
-
 ### Hook Payload Diagnostic Enhancement
 
 Add payload validation and logging at the hook entry point:
@@ -568,9 +524,9 @@ export async function recoverInterruptedTasks() {
 }
 ```
 
-### Session Cleanup on Startup
+### Session and Outbox Recovery
 
-Clean up sessions that were left in inconsistent states:
+Clean up sessions and outbox entries left in inconsistent states:
 
 ```typescript
 // Clean up sessions that were marked active but daemon wasn't running
@@ -585,11 +541,6 @@ export async function cleanupStaleActiveSessions() {
     );
 
   for (const session of staleActiveSessions) {
-    logger.warn(`[Recovery] Found stale active session`, {
-      sessionId: session.id,
-      lastUpdate: session.updated_at
-    });
-
     // Transition to terminal based on content
     const status = session.promptCount > 0 ? 'complete' : 'abandoned';
     await db.update(sessions)
@@ -599,13 +550,7 @@ export async function cleanupStaleActiveSessions() {
   
   logger.info(`[Recovery] Cleaned up ${staleActiveSessions.length} stale active sessions`);
 }
-```
 
-### Outbox Recovery Patterns
-
-Handle outbox entries that were being processed during shutdown:
-
-```typescript
 // Reset outbox entries that were being drained during shutdown
 export async function resetProcessingOutboxEntries() {
   const processingEntries = await db.select()
@@ -618,11 +563,6 @@ export async function resetProcessingOutboxEntries() {
     );
 
   for (const entry of processingEntries) {
-    logger.warn(`[Recovery] Resetting processing outbox entry`, {
-      entryId: entry.id,
-      type: entry.type
-    });
-
     await db.update(outbox)
       .set({ 
         status: 'pending',
@@ -636,63 +576,43 @@ export async function resetProcessingOutboxEntries() {
 }
 ```
 
-### Database Lock Recovery
+### Database Lock Recovery and Startup Orchestration
 
-Handle SQLite locks from interrupted transactions:
+Handle SQLite locks and coordinate recovery procedures:
 
 ```typescript
 // Check for database locks and attempt recovery
 export async function recoverDatabaseLocks() {
   try {
-    // Test database accessibility
     await db.select().from(sessions).limit(1).get();
     logger.info(`[Recovery] Database accessible`);
   } catch (err) {
     if (err.message.includes('database is locked')) {
       logger.warn(`[Recovery] Database locked, attempting recovery`);
-      
-      // Force close all connections and reinitialize
       await db.$client.close();
-      
-      // Wait briefly for locks to clear
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Reinitialize database connection
       await initializeDatabase();
-      
       logger.info(`[Recovery] Database lock recovered`);
     } else {
       throw err;
     }
   }
 }
-```
 
-### Startup Recovery Orchestration
-
-Coordinate all recovery patterns during daemon initialization:
-
-```typescript
 // Main recovery function called during daemon startup
 export async function performStartupRecovery() {
   const startTime = Date.now();
   logger.info(`[Recovery] Starting daemon recovery procedures`);
 
   try {
-    // Database recovery first
     await recoverDatabaseLocks();
-    
-    // Then state recovery
     await recoverInterruptedTasks();
     await cleanupStaleActiveSessions();
     await resetProcessingOutboxEntries();
-    
-    // Restart schedulers after state is clean
     await restartJobSchedulers();
     
     const duration = Date.now() - startTime;
     logger.info(`[Recovery] Completed daemon recovery in ${duration}ms`);
-    
   } catch (err) {
     logger.error(`[Recovery] Daemon recovery failed`, { error: err.message });
     throw err;
@@ -700,48 +620,7 @@ export async function performStartupRecovery() {
 }
 ```
 
-### Graceful Shutdown Preparation
-
-Implement clean shutdown to minimize recovery needs:
-
-```typescript
-// Prepare for graceful shutdown
-export async function prepareGracefulShutdown() {
-  logger.info(`[Shutdown] Preparing graceful daemon shutdown`);
-  
-  // Stop accepting new work
-  await stopJobSchedulers();
-  
-  // Wait for current tasks to complete (with timeout)
-  const runningTasks = await db.select()
-    .from(tasks)
-    .where(eq(tasks.status, 'running'));
-    
-  if (runningTasks.length > 0) {
-    logger.info(`[Shutdown] Waiting for ${runningTasks.length} running tasks`);
-    
-    // Wait up to 30 seconds for tasks to complete
-    for (let i = 0; i < 30; i++) {
-      const stillRunning = await db.select()
-        .from(tasks)
-        .where(eq(tasks.status, 'running'));
-        
-      if (stillRunning.length === 0) break;
-      
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-  
-  // Mark remaining tasks as interrupted
-  await db.update(tasks)
-    .set({ status: 'interrupted', updated_at: new Date() })
-    .where(eq(tasks.status, 'running'));
-    
-  logger.info(`[Shutdown] Graceful shutdown preparation complete`);
-}
-```
-
-**Usage:** Call `performStartupRecovery()` during daemon initialization and `prepareGracefulShutdown()` on shutdown signals. This minimizes the need for recovery procedures on the next startup.
+**Usage:** Call `performStartupRecovery()` during daemon initialization to restore consistent state after unclean shutdowns.
 
 ---
 
@@ -755,6 +634,7 @@ export async function prepareGracefulShutdown() {
 | Two sessions for one conversation | No duplicate guard on session insert | Check for existing session ID before insert |
 | Sessions vanish mid-run, no explicit error | `findDeadSessionIds()` too aggressive | Set `DEAD_SESSION_MAX_PROMPTS = 0`; add `status != 'active'` filter |
 | Task shows "process aborted by user" without user action | **Phase-level OR task-level timeout** — one phase times out, next phase runs under dead AbortController (spore `1f76ffdd`) | Create fresh `AbortController` for each phase; don't reuse across phases; distinguish task-level timeout from phase timeout in error logging |
+| Single-query tasks run indefinitely despite timeout config | `executeSingleQuery` missing timeout signal wiring | Wire `AbortController` from `timeoutSeconds` config through to SDK runtime |
 | Task status = `complete`, no output | Exception swallowed in executor | Separate success path from catch block; mark failed on error |
 | Phantom sessions with different parentID values | OpenCode sub-agent vs user fork confusion | Use diagnostic logging to distinguish session creation context; validate parentID references |
 | Sessions created within seconds but unclear relationship | Missing session type context in logs | Implement structured session creation logging with type classification |
@@ -762,4 +642,3 @@ export async function prepareGracefulShutdown() {
 | Database locked after restart | SQLite locks from interrupted transactions | Force close connections, wait for locks to clear, reinitialize |
 | Sessions stuck in `active` status after restart | Daemon shutdown during session processing | Cleanup stale active sessions: transition to `complete` or `abandoned` based on content |
 | Outbox entries stuck in `processing` status | Daemon shutdown during outbox drain | Reset processing entries to `pending` with incremented retry count |
-| Session context mismatch after worktree-to-main copy | Session registered to wrong git context | Restart daemon or use session re-registration API to update context |

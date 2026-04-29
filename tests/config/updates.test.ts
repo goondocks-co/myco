@@ -197,6 +197,38 @@ describe('withTaskConfig', () => {
     expect(updated.agent.tasks?.['skill-survey']?.schedule?.enabled).toBe(true);
   });
 
+  it('withTaskConfig persists schedule accelerator override', () => {
+    const updated = withTaskConfig(baseConfig(), 'canopy-describe', {
+      schedule: {
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 25, accelerated: 250 },
+        },
+      },
+    });
+    expect(updated.agent.tasks?.['canopy-describe']?.schedule?.accelerator).toEqual({
+      name: 'canopy-pending-describe',
+      thresholds: { steady: 25, accelerated: 250 },
+    });
+  });
+
+  it('withTaskConfig clears schedule accelerator with null', () => {
+    let config = withTaskConfig(baseConfig(), 'canopy-describe', {
+      schedule: {
+        enabled: true,
+        accelerator: {
+          name: 'canopy-pending-describe',
+          thresholds: { steady: 25, accelerated: 250 },
+        },
+      },
+    });
+    config = withTaskConfig(config, 'canopy-describe', {
+      schedule: { accelerator: null },
+    });
+    expect(config.agent.tasks?.['canopy-describe']?.schedule?.enabled).toBe(true);
+    expect(config.agent.tasks?.['canopy-describe']?.schedule?.accelerator).toBeUndefined();
+  });
+
   it('withTaskConfig clears schedule with null', () => {
     const base = MycoConfigSchema.parse({
       version: 3,
@@ -240,5 +272,54 @@ describe('withContext', () => {
     const config = baseConfig();
     withContext(config, { digest_tier: 1500 });
     expect(config.context.digest_tier).toBe(5000);
+  });
+});
+
+describe('unknown-key rejection (regression for canopy-describe params save)', () => {
+  it('withTaskConfig persists params and round-trips them on disk shape', () => {
+    const config = withTaskConfig(baseConfig(), 'canopy-describe', {
+      params: { batch_size: 20 },
+    });
+    expect(config.agent.tasks?.['canopy-describe']?.params).toEqual({ batch_size: 20 });
+  });
+
+  it('withTaskConfig merges params over an existing override', () => {
+    const a = withTaskConfig(baseConfig(), 'canopy-describe', {
+      params: { batch_size: 20, max_description_chars: 200 },
+    });
+    const b = withTaskConfig(a, 'canopy-describe', { params: { batch_size: 30 } });
+    expect(b.agent.tasks?.['canopy-describe']?.params).toEqual({
+      batch_size: 30,
+      max_description_chars: 200,
+    });
+  });
+
+  it('withTaskConfig deletes params when set to null', () => {
+    const a = withTaskConfig(baseConfig(), 'canopy-describe', {
+      params: { batch_size: 20 },
+    });
+    const b = withTaskConfig(a, 'canopy-describe', { params: null });
+    expect(b.agent.tasks?.['canopy-describe']?.params).toBeUndefined();
+  });
+
+  it('withTaskConfig throws on an unknown top-level key instead of silently dropping', () => {
+    expect(() =>
+      // @ts-expect-error — testing the runtime guard against a stale/wrong payload
+      withTaskConfig(baseConfig(), 'canopy-describe', { batchSize: 20 }),
+    ).toThrow(/unknown field 'batchSize'/);
+  });
+
+  it('withEmbedding throws on an unknown key', () => {
+    expect(() =>
+      // @ts-expect-error — runtime guard test
+      withEmbedding(baseConfig(), { providerz: 'ollama' }),
+    ).toThrow(/unknown field 'providerz'/);
+  });
+
+  it('withContext throws on an unknown key', () => {
+    expect(() =>
+      // @ts-expect-error — runtime guard test
+      withContext(baseConfig(), { digestTier: 1500 }),
+    ).toThrow(/unknown field 'digestTier'/);
   });
 });

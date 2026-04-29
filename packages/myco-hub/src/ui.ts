@@ -334,6 +334,12 @@ export function renderHubHtml(): string {
       font-size: 14px;
       font-weight: 700;
     }
+    .runtime-error {
+      color: #d27e7e;
+      font-family: var(--font-data);
+      font-size: 12px;
+      word-break: break-word;
+    }
     .mini-metrics {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -673,6 +679,7 @@ export function renderHubHtml(): string {
       const projectId = encodeURIComponent(project.id);
       const version = runtime.version ? 'v' + runtime.version : 'version unknown';
       const port = runtime.port ? ':' + runtime.port : 'no port';
+      const runtimeError = runtime.error ? '<div class="runtime-error">' + escapeHtml(runtime.error) + '</div>' : '';
       const activeSessions = statsValue(project, ['daemon', 'active_sessions'], []);
       const activeSessionCount = Array.isArray(activeSessions) ? activeSessions.length : 0;
       const sessionCount = statsValue(project, ['vault', 'session_count'], 'n/a');
@@ -688,6 +695,7 @@ export function renderHubHtml(): string {
         '<div>' + statusCell(runtime.status) + '</div>' +
         '<div class="runtime">' +
           '<div class="runtime-strong">' + escapeHtml(version + ' ' + port) + '</div>' +
+          runtimeError +
           '<div>uptime ' + escapeHtml(formatUptime(uptime)) + '</div>' +
           '<div class="mini-metrics">' +
             renderMiniMetric('Active', formatNumber(activeSessionCount)) +

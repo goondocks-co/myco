@@ -329,9 +329,16 @@ export async function handleUpdateTaskConfig(
     return { status: HTTP_BAD_REQUEST, body: { error: 'missing_body' } };
   }
 
-  const updated = updateConfig(vaultDir, (config) =>
-    withTaskConfig(config, taskId, body),
-  );
+  let updated;
+  try {
+    updated = updateConfig(vaultDir, (config) =>
+      withTaskConfig(config, taskId, body),
+    );
+  } catch (err) {
+    // withTaskConfig throws on unknown keys to prevent silent drops.
+    // Surface the message to the UI so a stale form payload fails loudly.
+    return { status: HTTP_BAD_REQUEST, body: { error: (err as Error).message } };
+  }
 
   return {
     status: HTTP_OK,

@@ -38,6 +38,7 @@ mock.module('@myco/hooks/client.js', () => ({
 
 mock.module('@myco/vault/resolve.js', () => ({
   resolveVaultDir: vi.fn(),
+  resolveProjectRoot: vi.fn((vaultDir: string) => path.dirname(vaultDir)),
 }));
 
 import { run } from '@myco/cli/init.js';

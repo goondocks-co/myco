@@ -2,10 +2,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { RuntimeExecuteInput, RuntimeExecuteResult, AgentRuntime, RuntimeCapability } from './types.js';
+import type {
+  RuntimeExecuteInput,
+  RuntimeExecuteResult,
+  AgentRuntime,
+  RuntimeCapability,
+  RuntimeScope,
+  RuntimeScopeRunInput,
+  RuntimeScopeSetup,
+} from './types.js';
 import { RuntimeExecutionError } from './types.js';
-import { createScopedVaultToolServer, createVaultToolServer } from '@myco/agent/tools.js';
-import { buildPhaseEnv } from '@myco/agent/provider.js';
+import {
+  createMaterializedVaultToolServer,
+  createScopedVaultToolServer,
+  createVaultToolServer,
+} from '@myco/agent/tools.js';
+import { buildPhaseEnv, isLocalProvider } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
@@ -46,8 +58,24 @@ function getIsolatedPluginCacheDir(): string {
   return dir;
 }
 
-function buildToolServer(input: RuntimeExecuteInput) {
+/** Disable thinking on local providers whose endpoints don't accept the SDK's reasoning enum. */
+function suppressEffortLeakForLocalProvider(
+  provider?: RuntimeExecuteInput['provider'],
+): { thinking?: { type: 'disabled' } } {
+  return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
+}
+
+function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'] }) {
   const { toolSurface } = input;
+  // Map-phase fast path: pre-materialized tool list. Bypasses both
+  // createScopedVaultToolServer and createVaultToolServer rebuilds, which
+  // would discard the argMap-stripped sink schema and outcome-capture
+  // wrapper that map-phase needs. See the design spec under "Why this
+  // shape" — materialized tools must flow through unchanged.
+  if (toolSurface.tools && toolSurface.tools.length > 0) {
+    return createMaterializedVaultToolServer(toolSurface.tools);
+  }
+
   if (toolSurface.toolNames && toolSurface.toolNames.length === 0) {
     return null;
   }
@@ -120,6 +148,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let costUsd = 0;
     let assistantMessages = 0;
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
+    const localProvider = isLocalProvider(input.provider);
 
     // Always pass `strictMcpConfig: true`, even when the phase wants no
     // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
@@ -149,6 +178,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
         allowDangerouslySkipPermissions: true,
         persistSession: true,
         env,
+        ...suppressEffortLeakForLocalProvider(input.provider),
         ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
         ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
         ...(input.abortController ? { abortController: input.abortController } : {}),
@@ -182,7 +212,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
           turnsUsed = message.num_turns ?? assistantMessages;
           inputTokens = message.usage?.input_tokens ?? 0;
           outputTokens = message.usage?.output_tokens ?? 0;
-          costUsd = message.total_cost_usd ?? 0;
+          costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
           if (message.subtype === 'success') {
             finalText = message.result;
           }
@@ -204,6 +234,112 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       turnsUsed,
       usage: buildUsage(),
       sessionRef: input.sessionRef,
+    };
+  }
+
+  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+    const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
+    const claudeCodeExecutable = resolveClaudeCodeExecutable();
+    const baseEnv = buildPhaseEnv(setup.provider);
+    const env = {
+      ...(baseEnv ?? process.env),
+      MYCO_AGENT_SESSION: '1',
+      CLAUDE_CODE_PLUGIN_CACHE_DIR:
+        process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
+    };
+    const localProvider = isLocalProvider(setup.provider);
+
+    if (setup.logger) {
+      const mcpToolNames = setup.toolSurface.toolNames
+        ?? (toolServer ? ['<full-vault-surface>'] : []);
+      setup.logger.debug('agent.runtime.scope-open', 'Claude SDK scope opened', {
+        runId: setup.toolSurface.runId,
+        agentId: setup.toolSurface.agentId,
+        model: setup.model,
+        mcpToolCount: mcpToolNames.length,
+        mcpTools: mcpToolNames,
+      });
+    }
+
+    let closed = false;
+
+    return {
+      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
+        if (closed) throw new Error('ClaudeSdkRuntime: scope.run() called after close()');
+
+        let finalText = '';
+        let turnsUsed = 0;
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let costUsd = 0;
+        let assistantMessages = 0;
+
+        const messageStream: AsyncIterable<SDKMessage> = query({
+          prompt: input.prompt,
+          options: {
+            model: setup.model,
+            systemPrompt: setup.systemPrompt,
+            tools: [],
+            mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
+            strictMcpConfig: true,
+            settingSources: [],
+            maxTurns: input.maxTurns,
+            permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
+            persistSession: false,
+            env,
+            ...suppressEffortLeakForLocalProvider(setup.provider),
+            ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
+            ...(input.abortController ? { abortController: input.abortController } : {}),
+          },
+        });
+
+        const buildUsage = () => ({
+          requests: turnsUsed,
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+          costUsd,
+          requestUsageEntries: turnsUsed > 0
+            ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
+            : [],
+        });
+
+        try {
+          for await (const message of messageStream) {
+            if (message.type === 'assistant') {
+              assistantMessages += 1;
+              continue;
+            }
+            if (message.type === 'result') {
+              turnsUsed = message.num_turns ?? assistantMessages;
+              inputTokens = message.usage?.input_tokens ?? 0;
+              outputTokens = message.usage?.output_tokens ?? 0;
+              costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
+              if (message.subtype === 'success') {
+                finalText = message.result;
+              }
+            }
+          }
+        } catch (err) {
+          if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
+            throw new RuntimeExecutionError(
+              errorMessage(err),
+              { usage: buildUsage() },
+              { cause: err },
+            );
+          }
+          throw err;
+        }
+
+        return { finalText, turnsUsed, usage: buildUsage() };
+      },
+      async close(): Promise<void> {
+        // The Claude SDK MCP server is in-process — no async resource to
+        // release. Just gate further run() calls.
+        if (closed) return;
+        closed = true;
+      },
     };
   }
 }

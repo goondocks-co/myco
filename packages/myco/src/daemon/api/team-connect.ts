@@ -10,6 +10,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
 import { countPending, countDeadLettered, backfillUnsynced, retryDeadLettered } from '@myco/db/queries/team-outbox.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
@@ -338,7 +339,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // myco-team's `upgrade` subcommand takes a project root and re-resolves
     // the vault from there — passing vaultDir directly would double-append
     // `.myco` in non-git-repo projects (resolveVaultDir's fallback path).
-    const projectRoot = path.dirname(vaultDir);
+    const projectRoot = resolveProjectRoot(vaultDir);
     logger.info('team-sync.upgrade.start', 'Starting worker upgrade subprocess', {
       entry: teamEntry,
       node: nodeBinary,

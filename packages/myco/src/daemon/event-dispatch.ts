@@ -35,6 +35,7 @@ import {
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, upsertSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
@@ -91,7 +92,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     triggerTitleSummary,
   } = deps;
 
-  const projectRoot = process.cwd();
+  const projectRoot = resolveProjectRoot(vaultDir);
   const manifests = loadManifests();
   const planTagsByAgent = new Map(
     manifests.map((manifest) => [manifest.name, manifest.capture?.planTags ?? []] as const),
@@ -357,6 +358,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
+          projectRoot,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });

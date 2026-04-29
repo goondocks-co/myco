@@ -31,6 +31,12 @@ import { textResult, type VaultToolDeps } from './types.js';
 // from blowing out the model's context.
 const FIRST_LINES = 60;
 
+// Hard character cap for the first-lines payload. Generated files
+// (templates.generated.ts and similar) often have very long single
+// lines — 60 lines × 1000+ chars is enough to overflow a 32K-token
+// context window once the system prompt and tool schemas are added.
+const FIRST_LINES_MAX_CHARS = 8000;
+
 // 10 is the largest value that has been observed to drain reliably on
 // 26B-class local models — see canopy-describe.yaml for the per-turn
 // tool-emission ceiling that bounds this. The MAX is generous so a
@@ -60,6 +66,13 @@ const SELECT_PENDING_SQL = `
   LIMIT ?
 `;
 
+const SELECT_BY_PATH_SQL = `
+  SELECT *
+  FROM canopy_entries
+  WHERE project_id = ? AND path = ?
+  LIMIT 1
+`;
+
 const UPDATE_DESCRIPTION_SQL = `
   UPDATE canopy_entries
   SET llm_description = ?,
@@ -75,7 +88,9 @@ async function readFirstLines(absolutePath: string, limit: number): Promise<stri
   } catch {
     return '';
   }
-  return content.split(/\r?\n/).slice(0, limit).join('\n');
+  const sliced = content.split(/\r?\n/).slice(0, limit).join('\n');
+  if (sliced.length <= FIRST_LINES_MAX_CHARS) return sliced;
+  return `${sliced.slice(0, FIRST_LINES_MAX_CHARS)}\n... [truncated; first ${limit} lines exceed ${FIRST_LINES_MAX_CHARS} chars]`;
 }
 
 function resolveProjectId(deps: VaultToolDeps): string | null {
@@ -90,13 +105,34 @@ function resolveProjectRoot(deps: VaultToolDeps): string | null {
 }
 
 export function createCanopyTools(deps: VaultToolDeps) {
+  // Per-run single-call gate. The fetch-loop failure mode (canopy_describe_next
+  // called repeatedly with zero canopy_describe_write calls) is now blocked
+  // structurally by map-phase mode in canopy-describe.yaml — the harness calls
+  // the source tool from harness code with the source absent from the per-item
+  // tool surface, so the model has no fetch tool to loop on. This gate remains
+  // as defense-in-depth for any free-form caller that would re-fetch — without
+  // it, a misconfigured task or a future free-form regression could bring the
+  // loop back. Closure-scoped because createCanopyTools is called once per run
+  // from agent/tools.ts.
+  let describeNextIssued = false;
+
   const canopyDescribeNext = tool(
     'canopy_describe_next',
-    'Return up to `limit` canopy_entries rows that need an llm_description (NULL or stale relative to mechanical_updated_at). Returns an empty entries array when the queue is drained — that is the signal to stop.',
+    'Return canopy_entries rows that need an llm_description. Pending mode (default): returns up to `limit` pending rows (NULL or stale relative to mechanical_updated_at). Single-row mode (`canopy_entry_path` set): returns that specific row, bypassing the pending predicate. May only be called ONCE per run; a second call returns an empty entries array with reason="already_issued_this_run" — write descriptions for the entries already returned, then stop.',
     {
       limit: z.number().int().positive().optional().describe(`Max rows to return (default ${DEFAULT_BATCH_LIMIT}, ceiling ${MAX_BATCH_LIMIT}).`),
+      canopy_entry_path: z.string().optional().describe('When set, fetch this one row by path bypassing the pending predicate (single-row mode).'),
     },
     async (args) => {
+      if (describeNextIssued) {
+        return textResult({
+          entries: [],
+          reason: 'already_issued_this_run',
+          guidance: 'Write canopy_describe_write for each entry from the previous canopy_describe_next result, then stop.',
+        });
+      }
+      describeNextIssued = true;
+
       // No project_id override knob — projectId/projectRoot must move
       // together (path.dirname(vaultDir) is both), and exposing one without
       // the other lets a caller select rows from one project but read
@@ -110,10 +146,14 @@ export function createCanopyTools(deps: VaultToolDeps) {
         return textResult({ error: 'canopy_describe_next: projectRoot unavailable (no vaultDir/projectRoot on tool deps)' });
       }
 
-      const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
-      const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
-
-      const rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+      let rows: CanopyEntry[];
+      if (args.canopy_entry_path) {
+        rows = getDatabase().prepare(SELECT_BY_PATH_SQL).all(projectId, args.canopy_entry_path) as CanopyEntry[];
+      } else {
+        const requested = args.limit ?? DEFAULT_BATCH_LIMIT;
+        const limit = Math.min(Math.max(1, requested), MAX_BATCH_LIMIT);
+        rows = getDatabase().prepare(SELECT_PENDING_SQL).all(projectId, limit) as CanopyEntry[];
+      }
       const safeRows = rows.filter((row) => !isCanopySensitivePath(row.path));
 
       const entries = await Promise.all(safeRows.map(async (row) => ({

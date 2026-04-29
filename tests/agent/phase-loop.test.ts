@@ -179,6 +179,34 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('executePhase', () => {
+  it('routes mode: map phases to the map-phase path', async () => {
+    const mapPhase: PhaseDefinition = {
+      name: 'm', prompt: '', tools: [], maxTurns: 1, required: true,
+      mode: 'map',
+      perItemMaxTurns: 1,
+      source: { tool: 'nonexistent', args: {}, itemsPath: 'entries' },
+      item: { prompt: 'x' },
+      sink: { tool: 'nonexistent', argMap: {} },
+    };
+    const ctx = baseContext({
+      config: {
+        ...baseConfig(),
+        runtime: 'claude-sdk',
+      },
+    });
+
+    const result = await executePhase({
+      ctx,
+      phasePrompt: 'p',
+      phaseModel: 'm',
+      phase: mapPhase,
+      toolSurface: { agentId: 'a', runId: 'r' },
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.summary).toMatch(/source tool|nonexistent/i);
+  });
+
   it('returns a completed PhaseResult on runtime success', async () => {
     const ctx = baseContext();
     const p = phase('draft');
