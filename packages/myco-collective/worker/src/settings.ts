@@ -44,7 +44,7 @@ export const COLLECTIVE_SETTING_DEFINITIONS: CollectiveSettingDefinition[] = [
   },
   {
     key: 'cortex.digest.tier',
-    description: 'Select which digest tier should be used by myco_context() and session-start digest injection.',
+    description: 'Select which digest tier should be used by myco_cortex op=digest and session-start digest injection.',
     value_type: 'integer',
     example: 5000,
   },

@@ -38,7 +38,7 @@ export interface ProjectRecord {
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 let schemaInitialized = false;
 const AUTH_ROTATE_CHOICES = new Set(['admin', 'mcp', 'all']);
-const WORKER_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project']);
+const WORKER_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -390,7 +390,7 @@ async function handleWorkerSettings(env: Env): Promise<Response> {
   const settings = await listSettings(env);
   return jsonResponse({
     settings_overrides: Object.fromEntries(Object.entries(settings).map(([key, value]) => [key, value.value])),
-    capabilities: ['collective_search', 'collective_projects', 'collective_project'],
+    capabilities: ['collective_search', 'collective_projects', 'collective_project', 'collective_settings'],
   });
 }
 

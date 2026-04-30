@@ -92,7 +92,7 @@ Every record is indexed for both keyword search and semantic similarity. Use [Ol
 
 ### Canopy — code intelligence for your agent
 
-Myco keeps a fresh per-file index of your project — exports, imports, top comment, optional one-line summary — and hands the agent that anatomy *before* it opens a file. Most reads end early because the summary already answered. A single `canopy_map()` MCP call returns the project's architectural overview, so a new agent can orient in one tool call instead of a dozen `Glob`s. Manage all of it from the dashboard's **Cortex** tab. See the [Canopy docs](docs/canopy.md).
+Myco keeps a fresh per-file index of your project — exports, imports, top comment, optional one-line summary — and hands the agent that anatomy *before* it opens a file. Most reads end early because the summary already answered. A single `myco_cortex` call with `op: "canopy_map"` returns the project's architectural overview, so a new agent can orient in one tool call instead of a dozen `Glob`s. Manage all of it from the dashboard's **Cortex** tab. See the [Canopy docs](docs/canopy.md).
 
 ### Context injection
 

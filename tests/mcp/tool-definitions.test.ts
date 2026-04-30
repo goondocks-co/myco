@@ -24,12 +24,9 @@ import {
 } from '@myco/tools/definitions.js';
 import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
 import { handleMycoPlans } from '@myco/tools/plans.js';
-import { handleMycoRemember } from '@myco/tools/remember.js';
-import { handleMycoSavePlan } from '@myco/tools/save-plan.js';
-import { handleMycoSupersede } from '@myco/tools/supersede.js';
-import { handleMycoConsolidate } from '@myco/tools/consolidate.js';
 import { handleMycoSearch } from '@myco/tools/search.js';
 import { handleMycoSessions } from '@myco/tools/sessions.js';
+import { handleMycoSpores } from '@myco/tools/spores.js';
 import {
   handleCollectiveSearch,
   handleCollectiveProject,
@@ -63,7 +60,7 @@ function constantNameForTool(toolName: string): string {
 }
 
 // Each tool is registered either as a HANDLERS Map entry (lazy-loaded
-// `[TOOL_X, async () =>`) or, for genuinely divergent tools like canopy_map,
+// `[TOOL_X, async () =>`) or, for direct-DB tools like myco_cortex Canopy ops,
 // as an explicit `if (name === TOOL_X)` branch in callTool.
 function isRegistered(constant: string): boolean {
   return (
@@ -137,9 +134,9 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('every tool name starts with myco_, collective_, or canopy_', () => {
+  it('every tool name starts with myco_ or collective_', () => {
     for (const tool of [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]) {
-      expect(tool.name).toMatch(/^(myco_|collective_|canopy_)/);
+      expect(tool.name).toMatch(/^(myco_|collective_)/);
     }
   });
 
@@ -147,7 +144,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // so clients can render the correct confirmation UI. Missing any one of
   // these is a regression.
   it('annotated tools declare the full MCP annotation shape', () => {
-    const required = ['myco_plans', 'myco_runs'];
+    const required = ['myco_cortex', 'myco_plans', 'myco_sessions', 'myco_spores', 'myco_agent'];
     for (const name of required) {
       const tool = TOOL_DEFINITIONS.find((t) => t.name === name);
       expect(tool, `Tool ${name} missing from TOOL_DEFINITIONS`).toBeDefined();
@@ -159,12 +156,12 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
     }
   });
 
-  it('myco_runs annotations are pinned (fully read-only, idempotent, local)', () => {
-    const runs = TOOL_DEFINITIONS.find((t) => t.name === 'myco_runs');
-    expect(runs?.annotations?.readOnlyHint).toBe(true);
-    expect(runs?.annotations?.destructiveHint).toBe(false);
-    expect(runs?.annotations?.idempotentHint).toBe(true);
-    expect(runs?.annotations?.openWorldHint).toBe(false);
+  it('myco_agent annotations are pinned (fully read-only, idempotent, local)', () => {
+    const agent = TOOL_DEFINITIONS.find((t) => t.name === 'myco_agent');
+    expect(agent?.annotations?.readOnlyHint).toBe(true);
+    expect(agent?.annotations?.destructiveHint).toBe(false);
+    expect(agent?.annotations?.idempotentHint).toBe(true);
+    expect(agent?.annotations?.openWorldHint).toBe(false);
   });
 
   it('myco_plans annotations are pinned (destructive via op: "delete", idempotent, local)', () => {
@@ -186,13 +183,19 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
  * to catch silent schema-vs-handler drift.
  */
 describe('handler forwards every documented schema property', () => {
-  it('myco_plans forwards id, status, and limit', async () => {
+  it('myco_plans forwards list filters', async () => {
     const client = mockClient({ plans: [] });
-    await handleMycoPlans({ id: 'p1', status: 'active', limit: 7 }, client);
+    await handleMycoPlans({ op: 'list', status: 'active', limit: 7 }, client);
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('id=p1');
     expect(url).toContain('status=active');
     expect(url).toContain('limit=7');
+  });
+
+  it('myco_plans forwards get id', async () => {
+    const client = mockClient({ plans: [] });
+    await handleMycoPlans({ op: 'get', id: 'p1' }, client);
+    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
+    expect(url).toContain('id=p1');
   });
 
   it('myco_sessions forwards all documented filters', async () => {
@@ -229,9 +232,9 @@ describe('handler forwards every documented schema property', () => {
     expect(url).toContain('language=typescript');
   });
 
-  it('myco_remember forwards content, type, tags via POST body', async () => {
+  it('myco_spores op save forwards content, type, tags via POST body', async () => {
     const client = mockClient({ id: 'g-1', observation_type: 'gotcha', status: 'active', created_at: 1 });
-    await handleMycoRemember({ content: 'x', type: 'gotcha', tags: ['t1', 't2'] }, client);
+    await handleMycoSpores({ op: 'save', content: 'x', type: 'gotcha', tags: ['t1', 't2'] }, client);
     expect(client.post).toHaveBeenCalledWith('/api/mcp/remember', {
       content: 'x',
       type: 'gotcha',
@@ -239,7 +242,7 @@ describe('handler forwards every documented schema property', () => {
     });
   });
 
-  it('myco_save_plan forwards session_id, content, source_path/plan_key, title, status, tags via POST body', async () => {
+  it('myco_plans op save forwards session_id, content, source_path/plan_key, title, status, tags via POST body', async () => {
     const client = mockClient({
       id: 'plan-1',
       logical_key: 'session:s1:key:primary',
@@ -252,7 +255,8 @@ describe('handler forwards every documented schema property', () => {
       created_at: 1,
       updated_at: 1,
     });
-    await handleMycoSavePlan({
+    await handleMycoPlans({
+      op: 'save',
       session_id: 's1',
       content: '# Plan',
       plan_key: 'primary',
@@ -271,9 +275,9 @@ describe('handler forwards every documented schema property', () => {
     });
   });
 
-  it('myco_supersede forwards old_spore_id, new_spore_id, reason via POST body', async () => {
+  it('myco_spores op supersede forwards old_spore_id, new_spore_id, reason via POST body', async () => {
     const client = mockClient({ old_spore: 'a', new_spore: 'b', status: 'superseded' });
-    await handleMycoSupersede({ old_spore_id: 'a', new_spore_id: 'b', reason: 'because' }, client);
+    await handleMycoSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', reason: 'because' }, client);
     expect(client.post).toHaveBeenCalledWith('/api/mcp/supersede', {
       old_spore_id: 'a',
       new_spore_id: 'b',
@@ -281,14 +285,15 @@ describe('handler forwards every documented schema property', () => {
     });
   });
 
-  it('myco_consolidate forwards source_spore_ids, consolidated_content, observation_type, tags, reason', async () => {
+  it('myco_spores op consolidate forwards source_spore_ids, consolidated_content, observation_type, tags, reason', async () => {
     const client = mockClient({
       new_spore_id: 'w-1',
       sources_superseded: ['a', 'b'],
       status: 'consolidated',
       created_at: 1,
     });
-    await handleMycoConsolidate({
+    await handleMycoSpores({
+      op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       consolidated_content: 'merged',
       observation_type: 'gotcha',
@@ -387,8 +392,16 @@ describe('cross-surface tool-name drift', () => {
     for (const n of names) {
       expect(canonical.has(n), `Team worker tool ${n} not in canonical TOOL_DEFINITIONS`).toBe(true);
     }
-    expect(names).toContain('myco_recall');
+    expect(new Set(names)).toEqual(new Set([
+      'myco_search',
+      'myco_cortex',
+      'myco_plans',
+      'myco_sessions',
+      'myco_skills',
+      'myco_spores',
+    ]));
     expect(names).not.toContain('myco_get');
+    expect(names).not.toContain('myco_recall');
     expect(names).not.toContain('myco_graph');
     expect(names).not.toContain('myco_team');
   });

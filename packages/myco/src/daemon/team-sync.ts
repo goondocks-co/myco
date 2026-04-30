@@ -41,11 +41,17 @@ export interface TeamSearchOptions {
 
 export interface TeamSearchResult {
   id: string;
-  table_name: string;
-  content: string;
+  type?: string;
+  table?: string;
+  table_name?: string;
+  title?: string;
+  preview?: string;
+  content?: string;
   score: number;
   machine_id: string;
   metadata?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+  retrieve?: { tool: string; input: Record<string, unknown> };
 }
 
 export interface TeamSearchResponse {
@@ -267,7 +273,7 @@ export class TeamSyncClient {
   /**
    * Fetch a single record by id from the team worker.
    *
-   * Used by the daemon's recall fallback: when `handleGetSession` /
+   * Used by entity get fallbacks: when `handleGetSession` /
    * `handleGetSpore` returns a local miss we try the team's D1 copy before
    * surfacing a 404. Fallback semantics — never throws; any failure (404,
    * network, auth, malformed response) returns `null` so the caller can

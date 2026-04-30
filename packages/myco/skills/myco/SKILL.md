@@ -16,7 +16,7 @@ Use Myco tools proactively in these situations — don't wait to be asked:
 - **When wondering why code is structured a certain way** — decisions and trade-offs behind the architecture are captured as spores.
 - **When continuing work on a feature** — check session history and plan progress for context on what's been done and what's pending.
 - **After discovering a gotcha, making a key decision, or fixing a tricky bug** — save it so future sessions benefit from the knowledge.
-- **When starting work on a branch** — context is injected automatically at session start, but you can call `myco_recall` for deeper context on specific files.
+- **When starting work on a branch** — context is injected automatically at session start, but you can call `myco_search` and then follow each result's `retrieve` hint for deeper context.
 
 ## What's Automatic
 
@@ -49,7 +49,7 @@ node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
 
 Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failures return `{ "ok": false, "tool": "<name>", "error": { "code": "...", "message": "..." } }`.
 
-The local Myco tool surface registers 12 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
+The local Myco tool surface registers 7 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
 
 Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the project-resolved CLI or MCP.
 
@@ -72,25 +72,37 @@ Runtime scopes stay separate:
 
 Remove only the worktree pin with `make dev-unlink-worktree`. Use `make dev-unlink` only when intentionally removing the shared dev symlinks from the main checkout.
 
-### myco_context — Get the project digest
+### myco_cortex — Get Cortex intelligence
 
-Retrieve Myco's pre-computed project digest: a synthesis of project history, decisions, patterns, active work, and institutional knowledge. This is the right tool when you need broad orientation on the project, not when you need to find a specific prior record.
+Retrieve Cortex-produced project intelligence: the pre-computed project digest, generated instructions, Canopy map, or a specific Canopy file summary.
 
 ```json
-{ "tier": 5000 }
+{ "op": "digest", "tier": 5000 }
 ```
 
 CLI:
 
 ```bash
-node .agents/myco-cli.cjs tool call myco_context --json --input '{"tier":5000}'
+node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"digest","tier":5000}'
 ```
 
 Tiers: `1500` (executive briefing), `5000` (default), `10000` (comprehensive). Prefer this over `myco_search` for broad project orientation; use `myco_search` when you need specific prior decisions or bug fixes.
 
+Canopy map:
+
+```bash
+node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'
+```
+
+Canopy entry returned by search:
+
+```json
+{ "op": "canopy_entry", "id": "/project:path/to/file.ts" }
+```
+
 ### myco_search — Find knowledge across the vault
 
-Search across sessions, plans, and spores.
+Search across sessions, plans, spores, skills, and Canopy file summaries.
 
 ```json
 { "query": "why did we choose JWT over session cookies", "type": "spore", "limit": 5 }
@@ -102,24 +114,26 @@ CLI:
 node .agents/myco-cli.cjs tool call myco_search --json --input '{"query":"why did we choose JWT over session cookies","type":"spore","limit":5}'
 ```
 
-**When to use**: searching for prior decisions, debugging context, or understanding rationale. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, or omit for all.
+**When to use**: searching for prior decisions, debugging context, understanding rationale, or finding source files by what they do. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, `"skill"` for skills, `"canopy"` for file summaries, or omit for all. Each result includes a stable `id` and, when the entity is retrievable, a `retrieve` object with the exact tool input to fetch it.
 
-### myco_recall — Look up a single vault note by ID
+### myco_spores — Manage durable spores
 
-Return the full content of a specific session, spore, or plan given its ID. Use this after `myco_search` returns an ID you want to read in full. When team sync is connected, recall automatically falls back to the team's D1 if the record isn't local.
+List, retrieve, save, supersede, or consolidate durable observations.
 
 ```json
-{ "note_id": "decision-abc123" }
+{ "op": "get", "id": "decision-abc123" }
 ```
 
-(Note: this is *not* a branch-based context tool. For project orientation, use `myco_context`.)
+```json
+{ "op": "list", "status": "active", "observation_type": "decision", "limit": 10 }
+```
 
-### myco_remember — Save an observation
+#### Save an observation
 
 Store a noteworthy observation for future sessions. Only save things that aren't obvious from reading the code.
 
 ```json
-{ "content": "better-sqlite3 WASM build fails on Node 22 ARM — must use native build", "type": "gotcha", "tags": ["sqlite", "build"] }
+{ "op": "save", "content": "better-sqlite3 WASM build fails on Node 22 ARM — must use native build", "type": "gotcha", "tags": ["sqlite", "build"] }
 ```
 
 **Observation types:** `gotcha`, `bug_fix`, `decision`, `discovery`, `trade_off`, `cross-cutting`.
@@ -135,30 +149,26 @@ Store a noteworthy observation for future sessions. Only save things that aren't
 
 Session association is derived by the daemon; the MCP client does not pass it.
 
-### myco_plans — List plans or read a single plan
+### myco_plans — Manage plans
 
-List plans and their progress, or retrieve a single plan's full content by ID.
+List plans, retrieve a single plan's full content by ID, save a plan, or delete one.
 
 ```json
-{ "status": "active" }
+{ "op": "list", "status": "active" }
 ```
 
 ```json
-{ "id": "plan-feature-x" }
+{ "op": "get", "id": "plan-feature-x" }
 ```
 
-When `id` is set, the response includes the plan's `content` field. Otherwise the list shape contains summary metadata only.
-
-### myco_save_plan — Persist a plan directly into Myco
-
-Save a plan directly to the current Myco session when you generated or materially revised it in the conversation.
+Save a plan directly to the current Myco session when you generated or materially revised it in the conversation:
 
 ```json
-{ "session_id": "sess-123", "content": "# Primary Plan", "plan_key": "primary" }
+{ "op": "save", "session_id": "sess-123", "content": "# Primary Plan", "plan_key": "primary" }
 ```
 
 ```json
-{ "session_id": "sess-123", "content": "# Plan", "source_path": "docs/plans/feature-x.md" }
+{ "op": "save", "session_id": "sess-123", "content": "# Plan", "source_path": "docs/plans/feature-x.md" }
 ```
 
 If the plan is also being written to disk, pass that same `source_path` so direct persistence and file capture reconcile to one logical plan. Use `plan_key` only for plans that do not have a durable file path.
@@ -168,27 +178,32 @@ If the plan is also being written to disk, pass that same `source_path` so direc
 Query past sessions with filters.
 
 ```json
-{ "branch": "feature/auth", "limit": 5 }
+{ "op": "list", "branch": "feature/auth", "limit": 5 }
+```
+
+```json
+{ "op": "get", "id": "session-abc123" }
 ```
 
 Filter by `plan`, `branch`, `user`, or `since` (ISO timestamp).
 
-### myco_supersede — Mark a spore as replaced
+#### Supersede a spore
 
 When a newer observation makes an older one obsolete, supersede it. The old spore stays in the vault (data is never deleted) but is marked `status: superseded`.
 
 ```json
-{ "old_spore_id": "decision-abc123", "new_spore_id": "decision-def456", "reason": "Migrated from bcrypt to argon2" }
+{ "op": "supersede", "old_spore_id": "decision-abc123", "new_spore_id": "decision-def456", "reason": "Migrated from bcrypt to argon2" }
 ```
 
 **When to use**: a decision was reversed, a gotcha was fixed, a discovery turned out to be wrong, or the codebase changed and an observation no longer applies.
 
-### myco_consolidate — Merge spores into wisdom
+#### Consolidate spores into wisdom
 
 Merge 2+ related spores into a single wisdom note. The daemon inserts the new spore, then marks each source `superseded` and writes a `resolution_events` row (action=`consolidate`) linking it to the new wisdom spore. The source content stays in the vault — nothing is deleted.
 
 ```json
 {
+  "op": "consolidate",
   "source_spore_ids": ["gotcha-aaa111", "gotcha-bbb222", "gotcha-ccc333"],
   "consolidated_content": "# SQLite Operational Gotchas\n\n1. WAL mode requires shared memory...\n2. Single writer lock...\n3. FTS5 tokenization...",
   "observation_type": "gotcha",
@@ -197,7 +212,7 @@ Merge 2+ related spores into a single wisdom note. The daemon inserts the new sp
 }
 ```
 
-**When to use**: multiple spores share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference. Prefer this over manually running `myco_supersede` repeatedly.
+**When to use**: multiple spores share a root cause, describe the same pattern from different angles, or would be more useful as a single comprehensive reference. Prefer this over manually running `myco_spores` op `"supersede"` repeatedly.
 
 For detailed patterns on when and how to consolidate, read `references/wisdom.md`.
 
@@ -206,23 +221,23 @@ For detailed patterns on when and how to consolidate, read `references/wisdom.md
 List skills generated by Myco, filter by status, or look up a specific skill by ID or name.
 
 ```json
-{ "status": "active" }
+{ "op": "list", "status": "active" }
 ```
 
 ```json
-{ "id": "install-and-initialize-myco" }
+{ "op": "get", "id": "install-and-initialize-myco" }
 ```
 
-### myco_runs — Inspect agent run history
+### myco_agent — Inspect agent run history
 
 List recent agent runs with runtime, provider, model, token, and cost fields, or fetch a specific run by id to see its phases and write intents.
 
 ```json
-{ "op": "list", "limit": 20 }
+{ "op": "runs", "limit": 20 }
 ```
 
 ```json
-{ "op": "get", "id": "run-abc123" }
+{ "op": "run", "id": "run-abc123" }
 ```
 
 ### Collective tools (only when connected)
@@ -261,14 +276,14 @@ Spores are injected into every prompt via the `UserPromptSubmit` hook. Each inje
 
 **Proactive superseding during normal work:**
 
-- You just changed how the stop hook works → an injected spore says it works the old way → `myco_supersede` with the old ID and a new `myco_remember` capturing the current behavior
+- You just changed how the stop hook works → an injected spore says it works the old way → `myco_spores` op `"supersede"` with the old ID and a new `myco_spores` op `"save"` capturing the current behavior
 - You see two injected spores that say conflicting things → supersede the older one
 - An injected gotcha references code that was refactored → supersede it
 
 **Other signals to act on:**
 
-- **Recurring gotchas**: the same problem keeps being recorded → `myco_consolidate` into one definitive note
-- **Overlapping content**: a `myco_remember` would duplicate an existing spore → `myco_supersede` with updated content instead
+- **Recurring gotchas**: the same problem keeps being recorded → `myco_spores` op `"consolidate"` into one definitive note
+- **Overlapping content**: a new spore would duplicate an existing spore → `myco_spores` op `"supersede"` with updated content instead
 - **Stale decisions**: a decision references a deleted component or reversed approach → supersede it
 
 The vault should get sharper over time, not just bigger. Every session should leave the vault more accurate than it found it.
@@ -277,22 +292,22 @@ The vault should get sharper over time, not just bigger. Every session should le
 
 ### Starting work on an existing feature
 
-1. `myco_recall` with your branch and key files
+1. `myco_cortex` op `"canopy_map"` for project layout, then `myco_search` with your branch and key files
 2. `myco_sessions` filtered by branch to see prior session summaries
 3. `myco_plans` to check if there's an active plan
-4. `myco_save_plan` after generating or revising a plan that should persist in Myco
+4. `myco_plans` op `"save"` after generating or revising a plan that should persist in Myco
 
 ### After fixing a tricky bug
 
 ```json
-{ "content": "Race condition in session stop: the unregister hook can fire before the stop hook processes the buffer. Fixed by checking buffer existence before deletion.", "type": "bug_fix", "tags": ["daemon", "hooks", "race-condition"] }
+{ "op": "save", "content": "Race condition in session stop: the unregister hook can fire before the stop hook processes the buffer. Fixed by checking buffer existence before deletion.", "type": "bug_fix", "tags": ["daemon", "hooks", "race-condition"] }
 ```
 
 ### Before making an architectural decision
 
 1. `myco_search` for prior decisions on the same component
 2. If you find relevant context, factor it into your recommendation
-3. After the decision is made, `myco_remember` the rationale
+3. After the decision is made, use `myco_spores` op `"save"` to capture the rationale
 
 ## Reconfiguration
 

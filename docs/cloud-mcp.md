@@ -10,29 +10,40 @@ The Cloud MCP server is **read-only by design**. It's a window into project inte
 
 ## Tools
 
-Five read-only tools. The Cloud MCP surface is deliberately narrower than the local MCP — it's for cloud agents that need to query project knowledge, not operate on it.
+Six read-only tools. The Cloud MCP surface follows the local search-then-entity pattern, but only exposes read operations for synced team data.
 
 ### Discovery — start here
 
-**`myco_search`** — Semantic and keyword search across all project knowledge. Returns ranked results with content previews.
+**`myco_search`** — Semantic and keyword search across synced project knowledge. Returns ranked results with stable IDs, previews, and `retrieve` hints.
 - `query` (string, required)
-- `types` (string array, optional) — filter to `spores`, `sessions`, `plans`, `artifacts`
+- `types` (string array, optional) — filter to `spores`, `sessions`, `plans`, `skill_records`
 - `limit` (number, default 10, max 50)
 
-**`myco_context`** — Pre-synthesized project digest at three depth tiers. The fastest way for a cloud agent to understand the project.
+**`myco_cortex`** — Pre-synthesized project digest at three depth tiers. The fastest way for a cloud agent to understand the project.
+- `op` (string, optional) — `digest`
 - `tier` (number, optional) — `1500` (executive summary), `5000` (deep onboarding, default), `10000` (comprehensive)
 
 ### Detail — retrieve specific items
 
-**`myco_recall`** — Retrieve a full item by ID and type.
-- `id` (string, required)
-- `type` (enum, required) — `session`, `spore`, `plan`, `artifact`, `skill`
+**`myco_plans`** — List or retrieve synced plans.
+- `op` — `list` or `get`
+- `id`, `machine_id` for `get`
+- `status`, `session`, `limit`
 
-**`myco_sessions`** — List and filter coding sessions.
+**`myco_sessions`** — List or retrieve synced coding sessions.
+- `op` — `list` or `get`
+- `id`, `machine_id` for `get`
 - `limit` (default 20, max 100), `status`, `agent`, `branch`, `since` (ISO date)
 
-**`myco_skills`** — List project skills (reusable patterns extracted from knowledge).
+**`myco_skills`** — List or retrieve synced project skills.
+- `op` — `list` or `get`
+- `id`, `machine_id` for `get`
 - `status`, `limit` (default 50, max 100)
+
+**`myco_spores`** — List or retrieve synced spores.
+- `op` — `list` or `get`
+- `id`, `machine_id` for `get`
+- `status`, `observation_type`, `agent_id`, `search`, `limit`, `offset`
 
 ## Setting it up
 

@@ -12,6 +12,7 @@ describe('handleContext', () => {
 
     expect(parsed.content).toBe('digest at 3000');
     expect(parsed.tier).toBe(3000);
+    expect(parsed.fallback).toBe(false);
     expect(parsed.generated_at).toBe(1700000000);
   });
 
@@ -31,8 +32,8 @@ describe('handleContext', () => {
     const result = await handleContext({ tier: 1500 }, { MYCO_TEAM_DB: fake.db });
     const parsed = parseToolResult(result);
 
-    expect(parsed.content).toBeNull();
+    expect(parsed.content).toContain('not yet available');
     expect(parsed.tier).toBe(1500);
-    expect(parsed.message).toBe('No digest available at tier 1500');
+    expect(parsed.fallback).toBe(false);
   });
 });

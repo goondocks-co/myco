@@ -28,8 +28,8 @@ describe('Myco tools dispatcher', () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient());
     const names = (await tools.listTools()).map((tool) => tool.name);
 
-    expect(names).toContain('myco_context');
-    expect(names).toContain('canopy_map');
+    expect(names).toContain('myco_cortex');
+    expect(names).toContain('myco_spores');
     expect(names).not.toContain('collective_search');
   });
 
@@ -48,7 +48,7 @@ describe('Myco tools dispatcher', () => {
       },
     }));
 
-    const result = await tools.callTool('myco_context', { tier: 5000 });
+    const result = await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
 
     expect(result).toEqual({
       content: 'digest',
@@ -73,7 +73,7 @@ describe('Myco tools dispatcher', () => {
   it('rejects non-object input', async () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient());
 
-    await expect(tools.callTool('myco_context', 'bad')).rejects.toThrow('Tool arguments must be a JSON object');
+    await expect(tools.callTool('myco_cortex', 'bad')).rejects.toThrow('Tool arguments must be a JSON object');
   });
 
   it('validates required schema fields before dispatch', async () => {
@@ -91,13 +91,14 @@ describe('Myco tools dispatcher', () => {
   it('validates schema enum values before dispatch', async () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient());
 
-    await expect(tools.callTool('myco_context', { tier: 1234 })).rejects.toThrow("Invalid argument 'tier'");
+    await expect(tools.callTool('myco_cortex', { op: 'digest', tier: 1234 })).rejects.toThrow("Invalid argument 'tier'");
   });
 
   it('validates array item types before dispatch', async () => {
     const tools = createMycoTools('/tmp/myco-vault', mockClient());
 
-    await expect(tools.callTool('myco_remember', {
+    await expect(tools.callTool('myco_spores', {
+      op: 'save',
       content: 'note',
       type: 'gotcha',
       tags: ['ok', 7],
@@ -125,14 +126,15 @@ describe('Myco tools dispatcher', () => {
       return fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-log-'));
     }
 
-    it('myco_context log carries tier + duration_ms', async () => {
+    it('myco_cortex digest log carries tier + duration_ms', async () => {
       const vaultDir = freshVault();
       const tools = createMycoTools(vaultDir, mockClient({
         digest: { tiers: [{ tier: 5000, content: 'd', generated_at: 1 }] },
       }));
-      await tools.callTool('myco_context', { tier: 5000 });
+      await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
       const entry = await readLastLog(vaultDir);
-      expect(entry.tool).toBe('myco_context');
+      expect(entry.tool).toBe('myco_cortex');
+      expect(entry.op).toBe('digest');
       expect(entry.tier).toBe(5000);
       expect(typeof entry.duration_ms).toBe('number');
       fs.rmSync(vaultDir, { recursive: true, force: true });

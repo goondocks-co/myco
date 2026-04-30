@@ -1,9 +1,19 @@
 import type { Env } from '../../index';
+import { fetchRecord } from '../../records';
+import { textJson } from '../result-shape';
 
 export async function handleSessions(
-  args: { limit?: number; status?: string; agent?: string; branch?: string; since?: string },
+  args: { op?: 'list' | 'get'; id?: string; machine_id?: string; limit?: number; status?: string; agent?: string; branch?: string; since?: string },
   env: Pick<Env, 'MYCO_TEAM_DB'>,
 ) {
+  const op = args.op ?? 'list';
+  if (op === 'get') {
+    if (!args.id) return textJson({ ok: false, error: 'id is required for op: get' });
+    const record = await fetchRecord(env, 'session', args.id, args.machine_id);
+    if (!record) return textJson({ ok: false, error: 'Session not found' });
+    return textJson(record);
+  }
+
   const { limit = 20, status, agent, branch, since } = args;
   const conditions: string[] = [];
   const binds: unknown[] = [];
@@ -20,5 +30,5 @@ export async function handleSessions(
     `SELECT id, machine_id, agent, "user", branch, status, title, SUBSTR(summary, 1, 300) as summary, prompt_count, tool_count, started_at, ended_at FROM sessions ${where} ORDER BY started_at DESC LIMIT ?`,
   ).bind(...binds).all();
 
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ sessions: results }) }] };
+  return textJson({ sessions: results });
 }

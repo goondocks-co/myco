@@ -11,6 +11,7 @@ import { validateAuth } from './auth';
 import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
+import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
 
@@ -110,7 +111,7 @@ const COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS = 5 * 60;
 const COLLECTIVE_STALE_AFTER_SECONDS = COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS * 3;
 const DEFAULT_TEAM_PACKAGE_VERSION = '0.1.0';
 const TEAM_COLLECTIVE_CAPABILITIES = ['search', 'digest', 'collective_proxy'] as const;
-const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project']);
+const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
 const VECTOR_REINDEX_DEFAULT_BATCH = 100;
 const VECTOR_REINDEX_MAX_BATCH = 250;
 
@@ -752,7 +753,9 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     return errorResponse('Missing query parameter "q"', 400);
   }
 
-  const topK = Math.min(parseInt(url.searchParams.get('top_k') ?? String(DEFAULT_TOP_K), 10), MAX_TOP_K);
+  const requestedLimit = url.searchParams.get('limit') ?? url.searchParams.get('top_k') ?? String(DEFAULT_TOP_K);
+  const parsedLimit = parseInt(requestedLimit, 10);
+  const topK = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), MAX_TOP_K) : DEFAULT_TOP_K;
 
   const results = await searchKnowledge(env.MYCO_TEAM_DB, env.MYCO_TEAM_VECTORS, env.AI, {
     query,
@@ -767,14 +770,15 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     name: url.searchParams.get('name') ?? undefined,
   });
 
-  return jsonResponse({ results: results.map((r) => ({ table: r.type, ...r })) });
+  return jsonResponse({ results: results.map(toCloudSearchResult) });
 }
 
-async function handleGetRecord(type: string, id: string, env: Env): Promise<Response> {
+async function handleGetRecord(type: string, id: string, request: Request, env: Env): Promise<Response> {
   if (!isAllowedRecordType(type)) {
     return errorResponse(`Unknown record type: ${type}`, 400);
   }
-  const record = await fetchRecord(env, type, id);
+  const machineId = new URL(request.url).searchParams.get('machine_id') ?? undefined;
+  const record = await fetchRecord(env, type, id, machineId);
   if (!record) {
     return jsonResponse({ error: 'not_found' }, 404);
   }
@@ -965,13 +969,13 @@ export default {
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
       }
-      // Single-record lookup used by the daemon's recall fallback (mirrors
+      // Single-record lookup used by the daemon's entity get fallback (mirrors
       // the fan-out pattern already in place for /search).
       if (method === 'GET' && path.startsWith('/records/')) {
         const segments = path.split('/').filter(Boolean);
         // /records/:type/:id
         if (segments.length === 3) {
-          return await handleGetRecord(segments[1], decodeURIComponent(segments[2]), env);
+          return await handleGetRecord(segments[1], decodeURIComponent(segments[2]), request, env);
         }
         return errorResponse('Not found', 404);
       }

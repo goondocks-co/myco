@@ -4,8 +4,7 @@
  * The MCP handler is a thin proxy over `/api/search` via `DaemonClient`. This
  * suite asserts that:
  *   - `type=canopy` is forwarded to the daemon endpoint, and
- *   - the canopy result rows the daemon returns (`{ project_id, path,
- *     llm_description, language, score }`) are passed through unchanged.
+ *   - canopy result rows are normalized with stable IDs and retrieve hints.
  *
  * The daemon-side canopy branch (which actually routes to the
  * `canopy_entries` namespace and hydrates `llm_description`) is exercised in
@@ -34,7 +33,7 @@ describe('myco_search type=canopy', () => {
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=5'));
   });
 
-  it('passes canopy result rows through unchanged', async () => {
+  it('normalizes canopy result rows with retrieve hints', async () => {
     const canopyRows = [
       {
         id: 'p:src/auth/login.ts',
@@ -51,10 +50,23 @@ describe('myco_search type=canopy', () => {
     const results = await handleMycoSearch({ query: 'login', type: 'canopy' }, client);
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
+      id: 'p:src/auth/login.ts',
+      type: 'canopy_entry',
+      title: 'src/auth/login.ts',
+      preview: 'login flow handler',
       project_id: 'p',
       path: 'src/auth/login.ts',
       llm_description: 'login flow handler',
       language: 'typescript',
+      retrieve: {
+        tool: 'myco_cortex',
+        input: {
+          op: 'canopy_entry',
+          id: 'p:src/auth/login.ts',
+          project_id: 'p',
+          path: 'src/auth/login.ts',
+        },
+      },
     });
   });
 

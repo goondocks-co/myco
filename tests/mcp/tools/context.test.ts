@@ -1,5 +1,5 @@
 /**
- * Tests for myco_context tool handler.
+ * Tests for myco_cortex digest handler.
  *
  * The handler now proxies through DaemonClient. Tests mock the client
  * to verify correct endpoint usage and response mapping.
@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoContext } from '@myco/tools/context.js';
+import { handleCortexDigest } from '@myco/tools/cortex.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
@@ -18,7 +18,7 @@ function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return client;
 }
 
-describe('myco_context', () => {
+describe('myco_cortex op: digest', () => {
   it('returns extract for requested tier', async () => {
     const client = mockClient({
       tiers: [
@@ -26,7 +26,7 @@ describe('myco_context', () => {
       ],
     });
 
-    const result = await handleMycoContext({ tier: 5000 }, client);
+    const result = await handleCortexDigest({ op: 'digest', tier: 5000 }, client);
 
     expect(result.tier).toBe(5000);
     expect(result.fallback).toBe(false);
@@ -41,7 +41,7 @@ describe('myco_context', () => {
       ],
     });
 
-    const result = await handleMycoContext({ tier: 5000 }, client);
+    const result = await handleCortexDigest({ op: 'digest', tier: 5000 }, client);
 
     // 1500 is distance 3500, 10000 is distance 5000 — should pick 1500
     expect(result.tier).toBe(1500);
@@ -52,7 +52,7 @@ describe('myco_context', () => {
   it('returns not-ready message when no extracts exist', async () => {
     const client = mockClient({ tiers: [] });
 
-    const result = await handleMycoContext({ tier: 5000 }, client);
+    const result = await handleCortexDigest({ op: 'digest', tier: 5000 }, client);
 
     expect(result.tier).toBe(5000);
     expect(result.fallback).toBe(false);
@@ -66,7 +66,7 @@ describe('myco_context', () => {
       ],
     });
 
-    const result = await handleMycoContext({}, client);
+    const result = await handleCortexDigest({}, client);
 
     expect(result.tier).toBe(5000);
     expect(result.content).toBe('Default tier content.');
@@ -75,7 +75,7 @@ describe('myco_context', () => {
   it('returns not-ready on daemon failure', async () => {
     const client = mockClient(null, false);
 
-    const result = await handleMycoContext({ tier: 5000 }, client);
+    const result = await handleCortexDigest({ op: 'digest', tier: 5000 }, client);
 
     expect(result.content).toContain('not yet available');
   });

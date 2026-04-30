@@ -18,22 +18,17 @@ describe('MCP Server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated 12-tool core surface', () => {
+  it('registers the consolidated 7-tool core surface', () => {
     const server = createMycoServer(tmpDir, client);
     const tools = server.getRegisteredTools();
     expect(tools).toContain('myco_search');
-    expect(tools).toContain('myco_recall');
-    expect(tools).toContain('myco_remember');
+    expect(tools).toContain('myco_cortex');
     expect(tools).toContain('myco_plans');
-    expect(tools).toContain('myco_save_plan');
     expect(tools).toContain('myco_sessions');
-    expect(tools).toContain('myco_supersede');
-    expect(tools).toContain('myco_consolidate');
-    expect(tools).toContain('myco_context');
     expect(tools).toContain('myco_skills');
-    expect(tools).toContain('myco_runs');
-    expect(tools).toContain('canopy_map');
-    expect(tools).toHaveLength(12);
+    expect(tools).toContain('myco_spores');
+    expect(tools).toContain('myco_agent');
+    expect(tools).toHaveLength(7);
   });
 
   it('no longer registers the retired MCP surfaces', () => {
@@ -44,7 +39,14 @@ describe('MCP Server', () => {
       'myco_team',
       'myco_graph',
       'myco_skill_candidates',
-      'myco_cortex',
+      'myco_recall',
+      'myco_remember',
+      'myco_save_plan',
+      'myco_supersede',
+      'myco_consolidate',
+      'myco_context',
+      'myco_runs',
+      'canopy_map',
       'myco_evaluations',
       'myco_write_intents',
       'myco_phase_audit',

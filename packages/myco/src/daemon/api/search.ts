@@ -14,6 +14,7 @@ import {
   TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
+import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -103,14 +104,14 @@ export function createSearchHandler(deps: SearchDeps) {
       if (canopyResults === null) {
         return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
       }
-      return { body: { mode: 'semantic', results: canopyResults } };
+      return { body: { mode: 'semantic', results: normalizeApiSearchResults(canopyResults) } };
     }
 
     // --- FTS-only mode ---
     if (mode === 'fts') {
       try {
         const results = fullTextSearch(sanitized, { type, limit });
-        return { body: { mode: 'fts', results } };
+        return { body: { mode: 'fts', results: normalizeApiSearchResults(results) } };
       } catch (err) {
         return {
           status: 500,
@@ -132,7 +133,7 @@ export function createSearchHandler(deps: SearchDeps) {
       if (mode === 'auto') {
         try {
           const results = fullTextSearch(sanitized, { type, limit });
-          return { body: { mode: 'fts', results, fallback: true } };
+          return { body: { mode: 'fts', results: normalizeApiSearchResults(results), fallback: true } };
         } catch (err) {
           return {
             status: 500,
@@ -208,6 +209,10 @@ export function createSearchHandler(deps: SearchDeps) {
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, limit);
 
-    return { body: { mode: 'semantic', results: merged } };
+    return { body: { mode: 'semantic', results: normalizeApiSearchResults(merged) } };
   };
+}
+
+function normalizeApiSearchResults(rows: readonly unknown[]): NormalizedSearchResult[] {
+  return normalizeSearchResults(rows);
 }

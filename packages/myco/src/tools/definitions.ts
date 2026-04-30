@@ -3,8 +3,8 @@
  * Single source of truth for all tool metadata — referenced by the MCP server
  * and available to tests, logging, and documentation generators.
  */
-import { OBSERVATION_TYPES, PLAN_STATUSES } from '../vault/types.js';
 import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAULT_LIMIT } from '../constants.js';
+import { OBSERVATION_TYPES, PLAN_STATUSES, SPORE_STATUSES } from '../vault/types.js';
 
 /** Plan statuses plus 'all' for filtering. */
 const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
@@ -58,21 +58,16 @@ export function getToolCortexPriority(tool: Pick<ToolDefinition, 'cortex'>): num
 
 // --- Tool names ---
 export const TOOL_SEARCH = 'myco_search';
-export const TOOL_RECALL = 'myco_recall';
-export const TOOL_REMEMBER = 'myco_remember';
+export const TOOL_CORTEX = 'myco_cortex';
 export const TOOL_PLANS = 'myco_plans';
-export const TOOL_SAVE_PLAN = 'myco_save_plan';
 export const TOOL_SESSIONS = 'myco_sessions';
-export const TOOL_SUPERSEDE = 'myco_supersede';
-export const TOOL_CONSOLIDATE = 'myco_consolidate';
-export const TOOL_CONTEXT = 'myco_context';
 export const TOOL_SKILLS = 'myco_skills';
+export const TOOL_SPORES = 'myco_spores';
+export const TOOL_AGENT = 'myco_agent';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
 export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
-export const TOOL_RUNS = 'myco_runs';
-export const TOOL_CANOPY_MAP = 'canopy_map';
 
 // --- Shared property descriptions (used by multiple tools) ---
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
@@ -83,16 +78,22 @@ const PROP_TAGS = 'Tags for discoverability — component names, technologies, c
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: TOOL_SEARCH,
-    description: 'Search the vault for prior sessions, spores, plans, and artifacts. Use before making design decisions, when debugging non-obvious issues, or when wondering why code is structured a certain way. Pass type="canopy" to search the project canopy index — file-level llm_description summaries — when you need to find relevant source files by what they DO, not by keyword; canopy results return one row per file as `{project_id, path, llm_description, language, score}` and are local-only (not synced to team).',
+    description: 'Search the vault for prior sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs plus a `retrieve` hint naming the entity tool and input to fetch the full record. Use before making design decisions, debugging non-obvious issues, or locating source files by what they do. Pass type="canopy" to search the project Canopy index — file-level llm_description summaries — when keyword search is too shallow.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     cortex: {
-      guidance: 'Use for prior decisions, bugs, and rationale when you know the topic but not the exact note. Pass type="canopy" when you need to find source files by behavior rather than keyword.',
+      guidance: 'Use to find prior decisions, bugs, plans, sessions, skills, or Canopy file summaries. Follow each result\'s `retrieve` hint to fetch the full entity with its owning tool.',
       priority: 20,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
         query: { type: 'string', description: 'Natural language search query — describe what you are looking for' },
-        type: { type: 'string', enum: ['session', 'plan', 'spore', 'canopy', 'all'], description: 'Filter by note type (default: all). "canopy" searches per-file llm_description summaries and returns {project_id, path, llm_description, language, score}.' },
+        type: { type: 'string', enum: ['session', 'plan', 'spore', 'skill', 'canopy', 'all'], description: 'Filter by entity type (default: all). "canopy" searches per-file llm_description summaries and returns canopy_entry results.' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
         observation_type: { type: 'string', description: 'Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)' },
         status: { type: 'string', description: 'Optional semantic filter for record status (for example active)' },
@@ -104,95 +105,78 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: TOOL_RECALL,
-    description: 'Look up a specific vault note by ID — returns the full content of a session, spore, or plan. Use when you have a note ID from search results or graph traversal and need the complete details.',
+    name: TOOL_CORTEX,
+    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map. op: "canopy_entry" retrieves one Canopy file summary by id (`project_id:path`) or by project_id plus path.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     cortex: {
-      guidance: 'Use after search finds a promising result and you need the full note.',
-      priority: 30,
+      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, and op: "canopy_entry" to retrieve a Canopy result returned by search.',
+      priority: 10,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        note_id: { type: 'string', description: 'Note ID to look up (e.g., "session-abc123", "decision-xyz789", "plan-feature-x")' },
+        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry'], description: 'Operation (default: "digest")' },
+        tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
+        id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
+        project_id: { type: 'string', description: 'Canopy project id for op: "canopy_entry"; optional for op: "canopy_map"' },
+        path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
       },
-      required: ['note_id'],
-    },
-  },
-  {
-    name: TOOL_REMEMBER,
-    description: 'Save a decision, gotcha, bug fix, discovery, or trade-off as a permanent spore. Use after making a key decision, fixing a tricky bug, discovering something non-obvious, or encountering a gotcha. Session association is derived by the daemon — the MCP client does not pass it.',
-    cortex: {
-      guidance: 'Use to save durable decisions, gotchas, discoveries, or bug fixes from this work.',
-      priority: 90,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        content: { type: 'string', description: 'The observation — include context, reasoning, and what someone encountering this in the future needs to know' },
-        type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type: ${OBSERVATION_TYPES.join(', ')}` },
-        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-      },
-      required: ['content', 'type'],
     },
   },
   {
     name: TOOL_PLANS,
-    description: 'List or delete implementation plans. op: "list" (default) returns plan summaries — filter by status, session, or a single id. op: "delete" removes a plan by id; cross-machine rows require force_remote: true. Use list to check what work is in flight before starting new tasks; use delete when retiring obsolete plans.',
+    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" persists a plan for a session; pass exactly one of source_path or plan_key. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
     annotations: {
-      // Destructive because op: "delete" removes a plan and enqueues a tombstone.
-      // Consumers should confirm before running this tool with op: "delete".
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: true,
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "list" before implementation when approved plans or specs may already exist; pass session to scope to the current work, or id to fetch a single plan with content.',
+      guidance: 'Use op: "list" before implementation when plans or specs may already exist. Use op: "save" when you create or materially revise a plan. Use op: "get" for full plan content returned by search.',
       priority: 50,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['list', 'delete'], description: 'Operation (default: "list")' },
-        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status (default: all statuses); ignored for op: "delete"' },
-        id: { type: 'string', description: 'Plan id. Required for op: "delete". For op: "list" returns that plan with content.' },
+        op: { type: 'string', enum: ['list', 'get', 'save', 'delete'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Plan id. Required for op: "get" and op: "delete".' },
         session: { type: 'string', description: 'Filter list to plans belonging to this session; mutually exclusive with id.' },
+        session_id: { type: 'string', description: 'Session id the plan belongs to for op: "save"' },
+        content: { type: 'string', description: 'Markdown plan content to persist for op: "save"' },
+        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk. Pass this OR plan_key, never both.' },
+        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans. Pass this OR source_path, never both.' },
+        title: { type: 'string', description: 'Optional explicit title for op: "save"' },
+        status: { type: 'string', enum: PLAN_STATUS_FILTER, description: 'Filter by status for op: "list" or set plan status for op: "save"' },
+        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         limit: { type: 'number', description: 'Max results for op: "list"' },
         force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },
       },
     },
   },
   {
-    name: TOOL_SAVE_PLAN,
-    description: 'Persist a plan directly into Myco for a session. Use this when you generated or revised a plan and want it captured reliably. Pass exactly one of `source_path` or `plan_key` — `source_path` when the plan is also written to disk (so direct persistence and file capture reconcile to one logical plan), or `plan_key` for non-file-backed plans. The daemon rejects requests that set neither or both. Note: plan_key creates a stable namespace (session:<id>:key:<name>) distinct from transcript <tag> capture (session:<id>:tag:<name>) — the two do not merge. Dropping the transcript tag while also calling myco_save_plan with plan_key=tag will produce two separate rows.',
-    cortex: {
-      guidance: 'Use when you create or materially revise a plan and want it persisted to Myco. Pass `source_path` when the plan is also written to disk; otherwise use a stable `plan_key`. Note: `plan_key` rows are a separate namespace from transcript `<tag>` capture — reusing the same name in both channels creates two rows, not one.',
-      priority: 60,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        session_id: { type: 'string', description: 'Session id the plan belongs to' },
-        content: { type: 'string', description: 'Markdown plan content to persist' },
-        source_path: { type: 'string', description: 'Path to the plan file when the plan is also written to disk. Pass this OR plan_key, never both.' },
-        plan_key: { type: 'string', description: 'Stable key for non-file-backed plans (for example: primary). Pass this OR source_path, never both.' },
-        title: { type: 'string', description: 'Optional explicit title. Defaults to the first Markdown H1, then file name or humanized plan_key.' },
-        status: { type: 'string', enum: PLAN_STATUSES, description: `Plan status: ${PLAN_STATUSES.join(', ')}` },
-        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-      },
-      required: ['session_id', 'content'],
-    },
-  },
-  {
     name: TOOL_SESSIONS,
-    description: 'Browse past coding sessions with summaries, tools used, and linked spores. Use to understand what work has been done on a feature or branch.',
+    description: 'Browse and retrieve past coding sessions with summaries, tools used, and linked spores. op: "list" (default) returns summaries; op: "get" returns one session by id.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     cortex: {
-      guidance: 'Use when continuing related work or recovering recent implementation context.',
+      guidance: 'Use when continuing related work or recovering recent implementation context. Use op: "get" for full session content returned by search.',
       priority: 40,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
+        op: { type: 'string', enum: ['list', 'get'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Session id for op: "get"' },
         plan: { type: 'string', description: 'Filter to the session linked to this plan id' },
         branch: { type: 'string', description: PROP_BRANCH },
         user: { type: 'string', description: 'Filter sessions by user' },
@@ -203,74 +187,62 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: TOOL_SUPERSEDE,
-    description: 'Mark a spore as outdated and replaced by a newer one. Use when a decision was reversed, a gotcha was fixed, a discovery was wrong, or the codebase changed and an observation no longer applies. The old spore is preserved but marked superseded.',
-    cortex: {
-      guidance: 'Use when existing knowledge is outdated and should stop guiding future runs.',
-      priority: 100,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        old_spore_id: { type: 'string', description: 'ID of the outdated spore (e.g., "decision-abc123")' },
-        new_spore_id: { type: 'string', description: 'ID of the replacement spore' },
-        reason: { type: 'string', description: 'Why the old spore is being superseded' },
-      },
-      required: ['old_spore_id', 'new_spore_id'],
-    },
-  },
-  {
-    name: TOOL_CONSOLIDATE,
-    description: 'Merge 2+ related spores into a single comprehensive wisdom note. Inserts a new spore with the consolidated content; each source spore is marked superseded with a resolution_events row linking it to the new wisdom spore. Use when multiple observations describe aspects of the same insight, share a root cause, or would be more useful as one reference.',
-    cortex: {
-      guidance: 'Use when several related learnings should become one durable wisdom artifact.',
-      priority: 110,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        source_spore_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the spores to merge (minimum 2)' },
-        consolidated_content: { type: 'string', description: 'The merged, comprehensive content — synthesize, do not just concatenate' },
-        observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: `Type for the consolidated wisdom note: ${OBSERVATION_TYPES.join(', ')}` },
-        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
-        reason: { type: 'string', description: 'Optional reason recorded on each resolution event' },
-      },
-      required: ['source_spore_ids', 'consolidated_content', 'observation_type'],
-    },
-  },
-  {
-    name: TOOL_CONTEXT,
-    description: "Retrieve Myco's pre-computed project digest — a rich, always-current synthesis of project history, decisions, patterns, active work, and institutional knowledge. Call this at the start of a new task or session to orient yourself on the project before taking action; call it again after long interruptions or when switching contexts. This is NOT a search — it's the project's accumulated understanding, served instantly. Available tiers: 1500 (executive briefing, one-screen overview), 5000 (deep onboarding, default), 10000 (comprehensive institutional knowledge). Prefer this over myco_search when you need broad project orientation; use myco_search when you need to find specific prior decisions or bug fixes.",
-    cortex: {
-      guidance: 'Use for broad project orientation or when you want the current digest before planning changes.',
-      priority: 10,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        tier: {
-          type: 'number',
-          enum: [1500, 5000, 10000],
-          description: 'Token budget tier. Larger tiers include more detail. Default: 5000.',
-        },
-      },
-    },
-  },
-  {
     name: TOOL_SKILLS,
-    description: 'List and inspect skills generated by Myco. Use to see what skills are active, check skill details, or find skills by status.',
+    description: 'List and inspect skills generated by Myco. op: "list" (default) filters by status; op: "get" retrieves a specific skill by id or name.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        id: { type: 'string', description: 'Get a specific skill by ID or name' },
+        op: { type: 'string', enum: ['list', 'get'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Skill id or name for op: "get"' },
         status: { type: 'string', description: 'Filter by status: active, stale, retired' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
       },
     },
   },
   {
-    name: TOOL_RUNS,
-    description: 'Read agent run history. op: "list" (default) returns recent runs with harness/provider/model/token/cost/reasoning fields — filter by task, agent_id, limit. op: "get" with id returns a single run including write_intents totals and duration_ms. Use after a run completes to check your own token budget, cost, and reasoning level — particularly useful when debugging a run that exhausted context.',
+    name: TOOL_SPORES,
+    description: 'Manage durable knowledge spores. op: "list" returns spores by status/type/search. op: "get" retrieves one spore by id. op: "save" records a new decision, gotcha, bug fix, discovery, or trade-off. op: "supersede" marks an old spore as replaced by a newer one. op: "consolidate" merges related spores into one comprehensive wisdom note.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    cortex: {
+      guidance: 'Use op: "save" to capture durable decisions, gotchas, discoveries, or bug fixes. Use op: "get" for full spore content returned by search. Use op: "supersede" or "consolidate" when existing knowledge should be retired or merged.',
+      priority: 90,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['list', 'get', 'save', 'supersede', 'consolidate'], description: 'Operation (default: "list")' },
+        id: { type: 'string', description: 'Spore id for op: "get"' },
+        content: { type: 'string', description: 'Observation content for op: "save"' },
+        type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type for op: "save": ${OBSERVATION_TYPES.join(', ')}` },
+        observation_type: { type: 'string', enum: OBSERVATION_TYPES, description: `Observation type filter for op: "list" or consolidated note type for op: "consolidate": ${OBSERVATION_TYPES.join(', ')}` },
+        status: { type: 'string', enum: [...SPORE_STATUSES, 'all'] as const, description: 'Filter by status for op: "list"' },
+        agent_id: { type: 'string', description: 'Filter op: "list" by agent id' },
+        search: { type: 'string', description: 'Text filter for op: "list"' },
+        limit: { type: 'number', description: 'Max results for op: "list"' },
+        offset: { type: 'number', description: 'Offset for op: "list"' },
+        old_spore_id: { type: 'string', description: 'ID of the outdated spore for op: "supersede"' },
+        new_spore_id: { type: 'string', description: 'ID of the replacement spore for op: "supersede"' },
+        source_spore_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of the spores to merge for op: "consolidate" (minimum 2)' },
+        consolidated_content: { type: 'string', description: 'Merged content for op: "consolidate" — synthesize, do not just concatenate' },
+        reason: { type: 'string', description: 'Reason for op: "supersede" or op: "consolidate"' },
+        tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+      },
+    },
+  },
+  {
+    name: TOOL_AGENT,
+    description: 'Read agent run history. op: "runs" (default) returns recent runs with harness/provider/model/token/cost/reasoning fields — filter by task, agent_id, limit. op: "run" with id returns a single run including write_intents totals and duration_ms.',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -278,34 +250,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "get" with your run id to check your own token budget, cost, and reasoning level — especially after a run that exhausted context or failed. Use op: "list" to browse recent runs for a task.',
+      guidance: 'Use op: "run" with your run id to check token budget, cost, reasoning level, or failure details. Use op: "runs" to browse recent runs for a task.',
       priority: 85,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['list', 'get'], description: 'Operation (default: "list")' },
-        id: { type: 'string', description: 'Required for op: "get" — the run id' },
-        task: { type: 'string', description: 'Filter op: "list" by task name' },
-        agent_id: { type: 'string', description: 'Filter op: "list" by agent id' },
-        limit: { type: 'number', description: 'Max results for op: "list" (default: 50)' },
+        op: { type: 'string', enum: ['runs', 'run'], description: 'Operation (default: "runs")' },
+        id: { type: 'string', description: 'Required for op: "run" — the run id' },
+        task: { type: 'string', description: 'Filter op: "runs" by task name' },
+        agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
+        limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
       },
     },
-  },
-  {
-    name: TOOL_CANOPY_MAP,
-    description: "Returns the project's architectural overview (directory skeleton + key files + golden paths) — a 1.5K–3K-token markdown document maintained by the canopy-map background task. Call this when you need to understand an unfamiliar part of the codebase before reaching for Glob or Grep. Returns { content, generated_at, token_estimate, is_empty? }; an empty-state shape ({ content: '', is_empty: true, message }) is returned when no map has been generated yet.",
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-    cortex: {
-      guidance: 'Use to orient on an unfamiliar part of the codebase before reaching for Glob/Grep. The map is a small, high-signal architectural overview — directory skeleton, key files, golden paths.',
-      priority: 35,
-    },
-    inputSchema: { type: 'object' as const, properties: {} },
   },
 ];
 
@@ -385,4 +342,4 @@ export const COLLECTIVE_TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {},
     },
   },
-] as const;
+];

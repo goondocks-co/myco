@@ -14,7 +14,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js agent             # execute
 
 ## Supersede
 
-Use `myco_supersede` for manual supersession when you spot a stale spore that automatic intelligence missed.
+Use `myco_spores` with `op: "supersede"` for manual supersession when you spot a stale spore that automatic intelligence missed.
 
 **Signals:**
 - A decision was reversed in a later session
@@ -28,6 +28,7 @@ Use `myco_supersede` for manual supersession when you spot a stale spore that au
 3. Supersede the old one:
 ```json
 {
+  "op": "supersede",
   "old_spore_id": "decision-abc123",
   "new_spore_id": "decision-def456",
   "reason": "Auth migrated from bcrypt to argon2"
@@ -38,7 +39,7 @@ The old spore stays in the vault (data is never deleted) but its frontmatter is 
 
 ## Consolidate
 
-Use `myco_consolidate` when multiple spores describe aspects of the same insight and would be more useful as a single comprehensive note.
+Use `myco_spores` with `op: "consolidate"` when multiple spores describe aspects of the same insight and would be more useful as a single comprehensive note.
 
 **Signals:**
 - Three gotchas about the same subsystem that share a root cause
@@ -54,6 +55,7 @@ Use `myco_consolidate` when multiple spores describe aspects of the same insight
 2. Consolidate them into a wisdom note:
 ```json
 {
+  "op": "consolidate",
   "source_spore_ids": ["gotcha-aaa111", "gotcha-bbb222", "gotcha-ccc333"],
   "consolidated_content": "# SQLite Operational Gotchas\n\nThree key constraints when using SQLite in production:\n\n1. **WAL mode + Docker**: WAL requires shared memory (mmap). Containers with `--tmpfs` or read-only root filesystems break this. Mount the database directory as a named volume.\n\n2. **Concurrent write access**: SQLite serializes all writes through a single writer lock. Multiple processes writing concurrently will get SQLITE_BUSY. Use a single long-lived process (the daemon) for all writes.\n\n3. **FTS5 tokenization**: The default tokenizer splits on non-alphanumeric characters, so CamelCase identifiers like `getUserById` are indexed as one token. Use the `unicode61` tokenizer with `tokenchars` to handle this.",
   "observation_type": "gotcha",
