@@ -10,6 +10,12 @@
  *   - { error: { message } }  → errorBody() canonical envelope
  */
 
+/** Standard failure-result envelope returned by handler ops. */
+export interface ToolFailure {
+  ok: false;
+  error: string;
+}
+
 export type ToolErrorCode =
   | 'unknown_tool'
   | 'tool_unavailable'

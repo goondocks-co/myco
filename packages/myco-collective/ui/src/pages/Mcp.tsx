@@ -246,7 +246,7 @@ export default function Mcp() {
           </div>
 
           <p className="mt-3 text-sm text-on-surface-variant">
-            This is the shared read-only MCP surface for cross-project recall, search, context, sessions, graph traversal, and skills across connected workers.
+            This is the shared read-only MCP surface for cross-project search, project discovery, and Collective settings across connected workers.
           </p>
 
           <div className="mt-5 space-y-4">

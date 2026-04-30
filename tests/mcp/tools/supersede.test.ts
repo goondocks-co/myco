@@ -1,5 +1,5 @@
 /**
- * Tests for myco_supersede tool handler.
+ * Tests for myco_spores supersede handler.
  *
  * The handler now proxies through DaemonClient. Tests mock the client
  * to verify correct endpoint usage and response mapping.
@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoSupersede } from '@myco/tools/supersede.js';
+import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
@@ -18,7 +18,7 @@ function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return client;
 }
 
-describe('myco_supersede', () => {
+describe('myco_spores op: supersede', () => {
   it('supersedes a spore and returns success', async () => {
     const client = mockClient({
       old_spore: 'old-spore',
@@ -26,7 +26,8 @@ describe('myco_supersede', () => {
       status: 'superseded',
     });
 
-    const result = await handleMycoSupersede({
+    const result = await handleMycoSpores({
+      op: 'supersede',
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'Bug was fixed',
@@ -44,7 +45,8 @@ describe('myco_supersede', () => {
       status: 'superseded',
     });
 
-    await handleMycoSupersede({
+    await handleMycoSpores({
+      op: 'supersede',
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'Test reason',
@@ -57,12 +59,13 @@ describe('myco_supersede', () => {
     });
   });
 
-  it('throws on daemon failure', async () => {
+  it('returns a structured error on daemon failure', async () => {
     const client = mockClient(null, false);
 
-    await expect(handleMycoSupersede({
+    await expect(handleMycoSpores({
+      op: 'supersede',
       old_spore_id: 'nonexistent',
       new_spore_id: 'new-spore',
-    }, client)).rejects.toThrow('Failed to supersede spore');
+    }, client)).resolves.toEqual({ ok: false, error: 'Failed to supersede spore' });
   });
 });

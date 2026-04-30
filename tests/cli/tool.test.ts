@@ -53,25 +53,25 @@ describe('myco tool CLI', () => {
 
     const output = JSON.parse(logged[0]) as { ok: boolean; result: Array<{ name: string }> };
     expect(output.ok).toBe(true);
-    expect(output.result.map((tool) => tool.name)).toContain('myco_context');
+    expect(output.result.map((tool) => tool.name)).toContain('myco_cortex');
   });
 
   it('calls a tool with inline JSON input', async () => {
     await startDaemonStub();
-    await run(['call', 'myco_context', '--json', '--input', '{"tier":5000}'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"digest","tier":5000}'], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; tool: string; result: { tier: number } };
     expect(output.ok).toBe(true);
-    expect(output.tool).toBe('myco_context');
+    expect(output.tool).toBe('myco_cortex');
     expect(output.result.tier).toBe(5000);
   });
 
   it('calls a tool with @file input', async () => {
     await startDaemonStub();
     const inputPath = path.join(tmpDir, 'payload.json');
-    fs.writeFileSync(inputPath, '{"tier":1500}', 'utf-8');
+    fs.writeFileSync(inputPath, '{"op":"digest","tier":1500}', 'utf-8');
 
-    await run(['call', 'myco_context', '--json', '--input', `@${inputPath}`], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', `@${inputPath}`], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; result: { tier: number } };
     expect(output.ok).toBe(true);
@@ -80,16 +80,16 @@ describe('myco tool CLI', () => {
 
   it('calls a tool when options appear before the tool name', async () => {
     await startDaemonStub();
-    await run(['call', '--json', '--input', '{"tier":5000}', 'myco_context'], tmpDir);
+    await run(['call', '--json', '--input', '{"op":"digest","tier":5000}', 'myco_cortex'], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; tool: string; result: { tier: number } };
     expect(output.ok).toBe(true);
-    expect(output.tool).toBe('myco_context');
+    expect(output.tool).toBe('myco_cortex');
     expect(output.result.tier).toBe(5000);
   });
 
   it('returns an error when --input is missing its value', async () => {
-    await run(['call', 'myco_context', '--json', '--input'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input'], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
     expect(output.ok).toBe(false);
@@ -98,7 +98,7 @@ describe('myco tool CLI', () => {
   });
 
   it('returns invalid_input for non-object JSON input', async () => {
-    await run(['call', 'myco_context', '--json', '--input', '"bad"'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', '"bad"'], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
     expect(output.ok).toBe(false);
@@ -107,7 +107,7 @@ describe('myco tool CLI', () => {
   });
 
   it('returns JSON error envelope for invalid JSON', async () => {
-    await run(['call', 'myco_context', '--json', '--input', '{bad'], tmpDir);
+    await run(['call', 'myco_cortex', '--json', '--input', '{bad'], tmpDir);
 
     const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
     expect(output.ok).toBe(false);

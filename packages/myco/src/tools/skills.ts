@@ -5,6 +5,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -12,6 +13,7 @@ import { buildEndpoint } from './shared.js';
 // ---------------------------------------------------------------------------
 
 interface SkillsInput {
+  op?: 'list' | 'get';
   id?: string;
   status?: string;
   limit?: number;
@@ -25,9 +27,13 @@ export async function handleMycoSkills(
   input: SkillsInput,
   client: DaemonClient,
 ): Promise<unknown> {
-  if (input.id) {
+  const op = input.op ?? 'list';
+  if (op === 'get') {
+    if (!input.id) return { ok: false, error: 'id is required for op: get' };
     const result = await client.get(`/api/skill-records/${encodeURIComponent(input.id)}`);
-    if (!result.ok || !result.data) return { error: 'Skill not found' };
+    if (!result.ok || !result.data) {
+      return { ok: false, error: extractErrorMessage(result.data, 'Skill not found') };
+    }
     return result.data;
   }
 

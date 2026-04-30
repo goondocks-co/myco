@@ -38,7 +38,7 @@ export interface ProjectRecord {
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 let schemaInitialized = false;
 const AUTH_ROTATE_CHOICES = new Set(['admin', 'mcp', 'all']);
-const WORKER_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project']);
+const WORKER_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -108,10 +108,8 @@ async function configureProjectWorker(
 }
 
 async function ensureInitialized(env: Env): Promise<void> {
-  if (!schemaInitialized) {
-    await initD1Schema(env.MYCO_COLLECTIVE_DB);
-    schemaInitialized = true;
-  }
+  if (schemaInitialized) return;
+  await initD1Schema(env.MYCO_COLLECTIVE_DB);
   const { adminToken, mcpToken } = await ensureBootstrapTokens(
     env.MYCO_SECRETS,
     env.MYCO_BOOTSTRAP_ADMIN_TOKEN,
@@ -123,6 +121,7 @@ async function ensureInitialized(env: Env): Promise<void> {
     env.MYCO_COLLECTIVE_DB.prepare('INSERT OR REPLACE INTO collective_meta (key, value) VALUES (?, ?)').bind('mcp_token_hash', tokenHash(mcpToken) ?? ''),
   ];
   await env.MYCO_COLLECTIVE_DB.batch(statements);
+  schemaInitialized = true;
 }
 
 function hashToken(token: string): string {
@@ -390,7 +389,7 @@ async function handleWorkerSettings(env: Env): Promise<Response> {
   const settings = await listSettings(env);
   return jsonResponse({
     settings_overrides: Object.fromEntries(Object.entries(settings).map(([key, value]) => [key, value.value])),
-    capabilities: ['collective_search', 'collective_projects', 'collective_project'],
+    capabilities: ['collective_search', 'collective_projects', 'collective_project', 'collective_settings'],
   });
 }
 

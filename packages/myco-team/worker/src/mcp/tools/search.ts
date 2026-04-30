@@ -1,5 +1,6 @@
 import type { Env } from '../../index';
 import { searchKnowledge } from '../../search-helpers';
+import { textJson, toCloudSearchResult } from '../result-shape';
 
 interface SearchArgs {
   query: string;
@@ -16,5 +17,5 @@ interface SearchArgs {
 
 export async function handleSearch(args: SearchArgs, env: Pick<Env, 'MYCO_TEAM_DB' | 'MYCO_TEAM_VECTORS' | 'AI'>) {
   const results = await searchKnowledge(env.MYCO_TEAM_DB, env.MYCO_TEAM_VECTORS, env.AI, args);
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ results }) }] };
+  return textJson({ results: results.map(toCloudSearchResult) });
 }

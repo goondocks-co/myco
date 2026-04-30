@@ -17,6 +17,19 @@ describe('handleSessions', () => {
     expect(parsed.sessions[0].id).toBe('s1');
   });
 
+  it('retrieves a session by id and machine_id', async () => {
+    const fake = createFakeD1();
+    fake.addResult([{ id: 's1', machine_id: 'm1', summary: 'full session' }]);
+
+    const result = await handleSessions({ op: 'get', id: 's1', machine_id: 'm1' }, { MYCO_TEAM_DB: fake.db });
+    const parsed = parseToolResult(result);
+
+    expect(parsed).toEqual({ id: 's1', machine_id: 'm1', summary: 'full session' });
+    expect(fake.queries[0].sql).toContain('FROM sessions');
+    expect(fake.queries[0].sql).toContain('machine_id = ?');
+    expect(fake.queries[0].values).toEqual(['s1', 'm1']);
+  });
+
   it('filters by status', async () => {
     const fake = createFakeD1();
     fake.addResult([{ id: 's1', status: 'completed' }]);

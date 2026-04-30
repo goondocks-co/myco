@@ -1,5 +1,5 @@
 /**
- * Tests for myco_consolidate tool handler.
+ * Tests for myco_spores consolidate handler.
  *
  * The handler proxies through DaemonClient to POST /api/mcp/consolidate.
  * Tests mock the client to verify endpoint usage and response mapping.
@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoConsolidate } from '@myco/tools/consolidate.js';
+import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
@@ -17,7 +17,7 @@ function mockClient(data: unknown = null, ok = true): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-describe('myco_consolidate', () => {
+describe('myco_spores op: consolidate', () => {
   it('posts to daemon with full body and returns the consolidation result', async () => {
     const client = mockClient({
       new_spore_id: 'gotcha-newwisdom',
@@ -26,7 +26,8 @@ describe('myco_consolidate', () => {
       created_at: 1700000000,
     });
 
-    const result = await handleMycoConsolidate({
+    const result = await handleMycoSpores({
+      op: 'consolidate',
       source_spore_ids: ['g-1', 'g-2', 'g-3'],
       consolidated_content: '# Merged gotchas',
       observation_type: 'gotcha',
@@ -54,7 +55,8 @@ describe('myco_consolidate', () => {
       created_at: 1700000000,
     });
 
-    await handleMycoConsolidate({
+    await handleMycoSpores({
+      op: 'consolidate',
       source_spore_ids: ['d-1', 'd-2'],
       consolidated_content: 'merged',
       observation_type: 'decision',
@@ -69,12 +71,13 @@ describe('myco_consolidate', () => {
     });
   });
 
-  it('throws on daemon failure', async () => {
+  it('returns a structured error on daemon failure', async () => {
     const client = mockClient(null, false);
-    await expect(handleMycoConsolidate({
+    await expect(handleMycoSpores({
+      op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       consolidated_content: 'x',
       observation_type: 'gotcha',
-    }, client)).rejects.toThrow('Failed to consolidate');
+    }, client)).resolves.toEqual({ ok: false, error: 'Failed to consolidate spores' });
   });
 });

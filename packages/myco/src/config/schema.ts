@@ -257,7 +257,7 @@ const CortexInstructionsSchema = z.object({
 const CortexDigestSchema = z.object({
   /**
    * Default digest tier — used both at session-start injection time AND
-   * as the default tier returned by `myco_context()` retrievals.
+   * as the default tier returned by `myco_cortex` digest retrievals.
    */
   tier: z.number().int().default(5000),
   /** Append the preferred digest extract at session start. */

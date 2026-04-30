@@ -13,14 +13,15 @@ MCP tools are the primary interface between agents and the Myco intelligence pip
 
 ## Prerequisites
 
-- Working Myco development environment with `packages/myco/src/mcp/` structure
+- Working Myco development environment with `packages/myco/src/tools/` and `packages/myco/src/mcp/` structure
 - Understanding of JSON Schema for parameter definitions
 - Familiarity with TypeScript handler patterns and DaemonClient usage
 - Knowledge of local vs cloud MCP bifurcation model
+- Understanding of shared tool-runtime supporting multiple transports (MCP stdio, HTTP MCP, CLI)
 
 ## Procedure A: Schema Definition
 
-Define the tool interface in `packages/myco/src/mcp/tool-definitions.ts`:
+Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared tool-runtime definitions):
 
 1. **Add tool name constant** at the top of the file:
    ```typescript
@@ -111,7 +112,7 @@ Define the tool interface in `packages/myco/src/mcp/tool-definitions.ts`:
 
 ## Procedure B: Handler Implementation
 
-Create the handler in `packages/myco/src/mcp/tools/my-new-tool.ts`:
+Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
 
 1. **Import required types and client**:
    ```typescript
@@ -158,64 +159,60 @@ Create the handler in `packages/myco/src/mcp/tools/my-new-tool.ts`:
 
 6. **Handle errors gracefully** — let DaemonClient errors bubble up; they're already structured for agent consumption.
 
-## Procedure C: Tool Registration and Conditional Enablement
+## Procedure C: Multi-Transport Registration
 
-Register the tool in `packages/myco/src/mcp/server.ts`:
+Register the tool once in the shared tool runtime. Stdio MCP, HTTP MCP, and the CLI all call through `packages/myco/src/tools/index.ts`; do not add transport-specific switch cases for normal tools.
 
-1. **Import the handler**:
+1. **Shared runtime registration** in `packages/myco/src/tools/index.ts`:
    ```typescript
-   import { handleMyNewTool } from './tools/my-new-tool.js';
+   [TOOL_MY_NEW_TOOL, async () => {
+     const { handleMyNewTool } = await import('./my-new-tool.js');
+     return {
+       handle: (input, client) => handleMyNewTool(input as MyNewToolInput, client),
+       summarize: (input, result) => ({ param_name: input.param_name }),
+     };
+   }],
    ```
 
-2. **Import the tool constant**:
-   ```typescript
-   import { TOOL_MY_NEW_TOOL } from './tool-definitions.js';
-   ```
+2. **MCP stdio and HTTP registration** — `packages/myco/src/mcp/server.ts` exposes the shared definitions from `packages/myco/src/tools/definitions.ts` and dispatches calls through `createMycoTools(...)`.
 
-3. **Add switch case** in the `callTool` handler function:
-   ```typescript
-   case TOOL_MY_NEW_TOOL: {
-     const myInput = request.params.arguments as MyNewToolInput;
-     const result = await handleMyNewTool(myInput, daemonClient);
-     logActivity(TOOL_MY_NEW_TOOL, { param_name: myInput.param_name, duration_ms: Date.now() - start });
-     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-   }
-   ```
+3. **CLI registration** — `myco tool list` and `myco tool call` use the same shared runtime, so the tool becomes available there after it is in `TOOL_DEFINITIONS` and `HANDLERS`.
 
-4. **Test local registration** — verify tool appears in MCP client tool list and accepts test invocations.
+4. **Test multi-transport availability** — verify tool appears in MCP client tool list, HTTP MCP endpoints, and CLI help for all configured transports.
 
-5. **Configure conditional enablement** — Collective tools are automatically enabled/disabled based on `collectiveEnabled` flag. Local tools are always available.
+5. **Configure conditional enablement** — Collective tools are automatically enabled/disabled based on `collectiveEnabled` flag across all transports. Local tools are always available.
 
 ## Procedure D: Documentation Bundling and Regeneration
 
-Each MCP tool carries inline SKILL.md documentation bundled at compile time:
+Each tool carries inline SKILL.md documentation bundled at compile time across all transports:
 
 1. **Write clear tool documentation** covering:
    - When to use this tool vs alternatives
    - Parameter meanings and examples
    - Expected response format
    - Common usage patterns
+   - Transport-specific considerations (MCP stdio vs HTTP vs CLI)
 
-2. **Bundle at build time** — documentation is compiled into the handler during the build process.
+2. **Bundle at build time** — documentation is compiled into handlers during build process and shared across transports.
 
 3. **Regenerate after schema changes**:
    ```bash
-   npm run build  # Rebuild bundled documentation
+   npm run build  # Rebuild bundled documentation for all transports
    ```
 
-4. **Verify agent-visible docs** — test that agents receive current parameter names and descriptions, not stale snapshots.
+4. **Verify agent-visible docs** — test that agents receive current parameter names and descriptions across all transport types, not stale snapshots.
 
-5. **Never ship handler changes without doc updates** — mismatched documentation causes agents to call tools with wrong parameters.
+5. **Never ship handler changes without doc updates** — mismatched documentation causes agents to call tools with wrong parameters across any transport.
 
 ## Procedure E: Anti-Drift Testing Patterns
 
-Implement systematic checks to catch schema-handler-documentation drift:
+Implement systematic checks to catch schema-handler-documentation drift across the shared tool-runtime:
 
-1. **Create test file** `packages/myco/src/mcp/tool-definitions.test.ts` if it doesn't exist:
+1. **Create test file** `packages/myco/src/tools/definitions.test.ts`:
    ```typescript
    import { describe, test, expect } from 'vitest';
-   import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from './tool-definitions.js';
-   import * as handlers from './tools/index.js'; // Export all handlers from index
+   import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from './definitions.js';
+   import * as handlers from './index.js';
    ```
 
 2. **Schema-handler parameter alignment test**:
@@ -258,7 +255,15 @@ Implement systematic checks to catch schema-handler-documentation drift:
    });
    ```
 
-5. **Run after every handler or schema change** — drift failures are silent until agents encounter them in production.
+5. **Multi-transport registration consistency**:
+   ```typescript
+   test('all tools registered across transports', () => {
+     // Verify MCP stdio, HTTP MCP, and CLI registrations are consistent
+     // Check that transport-specific configurations align with shared definitions
+   });
+   ```
+
+6. **Run after every handler or schema change** — drift failures are silent until agents encounter them in production across any transport.
 
 ## Procedure F: Stub vs Documented Tool Discipline
 
@@ -280,11 +285,11 @@ Handle incomplete or placeholder tools appropriately:
    }
    ```
 
-3. **Never document stubs as working tools** — agents should know when functionality is incomplete.
+3. **Never document stubs as working tools** — agents should know when functionality is incomplete across all transports.
 
-4. **Test stub behavior** — ensure stubs return consistent responses rather than errors.
+4. **Test stub behavior** — ensure stubs return consistent responses rather than errors across MCP stdio, HTTP MCP, and CLI.
 
-5. **Remove or implement** — stubs confuse agents. Either complete the implementation or remove from schema entirely.
+5. **Remove or implement** — stubs confuse agents across all transports. Either complete the implementation or remove from schema entirely.
 
 ## Procedure G: Cloud vs Local Placement Decisions
 
@@ -305,11 +310,11 @@ Decide whether new tools belong in local or cloud MCP surface:
 
 ## Procedure H: Skill Lifecycle Tool Registration Patterns
 
-The skill lifecycle system requires specific MCP tools that follow domain-specific registration patterns:
+The skill lifecycle system requires specific tools that follow domain-specific registration patterns:
 
 1. **Register skill candidate management tools**:
    ```typescript
-   // In tool-definitions.ts
+   // In packages/myco/src/tools/definitions.ts
    export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
    
    {
@@ -416,6 +421,37 @@ The skill lifecycle system requires specific MCP tools that follow domain-specif
 
 5. **Test skill workflow integration** — verify tools support the complete skill lifecycle: survey → approve → generate → evolve.
 
+## Procedure I: Shared Tool-Runtime Integration
+
+Integrate with the shared tool-runtime supporting multiple transports:
+
+1. **Configure transport-specific behaviors**:
+   ```typescript
+   // Different transports may need different error handling
+   const formatResponse = (result: any, transport: 'mcp' | 'http' | 'cli') => {
+     switch (transport) {
+       case 'mcp': return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+       case 'http': return result; // Direct JSON response
+       case 'cli': return formatCliOutput(result); // Human-readable format
+     }
+   };
+   ```
+
+2. **Handle transport-specific authentication** — MCP stdio uses connection-level auth, HTTP MCP uses token auth, CLI uses file-based auth.
+
+3. **Implement transport-aware logging**:
+   ```typescript
+   logActivity(TOOL_NAME, {
+     ...params,
+     transport: 'mcp|http|cli',
+     duration_ms: Date.now() - start
+   });
+   ```
+
+4. **Test cross-transport consistency** — verify same input produces equivalent results across MCP stdio, HTTP MCP, and CLI transports.
+
+5. **Document transport differences** — note any transport-specific behaviors or limitations in tool documentation.
+
 ## Cross-Cutting Gotchas
 
 **Silent parameter drops**: When schema defines a parameter but handler ignores it, agents receive no error — their input is silently dropped. This is the most common drift failure.
@@ -426,7 +462,7 @@ The skill lifecycle system requires specific MCP tools that follow domain-specif
 
 **Validation vs runtime divergence**: Schema validation passes but handler expects different parameter structure. Test actual invocations, not just schema validation.
 
-**Collective conditional enablement**: `collective_*` tools are enabled by Collective connection state. Test both connected and disconnected scenarios.
+**Collective conditional enablement**: `collective_*` tools are enabled by Collective connection state. Test both connected and disconnected scenarios across all transports.
 
 **Tool name consistency**: Use `myco_` prefix for standard tools, `collective_` prefix for Collective-dependent tools. Avoid generic names that conflict with other MCP servers.
 
@@ -435,3 +471,9 @@ The skill lifecycle system requires specific MCP tools that follow domain-specif
 **Cross-runtime schema compatibility**: OpenAI strict mode and Zod refinement patterns cause silent registration failures. Use plain JSON Schema types with descriptive documentation instead of complex validation constructs.
 
 **Skill tool registration gaps**: Skill lifecycle operations require complete tool registration (candidates, records, write_skill) — missing any component breaks agent workflows. Always register skill tools as a complete set.
+
+**Shared tool-runtime path shifts**: Tool definitions live in `packages/myco/src/tools/definitions.ts`. Update import paths and test references when the shared runtime moves.
+
+**Multi-transport registration complexity**: Shared tool-runtime requires consistent registration across MCP stdio, HTTP MCP, and CLI transports. Test all transports when adding new tools.
+
+**Transport-specific error handling**: Different transports expect different response formats. Implement transport-aware error formatting to prevent agent confusion.

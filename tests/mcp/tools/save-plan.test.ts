@@ -1,10 +1,10 @@
 /**
- * Tests for myco_save_plan tool handler.
+ * Tests for myco_plans save handler.
  */
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoSavePlan } from '@myco/tools/save-plan.js';
+import { handleMycoPlans } from '@myco/tools/plans.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
@@ -14,7 +14,7 @@ function mockClient(data: unknown = null, ok = true): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-describe('myco_save_plan', () => {
+describe('myco_plans op: save', () => {
   it('posts the save-plan request to the daemon and returns saved metadata', async () => {
     const client = mockClient({
       id: 'plan-1234',
@@ -29,7 +29,8 @@ describe('myco_save_plan', () => {
       updated_at: 1700000000,
     });
 
-    const result = await handleMycoSavePlan({
+    const result = await handleMycoPlans({
+      op: 'save',
       session_id: 'sess-1',
       content: '# Primary Plan',
       plan_key: 'primary',
@@ -54,7 +55,8 @@ describe('myco_save_plan', () => {
 
   it('returns a structured error when the daemon save fails', async () => {
     const client = mockClient({ error: 'save-failed' }, false);
-    const result = await handleMycoSavePlan({
+    const result = await handleMycoPlans({
+      op: 'save',
       session_id: 'sess-1',
       content: '# Plan',
       plan_key: 'primary',
@@ -65,7 +67,8 @@ describe('myco_save_plan', () => {
 
   it('falls back to "unknown" when the failure payload lacks an error string', async () => {
     const client = mockClient(null, false);
-    const result = await handleMycoSavePlan({
+    const result = await handleMycoPlans({
+      op: 'save',
       session_id: 'sess-1',
       content: '# Plan',
       plan_key: 'primary',

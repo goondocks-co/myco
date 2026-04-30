@@ -17,5 +17,5 @@ registration:
 capabilities:
   # Windsurf's bundled hook template does not currently register a
   # session-start hook. Cortex falls back to inline delivery via
-  # `myco_context` and to the AGENTS.md managed-guidance bullet.
+  # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
   sessionStartInjection: false

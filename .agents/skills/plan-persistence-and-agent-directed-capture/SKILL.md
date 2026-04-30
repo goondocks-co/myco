@@ -74,18 +74,21 @@ The `id` field provides stable row identity while `logical_key` handles deduplic
 
 ## Procedure 2: Agent-Directed Capture via MCP Tools
 
-Invert from heuristic capture (event-driven scanning) to intentional capture (agent-chooses-when) through the `myco_save_plan` MCP tool.
+Invert from heuristic capture (event-driven scanning) to intentional capture (agent-chooses-when) through the `myco_plans` MCP tool with `op: "save"`.
 
 ### MCP Tool Implementation
 
-The tool is defined in `packages/myco/src/mcp/tool-definitions.ts` and implemented in `packages/myco/src/mcp/tools/save-plan.ts`:
+The tool is defined in `packages/myco/src/tools/definitions.ts` and implemented in `packages/myco/src/tools/plans.ts`:
 
 ```typescript
-// MCP tool handler in save-plan.ts
-export async function handleMycoSavePlan(
-  input: SavePlanInput,
+// MCP tool handler in plans.ts
+export async function handleMycoPlans(
+  input: PlansInput,
   client: DaemonClient,
-): Promise<SavePlanResult> {
+): Promise<PlansResult> {
+  if (input.op !== 'save') {
+    // list/get/delete handled separately
+  }
   const result = await client.post('/api/mcp/plans', {
     session_id: input.session_id,
     content: input.content,
@@ -105,7 +108,7 @@ export async function handleMycoSavePlan(
 
 ### Agent Integration Patterns
 
-- **Reactive planning**: Agent saves plans during problem-solving sessions via `myco_save_plan`
+- **Reactive planning**: Agent saves plans during problem-solving sessions via `myco_plans` with `op: "save"`
 - **Proactive archival**: Agent identifies reusable patterns and persists them with explicit `plan_key`
 - **Cross-session persistence**: Agent maintains plan continuity by referencing prior plans through logical keys
 
@@ -113,6 +116,7 @@ export async function handleMycoSavePlan(
 
 ```typescript
 interface SavePlanInput {
+  op: "save";
   session_id: string;      // Required: current session context
   content: string;         // Required: plan body (markdown, YAML, etc.)
   source_path?: string;    // Optional: original file reference
@@ -168,7 +172,7 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
 ### Integration Points
 
 - **Transcript mining**: Extract plans from session transcripts, generate tag-based logical keys via `extractPlansFromTranscript()`
-- **MCP agents**: Direct agent calls via `myco_save_plan` tool through daemon API proxy
+- **MCP agents**: Direct agent calls via `myco_plans` with `op: "save"` through the daemon API proxy
 - **File scanning**: Periodic file system scans for new plan files using path-based logical keys
 
 ## Procedure 4: Cross-Channel Deduplication

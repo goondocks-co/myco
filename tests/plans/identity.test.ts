@@ -1,10 +1,10 @@
 /**
  * Anti-drift tests for plan logical-key builders.
  *
- * The MCP `myco_save_plan` tool and the transcript-tag capture path both
+ * The MCP `myco_plans` op "save" tool path and the transcript-tag capture path both
  * compose session-scoped logical keys, but they MUST land in distinct
  * namespaces so an agent that drops a `<primary>` tag *and* calls
- * myco_save_plan({plan_key: 'primary'}) produces two rows, not one.
+ * myco_plans({op: 'save', plan_key: 'primary'}) produces two rows, not one.
  *
  * Finding #10 of the pre-0.21 runtime review.
  */

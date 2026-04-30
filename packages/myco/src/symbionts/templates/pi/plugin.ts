@@ -368,18 +368,26 @@ async function mycoPostCompact(
   });
 }
 
-async function mycoContext(
+async function mycoCortex(
   directory: string,
-  tier?: number,
-): Promise<{ content: string; tier: number; fallback: boolean; generated_at?: number }> {
-  const requestedTier = tier ?? 5000;
+  input: { op?: string; tier?: number; id?: string; project_id?: string; path?: string },
+): Promise<{ ok: boolean; data?: unknown }> {
+  const op = input.op ?? "digest";
+  if (op === "instructions") return getJson(directory, "/api/cortex/instructions");
+  if (op === "canopy_map") return getJson(directory, "/api/canopy/map");
+  if (op === "canopy_entry") {
+    const path = input.path ?? (input.id ? input.id.slice(input.id.indexOf(":") + 1) : "");
+    return getJson(directory, `/api/canopy/entries/${encodeURIComponent(path)}`);
+  }
+
+  const requestedTier = input.tier ?? 5000;
   const result = await getJson(directory, "/api/digest");
   if (!result.ok || !result.data) {
-    return {
+    return { ok: true, data: {
       content: "Digest context is not yet available. The first digest cycle has not completed.",
       tier: requestedTier,
       fallback: false,
-    };
+    } };
   }
 
   // Daemon contract: /api/digest responses carry a `tiers` array.
@@ -388,31 +396,31 @@ async function mycoContext(
   }).tiers;
   const exact = tiers.find((entry) => entry.tier === requestedTier);
   if (exact) {
-    return {
+    return { ok: true, data: {
       content: exact.content,
       tier: exact.tier,
       fallback: false,
       generated_at: exact.generated_at,
-    };
+    } };
   }
 
   if (tiers.length > 0) {
     const nearest = [...tiers].sort(
       (left, right) => Math.abs(left.tier - requestedTier) - Math.abs(right.tier - requestedTier),
     )[0];
-    return {
+    return { ok: true, data: {
       content: nearest.content,
       tier: nearest.tier,
       fallback: true,
       generated_at: nearest.generated_at,
-    };
+    } };
   }
 
-  return {
+  return { ok: true, data: {
     content: "Digest context is not yet available. The first digest cycle has not completed.",
     tier: requestedTier,
     fallback: false,
-  };
+  } };
 }
 
 async function mycoSearch(
@@ -439,55 +447,35 @@ async function mycoSearch(
   return getJson(directory, `/api/search?${query.toString()}`);
 }
 
-async function mycoRecall(
-  directory: string,
-  noteId: string,
-): Promise<Record<string, unknown> | null> {
-  const encodedId = encodeURIComponent(noteId);
-  const [sessionResult, sporeResult, plansResult] = await Promise.all([
-    getJson(directory, `/api/sessions/${encodedId}`),
-    getJson(directory, `/api/spores/${encodedId}`),
-    getJson(directory, `/api/mcp/plans?id=${encodedId}`),
-  ]);
-
-  if (sessionResult.ok && sessionResult.data && typeof sessionResult.data === "object") {
-    return { type: "session", ...(sessionResult.data as Record<string, unknown>) };
-  }
-  if (sporeResult.ok && sporeResult.data && typeof sporeResult.data === "object") {
-    return { type: "spore", ...(sporeResult.data as Record<string, unknown>) };
-  }
-
-  const plans = (plansResult.data as { plans?: unknown } | undefined)?.plans;
-  if (plansResult.ok && Array.isArray(plans) && plans[0] && typeof plans[0] === "object") {
-    return { type: "plan", ...(plans[0] as Record<string, unknown>) };
-  }
-
-  return null;
-}
-
-async function mycoRemember(
-  directory: string,
-  input: { content: string; type?: string; tags?: string[] },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return postJson(directory, "/api/mcp/remember", {
-    content: input.content,
-    type: input.type,
-    tags: input.tags,
-  });
-}
-
 async function mycoPlans(
   directory: string,
   input: {
     op?: string;
     id?: string;
     session?: string;
+    session_id?: string;
+    content?: string;
+    source_path?: string;
+    plan_key?: string;
+    title?: string;
     status?: string;
+    tags?: string[];
     limit?: number;
     force_remote?: boolean;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
   const op = input.op ?? "list";
+  if (op === "save") {
+    return postJson(directory, "/api/mcp/plans", {
+      session_id: input.session_id,
+      content: input.content,
+      source_path: input.source_path,
+      plan_key: input.plan_key,
+      title: input.title,
+      status: input.status,
+      tags: input.tags,
+    });
+  }
   if (op === "delete") {
     return deleteJson(
       directory,
@@ -495,33 +483,25 @@ async function mycoPlans(
       input.force_remote ? { force_remote: true } : undefined,
     );
   }
+  if (op === "get") {
+    const result = await getJson(directory, `/api/mcp/plans?id=${encodeURIComponent(input.id ?? "")}`);
+    const plans = (result.data as { plans?: unknown[] } | undefined)?.plans;
+    if (result.ok && Array.isArray(plans) && plans[0]) return { ok: true, data: plans[0] };
+    return result.ok ? { ok: false, data: { error: "Plan not found" } } : result;
+  }
 
   const query = new URLSearchParams();
-  if (input.id) query.set("id", input.id);
   if (input.session) query.set("session", input.session);
   if (input.status) query.set("status", input.status);
   if (input.limit !== undefined) query.set("limit", String(input.limit));
   return getJson(directory, `/api/mcp/plans?${query.toString()}`);
 }
 
-async function mycoSavePlan(
-  directory: string,
-  input: {
-    session_id: string;
-    content: string;
-    source_path?: string;
-    plan_key?: string;
-    title?: string;
-    status?: string;
-    tags?: string[];
-  },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return postJson(directory, "/api/mcp/plans", input);
-}
-
 async function mycoSessions(
   directory: string,
   input: {
+    op?: string;
+    id?: string;
     plan?: string;
     branch?: string;
     user?: string;
@@ -530,6 +510,9 @@ async function mycoSessions(
     limit?: number;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
+  if ((input.op ?? "list") === "get") {
+    return getJson(directory, `/api/sessions/${encodeURIComponent(input.id ?? "")}`);
+  }
   const query = new URLSearchParams();
   if (input.plan) query.set("plan", input.plan);
   if (input.branch) query.set("branch", input.branch);
@@ -544,52 +527,78 @@ async function fetchTeamStatus(directory: string): Promise<{ ok: boolean; data?:
   return getJson(directory, "/api/team/status");
 }
 
-async function mycoSupersede(
-  directory: string,
-  input: { old_spore_id: string; new_spore_id: string; reason?: string },
-): Promise<{ ok: boolean; data?: unknown }> {
-  return postJson(directory, "/api/mcp/supersede", input);
-}
-
-async function mycoConsolidate(
+async function mycoSpores(
   directory: string,
   input: {
-    source_spore_ids: string[];
-    consolidated_content: string;
-    observation_type: string;
+    op?: string;
+    id?: string;
+    content?: string;
+    type?: string;
+    observation_type?: string;
+    status?: string;
+    agent_id?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    old_spore_id?: string;
+    new_spore_id?: string;
+    source_spore_ids?: string[];
+    consolidated_content?: string;
     tags?: string[];
     reason?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  return postJson(directory, "/api/mcp/consolidate", input);
+  const op = input.op ?? "list";
+  if (op === "get") return getJson(directory, `/api/spores/${encodeURIComponent(input.id ?? "")}`);
+  if (op === "save") return postJson(directory, "/api/mcp/remember", {
+    content: input.content,
+    type: input.type,
+    tags: input.tags,
+  });
+  if (op === "supersede") return postJson(directory, "/api/mcp/supersede", {
+    old_spore_id: input.old_spore_id,
+    new_spore_id: input.new_spore_id,
+    reason: input.reason,
+  });
+  if (op === "consolidate") return postJson(directory, "/api/mcp/consolidate", {
+    source_spore_ids: input.source_spore_ids,
+    consolidated_content: input.consolidated_content,
+    observation_type: input.observation_type,
+    tags: input.tags,
+    reason: input.reason,
+  });
+  const query = new URLSearchParams();
+  if (input.agent_id) query.set("agent_id", input.agent_id);
+  if (input.observation_type ?? input.type) query.set("type", input.observation_type ?? input.type ?? "");
+  if (input.status) query.set("status", input.status);
+  if (input.search) query.set("search", input.search);
+  if (input.limit !== undefined) query.set("limit", String(input.limit));
+  if (input.offset !== undefined) query.set("offset", String(input.offset));
+  return getJson(directory, `/api/spores?${query.toString()}`);
 }
 
 async function mycoSkills(
   directory: string,
-  input: { id?: string; status?: string; limit?: number },
+  input: { op?: string; id?: string; status?: string; limit?: number },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  if (input.id) return getJson(directory, `/api/skill-records/${encodeURIComponent(input.id)}`);
+  if ((input.op ?? "list") === "get") return getJson(directory, `/api/skill-records/${encodeURIComponent(input.id ?? "")}`);
   const query = new URLSearchParams();
   if (input.status) query.set("status", input.status);
   if (input.limit !== undefined) query.set("limit", String(input.limit));
   return getJson(directory, `/api/skill-records?${query.toString()}`);
 }
 
-async function mycoRuns(
+async function mycoAgent(
   directory: string,
   input: { op?: string; id?: string; task?: string; agent_id?: string; limit?: number },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "list";
-  if (op === "get") return getJson(directory, `/api/agent/runs/${encodeURIComponent(input.id ?? "")}`);
+  const op = input.op ?? "runs";
+  if (op === "run") return getJson(directory, `/api/agent/runs/${encodeURIComponent(input.id ?? "")}`);
   const query = new URLSearchParams();
   if (input.task) query.set("task", input.task);
   if (input.agent_id) query.set("agentId", input.agent_id);
   if (input.limit !== undefined) query.set("limit", String(input.limit));
   return getJson(directory, `/api/agent/runs?${query.toString()}`);
-}
-
-async function canopyMap(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, "/api/canopy/map");
 }
 
 async function collectiveProjects(directory: string): Promise<{ ok: boolean; data?: unknown }> {
@@ -996,39 +1005,18 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerTool({
-    name: "myco_context",
-    label: "Myco Context",
-    description:
-      "Retrieve Myco's pre-computed project digest. Prefer this for broad project orientation.",
-    promptSnippet: "Retrieve the project digest for broad orientation before taking action",
-    promptGuidelines: [
-      "Use myco_context for broad project orientation or when you want the current digest before planning changes.",
-    ],
-    parameters: Type.Object({
-      tier: Type.Optional(Type.Number({ description: "Optional digest tier: 1500, 5000, or 10000" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoContext(currentCwd, params.tier);
-      return {
-        content: [{ type: "text" as const, text: result.content }],
-        details: result,
-      };
-    },
-  });
-
-  pi.registerTool({
     name: "myco_search",
     label: "Myco Search",
     description:
-      "Search the vault for prior sessions, spores, plans, and related artifacts.",
-    promptSnippet: "Search Myco for prior decisions, bugs, rationale, sessions, or plans on a topic",
+      "Search the vault for prior sessions, spores, plans, skills, and Canopy file summaries.",
+    promptSnippet: "Search Myco for prior decisions, bugs, rationale, sessions, plans, skills, or Canopy file summaries",
     promptGuidelines: [
       "Use myco_search when you need specific information about a topic, pattern, or past decision.",
-      "Prefer myco_search over myco_context when you have a focused query.",
+      "Follow the retrieve hint on a result to fetch the full entity from its owning tool.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query — topic, pattern, or question" }),
-      type: Type.Optional(Type.String({ description: "Optional note type filter: session, plan, spore, or all" })),
+      type: Type.Optional(Type.String({ description: "Optional type filter: session, plan, spore, skill, canopy, or all" })),
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
       observation_type: Type.Optional(Type.String({ description: "Optional spore observation type filter" })),
       status: Type.Optional(Type.String({ description: "Optional semantic status filter" })),
@@ -1046,71 +1034,68 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "myco_recall",
-    label: "Myco Recall",
-    description: "Look up a specific vault note by ID and return the full record.",
-    promptSnippet: "Fetch a full vault note by ID after myco_search finds a promising result",
+    name: "myco_cortex",
+    label: "Myco Cortex",
+    description: "Retrieve Cortex project intelligence: digest, instructions, Canopy map, or a Canopy entry.",
+    promptSnippet: "Retrieve Cortex digest or Canopy data for project orientation",
     promptGuidelines: [
-      "Use myco_recall after myco_search identifies a promising result and you need the full note.",
-    ],
-    parameters: Type.Object({ note_id: Type.String({ description: "Note ID to look up" }) }),
-    async execute(_toolCallId, params) {
-      const result = await mycoRecall(currentCwd, params.note_id);
-      if (!result) {
-        return { content: [{ type: "text" as const, text: `Note not found: ${params.note_id}` }], details: {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result) }], details: result };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_remember",
-    label: "Myco Remember",
-    description: "Save a durable observation as a spore.",
-    promptSnippet: "Save a durable decision, gotcha, discovery, or bug fix into the vault",
-    promptGuidelines: [
-      "Use myco_remember to save durable decisions, gotchas, discoveries, or bug fixes from this work.",
+      "Use myco_cortex op digest for broad project orientation.",
+      "Use myco_cortex op canopy_map as the default opener for project layout.",
+      "Use myco_cortex op canopy_entry with retrieve hints returned by myco_search.",
     ],
     parameters: Type.Object({
-      content: Type.String({ description: "Observation content with enough future-facing context" }),
-      type: Type.Optional(Type.String({ description: "Observation type" })),
-      tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
+      op: Type.Optional(Type.String({ description: "digest (default), instructions, canopy_map, or canopy_entry" })),
+      tier: Type.Optional(Type.Number({ description: "Optional digest tier: 1500, 5000, or 10000" })),
+      id: Type.Optional(Type.String({ description: "Canopy entry id for op=canopy_entry" })),
+      project_id: Type.Optional(Type.String({ description: "Optional Canopy project id" })),
+      path: Type.Optional(Type.String({ description: "Canopy path for op=canopy_entry" })),
     }),
     async execute(_toolCallId, params) {
-      const result = await mycoRemember(currentCwd, params);
+      const result = await mycoCortex(currentCwd, params);
       if (!result.ok) {
-        return { content: [{ type: "text" as const, text: "Failed to save observation — Myco daemon may not be running." }], details: {} };
+        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Cortex data unavailable.") }], details: result.data ?? {} };
       }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
+      const data = result.data as { content?: unknown } | undefined;
+      return { content: [{ type: "text" as const, text: typeof data?.content === "string" && (params.op ?? "digest") === "digest" ? data.content : formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },
   });
 
   pi.registerTool({
     name: "myco_plans",
     label: "Myco Plans",
-    description: "List plans, fetch one plan, or delete an obsolete plan.",
-    promptSnippet: "List active plans, fetch a specific plan, or delete an obsolete one",
+    description: "List, retrieve, save, or delete implementation plans.",
+    promptSnippet: "List, fetch, save, or delete Myco plans",
     promptGuidelines: [
       "Use myco_plans before implementation when approved plans or specs may already exist.",
-      "Use id to fetch one plan with content, or session to scope the list to current work.",
+      "Use myco_plans op save when you create or materially revise a plan.",
     ],
     parameters: Type.Object({
-      op: Type.Optional(Type.String({ description: 'Operation: "list" (default) or "delete"' })),
-      status: Type.Optional(Type.String({ description: "Optional list filter" })),
-      id: Type.Optional(Type.String({ description: "Plan id" })),
+      op: Type.Optional(Type.String({ description: "list (default), get, save, or delete" })),
+      status: Type.Optional(Type.String({ description: "Optional list filter or saved plan status" })),
+      id: Type.Optional(Type.String({ description: "Plan id for op=get/delete" })),
       session: Type.Optional(Type.String({ description: "Optional session id filter" })),
+      session_id: Type.Optional(Type.String({ description: "Session id for op=save; defaults to the active Pi session" })),
+      content: Type.Optional(Type.String({ description: "Markdown plan content for op=save" })),
+      source_path: Type.Optional(Type.String({ description: "Plan file path when also written to disk" })),
+      plan_key: Type.Optional(Type.String({ description: "Stable key for non-file-backed plans" })),
+      title: Type.Optional(Type.String({ description: "Optional explicit title" })),
+      tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
       force_remote: Type.Optional(Type.Boolean({ description: "Allow delete to remove a plan owned by another machine" })),
     }),
     async execute(_toolCallId, params) {
       const op = params.op ?? "list";
-      if (op === "delete" && !params.id) {
-        return { content: [{ type: "text" as const, text: "id is required for op: delete" }], details: {} };
+      if ((op === "delete" || op === "get") && !params.id) {
+        return { content: [{ type: "text" as const, text: `id is required for op: ${op}` }], details: {} };
+      }
+      const sessionId = params.session_id ?? currentSessionId;
+      if (op === "save" && !sessionId) {
+        return { content: [{ type: "text" as const, text: "No active session" }], details: {} };
       }
       if (op !== "delete" && params.id && params.session) {
         return { content: [{ type: "text" as const, text: "Pass either id or session, not both" }], details: {} };
       }
-      const result = await mycoPlans(currentCwd, params);
+      const result = await mycoPlans(currentCwd, op === "save" ? { ...params, session_id: sessionId } : params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Plan operation failed") }], details: result.data ?? {} };
       }
@@ -1119,41 +1104,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "myco_save_plan",
-    label: "Myco Save Plan",
-    description: "Persist a plan directly into Myco.",
-    promptSnippet: "Persist a plan directly into Myco when you create or materially revise one",
-    promptGuidelines: [
-      "Use myco_save_plan when you create or materially revise a plan and want it persisted to Myco.",
-      "Pass source_path when the plan is also written to disk; otherwise use a stable plan_key.",
-    ],
-    parameters: Type.Object({
-      session_id: Type.Optional(Type.String({ description: "Session id; defaults to the active Pi session" })),
-      content: Type.String({ description: "Markdown plan content" }),
-      source_path: Type.Optional(Type.String({ description: "Plan file path when also written to disk" })),
-      plan_key: Type.Optional(Type.String({ description: "Stable key for non-file-backed plans" })),
-      title: Type.Optional(Type.String({ description: "Optional explicit title" })),
-      status: Type.Optional(Type.String({ description: "Optional status" })),
-      tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
-    }),
-    async execute(_toolCallId, params) {
-      const sessionId = params.session_id ?? currentSessionId;
-      if (!sessionId) {
-        return { content: [{ type: "text" as const, text: "No active session" }], details: {} };
-      }
-      const result = await mycoSavePlan(currentCwd, { ...params, session_id: sessionId });
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Failed to save plan") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
     name: "myco_sessions",
     label: "Myco Sessions",
-    description: "Browse past coding sessions with summaries and metadata.",
+    description: "List or retrieve coding sessions with summaries and metadata.",
     parameters: Type.Object({
+      op: Type.Optional(Type.String({ description: "list (default) or get" })),
+      id: Type.Optional(Type.String({ description: "Session id for op=get" })),
       plan: Type.Optional(Type.String({ description: "Optional plan filter" })),
       branch: Type.Optional(Type.String({ description: "Optional branch filter" })),
       user: Type.Optional(Type.String({ description: "Optional user filter" })),
@@ -1162,58 +1118,17 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
     }),
     async execute(_toolCallId, params) {
+      if ((params.op ?? "list") === "get" && !params.id) {
+        return { content: [{ type: "text" as const, text: "id is required for op: get" }], details: {} };
+      }
       const result = await mycoSessions(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: "Session query unavailable." }], details: {} };
       }
-      const sessions = (result.data as { sessions?: unknown } | undefined)?.sessions ?? [];
+      const sessions = (params.op ?? "list") === "get"
+        ? result.data
+        : (result.data as { sessions?: unknown } | undefined)?.sessions ?? [];
       return { content: [{ type: "text" as const, text: formatToolOutput(sessions) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_supersede",
-    label: "Myco Supersede",
-    description: "Mark an outdated spore as superseded by a newer one.",
-    promptSnippet: "Mark outdated vault knowledge as superseded by a newer spore",
-    promptGuidelines: [
-      "Use myco_supersede when existing knowledge is outdated and should stop guiding future runs.",
-    ],
-    parameters: Type.Object({
-      old_spore_id: Type.String({ description: "ID of the outdated spore" }),
-      new_spore_id: Type.String({ description: "ID of the replacement spore" }),
-      reason: Type.Optional(Type.String({ description: "Optional reason" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoSupersede(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Failed to supersede spore") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "myco_consolidate",
-    label: "Myco Consolidate",
-    description: "Merge related spores into a single durable wisdom note.",
-    promptSnippet: "Merge several related Myco spores into one consolidated wisdom note",
-    promptGuidelines: [
-      "Use myco_consolidate when several related learnings should become one durable wisdom artifact.",
-    ],
-    parameters: Type.Object({
-      source_spore_ids: Type.Array(Type.String(), { description: "IDs of the spores to merge" }),
-      consolidated_content: Type.String({ description: "Merged comprehensive content" }),
-      observation_type: Type.String({ description: "Observation type for the consolidated note" }),
-      tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
-      reason: Type.Optional(Type.String({ description: "Optional reason" })),
-    }),
-    async execute(_toolCallId, params) {
-      const result = await mycoConsolidate(currentCwd, params);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Failed to consolidate spores") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
     },
   });
 
@@ -1222,11 +1137,15 @@ export default function (pi: ExtensionAPI) {
     label: "Myco Skills",
     description: "List or inspect skills generated by Myco.",
     parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: "Optional skill id or name" })),
+      op: Type.Optional(Type.String({ description: "list (default) or get" })),
+      id: Type.Optional(Type.String({ description: "Optional skill id or name for op=get" })),
       status: Type.Optional(Type.String({ description: "Optional status filter" })),
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
     }),
     async execute(_toolCallId, params) {
+      if ((params.op ?? "list") === "get" && !params.id) {
+        return { content: [{ type: "text" as const, text: "id is required for op: get" }], details: {} };
+      }
       const result = await mycoSkills(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: "Skill lookup unavailable." }], details: {} };
@@ -1236,37 +1155,60 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "myco_runs",
-    label: "Myco Runs",
+    name: "myco_spores",
+    label: "Myco Spores",
+    description: "List, retrieve, save, supersede, or consolidate durable knowledge spores.",
+    promptSnippet: "Manage durable Myco spores",
+    promptGuidelines: [
+      "Use myco_spores op save to capture durable decisions, gotchas, discoveries, or bug fixes.",
+      "Use myco_spores op get with retrieve hints returned by myco_search.",
+      "Use myco_spores op supersede or consolidate when existing knowledge should be retired or merged.",
+    ],
+    parameters: Type.Object({
+      op: Type.Optional(Type.String({ description: "list (default), get, save, supersede, or consolidate" })),
+      id: Type.Optional(Type.String({ description: "Spore id for op=get" })),
+      content: Type.Optional(Type.String({ description: "Observation content for op=save" })),
+      type: Type.Optional(Type.String({ description: "Observation type for op=save" })),
+      observation_type: Type.Optional(Type.String({ description: "Observation type filter or consolidated note type" })),
+      status: Type.Optional(Type.String({ description: "Optional list status filter" })),
+      agent_id: Type.Optional(Type.String({ description: "Optional agent id filter" })),
+      search: Type.Optional(Type.String({ description: "Optional text filter" })),
+      limit: Type.Optional(Type.Number({ description: "Optional max results" })),
+      offset: Type.Optional(Type.Number({ description: "Optional list offset" })),
+      old_spore_id: Type.Optional(Type.String({ description: "ID of the outdated spore" })),
+      new_spore_id: Type.Optional(Type.String({ description: "ID of the replacement spore" })),
+      source_spore_ids: Type.Optional(Type.Array(Type.String(), { description: "IDs of the spores to merge" })),
+      consolidated_content: Type.Optional(Type.String({ description: "Merged comprehensive content" })),
+      tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags" })),
+      reason: Type.Optional(Type.String({ description: "Optional reason" })),
+    }),
+    async execute(_toolCallId, params) {
+      const result = await mycoSpores(currentCwd, params);
+      if (!result.ok) {
+        return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Spore operation failed") }], details: result.data ?? {} };
+      }
+      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? { ok: true }) }], details: result.data ?? {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "myco_agent",
+    label: "Myco Agent",
     description: "List agent runs or fetch a single run.",
     parameters: Type.Object({
-      op: Type.Optional(Type.String({ description: "list (default) or get" })),
-      id: Type.Optional(Type.String({ description: "Run id for op=get" })),
+      op: Type.Optional(Type.String({ description: "runs (default) or run" })),
+      id: Type.Optional(Type.String({ description: "Run id for op=run" })),
       task: Type.Optional(Type.String({ description: "Optional task filter" })),
       agent_id: Type.Optional(Type.String({ description: "Optional agent id filter" })),
       limit: Type.Optional(Type.Number({ description: "Optional max results" })),
     }),
     async execute(_toolCallId, params) {
-      if ((params.op ?? "list") === "get" && !params.id) {
-        return { content: [{ type: "text" as const, text: "id is required for op: get" }], details: {} };
+      if ((params.op ?? "runs") === "run" && !params.id) {
+        return { content: [{ type: "text" as const, text: "id is required for op: run" }], details: {} };
       }
-      const result = await mycoRuns(currentCwd, params);
+      const result = await mycoAgent(currentCwd, params);
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: extractErrorMessage(result.data, "Run query failed") }], details: result.data ?? {} };
-      }
-      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
-    },
-  });
-
-  pi.registerTool({
-    name: "canopy_map",
-    label: "Canopy Map",
-    description: "Returns the project's architectural overview (directory skeleton + key files + golden paths) maintained by the canopy-map background task.",
-    parameters: Type.Object({}),
-    async execute() {
-      const result = await canopyMap(currentCwd);
-      if (!result.ok) {
-        return { content: [{ type: "text" as const, text: "Canopy map unavailable." }], details: result.data ?? {} };
       }
       return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? {}) }], details: result.data ?? {} };
     },

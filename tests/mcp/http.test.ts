@@ -47,10 +47,10 @@ describe('streamable HTTP MCP', () => {
     await client.connect(transport);
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name);
-    const called = await client.callTool({ name: 'myco_context', arguments: { tier: 5000 } });
+    const called = await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
 
-    expect(names).toContain('myco_context');
-    expect(names).toContain('canopy_map');
+    expect(names).toContain('myco_cortex');
+    expect(names).toContain('myco_spores');
     expect(called.content[0]).toEqual({ type: 'text', text: 'HTTP MCP digest' });
 
     await client.close();

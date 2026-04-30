@@ -102,7 +102,7 @@ describe('createSessionContextHandler', () => {
   it('returns stored Cortex instructions with branch and session metadata', async () => {
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
-      content: 'Use `myco_context` before major changes.',
+      content: 'Use `myco_cortex` before major changes.',
       input_hash: 'hash-session',
       generated_at: NOW,
     });
@@ -111,7 +111,7 @@ describe('createSessionContextHandler', () => {
     const body = result.body as { text: string; source: string };
 
     expect(body.source).toBe('cortex');
-    expect(body.text).toContain('myco_context');
+    expect(body.text).toContain('myco_cortex');
     expect(body.text).toContain('Branch:: `main`');
     expect(body.text).toContain('Session:: `sess-1`');
   });
@@ -141,7 +141,7 @@ describe('createSessionContextHandler', () => {
     });
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
-      content: 'Use `myco_context` before major changes.',
+      content: 'Use `myco_cortex` before major changes.',
       input_hash: 'hash-session-digest',
       generated_at: NOW,
     });
@@ -159,7 +159,7 @@ describe('createSessionContextHandler', () => {
     const body = result.body as { text: string; source: string };
 
     expect(body.source).toBe('cortex+digest:5000');
-    expect(body.text).toContain('Use `myco_context` before major changes.');
+    expect(body.text).toContain('Use `myco_cortex` before major changes.');
     expect(body.text).toContain('## Preferred Digest (Tier 5000)');
     expect(body.text).toContain('Digest extract for current project work.');
   });

@@ -14,6 +14,7 @@ import {
   TEAM_SOURCE_PREFIX,
 } from '@myco/constants.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
+import { normalizeSearchResults } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -103,14 +104,14 @@ export function createSearchHandler(deps: SearchDeps) {
       if (canopyResults === null) {
         return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
       }
-      return { body: { mode: 'semantic', results: canopyResults } };
+      return { body: { mode: 'semantic', results: normalizeSearchResults(canopyResults) } };
     }
 
     // --- FTS-only mode ---
     if (mode === 'fts') {
       try {
         const results = fullTextSearch(sanitized, { type, limit });
-        return { body: { mode: 'fts', results } };
+        return { body: { mode: 'fts', results: normalizeSearchResults(results) } };
       } catch (err) {
         return {
           status: 500,
@@ -125,6 +126,24 @@ export function createSearchHandler(deps: SearchDeps) {
     }
 
     // --- Semantic or auto mode: attempt vector search ---
+    // Fire team search in parallel with the embedding round-trip — both are
+    // network-bound and team search depends only on the query string. On the
+    // rare FTS fallback path the team response is discarded; the saved
+    // round-trip on every successful semantic search is the better trade.
+    const teamClient = deps.getTeamClient?.();
+    const teamSearchNamespace = normalizeSearchNamespace(namespace ?? type);
+    const teamPromise = teamClient
+      ? teamClient.search(query, {
+          limit,
+          tables: teamSearchNamespace ? [teamSearchNamespace] : undefined,
+          status: req.query.status || undefined,
+          observation_type: req.query.observation_type || undefined,
+          since: req.query.since ? Number(req.query.since) : undefined,
+          until: req.query.until ? Number(req.query.until) : undefined,
+          session_id: req.query.session_id || undefined,
+        }).catch(() => null)
+      : null;
+
     const queryVector = await deps.embeddingManager.embedQuery(query);
 
     // If provider unavailable, auto falls back to FTS; semantic returns empty
@@ -132,7 +151,7 @@ export function createSearchHandler(deps: SearchDeps) {
       if (mode === 'auto') {
         try {
           const results = fullTextSearch(sanitized, { type, limit });
-          return { body: { mode: 'fts', results, fallback: true } };
+          return { body: { mode: 'fts', results: normalizeSearchResults(results), fallback: true } };
         } catch (err) {
           return {
             status: 500,
@@ -150,9 +169,8 @@ export function createSearchHandler(deps: SearchDeps) {
     }
 
     // Vector search with optional namespace/type filtering
-    const searchNamespace = normalizeSearchNamespace(namespace ?? type);
     const vectorResults = deps.embeddingManager.searchVectors(queryVector, {
-      namespace: searchNamespace,
+      namespace: teamSearchNamespace,
       limit,
       threshold: SEARCH_SIMILARITY_THRESHOLD,
       filters: vectorFilters,
@@ -168,28 +186,13 @@ export function createSearchHandler(deps: SearchDeps) {
       source: 'local',
     }));
 
-    // Fan out to team search in parallel (if connected)
-    const teamClient = deps.getTeamClient?.();
-    let teamResults: Array<TeamSearchResult & { source: string }> = [];
-    if (teamClient) {
-      try {
-        const teamResponse = await teamClient.search(query, {
-          limit,
-          tables: searchNamespace ? [searchNamespace] : undefined,
-          status: req.query.status || undefined,
-          observation_type: req.query.observation_type || undefined,
-          since: req.query.since ? Number(req.query.since) : undefined,
-          until: req.query.until ? Number(req.query.until) : undefined,
-          session_id: req.query.session_id || undefined,
-        });
-        teamResults = teamResponse.results.map((r) => ({
+    const teamResponse = teamPromise ? await teamPromise : null;
+    const teamResults: Array<TeamSearchResult & { source: string }> = teamResponse
+      ? teamResponse.results.map((r) => ({
           ...r,
           source: `${TEAM_SOURCE_PREFIX}${r.machine_id}`,
-        }));
-      } catch {
-        // Team search failure is non-blocking — local results still returned
-      }
-    }
+        }))
+      : [];
 
     // Deduplicate: skip team results from this machine (we already have them locally)
     const dedupedTeam = deps.machineId
@@ -208,6 +211,6 @@ export function createSearchHandler(deps: SearchDeps) {
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .slice(0, limit);
 
-    return { body: { mode: 'semantic', results: merged } };
+    return { body: { mode: 'semantic', results: normalizeSearchResults(merged) } };
   };
 }

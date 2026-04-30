@@ -17,6 +17,19 @@ describe('handleSkills', () => {
     expect(parsed.skills[0].name).toBe('debug-daemon');
   });
 
+  it('retrieves a skill by id and machine_id', async () => {
+    const fake = createFakeD1();
+    fake.addResult([{ id: 'sk1', machine_id: 'm1', name: 'debug-daemon' }]);
+
+    const result = await handleSkills({ op: 'get', id: 'sk1', machine_id: 'm1' }, { MYCO_TEAM_DB: fake.db });
+    const parsed = parseToolResult(result);
+
+    expect(parsed).toEqual({ id: 'sk1', machine_id: 'm1', name: 'debug-daemon' });
+    expect(fake.queries[0].sql).toContain('FROM skill_records');
+    expect(fake.queries[0].sql).toContain('machine_id = ?');
+    expect(fake.queries[0].values).toEqual(['sk1', 'm1']);
+  });
+
   it('filters by status', async () => {
     const fake = createFakeD1();
     fake.addResult([{ id: 'sk1', status: 'active' }]);

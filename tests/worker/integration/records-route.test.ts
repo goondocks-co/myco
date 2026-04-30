@@ -1,6 +1,6 @@
 /**
  * Integration coverage for the `GET /records/:type/:id` HTTP route exposed
- * by the team worker. The daemon's recall fallback relies on this route
+ * by the team worker. The daemon's entity get fallback relies on this route
  * (see `TeamSyncClient.getRecord` and `createGetSessionHandler`), so it
  * needs to keep the contract: authorized hit returns 200 + `{ record }`,
  * authorized miss returns 404 + `{ error: 'not_found' }`, unauthorized

@@ -121,7 +121,7 @@ describe('Pi plugin', () => {
     expect(source).not.toContain('name: "myco_observe"');
   });
 
-  it('uses /api/digest for myco_context and /context for session-start injection', () => {
+  it('uses /api/digest for myco_cortex digest and /context for session-start injection', () => {
     const source = pluginSource();
     expect(source).toContain('getJson(directory, "/api/digest")');
     expect(source).toContain('postJson(directory, "/context", { session_id: sessionId })');

@@ -5,8 +5,9 @@
  * The daemon handles embedding and similarity search internally.
  */
 
-import type { DaemonClient } from '@myco/hooks/client.js';
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
+import type { DaemonClient } from '@myco/hooks/client.js';
+import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -25,26 +26,6 @@ interface SearchInput {
   language?: string;
 }
 
-/**
- * Result row shape. Canopy results carry `project_id`, `path`, and
- * `llm_description` instead of `id`/`content`; we expose a single union
- * here and let the daemon decide which fields to populate.
- */
-interface SearchResult {
-  id?: string;
-  type?: string;
-  content?: string;
-  score: number;
-  observation_type?: string;
-  status?: string;
-  tags?: string;
-  // Canopy-specific
-  project_id?: string | null;
-  path?: string | null;
-  llm_description?: string | null;
-  language?: string | null;
-}
-
 function requiresSemanticMode(input: SearchInput): boolean {
   // Canopy is its own retrieval surface — always semantic, never FTS-fallback.
   if (input.type === 'canopy') return true;
@@ -61,7 +42,7 @@ function requiresSemanticMode(input: SearchInput): boolean {
 export async function handleMycoSearch(
   input: SearchInput,
   client: DaemonClient,
-): Promise<SearchResult[]> {
+): Promise<NormalizedSearchResult[]> {
   const limit = input.limit ?? MCP_SEARCH_DEFAULT_LIMIT;
 
   const endpoint = buildEndpoint('/api/search', {
@@ -78,5 +59,5 @@ export async function handleMycoSearch(
   const result = await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];
 
-  return result.data.results as SearchResult[];
+  return normalizeSearchResults(result.data.results);
 }

@@ -46,6 +46,21 @@ const DIGEST_EXCERPT_MAX_CHARS = 1800;
 const JSON_INDENT = 2;
 
 export const CORTEX_SKILLS_NOTE = 'Project and Myco skills are already registered with the agent separately. Tell the agent to use those skills directly when relevant, and do not instruct it to call `myco_skills`.';
+export const RETIRED_TOOL_NAMES = [
+  'canopy_map',
+  'myco_context',
+  'myco_recall',
+  'myco_remember',
+  'myco_save_plan',
+  'myco_runs',
+  'myco_supersede',
+  'myco_consolidate',
+] as const;
+const RETIRED_TOOLS_NOTE = 'Do not mention retired tool names, even as gotchas or historical context. If recent vault context mentions an obsolete name, translate it to the current owning tool from the tool guidance instead.';
+const RETIRED_TOOL_REFERENCE_PATTERN = new RegExp(
+  RETIRED_TOOL_NAMES.map((tool) => tool.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+  'g',
+);
 
 // ---------------------------------------------------------------------------
 // Capability resolution
@@ -177,6 +192,20 @@ export function buildRetrievalGuidanceLines(capabilities: CortexCapabilities): s
   return lines;
 }
 
+function buildCurrentToolSurfaceLines(capabilities: CortexCapabilities): string[] {
+  const lines = [
+    `Local project tools: ${TOOL_DEFINITIONS.map((tool) => `\`${tool.name}\``).join(', ')}.`,
+  ];
+
+  if (capabilities.collectiveConnected) {
+    lines.push(`Collective tools: ${COLLECTIVE_TOOL_DEFINITIONS.map((tool) => `\`${tool.name}\``).join(', ')}.`);
+  } else {
+    lines.push('Collective tools are offline in this session; do not mention them unless the capability summary says Collective is connected.');
+  }
+
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Instruction-input prompt assembly (for the `cortex-instructions` task)
 // ---------------------------------------------------------------------------
@@ -189,9 +218,12 @@ function hashInput(value: unknown): string {
 
 function truncatePreview(text: string | null, maxChars: number = CONTENT_PREVIEW_MAX_CHARS): string | null {
   if (!text) return null;
-  return text.length > maxChars
-    ? `${text.slice(0, maxChars)}...`
-    : text;
+  const sanitized = text
+    .replace(RETIRED_TOOL_REFERENCE_PATTERN, '[retired Myco tool]')
+    .replace(/\[retired Myco tool\]\(\)/g, '[retired Myco tool]');
+  return sanitized.length > maxChars
+    ? `${sanitized.slice(0, maxChars)}...`
+    : sanitized;
 }
 
 function formatRecentSessions(): string {
@@ -270,7 +302,7 @@ export async function buildCortexInstructionsInput(
   getTeamClient?: () => TeamSyncClient | null,
 ): Promise<CortexInstructionPayload> {
   // Probe the Canopy Map state once at build time so the prompt can branch
-  // deterministically. We only emit the canopy_map() directive when a
+  // deterministically. We only emit the myco_cortex canopy_map directive when a
   // populated map exists for this project — that way agents downstream
   // never see guidance for a tool that would return empty. The chain
   // also covers describe state implicitly: the map task can't produce a
@@ -283,6 +315,7 @@ export async function buildCortexInstructionsInput(
 
   const capabilities = await resolveCortexCapabilities(config, getTeamClient);
   const capabilitySummary = buildCapabilitySummary(capabilities);
+  const currentToolSurface = buildCurrentToolSurfaceLines(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
   const recentSessions = formatRecentSessions();
   const recentWisdomSpores = formatSporesOfType('wisdom', RECENT_WISDOM_SPORE_LIMIT);
@@ -300,13 +333,19 @@ export async function buildCortexInstructionsInput(
       spores_max_per_prompt: config.cortex.spores.max_per_prompt,
     },
     capabilities,
+    toolSurface: {
+      currentToolSurface,
+      retrievalGuidance,
+      retiredToolNames: RETIRED_TOOL_NAMES,
+      skillsNote: CORTEX_SKILLS_NOTE,
+      retiredToolsNote: RETIRED_TOOLS_NOTE,
+    },
     digestExcerpt,
     recentSessions,
     recentWisdomSpores,
     recentDecisionSpores,
     recentDiscoverySpores,
     recentPlans,
-    skillsNote: CORTEX_SKILLS_NOTE,
   };
 
   const instructionParts = [
@@ -321,8 +360,10 @@ export async function buildCortexInstructionsInput(
     '- Start with the heading `## Myco-Enabled Project`.',
     '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this repository.',
     '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Prefer the project-resolved CLI JSON launcher (`node .agents/myco-cli.cjs tool ...`) as the portable fallback and describe MCP as available when the host exposes it cleanly.',
+    '- Treat "Current valid tool surface" and "Tool guidance to encode" below as authoritative. Recent sessions, spores, or digest excerpts may contain obsolete tool names; do not copy obsolete names into the final instructions.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
     `- ${CORTEX_SKILLS_NOTE}`,
+    `- ${RETIRED_TOOLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
     '- Keep the output compact and ready for direct injection.',
     // The recent-plans section is background context, not a task list for
@@ -340,9 +381,9 @@ export async function buildCortexInstructionsInput(
     // is no empty-state caveat to hedge with — so the generated downstream
     // copy can be a default action rather than a conditional. If the map
     // is missing or empty, this directive is omitted entirely and the
-    // session-start instructions stay silent about canopy_map().
+    // session-start instructions stay silent about Canopy map retrieval.
     instructionParts.push(
-      '- Teach Myco Canopy Map as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. Prefer the project-resolved CLI JSON path (`node .agents/myco-cli.cjs tool call canopy_map --json --input \'{}\'`); use `canopy_map()` via MCP when the host exposes Myco tools cleanly. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action, not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
+      '- Teach `myco_cortex` op `"canopy_map"` as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. Prefer the project-resolved CLI JSON path (`node .agents/myco-cli.cjs tool call myco_cortex --json --input \'{"op":"canopy_map"}\'`); use `myco_cortex({"op":"canopy_map"})` via MCP when the host exposes Myco tools cleanly. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action, not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
     );
   }
 
@@ -350,6 +391,9 @@ export async function buildCortexInstructionsInput(
     '',
     '## Capability summary',
     ...capabilitySummary,
+    '',
+    '## Current valid tool surface (authoritative)',
+    ...currentToolSurface,
     '',
     '## Tool guidance to encode',
     ...retrievalGuidance,

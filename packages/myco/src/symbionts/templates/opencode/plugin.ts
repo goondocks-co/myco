@@ -741,7 +741,7 @@ export const MycoPlugin = async ({ client, directory, worktree }: { client: any;
      * injected spores via session.prompt({ noReply: true }) inside this handler, but
      * opencode re-fires chat.message for the synthetic turn and the first real user
      * message landed during the re-entrancy window. Agents can fetch context on
-     * demand via the myco_context and myco_search MCP tools.
+     * demand via the myco_cortex and myco_search MCP tools.
      *
      * Re-entrancy guard: we check for `metadata.myco === true` on any part to
      * detect our session-start digest injection coming back around. Opencode

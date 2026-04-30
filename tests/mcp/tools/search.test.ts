@@ -52,7 +52,13 @@ describe('myco_search', () => {
     ];
     const client = mockClient({ mode: 'semantic', results: mockResults });
     const results = await handleMycoSearch({ query: 'test' }, client);
-    expect(results).toEqual(mockResults);
+    expect(results).toEqual([{
+      ...mockResults[0],
+      type: 'spore',
+      title: 'spore-1',
+      preview: 'test',
+      retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'spore-1' } },
+    }]);
   });
 
   it('returns empty on daemon failure', async () => {

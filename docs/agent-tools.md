@@ -13,48 +13,28 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-12 tools exposed through the local daemon over stdio. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/mcp/tool-definitions.ts`.
+7 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
 
-### Search & recall
-
-| Tool | Purpose |
-|------|---------|
-| `myco_search` | Semantic + keyword search across sessions, spores, and plans. Pass `type=canopy` to search the project's per-file code intelligence — finds files by what they do, not by keyword. Fans out to the connected team's D1 and merges results by score. |
-| `myco_recall` | Look up a specific note by ID. Falls back to the connected team's D1 when the record isn't local. |
-| `myco_context` | On-demand digest extract at a specific token tier (1500, 5000, or 10000). |
-
-### Knowledge capture
+### Search & Cortex
 
 | Tool | Purpose |
 |------|---------|
-| `myco_remember` | Save an observation as a spore. Types: `gotcha`, `decision`, `discovery`, `trade_off`, `bug_fix`. |
-| `myco_save_plan` | Persist a plan directly to a session. Pass `source_path` when the plan is also written to disk; use `plan_key` for non-file-backed plans. |
-| `myco_supersede` | Mark an older spore as replaced by a newer one. Lineage is preserved; the old spore is hidden from search. |
-| `myco_consolidate` | Merge related spores into a single wisdom note. |
+| `myco_search` | Semantic + keyword search across sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs and `retrieve` hints pointing to the owning entity tool. |
+| `myco_cortex` | Cortex project intelligence: digest (`op=digest`), generated instructions, Canopy map (`op=canopy_map`), and Canopy entries returned by search (`op=canopy_entry`). |
 
-### Browsing
+### Entity tools
 
 | Tool | Purpose |
 |------|---------|
-| `myco_sessions` | Browse session history with filters for branch, user, or date range. |
-| `myco_plans` | List active plans and their progress, or read a specific plan. |
-| `myco_runs` | Read agent run history — token budget, cost, reasoning level, and per-run details. |
-
-### Skills
-
-| Tool | Purpose |
-|------|---------|
+| `myco_plans` | List, retrieve, save, or delete plans using `op=list|get|save|delete`. |
+| `myco_sessions` | List or retrieve session history using `op=list|get`. |
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
-
-### Code intelligence
-
-| Tool | Purpose |
-|------|---------|
-| `canopy_map` | Returns the project's architectural overview — directory skeleton plus key files and golden paths. One call instead of a half-dozen `Glob` and `Grep` calls when an unfamiliar agent needs to orient. See the [Canopy guide](canopy.md). |
+| `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
+| `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
 
 ## Cloud MCP tools
 
-A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N8N, OpenAI Workflows, etc.). Five tools reshaped for cloud agent use cases rather than mirroring the local surface. See the [Cloud MCP docs](cloud-mcp.md) for the full reference and setup.
+A separate, read-only tool surface for cloud agents (Anthropic Managed Agents, N8N, OpenAI Workflows, etc.). Six tools follow the same search-then-entity access pattern as local MCP while limiting operations to synced team reads. See the [Cloud MCP docs](cloud-mcp.md) for the full reference and setup.
 
 ## Slash-command skills
 

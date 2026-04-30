@@ -54,7 +54,7 @@ Two injection points, each with a different purpose:
 
 **Session start** — Project understanding. At the start of each session, Myco injects the digest extract (or a fallback built from recent sessions and active spores if no digest exists yet). Total budget is around 1200 tokens, plus the session ID and current git branch.
 
-**Per prompt** — Targeted intelligence. On every prompt you submit, Myco runs a semantic search against your prompt text and injects the top matching spores. Each result includes its spore ID so the agent can follow up with `myco_recall` for more detail. Very short prompts skip this to avoid noise.
+**Per prompt** — Targeted intelligence. On every prompt you submit, Myco runs a semantic search against your prompt text and injects the top matching spores. Each result includes its spore ID so the agent can follow up with `myco_spores` op `"get"` for more detail. Very short prompts skip this to avoid noise.
 
 ## Degraded mode
 

@@ -1,7 +1,7 @@
 /**
- * Tests for canopy_map MCP handler + sessions counter helper.
+ * Tests for myco_cortex Canopy map helper + sessions counter helper.
  *
- * Direct DB access tool — the handler reads canopy_maps via the store and
+ * Direct DB access helper — the handler reads canopy_maps via the store and
  * the counter helper increments sessions.canopy_map_tool_calls.
  */
 
@@ -16,7 +16,7 @@ import { seedSession } from '../../helpers/sessions.js';
 beforeEach(() => { setupTestDb(); cleanTestDb(); });
 afterEach(() => teardownTestDb());
 
-describe('canopy_map MCP handler', () => {
+describe('myco_cortex op: canopy_map helper', () => {
   it('returns empty-state shape when no map exists', async () => {
     const res = await handleCanopyMap({ projectId: 'p', machineId: 'local' });
     expect(res.is_empty).toBe(true);

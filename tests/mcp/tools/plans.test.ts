@@ -66,7 +66,7 @@ describe('myco_plans op: list (default)', () => {
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=5'));
   });
 
-  it('forwards id to daemon when looking up a specific plan', async () => {
+  it('forwards id to daemon for op: get', async () => {
     const client = mockClient({
       plans: [{
         id: 'plan-auth',
@@ -78,17 +78,17 @@ describe('myco_plans op: list (default)', () => {
         content: '# Plan content here',
       }],
     });
-    await handleMycoPlans({ id: 'plan-auth' }, client);
+    await handleMycoPlans({ op: 'get', id: 'plan-auth' }, client);
     expect(client.get).toHaveBeenCalledWith(expect.stringContaining('id=plan-auth'));
   });
 
-  it('surfaces plan content on single-plan lookup response', async () => {
+  it('surfaces plan content on op: get response', async () => {
     const content = '# Auth Redesign\n\n- [x] Step 1\n- [ ] Step 2';
     const client = mockClient({
       plans: [{ id: 'plan-auth', title: 'Auth', status: 'active', progress: '1/2', tags: [], created_at: 1700000000, content }],
     });
-    const results = await handleMycoPlans({ id: 'plan-auth' }, client);
-    expect((results as Array<{ content?: string }>)[0].content).toBe(content);
+    const result = await handleMycoPlans({ op: 'get', id: 'plan-auth' }, client);
+    expect((result as { content?: string }).content).toBe(content);
   });
 
   it('forwards session filter to daemon', async () => {
