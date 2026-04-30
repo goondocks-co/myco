@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { handleMycoSkills } from '@myco/mcp/tools/skills.js';
+import { handleMycoSkills } from '@myco/tools/skills.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {

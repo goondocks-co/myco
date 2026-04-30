@@ -157,7 +157,6 @@ registration:
   hooksTarget: .codex/hooks.json
   mcpTarget: .codex/config.toml
   mcpFormat: toml
-  mcpCwd: "."
   skillsTarget: .agents/skills
   settingsTarget: .codex/config.toml
   settingsFormat: toml

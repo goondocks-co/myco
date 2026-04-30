@@ -261,6 +261,12 @@ export class DaemonClient {
     return false;
   }
 
+  async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
+    this.killDaemon(this.readDaemonJson());
+    await new Promise((r) => setTimeout(r, 200));
+    return this.ensureRunning(opts);
+  }
+
   spawnDaemon(): void {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.

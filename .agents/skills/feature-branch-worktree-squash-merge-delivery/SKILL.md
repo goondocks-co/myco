@@ -172,6 +172,30 @@ The single squashed commit becomes the PR commit.
 
 ## Key Gotchas
 
+### Core Worktree Hazards
+
+- **Native modules fail to build inside worktrees** — packages with native dependencies (sqlite-vec, better-sqlite3) cannot compile inside git worktrees. All test failures trace to native module build errors, not code issues. Use `npm rebuild` after creating worktrees to force recompilation.
+
+- **Daemon segfault on worktree activation** — activating a worktree while the daemon is running can cause segmentation faults. Stop the daemon before creating or switching worktrees: `pkill -f "myco-daemon"` then restart after worktree setup.
+
+- **Wrong daemon takeover** — worktrees can spawn duplicate daemon processes that compete for the same vault. Check for phantom processes with `ps aux | grep myco` before starting work in a worktree.
+
+- **Config path contamination** — worktree-local paths can leak into shared config files, breaking subsequent sessions. Avoid absolute path references in temporary configs; use relative paths or environment variables.
+
+- **Branch activation failures** — switching branches within an active worktree confuses git state. Always `git checkout` to the intended branch immediately after worktree creation, before any commits.
+
+- **Resource cleanup incomplete** — interrupted worktree operations leave stale references. Use `git worktree prune` periodically to clean orphaned worktree entries.
+
+### Binary and Path Safety
+
+- **Hardcoded binary names leak between scopes** — build scripts that reference fixed binary names (e.g., `myco-daemon`) break when multiple worktrees exist. Use dynamic scope dispatch to isolate binary instances.
+
+- **Absolute path leaks** — worktree-specific absolute paths contaminate shared configuration. Always use relative paths or project-root-relative references in config files.
+
+- **Build artifact scope collision** — multiple worktrees can overwrite each other's build outputs. Ensure build directories are worktree-scoped or use unique naming.
+
+### Standard Quality and Build Gotchas
+
 - **`npm run build` silently ships broken packages** — only `make build` runs the full `tsc` + `vitest` + `tsup` + `vite` chain
 - **Sibling directory, not subdirectory** — always use `../myco-branch-name`; nested worktrees cause CWD detection misattribution
 - **`/simplify` before squash, not after** — simplification belongs in the final squashed commit, not a follow-up cleanup PR

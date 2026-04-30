@@ -25,6 +25,7 @@ Commands:
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
   task <subcommand>        Manage agent task definitions
+  tool <list|call>         List or call Myco tools as JSON
   doctor [--fix]          Check vault health and repair issues
   open                     Open the dashboard in your browser
   restart                  Restart the daemon
@@ -108,6 +109,7 @@ async function main(): Promise<void> {
       return (await import('./cli/agent-run.js')).run(args, vaultDir);
     }
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
+    case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
     case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);

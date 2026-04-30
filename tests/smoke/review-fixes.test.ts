@@ -23,7 +23,7 @@ import {
 } from '@myco/agent/tools/skill-validator.js';
 import { buildScheduledJobs, type ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
 import type { AgentTask } from '@myco/agent/types.js';
-import { TOOL_DEFINITIONS } from '@myco/mcp/tool-definitions.js';
+import { TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 

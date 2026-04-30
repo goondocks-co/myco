@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
+import { derivePort } from '@myco/daemon/port.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -68,7 +69,6 @@ const CODEX_MANIFEST: SymbiontManifest = {
     hooksTarget: '.codex/hooks.json',
     mcpTarget: '.codex/config.toml',
     mcpFormat: 'toml',
-    mcpCwd: '.',
     skillsTarget: '.agents/skills',
     settingsTarget: '.codex/config.toml',
     settingsFormat: 'toml',
@@ -243,7 +243,7 @@ function setupPackageRoot(): void {
     Stop: [{ hooks: [{ type: 'command', command: 'node .agents/myco-run.cjs hook stop --symbiont codex', timeout: 30 }] }],
   });
   writeJson(path.join(codexTemplateDir, 'mcp.json'), {
-    myco: { command: 'myco-run', args: ['mcp'] },
+    myco: { url: 'http://127.0.0.1:{{daemonPort}}/mcp' },
   });
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
     features: { codex_hooks: true },
@@ -282,7 +282,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['myco-run', 'mcp'] },
+    myco: { type: 'local', command: ['node', '.agents/myco-cli.cjs', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -1014,6 +1014,17 @@ describe('gitignore management', () => {
 // =====================
 
 describe('installMcp (TOML)', () => {
+  it('real Codex MCP template uses daemon HTTP URL transport', () => {
+    const realTemplate = JSON.parse(fs.readFileSync(
+      path.resolve('packages/myco/src/symbionts/templates/codex/mcp.json'),
+      'utf-8',
+    )) as { myco: Record<string, unknown> };
+
+    expect(realTemplate.myco.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
+    expect(realTemplate.myco.command).toBeUndefined();
+    expect(realTemplate.myco.args).toBeUndefined();
+  });
+
   it('writes MCP server entry to TOML config', () => {
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
@@ -1022,10 +1033,46 @@ describe('installMcp (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
-    expect(content).toContain('args = ["mcp"]');
-    expect(content).toContain('cwd = "."');
+    expect(content).toContain(`url = "http://127.0.0.1:${derivePort(path.join(projectRoot, '.myco'))}/mcp"`);
+    expect(content).not.toContain('command = "myco-run"');
+    expect(content).not.toContain('args = ["mcp"]');
+    expect(content).not.toContain('cwd = "."');
     expect(content).not.toContain('[mcp_servers.myco.env]');
+  });
+
+  it('uses daemon.port from myco.yaml when installing Codex MCP URL', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
+      'version: 3',
+      'daemon:',
+      '  port: 21039',
+      'embedding:',
+      '  provider: ollama',
+      '  model: bge-m3',
+      '',
+    ].join('\n'));
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    expect(content).toContain('url = "http://127.0.0.1:21039/mcp"');
+  });
+
+  it('persists a stable daemon.port before installing Codex MCP URL when config omits it', () => {
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const expectedPort = derivePort(path.join(projectRoot, '.myco'));
+    const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    const mycoConfig = fs.readFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'utf-8');
+    expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
+    expect(mycoConfig).toContain(`port: ${expectedPort}`);
   });
 
   it('preserves existing TOML content', () => {
@@ -1051,131 +1098,58 @@ describe('installMcp (TOML)', () => {
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
-    expect(content).toContain('command = "myco-run"');
-    expect(content).toContain('args = ["mcp"]');
+    expect(content).toContain('url = "http://127.0.0.1:');
     expect(content).not.toContain('old-command');
   });
 
-  it('writes mcpCwd verbatim into the installed MCP entry', () => {
+  it('does not write cwd into the installed Codex MCP entry', () => {
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain('cwd = "."');
+    expect(content).not.toContain('cwd = "."');
   });
 });
 
 // =====================
-// installMcp — substituteRuntimeCommand
+// installMcp — runtime command isolation
 // =====================
-//
-// Narrow opt-in: symbionts whose host reorders PATH so `myco-run` can't
-// reach `~/.local/bin` (opencode today) set `registration.substituteRuntimeCommand
-// = true`. The installer then rewrites the `myco-run` command in the MCP
-// template to the project's `.myco/runtime.command` alias. Every other
-// symbiont keeps `myco-run` in their config and lets `bin/myco-run` read
-// runtime.command at spawn time — preserving the dynamic alias contract.
 
-describe('installMcp substituteRuntimeCommand', () => {
+describe('installMcp runtime command isolation', () => {
   function writeRuntimeCommand(value: string): void {
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), value, 'utf-8');
   }
 
-  const OPT_IN_OPENCODE_MANIFEST: SymbiontManifest = {
-    ...OPENCODE_MANIFEST,
-    registration: { ...OPENCODE_MANIFEST.registration!, substituteRuntimeCommand: true },
-  };
-
-  it('rewrites opencode array-form command from myco-run to the runtime.command alias', () => {
-    writeRuntimeCommand('myco-dev');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+  it('does not copy runtime.command into opencode MCP config', () => {
+    const runtime = '/Users/test/.local/bin/myco-dev';
+    writeRuntimeCommand(runtime);
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
+    expect(servers.myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
+    expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
 
-  it('rewrites string-form command when the opt-in flag is set', () => {
-    // Use a Claude-style string command to exercise the string branch of
-    // substituteMycoRunCommand. Claude does NOT set the flag in prod, but
-    // we force it here to verify both branches handle the rewrite.
-    writeRuntimeCommand('myco-dev');
-    const installer = new SymbiontInstaller(
-      { ...CLAUDE_MANIFEST, registration: { ...CLAUDE_MANIFEST.registration!, substituteRuntimeCommand: true } },
-      projectRoot,
-      packageRoot,
-    );
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, '.mcp.json'));
-    const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
-    expect(servers.myco.command).toBe('myco-dev');
-    expect(servers.myco.args).toEqual(['mcp']);
-  });
-
-  it('leaves command untouched when the symbiont does not opt in', () => {
-    // Claude Code does not set substituteRuntimeCommand; even with a
-    // runtime.command alias present, the MCP entry must continue to say
-    // `myco-run` so the spawn-time shim (bin/myco-run) can read the alias.
-    writeRuntimeCommand('myco-dev');
+  it('does not copy runtime.command into string-form MCP configs', () => {
+    const runtime = '/Users/test/.local/bin/myco-dev';
+    writeRuntimeCommand(runtime);
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const config = readJson(path.join(projectRoot, '.mcp.json'));
-    const servers = config.mcpServers as Record<string, { command: unknown }>;
+    const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
     expect(servers.myco.command).toBe('myco-run');
-  });
-
-  it('leaves command untouched when the opt-in symbiont has no runtime.command file', () => {
-    // No runtime.command file at all — nothing to substitute. Template
-    // value passes through unchanged even with the flag set.
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
-  });
-
-  it('treats runtime.command=myco as no-op (default value, nothing to substitute)', () => {
-    writeRuntimeCommand('myco');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
-  });
-
-  it('trims whitespace around the runtime.command value', () => {
-    writeRuntimeCommand('  myco-dev\n');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
-  });
-
-  it('treats an empty runtime.command file as absent (no substitution)', () => {
-    writeRuntimeCommand('');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+    expect(servers.myco.args).toEqual(['mcp']);
+    expect(JSON.stringify(servers.myco)).not.toContain(runtime);
+    expect(JSON.stringify(servers.myco)).not.toContain('myco-dev');
   });
 });
 
@@ -1252,7 +1226,7 @@ describe('installSettings (TOML)', () => {
 
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain('command = "myco-run"');
+    expect(content).toContain('url = "http://127.0.0.1:');
     expect(content).toContain('[features]');
     expect(content).toContain('codex_hooks = true');
   });
@@ -1340,12 +1314,11 @@ describe('uninstallSettings (TOML)', () => {
     expect(content).not.toContain('[mcp_servers.myco]');
   });
 
-  it('cleanup preserves `myco-run` inside exec argv arrays (opencode MCP shape)', () => {
+  it('cleanup preserves exec argv arrays (opencode MCP shape)', () => {
     // Regression: an earlier version of stripLegacyFromJson walked into
-    // every array and filtered out `myco-run` as a legacy token. That
+    // every array and filtered out legacy tokens. That
     // would corrupt opencode.json which stores its MCP server command
-    // as `command: ["myco-run", "mcp"]` — stripping the first element
-    // would leave `command: ["mcp"]` and break the MCP spawn. The
+    // as `command: ["node", ".agents/myco-cli.cjs", "mcp"]`. The
     // cleanup must now recognize `command` / `args` as exec argv arrays
     // and skip them.
     const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
@@ -1353,7 +1326,7 @@ describe('uninstallSettings (TOML)', () => {
       mcp: {
         myco: {
           type: 'local',
-          command: ['myco-run', 'mcp'],
+          command: ['node', '.agents/myco-cli.cjs', 'mcp'],
         },
       },
       permission: {
@@ -1370,7 +1343,7 @@ describe('uninstallSettings (TOML)', () => {
     const result = readJson(openCodeJsonPath);
     // Exec argv array preserved verbatim.
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['myco-run', 'mcp']);
+      .toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -1868,7 +1841,8 @@ describe('AGENTS.md managed guidance', () => {
     const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
     expect(content).toContain('myco:managed:start');
     expect(content).toContain('capture.ignore_plan_dirs_in_git');
-    expect(content).toContain('canopy_map()');
+    expect(content).toContain("node .agents/myco-cli.cjs tool call canopy_map --json --input '{}'");
+    expect(content).toContain('`canopy_map()` via MCP');
     expect(content).toContain('Keep tests current.');
   });
 
@@ -1936,13 +1910,15 @@ describe('uninstallInstructions', () => {
 // =====================
 
 describe('installHookGuard', () => {
-  it('writes .agents/myco-run.cjs', () => {
+  it('writes capture and project CLI launchers', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     const result = installer.installHookGuard();
 
     expect(result).toBe(true);
     const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
+    const cliPath = path.join(projectRoot, '.agents/myco-cli.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
+    expect(fs.existsSync(cliPath)).toBe(true);
     const content = fs.readFileSync(guardPath, 'utf-8');
     expect(content).toContain('hook guard');
   });
@@ -1960,6 +1936,7 @@ describe('installHookGuard', () => {
 
     // File should still exist with same content
     expect(fs.existsSync(guardPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
   });
 
   it('skips guard for symbionts without hooksTarget', () => {
@@ -1968,6 +1945,7 @@ describe('installHookGuard', () => {
 
     expect(result).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(false);
   });
 
   it('install() writes hook guard before hooks', () => {
@@ -1977,6 +1955,7 @@ describe('installHookGuard', () => {
     // Hook guard should exist
     const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
   });
 });
 
@@ -1985,14 +1964,16 @@ describe('installHookGuard', () => {
 // =====================
 
 describe('uninstallHookGuard', () => {
-  it('removes .agents/myco-run.cjs', () => {
+  it('removes runtime launchers', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.installHookGuard();
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
 
     const result = installer.uninstallHookGuard();
     expect(result).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(false);
   });
 
   it('does not fail if guard does not exist', () => {
@@ -2011,9 +1992,11 @@ describe('uninstallHookGuard', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
 
     installer.uninstall();
     expect(fs.existsSync(path.join(projectRoot, '.agents/myco-run.cjs'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(false);
   });
 });
 
@@ -2198,9 +2181,9 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["node", ".agents/myco-cli.cjs", "mcp"] }
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {
@@ -2250,6 +2233,7 @@ describe('opencode (plugin-file hooks)', () => {
 
     const guardPath = path.join(projectRoot, '.agents/myco-run.cjs');
     expect(fs.existsSync(guardPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.agents/myco-cli.cjs'))).toBe(true);
   });
 
   describe('shared-helpers snippet injection', () => {

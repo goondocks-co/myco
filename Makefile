@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-build dev-link dev-link-worktree dev-unlink dev-unlink-worktree ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 build:
 	$(MAKE) check
@@ -113,7 +113,7 @@ process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch =
 process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
 'windows-x64')")
 
-dev-link:
+dev-build:
 	@# myco-team, myco-collective, and myco-hub stay on tsup/Node.
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
@@ -127,6 +127,8 @@ dev-link:
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
+
+dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
 	@# the Bun runtime, so the caller's Node version is irrelevant.
@@ -160,10 +162,20 @@ dev-link:
 	@# `bin/myco-run` to read runtime.command at spawn time are unaffected
 	@# — `myco update` is a no-op for them.
 	@if command -v myco-dev >/dev/null 2>&1; then \
-		myco-dev update || echo "⚠ 'myco-dev update' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
+		myco-dev update --project "$(PWD)" || echo "⚠ 'myco-dev update --project $(PWD)' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
 	else \
 		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
 	fi
+
+dev-link-worktree: dev-build
+	@mkdir -p .myco
+	@# Worktrees must not rewrite the shared ~/.local/bin/myco-dev symlink:
+	@# other agents may already be using it from the main checkout. Pin this
+	@# worktree directly to its compiled binary instead.
+	@printf '%s/packages/myco/vendor/%s/myco\n' "$(PWD)" "$(HOST_TARGET)" > .myco/runtime.command
+	@echo "✓ .myco/runtime.command set to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
+	@echo "  (worktree-local pin; global myco-dev symlink unchanged)"
+	@./packages/myco/vendor/$(HOST_TARGET)/myco update --project "$(PWD)" || echo "⚠ worktree update failed — symbiont configs may not reflect the worktree runtime.command"
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
@@ -178,6 +190,15 @@ dev-unlink:
 	@echo "✓ myco-hub-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
 	@echo "✓ .myco/runtime.command removed — hook guard falls back to default 'myco'"
+
+dev-unlink-worktree:
+	@rm -f .myco/runtime.command
+	@echo "✓ .myco/runtime.command removed — worktree falls back to inherited/default runtime"
+	@if [ -x ./packages/myco/vendor/$(HOST_TARGET)/myco ]; then \
+		./packages/myco/vendor/$(HOST_TARGET)/myco update --project "$(PWD)" || echo "⚠ worktree update failed after removing runtime.command"; \
+	else \
+		echo "⚠ local binary missing — run make dev-link-worktree before refreshing symbiont configs"; \
+	fi
 	@# Regenerate symbiont configs using prod myco so any
 	@# `substituteRuntimeCommand` opt-ins revert their MCP command from
 	@# the dev alias back to `myco-run`. Soft-fail when prod myco isn't

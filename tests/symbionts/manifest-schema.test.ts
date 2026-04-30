@@ -61,60 +61,6 @@ describe('symbiont manifests', () => {
     expect(manifest.registration?.skillsTarget).toBe('.test/skills');
   });
 
-  it('accepts registration.mcpCwd for portable MCP launch anchoring', () => {
-    const manifest = SymbiontManifestSchema.parse({
-      name: 'test-agent',
-      displayName: 'Test Agent',
-      binary: 'test',
-      configDir: '.test',
-      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
-      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
-      registration: {
-        mcpTarget: '.test/config.toml',
-        mcpFormat: 'toml',
-        mcpCwd: '.',
-      },
-    });
-    expect(manifest.registration?.mcpCwd).toBe('.');
-  });
-
-  it('accepts registration.substituteRuntimeCommand for PATH-reordering hosts', () => {
-    // Opt-in flag that tells the installer to bake `.myco/runtime.command`
-    // into template commands at install time. Only set by symbionts whose
-    // host (opencode) can't reach `~/.local/bin` via PATH resolution.
-    const manifest = SymbiontManifestSchema.parse({
-      name: 'test-agent',
-      displayName: 'Test Agent',
-      binary: 'test',
-      configDir: '.test',
-      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
-      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
-      registration: {
-        mcpTarget: '.test/config.json',
-        substituteRuntimeCommand: true,
-      },
-    });
-    expect(manifest.registration?.substituteRuntimeCommand).toBe(true);
-  });
-
-  it('defaults registration.substituteRuntimeCommand to undefined (opt-in behavior)', () => {
-    // Absence must mean "do not substitute" so every pre-existing symbiont
-    // keeps the dynamic myco-run shim behavior. A default of `true` would
-    // silently freeze aliases at install time across the board.
-    const manifest = SymbiontManifestSchema.parse({
-      name: 'test-agent',
-      displayName: 'Test Agent',
-      binary: 'test',
-      configDir: '.test',
-      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
-      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
-      registration: {
-        mcpTarget: '.test/config.json',
-      },
-    });
-    expect(manifest.registration?.substituteRuntimeCommand).toBeUndefined();
-  });
-
   it('allows manifest without registration block', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',
@@ -199,7 +145,6 @@ describe('symbiont manifests', () => {
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
     expect(manifest.registration!.mcpFormat).toBe('toml');
-    expect(manifest.registration!.mcpCwd).toBe('.');
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });

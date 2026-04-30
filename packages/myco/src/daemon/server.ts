@@ -19,6 +19,11 @@ export interface DaemonServerConfig {
   onRequest?: () => void;
 }
 
+export type RawRouteHandler = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+) => Promise<void>;
+
 export class DaemonServer {
   port = 0;
   readonly version: string;
@@ -28,6 +33,7 @@ export class DaemonServer {
   private vaultDir: string;
   private logger: DaemonLogger;
   private router = new Router();
+  private rawRoutes = new Map<string, RawRouteHandler>();
   private onRequest: (() => void) | null;
 
   constructor(config: DaemonServerConfig) {
@@ -42,6 +48,10 @@ export class DaemonServer {
 
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
     this.router.add(method, routePath, handler);
+  }
+
+  registerRawRoute(routePath: string, handler: RawRouteHandler): void {
+    this.rawRoutes.set(routePath, handler);
   }
 
   async start(port: number = 0): Promise<void> {
@@ -91,6 +101,35 @@ export class DaemonServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const pathname = new URL(req.url!, 'http://localhost').pathname;
+    const rawHandler = this.rawRoutes.get(pathname);
+    if (rawHandler) {
+      const rejection = validateLoopbackRequest(req, this.port);
+      if (rejection) {
+        res.writeHead(rejection.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: rejection.error }));
+        return;
+      }
+      this.onRequest?.();
+      try {
+        await rawHandler(req, res);
+      } catch (error) {
+        this.logger.error(LOG_KINDS.SERVER_ERROR, 'Raw request handler error', {
+          path: req.url,
+          error: (error as Error).message,
+        });
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: 'Internal server error' },
+            id: null,
+          }));
+        }
+      }
+      return;
+    }
+
     // API/daemon routes take priority over static files
     const match = this.router.match(req.method!, req.url!);
 
@@ -145,7 +184,6 @@ export class DaemonServer {
 
     // No API route matched — serve static files (dashboard SPA)
     if (this.uiDir && req.method === 'GET') {
-      const pathname = new URL(req.url!, 'http://localhost').pathname;
       const result = resolveStaticFile(this.uiDir, pathname);
       if (result) {
         try {
