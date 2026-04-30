@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { vi } from '../helpers/vi-shim.js';
 import { createMycoTools } from '@myco/tools/index.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
@@ -99,5 +102,59 @@ describe('Myco tools dispatcher', () => {
       type: 'gotcha',
       tags: ['ok', 7],
     })).rejects.toThrow("Invalid argument 'tags[1]'");
+  });
+
+  describe('logActivity per-tool summary fields', () => {
+    // Each entry locks in the per-tool log shape contract that downstream
+    // dashboards consume. Adding/removing summary fields here is a public
+    // API change.
+    async function readLastLog(vaultDir: string): Promise<Record<string, unknown>> {
+      // logActivity uses fs.appendFile (callback-style, no promise to await).
+      // Poll until the file appears rather than guessing a fixed delay.
+      const file = path.join(vaultDir, 'logs', 'mcp.jsonl');
+      for (let i = 0; i < 50; i++) {
+        if (fs.existsSync(file) && fs.statSync(file).size > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const raw = fs.readFileSync(file, 'utf-8');
+      const lines = raw.trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    }
+
+    function freshVault(): string {
+      return fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-log-'));
+    }
+
+    it('myco_context log carries tier + duration_ms', async () => {
+      const vaultDir = freshVault();
+      const tools = createMycoTools(vaultDir, mockClient({
+        digest: { tiers: [{ tier: 5000, content: 'd', generated_at: 1 }] },
+      }));
+      await tools.callTool('myco_context', { tier: 5000 });
+      const entry = await readLastLog(vaultDir);
+      expect(entry.tool).toBe('myco_context');
+      expect(entry.tier).toBe(5000);
+      expect(typeof entry.duration_ms).toBe('number');
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+
+    it('myco_search log carries query, matches, and duration_ms', async () => {
+      const vaultDir = freshVault();
+      const client = mockClient();
+      // Override get for the search endpoint so handleMycoSearch returns []
+      (client.get as unknown as { mockImplementation: (fn: (e: string) => unknown) => void })
+        .mockImplementation(async (endpoint: string) => {
+          if (endpoint === '/api/team/status') return { ok: true, data: { collective_connected: false } };
+          return { ok: true, data: { results: [] } };
+        });
+      const tools = createMycoTools(vaultDir, client);
+      await tools.callTool('myco_search', { query: 'auth' });
+      const entry = await readLastLog(vaultDir);
+      expect(entry.tool).toBe('myco_search');
+      expect(entry.query).toBe('auth');
+      expect(entry.matches).toBe(0);
+      expect(typeof entry.duration_ms).toBe('number');
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
   });
 });

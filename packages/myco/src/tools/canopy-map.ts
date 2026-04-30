@@ -24,15 +24,13 @@ export interface CanopyMapResult {
 const EMPTY_STATE_MESSAGE =
   'No project map yet. Canopy is generating one in the background; try again in a few minutes.';
 
+export function emptyCanopyMap(message: string = EMPTY_STATE_MESSAGE): CanopyMapResult {
+  return { content: '', is_empty: true, message };
+}
+
 export async function handleCanopyMap(args: CanopyMapHandlerArgs): Promise<CanopyMapResult> {
   const row = readCanopyMap(args.projectId, args.machineId);
-  if (!row) {
-    return {
-      content: '',
-      is_empty: true,
-      message: EMPTY_STATE_MESSAGE,
-    };
-  }
+  if (!row) return emptyCanopyMap();
   return {
     content: row.content,
     generated_at: row.generated_at,
