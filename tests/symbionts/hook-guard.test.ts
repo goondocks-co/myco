@@ -24,6 +24,7 @@ const guardSource = path.resolve('packages/myco/src/symbionts/templates/myco-run
 interface Fixture {
   tmpDir: string;
   guardCopy: string;
+  cliCopy: string;
   binDir: string;
 }
 
@@ -36,12 +37,45 @@ function makeFixture(): Fixture {
   fs.mkdirSync(vaultDir);
   fs.mkdirSync(binDir);
   const guardCopy = path.join(agentsDir, 'myco-run.cjs');
+  const cliCopy = path.join(agentsDir, 'myco-cli.cjs');
   fs.copyFileSync(guardSource, guardCopy);
-  return { tmpDir, guardCopy, binDir };
+  fs.copyFileSync(guardSource, cliCopy);
+  return { tmpDir, guardCopy, cliCopy, binDir };
+}
+
+function makeWorktreeFixture(): Fixture {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-guard-worktree-test-'));
+  const mainRepo = path.join(tmpDir, 'main-repo');
+  const worktree = path.join(tmpDir, 'feature-worktree');
+  const agentsDir = path.join(worktree, '.agents');
+  const worktreeVaultDir = path.join(worktree, '.myco');
+  const mainVaultDir = path.join(mainRepo, '.myco');
+  const binDir = path.join(tmpDir, 'bin');
+  fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
+  fs.mkdirSync(mainVaultDir, { recursive: true });
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.mkdirSync(worktreeVaultDir, { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(worktree, '.git'),
+    `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
+    'utf-8',
+  );
+  fs.writeFileSync(path.join(mainVaultDir, 'runtime.command'), 'myco-dev\n', 'utf-8');
+  const guardCopy = path.join(agentsDir, 'myco-run.cjs');
+  const cliCopy = path.join(agentsDir, 'myco-cli.cjs');
+  fs.copyFileSync(guardSource, guardCopy);
+  fs.copyFileSync(guardSource, cliCopy);
+  return { tmpDir, guardCopy, cliCopy, binDir };
 }
 
 function writeAlias(fixture: Fixture, alias: string): void {
   fs.writeFileSync(path.join(fixture.tmpDir, '.myco', 'runtime.command'), alias, 'utf-8');
+}
+
+function writeProjectAlias(fixture: Fixture, alias: string): void {
+  const projectRoot = path.resolve(path.dirname(fixture.guardCopy), '..');
+  fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), alias, 'utf-8');
 }
 
 function createFakeBin(fixture: Fixture, name: string, script: string): string {
@@ -72,6 +106,28 @@ describe('myco-run.cjs', () => {
         timeout: 5000,
       });
       expect(result.toString()).toBe('');
+    });
+
+    it('returns a JSON runtime error for tool calls when default `myco` is not on PATH', () => {
+      try {
+        execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'call', 'canopy_map', '--json', '--input', '{}'], {
+          env: { ...BASE_ENV, PATH: fixture.binDir },
+          stdio: 'pipe',
+          timeout: 5000,
+        });
+        expect.fail('Should have thrown');
+      } catch (err: any) {
+        const envelope = JSON.parse(err.stdout.toString());
+        expect(err.status).toBe(1);
+        expect(envelope).toEqual({
+          ok: false,
+          tool: 'canopy_map',
+          error: {
+            code: 'runtime_unavailable',
+            message: "Myco runtime command 'myco' could not be found. Check .myco/runtime.command or run Myco update from a shell where Myco is installed.",
+          },
+        });
+      }
     });
 
     it('exits 0 with no arguments and no binary available', () => {
@@ -139,6 +195,24 @@ describe('myco-run.cjs', () => {
       expect(result.toString()).toBe('');
     });
 
+    it('returns a JSON runtime error for tool calls when the aliased binary is not on PATH', () => {
+      writeAlias(fixture, 'myco-dev');
+      try {
+        execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'list', '--json'], {
+          env: { ...BASE_ENV, PATH: fixture.binDir },
+          stdio: 'pipe',
+          timeout: 5000,
+        });
+        expect.fail('Should have thrown');
+      } catch (err: any) {
+        const envelope = JSON.parse(err.stdout.toString());
+        expect(err.status).toBe(1);
+        expect(envelope.ok).toBe(false);
+        expect(envelope.error.code).toBe('runtime_unavailable');
+        expect(envelope.error.message).toContain("'myco-dev'");
+      }
+    });
+
     it('invokes the alias at an absolute path even when PATH is empty', () => {
       // When runtime.command holds an absolute path, the guard execs it
       // directly — no PATH lookup needed. This is the recovery path for
@@ -158,6 +232,52 @@ describe('myco-run.cjs', () => {
         timeout: 5000,
       });
       expect(result.toString().trim()).toBe('ABS:hook stop');
+    });
+
+    it('finds runtime.command from the main repo when installed in a git worktree', () => {
+      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
+      fixture = makeWorktreeFixture();
+      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "WORKTREE:$*"');
+
+      const result = execFileSync(process.execPath, [fixture.cliCopy, 'tool', 'list', '--json'], {
+        env: { ...BASE_ENV, PATH: fixture.binDir },
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+
+      expect(result.toString().trim()).toBe('WORKTREE:tool list --json');
+    });
+
+    it('uses a worktree-local runtime.command for the project CLI launcher', () => {
+      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
+      fixture = makeWorktreeFixture();
+      writeProjectAlias(fixture, 'myco-worktree');
+      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "MAIN:$*"');
+      createFakeBin(fixture, 'myco-worktree', '#!/bin/sh\necho "LOCAL:$*"');
+
+      const result = execFileSync(process.execPath, [fixture.cliCopy, 'tool', 'list', '--json'], {
+        env: { ...BASE_ENV, PATH: fixture.binDir },
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+
+      expect(result.toString().trim()).toBe('LOCAL:tool list --json');
+    });
+
+    it('uses the main repo runtime.command for the capture launcher from a git worktree', () => {
+      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
+      fixture = makeWorktreeFixture();
+      writeProjectAlias(fixture, 'myco-worktree');
+      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "MAIN:$*"');
+      createFakeBin(fixture, 'myco-worktree', '#!/bin/sh\necho "LOCAL:$*"');
+
+      const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
+        env: { ...BASE_ENV, PATH: fixture.binDir },
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+
+      expect(result.toString().trim()).toBe('MAIN:hook session-start');
     });
 
     it('ignores MYCO_CMD — runtime.command is the only source', () => {

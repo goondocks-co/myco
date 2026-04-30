@@ -199,7 +199,7 @@ describe('symbiont manifests', () => {
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
     expect(manifest.registration!.mcpFormat).toBe('toml');
-    expect(manifest.registration!.mcpCwd).toBe('.');
+    expect(manifest.registration!.mcpCwd).toBeUndefined();
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });

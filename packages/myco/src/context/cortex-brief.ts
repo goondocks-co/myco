@@ -31,7 +31,7 @@ import {
   COLLECTIVE_TOOL_DEFINITIONS,
   getToolCortexPriority,
   type ToolDefinition,
-} from '../mcp/tool-definitions.js';
+} from '../tools/definitions.js';
 
 const MAX_COLLECTIVE_CAPABILITY_LABELS = 4;
 const ALL_CORTEX_TOOL_DEFINITIONS = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
@@ -149,7 +149,7 @@ export function buildCapabilitySummary(capabilities: CortexCapabilities): string
       : capabilities.teamEnabled
         ? 'Myco can retrieve local and shared team knowledge in this project.'
         : 'Myco can retrieve local project knowledge in this project.',
-    'Use only the currently available Myco MCP tools described below, and omit any surfaces that are offline.',
+    'Use the currently available Myco tool surfaces described below, preferring CLI JSON when MCP is unavailable or brittle, and omit any surfaces that are offline.',
   ];
 
   if (capabilities.collectiveConnected && capabilities.collectiveCapabilities.length > 0) {
@@ -320,7 +320,7 @@ export async function buildCortexInstructionsInput(
     '## Authoring requirements',
     '- Start with the heading `## Myco-Enabled Project`.',
     '- Follow the heading with one brief sentence explaining that Myco provides project memory, prior decisions, plans, and retrieval tools for this repository.',
-    '- Teach the most useful current Myco MCP tool behavior, especially retrieval and plan persistence.',
+    '- Teach the most useful current Myco tool behavior, especially retrieval and plan persistence. Prefer the project-resolved CLI JSON launcher (`node .agents/myco-cli.cjs tool ...`) as the portable fallback and describe MCP as available when the host exposes it cleanly.',
     '- Use the recent vault activity below to mention live project hotspots when that improves usefulness.',
     `- ${CORTEX_SKILLS_NOTE}`,
     '- Keep the heading and description brief so most of the budget goes to retrieval guidance.',
@@ -342,7 +342,7 @@ export async function buildCortexInstructionsInput(
     // is missing or empty, this directive is omitted entirely and the
     // session-start instructions stay silent about canopy_map().
     instructionParts.push(
-      '- Teach `canopy_map()` as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action ("call canopy_map() first"), not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
+      '- Teach Myco Canopy Map as the default opener for any task that needs project layout — finding a feature, locating the right file before editing, or orienting in this codebase. Prefer the project-resolved CLI JSON path (`node .agents/myco-cli.cjs tool call canopy_map --json --input \'{}\'`); use `canopy_map()` via MCP when the host exposes Myco tools cleanly. The map exists for this project right now and is built from real per-file descriptions (project-curated, not LLM guesses), and typically replaces a chain of Glob/Read calls before the agent has any signal about layout. Frame it as a default action, not a condition the agent can self-evaluate away. Do not add an empty-state caveat — this guidance is only injected when the map is populated.',
     );
   }
 

@@ -2,8 +2,8 @@
  * Anti-drift tests for `tool-definitions.ts`.
  *
  * These guard against the class of bugs where:
- *   - a tool is registered in `TOOL_DEFINITIONS` but never dispatched in `server.ts`
- *   - a tool is dispatched in `server.ts` but never declared in `TOOL_DEFINITIONS`
+ *   - a tool is registered in `TOOL_DEFINITIONS` but never dispatched in `tools/index.ts`
+ *   - a tool is dispatched in `tools/index.ts` but never declared in `TOOL_DEFINITIONS`
  *   - a schema property exists but the handler doesn't forward it
  *   - core and collective tool name sets overlap
  *
@@ -21,19 +21,19 @@ import { fileURLToPath } from 'node:url';
 import {
   TOOL_DEFINITIONS,
   COLLECTIVE_TOOL_DEFINITIONS,
-} from '@myco/mcp/tool-definitions.js';
+} from '@myco/tools/definitions.js';
 import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
-import { handleMycoPlans } from '@myco/mcp/tools/plans.js';
-import { handleMycoRemember } from '@myco/mcp/tools/remember.js';
-import { handleMycoSavePlan } from '@myco/mcp/tools/save-plan.js';
-import { handleMycoSupersede } from '@myco/mcp/tools/supersede.js';
-import { handleMycoConsolidate } from '@myco/mcp/tools/consolidate.js';
-import { handleMycoSearch } from '@myco/mcp/tools/search.js';
-import { handleMycoSessions } from '@myco/mcp/tools/sessions.js';
+import { handleMycoPlans } from '@myco/tools/plans.js';
+import { handleMycoRemember } from '@myco/tools/remember.js';
+import { handleMycoSavePlan } from '@myco/tools/save-plan.js';
+import { handleMycoSupersede } from '@myco/tools/supersede.js';
+import { handleMycoConsolidate } from '@myco/tools/consolidate.js';
+import { handleMycoSearch } from '@myco/tools/search.js';
+import { handleMycoSessions } from '@myco/tools/sessions.js';
 import {
   handleCollectiveSearch,
   handleCollectiveProject,
-} from '@myco/mcp/tools/collective.js';
+} from '@myco/tools/collective.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = {}, ok = true): DaemonClient {
@@ -44,27 +44,36 @@ function mockClient(data: unknown = {}, ok = true): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-// Read server.ts once so we can assert every tool name appears in a dispatch case.
+// Read tools/index.ts once so we can assert every tool name appears in dispatch.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_TS = fs.readFileSync(
-  path.resolve(__dirname, '../../packages/myco/src/mcp/server.ts'),
+const TOOLS_INDEX_TS = fs.readFileSync(
+  path.resolve(__dirname, '../../packages/myco/src/tools/index.ts'),
+  'utf-8',
+);
+const TOOL_DEFINITIONS_TS = fs.readFileSync(
+  path.resolve(__dirname, '../../packages/myco/src/tools/definitions.ts'),
   'utf-8',
 );
 
+function constantNameForTool(toolName: string): string {
+  const escaped = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = TOOL_DEFINITIONS_TS.match(new RegExp(`export const (TOOL_[A-Z_]+) = ['"]${escaped}['"]`));
+  if (!match) throw new Error(`Missing exported TOOL_ constant for ${toolName}`);
+  return match[1];
+}
+
 describe('TOOL_DEFINITIONS registration coverage', () => {
-  it('every core tool name appears in server.ts dispatch', () => {
+  it('every core tool has an exact tools/index.ts dispatch case', () => {
     for (const tool of TOOL_DEFINITIONS) {
-      expect(SERVER_TS, `Tool ${tool.name} missing from server dispatch`).toContain(`case TOOL_`);
-      // Name appears as a string either via the TOOL_ constant or as literal in the file.
-      const literal = tool.name;
-      expect(SERVER_TS).toMatch(new RegExp(`TOOL_${literal.toUpperCase().replace(/^MYCO_/, '').replace(/^COLLECTIVE_/, 'COLLECTIVE_')}|['"]${literal}['"]`));
+      const constant = constantNameForTool(tool.name);
+      expect(TOOLS_INDEX_TS, `Tool ${tool.name} missing from tool dispatch`).toContain(`case ${constant}:`);
     }
   });
 
-  it('every collective tool name appears in server.ts dispatch', () => {
+  it('every collective tool has an exact tools/index.ts dispatch case', () => {
     for (const tool of COLLECTIVE_TOOL_DEFINITIONS) {
-      const literal = tool.name;
-      expect(SERVER_TS).toMatch(new RegExp(`TOOL_COLLECTIVE_[A-Z_]+|['"]${literal}['"]`));
+      const constant = constantNameForTool(tool.name);
+      expect(TOOLS_INDEX_TS, `Tool ${tool.name} missing from tool dispatch`).toContain(`case ${constant}:`);
     }
   });
 
@@ -187,13 +196,27 @@ describe('handler forwards every documented schema property', () => {
     expect(url).toContain('limit=9');
   });
 
-  it('myco_search forwards query, type, limit', async () => {
+  it('myco_search forwards every documented filter', async () => {
     const client = mockClient({ results: [] });
-    await handleMycoSearch({ query: 'auth', type: 'spore', limit: 4 }, client);
+    await handleMycoSearch({
+      query: 'auth',
+      type: 'canopy',
+      limit: 4,
+      observation_type: 'decision',
+      status: 'active',
+      since: 10,
+      until: 20,
+      language: 'typescript',
+    }, client);
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
     expect(url).toContain('q=auth');
-    expect(url).toContain('type=spore');
+    expect(url).toContain('type=canopy');
     expect(url).toContain('limit=4');
+    expect(url).toContain('observation_type=decision');
+    expect(url).toContain('status=active');
+    expect(url).toContain('since=10');
+    expect(url).toContain('until=20');
+    expect(url).toContain('language=typescript');
   });
 
   it('myco_remember forwards content, type, tags via POST body', async () => {
@@ -328,6 +351,16 @@ describe('cross-surface tool-name drift', () => {
       ...COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name),
     ]);
     expect(new Set(names)).toEqual(expected);
+  });
+
+  it('Pi myco_search mirrors the canonical language filter', () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../packages/myco/src/symbionts/templates/pi/plugin.ts'),
+      'utf-8',
+    );
+    expect(source).toContain('language?: string');
+    expect(source).toContain('query.set("language", input.language)');
+    expect(source).toContain('language: Type.Optional(Type.String');
   });
 
   it('Collective worker exposes exactly COLLECTIVE_TOOL_DEFINITIONS', () => {

@@ -16,7 +16,7 @@ import { spawnSync } from 'node:child_process';
 const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
 
 type Helpers = {
-  findProjectRuntimePin: (cwd: string) => string | null;
+  findProjectRuntimePin: (cwd: string, scope?: 'capture' | 'project') => string | null;
   resolveSearchStart: (cwd: string) => string;
   pointsAtSelf: (target: string, selfPath: string) => boolean;
 };
@@ -73,6 +73,56 @@ describe('findProjectRuntimePin', () => {
     fs.writeFileSync(path.join(mycoDir, 'runtime.command'), '   \n');
     const { findProjectRuntimePin } = loadModule();
     expect(findProjectRuntimePin(tmpRoot)).toBeNull();
+  });
+
+  it('falls back to the main repo pin when a git worktree has no local pin', () => {
+    const mainRepo = path.join(tmpRoot, 'main-repo');
+    const worktree = path.join(tmpRoot, 'feature-worktree');
+    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
+    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
+    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktree, '.git'),
+      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
+    );
+    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
+
+    const { findProjectRuntimePin } = loadModule();
+    expect(findProjectRuntimePin(worktree, 'project')).toBe('/main/myco');
+  });
+
+  it('prefers a worktree-local pin for project scope', () => {
+    const mainRepo = path.join(tmpRoot, 'main-repo');
+    const worktree = path.join(tmpRoot, 'feature-worktree');
+    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
+    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
+    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktree, '.git'),
+      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
+    );
+    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
+    fs.writeFileSync(path.join(worktree, '.myco', 'runtime.command'), '/worktree/myco');
+
+    const { findProjectRuntimePin } = loadModule();
+    expect(findProjectRuntimePin(worktree, 'project')).toBe('/worktree/myco');
+  });
+
+  it('uses the main repo pin for capture scope from a git worktree', () => {
+    const mainRepo = path.join(tmpRoot, 'main-repo');
+    const worktree = path.join(tmpRoot, 'feature-worktree');
+    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
+    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
+    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
+    fs.writeFileSync(
+      path.join(worktree, '.git'),
+      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
+    );
+    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
+    fs.writeFileSync(path.join(worktree, '.myco', 'runtime.command'), '/worktree/myco');
+
+    const { findProjectRuntimePin } = loadModule();
+    expect(findProjectRuntimePin(worktree, 'capture')).toBe('/main/myco');
   });
 });
 

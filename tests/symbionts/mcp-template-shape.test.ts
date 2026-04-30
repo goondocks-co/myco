@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Regression guard: every symbiont MCP template must invoke `myco-run`
+ * Regression guard: stdio symbiont MCP templates must invoke `myco-run`
  * (no absolute paths, no `myco-dev`, no host-specific shims). The
  * global `myco-run` launcher consults `.myco/runtime.command` to pick
  * the right binary per project, so pinning anything else in a committed
@@ -11,8 +11,9 @@ import path from 'node:path';
  * (if we pin an absolute path that leaks a username).
  *
  * Two shape variants are allowed:
- *   - Claude/Cursor/Codex/Gemini/Copilot: `{ command: "myco-run", args: ["mcp"] }`
- *   - Opencode:                           `{ command: ["myco-run", "mcp"] }`
+ *   - Claude/Cursor/Gemini/Copilot: `{ command: "myco-run", args: ["mcp"] }`
+ *   - Opencode:                     `{ command: ["myco-run", "mcp"] }`
+ *   - Codex:                        `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
  *
  * Both satisfy "the launcher command is literally `myco-run mcp`."
  */
@@ -32,6 +33,7 @@ function listMcpTemplates(): string[] {
 interface Server {
   command?: string | string[];
   args?: string[];
+  url?: string;
 }
 
 function extractLauncherInvocation(server: Server): { command: string; args: string[] } {
@@ -61,7 +63,14 @@ describe('symbiont MCP templates', () => {
         expect(mycoServer).toBeDefined();
       });
 
-      it('invokes exactly `myco-run mcp` (no absolute paths, no dev-specific binaries)', () => {
+      it('uses the expected transport shape', () => {
+        if (name === 'codex') {
+          expect(mycoServer.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
+          expect(mycoServer.command).toBeUndefined();
+          expect(mycoServer.args).toBeUndefined();
+          return;
+        }
+
         const { command, args } = extractLauncherInvocation(mycoServer);
 
         // Rationale for each assertion:

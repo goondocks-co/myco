@@ -252,7 +252,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "hooksFormat": "json",
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
-      "mcpCwd": ".",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
       "settingsTarget": ".codex/config.toml",

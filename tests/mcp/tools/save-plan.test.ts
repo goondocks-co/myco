@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoSavePlan } from '@myco/mcp/tools/save-plan.js';
+import { handleMycoSavePlan } from '@myco/tools/save-plan.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {

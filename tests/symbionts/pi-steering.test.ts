@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
-import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from '@myco/mcp/tool-definitions.js';
+import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 
 // These tests pin the structural shape of the Pi plugin — the exact event
 // names it subscribes to and the data it forwards to the daemon. They are

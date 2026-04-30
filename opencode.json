@@ -4,7 +4,7 @@
     "myco": {
       "type": "local",
       "command": [
-        "/Users/chris/.local/bin/myco-dev",
+        "/Users/chris/.codex/worktrees/c727/myco/packages/myco/vendor/darwin-arm64/myco",
         "mcp"
       ]
     }

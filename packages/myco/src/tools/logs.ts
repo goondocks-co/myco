@@ -1,5 +1,5 @@
-import { queryLogs } from '../../logs/reader.js';
-import type { LogQuery, LogQueryResult } from '../../logs/reader.js';
+import { queryLogs } from '../logs/reader.js';
+import type { LogQuery, LogQueryResult } from '../logs/reader.js';
 import path from 'node:path';
 
 export async function handleMycoLogs(

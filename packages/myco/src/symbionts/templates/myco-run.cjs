@@ -35,19 +35,116 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 // Claude Code desktop, etc.) run under macOS launchd and inherit a
 // minimal PATH that typically doesn't include `~/.local/bin`.
 //
-// We locate the alias file via __dirname so the guard doesn't depend on
-// cwd. Hook wrappers `cd` to the project root before invoking us, but
-// not every agent keeps that contract across every shell.
+// Runtime scope is an entrypoint concern, not a CLI subcommand concern:
+//
+// - capture scope (`.agents/myco-run.cjs`) uses the main repo pin in git
+//   worktrees so hook capture keeps writing to the shared vault.
+// - project scope (`.agents/myco-cli.cjs`) prefers a worktree-local pin for
+//   interactive CLI/tool testing, then falls back to the main repo pin.
+const args = process.argv.slice(2);
+const runtimeScope = resolveRuntimeScope();
 let bin = 'myco';
-try {
-  const aliasPath = path.resolve(__dirname, '..', '.myco', 'runtime.command');
-  const alias = fs.readFileSync(aliasPath, 'utf-8').trim();
-  if (alias) bin = alias;
-} catch { /* missing file → use default */ }
+const alias = findRuntimeCommand(process.cwd(), runtimeScope);
+if (alias) bin = alias;
+
+function resolveRuntimeScope() {
+  const envScope = process.env.MYCO_RUNTIME_SCOPE;
+  if (envScope === 'capture' || envScope === 'project') return envScope;
+  return path.basename(process.argv[1] || '') === 'myco-cli.cjs' ? 'project' : 'capture';
+}
+
+function findRuntimeCommand(cwd, scope) {
+  try {
+    if (scope === 'capture') {
+      return findRuntimeCommandFrom(resolveSearchStart(cwd));
+    }
+
+    const local = findRuntimeCommandFrom(path.resolve(cwd));
+    if (local) return local;
+
+    const fallbackStart = resolveSearchStart(cwd);
+    if (path.resolve(fallbackStart) === path.resolve(cwd)) return null;
+    return findRuntimeCommandFrom(fallbackStart);
+  } catch {
+    return null;
+  }
+}
+
+function findRuntimeCommandFrom(startDir) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    const aliasPath = path.join(dir, '.myco', 'runtime.command');
+    try {
+      const alias = fs.readFileSync(aliasPath, 'utf-8').trim();
+      if (alias) return alias;
+    } catch { /* not here */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function resolveSearchStart(cwd) {
+  let dir = path.resolve(cwd);
+  while (true) {
+    const gitEntry = path.join(dir, '.git');
+    try {
+      const stat = fs.lstatSync(gitEntry);
+      if (stat.isDirectory()) return dir;
+      if (stat.isFile()) {
+        const content = fs.readFileSync(gitEntry, 'utf-8').trim();
+        const match = content.match(/^gitdir:\s*(.+)$/m);
+        if (match && match[1]) {
+          const gitdir = path.isAbsolute(match[1]) ? match[1] : path.resolve(dir, match[1]);
+          return path.resolve(gitdir, '..', '..', '..');
+        }
+        return dir;
+      }
+    } catch {
+      // no .git here; keep walking
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return cwd;
+    dir = parent;
+  }
+}
+
+function toolNameFromArgs(args) {
+  if (args[0] !== 'tool' || args[1] !== 'call') return undefined;
+  for (let idx = 2; idx < args.length; idx++) {
+    const arg = args[idx];
+    if (arg === '--json') continue;
+    if (arg === '--input') {
+      idx++;
+      continue;
+    }
+    if (arg && !arg.startsWith('-')) return arg;
+  }
+  return undefined;
+}
+
+function writeToolRuntimeUnavailable(command, args) {
+  const tool = toolNameFromArgs(args);
+  const envelope = {
+    ok: false,
+    ...(tool ? { tool } : {}),
+    error: {
+      code: 'runtime_unavailable',
+      message: `Myco runtime command '${command}' could not be found. Check .myco/runtime.command or run Myco update from a shell where Myco is installed.`,
+    },
+  };
+  process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+}
 
 try {
-  execFileSync(bin, process.argv.slice(2), { stdio: 'inherit' });
+  execFileSync(bin, args, { stdio: 'inherit' });
 } catch (e) {
-  if (e.code === 'ENOENT') process.exit(0);
+  if (e.code === 'ENOENT') {
+    if (args[0] === 'tool') {
+      writeToolRuntimeUnavailable(bin, args);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   process.exit(e.status ?? 1);
 }

@@ -24,31 +24,44 @@ const { execFileSync } = require('node:child_process');
  * the trimmed file contents (an absolute path or PATH-resolvable name)
  * or null when no pin is found.
  *
- * Worktree-aware: when `cwd` is inside a git worktree, starts the walk
- * at the main repo root, because vaults live with the main repo and
- * worktrees don't carry their own.
+ * Worktree-aware: capture scope uses the main repo pin so session capture
+ * keeps writing to the shared vault. Project scope can use a worktree-local
+ * pin, then fall back to the main repo pin.
  *
  * Filename literals here mirror `PROJECT_RUNTIME_COMMAND_FILENAME` and
  * `.myco` from `src/constants/update.ts`. This file is plain CJS (runs
  * before bun) so it can't import the TS source of truth.
  */
-function findProjectRuntimePin(cwd) {
+function findProjectRuntimePin(cwd, scope = 'project') {
   try {
-    let dir = resolveSearchStart(cwd);
-    while (true) {
-      const pinPath = path.join(dir, '.myco', 'runtime.command');
-      try {
-        const raw = fs.readFileSync(pinPath, 'utf-8').trim();
-        return raw || null;
-      } catch {
-        // not here
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null;
-      dir = parent;
+    if (scope === 'capture') {
+      return findRuntimePinFrom(resolveSearchStart(cwd));
     }
+
+    const local = findRuntimePinFrom(path.resolve(cwd));
+    if (local) return local;
+
+    const fallbackStart = resolveSearchStart(cwd);
+    if (path.resolve(fallbackStart) === path.resolve(cwd)) return null;
+    return findRuntimePinFrom(fallbackStart);
   } catch {
     return null;
+  }
+}
+
+function findRuntimePinFrom(startDir) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    const pinPath = path.join(dir, '.myco', 'runtime.command');
+    try {
+      const raw = fs.readFileSync(pinPath, 'utf-8').trim();
+      if (raw) return raw;
+    } catch {
+      // not here
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
 }
 
@@ -124,7 +137,7 @@ function maybeRedirect(selfPath, cwd = process.cwd(), env = process.env) {
     trace('skip (MYCO_REDIRECTED already set)');
     return false;
   }
-  const pin = findProjectRuntimePin(cwd);
+  const pin = findProjectRuntimePin(cwd, env.MYCO_RUNTIME_SCOPE === 'capture' ? 'capture' : 'project');
   if (!pin) {
     trace('skip (no .myco/runtime.command pin found)');
     return false;
