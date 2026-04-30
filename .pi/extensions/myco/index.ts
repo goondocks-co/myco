@@ -425,6 +425,7 @@ async function mycoSearch(
     status?: string;
     since?: number;
     until?: number;
+    language?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
   const query = new URLSearchParams({ q: input.query });
@@ -434,6 +435,7 @@ async function mycoSearch(
   if (input.status) query.set("status", input.status);
   if (input.since !== undefined) query.set("since", String(input.since));
   if (input.until !== undefined) query.set("until", String(input.until));
+  if (input.language) query.set("language", input.language);
   return getJson(directory, `/api/search?${query.toString()}`);
 }
 
@@ -1032,6 +1034,7 @@ export default function (pi: ExtensionAPI) {
       status: Type.Optional(Type.String({ description: "Optional semantic status filter" })),
       since: Type.Optional(Type.Number({ description: "Optional created_at lower bound in epoch seconds" })),
       until: Type.Optional(Type.Number({ description: "Optional created_at upper bound in epoch seconds" })),
+      language: Type.Optional(Type.String({ description: "Canopy-only optional language filter, e.g. typescript" })),
     }),
     async execute(_toolCallId, params) {
       const result = await mycoSearch(currentCwd, params);

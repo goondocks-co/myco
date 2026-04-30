@@ -32,6 +32,15 @@ mock.module('@myco/symbionts/installer.js', () => ({
   MYCO_MCP_SERVER_NAME: 'myco',
 }));
 
+const ensureRunningMock = vi.fn();
+mock.module('@myco/hooks/client.js', () => ({
+  DaemonClient: vi.fn(function MockDaemonClient() {
+    return {
+      ensureRunning: ensureRunningMock,
+    };
+  }),
+}));
+
 const postMock = vi.fn();
 const sharedActual = await import('@myco/cli/shared.js');
 mock.module('@myco/cli/shared.js', () => ({
@@ -48,6 +57,7 @@ describe('myco update', () => {
     vaultDir = path.join(testDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     vi.clearAllMocks();
+    ensureRunningMock.mockResolvedValue(true);
     postMock.mockReset();
     postMock.mockResolvedValue({ ok: true, data: { embedded: 12, remaining_queue_depth: 4 } });
   });
@@ -218,5 +228,19 @@ describe('myco update', () => {
     const stamp = fs.readFileSync(path.join(vaultDir, 'last-update-version'), 'utf-8').trim();
     expect(stamp).not.toBe('0.21.0');
     expect(stamp).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it('ensures the daemon is running after regenerating HTTP MCP config', async () => {
+    const config = {
+      version: 3, config_version: 0,
+      symbionts: { 'claude-code': { enabled: true } },
+    };
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify(config));
+    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--project', testDir]);
+
+    expect(ensureRunningMock).toHaveBeenCalledTimes(1);
   });
 });

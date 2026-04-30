@@ -1,6 +1,6 @@
 {
   "myco": {
     "type": "local",
-    "command": ["myco-run", "mcp"]
+    "command": ["node", ".agents/myco-cli.cjs", "mcp"]
   }
 }

@@ -27,17 +27,50 @@ Myco works in the background without explicit tool calls:
 - **Session stop**: the daemon extracts spores, writes session records, detects parent sessions, and captures artifacts
 - **Lineage**: parent-child session relationships are detected automatically (clear context, same branch, semantic similarity)
 
-The MCP tools below are for going deeper than the automatic context injection provides.
+Use the CLI tool surface below for going deeper than the automatic context injection provides. MCP exposes the same tools when the host supports Myco cleanly; if MCP is missing, flaky, or unavailable, prefer the CLI JSON path before reaching for direct database access.
 
 ## Setup
 
 If the vault isn't configured, run `myco init` in the project directory for guided first-time setup.
 
-For reconfiguration, status checks, and ongoing management, use the CLI commands and MCP tools documented below. For detailed vault health checks, see `references/vault-status.md`.
+For reconfiguration, status checks, and ongoing management, use the CLI commands and tool surfaces documented below. For detailed vault health checks, see `references/vault-status.md`.
 
-## MCP Tools Reference
+## CLI Tool Reference
 
-The local Myco MCP server registers 11 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. Tools are defined in `packages/myco/src/mcp/tool-definitions.ts` — that file is the source of truth.
+The stable portable path is the project-resolved CLI launcher. In an initialized project, prefer `node .agents/myco-cli.cjs` because it reads `.myco/runtime.command` in project scope and therefore works with dogfood aliases, worktree-local runtimes, and renamed binaries. The sibling `.agents/myco-run.cjs` launcher is reserved for capture hooks and may intentionally route git worktrees through the main checkout runtime so session data lands in the main vault. If the CLI launcher is not present, use host MCP tools when available, then fall back to `myco-run` or `myco` only when the command is known to be on PATH for this project.
+
+Project-resolved CLI:
+
+```bash
+node .agents/myco-cli.cjs tool list --json
+node .agents/myco-cli.cjs tool call <tool-name> --json --input '<json>'
+node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
+```
+
+Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failures return `{ "ok": false, "tool": "<name>", "error": { "code": "...", "message": "..." } }`.
+
+The local Myco tool surface registers 12 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.
+
+Use direct SQLite reads only as an expert, read-only fallback for complex analysis that cannot be answered through the project-resolved CLI or MCP.
+
+## Myco Development Worktrees
+
+When developing Myco itself inside a git worktree, do not run `make dev-link`. That target rewrites shared `~/.local/bin/myco-*` symlinks and can redirect other active agents to the worktree binary.
+
+Use the worktree-scoped pattern instead:
+
+```bash
+make dev-link-worktree
+```
+
+This builds the worktree binary and writes the worktree's `.myco/runtime.command` directly to `packages/myco/vendor/<target>/myco`. That file is local runtime state and is not inherited when a worktree is created, so run the command from each worktree that needs project-scoped CLI/tool testing.
+
+Runtime scopes stay separate:
+
+- `.agents/myco-run.cjs` is the capture launcher for hooks; in git worktrees it can resolve through the main checkout runtime so session capture stays attached to the main vault.
+- `.agents/myco-cli.cjs` is the project launcher for CLI/tool calls; in git worktrees it prefers the worktree-local `.myco/runtime.command`, then falls back to the main checkout pin.
+
+Remove only the worktree pin with `make dev-unlink-worktree`. Use `make dev-unlink` only when intentionally removing the shared dev symlinks from the main checkout.
 
 ### myco_context — Get the project digest
 
@@ -45,6 +78,12 @@ Retrieve Myco's pre-computed project digest: a synthesis of project history, dec
 
 ```json
 { "tier": 5000 }
+```
+
+CLI:
+
+```bash
+node .agents/myco-cli.cjs tool call myco_context --json --input '{"tier":5000}'
 ```
 
 Tiers: `1500` (executive briefing), `5000` (default), `10000` (comprehensive). Prefer this over `myco_search` for broad project orientation; use `myco_search` when you need specific prior decisions or bug fixes.
@@ -55,6 +94,12 @@ Search across sessions, plans, and spores.
 
 ```json
 { "query": "why did we choose JWT over session cookies", "type": "spore", "limit": 5 }
+```
+
+CLI:
+
+```bash
+node .agents/myco-cli.cjs tool call myco_search --json --input '{"query":"why did we choose JWT over session cookies","type":"spore","limit":5}'
 ```
 
 **When to use**: searching for prior decisions, debugging context, or understanding rationale. The `type` filter narrows results — use `"spore"` for decisions/gotchas, `"session"` for session history, `"plan"` for plans, or omit for all.
@@ -182,7 +227,7 @@ List recent agent runs with runtime, provider, model, token, and cost fields, or
 
 ### Collective tools (only when connected)
 
-The following tools appear only when the project is connected to a Myco Collective — they are conditionally registered by `createMycoServer` based on the team status.
+The following tools appear only when the project is connected to a Myco Collective — they are conditionally registered by the shared tools dispatcher based on the team status.
 
 #### collective_projects — List projects in the collective
 

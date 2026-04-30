@@ -8,7 +8,7 @@
  *     the description on accept.
  *
  * Harness-internal: not exposed via the public MCP server (no entry in
- * mcp/tool-definitions.ts), no Cortex guidance, no priority boost.
+ * tools/definitions.ts), no Cortex guidance, no priority boost.
  */
 
 import { z } from 'zod/v4';

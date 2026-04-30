@@ -13,7 +13,7 @@ import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { handleMycoPlans } from '@myco/mcp/tools/plans.js';
+import { handleMycoPlans } from '@myco/tools/plans.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { DaemonServer } from '@myco/daemon/server.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';

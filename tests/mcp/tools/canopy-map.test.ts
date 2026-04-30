@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
-import { handleCanopyMap } from '@myco/mcp/tools/canopy-map.js';
+import { handleCanopyMap } from '@myco/tools/canopy-map.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { incrementCanopyMapToolCalls } from '@myco/db/queries/sessions.js';
 import { getDatabase } from '@myco/db/client.js';

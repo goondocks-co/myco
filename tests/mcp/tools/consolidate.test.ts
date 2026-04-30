@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoConsolidate } from '@myco/mcp/tools/consolidate.js';
+import { handleMycoConsolidate } from '@myco/tools/consolidate.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {

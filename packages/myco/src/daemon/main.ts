@@ -128,6 +128,7 @@ import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/cli
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createMcpProxyHandlers } from './api/mcp-proxy.js';
+import { createStreamableMcpHttpHandler } from '../mcp/http.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createDigestRevisionHandlers } from './api/digest-revisions.js';
 import { createAttachmentHandler } from './api/attachments.js';
@@ -1053,6 +1054,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/mcp/plans', mcpProxy.handleSavePlan);
   server.registerRoute('GET', '/api/mcp/sessions', mcpProxy.handleSessions);
   server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);
+  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir));
 
   // --- Backup routes ---
   const backupHandlers = createBackupHandlers({ db, machineId, vaultDir, liveConfig });

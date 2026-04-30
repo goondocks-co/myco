@@ -3,18 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Regression guard: every symbiont MCP template must invoke `myco-run`
- * (no absolute paths, no `myco-dev`, no host-specific shims). The
- * global `myco-run` launcher consults `.myco/runtime.command` to pick
- * the right binary per project, so pinning anything else in a committed
- * template breaks either prod users (if we pin `myco-dev`) or the repo
- * (if we pin an absolute path that leaks a username).
+ * Regression guard: stdio symbiont MCP templates must use committed,
+ * project-portable launchers (no absolute paths, no `myco-dev`, no
+ * host-specific shims). Most agents use the global `myco-run` launcher,
+ * which consults `.myco/runtime.command` to pick the right binary per
+ * project. OpenCode uses the committed project launcher because its MCP
+ * child PATH can bypass `~/.local/bin`.
  *
  * Two shape variants are allowed:
- *   - Claude/Cursor/Codex/Gemini/Copilot: `{ command: "myco-run", args: ["mcp"] }`
- *   - Opencode:                           `{ command: ["myco-run", "mcp"] }`
- *
- * Both satisfy "the launcher command is literally `myco-run mcp`."
+ *   - Claude/Cursor/Gemini/Copilot: `{ command: "myco-run", args: ["mcp"] }`
+ *   - Opencode:                     `{ command: ["node", ".agents/myco-cli.cjs", "mcp"] }`
+ *   - Codex:                        `{ url: "http://127.0.0.1:{{daemonPort}}/mcp" }`
  */
 
 const TEMPLATES_ROOT = path.resolve('packages/myco/src/symbionts/templates');
@@ -32,6 +31,7 @@ function listMcpTemplates(): string[] {
 interface Server {
   command?: string | string[];
   args?: string[];
+  url?: string;
 }
 
 function extractLauncherInvocation(server: Server): { command: string; args: string[] } {
@@ -61,22 +61,30 @@ describe('symbiont MCP templates', () => {
         expect(mycoServer).toBeDefined();
       });
 
-      it('invokes exactly `myco-run mcp` (no absolute paths, no dev-specific binaries)', () => {
+      it('uses the expected transport shape', () => {
+        if (name === 'codex') {
+          expect(mycoServer.url).toBe('http://127.0.0.1:{{daemonPort}}/mcp');
+          expect(mycoServer.command).toBeUndefined();
+          expect(mycoServer.args).toBeUndefined();
+          return;
+        }
+
         const { command, args } = extractLauncherInvocation(mycoServer);
 
-        // Rationale for each assertion:
-        //  - command === 'myco-run': the launcher must be PATH-resolved
-        //    so .myco/runtime.command can intercept. Pinning `myco-dev`
-        //    breaks prod; pinning an absolute path (`/Users/<name>/…`)
-        //    leaks a username into the committed template.
-        //  - args/start === ['mcp']: the launcher expects `mcp` as the
-        //    first forwarded argument.
-        expect(command).toBe('myco-run');
-        expect(args[0]).toBe('mcp');
+        if (name === 'opencode') {
+          expect(command).toBe('node');
+          expect(args).toEqual(['.agents/myco-cli.cjs', 'mcp']);
+        } else {
+          expect(command).toBe('myco-run');
+          expect(args[0]).toBe('mcp');
+        }
 
         // Hard guards against the failure modes we've already seen.
-        expect(command).not.toMatch(/^\//);
-        expect(command).not.toBe('myco-dev');
+        for (const token of [command, ...args]) {
+          expect(token).not.toMatch(/^\//);
+          expect(token).not.toContain('/Users/');
+          expect(token).not.toBe('myco-dev');
+        }
         expect(command).not.toBe('myco');
       });
     });

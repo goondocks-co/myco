@@ -9,7 +9,7 @@ description: |
   for map-phase implementation guidance.
 managed_by: myco
 user-invocable: true
-allowed-tools: Read, Edit, Write, Bash, Grep, Glob
+allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
 ---
 
 # Agent Harness Map-Phase Advanced Implementation
@@ -196,6 +196,12 @@ For efficient resource utilization:
    - **Memory-based**: Balance batch size with instance reuse
    - **API quota**: Spread load across time windows
 
+4. **Leverage provider metadata consolidation**:
+   - Use consolidated provider metadata to optimize model selection across iterations
+   - Cache provider configurations to avoid repeated API calls (600x+ speedup observed)
+   - Implement efficient provider switching logic for cost optimization
+   - Monitor provider availability and automatically failover to alternatives
+
 ## Procedure 5: Implement Fault Tolerance Patterns
 
 For robust map-phase operations:
@@ -268,6 +274,34 @@ For seamless phase transitions:
    - Enable resumption from the last successful checkpoint
    - Design checkpoint data to be human-readable for debugging
 
+## Procedure 7: Harness-Ready Architecture Integration
+
+For modern harness-ready agent implementations:
+
+1. **Implement Pi integration patterns**:
+   - Design agent implementations that integrate with the central harness registry
+   - Use durable state contracts for reliable agent lifecycle management
+   - Implement proper agent scoping and resource cleanup
+   - Follow Pi conceptual framework for agent architecture consistency
+
+2. **Leverage central harness registry**:
+   - Register agent implementations in the central harness for discoverability
+   - Use registry-based agent resolution for dynamic task assignment
+   - Implement proper agent metadata for harness optimization
+   - Design agents for composability within the harness ecosystem
+
+3. **Implement durable state contracts**:
+   - Design state persistence that survives agent restarts and failures
+   - Use contract-based state management for predictable recovery
+   - Implement state validation and migration patterns
+   - Design for state consistency across distributed agent operations
+
+4. **Apply efficiency improvements**:
+   - Implement config caching patterns to reduce initialization overhead
+   - Use migration efficiency patterns for smooth state transitions
+   - Optimize provider metadata access for faster agent startup
+   - Design for minimal resource consumption during idle periods
+
 ## Cross-Cutting Implementation Gotchas
 
 - **Sink schema stripping**: Map-phase harness automatically removes sink_schema from phase args and replaces it with argMap. Don't expect sink_schema to be present in your phase handler. Phase handlers that check `if (args.sink_schema)` will always fail in map mode.
@@ -293,3 +327,7 @@ For seamless phase transitions:
 - **Error context loss**: Failed iterations may lose important context. Always log sufficient information to reproduce and debug failures offline.
 
 - **Cost explosion**: Poorly configured accelerators can lead to exponential cost growth. Always set maximum cost bounds and monitor spending in real-time.
+
+- **Provider metadata staleness**: Cached provider configurations can become stale over time. Implement refresh mechanisms and validate provider availability before use.
+
+- **State contract violations**: Durable state implementations must strictly adhere to defined contracts. Contract violations can cascade through the entire harness system.

@@ -274,6 +274,7 @@ describe('buildCortexInstructionsInput', () => {
     const result = await buildCortexInstructionsInput(config, vaultDir);
     cleanup();
     expect(result.instruction).toContain('canopy_map()');
+    expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call canopy_map --json');
     expect(result.instruction).toContain('default opener');
   });
 

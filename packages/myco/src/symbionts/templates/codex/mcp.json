@@ -1,6 +1,5 @@
 {
   "myco": {
-    "command": "myco-run",
-    "args": ["mcp"]
+    "url": "http://127.0.0.1:{{daemonPort}}/mcp"
   }
 }

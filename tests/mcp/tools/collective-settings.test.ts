@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { handleCollectiveSettings } from '@myco/mcp/tools/collective.js';
+import { handleCollectiveSettings } from '@myco/tools/collective.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {

@@ -96,11 +96,14 @@ phases:
          `myco_context`). Describe when each is useful, not what each
          argument does.
 
-         If the tool guidance flags `canopy_map()` as a default opener,
+         If the tool guidance flags Canopy Map as a default opener,
          frame it as a default action in this paragraph — phrasing like
-         "Call `canopy_map()` first whenever you need to find a feature,
-         locate the right file before editing, or orient in this
-         codebase." Never frame it as a condition the agent self-evaluates
+         "Call `node .agents/myco-cli.cjs tool call canopy_map --json --input '{}'`
+         first whenever you need to find a feature, locate the right
+         file before editing, or orient in this codebase; use
+         `canopy_map()` via MCP when the host exposes Myco tools
+         cleanly." Never frame
+         it as a condition the agent self-evaluates
          ("when you need to explore unfamiliar code", "if you're new to
          the project") — the directive exists precisely because that
          conditional framing causes agents to skip the tool. Preserve

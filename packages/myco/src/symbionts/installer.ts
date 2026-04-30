@@ -5,7 +5,8 @@ import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlS
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
-import { loadMergedConfig } from '../config/loader.js';
+import { loadConfig, loadMergedConfig, updateConfig } from '../config/loader.js';
+import { derivePort } from '../daemon/port.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
@@ -23,7 +24,7 @@ const AGENTS_MANAGED_BLOCK = `${AGENTS_MANAGED_START}
 
 - When \`capture.ignore_plan_dirs_in_git\` is enabled, custom directories in \`capture.plan_dirs\` may be intentionally gitignored after capture into Myco.
 - Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
-- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — call \`canopy_map()\` (Myco MCP) for an architectural overview before falling back to Glob/Grep.
+- When orienting in this codebase — finding a feature, locating files relevant to a change, or understanding an unfamiliar subsystem — use Myco first: call \`node .agents/myco-cli.cjs tool call canopy_map --json --input '{}'\` as the project-resolved CLI path, or \`canopy_map()\` via MCP when the host exposes Myco tools cleanly, before falling back to Glob/Grep.
 ${AGENTS_MANAGED_END}
 `;
 
@@ -36,8 +37,14 @@ const HOOK_GUARD_TEMPLATE_FILENAME = 'myco-run.cjs';
 /** Filename when installed into the project .agents/ directory. */
 const HOOK_GUARD_INSTALLED_FILENAME = 'myco-run.cjs';
 
+/** Project-local CLI launcher installed beside the capture hook guard. */
+const CLI_LAUNCHER_INSTALLED_FILENAME = 'myco-cli.cjs';
+
 /** Project-relative path where the hook guard is installed. */
 const HOOK_GUARD_PROJECT_PATH = `.agents/${HOOK_GUARD_INSTALLED_FILENAME}`;
+
+/** Project-relative path where the CLI launcher is installed. */
+const CLI_LAUNCHER_PROJECT_PATH = `.agents/${CLI_LAUNCHER_INSTALLED_FILENAME}`;
 
 /**
  * Legacy guard filename we still delete on install to clean up previous
@@ -56,33 +63,6 @@ const LEGACY_BUILTIN_SKILL_NAMES = ['myco-curate', 'rules'];
 
 /** MCP server name used by Myco in all symbiont configurations. */
 export const MYCO_MCP_SERVER_NAME = 'myco';
-
-/**
- * Replace the `myco-run` launcher with the project's runtime.command alias
- * (e.g. `myco-dev`) in an MCP server definition. Handles both shapes:
- *
- *   - string:  `{ command: "myco-run", args: ["mcp"] }`
- *             → `{ command: "<alias>",  args: ["mcp"] }`
- *   - array:   `{ command: ["myco-run", "mcp"] }`
- *             → `{ command: ["<alias>",  "mcp"] }`
- *
- * Only substitutes when the existing command is literally `myco-run`; any
- * other value is left alone so hand-edited or non-standard entries are
- * preserved.
- */
-function substituteMycoRunCommand(
-  server: Record<string, unknown>,
-  alias: string,
-): Record<string, unknown> {
-  const command = server.command;
-  if (command === 'myco-run') {
-    return { ...server, command: alias };
-  }
-  if (Array.isArray(command) && command[0] === 'myco-run') {
-    return { ...server, command: [alias, ...command.slice(1)] };
-  }
-  return server;
-}
 
 /**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
@@ -195,14 +175,14 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Copy the hook guard script into .agents/myco-run.cjs and delete the
-   * legacy .agents/myco-hook.cjs if present.
+   * Copy runtime launchers into .agents/ and delete the legacy
+   * .agents/myco-hook.cjs if present.
    *
-   * The guard is the cross-platform entry point for lifecycle hooks.
-   * Hook commands invoke `node .agents/myco-run.cjs …`, and the guard
-   * resolves which myco binary to exec via `.myco/runtime.command`.
+   * `myco-run.cjs` is the capture launcher for lifecycle hooks.
+   * `myco-cli.cjs` is the project-local launcher for CLI/tool calls.
+   * Both use the same template and resolve runtime scope from filename.
    * MCP server spawn continues to use the published `myco-run` binary.
-   * Returns true if the file was written (or updated); false if skipped
+   * Returns true if any file was written (or updated); false if skipped
    * or N/A.
    */
   installHookGuard(): boolean {
@@ -219,14 +199,19 @@ export class SymbiontInstaller {
       fs.unlinkSync(path.join(this.projectRoot, LEGACY_HOOK_GUARD_PATH));
     } catch { /* no legacy file present */ }
 
-    return this.writeManagedFile(
+    const wroteHookGuard = this.writeManagedFile(
       path.join(this.projectRoot, HOOK_GUARD_PROJECT_PATH),
       guardTemplate,
     );
+    const wroteCliLauncher = this.writeManagedFile(
+      path.join(this.projectRoot, CLI_LAUNCHER_PROJECT_PATH),
+      guardTemplate,
+    );
+    return wroteHookGuard || wroteCliLauncher;
   }
 
   /**
-   * Remove the hook guard script from .agents/myco-run.cjs.
+   * Remove runtime launchers from .agents/.
    * Also deletes the legacy .agents/myco-hook.cjs if present.
    * Returns true if any file was removed; false otherwise.
    */
@@ -235,7 +220,7 @@ export class SymbiontInstaller {
     if (!reg?.hooksTarget) return false;
 
     let removed = false;
-    for (const relPath of [HOOK_GUARD_PROJECT_PATH, LEGACY_HOOK_GUARD_PATH]) {
+    for (const relPath of [HOOK_GUARD_PROJECT_PATH, CLI_LAUNCHER_PROJECT_PATH, LEGACY_HOOK_GUARD_PATH]) {
       try {
         fs.unlinkSync(path.join(this.projectRoot, relPath));
         removed = true;
@@ -414,18 +399,16 @@ export class SymbiontInstaller {
     const LEGACY_OBJECT_KEYS = ['myco-run', 'myco-run *'];
     // Fields whose array values are exec argvs (process invocation arrays),
     // NOT allowlist tokens. The cleanup sweep must not touch these because
-    // `myco-run` remains the PUBLISHED MCP launcher command — stripping it
-    // from an opencode-style `command: ["myco-run", "mcp"]` array would
-    // corrupt the MCP spawn. Only works today because installMcp() deep-
-    // merges the template back in after cleanup; don't rely on that mask.
+    // stripping tokens from an opencode-style `command` array would corrupt
+    // the MCP spawn. Only works today because installMcp() deep-merges the
+    // template back in after cleanup; don't rely on that mask.
     const EXEC_ARGV_KEYS = new Set(['command', 'args']);
 
     const walk = (node: unknown, parentKey?: string): void => {
       if (node === null || typeof node !== 'object') return;
       if (Array.isArray(node)) {
         // Exec argv arrays are process invocations (e.g. opencode's
-        // `command: ["myco-run", "mcp"]`). Never strip tokens from these
-        // — `myco-run` is the intended MCP command.
+        // MCP `command` array). Never strip tokens from these.
         if (parentKey !== undefined && EXEC_ARGV_KEYS.has(parentKey)) return;
         // String arrays: filter out legacy allowlist tokens in place.
         for (let i = node.length - 1; i >= 0; i--) {
@@ -1031,48 +1014,44 @@ export class SymbiontInstaller {
   ): Record<string, unknown> | null {
     if (!template) return null;
 
-    const reg = this.manifest.registration;
-    const cwd = reg?.mcpCwd;
-    const alias = reg?.substituteRuntimeCommand ? this.readRuntimeCommandAlias() : null;
-    if (!cwd && !alias) return template;
+    const daemonPort = this.resolveDaemonPort();
 
     return Object.fromEntries(
       Object.entries(template).map(([name, def]) => {
         if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        let next = { ...(def as Record<string, unknown>) };
-        if (cwd) next.cwd = cwd;
-        if (alias) next = substituteMycoRunCommand(next, alias);
+        const next = this.interpolateMcpTemplate({ ...(def as Record<string, unknown>) }, daemonPort);
         return [name, next];
       }),
     );
   }
 
-  /**
-   * Read `.myco/runtime.command` and return the alias (e.g. `myco-dev`).
-   *
-   * Same file the hook guard and the `bin/myco-run` launcher consult to
-   * decide which binary answers for the project. Only symbionts whose
-   * manifest opts in via `registration.substituteRuntimeCommand = true`
-   * reach this path — most symbionts rely on runtime PATH resolution
-   * inside `bin/myco-run` instead, which keeps the alias truly dynamic
-   * (change `runtime.command`, next spawn picks it up, no re-install).
-   * Opt-in is for hosts that reorder PATH so `myco-run` can't be reached
-   * via `~/.local/bin` (opencode, and whatever future host shares that
-   * behavior).
-   *
-   * Returns null when the file is missing, empty, or contains the
-   * default (`myco`) — no substitution is needed in those cases.
-   */
-  private readRuntimeCommandAlias(): string | null {
+  private interpolateMcpTemplate(
+    server: Record<string, unknown>,
+    daemonPort: number,
+  ): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(server).map(([key, value]) => [
+        key,
+        typeof value === 'string'
+          ? value.replace(/\{\{daemonPort\}\}/g, String(daemonPort))
+          : value,
+      ]),
+    );
+  }
+
+  private resolveDaemonPort(): number {
+    const vaultDir = path.join(this.projectRoot, '.myco');
     try {
-      const raw = fs.readFileSync(
-        path.join(this.projectRoot, '.myco', 'runtime.command'),
-        'utf-8',
-      ).trim();
-      if (!raw || raw === 'myco') return null;
-      return raw;
+      const config = loadConfig(vaultDir);
+      if (config.daemon.port !== null) return config.daemon.port;
+      const port = derivePort(vaultDir);
+      updateConfig(vaultDir, (current) => ({
+        ...current,
+        daemon: { ...current.daemon, port },
+      }));
+      return port;
     } catch {
-      return null;
+      return derivePort(vaultDir);
     }
   }
 

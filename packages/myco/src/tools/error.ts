@@ -10,6 +10,29 @@
  *   - { error: { message } }  → errorBody() canonical envelope
  */
 
+export type ToolErrorCode =
+  | 'unknown_tool'
+  | 'tool_unavailable'
+  | 'invalid_input'
+  | 'invalid_json'
+  | 'tool_call_failed';
+
+/**
+ * Typed error thrown by the shared tool dispatcher so transports (CLI, HTTP
+ * MCP, stdio MCP) can read a stable `code` instead of pattern-matching on
+ * message prose. Message text remains the human-readable detail.
+ */
+export class ToolError extends Error {
+  constructor(public readonly code: ToolErrorCode, message: string) {
+    super(message);
+    this.name = 'ToolError';
+  }
+}
+
+export function isToolError(error: unknown): error is ToolError {
+  return error instanceof ToolError;
+}
+
 export function extractErrorMessage(data: unknown, fallback: string): string {
   if (typeof data === 'string') return data;
   if (typeof data !== 'object' || data === null) return fallback;

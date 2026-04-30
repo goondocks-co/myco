@@ -4,6 +4,7 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
+import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -93,6 +94,26 @@ export async function run(args: string[]): Promise<void> {
     // Non-fatal — stamp write failure shouldn't break the update
   }
 
+  // HTTP MCP entries depend on the local daemon being reachable at the
+  // configured project port. `myco update` is the real reconciliation path for
+  // generated agent config, so bring the daemon up after the config rewrite.
+  // In git worktrees, daemon startup intentionally resolves through git-common
+  // to the shared project vault; using the literal --project/.myco path here
+  // makes the child daemon start against the shared vault while this health
+  // check waits on the worktree vault and falsely reports failure.
+  let daemonHealthy = false;
+  try {
+    const { DaemonClient } = await import('../hooks/client.js');
+    const daemonVaultDir = resolveVaultDir(resolvedProjectRoot);
+    const client = new DaemonClient(daemonVaultDir);
+    daemonHealthy = await client.ensureRunning();
+    if (daemonHealthy && await httpMcpEndpointMissing(daemonVaultDir)) {
+      daemonHealthy = await client.restart({ checkStale: false });
+    }
+  } catch {
+    daemonHealthy = false;
+  }
+
   // --- Summary ---
 
   console.log('');
@@ -101,5 +122,36 @@ export async function run(args: string[]): Promise<void> {
   } else {
     console.log('Everything is up to date.');
   }
+  if (daemonHealthy) {
+    console.log('Daemon is running for HTTP MCP.');
+  } else {
+    console.log('Daemon could not be verified; run `myco restart` before using HTTP MCP.');
+  }
   console.log('Run `myco doctor` to verify setup health.');
+}
+
+async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
+  const port = readDaemonPort(vaultDir);
+  if (port === null) return false;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
+    });
+    return response.status === 404;
+  } catch {
+    return false;
+  }
+}
+
+function readDaemonPort(vaultDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8');
+    const port = (JSON.parse(raw) as { port?: unknown }).port;
+    return typeof port === 'number' ? port : null;
+  } catch {
+    return null;
+  }
 }
