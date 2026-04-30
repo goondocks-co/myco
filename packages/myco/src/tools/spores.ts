@@ -6,7 +6,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { extractErrorMessage } from './error.js';
+import { extractErrorMessage, type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 export interface SporesInput {
@@ -26,11 +26,6 @@ export interface SporesInput {
   consolidated_content?: string;
   tags?: string[];
   reason?: string;
-}
-
-interface ToolFailure {
-  ok: false;
-  error: string;
 }
 
 export async function handleMycoSpores(

@@ -52,7 +52,7 @@ export async function handleMycoAgent(
   });
   const result = await client.get(endpoint);
   if (!result.ok) {
-    return { ok: false, op, error: 'fetch_failed' };
+    return { ok: false, op, error: extractErrorMessage(result.data, 'fetch_failed') };
   }
   return { ok: true, op, data: result.data };
 }

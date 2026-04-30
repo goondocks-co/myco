@@ -269,15 +269,23 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       handleCortexDigest,
       handleCortexInstructions,
     } = await import('./cortex.js');
-    if (op === 'digest') {
-      const result = await handleCortexDigest(input as unknown as Parameters<typeof handleCortexDigest>[0], client);
-      logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
-      return result;
-    }
-    if (op === 'instructions') {
-      const result = await handleCortexInstructions(client);
-      logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
-      return result;
+
+    switch (op) {
+      case 'digest': {
+        const result = await handleCortexDigest(input as unknown as Parameters<typeof handleCortexDigest>[0], client);
+        logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'instructions': {
+        const result = await handleCortexInstructions(client);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'canopy_entry':
+      case 'canopy_map':
+        break;
+      default:
+        throw new ToolError('invalid_input', `Unknown op '${String(op)}' for tool ${TOOL_CORTEX}`);
     }
 
     const { emptyCanopyMap } = await import('./canopy-map.js');

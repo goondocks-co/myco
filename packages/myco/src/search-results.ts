@@ -1,3 +1,12 @@
+import {
+  TOOL_AGENT,
+  TOOL_CORTEX,
+  TOOL_PLANS,
+  TOOL_SESSIONS,
+  TOOL_SKILLS,
+  TOOL_SPORES,
+} from './tools/definitions.js';
+
 export interface SearchResultRow {
   id?: string;
   type?: string | null;
@@ -122,14 +131,14 @@ function retrieveHint(
     ? { machine_id: row.machine_id }
     : {};
 
-  if (type === 'plan') return { tool: 'myco_plans', input: { op: 'get', id, ...machineInput } };
-  if (type === 'session') return { tool: 'myco_sessions', input: { op: 'get', id, ...machineInput } };
-  if (type === 'spore') return { tool: 'myco_spores', input: { op: 'get', id, ...machineInput } };
-  if (type === 'skill') return { tool: 'myco_skills', input: { op: 'get', id, ...machineInput } };
-  if (type === 'agent_run') return { tool: 'myco_agent', input: { op: 'run', id } };
+  if (type === 'plan') return { tool: TOOL_PLANS, input: { op: 'get', id, ...machineInput } };
+  if (type === 'session') return { tool: TOOL_SESSIONS, input: { op: 'get', id, ...machineInput } };
+  if (type === 'spore') return { tool: TOOL_SPORES, input: { op: 'get', id, ...machineInput } };
+  if (type === 'skill') return { tool: TOOL_SKILLS, input: { op: 'get', id, ...machineInput } };
+  if (type === 'agent_run') return { tool: TOOL_AGENT, input: { op: 'run', id } };
   if (type === 'canopy_entry') {
     return {
-      tool: 'myco_cortex',
+      tool: TOOL_CORTEX,
       input: {
         op: 'canopy_entry',
         id,

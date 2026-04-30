@@ -11,7 +11,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { extractErrorMessage } from './error.js';
+import { extractErrorMessage, type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -65,19 +65,9 @@ export interface PlanSaveSuccess {
   updated_at: number | null;
 }
 
-export interface PlanFailure {
-  ok: false;
-  error: string;
-}
+export type PlanFailure = ToolFailure;
 
-/** Error shape returned from op: "list" when input validation fails
- *  (e.g. both `id` and `session` supplied). Matches the daemon's 400 body. */
-export interface PlansListError {
-  ok: false;
-  error: string;
-}
-
-export type PlansResult = PlanSummary[] | PlanSummary | PlanDeleteResult | PlanSaveSuccess | PlanFailure | PlansListError;
+export type PlansResult = PlanSummary[] | PlanSummary | PlanDeleteResult | PlanSaveSuccess | PlanFailure;
 
 // ---------------------------------------------------------------------------
 // Handler

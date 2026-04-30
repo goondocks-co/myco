@@ -53,7 +53,7 @@ export function createMcpServerInstance(env: Env): McpServer {
     op: z.enum(['list', 'get']).default('list').optional().describe('Operation; cloud skills are read-only'),
     id: z.string().optional().describe('Skill id or name for op="get"'),
     machine_id: z.string().optional().describe('Machine id from a search retrieve hint for disambiguation'),
-    status: z.string().optional().describe('Filter: active, draft, retired'),
+    status: z.string().optional().describe('Filter: active, stale, retired'),
     limit: z.number().min(1).max(100).default(50).optional().describe('Maximum skills'),
   }, async (args) => handleSkills(args, env));
 

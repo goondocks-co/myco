@@ -6,6 +6,9 @@ import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { handleCanopyEntryGet } from '@myco/daemon/api/canopy-read.js';
 import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
+import type { ToolFailure } from './error.js';
+
+export type CortexFailure = ToolFailure;
 
 const DEFAULT_CONTEXT_TIER = 5000;
 const NO_DIGEST_MESSAGE = 'Digest context is not yet available. The first digest cycle has not completed.';
@@ -23,11 +26,6 @@ export interface CortexDigestResult {
   tier: number;
   fallback: boolean;
   generated_at?: number;
-}
-
-export interface CortexFailure {
-  ok: false;
-  error: string;
 }
 
 export interface CortexCanopyArgs {

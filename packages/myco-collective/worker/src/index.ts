@@ -108,10 +108,8 @@ async function configureProjectWorker(
 }
 
 async function ensureInitialized(env: Env): Promise<void> {
-  if (!schemaInitialized) {
-    await initD1Schema(env.MYCO_COLLECTIVE_DB);
-    schemaInitialized = true;
-  }
+  if (schemaInitialized) return;
+  await initD1Schema(env.MYCO_COLLECTIVE_DB);
   const { adminToken, mcpToken } = await ensureBootstrapTokens(
     env.MYCO_SECRETS,
     env.MYCO_BOOTSTRAP_ADMIN_TOKEN,
@@ -123,6 +121,7 @@ async function ensureInitialized(env: Env): Promise<void> {
     env.MYCO_COLLECTIVE_DB.prepare('INSERT OR REPLACE INTO collective_meta (key, value) VALUES (?, ?)').bind('mcp_token_hash', tokenHash(mcpToken) ?? ''),
   ];
   await env.MYCO_COLLECTIVE_DB.batch(statements);
+  schemaInitialized = true;
 }
 
 function hashToken(token: string): string {

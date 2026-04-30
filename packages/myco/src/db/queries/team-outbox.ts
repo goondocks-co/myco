@@ -431,7 +431,10 @@ export function backfillUnsynced(machineId: string): number {
          VALUES (?, ?, 'upsert', ?, ?, ?)`,
       );
       for (const row of batchRows) {
-        stmt.run(table, String(row.id), JSON.stringify(row), machineId, now);
+        // Strip local-only columns before serializing — backfill must follow
+        // the same contract as syncRow(), or restart-driven re-enqueues will
+        // ship columns the worker D1 has no place for and dead-letter them.
+        stmt.run(table, String(row.id), JSON.stringify(sanitizeSyncPayload(table, row)), machineId, now);
       }
     });
 

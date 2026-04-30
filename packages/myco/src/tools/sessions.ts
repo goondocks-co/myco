@@ -5,6 +5,7 @@
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type { ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -37,11 +38,6 @@ interface SessionSummary {
   parent_session_id: string | null;
 }
 
-interface SessionGetFailure {
-  ok: false;
-  error: string;
-}
-
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -49,7 +45,7 @@ interface SessionGetFailure {
 export async function handleMycoSessions(
   input: SessionsInput,
   client: DaemonClient,
-): Promise<SessionSummary[] | unknown | SessionGetFailure> {
+): Promise<SessionSummary[] | unknown | ToolFailure> {
   const op = input.op ?? 'list';
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
