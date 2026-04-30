@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { DaemonClient } from '@myco/hooks/client.js';
-import { createMycoTools } from '@myco/tools/index.js';
+import { COLLECTIVE_TOOL_DEFINITIONS, TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 import { isToolError } from '@myco/tools/error.js';
+import { isCollectiveEnabled } from '@myco/tools/shared.js';
 
 interface ToolCliError {
   code: string;
@@ -23,10 +24,9 @@ interface ParsedCallArgs {
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const [subcommand, ...rest] = args;
   const json = rest.includes('--json');
-  const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir));
 
   if (subcommand === 'list') {
-    const definitions = await tools.listTools();
+    const definitions = await listToolDefinitions(vaultDir);
     if (json) {
       console.log(JSON.stringify({ ok: true, result: definitions }, null, 2));
       return;
@@ -53,6 +53,8 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
     try {
       const input = parseInput(parsed.input ?? '{}');
+      const { createMycoTools } = await import('@myco/tools/index.js');
+      const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir));
       const result = await tools.callTool(tool, input);
       writeEnvelope({ ok: true, tool, result });
     } catch (error) {
@@ -71,6 +73,12 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   writeEnvelope({ ok: false, error: { code: 'unknown_command', message: 'Usage: tool <list|call> [args]' } });
   process.exitCode = 1;
+}
+
+async function listToolDefinitions(vaultDir: string) {
+  return await isCollectiveEnabled(new DaemonClient(vaultDir))
+    ? [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS]
+    : TOOL_DEFINITIONS;
 }
 
 function parseCallArgs(args: string[]): ParsedCallArgs {
