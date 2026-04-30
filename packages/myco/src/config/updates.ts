@@ -44,7 +44,6 @@ export function assertKnownKeys<T extends object>(
 
 /** Provider override shape used in task config updates. Null means delete. */
 interface ProviderInput {
-  runtime?: 'claude-sdk' | 'openai-agents';
   type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
   local_backend?: 'ollama' | 'lmstudio';
   model?: string;
@@ -79,7 +78,7 @@ interface ScheduleInput {
 /** Input shape for task config updates. Null values mean "delete this field". */
 export interface TaskConfigUpdate {
   provider?: ProviderInput | null;
-  runtime?: 'claude-sdk' | 'openai-agents' | null;
+  harness?: string | null;
   model?: string | null;
   maxTurns?: number | null;
   timeoutSeconds?: number | null;
@@ -97,7 +96,7 @@ export interface TaskConfigUpdate {
  */
 const TASK_CONFIG_UPDATE_KEYS: ReadonlySet<keyof TaskConfigUpdate> = new Set([
   'provider',
-  'runtime',
+  'harness',
   'model',
   'maxTurns',
   'timeoutSeconds',
@@ -129,9 +128,9 @@ export function withTaskConfig(
     }
   }
 
-  if ('runtime' in update) {
-    if (update.runtime === null) delete entry.runtime;
-    else if (update.runtime !== undefined) entry.runtime = update.runtime;
+  if ('harness' in update) {
+    if (update.harness === null) delete entry.harness;
+    else if (update.harness !== undefined) entry.harness = update.harness;
   }
 
   if ('model' in update) {

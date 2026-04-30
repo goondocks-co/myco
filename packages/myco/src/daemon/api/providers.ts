@@ -25,7 +25,7 @@ import {
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
-import { PROVIDER_TYPES, type RuntimeId, type ProviderType } from '@myco/agent/types.js';
+import { PROVIDER_TYPES, type HarnessId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 
@@ -48,7 +48,7 @@ const HTTP_BAD_REQUEST = 400;
 
 interface ProviderInfo {
   type: ProviderType;
-  runtime: RuntimeId;
+  harness: HarnessId;
   available: boolean;
   authConfigured?: boolean;
   baseUrl?: string;
@@ -78,27 +78,27 @@ export async function handleGetProviders(logger?: DaemonLogger): Promise<RouteRe
   }> = [
     {
       detect: () => detectAnthropic(logger),
-      fallback: { type: 'anthropic', runtime: 'claude-sdk', available: false, models: [] },
+      fallback: { type: 'anthropic', harness: 'claude-sdk', available: false, models: [] },
     },
     {
       detect: () => detectLocalProviderInfo('ollama', OllamaBackend.DEFAULT_BASE_URL),
-      fallback: { type: 'ollama', runtime: 'claude-sdk', available: false, baseUrl: OllamaBackend.DEFAULT_BASE_URL, models: [] },
+      fallback: { type: 'ollama', harness: 'claude-sdk', available: false, baseUrl: OllamaBackend.DEFAULT_BASE_URL, models: [] },
     },
     {
       detect: () => detectLocalProviderInfo('lmstudio', LmStudioBackend.DEFAULT_BASE_URL),
-      fallback: { type: 'lmstudio', runtime: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
+      fallback: { type: 'lmstudio', harness: 'claude-sdk', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
     },
     {
       detect: () => detectRemoteProviderInfo('openai', DEFAULT_OPENAI_URL, logger),
-      fallback: { type: 'openai', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENAI_URL, models: [] },
+      fallback: { type: 'openai', harness: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENAI_URL, models: [] },
     },
     {
       detect: () => detectRemoteProviderInfo('openrouter', DEFAULT_OPENROUTER_URL, logger),
-      fallback: { type: 'openrouter', runtime: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENROUTER_URL, models: [] },
+      fallback: { type: 'openrouter', harness: 'openai-agents', available: false, authConfigured: false, baseUrl: DEFAULT_OPENROUTER_URL, models: [] },
     },
     {
       detect: () => detectLocalProviderInfo('openai-compatible', LmStudioBackend.DEFAULT_BASE_URL),
-      fallback: { type: 'openai-compatible', runtime: 'openai-agents', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
+      fallback: { type: 'openai-compatible', harness: 'openai-agents', available: false, baseUrl: LmStudioBackend.DEFAULT_BASE_URL, models: [] },
     },
   ];
 
@@ -195,7 +195,7 @@ async function detectLocalProviderInfo(
   const models = filterLlmModels(variantFiltered);
   return {
     type,
-    runtime: type === 'openai-compatible' ? 'openai-agents' : 'claude-sdk',
+    harness: type === 'openai-compatible' ? 'openai-agents' : 'claude-sdk',
     available: status.available,
     baseUrl: defaultBaseUrl,
     models,
@@ -213,7 +213,7 @@ async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
   // ANTHROPIC_MODELS constant so the dropdown is never empty.
   const now = Date.now();
   if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
-    return { type: 'anthropic', runtime: 'claude-sdk', available: true, models: anthropicModelsCache.models };
+    return { type: 'anthropic', harness: 'claude-sdk', available: true, models: anthropicModelsCache.models };
   }
 
   let models = ANTHROPIC_MODELS;
@@ -238,7 +238,7 @@ async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
     logger?.warn('providers.anthropic.models-unavailable', 'Anthropic model list unavailable', { error: detail });
   }
   anthropicModelsCache = { ts: now, models };
-  return { type: 'anthropic', runtime: 'claude-sdk', available: true, models };
+  return { type: 'anthropic', harness: 'claude-sdk', available: true, models };
 }
 
 async function detectRemoteProviderInfo(
@@ -265,7 +265,7 @@ async function detectRemoteProviderInfo(
 
   return {
     type,
-    runtime: 'openai-agents',
+    harness: 'openai-agents',
     available,
     authConfigured,
     baseUrl,

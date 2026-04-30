@@ -5,10 +5,10 @@ const __orig__myco_agent_loader_js_2 = { ...__orig__myco_agent_loader_js_2__ns }
 import * as __orig__myco_db_client_js_3__ns from '@myco/db/client.js';
 const __orig__myco_db_client_js_3 = { ...__orig__myco_db_client_js_3__ns };
 /**
- * Executor tests that exercise the openai-agents runtime path.
+ * Executor tests that exercise the openai-agents harness path.
  *
  * Addresses findings #27 (dryRun not E2E tested for openai-agents) and
- * #28 (resume semantics untested for openai-agents). The Claude SDK runtime
+ * #28 (resume semantics untested for openai-agents). The Claude SDK harness
  * has its own coverage in executor.test.ts and executor-dry-run.test.ts;
  * this file stands up the parallel @openai/agents Runner mock and verifies
  * the executor threads dryRun + resumes lastResponseId correctly.
@@ -21,6 +21,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import { getRun, insertRun } from '@myco/db/queries/runs.js';
+import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
@@ -183,9 +184,18 @@ mock.module('@myco/agent/context.js', () => ({
 
 let localMcpCalls: Array<Record<string, unknown>> = [];
 
-mock.module('@myco/agent/runtime/openai-local-mcp.js', () => ({
+mock.module('@myco/agent/harness/openai-local-mcp.js', () => ({
   createLocalVaultMcpServer: (toolSurface: Record<string, unknown>) => {
     localMcpCalls.push(toolSurface);
+    if (!toolSurface.dryRun && typeof toolSurface.runId === 'string' && typeof toolSurface.agentId === 'string') {
+      insertReport({
+        run_id: toolSurface.runId,
+        agent_id: toolSurface.agentId,
+        action: 'skip',
+        summary: 'Test harness completed without tool writes.',
+        created_at: epochSeconds(),
+      });
+    }
     return {
       connect: async () => {},
       close: async () => {},
@@ -257,7 +267,7 @@ function createTestTask(): void {
 // Test suite
 // ---------------------------------------------------------------------------
 
-describe('executor with openai-agents runtime', () => {
+describe('executor with openai-agents harness', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => {
@@ -269,19 +279,35 @@ describe('executor with openai-agents runtime', () => {
     mockLastResponseId = 'resp_openai_final';
   });
 
-  it('runs the openai-agents runtime and persists runtime=openai-agents on the row', async () => {
+  it('runs the openai-agents harness and persists harness=openai-agents on the row', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
     const result = await runAgent(TEST_VAULT_DIR, {
       task: TEST_TASK_NAME,
       executionOverrides: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: { type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
 
     expect(result.status).toBe('completed');
     const run = getRun(result.runId);
-    expect(run?.runtime).toBe('openai-agents');
+    expect(run?.harness).toBe('openai-agents');
+    expect(runnerCalls).toHaveLength(1);
+  });
+
+  it('infers openai-agents when a per-run provider override is OpenAI-only', async () => {
+    const { runAgent } = await import('@myco/agent/executor.js');
+    const result = await runAgent(TEST_VAULT_DIR, {
+      task: TEST_TASK_NAME,
+      executionOverrides: {
+        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+      },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.harness).toBe('openai-agents');
+    const run = getRun(result.runId);
+    expect(run?.harness).toBe('openai-agents');
     expect(runnerCalls).toHaveLength(1);
   });
 
@@ -291,7 +317,7 @@ describe('executor with openai-agents runtime', () => {
       task: TEST_TASK_NAME,
       dryRun: true,
       executionOverrides: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: { type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
@@ -307,12 +333,12 @@ describe('executor with openai-agents runtime', () => {
   it('round-trips lastResponseId via rawRuntimeMetadata on resume', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    // First run — establishes checkpoint state with runtime=openai-agents
+    // First run — establishes checkpoint state with harness=openai-agents
     mockLastResponseId = 'resp_first_call';
     const first = await runAgent(TEST_VAULT_DIR, {
       task: TEST_TASK_NAME,
       executionOverrides: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: { type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
@@ -328,13 +354,13 @@ describe('executor with openai-agents runtime', () => {
       task: TEST_TASK_NAME,
       status: 'failed',
       instruction: 'Resume me',
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       provider: 'openai',
       model: 'gpt-5.4-mini',
       resumable: 1,
       resume_status: 'ready',
       checkpoints: JSON.stringify({
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         phases: {},
         rawRuntimeMetadata: { lastResponseId: 'resp_abc_prior' },
         sessionData: [{ type: 'user', content: 'first turn before failure' }],
@@ -351,7 +377,7 @@ describe('executor with openai-agents runtime', () => {
       resumeRunId: existingRunId,
       resumeMode: 'manual',
       executionOverrides: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: { type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
@@ -364,6 +390,6 @@ describe('executor with openai-agents runtime', () => {
     ]);
 
     const run = getRun(existingRunId);
-    expect(run?.runtime).toBe('openai-agents');
+    expect(run?.harness).toBe('openai-agents');
   });
 });

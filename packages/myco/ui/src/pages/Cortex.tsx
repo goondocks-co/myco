@@ -137,7 +137,7 @@ function formatRefreshReason(reason?: string): string {
     case 'provider-not-configured':
       return 'no provider is configured for Cortex instructions';
     case 'agent-module-unavailable':
-      return 'the agent runtime is unavailable';
+      return 'the agent harness is unavailable';
     default:
       return reason ?? 'unknown reason';
   }

@@ -69,6 +69,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 26, migrate: (db) => migrateV25ToV26(db) },
   { version: 27, migrate: (db) => migrateV26ToV27(db) },
   { version: 28, migrate: (db) => migrateV27ToV28(db) },
+  { version: 29, migrate: (db) => migrateV28ToV29(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,88 @@ export const MIGRATIONS: Migration[] = [
 function getTableColumnSet(db: Database, tableName: string): Set<string> {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
   return new Set(rows.map((r) => r.name));
+}
+
+function moveRecordKey(record: Record<string, unknown>, fromKey: string, toKey: string): void {
+  if (fromKey in record && !(toKey in record)) {
+    record[toKey] = record[fromKey];
+  }
+  if (fromKey in record) {
+    delete record[fromKey];
+  }
+}
+
+function moveJsonKey(value: unknown, fromKey: string, toKey: string): string | null {
+  if (typeof value !== 'string' || value.length === 0) return typeof value === 'string' ? value : null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return value;
+    const record = parsed as Record<string, unknown>;
+    moveRecordKey(record, fromKey, toKey);
+    return JSON.stringify(record);
+  } catch {
+    return value;
+  }
+}
+
+function moveProviderRuntimeToHarness(
+  owner: Record<string, unknown>,
+  providerKey: string,
+  options: { moveToOwnerHarness: boolean },
+): void {
+  const provider = owner[providerKey];
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return;
+  const providerRecord = provider as Record<string, unknown>;
+  if (!('runtime' in providerRecord)) return;
+  if (options.moveToOwnerHarness && !('harness' in owner)) {
+    owner.harness = providerRecord.runtime;
+  }
+  delete providerRecord.runtime;
+}
+
+function migrateAgentRunEnvelope(column: string, value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0) return typeof value === 'string' ? value : null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return value;
+    const record = parsed as Record<string, unknown>;
+    moveRecordKey(record, 'runtime', 'harness');
+
+    if (column === 'checkpoints') {
+      moveProviderRuntimeToHarness(record, 'providerConfig', { moveToOwnerHarness: true });
+    } else if (column === 'execution_overrides') {
+      moveProviderRuntimeToHarness(record, 'provider', { moveToOwnerHarness: true });
+      const phases = record.phases;
+      if (phases && typeof phases === 'object' && !Array.isArray(phases)) {
+        for (const phase of Object.values(phases as Record<string, unknown>)) {
+          if (!phase || typeof phase !== 'object' || Array.isArray(phase)) continue;
+          moveProviderRuntimeToHarness(phase as Record<string, unknown>, 'provider', {
+            moveToOwnerHarness: false,
+          });
+        }
+      }
+    }
+
+    return JSON.stringify(record);
+  } catch {
+    return value;
+  }
+}
+
+function migrateAgentRunJsonColumnKey(db: Database, column: string, fromKey: string, toKey: string): void {
+  const rows = db.prepare(`SELECT id, ${column} AS payload FROM agent_runs WHERE ${column} IS NOT NULL`).all() as Array<{
+    id: string;
+    payload: string | null;
+  }>;
+  const update = db.prepare(`UPDATE agent_runs SET ${column} = ? WHERE id = ?`);
+  for (const row of rows) {
+    const next = fromKey === 'runtime' && toKey === 'harness'
+      ? migrateAgentRunEnvelope(column, row.payload)
+      : moveJsonKey(row.payload, fromKey, toKey);
+    if (next !== row.payload) {
+      update.run(next, row.id);
+    }
+  }
 }
 
 /**
@@ -1547,6 +1630,42 @@ function migrateV27ToV28(db: Database): void {
     if (deleted > 0) {
       console.log(`[migration v28] purged ${deleted} canopy_entries rows matching new exclude baseline`);
     }
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 29 renames the agent execution selector from runtime to harness.
+ * This is a hard product/API rename, but the migration preserves existing
+ * durable rows and JSON envelopes so old vault history remains readable.
+ */
+function migrateV28ToV29(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'agent_runs');
+    if (cols.has('runtime') && !cols.has('harness')) {
+      db.prepare('ALTER TABLE agent_runs RENAME COLUMN runtime TO harness').run();
+    }
+
+    const nextCols = getTableColumnSet(db, 'agent_runs');
+    if (nextCols.has('checkpoints')) {
+      migrateAgentRunJsonColumnKey(db, 'checkpoints', 'runtime', 'harness');
+    }
+    if (nextCols.has('execution_overrides')) {
+      migrateAgentRunJsonColumnKey(db, 'execution_overrides', 'runtime', 'harness');
+    }
+    if (nextCols.has('actions_taken')) {
+      migrateAgentRunJsonColumnKey(db, 'actions_taken', 'runtime', 'harness');
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(29, epochSeconds());
+    db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;

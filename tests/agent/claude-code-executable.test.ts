@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { resolveClaudeCodeExecutable } from '@myco/agent/runtime/claude-code-executable.js';
+import { resolveClaudeCodeExecutable } from '@myco/agent/harness/claude-code-executable.js';
 
 function expectedOptionalPackage(): string {
   if (process.platform === 'darwin') {
@@ -22,7 +22,7 @@ function expectedExecutableName(): string {
 
 function runtimeModuleUrl(): string {
   return pathToFileURL(
-    path.join(process.cwd(), 'packages/myco/src/agent/runtime/claude-code-executable.ts'),
+    path.join(process.cwd(), 'packages/myco/src/agent/harness/claude-code-executable.ts'),
   ).href;
 }
 

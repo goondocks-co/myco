@@ -1,7 +1,7 @@
 /**
  * Pure helpers for RunTaskDialog's "Run configuration" editor.
  *
- * The dialog lets an operator override runtime, provider, model, reasoning,
+ * The dialog lets an operator override harness, provider, model, reasoning,
  * and per-phase config for a single run without touching the task YAML. The
  * form UI is a thin wrapper around `buildExecutionOverrides`, which compares
  * the form state against the task's effective defaults and returns either
@@ -13,7 +13,7 @@
  * harness (same rationale as `comparison-helpers.ts`).
  */
 
-import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';
+import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import type { ProviderConfig } from '../../hooks/use-providers';
 import { toWireProvider, type WireProviderConfig } from './provider-coercion';
 
@@ -35,7 +35,7 @@ export interface PhaseOverrideFormEntry {
 /** The raw form state held inside RunTaskDialog. All fields optional; an
  *  `undefined` value means "use the task default" (i.e. no override). */
 export interface OverridesFormState {
-  runtime?: RuntimeId;
+  harness?: HarnessId;
   reasoningLevel?: ReasoningLevel;
   model?: string;
   /** Full top-level provider override. */
@@ -47,7 +47,7 @@ export interface OverridesFormState {
 /** Effective defaults resolved from the task YAML + global config, mirrored
  *  from the backend via `useTaskConfig` + `resolveReasoningModel`. */
 export interface EffectiveDefaults {
-  runtime: RuntimeId;
+  harness: HarnessId;
   reasoningLevel?: ReasoningLevel;
   model?: string;
   /** Task-level resolved provider (so we can tell if the form's provider differs). */
@@ -64,7 +64,7 @@ export interface EffectiveDefaults {
 /** Wire-shape posted to `/agent/run` under `executionOverrides`. Matches
  *  `RunOptions.executionOverrides` in `@myco/agent/types` (camelCase). */
 export interface ExecutionOverridesPayload {
-  runtime?: RuntimeId;
+  harness?: HarnessId;
   reasoningLevel?: ReasoningLevel;
   model?: string;
   provider?: WireProviderConfig;
@@ -119,9 +119,9 @@ export function buildExecutionOverrides(
 ): ExecutionOverridesPayload | undefined {
   const payload: ExecutionOverridesPayload = {};
 
-  // Top-level runtime: only included when set AND different from default.
-  if (form.runtime && form.runtime !== defaults.runtime) {
-    payload.runtime = form.runtime;
+  // Top-level harness: only included when set AND different from default.
+  if (form.harness && form.harness !== defaults.harness) {
+    payload.harness = form.harness;
   }
 
   // Top-level reasoning: include when set AND different from default.
@@ -201,7 +201,7 @@ export function buildExecutionOverrides(
 
   // Nothing differed → don't emit an override at all.
   if (
-    payload.runtime === undefined
+    payload.harness === undefined
     && payload.reasoningLevel === undefined
     && payload.model === undefined
     && payload.provider === undefined
@@ -225,7 +225,7 @@ export function countOverrides(
   const payload = buildExecutionOverrides(form, defaults);
   if (!payload) return 0;
   let count = 0;
-  if (payload.runtime !== undefined) count++;
+  if (payload.harness !== undefined) count++;
   if (payload.reasoningLevel !== undefined) count++;
   if (payload.model !== undefined) count++;
   if (payload.provider !== undefined) count++;

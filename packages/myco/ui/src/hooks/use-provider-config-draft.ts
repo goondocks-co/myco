@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   defaultBaseUrlForProvider,
   draftToProviderConfig,
-  maybeInferRuntimeFromProviderType,
+  maybeInferHarnessFromProviderType,
   parseProviderType,
-  parseRuntimeId,
-  providerSupportsRuntime,
+  parseHarnessId,
+  providerSupportsHarness,
   seedDraftFromProviderType,
   type ProviderConfig,
   type ProviderDraft,
@@ -15,10 +15,9 @@ import {
 type ReasoningLevel = 'low' | 'default' | 'high';
 
 export interface ProviderDraftSource {
-  runtime?: string;
+  harness?: string;
   model?: string;
   provider?: {
-    runtime?: string;
     type?: string;
     local_backend?: 'ollama' | 'lmstudio';
     model?: string;
@@ -29,7 +28,7 @@ export interface ProviderDraftSource {
 }
 
 export interface ProviderDraftDefaults {
-  runtime?: string;
+  harness?: string;
   providerType?: string;
   localBackend?: 'ollama' | 'lmstudio';
   model?: string;
@@ -40,7 +39,7 @@ export interface ProviderDraftDefaults {
 
 export function emptyProviderDraft(): ProviderDraft {
   return {
-    runtime: '',
+    harness: '',
     type: '',
     localBackend: '',
     model: '',
@@ -52,22 +51,20 @@ export function emptyProviderDraft(): ProviderDraft {
   };
 }
 
-function runtimeFromSource(
+function harnessFromSource(
   source: ProviderDraftSource | null | undefined,
   defaults?: ProviderDraftDefaults,
-): ProviderDraft['runtime'] | '' {
-  const sourceRuntime = source?.runtime ? parseRuntimeId(source.runtime) : '';
-  if (sourceRuntime) return sourceRuntime;
-  const providerRuntime = source?.provider?.runtime ? parseRuntimeId(source.provider.runtime) : '';
-  if (providerRuntime) return providerRuntime;
+): ProviderDraft['harness'] | '' {
+  const sourceHarness = source?.harness ? parseHarnessId(source.harness) : '';
+  if (sourceHarness) return sourceHarness;
   const inferredFromSourceType = source?.provider?.type
-    ? maybeInferRuntimeFromProviderType(parseProviderType(source.provider.type) || undefined)
+    ? maybeInferHarnessFromProviderType(parseProviderType(source.provider.type) || undefined)
     : undefined;
   if (inferredFromSourceType) return inferredFromSourceType;
-  const defaultRuntime = defaults?.runtime ? parseRuntimeId(defaults.runtime) : '';
-  if (defaultRuntime) return defaultRuntime;
+  const defaultHarness = defaults?.harness ? parseHarnessId(defaults.harness) : '';
+  if (defaultHarness) return defaultHarness;
   const inferredFromDefaults = defaults?.providerType
-    ? maybeInferRuntimeFromProviderType(parseProviderType(defaults.providerType) || undefined)
+    ? maybeInferHarnessFromProviderType(parseProviderType(defaults.providerType) || undefined)
     : undefined;
   return inferredFromDefaults ?? '';
 }
@@ -79,7 +76,7 @@ export function providerDraftFromSource(
   const providerType = source?.provider?.type ? parseProviderType(source.provider.type) : '';
   if (providerType !== '') {
     return {
-      runtime: runtimeFromSource(source, defaults),
+      harness: harnessFromSource(source, defaults),
       type: providerType,
       localBackend: source?.provider?.local_backend ?? defaults?.localBackend ?? '',
       model: source?.provider?.model ?? source?.model ?? '',
@@ -95,7 +92,7 @@ export function providerDraftFromSource(
   }
 
   return {
-    runtime: runtimeFromSource(source, defaults),
+    harness: harnessFromSource(source, defaults),
     type: defaults?.providerType ? parseProviderType(defaults.providerType) : '',
     localBackend: defaults?.localBackend ?? '',
     model: source?.model ?? defaults?.model ?? '',
@@ -111,7 +108,7 @@ export function providerDraftFromSource(
 }
 
 export function providerDraftsEqual(left: ProviderDraft, right: ProviderDraft): boolean {
-  return left.runtime === right.runtime
+  return left.harness === right.harness
     && left.type === right.type
     && left.localBackend === right.localBackend
     && left.model === right.model
@@ -147,15 +144,15 @@ function isDefaultLocalBaseUrl(value: string): boolean {
     || value === defaultBaseUrlForProvider('openai-compatible', 'lmstudio');
 }
 
-function nextDraftForRuntime(runtime: string, providers: ProviderInfo[]): ProviderDraft {
-  const parsedRuntime = parseRuntimeId(runtime);
-  const firstProvider = providers.find((provider) => providerSupportsRuntime(provider.type, parsedRuntime));
+function nextDraftForHarness(harness: string, providers: ProviderInfo[]): ProviderDraft {
+  const parsedHarness = parseHarnessId(harness);
+  const firstProvider = providers.find((provider) => providerSupportsHarness(provider.type, parsedHarness));
   if (firstProvider) {
-    return seedDraftFromProviderType(firstProvider.type, providers, parsedRuntime || undefined);
+    return seedDraftFromProviderType(firstProvider.type, providers, parsedHarness || undefined);
   }
   return {
     ...emptyProviderDraft(),
-    runtime: parsedRuntime,
+    harness: parsedHarness,
   };
 }
 
@@ -173,9 +170,8 @@ export function useProviderConfigDraft({
   const sourceDraft = useMemo(
     () => providerDraftFromSource(source, defaults),
     [
-      source?.runtime,
+      source?.harness,
       source?.model,
-      source?.provider?.runtime,
       source?.provider?.type,
       source?.provider?.local_backend,
       source?.provider?.model,
@@ -184,7 +180,7 @@ export function useProviderConfigDraft({
       source?.provider?.reasoning_map?.high,
       source?.provider?.base_url,
       source?.provider?.context_length,
-      defaults?.runtime,
+      defaults?.harness,
       defaults?.providerType,
       defaults?.localBackend,
       defaults?.model,
@@ -210,13 +206,13 @@ export function useProviderConfigDraft({
 
   const isDirty = !providerDraftsEqual(draft, savedDraft);
 
-  const handleRuntimeChange = useCallback((runtime: string) => {
-    const parsedRuntime = parseRuntimeId(runtime);
+  const handleHarnessChange = useCallback((harness: string) => {
+    const parsedHarness = parseHarnessId(harness);
     setDraft((prev) => {
-      if (providerSupportsRuntime(prev.type, parsedRuntime)) {
-        return { ...prev, runtime: parsedRuntime };
+      if (providerSupportsHarness(prev.type, parsedHarness)) {
+        return { ...prev, harness: parsedHarness };
       }
-      return nextDraftForRuntime(runtime, providers);
+      return nextDraftForHarness(harness, providers);
     });
   }, [providers]);
 
@@ -225,7 +221,7 @@ export function useProviderConfigDraft({
     setDraft((prev) => seedDraftFromProviderType(
       type,
       providers,
-      providerSupportsRuntime(parsedType, prev.runtime) ? prev.runtime : undefined,
+      providerSupportsHarness(parsedType, prev.harness) ? prev.harness : undefined,
     ));
   }, [providers]);
 
@@ -294,7 +290,7 @@ export function useProviderConfigDraft({
     commitDraft,
     resetDraft,
     clearDraft,
-    handleRuntimeChange,
+    handleHarnessChange,
     handleProviderChange,
     handleModelChange,
     handleLocalBackendChange,

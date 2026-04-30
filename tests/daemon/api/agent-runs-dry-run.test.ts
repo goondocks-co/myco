@@ -89,7 +89,7 @@ describe('agent-runs API dry-run + write-intents', () => {
           instruction: 'go',
           agentId: 'myco-agent',
           executionOverrides: {
-            runtime: 'claude-sdk',
+            harness: 'claude-sdk',
             reasoningLevel: 'high',
             model: 'claude-opus-4-6',
             phases: {
@@ -104,7 +104,7 @@ describe('agent-runs API dry-run + write-intents', () => {
         { executionOverrides?: Record<string, unknown> },
       ];
       expect(opts.executionOverrides).toEqual({
-        runtime: 'claude-sdk',
+        harness: 'claude-sdk',
         reasoningLevel: 'high',
         model: 'claude-opus-4-6',
         phases: {
@@ -127,7 +127,48 @@ describe('agent-runs API dry-run + write-intents', () => {
         })),
       ).rejects.toThrow();
     });
-  });
+
+	    it('rejects legacy runtime keys in executionOverrides', async () => {
+      const { handleRun } = makeHandlers();
+      await expect(
+        handleRun(makeRequest({
+          body: {
+            task: 'vault-evolve',
+            instruction: 'go',
+            agentId: 'myco-agent',
+            executionOverrides: { runtime: 'claude-sdk' },
+          },
+        })),
+      ).rejects.toThrow();
+
+      await expect(
+        handleRun(makeRequest({
+          body: {
+            task: 'vault-evolve',
+            instruction: 'go',
+            agentId: 'myco-agent',
+            executionOverrides: {
+              provider: { type: 'anthropic', runtime: 'claude-sdk' },
+            },
+          },
+        })),
+	      ).rejects.toThrow();
+	    });
+
+	    it('rejects unknown harness ids in executionOverrides', async () => {
+	      const { handleRun } = makeHandlers();
+	      await expect(
+	        handleRun(makeRequest({
+	          body: {
+	            task: 'vault-evolve',
+	            instruction: 'go',
+	            agentId: 'myco-agent',
+	            executionOverrides: { harness: 'bogus-harness' },
+	          },
+	        })),
+	      ).rejects.toThrow(/Unknown harness id: bogus-harness/);
+	    });
+	  });
 
   describe('handleResumeRun — dry-run preservation', () => {
     it('preserves dryRun=true when resuming a resumable failed run', async () => {
@@ -162,7 +203,7 @@ describe('agent-runs API dry-run + write-intents', () => {
         agent_id: 'myco-agent',
         reasoningLevel: 'high',
         executionOverrides: {
-          runtime: 'claude-sdk',
+          harness: 'claude-sdk',
           reasoningLevel: 'high',
           phases: { extract: { reasoningLevel: 'low' } },
         },
@@ -177,7 +218,7 @@ describe('agent-runs API dry-run + write-intents', () => {
       } };
       expect(body.run.reasoning_level).toBe('high');
       expect(body.run.execution_overrides).toEqual({
-        runtime: 'claude-sdk',
+        harness: 'claude-sdk',
         reasoningLevel: 'high',
         phases: { extract: { reasoningLevel: 'low' } },
       });

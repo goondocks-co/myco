@@ -1,16 +1,16 @@
 /**
  * `useTaskExecutionDefaults` — resolves the effective task-level defaults
- * (runtime, provider, model, reasoning) and the inputs the shared provider
+ * (harness, provider, model, reasoning) and the inputs the shared provider
  * draft hook needs, in one place. Kept centralized so `RunTaskDialog` (and
  * any future dialog) stays consistent on the task-default resolution chain.
  */
 
 import { useMemo } from 'react';
-import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';
+import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import type { ProviderDraftDefaults, ProviderDraftSource } from './use-provider-config-draft';
 import type { TaskRow } from './use-agent';
 import {
-  maybeInferRuntimeFromProviderType,
+  maybeInferHarnessFromProviderType,
   parseProviderType,
   resolveReasoningModel,
   useTaskConfig,
@@ -23,8 +23,8 @@ import { fromTaskRowProvider } from '../components/agent/provider-coercion';
 export interface TaskExecutionDefaults {
   /** The task row the defaults were resolved from, when still known. */
   taskRow: TaskRow | undefined;
-  /** Resolved runtime — always present (falls back to `claude-sdk`). */
-  runtime: RuntimeId;
+  /** Resolved harness — always present (falls back to `claude-sdk`). */
+  harness: HarnessId;
   /** Resolved provider config, when any override chain produced one. */
   provider: ProviderConfig | undefined;
   /** Provider type short name — always present (falls back to `anthropic`). */
@@ -42,7 +42,7 @@ export interface TaskExecutionDefaults {
 }
 
 /**
- * Resolve the default provider/runtime/model chain for a given task name.
+ * Resolve the default provider/harness/model chain for a given task name.
  * Returns `undefined` while task / global config data is still loading —
  * callers typically render a loading state in that case (as both dialogs
  * already do today).
@@ -61,7 +61,7 @@ export function useTaskExecutionDefaults(
   const globalProviderType = globalProvider?.type
     ? parseProviderType(globalProvider.type) || undefined
     : undefined;
-  const globalRuntime = globalProvider?.runtime;
+  const globalHarness = effective?.agent?.harness;
 
   const { data: taskConfigData } = useTaskConfig(taskName);
   const taskConfig = taskConfigData?.config;
@@ -70,15 +70,13 @@ export function useTaskExecutionDefaults(
     ? parseProviderType(execution.provider.type) || undefined
     : undefined;
 
-  const runtime: RuntimeId = (taskConfig?.runtime
-    ?? taskConfig?.provider?.runtime
-    ?? maybeInferRuntimeFromProviderType(taskConfig?.provider?.type)
-    ?? execution?.runtime
-    ?? maybeInferRuntimeFromProviderType(executionProviderType)
-    ?? globalRuntime
-    ?? maybeInferRuntimeFromProviderType(globalProviderType)
-    ?? effective?.agent?.runtime
-    ?? 'claude-sdk') as RuntimeId;
+  const harness: HarnessId = (taskConfig?.harness
+    ?? execution?.harness
+    ?? globalHarness
+    ?? maybeInferHarnessFromProviderType(taskConfig?.provider?.type)
+    ?? maybeInferHarnessFromProviderType(globalProviderType)
+    ?? maybeInferHarnessFromProviderType(executionProviderType)
+    ?? 'claude-sdk') as HarnessId;
 
   const reasoning: ReasoningLevel | undefined =
     execution?.reasoningLevel ?? taskRow?.reasoningLevel;
@@ -100,15 +98,15 @@ export function useTaskExecutionDefaults(
 
   const draftSource: ProviderDraftSource = useMemo(
     () => ({
-      runtime: taskConfig?.runtime ?? execution?.runtime,
+      harness: taskConfig?.harness ?? execution?.harness,
       provider,
       model: modelFallback,
     }),
-    [taskConfig?.runtime, execution?.runtime, provider, modelFallback],
+    [taskConfig?.harness, execution?.harness, provider, modelFallback],
   );
 
   const draftDefaults: ProviderDraftDefaults = {
-    runtime,
+    harness,
     providerType,
     localBackend: provider?.local_backend,
     model: modelFallback,
@@ -119,7 +117,7 @@ export function useTaskExecutionDefaults(
 
   return {
     taskRow,
-    runtime,
+    harness,
     provider,
     providerType,
     modelFallback,

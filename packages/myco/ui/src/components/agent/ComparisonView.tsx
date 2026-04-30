@@ -86,7 +86,7 @@ export interface ComparisonViewProps {
  * diff-only toggle is on.
  */
 const COLUMN_ORDER: readonly ColumnKey[] = [
-  'runtime',
+  'harness',
   'reasoning',
   'model',
   'status',
@@ -99,7 +99,7 @@ const COLUMN_ORDER: readonly ColumnKey[] = [
 ];
 
 const COLUMN_LABELS: Record<ColumnKey, string> = {
-  runtime: 'Runtime',
+  harness: 'Harness',
   reasoning: 'Reasoning',
   model: 'Model',
   status: 'Status',
@@ -449,8 +449,8 @@ const ComparisonRow = memo(function ComparisonRow({
             {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </button>
         </Cell>
-        {visibleColumns.has('runtime') && (
-          <Cell>{run.runtime || <DefaultSentinel />}</Cell>
+        {visibleColumns.has('harness') && (
+          <Cell>{run.harness || <DefaultSentinel />}</Cell>
         )}
         {visibleColumns.has('reasoning') && (
           <Cell>

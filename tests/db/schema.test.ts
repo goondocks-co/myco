@@ -47,7 +47,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(28);
+      expect(SCHEMA_VERSION).toBe(29);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1338,16 +1338,85 @@ describe('Database schema', () => {
 
       it('full v13 -> v25 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
+      });
+
+      it('v29: renames agent_runs.runtime to harness and rewrites persisted JSON envelopes', () => {
+        db.prepare(`
+          CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at INTEGER NOT NULL
+          )
+        `).run();
+        db.prepare(`
+          CREATE TABLE agent_runs (
+            id TEXT PRIMARY KEY,
+            runtime TEXT,
+            checkpoints TEXT,
+            execution_overrides TEXT,
+            actions_taken TEXT
+          )
+        `).run();
+        db.prepare(`INSERT INTO schema_version (version, applied_at) VALUES (28, 1000)`).run();
+        db.prepare(`
+          INSERT INTO agent_runs (id, runtime, checkpoints, execution_overrides, actions_taken)
+          VALUES (?, ?, ?, ?, ?)
+	        `).run(
+	          'run-1',
+	          'openai-agents',
+	          JSON.stringify({
+	            runtime: 'openai-agents',
+	            providerConfig: { type: 'openai', runtime: 'openai-agents' },
+	            phases: {},
+	          }),
+	          JSON.stringify({
+	            provider: { type: 'openai', runtime: 'openai-agents' },
+	            phases: {
+	              draft: { provider: { type: 'anthropic', runtime: 'claude-sdk' } },
+	            },
+	            model: 'gpt-5',
+	          }),
+	          JSON.stringify({ runtime: 'openai-agents', model: 'gpt-5' }),
+	        );
+
+        runMigration(db, 29);
+
+        const cols = getColumnNames(db, 'agent_runs');
+        expect(cols).toContain('harness');
+        expect(cols).not.toContain('runtime');
+        const row = db.prepare(`
+          SELECT harness, checkpoints, execution_overrides, actions_taken FROM agent_runs WHERE id = ?
+        `).get('run-1') as {
+          harness: string;
+          checkpoints: string;
+          execution_overrides: string;
+          actions_taken: string;
+        };
+        expect(row.harness).toBe('openai-agents');
+	        expect(JSON.parse(row.checkpoints)).toEqual({
+	          harness: 'openai-agents',
+	          providerConfig: { type: 'openai' },
+	          phases: {},
+	        });
+	        expect(JSON.parse(row.execution_overrides)).toEqual({
+	          harness: 'openai-agents',
+	          provider: { type: 'openai' },
+	          phases: {
+	            draft: { provider: { type: 'anthropic' } },
+	          },
+	          model: 'gpt-5',
+	        });
+        expect(JSON.parse(row.actions_taken)).toEqual({ harness: 'openai-agents', model: 'gpt-5' });
+        expect(() => runMigration(db, 29)).not.toThrow();
       });
     });
 
@@ -1690,4 +1759,3 @@ describe('Database schema', () => {
     });
   });
 });
-

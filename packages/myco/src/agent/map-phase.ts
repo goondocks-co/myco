@@ -1,7 +1,7 @@
 /**
  * Map-phase executor. Drives a fan-out workload by:
  *   1. Calling a configured source tool ONCE (no model) to fetch items.
- *   2. Invoking the runtime once per item with a constrained tool surface
+ *   2. Invoking the harness once per item with a constrained tool surface
  *      containing only the sink tool (and optional read-only tools).
  *   3. Aggregating per-item outcomes into a MapPhaseResult.
  *
@@ -18,25 +18,25 @@ import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import { aggregateUsage } from './executor-state.js';
 import { buildMapItemToolSurface } from './map-phase-tool-surface.js';
 import {
-  RuntimeExecutionError,
-  type AgentRuntime,
-  type RuntimeExecuteResult,
-  type RuntimeScope,
-} from './runtime/types.js';
+  HarnessExecutionError,
+  type AgentHarness,
+  type HarnessExecuteResult,
+  type HarnessScope,
+} from './harness/types.js';
 import type { MapPhaseResult, PhaseDefinition, ProviderConfig, RunLogger, RuntimeUsage } from './types.js';
-import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 
 export interface ExecuteMapPhaseInput {
   phase: PhaseDefinition;
-  allTools: SdkMcpToolDefinition<any>[];
-  runtime: AgentRuntime;
+  allTools: MycoToolDefinition<any>[];
+  harness: AgentHarness;
   params: Record<string, unknown>;
   systemPrompt: string;
   runId: string;
   agentId: string;
-  /** Resolved phase model (from outer phase resolution). Required for the runtime adapter to pick the right model. Optional for stub-runtime tests. */
+  /** Resolved phase model (from outer phase resolution). Required for the harness adapter to pick the right model. Optional for stub-harness tests. */
   phaseModel?: string;
-  /** Resolved provider config (task/phase override aware). Required for the runtime adapter to pick the right backend. */
+  /** Resolved provider config (task/phase override aware). Required for the harness adapter to pick the right backend. */
   provider?: ProviderConfig;
   /** Vault dir threaded into per-item toolSurface so freshly-built tools resolve project_id correctly. */
   vaultDir?: string;
@@ -52,7 +52,7 @@ export interface ExecuteMapPhaseInput {
 
 export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapPhaseResult> {
   const {
-    phase, allTools, runtime, params, systemPrompt, runId, agentId,
+    phase, allTools, harness, params, systemPrompt, runId, agentId,
     phaseModel, provider, vaultDir, projectRoot, embeddingManager, logger,
     runAbortController,
   } = input;
@@ -114,9 +114,9 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     tools: sharedTools,
   };
 
-  let scope: RuntimeScope | undefined;
-  if (typeof runtime.openScope === 'function') {
-    scope = await runtime.openScope({
+  let scope: HarnessScope | undefined;
+  if (typeof harness.openScope === 'function') {
+    scope = await harness.openScope({
       systemPrompt,
       model: phaseModel ?? '',
       provider,
@@ -150,13 +150,13 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
         )
       : null;
     try {
-      const itemResult: RuntimeExecuteResult = scope
+      const itemResult: HarnessExecuteResult = scope
         ? await scope.run({
             prompt: itemPrompt,
             maxTurns: phase.perItemMaxTurns ?? 1,
             abortController: controller,
           })
-        : await runtime.execute({
+        : await harness.execute({
             prompt: itemPrompt,
             systemPrompt,
             model: phaseModel ?? '',
@@ -170,16 +170,16 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
     } catch (err) {
       if (runAbortController?.signal.aborted) throw toAbortError(runAbortController.signal.reason);
       const reason = toErrorMessage(err);
-      if (err instanceof RuntimeExecutionError && err.telemetry?.usage) {
+      if (err instanceof HarnessExecutionError && err.telemetry?.usage) {
         itemUsages.push(err.telemetry.usage);
       }
-      // If the wrapped sink already wrote successfully before the runtime
+      // If the wrapped sink already wrote successfully before the harness
       // threw, count as written — the data side succeeded, only the SDK
       // termination glitched.
       if (sinkOutcome?.ok === true) {
         result.written += 1;
         result.writeAfterThrow += 1;
-        logger?.debug('agent.map.item-write-then-throw', `Map phase "${phase.name}" item wrote successfully then runtime threw`, {
+        logger?.debug('agent.map.item-write-then-throw', `Map phase "${phase.name}" item wrote successfully then harness threw`, {
           runId, phase: phase.name, item: (item as any)?.path ?? null, reason,
         });
         continue;
@@ -224,13 +224,13 @@ export async function executeMapPhase(input: ExecuteMapPhaseInput): Promise<MapP
  * called serially across N items.
  */
 function wrapSinkWithMutableContext(
-  sinkTool: SdkMcpToolDefinition<any>,
-  exposedTool: SdkMcpToolDefinition<any>,
+  sinkTool: MycoToolDefinition<any>,
+  exposedTool: MycoToolDefinition<any>,
   ctx: {
     argMap: Record<string, unknown>;
     capture: (outcome: { ok: boolean; reason?: string }) => void;
   },
-): SdkMcpToolDefinition<any> {
+): MycoToolDefinition<any> {
   return {
     ...exposedTool,
     handler: async (modelArgs: Record<string, unknown>) => {
@@ -254,7 +254,7 @@ function wrapSinkWithMutableContext(
 
 async function fetchSourceItems(input: {
   phase: PhaseDefinition;
-  allTools: SdkMcpToolDefinition<any>[];
+  allTools: MycoToolDefinition<any>[];
   params: Record<string, unknown>;
 }): Promise<unknown[]> {
   const { phase, allTools, params } = input;

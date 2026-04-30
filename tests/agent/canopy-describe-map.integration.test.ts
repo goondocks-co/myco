@@ -107,7 +107,7 @@ describe('canopy-describe end-to-end (map phase)', () => {
     const result = await executeMapPhase({
       phase,
       allTools,
-      runtime: makeStubRuntime('A short one-sentence description.'),
+      harness: makeStubRuntime('A short one-sentence description.'),
       // batch_size: 3 overrides the yaml default of 10
       params: { batch_size: 3 },
       systemPrompt: 'sys',
@@ -150,7 +150,7 @@ describe('canopy-describe end-to-end (map phase)', () => {
     const result = await executeMapPhase({
       phase,
       allTools,
-      runtime: makeStubRuntime('A new description.'),
+      harness: makeStubRuntime('A new description.'),
       // single-row mode: canopy_entry_path bypasses the pending predicate
       params: { canopy_entry_path: 'src/foo.ts' },
       systemPrompt: 'sys',

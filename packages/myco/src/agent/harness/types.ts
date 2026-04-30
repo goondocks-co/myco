@@ -1,12 +1,12 @@
-import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
-import type { ProviderConfig, RunLogger, RuntimeId, RuntimeUsage } from '@myco/agent/types.js';
+import type { ProviderConfig, RunLogger, HarnessId, RuntimeUsage } from '@myco/agent/types.js';
 
-export type RuntimeCapability =
+export type HarnessCapability =
   | 'supportsSessionResume'
   | 'supportsMcp';
 
-export interface RuntimeToolSurface {
+export interface HarnessToolSurface {
   agentId: string;
   runId: string;
   toolNames?: string[];
@@ -22,30 +22,30 @@ export interface RuntimeToolSurface {
    */
   dryRun?: boolean;
   /**
-   * Pre-materialized tool list. When set, the runtime adapter MUST use
+   * Pre-materialized tool list. When set, the harness adapter MUST use
    * these tools as-is rather than rebuilding from `toolNames` via
    * createVaultTools. Required for map-phase mode, which builds a
    * constrained per-item surface (argMap-stripped sink schema +
    * outcome-capture wrapper) that would be lost if the adapter rebuilt.
    */
-  tools?: SdkMcpToolDefinition<any>[];
+  tools?: MycoToolDefinition<any>[];
 }
 
-export interface RuntimeExecuteInput {
+export interface HarnessExecuteInput {
   prompt: string;
   model: string;
   maxTurns?: number;
   systemPrompt?: string;
   provider?: ProviderConfig;
-  toolSurface: RuntimeToolSurface;
+  toolSurface: HarnessToolSurface;
   sessionRef?: string;
   sessionData?: unknown;
   abortController?: AbortController;
-  /** Optional logger for runtime-level debug diagnostics. */
+  /** Optional logger for harness-level debug diagnostics. */
   logger?: RunLogger;
 }
 
-export interface RuntimeExecuteResult {
+export interface HarnessExecuteResult {
   finalText: string;
   turnsUsed: number;
   usage: RuntimeUsage;
@@ -54,12 +54,13 @@ export interface RuntimeExecuteResult {
   rawRuntimeMetadata?: Record<string, unknown>;
 }
 
-export interface AgentRuntime {
-  readonly id: RuntimeId;
-  execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult>;
-  supports(capability: RuntimeCapability): boolean;
+export interface AgentHarness {
+  readonly id: HarnessId;
+  execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult>;
+  supports(capability: HarnessCapability): boolean;
+  classifyError?(error: unknown, context?: { attemptedResume?: boolean }): 'session-resume-failed' | 'session-expired' | 'unknown';
   /**
-   * Optional. Open a long-lived runtime scope for batch operations
+   * Optional. Open a long-lived harness scope for batch operations
    * (map-phase). Adapters that implement this construct the SDK-level
    * machinery (Agent, Runner, MCP server, provider client) once and
    * reuse it across multiple `scope.run()` calls. Each call still gets
@@ -68,45 +69,45 @@ export interface AgentRuntime {
    * conversation isolation being preserved.
    *
    * Adapters that don't implement this leave it undefined; map-phase
-   * falls back to N independent `runtime.execute()` calls.
+   * falls back to N independent `harness.execute()` calls.
    */
-  openScope?(setup: RuntimeScopeSetup): Promise<RuntimeScope>;
+  openScope?(setup: HarnessScopeSetup): Promise<HarnessScope>;
 }
 
-/** One-time setup state for a runtime scope. */
-export interface RuntimeScopeSetup {
+/** One-time setup state for a harness scope. */
+export interface HarnessScopeSetup {
   systemPrompt?: string;
   model: string;
   provider?: ProviderConfig;
-  toolSurface: RuntimeToolSurface;
+  toolSurface: HarnessToolSurface;
   logger?: RunLogger;
 }
 
-/** A long-lived runtime scope that runs N items against shared SDK machinery. */
-export interface RuntimeScope {
+/** A long-lived harness scope that runs N items against shared SDK machinery. */
+export interface HarnessScope {
   /** Execute one item against the long-lived scope. Conversation state is
    *  per-call — the scope shares Agent/Runner/MCP across calls but each
    *  call gets a fresh PersistedSession so per-item history is isolated. */
-  run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult>;
+  run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult>;
   /** Release scope resources (close MCP server, etc.). Idempotent. */
   close(): Promise<void>;
 }
 
 /** Per-call input for a scope.run() invocation. */
-export interface RuntimeScopeRunInput {
+export interface HarnessScopeRunInput {
   prompt: string;
   maxTurns?: number;
   abortController?: AbortController;
 }
 
 /**
- * Partial telemetry a runtime attaches to a thrown error when the underlying
+ * Partial telemetry a harness attaches to a thrown error when the underlying
  * SDK burned real tokens before terminating. Without this, the phase
  * executor's catch block cannot distinguish "run crashed after spending $5"
  * from "run crashed before doing anything." Turn count lives on
- * `usage.requests` (same invariant as the success-path RuntimeExecuteResult).
+ * `usage.requests` (same invariant as the success-path HarnessExecuteResult).
  */
-export interface RuntimeErrorTelemetry {
+export interface HarnessErrorTelemetry {
   usage: RuntimeUsage;
   sessionRef?: string;
   sessionData?: unknown;
@@ -118,12 +119,12 @@ export interface RuntimeErrorTelemetry {
  * immediately followed by a throw). Carries the usage captured before the
  * throw so the caller can record accurate telemetry for the failed run.
  */
-export class RuntimeExecutionError extends Error {
-  readonly telemetry: RuntimeErrorTelemetry;
+export class HarnessExecutionError extends Error {
+  readonly telemetry: HarnessErrorTelemetry;
 
-  constructor(message: string, telemetry: RuntimeErrorTelemetry, options?: { cause?: unknown }) {
+  constructor(message: string, telemetry: HarnessErrorTelemetry, options?: { cause?: unknown }) {
     super(message, options);
-    this.name = 'RuntimeExecutionError';
+    this.name = 'HarnessExecutionError';
     this.telemetry = telemetry;
   }
 }

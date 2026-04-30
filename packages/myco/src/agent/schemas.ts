@@ -15,7 +15,7 @@ import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 /** Current schema version for task config structures. */
 export const CURRENT_TASK_SCHEMA_VERSION = 1;
 
-export const RuntimeIdSchema = z.enum(['claude-sdk', 'openai-agents']);
+export const HarnessIdSchema = z.string().min(1);
 export const ReasoningLevelSchema = z.enum(['low', 'default', 'high']);
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,6 @@ export const ReasoningLevelSchema = z.enum(['low', 'default', 'high']);
 
 /** Schema for API provider configuration. */
 export const ProviderConfigSchema = z.object({
-  runtime: RuntimeIdSchema.optional(),
   type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
   localBackend: z.enum(['ollama', 'lmstudio']).optional(),
   baseUrl: z.string().optional(),
@@ -40,7 +39,7 @@ export const ProviderConfigSchema = z.object({
 
 /** Schema for execution configuration overrides. */
 export const ExecutionConfigSchema = z.object({
-  runtime: RuntimeIdSchema.optional(),
+  harness: HarnessIdSchema.optional(),
   model: z.string().optional(),
   reasoningLevel: ReasoningLevelSchema.optional(),
   maxTurns: z.number().optional(),

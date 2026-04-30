@@ -219,8 +219,8 @@ describe('Migration v4: rename-cloud-provider-to-anthropic', () => {
 });
 
 describe('CURRENT_MIGRATION_VERSION', () => {
-  it('is 8', () => {
-    expect(CURRENT_MIGRATION_VERSION).toBe(8);
+  it('is 9', () => {
+    expect(CURRENT_MIGRATION_VERSION).toBe(9);
   });
 });
 
@@ -321,14 +321,14 @@ describe('Migration v5: seed-settings-notification-domain-default', () => {
 });
 
 describe('runMigrations', () => {
-  it('runs v3 through v8 when config_version is 2', () => {
+  it('runs v3 through v9 when config_version is 2', () => {
     const doc: Record<string, unknown> = {
       config_version: 2,
       agent: { auto_run: true, interval_seconds: 300 },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
 
     const agent = doc.agent as Record<string, unknown>;
     const tasks = agent.tasks as Record<string, Record<string, unknown>>;
@@ -343,19 +343,19 @@ describe('runMigrations', () => {
     });
   });
 
-  it('runs v4 onward when config_version is 3 (target v8)', () => {
+  it('runs v4 onward when config_version is 3 (target v9)', () => {
     const doc: Record<string, unknown> = {
       config_version: 3,
       agent: { provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
     const agent = doc.agent as Record<string, unknown>;
     expect((agent.provider as Record<string, unknown>).type).toBe('anthropic');
   });
 
-  it('runs v5 onward when config_version is 4 (target v8)', () => {
+  it('runs v5 onward when config_version is 4 (target v9)', () => {
     const doc: Record<string, unknown> = {
       config_version: 4,
       notifications: {
@@ -364,7 +364,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
 
     const notifications = doc.notifications as Record<string, unknown>;
     const domains = notifications.domains as Record<string, Record<string, unknown>>;
@@ -381,7 +381,7 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
     const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
     expect(tasks['full-intelligence']).toBeUndefined();
     expect(tasks['vault-evolve']).toEqual({ model: 'claude-sonnet-4-6' });
@@ -394,15 +394,28 @@ describe('runMigrations', () => {
     };
     const ran = runMigrations(doc, '/tmp');
     expect(ran).toBe(true);
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
     const agent = doc.agent as Record<string, unknown>;
     expect(agent.auto_run).toBe(true);
     expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
   });
 
-  it('skips all migrations when config_version is already 8', () => {
+  it('runs v9 when config_version is 8', () => {
     const doc: Record<string, unknown> = {
       config_version: 8,
+      agent: { auto_run: true, provider: { type: 'cloud' } },
+    };
+    const ran = runMigrations(doc, '/tmp');
+    expect(ran).toBe(true);
+    expect(doc.config_version).toBe(9);
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.auto_run).toBe(true);
+    expect((agent.provider as Record<string, unknown>).type).toBe('cloud');
+  });
+
+  it('skips all migrations when config_version is already 9', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 9,
       agent: { auto_run: true, provider: { type: 'cloud' } },
     };
     const ran = runMigrations(doc, '/tmp');
@@ -453,7 +466,7 @@ describe('Migration v7: dedupe-canopy-exclude-patterns-against-baseline', () => 
   it('is a no-op when canopy.exclude is missing', () => {
     const doc: Record<string, unknown> = { config_version: 6 };
     expect(() => runMigrations(doc, '/tmp')).not.toThrow();
-    expect(doc.config_version).toBe(8);
+    expect(doc.config_version).toBe(9);
   });
 });
 
@@ -538,6 +551,123 @@ describe('Migration v8: unify-cortex-config-shape', () => {
     expect(() => v8.migrate(doc, '/tmp')).not.toThrow();
     const cortex = doc.cortex as Record<string, Record<string, unknown>>;
     expect((cortex.digest as Record<string, unknown>).tier).toBe(5000);
+  });
+});
+
+const v9 = MIGRATIONS.find((m) => m.version === 9)!;
+
+describe('Migration v9: rename-agent-runtime-to-harness', () => {
+  it('rewrites global, task, and provider runtime keys to harness', () => {
+    const doc: Record<string, unknown> = {
+      config_version: 8,
+      agent: {
+        runtime: 'claude-sdk',
+        provider: {
+          type: 'openai',
+          model: 'gpt-5',
+          runtime: 'openai-agents',
+        },
+        tasks: {
+          'review-session': {
+            runtime: 'openai-agents',
+            provider: {
+              type: 'openrouter',
+              model: 'openai/gpt-5.4-mini',
+              runtime: 'openai-agents',
+            },
+          },
+          'skill-survey': {
+            provider: {
+              type: 'anthropic',
+              model: 'claude-sonnet-4-6',
+              runtime: 'claude-sdk',
+            },
+          },
+        },
+      },
+    };
+
+    v9.migrate(doc, '/tmp');
+
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.runtime).toBeUndefined();
+    expect(agent.harness).toBe('openai-agents');
+    expect((agent.provider as Record<string, unknown>).runtime).toBeUndefined();
+
+    const tasks = agent.tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['review-session'].runtime).toBeUndefined();
+    expect(tasks['review-session'].harness).toBe('openai-agents');
+    expect((tasks['review-session'].provider as Record<string, unknown>).runtime).toBeUndefined();
+    expect(tasks['skill-survey'].harness).toBe('claude-sdk');
+    expect((tasks['skill-survey'].provider as Record<string, unknown>).runtime).toBeUndefined();
+  });
+
+  it('preserves existing harness when both runtime and harness are present', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        runtime: 'claude-sdk',
+        harness: 'openai-agents',
+        tasks: {
+          'review-session': {
+            runtime: 'claude-sdk',
+            harness: 'openai-agents',
+          },
+        },
+      },
+    };
+
+    v9.migrate(doc, '/tmp');
+
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.runtime).toBeUndefined();
+    expect(agent.harness).toBe('openai-agents');
+    const tasks = agent.tasks as Record<string, Record<string, unknown>>;
+    expect(tasks['review-session'].runtime).toBeUndefined();
+    expect(tasks['review-session'].harness).toBe('openai-agents');
+  });
+
+  it('preserves legacy global provider precedence over stale agent runtime', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        runtime: 'claude-sdk',
+        provider: {
+          type: 'openai',
+        },
+      },
+    };
+
+    v9.migrate(doc, '/tmp');
+
+    const agent = doc.agent as Record<string, unknown>;
+    expect(agent.runtime).toBeUndefined();
+    expect(agent.harness).toBe('openai-agents');
+  });
+
+  it('removes phase provider runtime without introducing per-phase harness', () => {
+    const doc: Record<string, unknown> = {
+      agent: {
+        tasks: {
+          'vault-evolve': {
+            phases: {
+              map: {
+                provider: {
+                  type: 'openai-compatible',
+                  runtime: 'openai-agents',
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    v9.migrate(doc, '/tmp');
+
+    const tasks = (doc.agent as Record<string, unknown>).tasks as Record<string, Record<string, unknown>>;
+    const phases = tasks['vault-evolve'].phases as Record<string, Record<string, unknown>>;
+    expect(phases.map.harness).toBeUndefined();
+    expect((phases.map.provider as Record<string, unknown>).runtime).toBeUndefined();
+    expect((phases.map.provider as Record<string, unknown>).type).toBe('openai-compatible');
   });
 });
 

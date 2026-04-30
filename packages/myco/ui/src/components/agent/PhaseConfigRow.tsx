@@ -27,7 +27,7 @@ import type { PhaseDefinition } from '../../hooks/use-agent';
 export interface PhaseConfigRowProps {
   phase: PhaseDefinition;
   override: PhaseOverride;
-  taskRuntime: string;
+  taskHarness: string;
   taskProviderType: string;
   taskModel: string;
   taskReasoningMap?: Partial<Record<'low' | 'default' | 'high', string>>;
@@ -39,7 +39,7 @@ export interface PhaseConfigRowProps {
 export function PhaseConfigRow({
   phase,
   override,
-  taskRuntime,
+  taskHarness,
   taskProviderType,
   taskModel,
   taskReasoningMap,
@@ -75,7 +75,7 @@ export function PhaseConfigRow({
         <div className="px-3 pb-3 space-y-3 border-t border-[var(--ghost-border)]">
           <div className="pt-3">
             <ProviderModelSelector
-              runtime={override.provider?.runtime ?? taskRuntime}
+              harness={taskHarness}
               providerType={override.provider?.type ?? taskProviderType}
               localBackend={override.provider?.local_backend ?? ''}
               model={override.provider?.model ?? override.model ?? ''}
@@ -84,14 +84,13 @@ export function PhaseConfigRow({
               modelPlaceholder={modelPlaceholder}
               providers={providers}
               isLoadingProviders={isLoadingProviders}
-              showRuntimeSelector={false}
-              onRuntimeChange={() => {}}
+              showHarnessSelector={false}
+              onHarnessChange={() => {}}
               onProviderChange={(type) => {
                 const bp = providers.find(p => p.type === type)?.baseUrl;
                 onChange({
                   ...override,
                   provider: {
-                    runtime: (override.provider?.runtime ?? taskRuntime) as ProviderConfig['runtime'],
                     type: type as ProviderConfig['type'],
                     base_url: bp,
                   },
@@ -101,14 +100,14 @@ export function PhaseConfigRow({
               onLocalBackendChange={(localBackend) => onChange({
                 ...override,
                 provider: {
-                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  ...(override.provider ?? { type: (taskProviderType as ProviderConfig['type']) }),
                   local_backend: localBackend || undefined,
                 },
               })}
               onModelChange={(m) => onChange({
                 ...override,
                 provider: {
-                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  ...(override.provider ?? { type: (taskProviderType as ProviderConfig['type']) }),
                   model: m,
                 },
                 model: undefined,
@@ -116,14 +115,14 @@ export function PhaseConfigRow({
               onBaseUrlChange={(url) => onChange({
                 ...override,
                 provider: {
-                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  ...(override.provider ?? { type: (taskProviderType as ProviderConfig['type']) }),
                   base_url: url,
                 },
               })}
               onContextLengthChange={(ctx) => onChange({
                 ...override,
                 provider: {
-                  ...(override.provider ?? { runtime: (taskRuntime as ProviderConfig['runtime']), type: (taskProviderType as ProviderConfig['type']) }),
+                  ...(override.provider ?? { type: (taskProviderType as ProviderConfig['type']) }),
                   context_length: ctx ? Number(ctx) : undefined,
                 },
               })}

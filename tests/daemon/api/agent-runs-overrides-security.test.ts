@@ -2,7 +2,7 @@
  * Security defenses for POST /api/agent/run executionOverrides.
  *
  * Two invariants under test:
- *   1. `executionOverrides.provider.apiKey` is silently dropped (or rejected)
+ *   1. `executionOverrides.provider.apiKey` is rejected
  *      — the daemon never accepts secrets on the API surface.
  *   2. `executionOverrides.provider.baseUrl` is dropped for `openai` /
  *      `openrouter` remote providers, so the daemon's bearer key cannot
@@ -50,22 +50,20 @@ describe('POST /api/agent/run — executionOverrides security', () => {
     registerAgent({ id: 'myco-agent', name: 'Test', created_at: epochNow() });
   });
 
-  it('silently drops provider.apiKey from executionOverrides', async () => {
+  it('rejects provider.apiKey in executionOverrides', async () => {
     const { handleRun } = makeHandlers();
-    await handleRun(makeRequest({
-      body: {
-        task: 't', instruction: 'go', agentId: 'myco-agent',
-        executionOverrides: {
-          provider: { type: 'openai', apiKey: 'sk-attacker-captured' },
+    await expect(
+      handleRun(makeRequest({
+        body: {
+          task: 't', instruction: 'go', agentId: 'myco-agent',
+          executionOverrides: {
+            provider: { type: 'openai', apiKey: 'sk-attacker-captured' },
+          },
         },
-      },
-    }));
+      })),
+    ).rejects.toThrow();
 
-    expect(runAgentSpy).toHaveBeenCalledTimes(1);
-    const [, opts] = runAgentSpy.mock.calls[0] as [string, { executionOverrides?: unknown }];
-    const forwarded = JSON.stringify(opts.executionOverrides ?? {});
-    expect(forwarded).not.toContain('sk-attacker-captured');
-    expect(forwarded).not.toContain('apiKey');
+    expect(runAgentSpy).not.toHaveBeenCalled();
   });
 
   it('strips provider.baseUrl from executionOverrides when type=openai', async () => {

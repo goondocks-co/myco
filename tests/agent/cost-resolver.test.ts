@@ -11,13 +11,13 @@ afterEach(() => {
 describe('resolveCost', () => {
   it('returns the correct resolver for known provider types', () => {
     const openRouterProvider = getCostProvider({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       model: 'openrouter/auto',
       provider: { type: 'openrouter', model: 'openrouter/auto' },
       usage: {},
     });
     const localProvider = getCostProvider({
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       model: 'llama3.2',
       provider: { type: 'ollama', model: 'llama3.2' },
       usage: {},
@@ -29,7 +29,7 @@ describe('resolveCost', () => {
 
   it('prefers actual cost reported by the runtime', async () => {
     const result = await resolveCost({
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       model: 'claude-sonnet-4-6',
       provider: { type: 'anthropic', model: 'claude-sonnet-4-6' },
       usage: {
@@ -48,7 +48,7 @@ describe('resolveCost', () => {
 
   it('estimates OpenAI pricing with cached-input discounts', async () => {
     const result = await resolveCost({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       model: 'gpt-5.4-nano',
       provider: { type: 'openai', model: 'gpt-5.4-nano' },
       usage: {
@@ -84,7 +84,7 @@ describe('resolveCost', () => {
     })));
 
     const result = await resolveCost({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       model: 'openai/gpt-5.4-mini',
       provider: { type: 'openrouter', model: 'openai/gpt-5.4-mini' },
       usage: {
@@ -118,7 +118,7 @@ describe('resolveCost', () => {
     })));
 
     const result = await resolveCost({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       model: 'openrouter/auto',
       provider: { type: 'openrouter', model: 'openrouter/auto' },
       usage: {

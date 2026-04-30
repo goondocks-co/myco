@@ -2,7 +2,7 @@
  * Agent definition and task types for the intelligence agent system.
  *
  * These types describe the shape of YAML definition files (on disk)
- * and the runtime configuration produced by merging definitions with
+ * and the harness/provider configuration produced by merging definitions with
  * database overrides.
  */
 
@@ -56,7 +56,7 @@ export interface PhaseDefinition {
   perItemMaxTurns?: number;
   /** Map mode: per-item timeout in seconds. */
   perItemTimeoutSeconds?: number;
-  /** Map mode: how to handle per-item runtime errors. Default `skip`. */
+  /** Map mode: how to handle per-item harness errors. Default `skip`. */
   onItemError?: MapPhaseItemErrorPolicy;
   /** Map mode: source-block config (required when mode === 'map'). */
   source?: MapPhaseSource;
@@ -136,7 +136,7 @@ export interface MapPhaseResult {
   abandoned: number;
   skipReasons: Record<string, number>;
   /**
-   * Items where the wrapped sink fired ok:true but the runtime later
+   * Items where the wrapped sink fired ok:true but the harness later
    * threw (typically max-turns from a chatty local model that emitted
    * the tool call redundantly). Counted in `written`, not `failed` —
    * surfaced separately so chronic model-confusion is observable
@@ -144,8 +144,8 @@ export interface MapPhaseResult {
    */
   writeAfterThrow: number;
   /**
-   * Aggregated runtime usage across all per-item invocations. Token counts
-   * sum across items; durations sum; cost sums where the runtime reports
+   * Aggregated harness usage across all per-item invocations. Token counts
+   * sum across items; durations sum; cost sums where the harness reports
    * one. Map-mode runs were previously synthesizing zeros here, leaving
    * dashboards/cost-tracking blind. The aggregation happens inside
    * executeMapPhase so callers receive the real numbers.
@@ -162,7 +162,8 @@ export interface ContextQuery {
   required: boolean;
 }
 
-export type RuntimeId = 'claude-sdk' | 'openai-agents';
+export type BuiltinHarnessId = 'claude-sdk' | 'openai-agents';
+export type HarnessId = string;
 export type ReasoningLevel = 'low' | 'default' | 'high';
 
 export const PROVIDER_TYPES = [
@@ -182,7 +183,6 @@ export function isProviderType(value: unknown): value is ProviderType {
 
 /** API provider configuration for task execution. */
 export interface ProviderConfig {
-  runtime?: RuntimeId;
   type: ProviderType;
   localBackend?: 'ollama' | 'lmstudio';
   baseUrl?: string;
@@ -218,7 +218,7 @@ export interface RuntimeTokenBudget {
    * Budget status is observability-only. `post_run_pressure` (formerly
    * `critical`) means this run hit the upper utilization band but was NOT
    * aborted — naming it `critical` misled callers into assuming it signalled
-   * a pre-flight abort, which the runtime never performed. A future feature
+   * a pre-flight abort, which the harness never performed. A future feature
    * may add true pre-flight abort behavior behind a separate flag.
    */
   status: 'unknown' | 'ok' | 'warning' | 'post_run_pressure';
@@ -227,7 +227,7 @@ export interface RuntimeTokenBudget {
 
 /** Execution configuration overrides for a task. */
 export interface ExecutionConfig {
-  runtime?: RuntimeId;
+  harness?: HarnessId;
   model?: string;
   reasoningLevel?: ReasoningLevel;
   maxTurns?: number;
@@ -315,7 +315,7 @@ export interface AgentTask {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime types (merged from definitions + DB overrides)
+// Harness execution types (merged from definitions + DB overrides)
 // ---------------------------------------------------------------------------
 
 /**
@@ -326,7 +326,7 @@ export interface AgentTask {
  */
 export interface EffectiveConfig {
   agentId: string;
-  runtime: RuntimeId;
+  harness: HarnessId;
   model: string;
   reasoningLevel?: ReasoningLevel;
   maxTurns: number;
@@ -350,7 +350,7 @@ export interface EffectiveConfig {
 }
 
 /**
- * Minimal logger shape accepted by the agent runtime for diagnostic output.
+ * Minimal logger shape accepted by the agent harness for diagnostic output.
  * Structurally compatible with `DaemonLogger` so the daemon can pass its
  * logger straight in; kept here as a narrow interface so agent code never
  * imports daemon modules (that direction of dependency is inverted).
@@ -375,7 +375,7 @@ export interface RunOptions {
   embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
   /**
    * Optional logger. When provided (the daemon always provides one),
-   * runtime diagnostics are emitted at `debug` level — visible once
+   * harness diagnostics are emitted at `debug` level — visible once
    * `daemon.log_level` is set to `debug`, otherwise filtered out.
    */
   logger?: RunLogger;
@@ -404,11 +404,11 @@ export interface RunOptions {
    * Per-run execution overrides. When set, these overwrite the
    * corresponding fields on the resolved EffectiveConfig before the
    * executor enters the phase loop. Used by the Compare Runs UI for
-   * A/B testing runtimes, reasoning tiers, or models against the same
+   * A/B testing harnesses, reasoning tiers, or models against the same
    * task & vault snapshot.
    */
   executionOverrides?: {
-    runtime?: RuntimeId;
+    harness?: HarnessId;
     reasoningLevel?: ReasoningLevel;
     model?: string;
     /**
@@ -458,7 +458,7 @@ export interface AgentRunResult {
   costData?: CostResolution;
   error?: string;
   phases?: PhaseResult[];
-  runtime?: RuntimeId;
+  harness?: HarnessId;
   provider?: ProviderType;
   model?: string;
 }

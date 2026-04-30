@@ -6,11 +6,11 @@ import {
 } from '../../packages/myco/ui/src/hooks/use-provider-config-draft';
 
 describe('provider config draft helpers', () => {
-  it('preserves the inherited runtime when defaults provide a provider bundle', () => {
+  it('preserves the inherited harness when defaults provide a provider bundle', () => {
     const draft = providerDraftFromSource(
       null,
       {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         providerType: 'openrouter',
         model: 'openrouter/auto',
         reasoningMap: {
@@ -21,7 +21,7 @@ describe('provider config draft helpers', () => {
       },
     );
 
-    expect(draft.runtime).toBe('openai-agents');
+    expect(draft.harness).toBe('openai-agents');
     expect(draft.type).toBe('openrouter');
     expect(draft.model).toBe('openrouter/auto');
   });
@@ -29,7 +29,7 @@ describe('provider config draft helpers', () => {
   it('does not inherit cross-provider reasoning models when a task provider override exists', () => {
     const draft = providerDraftFromSource(
       {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: {
           type: 'openai',
           model: 'gpt-5.4-nano',
@@ -59,7 +59,7 @@ describe('provider config draft helpers', () => {
   it('normalizes a compound provider bundle before save', () => {
     const provider = draftToNormalizedProviderConfig(
       {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         type: 'openai',
         model: 'gpt-5.4-nano',
         reasoningLow: 'openrouter/auto',
@@ -72,7 +72,6 @@ describe('provider config draft helpers', () => {
     );
 
     expect(provider).toEqual({
-      runtime: 'openai-agents',
       type: 'openai',
       model: 'gpt-5.4-nano',
       reasoning_map: {

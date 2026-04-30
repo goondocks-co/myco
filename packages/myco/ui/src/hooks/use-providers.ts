@@ -10,17 +10,17 @@ const PROVIDERS_STALE_TIME = 30_000;
 
 export interface ProviderInfo {
   type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
-  runtime: 'claude-sdk' | 'openai-agents';
+  harness: 'claude-sdk' | 'openai-agents';
   available: boolean;
   authConfigured?: boolean;
   baseUrl?: string;
   models: string[];
 }
 
-export type RuntimeIdUi = ProviderInfo['runtime'];
+export type HarnessIdUi = ProviderInfo['harness'];
 export type ProviderTypeUi = ProviderInfo['type'];
 
-const RUNTIME_IDS: readonly RuntimeIdUi[] = ['claude-sdk', 'openai-agents'];
+const RUNTIME_IDS: readonly HarnessIdUi[] = ['claude-sdk', 'openai-agents'];
 const PROVIDER_TYPES_UI: readonly ProviderTypeUi[] = [
   'anthropic',
   'ollama',
@@ -31,12 +31,12 @@ const PROVIDER_TYPES_UI: readonly ProviderTypeUi[] = [
 ];
 
 /**
- * Narrow an arbitrary string to RuntimeIdUi. Returns '' when the input
- * isn't a known runtime id — callers can then treat '' as "no runtime
+ * Narrow an arbitrary string to HarnessIdUi. Returns '' when the input
+ * isn't a known harness id — callers can then treat '' as "no harness
  * selected" without blanket casting.
  */
-export function parseRuntimeId(value: string): RuntimeIdUi | '' {
-  return (RUNTIME_IDS as readonly string[]).includes(value) ? (value as RuntimeIdUi) : '';
+export function parseHarnessId(value: string): HarnessIdUi | '' {
+  return (RUNTIME_IDS as readonly string[]).includes(value) ? (value as HarnessIdUi) : '';
 }
 
 /**
@@ -52,7 +52,6 @@ export interface ProvidersResponse {
 }
 
 export interface ProviderConfig {
-  runtime?: 'claude-sdk' | 'openai-agents';
   type: ProviderInfo['type'];
   local_backend?: 'ollama' | 'lmstudio';
   model?: string;
@@ -75,7 +74,7 @@ export interface ScheduleOverride {
 }
 
 export interface TaskConfigOverride {
-  runtime?: 'claude-sdk' | 'openai-agents';
+  harness?: 'claude-sdk' | 'openai-agents';
   provider?: ProviderConfig;
   model?: string;
   maxTurns?: number;
@@ -90,7 +89,7 @@ export interface TaskConfigOverride {
  *  flicker. Used by both the global Agent Provider card and per-task
  *  TaskProviderConfig. */
 export interface ProviderDraft {
-  runtime: ProviderConfig['runtime'] | '';
+  harness: HarnessIdUi | '';
   type: ProviderConfig['type'] | '';
   localBackend: ProviderConfig['local_backend'] | '';
   model: string;
@@ -121,7 +120,7 @@ export function defaultBaseUrlForProvider(
   return fallbackBaseUrl ?? '';
 }
 
-const PROVIDER_RUNTIME_BY_TYPE: Record<ProviderInfo['type'], ProviderInfo['runtime']> = {
+const PROVIDER_HARNESS_BY_TYPE: Record<ProviderInfo['type'], ProviderInfo['harness']> = {
   anthropic: 'claude-sdk',
   ollama: 'claude-sdk',
   lmstudio: 'claude-sdk',
@@ -130,21 +129,21 @@ const PROVIDER_RUNTIME_BY_TYPE: Record<ProviderInfo['type'], ProviderInfo['runti
   'openai-compatible': 'openai-agents',
 };
 
-export function inferRuntimeFromProviderType(
+export function inferHarnessFromProviderType(
   type: ProviderDraft['type'] | undefined,
-): ProviderDraft['runtime'] | '' {
+): ProviderDraft['harness'] | '' {
   if (!type) return '';
-  return PROVIDER_RUNTIME_BY_TYPE[type];
+  return PROVIDER_HARNESS_BY_TYPE[type];
 }
 
-export function maybeInferRuntimeFromProviderType(
+export function maybeInferHarnessFromProviderType(
   type: ProviderDraft['type'] | undefined,
-): ProviderDraft['runtime'] | undefined {
-  const runtime = inferRuntimeFromProviderType(type);
-  return runtime || undefined;
+): ProviderDraft['harness'] | undefined {
+  const harness = inferHarnessFromProviderType(type);
+  return harness || undefined;
 }
 
-const PROVIDER_RUNTIME_SUPPORT: Record<ProviderInfo['type'], Array<ProviderInfo['runtime']>> = {
+const PROVIDER_HARNESS_SUPPORT: Record<ProviderInfo['type'], Array<ProviderInfo['harness']>> = {
   anthropic: ['claude-sdk'],
   ollama: ['claude-sdk', 'openai-agents'],
   lmstudio: ['claude-sdk', 'openai-agents'],
@@ -153,12 +152,12 @@ const PROVIDER_RUNTIME_SUPPORT: Record<ProviderInfo['type'], Array<ProviderInfo[
   'openai-compatible': ['openai-agents'],
 };
 
-export function providerSupportsRuntime(
+export function providerSupportsHarness(
   type: ProviderDraft['type'] | undefined,
-  runtime: ProviderDraft['runtime'] | '' | undefined,
+  harness: ProviderDraft['harness'] | '' | undefined,
 ): boolean {
-  if (!type || !runtime) return false;
-  return PROVIDER_RUNTIME_SUPPORT[type]?.includes(runtime) ?? false;
+  if (!type || !harness) return false;
+  return PROVIDER_HARNESS_SUPPORT[type]?.includes(harness) ?? false;
 }
 
 export function resolveReasoningModel(
@@ -183,7 +182,7 @@ export function resolveReasoningModel(
 export function seedDraftFromProviderType(
   type: string,
   providers: ProviderInfo[],
-  runtimeOverride?: ProviderDraft['runtime'],
+  harnessOverride?: ProviderDraft['harness'],
 ): ProviderDraft {
   const info = providers.find((p) => p.type === type);
   const modelSet = new Set(info?.models ?? []);
@@ -193,9 +192,9 @@ export function seedDraftFromProviderType(
   const pickExact = (candidate: string) =>
     info?.models?.find((model) => model === candidate) ?? '';
   return {
-    runtime: runtimeOverride && providerSupportsRuntime(type as ProviderDraft['type'], runtimeOverride)
-      ? runtimeOverride
-      : info?.runtime ?? inferRuntimeFromProviderType(type as ProviderDraft['type']),
+    harness: harnessOverride && providerSupportsHarness(type as ProviderDraft['type'], harnessOverride)
+      ? harnessOverride
+      : info?.harness ?? inferHarnessFromProviderType(type as ProviderDraft['type']),
     type: type as ProviderConfig['type'],
     localBackend: '',
     model: defaultModel,
@@ -236,7 +235,6 @@ export function draftToProviderConfig(draft: ProviderDraft): ProviderConfig | un
     ...(draft.reasoningHigh ? { high: draft.reasoningHigh } : {}),
   };
   return {
-    ...(draft.runtime ? { runtime: draft.runtime } : {}),
     type: draft.type,
     ...(draft.type === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
     ...(draft.model ? { model: draft.model } : {}),

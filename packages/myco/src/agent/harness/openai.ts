@@ -8,14 +8,14 @@ import {
   type Session,
 } from '@openai/agents';
 import {
-  RuntimeExecutionError,
-  type AgentRuntime,
-  type RuntimeCapability,
-  type RuntimeExecuteInput,
-  type RuntimeExecuteResult,
-  type RuntimeScope,
-  type RuntimeScopeRunInput,
-  type RuntimeScopeSetup,
+  HarnessExecutionError,
+  type AgentHarness,
+  type HarnessCapability,
+  type HarnessExecuteInput,
+  type HarnessExecuteResult,
+  type HarnessScope,
+  type HarnessScopeRunInput,
+  type HarnessScopeSetup,
 } from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
@@ -31,9 +31,16 @@ import {
   type LocalOpenAIBackendKind,
 } from '@myco/intelligence/local-openai-backends.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
+const SESSION_RESUME_ERROR_PATTERNS = [
+  /session/i,
+  /resume/i,
+  /previous[_ ]response/i,
+  /conversation/i,
+];
 
 class PersistedSession implements Session {
   private items: AgentInputItem[];
@@ -243,7 +250,7 @@ async function prepareLocalProviderExecution(
   };
 }
 
-function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
+function createProvider(input: HarnessExecuteInput): OpenAIProvider {
   const { apiKey, baseURL } = resolveOpenAIClientConfig(input.provider);
   const client = new OpenAI({
     apiKey,
@@ -256,14 +263,21 @@ function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
   });
 }
 
-export class OpenAIAgentsRuntime implements AgentRuntime {
+export class OpenAIAgentsHarness implements AgentHarness {
   readonly id = 'openai-agents' as const;
 
-  supports(capability: RuntimeCapability): boolean {
+  supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
 
-  async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
+  classifyError(error: unknown) {
+    const message = errorMessage(error);
+    return SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+      ? 'session-resume-failed' as const
+      : 'unknown' as const;
+  }
+
+  async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     const preparedExecution = await prepareLocalProviderExecution(input.provider, input.model);
     let persistedItems = Array.isArray(input.sessionData)
       ? (input.sessionData as AgentInputItem[])
@@ -278,7 +292,7 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     try {
       const agent = new Agent({
         name: 'myco-agent',
-        instructions: input.systemPrompt ?? 'You are the Myco agent runtime.',
+        instructions: input.systemPrompt ?? 'You are the Myco agent harness.',
         model: preparedExecution.model,
         mcpServers: [mcpServer],
       });
@@ -298,7 +312,7 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
       } catch (err) {
         const partialRaw = extractPartialRawResponses(err);
         const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-        throw new RuntimeExecutionError(
+        throw new HarnessExecutionError(
           err instanceof Error ? err.message : String(err),
           { usage, sessionRef, sessionData: persistedItems },
           { cause: err instanceof Error ? err : undefined },
@@ -326,28 +340,28 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
     }
   }
 
-  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+  async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
     const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
     const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
     await mcpServer.connect();
 
     const agent = new Agent({
       name: 'myco-agent',
-      instructions: setup.systemPrompt ?? 'You are the Myco agent runtime.',
+      instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
       model: preparedExecution.model,
       mcpServers: [mcpServer],
     });
     const runner = new Runner({
       modelProvider: createProvider({
         provider: preparedExecution.provider,
-      } as RuntimeExecuteInput),
+      } as HarnessExecuteInput),
     });
 
     let closed = false;
 
     return {
-      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
-        if (closed) throw new Error('OpenAIAgentsRuntime: scope.run() called after close()');
+      async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
+        if (closed) throw new Error('OpenAIAgentsHarness: scope.run() called after close()');
         const sessionRef = crypto.randomUUID();
         let persistedItems: AgentInputItem[] = [];
         const session = new PersistedSession(sessionRef, persistedItems, (items) => {
@@ -363,7 +377,7 @@ export class OpenAIAgentsRuntime implements AgentRuntime {
         } catch (err) {
           const partialRaw = extractPartialRawResponses(err);
           const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-          throw new RuntimeExecutionError(
+          throw new HarnessExecutionError(
             err instanceof Error ? err.message : String(err),
             { usage, sessionRef, sessionData: persistedItems },
             { cause: err instanceof Error ? err : undefined },

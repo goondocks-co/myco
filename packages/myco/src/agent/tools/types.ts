@@ -6,8 +6,25 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
-// Re-export for convenience
-export type { SdkMcpToolDefinition };
+export interface MycoToolDefinition<TInput = any> {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  annotations?: SdkMcpToolDefinition<any>['annotations'];
+  handler: (args: TInput, extra: unknown) => Promise<any>;
+}
+
+export function toSdkMcpToolDefinition<TInput>(
+  tool: MycoToolDefinition<TInput>,
+): SdkMcpToolDefinition<any> {
+  return tool as SdkMcpToolDefinition<any>;
+}
+
+export function toSdkMcpToolDefinitions(
+  tools: MycoToolDefinition[],
+): SdkMcpToolDefinition<any>[] {
+  return tools.map((tool) => toSdkMcpToolDefinition(tool));
+}
 
 /**
  * Non-null JSON-serialisable shapes accepted by textResult.

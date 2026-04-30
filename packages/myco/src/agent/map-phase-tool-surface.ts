@@ -9,14 +9,14 @@
  * Flexible mode: same as strict, plus the explicitly-named read tools.
  * Each named read tool MUST advertise readOnlyHint: true (validated).
  *
- * The returned `tools` array is what the runtime adapter sees; the sink
+ * The returned `tools` array is what the harness adapter sees; the sink
  * tool's inputSchema has the argMap fields removed so the model literally
  * cannot supply them. The harness re-merges argMap fields with the model's
  * args before invoking the wrapped sink.
  */
 
 import { z } from 'zod/v4';
-import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 
 export interface BuildMapItemSurfaceOptions {
   sinkName: string;
@@ -25,14 +25,14 @@ export interface BuildMapItemSurfaceOptions {
 }
 
 export interface MapItemToolSurface {
-  /** Tools to expose to the runtime for this item's invocation. */
-  tools: SdkMcpToolDefinition<any>[];
+  /** Tools to expose to the harness for this item's invocation. */
+  tools: MycoToolDefinition<any>[];
   /** Reference to the original sink tool (with full schema), for harness-side invocation. */
-  sinkTool: SdkMcpToolDefinition<any>;
+  sinkTool: MycoToolDefinition<any>;
 }
 
 export function buildMapItemToolSurface(
-  allTools: SdkMcpToolDefinition<any>[],
+  allTools: MycoToolDefinition<any>[],
   opts: BuildMapItemSurfaceOptions,
 ): MapItemToolSurface {
   const sinkTool = allTools.find((t) => t.name === opts.sinkName);
@@ -40,7 +40,7 @@ export function buildMapItemToolSurface(
     throw new Error(`map-phase: sink tool "${opts.sinkName}" not found in tool registry`);
   }
 
-  const readTools: SdkMcpToolDefinition<any>[] = [];
+  const readTools: MycoToolDefinition<any>[] = [];
   for (const name of opts.readToolNames) {
     const t = allTools.find((tt) => tt.name === name);
     if (!t) {
@@ -61,9 +61,9 @@ export function buildMapItemToolSurface(
 }
 
 function stripArgMapFromSchema(
-  toolDef: SdkMcpToolDefinition<any>,
+  toolDef: MycoToolDefinition<any>,
   pinnedKeys: string[],
-): SdkMcpToolDefinition<any> {
+): MycoToolDefinition<any> {
   if (pinnedKeys.length === 0) return toolDef;
   const original = toolDef.inputSchema as Record<string, z.ZodTypeAny>;
   const pinnedSet = new Set(pinnedKeys);
