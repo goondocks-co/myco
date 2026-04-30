@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { DAEMON_CLIENT_TIMEOUT_MS } from '@myco/constants.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { incrementCanopyMapToolCalls } from '@myco/db/queries/sessions.js';
+import { ToolError } from './error.js';
 import { handleCanopyMap } from './canopy-map.js';
 import {
   handleCollectiveProject,
@@ -66,7 +66,8 @@ interface JsonSchemaProperty {
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
   let dbReady = false;
-  let cachedDaemonPort: number | null = null;
+  let logDirReady = false;
+  const logDir = path.join(vaultDir, 'logs');
 
   function ensureDb(): boolean {
     if (dbReady) return true;
@@ -92,7 +93,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   function normalizeInput(args: unknown): Record<string, unknown> {
     if (args === undefined || args === null) return {};
     if (typeof args === 'object' && !Array.isArray(args)) return args as Record<string, unknown>;
-    throw new Error('Tool arguments must be a JSON object');
+    throw new ToolError('invalid_input', 'Tool arguments must be a JSON object');
   }
 
   async function getAvailableDefinitions(): Promise<ToolDefinition[]> {
@@ -106,15 +107,15 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     const definition = available.find((tool) => tool.name === name);
     if (definition) return definition;
     if (COLLECTIVE_TOOL_NAMES.has(name)) {
-      throw new Error(`Tool unavailable: ${name}`);
+      throw new ToolError('tool_unavailable', `Tool unavailable: ${name}`);
     }
-    throw new Error(`Unknown tool: ${name}`);
+    throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
   }
 
   function validateInput(definition: ToolDefinition, input: Record<string, unknown>): void {
     for (const key of definition.inputSchema.required ?? []) {
       if (input[key] === undefined || input[key] === null) {
-        throw new Error(`Missing required argument '${key}' for tool ${definition.name}`);
+        throw new ToolError('invalid_input', `Missing required argument '${key}' for tool ${definition.name}`);
       }
     }
 
@@ -127,18 +128,18 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 
   function validateSchemaProperty(tool: string, key: string, value: unknown, property: JsonSchemaProperty): void {
     if (value === null) {
-      throw new Error(`Invalid argument '${key}' for tool ${tool}: expected ${formatExpectedType(property)}`);
+      throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected ${formatExpectedType(property)}`);
     }
 
     if (property.enum && !property.enum.includes(value)) {
-      throw new Error(`Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}`);
+      throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected one of ${property.enum.map(String).join(', ')}`);
     }
 
     const expectedTypes = typeof property.type === 'string'
       ? [property.type]
       : property.type ?? [];
     if (expectedTypes.length > 0 && !expectedTypes.some((type) => matchesJsonType(value, type))) {
-      throw new Error(`Invalid argument '${key}' for tool ${tool}: expected ${formatExpectedType(property)}`);
+      throw new ToolError('invalid_input', `Invalid argument '${key}' for tool ${tool}: expected ${formatExpectedType(property)}`);
     }
 
     if (expectedTypes.includes('array') && property.items && Array.isArray(value)) {
@@ -169,36 +170,22 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   }
 
   function logActivity(tool: string, detail: Record<string, unknown>): void {
-    const logDir = path.join(vaultDir, 'logs');
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      component: 'mcp',
+      level: 'info',
+      tool,
+      ...detail,
+    }) + '\n';
     try {
-      fs.mkdirSync(logDir, { recursive: true });
-      const entry = JSON.stringify({
-        timestamp: new Date().toISOString(),
-        component: 'mcp',
-        level: 'info',
-        tool,
-        ...detail,
-      }) + '\n';
-      fs.appendFileSync(path.join(logDir, 'mcp.jsonl'), entry);
+      if (!logDirReady) {
+        fs.mkdirSync(logDir, { recursive: true });
+        logDirReady = true;
+      }
+      fs.appendFile(path.join(logDir, 'mcp.jsonl'), entry, () => { /* non-fatal */ });
     } catch { /* logging failure is non-fatal */ }
 
-    postToDaemon('info', 'mcp', `Tool call: ${tool}`, { tool, ...detail });
-  }
-
-  function postToDaemon(level: string, component: string, message: string, data?: Record<string, unknown>): void {
-    try {
-      if (cachedDaemonPort === null) {
-        const daemonJsonPath = path.join(vaultDir, 'daemon.json');
-        const raw = fs.readFileSync(daemonJsonPath, 'utf-8');
-        cachedDaemonPort = (JSON.parse(raw) as { port: number }).port;
-      }
-      fetch(`http://127.0.0.1:${cachedDaemonPort}/api/log`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ level, component, message, data }),
-        signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-      }).catch(() => { cachedDaemonPort = null; });
-    } catch { cachedDaemonPort = null; }
+    void client.post('/api/log', { level: 'info', component: 'mcp', message: `Tool call: ${tool}`, data: { tool, ...detail } }).catch(() => { /* non-fatal */ });
   }
 
   return {
@@ -338,7 +325,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
           return result;
         }
         default:
-          throw new Error(`Unknown tool: ${name}`);
+          throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
       }
     },
   };

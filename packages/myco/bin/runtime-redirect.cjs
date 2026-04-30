@@ -106,6 +106,10 @@ function resolveSearchStart(cwd) {
  * so the caller proceeds to attempt the exec and handles ENOENT there.
  */
 function pointsAtSelf(target, selfPath) {
+  // Unqualified PATH commands (`myco`, `myco-dev`) can't be self-redirects:
+  // selfPath is always absolute, so realpathSync(target) would either fail or
+  // resolve to a different binary. Skip the syscall on the common case.
+  if (!target.includes(path.sep)) return false;
   try {
     return fs.realpathSync(target) === fs.realpathSync(selfPath);
   } catch {

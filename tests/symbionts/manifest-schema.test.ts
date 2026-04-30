@@ -61,23 +61,6 @@ describe('symbiont manifests', () => {
     expect(manifest.registration?.skillsTarget).toBe('.test/skills');
   });
 
-  it('accepts registration.mcpCwd for portable MCP launch anchoring', () => {
-    const manifest = SymbiontManifestSchema.parse({
-      name: 'test-agent',
-      displayName: 'Test Agent',
-      binary: 'test',
-      configDir: '.test',
-      pluginRootEnvVar: 'TEST_PLUGIN_ROOT',
-      hookFields: { transcriptPath: 'tp', lastResponse: 'lr', sessionId: 'sid' },
-      registration: {
-        mcpTarget: '.test/config.toml',
-        mcpFormat: 'toml',
-        mcpCwd: '.',
-      },
-    });
-    expect(manifest.registration?.mcpCwd).toBe('.');
-  });
-
   it('allows manifest without registration block', () => {
     const manifest = SymbiontManifestSchema.parse({
       name: 'test-agent',
@@ -162,7 +145,6 @@ describe('symbiont manifests', () => {
     expect(manifest.registration).toBeDefined();
     expect(manifest.registration!.mcpTarget).toBe('.codex/config.toml');
     expect(manifest.registration!.mcpFormat).toBe('toml');
-    expect(manifest.registration!.mcpCwd).toBeUndefined();
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });

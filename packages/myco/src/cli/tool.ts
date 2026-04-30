@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
+import { isToolError } from '@myco/tools/error.js';
 
 interface ToolCliError {
   code: string;
@@ -104,21 +105,18 @@ function parseInput(value: string): unknown {
   try {
     return JSON.parse(raw);
   } catch (error) {
-    throw new Error(`Invalid JSON input: ${(error as Error).message}`);
+    throw new ToolJsonError(`Invalid JSON input: ${(error as Error).message}`);
   }
 }
+
+class ToolJsonError extends Error {}
 
 function writeEnvelope(envelope: ToolCliEnvelope): void {
   console.log(JSON.stringify(envelope, null, 2));
 }
 
 function classifyError(error: unknown): string {
-  const message = (error as Error).message ?? '';
-  if (message.startsWith('Invalid JSON input')) return 'invalid_json';
-  if (message.startsWith('Unknown tool')) return 'unknown_tool';
-  if (message.startsWith('Tool unavailable')) return 'tool_unavailable';
-  if (message.startsWith('Missing required argument')) return 'invalid_input';
-  if (message.startsWith('Invalid argument')) return 'invalid_input';
-  if (message.startsWith('Tool arguments must be a JSON object')) return 'invalid_input';
+  if (isToolError(error)) return error.code;
+  if (error instanceof ToolJsonError) return 'invalid_json';
   return 'tool_call_failed';
 }

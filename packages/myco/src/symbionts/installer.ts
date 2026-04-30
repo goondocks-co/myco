@@ -1014,16 +1014,12 @@ export class SymbiontInstaller {
   ): Record<string, unknown> | null {
     if (!template) return null;
 
-    const reg = this.manifest.registration;
-    const cwd = reg?.mcpCwd;
     const daemonPort = this.resolveDaemonPort();
 
     return Object.fromEntries(
       Object.entries(template).map(([name, def]) => {
         if (!def || typeof def !== 'object' || Array.isArray(def)) return [name, def];
-        let next = { ...(def as Record<string, unknown>) };
-        next = this.interpolateMcpTemplate(next, daemonPort);
-        if (cwd) next.cwd = cwd;
+        const next = this.interpolateMcpTemplate({ ...(def as Record<string, unknown>) }, daemonPort);
         return [name, next];
       }),
     );
