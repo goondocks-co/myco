@@ -33,6 +33,7 @@ export interface Migration {
 /** Regex matching both quoted and unquoted YAML: type: memory, type: "memory", type: 'memory' */
 const MEMORY_TYPE_PATTERN = /type:\s*["']?memory["']?/g;
 
+
 export const MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -406,6 +407,94 @@ export const MIGRATIONS: Migration[] = [
       // Tidy up: don't leave an empty `cortex: {}` if nothing migrated.
       if (Object.keys(cortex).length === 0) {
         delete doc.cortex;
+      }
+    },
+  },
+  {
+    version: 9,
+    name: 'rename-agent-runtime-to-harness',
+    migrate(doc: Record<string, unknown>, _vaultDir: string): void {
+      const agent = doc.agent as Record<string, unknown> | undefined;
+      if (!agent) return;
+
+      // Frozen snapshot of the provider→harness mapping as of v9. Intentionally
+      // not importing the live helper from `provider-harness.ts`: if a future
+      // provider type changes its harness home, this migration must keep
+      // migrating old configs the v9 way, not the new way.
+      const harnessForProviderTypeAtV9 = (type: unknown): string | undefined => {
+        switch (type) {
+          case 'openai':
+          case 'openrouter':
+          case 'openai-compatible':
+            return 'openai-agents';
+          case 'anthropic':
+          case 'ollama':
+          case 'lmstudio':
+            return 'claude-sdk';
+          default:
+            return undefined;
+        }
+      };
+
+      const providerRuntime = agent.provider && typeof agent.provider === 'object'
+        ? (agent.provider as Record<string, unknown>).runtime
+        : undefined;
+      const providerType = agent.provider && typeof agent.provider === 'object'
+        ? (agent.provider as Record<string, unknown>).type
+        : undefined;
+      if ('runtime' in agent) {
+        if (!('harness' in agent)) {
+          agent.harness = providerRuntime
+            ?? harnessForProviderTypeAtV9(providerType)
+            ?? agent.runtime;
+        }
+        delete agent.runtime;
+      } else if (!('harness' in agent)) {
+        const inferred = providerRuntime ?? harnessForProviderTypeAtV9(providerType);
+        if (inferred) {
+          agent.harness = inferred;
+        }
+      }
+
+      const migrateProvider = (
+        owner: Record<string, unknown>,
+        provider: unknown,
+        allowHarnessMove: boolean,
+      ): void => {
+        if (!provider || typeof provider !== 'object') return;
+        const providerRecord = provider as Record<string, unknown>;
+        if (!('runtime' in providerRecord)) return;
+        if (allowHarnessMove && !('harness' in owner)) {
+          owner.harness = providerRecord.runtime;
+        }
+        delete providerRecord.runtime;
+      };
+
+      migrateProvider(agent, agent.provider, false);
+
+      const tasks = agent.tasks as Record<string, unknown> | undefined;
+      if (!tasks) return;
+
+      for (const taskValue of Object.values(tasks)) {
+        if (!taskValue || typeof taskValue !== 'object') continue;
+        const task = taskValue as Record<string, unknown>;
+
+        if ('runtime' in task) {
+          if (!('harness' in task)) {
+            task.harness = task.runtime;
+          }
+          delete task.runtime;
+        }
+
+        migrateProvider(task, task.provider, true);
+
+        const phases = task.phases as Record<string, unknown> | undefined;
+        if (!phases) continue;
+        for (const phaseValue of Object.values(phases)) {
+          if (!phaseValue || typeof phaseValue !== 'object') continue;
+          const phase = phaseValue as Record<string, unknown>;
+          migrateProvider(phase, phase.provider, false);
+        }
       }
     },
   },

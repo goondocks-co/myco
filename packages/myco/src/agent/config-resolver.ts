@@ -22,8 +22,8 @@ import {
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
-import type { ProviderConfig, EffectiveConfig, RuntimeId } from './types.js';
-import { inferRuntimeFromProviderType } from './provider-runtime.js';
+import type { ProviderConfig, EffectiveConfig, HarnessId } from './types.js';
+import { inferHarnessFromProviderType } from './provider-harness.js';
 
 /**
  * Returns true when an agent provider is configured for the given task —
@@ -54,8 +54,8 @@ export interface ResolvedRunConfig {
   taskName?: string;
   /** Resolved task params — YAML defaults merged with myco.yaml overrides. */
   taskParams?: Record<string, string | number | boolean>;
-  /** Effective runtime after applying YAML + myco.yaml overrides. */
-  runtime: RuntimeId;
+  /** Effective harness after applying YAML + myco.yaml overrides. */
+  harness: HarnessId;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,13 +63,12 @@ export interface ResolvedRunConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a myco.yaml snake_case provider to the runtime camelCase ProviderConfig.
+ * Convert a myco.yaml snake_case provider to the harness camelCase ProviderConfig.
  *
  * API keys are NOT stored in myco.yaml — they flow via env vars
  * (settings.json -> hooks -> daemon).
  */
 function toProviderConfig(p: {
-  runtime?: RuntimeId;
   type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
   local_backend?: 'ollama' | 'lmstudio';
   base_url?: string;
@@ -78,7 +77,6 @@ function toProviderConfig(p: {
   context_length?: number;
 }): ProviderConfig {
   return {
-    runtime: p.runtime ?? inferRuntimeFromProviderType(p.type),
     type: p.type,
     localBackend: p.local_backend,
     baseUrl: p.base_url,
@@ -91,11 +89,11 @@ function toProviderConfig(p: {
 function applyTaskConfigOverrides(
   config: EffectiveConfig,
   taskConfig: TaskProviderOverride | undefined,
-  runtime: RuntimeId,
+  harness: HarnessId,
 ): EffectiveConfig {
   return {
     ...config,
-    runtime,
+    harness,
     ...(taskConfig?.model ? { model: taskConfig.model } : {}),
     ...(taskConfig?.maxTurns ? { maxTurns: taskConfig.maxTurns } : {}),
     ...(taskConfig?.timeoutSeconds ? { timeoutSeconds: taskConfig.timeoutSeconds } : {}),
@@ -171,8 +169,7 @@ export function resolveRunConfig(
   let taskConfig: TaskProviderOverride | undefined;
   let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; model?: string; maxTurns?: number }> = {};
   let taskParams: Record<string, string | number | boolean> | undefined;
-  let runtime: RuntimeId = config.execution?.runtime
-    ?? config.execution?.provider?.runtime
+  let harness: HarnessId = config.execution?.harness
     ?? 'claude-sdk';
   try {
     const mycoConfig = loadMergedConfig(vaultDir);
@@ -180,15 +177,12 @@ export function resolveRunConfig(
     // Per-task override takes priority over global
     taskConfig = taskName ? mycoConfig.agent.tasks?.[taskName] : undefined;
     const globalProvider = mycoConfig.agent.provider;
-    runtime = taskConfig?.runtime
-      ?? taskConfig?.provider?.runtime
-      ?? inferRuntimeFromProviderType(taskConfig?.provider?.type)
-      ?? globalProvider?.runtime
-      ?? inferRuntimeFromProviderType(globalProvider?.type)
-      ?? mycoConfig.agent.runtime
-      ?? config.execution?.runtime
-      ?? config.execution?.provider?.runtime
-      ?? inferRuntimeFromProviderType(config.execution?.provider?.type)
+    harness = taskConfig?.harness
+      ?? inferHarnessFromProviderType(taskConfig?.provider?.type)
+      ?? mycoConfig.agent.harness
+      ?? inferHarnessFromProviderType(globalProvider?.type)
+      ?? config.execution?.harness
+      ?? inferHarnessFromProviderType(config.execution?.provider?.type)
       ?? 'claude-sdk';
 
     if (taskConfig?.provider) {
@@ -214,17 +208,22 @@ export function resolveRunConfig(
     if (yamlParams || configParams) {
       taskParams = { ...yamlParams, ...configParams };
     }
-  } catch {
-    // Config load failure is non-fatal — proceed without overrides
+  } catch (err) {
+    // Config load failure is non-fatal — proceed without overrides — but
+    // surface it so a malformed myco.yaml doesn't silently fall back to the
+    // default harness with no signal.
+    console.warn(
+      `[agent] Failed to load myco.yaml overrides for run resolution: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return {
-    config: applyTaskConfigOverrides(config, taskConfig, runtime),
+    config: applyTaskConfigOverrides(config, taskConfig, harness),
     definitionsDir,
     taskProviderOverride,
     phaseProviderOverrides,
     taskName,
     taskParams,
-    runtime,
+    harness,
   };
 }

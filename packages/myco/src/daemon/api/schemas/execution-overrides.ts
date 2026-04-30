@@ -3,20 +3,28 @@
  *
  * These schemas describe the camelCase provider/phase override packets that
  * clients (eval CLI, RunTaskDialog, etc.) POST to /api/agent/run and
- * /api/agent/evaluations. They mirror the runtime `ProviderConfig` and
+ * /api/agent/evaluations. They mirror the harness `ProviderConfig` and
  * `RunOptions.executionOverrides` types in `@myco/agent/types.ts`.
  *
- * The provider wire shape is camelCase (matches the runtime ProviderConfig),
+ * The provider wire shape is camelCase (matches the harness ProviderConfig),
  * unlike the snake_case myco.yaml persisted shape. Clients that read from
  * myco.yaml convert to camelCase before posting — see RunTaskDialog's
  * override builder.
  */
 
 import { z } from 'zod';
+import { listAgentHarnessIds } from '@myco/agent/harness/index.js';
 
 export const ReasoningLevelEnum = z.enum(['low', 'default', 'high']);
 
-export const RuntimeIdEnum = z.enum(['claude-sdk', 'openai-agents']);
+export const HarnessIdEnum = z.string().min(1).superRefine((value, ctx) => {
+  if (!listAgentHarnessIds().includes(value)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Unknown harness id: ${value}`,
+    });
+  }
+});
 
 export const ProviderTypeEnum = z.enum([
   'anthropic',
@@ -34,11 +42,10 @@ export const ProviderTypeEnum = z.enum([
  * `.myco/secrets.env` and provider-specific env vars, never through an API
  * body (feedback_secrets_not_in_yaml). `baseUrl` is parsed for all provider
  * types but is stripped by the run handler for `openai` and `openrouter`
- * before it can reach the runtime, so the daemon's bearer key cannot be
+ * before it can reach the harness, so the daemon's bearer key cannot be
  * redirected to an attacker-controlled host.
  */
 export const ProviderOverrideWireSchema = z.object({
-  runtime: RuntimeIdEnum.optional(),
   type: ProviderTypeEnum,
   localBackend: z.enum(['ollama', 'lmstudio']).optional(),
   baseUrl: z.string().optional(),
@@ -49,7 +56,7 @@ export const ProviderOverrideWireSchema = z.object({
     high: z.string().optional(),
   }).optional(),
   contextLength: z.number().int().positive().optional(),
-});
+}).strict();
 
 /** `{reasoningLevel?, model?, provider?, maxTurns?}` shape for per-phase pins. */
 export const PhaseExecutionOverrideBody = z.object({
@@ -57,7 +64,7 @@ export const PhaseExecutionOverrideBody = z.object({
   model: z.string().optional(),
   provider: ProviderOverrideWireSchema.optional(),
   maxTurns: z.number().int().positive().optional(),
-});
+}).strict();
 
 /**
  * Full per-run execution overrides. Used by the agent-runs handler (as
@@ -66,9 +73,9 @@ export const PhaseExecutionOverrideBody = z.object({
  * the shared `phases` overlay).
  */
 export const ExecutionOverrideBody = z.object({
-  runtime: RuntimeIdEnum.optional(),
+  harness: HarnessIdEnum.optional(),
   reasoningLevel: ReasoningLevelEnum.optional(),
   model: z.string().optional(),
   provider: ProviderOverrideWireSchema.optional(),
   phases: z.record(z.string(), PhaseExecutionOverrideBody).optional(),
-}).optional();
+}).strict().optional();

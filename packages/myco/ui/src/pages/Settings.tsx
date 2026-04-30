@@ -9,7 +9,7 @@ import {
   defaultBaseUrlForProvider,
   useProviders,
   useTestProvider,
-  maybeInferRuntimeFromProviderType,
+  maybeInferHarnessFromProviderType,
   resolveReasoningModel,
 } from '../hooks/use-providers';
 import type { ProviderDraft } from '../hooks/use-providers';
@@ -116,7 +116,7 @@ function isSecretProvider(type: ProviderDraft['type']): type is SecretProvider {
 }
 
 /** Myco Agent — personal-default. Provider configuration is staged locally
- *  and saved explicitly because runtime -> provider -> model -> reasoning is
+ *  and saved explicitly because harness -> provider -> model -> reasoning is
  *  a dependency chain that cannot be persisted safely as independent writes.
  *  Two coupled writes use setFields:
  *    • setting a provider for the first time also enables both task toggles
@@ -131,14 +131,14 @@ function AgentProviderCard() {
 
   const providers = providersData?.providers ?? [];
   const provider = effective?.agent?.provider;
-  const agentRuntime = effective?.agent?.runtime;
+  const agentHarness = effective?.agent?.harness;
   const {
     draft,
     savedDraft,
     isDirty,
     clearDraft,
     resetDraft,
-    handleRuntimeChange,
+    handleHarnessChange,
     handleProviderChange,
     handleModelChange,
     handleLocalBackendChange,
@@ -147,7 +147,7 @@ function AgentProviderCard() {
     handleContextLengthChange,
   } = useProviderConfigDraft({
     source: {
-      runtime: agentRuntime,
+      harness: agentHarness,
       provider,
     },
     providers,
@@ -161,18 +161,18 @@ function AgentProviderCard() {
   const supportsReasoningMap = draft.type !== '';
   useEffect(() => { setApiKeyInput(''); }, [draft.type]);
 
-  const personal = isLocalOverride('agent.provider') || isLocalOverride('agent.runtime');
+  const personal = isLocalOverride('agent.provider') || isLocalOverride('agent.harness');
   const handleResetScope = useCallback(async () => {
-    if (isLocalOverride('agent.runtime')) {
-      await resetField('agent.runtime');
+    if (isLocalOverride('agent.harness')) {
+      await resetField('agent.harness');
     }
     if (isLocalOverride('agent.provider')) {
       await resetField('agent.provider');
     }
   }, [isLocalOverride, resetField]);
   const handlePromoteScope = useCallback(async () => {
-    if (isLocalOverride('agent.runtime')) {
-      await promoteField('agent.runtime');
+    if (isLocalOverride('agent.harness')) {
+      await promoteField('agent.harness');
     }
     if (isLocalOverride('agent.provider')) {
       await promoteField('agent.provider');
@@ -181,8 +181,8 @@ function AgentProviderCard() {
 
   const writeProvider = useCallback((next: ProviderDraft, autoEnableTasks: boolean) => {
     const value = draftToNormalizedProviderConfig(next, reasoningModels);
-    const fields: Array<{ path: 'agent.runtime' | 'agent.provider' | 'agent.scheduled_tasks_enabled' | 'agent.event_tasks_enabled'; value: unknown }> = [
-      { path: 'agent.runtime', value: next.runtime || maybeInferRuntimeFromProviderType(next.type) },
+    const fields: Array<{ path: 'agent.harness' | 'agent.provider' | 'agent.scheduled_tasks_enabled' | 'agent.event_tasks_enabled'; value: unknown }> = [
+      { path: 'agent.harness', value: next.harness || maybeInferHarnessFromProviderType(next.type) },
       { path: 'agent.provider', value },
     ];
     if (autoEnableTasks) {
@@ -214,7 +214,7 @@ function AgentProviderCard() {
             { path: 'agent.event_tasks_enabled', value: false },
           ],
           'local',
-          ['agent.provider', 'agent.runtime'],
+          ['agent.provider', 'agent.harness'],
         );
       } catch (err) {
         console.error('[agent-card] clear provider failed', err);
@@ -250,11 +250,10 @@ function AgentProviderCard() {
     if (draft.type === '') return;
     agentTestMutation.mutate({
       type: draft.type,
-      runtime: draft.runtime || undefined,
       ...(draft.type === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
       ...(draft.baseUrl ? { base_url: draft.baseUrl } : {}),
     });
-  }, [draft.baseUrl, draft.localBackend, draft.runtime, draft.type, agentTestMutation]);
+  }, [draft.baseUrl, draft.localBackend, draft.type, agentTestMutation]);
 
   return (
     <Surface
@@ -282,7 +281,7 @@ function AgentProviderCard() {
       ) : null}
 
       <ProviderModelSelector
-        runtime={draft.runtime}
+        harness={draft.harness}
         providerType={draft.type}
         localBackend={draft.localBackend}
         model={draft.model}
@@ -290,8 +289,8 @@ function AgentProviderCard() {
         contextLength={draft.contextLength}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
-        onRuntimeChange={(runtime) => {
-          handleRuntimeChange(runtime);
+        onHarnessChange={(harness) => {
+          handleHarnessChange(harness);
           agentTestMutation.reset();
         }}
         onProviderChange={(type) => {

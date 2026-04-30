@@ -6,7 +6,7 @@ import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { useTask, type PhaseDefinition } from '../../hooks/use-agent';
 import { useScopedConfig } from '../../hooks/use-scoped-config';
-import { maybeInferRuntimeFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
+import { maybeInferHarnessFromProviderType, resolveReasoningModel } from '../../hooks/use-providers';
 import { capitalize } from '../../lib/format';
 import { sourceBadgeVariant } from './helpers';
 import { TaskActions } from './TaskActions';
@@ -32,7 +32,7 @@ interface TaskDetailProps {
 /** Resolve effective execution config from task fields. */
 function getExecution(task: {
   execution?: {
-    runtime?: string;
+    harness?: string;
     provider?: { type?: string };
     model?: string;
     reasoningLevel?: 'low' | 'default' | 'high';
@@ -45,7 +45,7 @@ function getExecution(task: {
   timeoutSeconds?: number;
 }) {
   return {
-    runtime: task.execution?.runtime,
+    harness: task.execution?.harness,
     provider: task.execution?.provider?.type,
     model: task.execution?.model ?? task.model,
     reasoningLevel: task.execution?.reasoningLevel ?? task.reasoningLevel,
@@ -57,9 +57,8 @@ function getExecution(task: {
 function getInheritedExecution(
   task: {
     execution?: {
-      runtime?: string;
+      harness?: string;
       provider?: {
-        runtime?: string;
         type?: string;
         local_backend?: 'ollama' | 'lmstudio';
         model?: string;
@@ -79,9 +78,8 @@ function getInheritedExecution(
   },
   config: {
     agent?: {
-      runtime?: string;
+      harness?: string;
       provider?: {
-        runtime?: string;
         type?: string;
         local_backend?: 'ollama' | 'lmstudio';
         model?: string;
@@ -97,12 +95,10 @@ function getInheritedExecution(
   const reasoningLevel = task.execution?.reasoningLevel ?? task.reasoningLevel;
   const fallbackModel = task.execution?.model ?? task.model ?? globalProvider?.model;
   return {
-    runtime: task.execution?.runtime
-      ?? taskProvider?.runtime
-      ?? maybeInferRuntimeFromProviderType(taskProvider?.type)
-      ?? globalProvider?.runtime
-      ?? maybeInferRuntimeFromProviderType(globalProvider?.type)
-      ?? config?.agent?.runtime,
+    harness: task.execution?.harness
+      ?? config?.agent?.harness
+      ?? maybeInferHarnessFromProviderType(taskProvider?.type)
+      ?? maybeInferHarnessFromProviderType(globalProvider?.type),
     providerType: taskProvider?.type ?? globalProvider?.type,
     localBackend: taskProvider?.local_backend ?? globalProvider?.local_backend,
     reasoningLevel,
@@ -189,7 +185,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
   const execution = task ? getExecution(task) : {};
   const inheritedExecution = task ? getInheritedExecution(task, effective) : {};
   const taskConfigDefaults = useMemo(() => ({
-    runtime: inheritedExecution.runtime,
+    harness: inheritedExecution.harness,
     providerType: inheritedExecution.providerType,
     localBackend: inheritedExecution.localBackend,
     reasoningLevel: inheritedExecution.reasoningLevel,
@@ -200,7 +196,7 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
     maxTurns: inheritedExecution.maxTurns,
     timeoutSeconds: inheritedExecution.timeoutSeconds,
   }), [
-    inheritedExecution.runtime,
+    inheritedExecution.harness,
     inheritedExecution.providerType,
     inheritedExecution.localBackend,
     inheritedExecution.reasoningLevel,
@@ -280,10 +276,10 @@ export function TaskDetail({ taskId, onBack, onNavigate, onRunTriggered }: TaskD
             Task Definition
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {execution.runtime !== undefined && (
+            {execution.harness !== undefined && (
               <div>
-                <p className="font-sans text-xs text-on-surface-variant">Runtime</p>
-                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.runtime}</p>
+                <p className="font-sans text-xs text-on-surface-variant">Harness</p>
+                <p className="font-mono text-sm text-on-surface mt-0.5">{execution.harness}</p>
               </div>
             )}
             {execution.provider !== undefined && (

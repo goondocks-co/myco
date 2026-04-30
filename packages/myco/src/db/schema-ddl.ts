@@ -292,7 +292,7 @@ const AGENT_RUNS_TABLE = `
     task           TEXT,
     instruction    TEXT,
     status         TEXT DEFAULT 'pending',
-    runtime        TEXT,
+    harness        TEXT,
     provider       TEXT,
     model          TEXT,
     session_ref    TEXT,

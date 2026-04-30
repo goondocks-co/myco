@@ -1,5 +1,5 @@
 /**
- * Tests for OpenAIAgentsRuntime.execute() covering the responsibilities not
+ * Tests for OpenAIAgentsHarness.execute() covering the responsibilities not
  * exercised by openai-runtime.test.ts (which only tests pure helpers):
  *
  *   - PersistedSession round-trips input items on fresh + resumed runs.
@@ -108,7 +108,7 @@ let mockMcpServer: { connect: ReturnType<typeof vi.fn>; close: ReturnType<typeof
   close: vi.fn(async () => {}),
 };
 
-mock.module('@myco/agent/runtime/openai-local-mcp.js', () => ({
+mock.module('@myco/agent/harness/openai-local-mcp.js', () => ({
   createLocalVaultMcpServer: (toolSurface: Record<string, unknown>) => {
     mcpServerCalls.push(toolSurface);
     return mockMcpServer;
@@ -120,8 +120,8 @@ mock.module('@myco/agent/runtime/openai-local-mcp.js', () => ({
 // ---------------------------------------------------------------------------
 
 async function loadRuntime() {
-  const mod = await import('@myco/agent/runtime/openai.js');
-  return mod.OpenAIAgentsRuntime;
+  const mod = await import('@myco/agent/harness/openai.js');
+  return mod.OpenAIAgentsHarness;
 }
 
 function makeMcpServer() {
@@ -133,7 +133,7 @@ function makeMcpServer() {
   return server;
 }
 
-function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').RuntimeExecuteInput> = {}) {
+function makeInput(overrides: Partial<import('@myco/agent/harness/types.js').HarnessExecuteInput> = {}) {
   return {
     prompt: 'Hello',
     model: 'gpt-5.4-mini',
@@ -148,7 +148,7 @@ function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').Run
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('OpenAIAgentsRuntime.execute', () => {
+describe('OpenAIAgentsHarness.execute', () => {
   beforeEach(() => {
     runnerCalls.length = 0;
     mcpServerCalls.length = 0;

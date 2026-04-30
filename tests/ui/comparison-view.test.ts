@@ -28,7 +28,7 @@ function fakeRun(over: Partial<RunCompareSummary>): RunCompareSummary {
     task: 'vault-evolve',
     instruction: null,
     status: 'completed',
-    runtime: null,
+    harness: null,
     provider: null,
     model: null,
     session_ref: null,
@@ -213,7 +213,7 @@ describe('formatDriftDuration', () => {
 
 describe('selectVisibleColumns on ad-hoc run sets', () => {
   const CANDIDATES: readonly ColumnKey[] = [
-    'runtime',
+    'harness',
     'reasoning',
     'model',
     'status',
@@ -227,11 +227,11 @@ describe('selectVisibleColumns on ad-hoc run sets', () => {
 
   it('hides columns that are uniform across every run', () => {
     const runs = [
-      fakeRun({ id: 'a', runtime: 'claude-sdk', model: 'sonnet-4-5', tokens_used: 100 }),
-      fakeRun({ id: 'b', runtime: 'claude-sdk', model: 'haiku-4-5', tokens_used: 200 }),
+      fakeRun({ id: 'a', harness: 'claude-sdk', model: 'sonnet-4-5', tokens_used: 100 }),
+      fakeRun({ id: 'b', harness: 'claude-sdk', model: 'haiku-4-5', tokens_used: 200 }),
     ];
     const visible = selectVisibleColumns(runs, CANDIDATES);
-    expect(visible.has('runtime')).toBe(false); // uniform
+    expect(visible.has('harness')).toBe(false); // uniform
     expect(visible.has('model')).toBe(true); // varied
     expect(visible.has('tokens')).toBe(true); // varied
     expect(visible.has('status')).toBe(true); // always visible

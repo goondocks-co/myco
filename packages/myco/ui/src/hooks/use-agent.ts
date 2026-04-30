@@ -5,7 +5,7 @@ import { POLL_INTERVALS } from '../lib/constants';
 import type { PhaseAudit, PhaseAuditEntry } from '@myco/services/phase-audit';
 import type { WriteIntentRow } from '@myco/db/queries/write-intents';
 import type { DigestExtractRevisionRow } from '@myco/db/queries/digest-extracts';
-import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';
+import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 
 /* ---------- Re-exported backend types ---------- */
 
@@ -44,7 +44,7 @@ export interface RunRow {
   task: string | null;
   instruction: string | null;
   status: string;
-  runtime: string | null;
+  harness: string | null;
   provider: string | null;
   model: string | null;
   session_ref: string | null;
@@ -74,18 +74,17 @@ export interface RunRow {
    */
   reasoning_level?: ReasoningLevel | null;
   /**
-   * Parsed `executionOverrides` packet (runtime / reasoning / model / provider
+   * Parsed `executionOverrides` packet (harness / reasoning / model / provider
    * / phases) the run was started with. Null when the run used task defaults
    * verbatim. Shape mirrors the server's serialized payload (camelCase on the
    * wire) — used by the "Rerun with same settings" flow to pre-fill the
    * RunTaskDialog from a source run.
    */
   execution_overrides?: {
-    runtime?: string;
+    harness?: string;
     reasoningLevel?: string;
     model?: string;
     provider?: {
-      runtime?: string;
       type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
       localBackend?: 'ollama' | 'lmstudio';
       baseUrl?: string;
@@ -97,7 +96,6 @@ export interface RunRow {
       reasoningLevel?: string;
       model?: string;
       provider?: {
-        runtime?: string;
         type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
         localBackend?: 'ollama' | 'lmstudio';
         baseUrl?: string;
@@ -188,7 +186,7 @@ export interface TaskRow {
   timeoutSeconds?: number;
   phases?: PhaseDefinition[];
   execution?: {
-    runtime?: string;
+    harness?: string;
     provider?: {
       type?: string;
       model?: string;
@@ -212,19 +210,18 @@ export interface TriggerRunPayload {
   /** When true, writes are intercepted and recorded as write-intents. */
   dryRun?: boolean;
   /**
-   * Per-run overrides that pin runtime/reasoning/model (plus per-phase
+   * Per-run overrides that pin harness/reasoning/model (plus per-phase
    * reasoning & model) without touching the task YAML. Mirrors
    * `RunOptions.executionOverrides` in `@myco/agent/types`. Omit the field
    * entirely when nothing differs from task defaults — passing an empty
    * object still persists onto the run row.
    */
   executionOverrides?: {
-    runtime?: RuntimeId;
+    harness?: HarnessId;
     reasoningLevel?: ReasoningLevel;
     model?: string;
-    /** Camel-case provider override (wire-shape, matches runtime ProviderConfig). */
+    /** Camel-case provider override (wire-shape, matches harness ProviderConfig). */
     provider?: {
-      runtime?: RuntimeId;
       type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
       localBackend?: 'ollama' | 'lmstudio';
       baseUrl?: string;
@@ -236,7 +233,6 @@ export interface TriggerRunPayload {
       reasoningLevel?: ReasoningLevel;
       model?: string;
       provider?: {
-        runtime?: RuntimeId;
         type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
         localBackend?: 'ollama' | 'lmstudio';
         baseUrl?: string;
@@ -272,7 +268,7 @@ export interface RunCompareSummary {
   task: string | null;
   instruction: string | null;
   status: string;
-  runtime: string | null;
+  harness: string | null;
   provider: string | null;
   model: string | null;
   session_ref: string | null;
@@ -294,11 +290,11 @@ export interface RunCompareSummary {
    */
   reasoning_level: ReasoningLevel | null;
   /**
-   * Parsed `executionOverrides` packet (runtime / reasoning / model / phases)
+   * Parsed `executionOverrides` packet (harness / reasoning / model / phases)
    * the run was started with. Null when the run used task defaults verbatim.
    */
   execution_overrides: {
-    runtime?: string;
+    harness?: string;
     reasoningLevel?: string;
     model?: string;
     phases?: Record<string, { reasoningLevel?: string; model?: string }>;
@@ -638,7 +634,7 @@ function serializedRunToSummary(run: SerializedRunDetail): RunCompareSummary {
     task: run.task,
     instruction: run.instruction,
     status: run.status,
-    runtime: run.runtime,
+    harness: run.harness,
     provider: run.provider,
     model: run.model,
     session_ref: run.session_ref,

@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { loadConfig, saveConfig, updateConfig } from '@myco/config/loader';
-import { loadLocalConfig, loadMergedConfig, saveLocalConfig, updateLocalConfig } from '@myco/config/loader';
+import {
+  invalidateMergedConfigCache,
+  loadLocalConfig,
+  loadMergedConfig,
+  saveLocalConfig,
+  updateLocalConfig,
+} from '@myco/config/loader';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -221,5 +227,57 @@ describe('Local config overlay', () => {
   it('loadLocalConfig returns {} when YAML root is an array', () => {
     writeLocal(tmpDir, '- a\n- b\n');
     expect(loadLocalConfig(tmpDir)).toEqual({});
+  });
+});
+
+describe('loadMergedConfig caching', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cache-'));
+    invalidateMergedConfigCache();
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    invalidateMergedConfigCache();
+  });
+
+  it('returns the same object reference on a back-to-back call', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    const first = loadMergedConfig(tmpDir);
+    const second = loadMergedConfig(tmpDir);
+    expect(second).toBe(first);
+  });
+
+  it('reloads when myco.yaml changes on disk', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    const first = loadMergedConfig(tmpDir);
+    expect(first.appearance.theme).toBe('sage');
+
+    // Bump mtime + content to invalidate the fingerprint deterministically.
+    const next = `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: moss\n`;
+    fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), next);
+    fs.utimesSync(path.join(tmpDir, 'myco.yaml'), new Date(), new Date(Date.now() + 2000));
+
+    const second = loadMergedConfig(tmpDir);
+    expect(second.appearance.theme).toBe('moss');
+    expect(second).not.toBe(first);
+  });
+
+  it('reloads when local.yaml is added', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    const first = loadMergedConfig(tmpDir);
+    expect(first.appearance.theme).toBe('sage');
+
+    writeLocal(tmpDir, `appearance:\n  theme: moss\n`);
+    const second = loadMergedConfig(tmpDir);
+    expect(second.appearance.theme).toBe('moss');
+    expect(second).not.toBe(first);
+  });
+
+  it('saveLocalConfig invalidates the cached merge', () => {
+    writeProject(tmpDir, `version: 3\nembedding:\n  provider: ollama\n  model: bge-m3\nappearance:\n  theme: sage\n`);
+    loadMergedConfig(tmpDir);
+    saveLocalConfig(tmpDir, { appearance: { theme: 'plum' } });
+    expect(loadMergedConfig(tmpDir).appearance.theme).toBe('plum');
   });
 });

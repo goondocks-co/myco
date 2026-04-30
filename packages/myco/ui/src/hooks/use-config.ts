@@ -40,9 +40,9 @@ export interface MycoConfig {
     summary_batch_interval: number;
     scheduled_tasks_enabled?: boolean;
     event_tasks_enabled?: boolean;
-    runtime?: 'claude-sdk' | 'openai-agents';
+    harness?: 'claude-sdk' | 'openai-agents';
     provider?: {
-      runtime?: 'claude-sdk' | 'openai-agents';
+      harness?: 'claude-sdk' | 'openai-agents';
       type: string;
       base_url?: string;
       model?: string;

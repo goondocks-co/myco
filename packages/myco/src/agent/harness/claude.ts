@@ -3,15 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  RuntimeExecuteInput,
-  RuntimeExecuteResult,
-  AgentRuntime,
-  RuntimeCapability,
-  RuntimeScope,
-  RuntimeScopeRunInput,
-  RuntimeScopeSetup,
+  HarnessExecuteInput,
+  HarnessExecuteResult,
+  AgentHarness,
+  HarnessCapability,
+  HarnessScope,
+  HarnessScopeRunInput,
+  HarnessScopeSetup,
 } from './types.js';
-import { RuntimeExecutionError } from './types.js';
+import { HarnessExecutionError } from './types.js';
 import {
   createMaterializedVaultToolServer,
   createScopedVaultToolServer,
@@ -22,6 +22,20 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveClaudeCodeExecutable } from './claude-code-executable.js';
 
 const MCP_SERVER_NAME = 'myco-vault';
+
+const SESSION_RESUME_ERROR_PATTERNS = [
+  /session/i,
+  /resume/i,
+  /previous[_ ]response/i,
+  /conversation/i,
+];
+
+const EXPIRED_SESSION_ERROR_PATTERNS = [
+  /exited with code/i,
+  /session[\s_-]*not[\s_-]*found/i,
+  /session[\s_-]*expired/i,
+  /session[\s_-]*(is|was)?[\s_-]*(gone|missing|invalid)/i,
+];
 
 /**
  * Per-process isolated plugin cache directory for agent runs. The Claude
@@ -60,12 +74,77 @@ function getIsolatedPluginCacheDir(): string {
 
 /** Disable thinking on local providers whose endpoints don't accept the SDK's reasoning enum. */
 function suppressEffortLeakForLocalProvider(
-  provider?: RuntimeExecuteInput['provider'],
+  provider?: HarnessExecuteInput['provider'],
 ): { thinking?: { type: 'disabled' } } {
   return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
 }
 
-function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'] }) {
+/**
+ * Drain a Claude SDK message stream into a final text + usage tally.
+ *
+ * Both `execute` and `openScope.run` produce identical message-stream
+ * shapes — only their `query()` options differ (resume + persistSession in
+ * `execute`, fresh + ephemeral in `openScope`). Centralizing the loop
+ * keeps usage accounting, partial-usage rescue on stream errors, and the
+ * assistant-message turn fallback consistent across both paths; without it
+ * the two had already drifted (e.g., `assistantMessages` rescue was added
+ * to one and not the other).
+ */
+async function consumeClaudeMessageStream(
+  messageStream: AsyncIterable<SDKMessage>,
+  options: { localProvider: boolean; sessionRef?: string },
+): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage'] }> {
+  let finalText = '';
+  let turnsUsed = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let costUsd = 0;
+  let assistantMessages = 0;
+
+  const buildUsage = () => ({
+    requests: turnsUsed,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    costUsd,
+    requestUsageEntries: turnsUsed > 0
+      ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
+      : [],
+  });
+
+  try {
+    for await (const message of messageStream) {
+      if (message.type === 'assistant') {
+        assistantMessages += 1;
+        continue;
+      }
+      if (message.type === 'result') {
+        // Capture usage on any subtype — error variants still burn tokens.
+        // finalText only exists on a successful result.
+        turnsUsed = message.num_turns ?? assistantMessages;
+        inputTokens = message.usage?.input_tokens ?? 0;
+        outputTokens = message.usage?.output_tokens ?? 0;
+        costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
+        if (message.subtype === 'success') {
+          finalText = message.result;
+        }
+      }
+    }
+  } catch (err) {
+    if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
+      throw new HarnessExecutionError(
+        errorMessage(err),
+        { usage: buildUsage(), ...(options.sessionRef ? { sessionRef: options.sessionRef } : {}) },
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+
+  return { finalText, turnsUsed, usage: buildUsage() };
+}
+
+function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'] }) {
   const { toolSurface } = input;
   // Map-phase fast path: pre-materialized tool list. Bypasses both
   // createScopedVaultToolServer and createVaultToolServer rebuilds, which
@@ -102,14 +181,28 @@ function buildToolServer(input: { toolSurface: RuntimeExecuteInput['toolSurface'
   });
 }
 
-export class ClaudeSdkRuntime implements AgentRuntime {
+export class ClaudeSdkHarness implements AgentHarness {
   readonly id = 'claude-sdk' as const;
 
-  supports(capability: RuntimeCapability): boolean {
+  supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
 
-  async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
+  classifyError(error: unknown, context?: { attemptedResume?: boolean }) {
+    const message = errorMessage(error);
+    if (
+      context?.attemptedResume
+      && EXPIRED_SESSION_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+    ) {
+      return 'session-expired' as const;
+    }
+    if (SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message))) {
+      return 'session-resume-failed' as const;
+    }
+    return 'unknown' as const;
+  }
+
+  async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     const toolServer = buildToolServer(input);
     const baseEnv = buildPhaseEnv(input.provider);
     const env = {
@@ -124,13 +217,13 @@ export class ClaudeSdkRuntime implements AgentRuntime {
 
     // Debug-level record of the per-request tool surface. Filtered out
     // unless daemon.log_level is set to 'debug' — when it is, operators
-    // can grep the log viewer for `agent.runtime.request` to see what
+    // can grep the log viewer for `agent.harness.request` to see what
     // tools each phase actually sent, which is how you catch a plugin
     // leak before it blows up a real run with a 400 tool-schema error.
     if (input.logger) {
       const mcpToolNames = input.toolSurface.toolNames
         ?? (toolServer ? ['<full-vault-surface>'] : []);
-      input.logger.debug('agent.runtime.request', 'Agent runtime request', {
+      input.logger.debug('agent.harness.request', 'Agent harness request', {
         runId: input.toolSurface.runId,
         agentId: input.toolSurface.agentId,
         model: input.model,
@@ -141,12 +234,6 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       });
     }
 
-    let finalText = '';
-    let turnsUsed = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let costUsd = 0;
-    let assistantMessages = 0;
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
     const localProvider = isLocalProvider(input.provider);
 
@@ -185,59 +272,18 @@ export class ClaudeSdkRuntime implements AgentRuntime {
       },
     });
 
-    const buildUsage = () => ({
-      requests: turnsUsed,
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-      costUsd,
-      requestUsageEntries: turnsUsed > 0
-        ? [{
-            inputTokens,
-            outputTokens,
-            totalTokens: inputTokens + outputTokens,
-          }]
-        : [],
+    const drained = await consumeClaudeMessageStream(messageStream, {
+      localProvider,
+      sessionRef: input.sessionRef,
     });
 
-    try {
-      for await (const message of messageStream) {
-        if (message.type === 'assistant') {
-          assistantMessages += 1;
-          continue;
-        }
-        if (message.type === 'result') {
-          // Capture usage on any subtype — error variants still burn tokens.
-          // finalText only exists on a successful result.
-          turnsUsed = message.num_turns ?? assistantMessages;
-          inputTokens = message.usage?.input_tokens ?? 0;
-          outputTokens = message.usage?.output_tokens ?? 0;
-          costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
-          if (message.subtype === 'success') {
-            finalText = message.result;
-          }
-        }
-      }
-    } catch (err) {
-      if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
-        throw new RuntimeExecutionError(
-          errorMessage(err),
-          { usage: buildUsage(), sessionRef: input.sessionRef },
-          { cause: err },
-        );
-      }
-      throw err;
-    }
-
     return {
-      finalText,
-      turnsUsed,
-      usage: buildUsage(),
+      ...drained,
       sessionRef: input.sessionRef,
     };
   }
 
-  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+  async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
     const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
     const baseEnv = buildPhaseEnv(setup.provider);
@@ -252,7 +298,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     if (setup.logger) {
       const mcpToolNames = setup.toolSurface.toolNames
         ?? (toolServer ? ['<full-vault-surface>'] : []);
-      setup.logger.debug('agent.runtime.scope-open', 'Claude SDK scope opened', {
+      setup.logger.debug('agent.harness.scope-open', 'Claude SDK scope opened', {
         runId: setup.toolSurface.runId,
         agentId: setup.toolSurface.agentId,
         model: setup.model,
@@ -264,15 +310,8 @@ export class ClaudeSdkRuntime implements AgentRuntime {
     let closed = false;
 
     return {
-      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
-        if (closed) throw new Error('ClaudeSdkRuntime: scope.run() called after close()');
-
-        let finalText = '';
-        let turnsUsed = 0;
-        let inputTokens = 0;
-        let outputTokens = 0;
-        let costUsd = 0;
-        let assistantMessages = 0;
+      async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
+        if (closed) throw new Error('ClaudeSdkHarness: scope.run() called after close()');
 
         const messageStream: AsyncIterable<SDKMessage> = query({
           prompt: input.prompt,
@@ -294,45 +333,7 @@ export class ClaudeSdkRuntime implements AgentRuntime {
           },
         });
 
-        const buildUsage = () => ({
-          requests: turnsUsed,
-          inputTokens,
-          outputTokens,
-          totalTokens: inputTokens + outputTokens,
-          costUsd,
-          requestUsageEntries: turnsUsed > 0
-            ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
-            : [],
-        });
-
-        try {
-          for await (const message of messageStream) {
-            if (message.type === 'assistant') {
-              assistantMessages += 1;
-              continue;
-            }
-            if (message.type === 'result') {
-              turnsUsed = message.num_turns ?? assistantMessages;
-              inputTokens = message.usage?.input_tokens ?? 0;
-              outputTokens = message.usage?.output_tokens ?? 0;
-              costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
-              if (message.subtype === 'success') {
-                finalText = message.result;
-              }
-            }
-          }
-        } catch (err) {
-          if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
-            throw new RuntimeExecutionError(
-              errorMessage(err),
-              { usage: buildUsage() },
-              { cause: err },
-            );
-          }
-          throw err;
-        }
-
-        return { finalText, turnsUsed, usage: buildUsage() };
+        return consumeClaudeMessageStream(messageStream, { localProvider });
       },
       async close(): Promise<void> {
         // The Claude SDK MCP server is in-process — no async resource to

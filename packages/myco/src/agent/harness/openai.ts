@@ -8,14 +8,14 @@ import {
   type Session,
 } from '@openai/agents';
 import {
-  RuntimeExecutionError,
-  type AgentRuntime,
-  type RuntimeCapability,
-  type RuntimeExecuteInput,
-  type RuntimeExecuteResult,
-  type RuntimeScope,
-  type RuntimeScopeRunInput,
-  type RuntimeScopeSetup,
+  HarnessExecutionError,
+  type AgentHarness,
+  type HarnessCapability,
+  type HarnessExecuteInput,
+  type HarnessExecuteResult,
+  type HarnessScope,
+  type HarnessScopeRunInput,
+  type HarnessScopeSetup,
 } from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
@@ -31,9 +31,16 @@ import {
   type LocalOpenAIBackendKind,
 } from '@myco/intelligence/local-openai-backends.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
+const SESSION_RESUME_ERROR_PATTERNS = [
+  /session/i,
+  /resume/i,
+  /previous[_ ]response/i,
+  /conversation/i,
+];
 
 class PersistedSession implements Session {
   private items: AgentInputItem[];
@@ -243,8 +250,8 @@ async function prepareLocalProviderExecution(
   };
 }
 
-function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
-  const { apiKey, baseURL } = resolveOpenAIClientConfig(input.provider);
+function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
+  const { apiKey, baseURL } = resolveOpenAIClientConfig(provider);
   const client = new OpenAI({
     apiKey,
     ...(baseURL ? { baseURL } : {}),
@@ -252,135 +259,132 @@ function createProvider(input: RuntimeExecuteInput): OpenAIProvider {
 
   return new OpenAIProvider({
     openAIClient: client,
-    useResponses: shouldUseResponsesApi(input.provider),
+    useResponses: shouldUseResponsesApi(provider),
   });
 }
 
-export class OpenAIAgentsRuntime implements AgentRuntime {
+/**
+ * Drive a single SDK turn-loop with a configured runner+agent. Used by
+ * both `OpenAIAgentsHarness.execute` (which feeds in any prior session
+ * data + sessionRef) and `scope.run` (always a fresh session). Centralized
+ * here so usage accounting, partial-usage rescue on throw, and result-shape
+ * construction stay in one place — without it the two call sites had
+ * already drifted.
+ */
+async function runOpenAIAgent(
+  runner: Runner,
+  agent: Agent,
+  prompt: string,
+  options: {
+    maxTurns?: number;
+    sessionRef: string;
+    sessionData: AgentInputItem[];
+    abortController?: AbortController;
+  },
+): Promise<HarnessExecuteResult> {
+  let persistedItems: AgentInputItem[] = [...options.sessionData];
+  const session = new PersistedSession(options.sessionRef, persistedItems, (items) => {
+    persistedItems = [...items];
+  });
+
+  let result;
+  try {
+    result = await runner.run(agent, prompt, {
+      maxTurns: options.maxTurns,
+      session,
+      ...(options.abortController ? { signal: options.abortController.signal } : {}),
+    });
+  } catch (err) {
+    const partialRaw = extractPartialRawResponses(err);
+    const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+    throw new HarnessExecutionError(
+      err instanceof Error ? err.message : String(err),
+      { usage, sessionRef: options.sessionRef, sessionData: persistedItems },
+      { cause: err instanceof Error ? err : undefined },
+    );
+  }
+
+  const usage = toOpenAIUsage(result.rawResponses);
+  usage.providerData = { lastResponseId: result.lastResponseId };
+
+  return {
+    finalText: typeof result.finalOutput === 'string'
+      ? result.finalOutput
+      : JSON.stringify(result.finalOutput ?? ''),
+    turnsUsed: result.rawResponses.length,
+    usage,
+    sessionRef: options.sessionRef,
+    sessionData: persistedItems,
+    rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
+  };
+}
+
+export class OpenAIAgentsHarness implements AgentHarness {
   readonly id = 'openai-agents' as const;
 
-  supports(capability: RuntimeCapability): boolean {
+  supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
   }
 
-  async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
+  classifyError(error: unknown) {
+    const message = errorMessage(error);
+    return SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+      ? 'session-resume-failed' as const
+      : 'unknown' as const;
+  }
+
+  async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     const preparedExecution = await prepareLocalProviderExecution(input.provider, input.model);
-    let persistedItems = Array.isArray(input.sessionData)
-      ? (input.sessionData as AgentInputItem[])
-      : [];
-    const sessionRef = input.sessionRef ?? crypto.randomUUID();
-    const session = new PersistedSession(sessionRef, persistedItems, (items) => {
-      persistedItems = [...items];
-    });
     const mcpServer = createLocalVaultMcpServer(input.toolSurface);
     await mcpServer.connect();
 
     try {
       const agent = new Agent({
         name: 'myco-agent',
-        instructions: input.systemPrompt ?? 'You are the Myco agent runtime.',
+        instructions: input.systemPrompt ?? 'You are the Myco agent harness.',
         model: preparedExecution.model,
         mcpServers: [mcpServer],
       });
       const runner = new Runner({
-        modelProvider: createProvider({
-          ...input,
-          provider: preparedExecution.provider,
-        }),
+        modelProvider: createProvider(preparedExecution.provider),
       });
-      let result;
-      try {
-        result = await runner.run(agent, input.prompt, {
-          maxTurns: input.maxTurns,
-          session,
-          ...(input.abortController ? { signal: input.abortController.signal } : {}),
-        });
-      } catch (err) {
-        const partialRaw = extractPartialRawResponses(err);
-        const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-        throw new RuntimeExecutionError(
-          err instanceof Error ? err.message : String(err),
-          { usage, sessionRef, sessionData: persistedItems },
-          { cause: err instanceof Error ? err : undefined },
-        );
-      }
-      const usage = toOpenAIUsage(result.rawResponses);
-      usage.providerData = {
-        lastResponseId: result.lastResponseId,
-      };
-
-      return {
-        finalText: typeof result.finalOutput === 'string'
-          ? result.finalOutput
-          : JSON.stringify(result.finalOutput ?? ''),
-        turnsUsed: result.rawResponses.length,
-        usage,
-        sessionRef,
-        sessionData: persistedItems,
-        rawRuntimeMetadata: {
-          lastResponseId: result.lastResponseId,
-        },
-      };
+      return await runOpenAIAgent(runner, agent, input.prompt, {
+        maxTurns: input.maxTurns,
+        sessionRef: input.sessionRef ?? crypto.randomUUID(),
+        sessionData: Array.isArray(input.sessionData) ? (input.sessionData as AgentInputItem[]) : [],
+        abortController: input.abortController,
+      });
     } finally {
       await mcpServer.close();
     }
   }
 
-  async openScope(setup: RuntimeScopeSetup): Promise<RuntimeScope> {
+  async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
     const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
     const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
     await mcpServer.connect();
 
     const agent = new Agent({
       name: 'myco-agent',
-      instructions: setup.systemPrompt ?? 'You are the Myco agent runtime.',
+      instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
       model: preparedExecution.model,
       mcpServers: [mcpServer],
     });
     const runner = new Runner({
-      modelProvider: createProvider({
-        provider: preparedExecution.provider,
-      } as RuntimeExecuteInput),
+      modelProvider: createProvider(preparedExecution.provider),
     });
 
     let closed = false;
 
     return {
-      async run(input: RuntimeScopeRunInput): Promise<RuntimeExecuteResult> {
-        if (closed) throw new Error('OpenAIAgentsRuntime: scope.run() called after close()');
-        const sessionRef = crypto.randomUUID();
-        let persistedItems: AgentInputItem[] = [];
-        const session = new PersistedSession(sessionRef, persistedItems, (items) => {
-          persistedItems = [...items];
+      async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
+        if (closed) throw new Error('OpenAIAgentsHarness: scope.run() called after close()');
+        return runOpenAIAgent(runner, agent, input.prompt, {
+          maxTurns: input.maxTurns,
+          sessionRef: crypto.randomUUID(),
+          sessionData: [],
+          abortController: input.abortController,
         });
-        let result;
-        try {
-          result = await runner.run(agent, input.prompt, {
-            maxTurns: input.maxTurns,
-            session,
-            ...(input.abortController ? { signal: input.abortController.signal } : {}),
-          });
-        } catch (err) {
-          const partialRaw = extractPartialRawResponses(err);
-          const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-          throw new RuntimeExecutionError(
-            err instanceof Error ? err.message : String(err),
-            { usage, sessionRef, sessionData: persistedItems },
-            { cause: err instanceof Error ? err : undefined },
-          );
-        }
-        const usage = toOpenAIUsage(result.rawResponses);
-        usage.providerData = { lastResponseId: result.lastResponseId };
-        return {
-          finalText: typeof result.finalOutput === 'string'
-            ? result.finalOutput
-            : JSON.stringify(result.finalOutput ?? ''),
-          turnsUsed: result.rawResponses.length,
-          usage,
-          sessionRef,
-          sessionData: persistedItems,
-          rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
-        };
       },
       async close(): Promise<void> {
         if (closed) return;

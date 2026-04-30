@@ -18,7 +18,7 @@ function baseRun(overrides: Partial<RunRow>): RunRow {
     task: 'test',
     instruction: null,
     status: 'completed',
-    runtime: null,
+    harness: null,
     provider: null,
     model: null,
     session_ref: null,

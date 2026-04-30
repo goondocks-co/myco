@@ -169,6 +169,32 @@ describe('MycoConfigSchema v3', () => {
     expect(config.agent.tasks?.['skill-survey']?.schedule?.intervalSeconds).toBe(900);
   });
 
+  it('rejects legacy runtime keys after config migration', () => {
+    expect(MycoConfigSchema.safeParse({
+      version: 3,
+      config_version: 9,
+      agent: { runtime: 'claude-sdk' },
+    }).success).toBe(false);
+
+    expect(MycoConfigSchema.safeParse({
+      version: 3,
+      config_version: 9,
+      agent: {
+        provider: { type: 'anthropic', runtime: 'claude-sdk' },
+      },
+    }).success).toBe(false);
+
+    expect(MycoConfigSchema.safeParse({
+      version: 3,
+      config_version: 9,
+      agent: {
+        tasks: {
+          'review-session': { runtime: 'openai-agents' },
+        },
+      },
+    }).success).toBe(false);
+  });
+
   it('accepts task schedule accelerator overrides in agent.tasks', () => {
     const config = MycoConfigSchema.parse({
       version: 3,

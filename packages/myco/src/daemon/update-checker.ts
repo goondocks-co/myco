@@ -196,7 +196,7 @@ export function isManagedProjectRuntime(cliEntry: string, vaultDir?: string): bo
  * Single source of truth for the "where does this project's myco live"
  * question. Prefer this over reading `runtime.command` directly.
  */
-export function getRuntimeScope(vaultDir: string): 'project' | 'machine' {
+export function getHarnessScope(vaultDir: string): 'project' | 'machine' {
   const runtimeCommand = resolveRuntimeCommand(vaultDir);
   return runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
     ? 'project'

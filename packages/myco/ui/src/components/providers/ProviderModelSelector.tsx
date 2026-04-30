@@ -14,10 +14,10 @@ import {
   SelectValue,
 } from '../ui/select';
 import { SearchableSelect } from '../ui/searchable-select';
-import { defaultBaseUrlForProvider, providerSupportsRuntime, type ProviderInfo } from '../../hooks/use-providers';
+import { defaultBaseUrlForProvider, providerSupportsHarness, type ProviderInfo } from '../../hooks/use-providers';
 import { useModels } from '../../hooks/use-models';
 
-const RUNTIME_LABELS: Record<string, string> = {
+const HARNESS_LABELS: Record<string, string> = {
   'claude-sdk': 'Claude SDK',
   'openai-agents': 'OpenAI Agents',
 };
@@ -47,7 +47,7 @@ const OPENAI_COMPATIBLE_BACKEND_OPTIONS = [
 ] as const;
 
 export interface ProviderModelSelectorProps {
-  runtime: string;
+  harness: string;
   providerType: string;
   localBackend?: 'ollama' | 'lmstudio' | '';
   model: string;
@@ -56,8 +56,8 @@ export interface ProviderModelSelectorProps {
   modelPlaceholder?: string;
   providers: ProviderInfo[];
   isLoadingProviders: boolean;
-  showRuntimeSelector?: boolean;
-  onRuntimeChange: (runtime: string) => void;
+  showHarnessSelector?: boolean;
+  onHarnessChange: (harness: string) => void;
   onProviderChange: (type: string) => void;
   onLocalBackendChange?: (localBackend: 'ollama' | 'lmstudio' | '') => void;
   onModelChange: (model: string) => void;
@@ -70,7 +70,7 @@ export interface ProviderModelSelectorProps {
 }
 
 export function ProviderModelSelector({
-  runtime,
+  harness,
   providerType,
   localBackend = '',
   model,
@@ -79,8 +79,8 @@ export function ProviderModelSelector({
   modelPlaceholder,
   providers,
   isLoadingProviders,
-  showRuntimeSelector = true,
-  onRuntimeChange,
+  showHarnessSelector = true,
+  onHarnessChange,
   onProviderChange,
   onLocalBackendChange,
   onModelChange,
@@ -89,7 +89,7 @@ export function ProviderModelSelector({
   onBaseUrlBlur,
   onContextLengthBlur,
 }: ProviderModelSelectorProps) {
-  const providersForRuntime = providers.filter((provider) => providerSupportsRuntime(provider.type, runtime as 'claude-sdk' | 'openai-agents'));
+  const providersForHarness = providers.filter((provider) => providerSupportsHarness(provider.type, harness as 'claude-sdk' | 'openai-agents'));
   const selectedProvider = providers.find((p) => p.type === providerType);
   const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
   const hasSelection = providerType !== '';
@@ -109,15 +109,15 @@ export function ProviderModelSelector({
 
   return (
     <div className="space-y-3">
-      {showRuntimeSelector && (
+      {showHarnessSelector && (
         <div className="space-y-1">
-          <label className="font-sans text-xs text-on-surface-variant">Runtime</label>
-          <Select value={runtime} onValueChange={onRuntimeChange}>
+          <label className="font-sans text-xs text-on-surface-variant">Harness</label>
+          <Select value={harness} onValueChange={onHarnessChange}>
             <SelectTrigger>
-              <SelectValue placeholder="Select a runtime" />
+              <SelectValue placeholder="Select a harness" />
             </SelectTrigger>
             <SelectContent>
-              {Object.entries(RUNTIME_LABELS).map(([value, label]) => (
+              {Object.entries(HARNESS_LABELS).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
                   {label}
                 </SelectItem>
@@ -129,7 +129,7 @@ export function ProviderModelSelector({
 
       {/* Provider selector — derived from /providers response order */}
       <div className="grid grid-cols-3 gap-2">
-        {providersForRuntime.map((info) => {
+        {providersForHarness.map((info) => {
           const Icon = PROVIDER_ICONS[info.type];
           if (!Icon) return null;
           const isSelected = providerType === info.type;

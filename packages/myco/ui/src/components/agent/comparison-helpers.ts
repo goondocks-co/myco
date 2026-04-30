@@ -40,13 +40,13 @@ export function deriveRunReasoning(
 // ---------------------------------------------------------------------------
 
 export interface CellLabelInput {
-  runtime: string | null | undefined;
+  harness: string | null | undefined;
   reasoningLevel: string | null | undefined;
   model: string | null | undefined;
 }
 
 /**
- * Build a compact human label for a cell from its (runtime, reasoning,
+ * Build a compact human label for a cell from its (harness, reasoning,
  * model) triple. Omits any dimension that resolves to the task default so
  * single-axis matrices read cleanly. Returns `"default"` when every axis
  * defaulted (the single-cell degenerate case).
@@ -56,7 +56,7 @@ export interface CellLabelInput {
  */
 export function deriveCellLabel(input: CellLabelInput): string {
   const parts: string[] = [];
-  if (isConcrete(input.runtime)) parts.push(String(input.runtime));
+  if (isConcrete(input.harness)) parts.push(String(input.harness));
   if (isConcrete(input.reasoningLevel)) parts.push(String(input.reasoningLevel));
   if (isConcrete(input.model)) parts.push(String(input.model));
   if (parts.length === 0) return 'default';
@@ -97,7 +97,7 @@ export function computeCostPerWrite(
 export interface DeltaCell {
   /** The run that won this category (lowest cost / most writes / fastest). */
   run: RunCompareSummary;
-  /** Human-friendly label for the cell (runtime / reasoning / model). */
+  /** Human-friendly label for the cell (harness / reasoning / model). */
   label: string;
 }
 
@@ -128,7 +128,7 @@ export function computeDeltas(
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
     const label = deriveCellLabel({
-      runtime: run.runtime,
+      harness: run.harness,
       reasoningLevel: reasoningByIndex[i],
       model: run.model,
     });
@@ -242,7 +242,7 @@ export function sumPhaseTurns(usageData: string | null): number | null {
  * typos. Keep in sync with the `<thead>` render in ComparisonView.
  */
 export type ColumnKey =
-  | 'runtime'
+  | 'harness'
   | 'reasoning'
   | 'model'
   | 'status'
@@ -268,8 +268,8 @@ const ALWAYS_VISIBLE_COLUMNS: ReadonlySet<ColumnKey> = new Set<ColumnKey>(['stat
  */
 function readColumnValue(run: RunCompareSummary, column: ColumnKey): string {
   switch (column) {
-    case 'runtime':
-      return run.runtime ?? '__missing__';
+    case 'harness':
+      return run.harness ?? '__missing__';
     case 'reasoning':
       return run.reasoning_level ?? '__missing__';
     case 'model':

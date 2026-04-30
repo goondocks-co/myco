@@ -187,7 +187,7 @@ export function loadSystemPrompt(definitionsDir: string, relativePath: string): 
 
 /**
  * Merge a built-in AgentDefinition with optional database overrides and
- * task-specific configuration to produce the effective runtime config.
+ * task-specific configuration to produce the effective harness config.
  *
  * Priority (highest wins):
  * 1. Task toolOverrides (replaces tool list entirely if present)
@@ -204,7 +204,7 @@ export function resolveEffectiveConfig(
   agentOverrides?: AgentRow | null,
   taskOverrides?: AgentTask,
 ): EffectiveConfig {
-  let runtime = taskOverrides?.execution?.runtime ?? taskOverrides?.execution?.provider?.runtime ?? 'claude-sdk';
+  let harness = taskOverrides?.execution?.harness ?? 'claude-sdk';
   // Start with definition defaults
   let model = definition.model;
   let reasoningLevel = taskOverrides?.reasoningLevel;
@@ -258,7 +258,7 @@ export function resolveEffectiveConfig(
 
   return {
     agentId,
-    runtime,
+    harness,
     model,
     ...(reasoningLevel ? { reasoningLevel } : {}),
     maxTurns,

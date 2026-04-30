@@ -3,7 +3,7 @@
  *
  * These tests call executePhase / executeSingleQuery / executePhasedQuery
  * directly with a hand-constructed PhaseLoopContext, bypassing runAgent's
- * DB bookkeeping. The runtime adapter is mocked so dispatch goes through
+ * DB bookkeeping. The harness adapter is mocked so dispatch goes through
  * a programmable fake instead of a real SDK.
  */
 
@@ -13,23 +13,23 @@ import type {
   EffectiveConfig,
   PhaseDefinition,
   RuntimeUsage,
-  RuntimeId,
+  HarnessId,
 } from '@myco/agent/types.js';
-import type { AgentRuntime, RuntimeExecuteInput, RuntimeExecuteResult } from '@myco/agent/runtime/types.js';
+import type { AgentHarness, HarnessExecuteInput, HarnessExecuteResult } from '@myco/agent/harness/types.js';
 import type { RunCheckpointState } from '@myco/agent/executor-state.js';
 
 // ---------------------------------------------------------------------------
-// Runtime mock — controls execute() behavior per test.
+// Harness mock — controls execute() behavior per test.
 // ---------------------------------------------------------------------------
 
 type RuntimeBehavior =
-  | { kind: 'success'; result?: Partial<RuntimeExecuteResult> }
+  | { kind: 'success'; result?: Partial<HarnessExecuteResult> }
   | { kind: 'error'; message?: string }
   | { kind: 'abort' };
 
 let runtimeBehaviors: RuntimeBehavior[] = [];
 let defaultRuntimeBehavior: RuntimeBehavior = { kind: 'success' };
-let capturedExecuteInputs: RuntimeExecuteInput[] = [];
+let capturedExecuteInputs: HarnessExecuteInput[] = [];
 let runtimeSupportsSessionResume = false;
 
 const DEFAULT_USAGE: RuntimeUsage = {
@@ -46,9 +46,9 @@ function nextBehavior(): RuntimeBehavior {
   return runtimeBehaviors.length > 0 ? runtimeBehaviors.shift()! : defaultRuntimeBehavior;
 }
 
-const fakeRuntime: AgentRuntime = {
-  id: 'claude-sdk' as RuntimeId,
-  async execute(input: RuntimeExecuteInput): Promise<RuntimeExecuteResult> {
+const fakeRuntime: AgentHarness = {
+  id: 'claude-sdk' as HarnessId,
+  async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     capturedExecuteInputs.push(input);
     const behavior = nextBehavior();
     if (behavior.kind === 'error') {
@@ -73,10 +73,16 @@ const fakeRuntime: AgentRuntime = {
     if (capability === 'supportsSessionResume') return runtimeSupportsSessionResume;
     return false;
   },
+	  classifyError(error) {
+	    const message = error instanceof Error ? error.message : String(error);
+	    if (/exited with code/i.test(message)) return 'session-expired';
+	    if (/unable to resume session/i.test(message)) return 'session-resume-failed';
+	    return 'unknown';
+	  },
 };
 
-mock.module('@myco/agent/runtime/index.js', () => ({
-  getAgentRuntime: () => fakeRuntime,
+mock.module('@myco/agent/harness/index.js', () => ({
+  getAgentHarness: () => fakeRuntime,
 }));
 
 // Cost resolution is async but doesn't need real numbers here.
@@ -119,7 +125,7 @@ function baseConfig(phases?: PhaseDefinition[]): EffectiveConfig {
     taskDisplayName: 'Test Task',
     taskPrompt: 'Do the thing.',
     systemPromptPath: 'prompts/system.md',
-    runtime: 'claude-sdk',
+    harness: 'claude-sdk',
     model: 'claude-sonnet-4',
     maxTurns: 5,
     timeoutSeconds: 60,
@@ -130,7 +136,7 @@ function baseConfig(phases?: PhaseDefinition[]): EffectiveConfig {
 
 function baseCheckpoint(): RunCheckpointState {
   return {
-    runtime: 'claude-sdk',
+    harness: 'claude-sdk',
     phases: {},
   };
 }
@@ -191,7 +197,7 @@ describe('executePhase', () => {
     const ctx = baseContext({
       config: {
         ...baseConfig(),
-        runtime: 'claude-sdk',
+        harness: 'claude-sdk',
       },
     });
 
@@ -394,7 +400,7 @@ describe('executePhasedQuery', () => {
   it('does not reuse sessionRef when prior attempt failed with zero turns', async () => {
     const phases = [phase('a')];
     const checkpointState: RunCheckpointState = {
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       phases: {
         a: {
           name: 'a',
@@ -414,7 +420,7 @@ describe('executePhasedQuery', () => {
   it('reuses sessionRef when prior attempt failed after producing turns', async () => {
     const phases = [phase('a')];
     const checkpointState: RunCheckpointState = {
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       phases: {
         a: {
           name: 'a',
