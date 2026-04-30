@@ -136,12 +136,6 @@ const RegistrationSchema = z.object({
    */
   mcpCwd: z.string().optional(),
   /**
-   * Installer rewrites `myco-run` references to the absolute path from
-   * `.myco/runtime.command` at install time. Use only for hosts whose PATH
-   * order can't reach the dev shim (e.g., opencode prepending /opt/homebrew/bin).
-   */
-  substituteRuntimeCommand: z.boolean().optional(),
-  /**
    * JSON key under which MCP server entries are stored in the MCP config file.
    * Defaults to 'mcpServers' (used by Claude Code, Cursor, etc.). opencode uses 'mcp'.
    */

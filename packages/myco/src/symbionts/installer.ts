@@ -65,33 +65,6 @@ const LEGACY_BUILTIN_SKILL_NAMES = ['myco-curate', 'rules'];
 export const MYCO_MCP_SERVER_NAME = 'myco';
 
 /**
- * Replace the `myco-run` launcher with the project's runtime.command alias
- * (e.g. `myco-dev`) in an MCP server definition. Handles both shapes:
- *
- *   - string:  `{ command: "myco-run", args: ["mcp"] }`
- *             → `{ command: "<alias>",  args: ["mcp"] }`
- *   - array:   `{ command: ["myco-run", "mcp"] }`
- *             → `{ command: ["<alias>",  "mcp"] }`
- *
- * Only substitutes when the existing command is literally `myco-run`; any
- * other value is left alone so hand-edited or non-standard entries are
- * preserved.
- */
-function substituteMycoRunCommand(
-  server: Record<string, unknown>,
-  alias: string,
-): Record<string, unknown> {
-  const command = server.command;
-  if (command === 'myco-run') {
-    return { ...server, command: alias };
-  }
-  if (Array.isArray(command) && command[0] === 'myco-run') {
-    return { ...server, command: [alias, ...command.slice(1)] };
-  }
-  return server;
-}
-
-/**
  * Marker substring written into plugin-file hook templates (e.g., opencode's plugin.ts).
  * Uninstall only deletes plugin files whose content contains this marker, so
  * contributors who hand-edit a plugin file without removing the marker are protected.
@@ -426,18 +399,16 @@ export class SymbiontInstaller {
     const LEGACY_OBJECT_KEYS = ['myco-run', 'myco-run *'];
     // Fields whose array values are exec argvs (process invocation arrays),
     // NOT allowlist tokens. The cleanup sweep must not touch these because
-    // `myco-run` remains the PUBLISHED MCP launcher command — stripping it
-    // from an opencode-style `command: ["myco-run", "mcp"]` array would
-    // corrupt the MCP spawn. Only works today because installMcp() deep-
-    // merges the template back in after cleanup; don't rely on that mask.
+    // stripping tokens from an opencode-style `command` array would corrupt
+    // the MCP spawn. Only works today because installMcp() deep-merges the
+    // template back in after cleanup; don't rely on that mask.
     const EXEC_ARGV_KEYS = new Set(['command', 'args']);
 
     const walk = (node: unknown, parentKey?: string): void => {
       if (node === null || typeof node !== 'object') return;
       if (Array.isArray(node)) {
         // Exec argv arrays are process invocations (e.g. opencode's
-        // `command: ["myco-run", "mcp"]`). Never strip tokens from these
-        // — `myco-run` is the intended MCP command.
+        // MCP `command` array). Never strip tokens from these.
         if (parentKey !== undefined && EXEC_ARGV_KEYS.has(parentKey)) return;
         // String arrays: filter out legacy allowlist tokens in place.
         for (let i = node.length - 1; i >= 0; i--) {
@@ -1045,7 +1016,6 @@ export class SymbiontInstaller {
 
     const reg = this.manifest.registration;
     const cwd = reg?.mcpCwd;
-    const alias = reg?.substituteRuntimeCommand ? this.readRuntimeCommandAlias() : null;
     const daemonPort = this.resolveDaemonPort();
 
     return Object.fromEntries(
@@ -1054,7 +1024,6 @@ export class SymbiontInstaller {
         let next = { ...(def as Record<string, unknown>) };
         next = this.interpolateMcpTemplate(next, daemonPort);
         if (cwd) next.cwd = cwd;
-        if (alias) next = substituteMycoRunCommand(next, alias);
         return [name, next];
       }),
     );
@@ -1087,35 +1056,6 @@ export class SymbiontInstaller {
       return port;
     } catch {
       return derivePort(vaultDir);
-    }
-  }
-
-  /**
-   * Read `.myco/runtime.command` and return the alias (e.g. `myco-dev`).
-   *
-   * Same file the hook guard and the `bin/myco-run` launcher consult to
-   * decide which binary answers for the project. Only symbionts whose
-   * manifest opts in via `registration.substituteRuntimeCommand = true`
-   * reach this path — most symbionts rely on runtime PATH resolution
-   * inside `bin/myco-run` instead, which keeps the alias truly dynamic
-   * (change `runtime.command`, next spawn picks it up, no re-install).
-   * Opt-in is for hosts that reorder PATH so `myco-run` can't be reached
-   * via `~/.local/bin` (opencode, and whatever future host shares that
-   * behavior).
-   *
-   * Returns null when the file is missing, empty, or contains the
-   * default (`myco`) — no substitution is needed in those cases.
-   */
-  private readRuntimeCommandAlias(): string | null {
-    try {
-      const raw = fs.readFileSync(
-        path.join(this.projectRoot, '.myco', 'runtime.command'),
-        'utf-8',
-      ).trim();
-      if (!raw || raw === 'myco') return null;
-      return raw;
-    } catch {
-      return null;
     }
   }
 

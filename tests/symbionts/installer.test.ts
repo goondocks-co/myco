@@ -282,7 +282,7 @@ function setupPackageRoot(): void {
   fs.writeFileSync(path.join(opencodeTemplateDir, 'plugin.ts'), OPENCODE_PLUGIN_TEMPLATE_CONTENT, 'utf-8');
   fs.writeFileSync(path.join(opencodeTemplateDir, 'package.json'), OPENCODE_PACKAGE_TEMPLATE_CONTENT, 'utf-8');
   writeJson(path.join(opencodeTemplateDir, 'mcp.json'), {
-    myco: { type: 'local', command: ['myco-run', 'mcp'] },
+    myco: { type: 'local', command: ['node', '.agents/myco-cli.cjs', 'mcp'] },
   });
   writeJson(path.join(opencodeTemplateDir, 'settings.json'), {
     permission: { bash: { 'myco *': 'allow', 'myco-dev *': 'allow' } },
@@ -1114,114 +1114,42 @@ describe('installMcp (TOML)', () => {
 });
 
 // =====================
-// installMcp — substituteRuntimeCommand
+// installMcp — runtime command isolation
 // =====================
-//
-// Narrow opt-in: symbionts whose host reorders PATH so `myco-run` can't
-// reach `~/.local/bin` (opencode today) set `registration.substituteRuntimeCommand
-// = true`. The installer then rewrites the `myco-run` command in the MCP
-// template to the project's `.myco/runtime.command` alias. Every other
-// symbiont keeps `myco-run` in their config and lets `bin/myco-run` read
-// runtime.command at spawn time — preserving the dynamic alias contract.
 
-describe('installMcp substituteRuntimeCommand', () => {
+describe('installMcp runtime command isolation', () => {
   function writeRuntimeCommand(value: string): void {
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), value, 'utf-8');
   }
 
-  const OPT_IN_OPENCODE_MANIFEST: SymbiontManifest = {
-    ...OPENCODE_MANIFEST,
-    registration: { ...OPENCODE_MANIFEST.registration!, substituteRuntimeCommand: true },
-  };
-
-  it('rewrites opencode array-form command from myco-run to the runtime.command alias', () => {
-    writeRuntimeCommand('myco-dev');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
+  it('does not copy runtime.command into opencode MCP config', () => {
+    const runtime = '/Users/test/.local/bin/myco-dev';
+    writeRuntimeCommand(runtime);
+    const installer = new SymbiontInstaller(OPENCODE_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const config = readJson(path.join(projectRoot, 'opencode.json'));
     const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
+    expect(servers.myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
+    expect(JSON.stringify(servers.myco.command)).not.toContain(runtime);
+    expect(JSON.stringify(servers.myco.command)).not.toContain('myco-dev');
   });
 
-  it('rewrites string-form command when the opt-in flag is set', () => {
-    // Use a Claude-style string command to exercise the string branch of
-    // substituteMycoRunCommand. Claude does NOT set the flag in prod, but
-    // we force it here to verify both branches handle the rewrite.
-    writeRuntimeCommand('myco-dev');
-    const installer = new SymbiontInstaller(
-      { ...CLAUDE_MANIFEST, registration: { ...CLAUDE_MANIFEST.registration!, substituteRuntimeCommand: true } },
-      projectRoot,
-      packageRoot,
-    );
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, '.mcp.json'));
-    const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
-    expect(servers.myco.command).toBe('myco-dev');
-    expect(servers.myco.args).toEqual(['mcp']);
-  });
-
-  it('leaves command untouched when the symbiont does not opt in', () => {
-    // Claude Code does not set substituteRuntimeCommand; even with a
-    // runtime.command alias present, the MCP entry must continue to say
-    // `myco-run` so the spawn-time shim (bin/myco-run) can read the alias.
-    writeRuntimeCommand('myco-dev');
+  it('does not copy runtime.command into string-form MCP configs', () => {
+    const runtime = '/Users/test/.local/bin/myco-dev';
+    writeRuntimeCommand(runtime);
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
 
     installer.installMcp();
 
     const config = readJson(path.join(projectRoot, '.mcp.json'));
-    const servers = config.mcpServers as Record<string, { command: unknown }>;
+    const servers = config.mcpServers as Record<string, { command: unknown; args: unknown }>;
     expect(servers.myco.command).toBe('myco-run');
-  });
-
-  it('leaves command untouched when the opt-in symbiont has no runtime.command file', () => {
-    // No runtime.command file at all — nothing to substitute. Template
-    // value passes through unchanged even with the flag set.
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
-  });
-
-  it('treats runtime.command=myco as no-op (default value, nothing to substitute)', () => {
-    writeRuntimeCommand('myco');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
-  });
-
-  it('trims whitespace around the runtime.command value', () => {
-    writeRuntimeCommand('  myco-dev\n');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-dev', 'mcp']);
-  });
-
-  it('treats an empty runtime.command file as absent (no substitution)', () => {
-    writeRuntimeCommand('');
-    const installer = new SymbiontInstaller(OPT_IN_OPENCODE_MANIFEST, projectRoot, packageRoot);
-
-    installer.installMcp();
-
-    const config = readJson(path.join(projectRoot, 'opencode.json'));
-    const servers = config.mcp as Record<string, { command: unknown }>;
-    expect(servers.myco.command).toEqual(['myco-run', 'mcp']);
+    expect(servers.myco.args).toEqual(['mcp']);
+    expect(JSON.stringify(servers.myco)).not.toContain(runtime);
+    expect(JSON.stringify(servers.myco)).not.toContain('myco-dev');
   });
 });
 
@@ -1386,12 +1314,11 @@ describe('uninstallSettings (TOML)', () => {
     expect(content).not.toContain('[mcp_servers.myco]');
   });
 
-  it('cleanup preserves `myco-run` inside exec argv arrays (opencode MCP shape)', () => {
+  it('cleanup preserves exec argv arrays (opencode MCP shape)', () => {
     // Regression: an earlier version of stripLegacyFromJson walked into
-    // every array and filtered out `myco-run` as a legacy token. That
+    // every array and filtered out legacy tokens. That
     // would corrupt opencode.json which stores its MCP server command
-    // as `command: ["myco-run", "mcp"]` — stripping the first element
-    // would leave `command: ["mcp"]` and break the MCP spawn. The
+    // as `command: ["node", ".agents/myco-cli.cjs", "mcp"]`. The
     // cleanup must now recognize `command` / `args` as exec argv arrays
     // and skip them.
     const openCodeJsonPath = path.join(projectRoot, 'opencode.json');
@@ -1399,7 +1326,7 @@ describe('uninstallSettings (TOML)', () => {
       mcp: {
         myco: {
           type: 'local',
-          command: ['myco-run', 'mcp'],
+          command: ['node', '.agents/myco-cli.cjs', 'mcp'],
         },
       },
       permission: {
@@ -1416,7 +1343,7 @@ describe('uninstallSettings (TOML)', () => {
     const result = readJson(openCodeJsonPath);
     // Exec argv array preserved verbatim.
     expect(((result.mcp as Record<string, unknown>).myco as Record<string, unknown>).command)
-      .toEqual(['myco-run', 'mcp']);
+      .toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
     // Legacy permission key stripped.
     const bash = ((result.permission as Record<string, unknown>).bash) as Record<string, unknown>;
     expect(bash['myco-run *']).toBeUndefined();
@@ -2254,9 +2181,9 @@ describe('opencode (plugin-file hooks)', () => {
 
     const openCodeJson = readJson(path.join(projectRoot, 'opencode.json'));
     const myco = (openCodeJson.mcp as Record<string, unknown>).myco as Record<string, unknown>;
-    // opencode's MCP entry shape: { type: "local", command: ["myco-run", "mcp"] }
+    // opencode's MCP entry shape: { type: "local", command: ["node", ".agents/myco-cli.cjs", "mcp"] }
     expect(myco.type).toBe('local');
-    expect(myco.command).toEqual(['myco-run', 'mcp']);
+    expect(myco.command).toEqual(['node', '.agents/myco-cli.cjs', 'mcp']);
   });
 
   it('uninstall removes only the myco MCP entry and leaves other servers intact', () => {

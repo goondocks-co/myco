@@ -382,7 +382,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "pluginPackageTarget": ".opencode/package.json",
       "mcpTarget": "opencode.json",
       "mcpFormat": "json",
-      "substituteRuntimeCommand": true,
       "mcpServersKey": "mcp",
       "skillsTarget": ".agents/skills",
       "settingsTarget": "opencode.json",

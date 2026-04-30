@@ -29,8 +29,8 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 //
 // `.myco/runtime.command` is the source of truth — a one-line plain-text
 // file holding either a PATH-resolvable name (`myco`, the default for
-// globally-installed users) or an absolute path (`/Users/chris/.local/
-// bin/myco-dev`, what `make dev-link` writes). Absolute paths bypass
+// globally-installed users) or an absolute path to a dev binary (what
+// `make dev-link` writes). Absolute paths bypass
 // PATH entirely, which matters because GUI-launched agents (Cursor,
 // Claude Code desktop, etc.) run under macOS launchd and inherit a
 // minimal PATH that typically doesn't include `~/.local/bin`.
