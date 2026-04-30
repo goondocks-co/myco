@@ -52,17 +52,17 @@ describe('POST /api/agent/run — executionOverrides security', () => {
 
   it('rejects provider.apiKey in executionOverrides', async () => {
     const { handleRun } = makeHandlers();
-    await expect(
-      handleRun(makeRequest({
-        body: {
-          task: 't', instruction: 'go', agentId: 'myco-agent',
-          executionOverrides: {
-            provider: { type: 'openai', apiKey: 'sk-attacker-captured' },
-          },
+    const response = await handleRun(makeRequest({
+      body: {
+        task: 't', instruction: 'go', agentId: 'myco-agent',
+        executionOverrides: {
+          provider: { type: 'openai', apiKey: 'sk-attacker-captured' },
         },
-      })),
-    ).rejects.toThrow();
+      },
+    }));
 
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).toContain('apiKey');
     expect(runAgentSpy).not.toHaveBeenCalled();
   });
 

@@ -119,13 +119,24 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
+    const parsedBody = AgentRunBody.safeParse(req.body);
+    if (!parsedBody.success) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: parsedBody.error.message,
+        },
+      };
+    }
+
     const {
       task,
       instruction: rawInstruction,
       agentId,
       dryRun,
       executionOverrides: rawExecutionOverrides,
-    } = AgentRunBody.parse(req.body);
+    } = parsedBody.data;
 
     // SSRF defense: strip caller-supplied baseUrl from any remote-provider
     // override. The daemon's bearer key cannot follow a redirected URL.

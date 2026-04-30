@@ -116,59 +116,61 @@ describe('agent-runs API dry-run + write-intents', () => {
 
     it('rejects invalid reasoningLevel in executionOverrides with a parse error', async () => {
       const { handleRun } = makeHandlers();
-      await expect(
-        handleRun(makeRequest({
-          body: {
-            task: 'vault-evolve',
-            instruction: 'go',
-            agentId: 'myco-agent',
-            executionOverrides: { reasoningLevel: 'medium' },
-          },
-        })),
-      ).rejects.toThrow();
+      const response = await handleRun(makeRequest({
+        body: {
+          task: 'vault-evolve',
+          instruction: 'go',
+          agentId: 'myco-agent',
+          executionOverrides: { reasoningLevel: 'medium' },
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(response.body)).toContain('reasoningLevel');
     });
 
-	    it('rejects legacy runtime keys in executionOverrides', async () => {
+    it('rejects legacy runtime keys in executionOverrides', async () => {
       const { handleRun } = makeHandlers();
-      await expect(
-        handleRun(makeRequest({
-          body: {
-            task: 'vault-evolve',
-            instruction: 'go',
-            agentId: 'myco-agent',
-            executionOverrides: { runtime: 'claude-sdk' },
-          },
-        })),
-      ).rejects.toThrow();
+      const topLevelResponse = await handleRun(makeRequest({
+        body: {
+          task: 'vault-evolve',
+          instruction: 'go',
+          agentId: 'myco-agent',
+          executionOverrides: { runtime: 'claude-sdk' },
+        },
+      }));
+      expect(topLevelResponse.status).toBe(400);
+      expect(JSON.stringify(topLevelResponse.body)).toContain('runtime');
 
-      await expect(
-        handleRun(makeRequest({
-          body: {
-            task: 'vault-evolve',
-            instruction: 'go',
-            agentId: 'myco-agent',
-            executionOverrides: {
-              provider: { type: 'anthropic', runtime: 'claude-sdk' },
-            },
+      const providerResponse = await handleRun(makeRequest({
+        body: {
+          task: 'vault-evolve',
+          instruction: 'go',
+          agentId: 'myco-agent',
+          executionOverrides: {
+            provider: { type: 'anthropic', runtime: 'claude-sdk' },
           },
-        })),
-	      ).rejects.toThrow();
-	    });
+        },
+      }));
+      expect(providerResponse.status).toBe(400);
+      expect(JSON.stringify(providerResponse.body)).toContain('runtime');
+    });
 
-	    it('rejects unknown harness ids in executionOverrides', async () => {
-	      const { handleRun } = makeHandlers();
-	      await expect(
-	        handleRun(makeRequest({
-	          body: {
-	            task: 'vault-evolve',
-	            instruction: 'go',
-	            agentId: 'myco-agent',
-	            executionOverrides: { harness: 'bogus-harness' },
-	          },
-	        })),
-	      ).rejects.toThrow(/Unknown harness id: bogus-harness/);
-	    });
-	  });
+    it('rejects unknown harness ids in executionOverrides', async () => {
+      const { handleRun } = makeHandlers();
+      const response = await handleRun(makeRequest({
+        body: {
+          task: 'vault-evolve',
+          instruction: 'go',
+          agentId: 'myco-agent',
+          executionOverrides: { harness: 'bogus-harness' },
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(response.body)).toContain('Unknown harness id: bogus-harness');
+    });
+  });
 
   describe('handleResumeRun — dry-run preservation', () => {
     it('preserves dryRun=true when resuming a resumable failed run', async () => {
