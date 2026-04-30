@@ -62,18 +62,28 @@ function constantNameForTool(toolName: string): string {
   return match[1];
 }
 
+// Each tool is registered either as a HANDLERS Map entry (lazy-loaded
+// `[TOOL_X, async () =>`) or, for genuinely divergent tools like canopy_map,
+// as an explicit `if (name === TOOL_X)` branch in callTool.
+function isRegistered(constant: string): boolean {
+  return (
+    new RegExp(`\\[${constant},\\s`).test(TOOLS_INDEX_TS)
+    || TOOLS_INDEX_TS.includes(`name === ${constant}`)
+  );
+}
+
 describe('TOOL_DEFINITIONS registration coverage', () => {
-  it('every core tool has an exact tools/index.ts dispatch case', () => {
+  it('every core tool is wired into the tools/index.ts dispatcher', () => {
     for (const tool of TOOL_DEFINITIONS) {
       const constant = constantNameForTool(tool.name);
-      expect(TOOLS_INDEX_TS, `Tool ${tool.name} missing from tool dispatch`).toContain(`case ${constant}:`);
+      expect(isRegistered(constant), `Tool ${tool.name} missing from tool dispatch`).toBe(true);
     }
   });
 
-  it('every collective tool has an exact tools/index.ts dispatch case', () => {
+  it('every collective tool is wired into the tools/index.ts dispatcher', () => {
     for (const tool of COLLECTIVE_TOOL_DEFINITIONS) {
       const constant = constantNameForTool(tool.name);
-      expect(TOOLS_INDEX_TS, `Tool ${tool.name} missing from tool dispatch`).toContain(`case ${constant}:`);
+      expect(isRegistered(constant), `Tool ${tool.name} missing from tool dispatch`).toBe(true);
     }
   });
 

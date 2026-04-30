@@ -1,29 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { initDatabase, vaultDbPath } from '@myco/db/client.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
-import { incrementCanopyMapToolCalls } from '@myco/db/queries/sessions.js';
 import { ToolError } from './error.js';
-import { handleCanopyMap } from './canopy-map.js';
-import {
-  handleCollectiveProject,
-  handleCollectiveProjects,
-  handleCollectiveSearch,
-  handleCollectiveSettings,
-} from './collective.js';
-import { handleMycoConsolidate } from './consolidate.js';
-import { handleMycoContext } from './context.js';
-import { handleMycoPlans } from './plans.js';
-import { handleMycoRecall } from './recall.js';
-import { handleMycoRemember } from './remember.js';
-import { handleMycoRuns } from './runs.js';
-import { handleMycoSavePlan } from './save-plan.js';
-import { handleMycoSearch } from './search.js';
-import { handleMycoSessions } from './sessions.js';
-import { handleMycoSkills } from './skills.js';
-import { handleMycoSupersede } from './supersede.js';
+import { isCollectiveEnabled } from './shared.js';
 import {
   COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_CANOPY_MAP,
@@ -64,14 +43,154 @@ interface JsonSchemaProperty {
   items?: JsonSchemaProperty;
 }
 
+type ToolInput = Record<string, unknown>;
+
+interface ToolEntry {
+  handle: (input: ToolInput, client: DaemonClient) => Promise<unknown>;
+  summarize?: (input: ToolInput, result: unknown) => Record<string, unknown>;
+}
+
+type ToolLoader = () => Promise<ToolEntry>;
+
+// canopy_map is dispatched separately: it needs vault DB init, env vars,
+// and a session counter that the table contract doesn't carry.
+const HANDLERS = new Map<string, ToolLoader>([
+  [TOOL_SEARCH, async () => {
+    const { handleMycoSearch } = await import('./search.js');
+    return {
+      handle: (input, client) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client),
+      summarize: (input, result) => ({ query: input.query, matches: (result as unknown[]).length }),
+    };
+  }],
+  [TOOL_RECALL, async () => {
+    const { handleMycoRecall } = await import('./recall.js');
+    return {
+      handle: (input, client) => handleMycoRecall(input as unknown as Parameters<typeof handleMycoRecall>[0], client),
+      summarize: (input) => ({ note_id: input.note_id }),
+    };
+  }],
+  [TOOL_REMEMBER, async () => {
+    const { handleMycoRemember } = await import('./remember.js');
+    return {
+      handle: (input, client) => handleMycoRemember(input as unknown as Parameters<typeof handleMycoRemember>[0], client),
+      summarize: (_input, result) => {
+        const r = result as { id: unknown; observation_type: unknown };
+        return { id: r.id, observation_type: r.observation_type };
+      },
+    };
+  }],
+  [TOOL_PLANS, async () => {
+    const { handleMycoPlans } = await import('./plans.js');
+    return {
+      handle: (input, client) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client),
+      summarize: (input, result) => ({
+        op: input.op ?? 'list',
+        id: input.id,
+        session: input.session,
+        count: Array.isArray(result) ? result.length : undefined,
+      }),
+    };
+  }],
+  [TOOL_SAVE_PLAN, async () => {
+    const { handleMycoSavePlan } = await import('./save-plan.js');
+    return {
+      handle: (input, client) => handleMycoSavePlan(input as unknown as Parameters<typeof handleMycoSavePlan>[0], client),
+      summarize: (input) => ({
+        session_id: input.session_id,
+        source_path: input.source_path,
+        plan_key: input.plan_key,
+      }),
+    };
+  }],
+  [TOOL_SESSIONS, async () => {
+    const { handleMycoSessions } = await import('./sessions.js');
+    return {
+      handle: (input, client) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client),
+      summarize: (_input, result) => ({ count: (result as unknown[]).length }),
+    };
+  }],
+  [TOOL_SUPERSEDE, async () => {
+    const { handleMycoSupersede } = await import('./supersede.js');
+    return {
+      handle: (input, client) => handleMycoSupersede(input as unknown as Parameters<typeof handleMycoSupersede>[0], client),
+      summarize: (_input, result) => {
+        const r = result as { old_spore: unknown; new_spore: unknown; status: unknown };
+        return { old: r.old_spore, new: r.new_spore, status: r.status };
+      },
+    };
+  }],
+  [TOOL_CONSOLIDATE, async () => {
+    const { handleMycoConsolidate } = await import('./consolidate.js');
+    return {
+      handle: (input, client) => handleMycoConsolidate(input as unknown as Parameters<typeof handleMycoConsolidate>[0], client),
+      summarize: (_input, result) => {
+        const r = result as { status: unknown; new_spore_id: unknown; sources_superseded: unknown[] };
+        return { status: r.status, new_spore_id: r.new_spore_id, sources: r.sources_superseded.length };
+      },
+    };
+  }],
+  [TOOL_CONTEXT, async () => {
+    const { handleMycoContext } = await import('./context.js');
+    return {
+      handle: (input, client) => handleMycoContext(input as unknown as Parameters<typeof handleMycoContext>[0], client),
+      summarize: (input) => ({ tier: input.tier }),
+    };
+  }],
+  [TOOL_SKILLS, async () => {
+    const { handleMycoSkills } = await import('./skills.js');
+    return {
+      handle: (input, client) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client),
+      summarize: (input) => ({ id: input.id, status: input.status }),
+    };
+  }],
+  [TOOL_COLLECTIVE_SEARCH, async () => {
+    const { handleCollectiveSearch } = await import('./collective.js');
+    return {
+      handle: (input, client) => handleCollectiveSearch(input as unknown as Parameters<typeof handleCollectiveSearch>[0], client),
+      summarize: (input) => ({ query: input.query }),
+    };
+  }],
+  [TOOL_COLLECTIVE_PROJECTS, async () => {
+    const { handleCollectiveProjects } = await import('./collective.js');
+    return {
+      handle: (_input, client) => handleCollectiveProjects(client),
+    };
+  }],
+  [TOOL_COLLECTIVE_PROJECT, async () => {
+    const { handleCollectiveProject } = await import('./collective.js');
+    return {
+      handle: (input, client) => handleCollectiveProject(input as unknown as Parameters<typeof handleCollectiveProject>[0], client),
+      summarize: (input) => ({ project: input.project }),
+    };
+  }],
+  [TOOL_COLLECTIVE_SETTINGS, async () => {
+    const { handleCollectiveSettings } = await import('./collective.js');
+    return {
+      handle: (_input, client) => handleCollectiveSettings(client),
+    };
+  }],
+  [TOOL_RUNS, async () => {
+    const { handleMycoRuns } = await import('./runs.js');
+    return {
+      handle: (input, client) => handleMycoRuns(input as unknown as Parameters<typeof handleMycoRuns>[0], client),
+      summarize: (input, result) => {
+        const r = result as { ok: unknown };
+        return { op: input.op ?? 'list', id: input.id, ok: r.ok };
+      },
+    };
+  }],
+]);
+
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
   let dbReady = false;
   let logDirReady = false;
   const logDir = path.join(vaultDir, 'logs');
+  let collectiveProbe: Promise<boolean> | null = null;
 
-  function ensureDb(): boolean {
+  async function ensureDb(): Promise<boolean> {
     if (dbReady) return true;
     try {
+      const { initDatabase, vaultDbPath } = await import('@myco/db/client.js');
       initDatabase(vaultDbPath(vaultDir));
       dbReady = true;
       return true;
@@ -80,19 +199,17 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     }
   }
 
-  async function collectiveEnabled(): Promise<boolean> {
+  // Memoize per-instance: the dispatcher hits this on every callTool, and
+  // the collective flag is stable for the lifetime of a tools instance.
+  function collectiveEnabled(): Promise<boolean> {
     if (options.collectiveEnabled) return options.collectiveEnabled();
-    try {
-      const teamStatus = await client.get('/api/team/status');
-      return Boolean(teamStatus.ok && teamStatus.data?.collective_connected);
-    } catch {
-      return false;
-    }
+    if (!collectiveProbe) collectiveProbe = isCollectiveEnabled(client);
+    return collectiveProbe;
   }
 
-  function normalizeInput(args: unknown): Record<string, unknown> {
+  function normalizeInput(args: unknown): ToolInput {
     if (args === undefined || args === null) return {};
-    if (typeof args === 'object' && !Array.isArray(args)) return args as Record<string, unknown>;
+    if (typeof args === 'object' && !Array.isArray(args)) return args as ToolInput;
     throw new ToolError('invalid_input', 'Tool arguments must be a JSON object');
   }
 
@@ -112,7 +229,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
   }
 
-  function validateInput(definition: ToolDefinition, input: Record<string, unknown>): void {
+  function validateInput(definition: ToolDefinition, input: ToolInput): void {
     for (const key of definition.inputSchema.required ?? []) {
       if (input[key] === undefined || input[key] === null) {
         throw new ToolError('invalid_input', `Missing required argument '${key}' for tool ${definition.name}`);
@@ -188,6 +305,30 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     void client.post('/api/log', { level: 'info', component: 'mcp', message: `Tool call: ${tool}`, data: { tool, ...detail } }).catch(() => { /* non-fatal */ });
   }
 
+  async function dispatchCanopyMap(start: number): Promise<unknown> {
+    const { handleCanopyMap, emptyCanopyMap } = await import('./canopy-map.js');
+    if (!(await ensureDb())) {
+      return emptyCanopyMap('Vault database is not available; the canopy map cannot be read right now.');
+    }
+    const { resolveCanopyProjectId } = await import('@myco/canopy/identity.js');
+    const { getMachineId } = await import('@myco/daemon/machine-id.js');
+    const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
+    const projectId = resolveCanopyProjectId(vaultDir);
+    const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
+    const sessionId = process.env.MYCO_SESSION_ID ?? null;
+    const result = await handleCanopyMap({ projectId, machineId });
+    if (sessionId) {
+      try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+    }
+    logActivity(TOOL_CANOPY_MAP, {
+      is_empty: (result as { is_empty?: boolean }).is_empty === true,
+      token_estimate: (result as { token_estimate?: number }).token_estimate,
+      session_id: sessionId,
+      duration_ms: Date.now() - start,
+    });
+    return result;
+  }
+
   return {
     async listTools() {
       return getAvailableDefinitions();
@@ -203,130 +344,19 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       validateInput(definition, input);
       const start = Date.now();
 
-      switch (name) {
-        case TOOL_SEARCH: {
-          const result = await handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client);
-          logActivity(TOOL_SEARCH, { query: input.query, matches: result.length, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_RECALL: {
-          const result = await handleMycoRecall(input as unknown as Parameters<typeof handleMycoRecall>[0], client);
-          logActivity(TOOL_RECALL, { note_id: input.note_id, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_REMEMBER: {
-          const result = await handleMycoRemember(input as unknown as Parameters<typeof handleMycoRemember>[0], client);
-          logActivity(TOOL_REMEMBER, { id: result.id, observation_type: result.observation_type, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_PLANS: {
-          const result = await handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client);
-          const count = Array.isArray(result) ? result.length : undefined;
-          logActivity(TOOL_PLANS, {
-            op: input.op ?? 'list',
-            id: input.id,
-            session: input.session,
-            count,
-            duration_ms: Date.now() - start,
-          });
-          return result;
-        }
-        case TOOL_SAVE_PLAN: {
-          const result = await handleMycoSavePlan(input as unknown as Parameters<typeof handleMycoSavePlan>[0], client);
-          logActivity(TOOL_SAVE_PLAN, {
-            session_id: input.session_id,
-            source_path: input.source_path,
-            plan_key: input.plan_key,
-            duration_ms: Date.now() - start,
-          });
-          return result;
-        }
-        case TOOL_SESSIONS: {
-          const result = await handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client);
-          logActivity(TOOL_SESSIONS, { count: result.length, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_SUPERSEDE: {
-          const result = await handleMycoSupersede(input as unknown as Parameters<typeof handleMycoSupersede>[0], client);
-          logActivity(TOOL_SUPERSEDE, { old: result.old_spore, new: result.new_spore, status: result.status, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_CONSOLIDATE: {
-          const result = await handleMycoConsolidate(input as unknown as Parameters<typeof handleMycoConsolidate>[0], client);
-          logActivity(TOOL_CONSOLIDATE, {
-            status: result.status,
-            new_spore_id: result.new_spore_id,
-            sources: result.sources_superseded.length,
-            duration_ms: Date.now() - start,
-          });
-          return result;
-        }
-        case TOOL_CONTEXT: {
-          const result = await handleMycoContext(input as unknown as Parameters<typeof handleMycoContext>[0], client);
-          logActivity(TOOL_CONTEXT, { tier: input.tier, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_SKILLS: {
-          const result = await handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client);
-          logActivity(TOOL_SKILLS, { id: input.id, status: input.status, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_COLLECTIVE_SEARCH: {
-          const result = await handleCollectiveSearch(input as unknown as Parameters<typeof handleCollectiveSearch>[0], client);
-          logActivity(TOOL_COLLECTIVE_SEARCH, { query: input.query, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_COLLECTIVE_PROJECTS: {
-          const result = await handleCollectiveProjects(client);
-          logActivity(TOOL_COLLECTIVE_PROJECTS, { duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_COLLECTIVE_PROJECT: {
-          const result = await handleCollectiveProject(input as unknown as Parameters<typeof handleCollectiveProject>[0], client);
-          logActivity(TOOL_COLLECTIVE_PROJECT, { project: input.project, duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_COLLECTIVE_SETTINGS: {
-          const result = await handleCollectiveSettings(client);
-          logActivity(TOOL_COLLECTIVE_SETTINGS, { duration_ms: Date.now() - start });
-          return result;
-        }
-        case TOOL_RUNS: {
-          const result = await handleMycoRuns(input as unknown as Parameters<typeof handleMycoRuns>[0], client);
-          logActivity(TOOL_RUNS, {
-            op: input.op ?? 'list',
-            id: input.id,
-            ok: result.ok,
-            duration_ms: Date.now() - start,
-          });
-          return result;
-        }
-        case TOOL_CANOPY_MAP: {
-          if (!ensureDb()) {
-            return {
-              content: '',
-              is_empty: true,
-              message: 'Vault database is not available; the canopy map cannot be read right now.',
-            };
-          }
-          const projectId = resolveCanopyProjectId(vaultDir);
-          const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
-          const sessionId = process.env.MYCO_SESSION_ID ?? null;
-          const result = await handleCanopyMap({ projectId, machineId });
-          if (sessionId) {
-            try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
-          }
-          logActivity(TOOL_CANOPY_MAP, {
-            is_empty: result.is_empty === true,
-            token_estimate: result.token_estimate,
-            session_id: sessionId,
-            duration_ms: Date.now() - start,
-          });
-          return result;
-        }
-        default:
-          throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
+      if (name === TOOL_CANOPY_MAP) {
+        return dispatchCanopyMap(start);
       }
+
+      const loader = HANDLERS.get(name);
+      if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
+      const entry = await loader();
+      const result = await entry.handle(input, client);
+      logActivity(name, {
+        ...(entry.summarize?.(input, result) ?? {}),
+        duration_ms: Date.now() - start,
+      });
+      return result;
     },
   };
 }
