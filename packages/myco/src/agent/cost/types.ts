@@ -30,7 +30,7 @@ export interface CostResolution {
 }
 
 export interface CostResolutionInput {
-  runtime: string;
+  harness: string;
   model: string;
   usage: RuntimeUsage;
   provider?: ProviderConfig;

@@ -441,7 +441,7 @@ describe('run query helpers', () => {
 
     it('allows updating executionOverrides via updateRun', () => {
       insertRun(makeRun({ id: 'run-update-overrides' }));
-      const nextOverrides = { runtime: 'claude-sdk', reasoningLevel: 'default' };
+      const nextOverrides = { harness: 'claude-sdk', reasoningLevel: 'default' };
       const updated = updateRun('run-update-overrides', { executionOverrides: nextOverrides });
       expect(updated!.execution_overrides).toEqual(nextOverrides);
     });

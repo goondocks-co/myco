@@ -1,7 +1,7 @@
 import * as __orig__myco_agent_provider_js_1__ns from '@myco/agent/provider.js';
 const __orig__myco_agent_provider_js_1 = { ...__orig__myco_agent_provider_js_1__ns };
 /**
- * Tests for ClaudeSdkRuntime.execute() covering:
+ * Tests for ClaudeSdkHarness.execute() covering:
  *   - session ref forwarding (sessionId is passed through to the SDK)
  *   - abortController forwarded when present
  *   - scoped tool server created with toolNames + dryRun
@@ -88,7 +88,7 @@ mock.module('@myco/agent/provider.js', () => {
   };
 });
 
-mock.module('@myco/agent/runtime/claude-code-executable.js', () => ({
+mock.module('@myco/agent/harness/claude-code-executable.js', () => ({
   resolveClaudeCodeExecutable: () => '/tmp/fake-claude',
 }));
 
@@ -97,11 +97,11 @@ mock.module('@myco/agent/runtime/claude-code-executable.js', () => ({
 // ---------------------------------------------------------------------------
 
 async function loadRuntime() {
-  const mod = await import('@myco/agent/runtime/claude.js');
-  return mod.ClaudeSdkRuntime;
+  const mod = await import('@myco/agent/harness/claude.js');
+  return mod.ClaudeSdkHarness;
 }
 
-function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').RuntimeExecuteInput> = {}) {
+function makeInput(overrides: Partial<import('@myco/agent/harness/types.js').HarnessExecuteInput> = {}) {
   return {
     prompt: 'Do the thing.',
     model: 'claude-sonnet-4-6',
@@ -120,7 +120,7 @@ function makeInput(overrides: Partial<import('@myco/agent/runtime/types.js').Run
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('ClaudeSdkRuntime.execute', () => {
+describe('ClaudeSdkHarness.execute', () => {
   beforeEach(() => {
     queryCalls.length = 0;
     scopedServerCalls.length = 0;

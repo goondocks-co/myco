@@ -2,7 +2,7 @@ import type { MCPServer } from '@openai/agents';
 import { z } from 'zod/v4';
 import type { ZodRawShape } from 'zod';
 import { createVaultTools } from '@myco/agent/tools.js';
-import type { RuntimeToolSurface } from './types.js';
+import type { HarnessToolSurface } from './types.js';
 
 interface LocalMcpTool {
   name: string;
@@ -16,7 +16,7 @@ class LocalVaultMcpServer implements MCPServer {
   private readonly tools: LocalMcpTool[];
   readonly name = 'myco-vault';
 
-  constructor(toolSurface: RuntimeToolSurface) {
+  constructor(toolSurface: HarnessToolSurface) {
     // Map-phase fast path: when the caller has pre-materialized the tool
     // list (e.g. with argMap-stripped sink schemas and outcome-capture
     // wrappers), use those directly instead of rebuilding from scratch.
@@ -96,6 +96,6 @@ function normalizeInputSchema(schema: ZodRawShape | undefined) {
   };
 }
 
-export function createLocalVaultMcpServer(toolSurface: RuntimeToolSurface): MCPServer {
+export function createLocalVaultMcpServer(toolSurface: HarnessToolSurface): MCPServer {
   return new LocalVaultMcpServer(toolSurface);
 }

@@ -31,7 +31,6 @@ describe('toWireProvider', () => {
   it('preserves all populated fields, converting to camelCase', () => {
     const ui: ProviderConfig = {
       type: 'openai',
-      runtime: 'openai-agents',
       local_backend: 'ollama',
       base_url: 'http://localhost:11434',
       model: 'gpt-5',
@@ -40,7 +39,6 @@ describe('toWireProvider', () => {
     };
     expect(toWireProvider(ui)).toEqual({
       type: 'openai',
-      runtime: 'openai-agents',
       localBackend: 'ollama',
       baseUrl: 'http://localhost:11434',
       model: 'gpt-5',
@@ -64,7 +62,6 @@ describe('fromWireProvider', () => {
   it('converts camelCase wire shape to snake_case UI shape', () => {
     const wire = {
       type: 'openai',
-      runtime: 'openai-agents',
       localBackend: 'ollama' as const,
       baseUrl: 'http://localhost:11434',
       model: 'gpt-5',
@@ -73,7 +70,6 @@ describe('fromWireProvider', () => {
     };
     expect(fromWireProvider(wire)).toEqual({
       type: 'openai',
-      runtime: 'openai-agents',
       local_backend: 'ollama',
       base_url: 'http://localhost:11434',
       model: 'gpt-5',
@@ -88,18 +84,14 @@ describe('fromWireProvider', () => {
     expect(out?.model).toBe('gemini-pro');
   });
 
-  it('drops unknown runtime strings', () => {
-    const out = fromWireProvider({ type: 'anthropic', runtime: 'bogus' });
-    expect(out?.runtime).toBeUndefined();
+  it('drops legacy provider-level harness strings', () => {
+    const out = fromWireProvider({ type: 'anthropic', harness: 'bogus' });
+    expect((out as Record<string, unknown> | undefined)?.harness).toBeUndefined();
   });
 
-  it('preserves known runtime strings', () => {
-    expect(fromWireProvider({ type: 'anthropic', runtime: 'claude-sdk' })?.runtime).toBe(
-      'claude-sdk',
-    );
-    expect(fromWireProvider({ type: 'openai', runtime: 'openai-agents' })?.runtime).toBe(
-      'openai-agents',
-    );
+  it('does not preserve known provider-level harness strings', () => {
+    expect((fromWireProvider({ type: 'anthropic', harness: 'claude-sdk' }) as Record<string, unknown> | undefined)?.harness).toBeUndefined();
+    expect((fromWireProvider({ type: 'openai', harness: 'openai-agents' }) as Record<string, unknown> | undefined)?.harness).toBeUndefined();
   });
 
   it('drops absent optional fields', () => {
@@ -137,7 +129,6 @@ describe('round-trip fromWireProvider → toWireProvider', () => {
   it('preserves the full provider shape', () => {
     const wire = {
       type: 'openai',
-      runtime: 'openai-agents',
       localBackend: 'lmstudio' as const,
       baseUrl: 'http://localhost:1234',
       model: 'some-model',

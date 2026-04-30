@@ -23,7 +23,7 @@ function baseDefaults(
   over: Partial<EffectiveDefaults> = {},
 ): EffectiveDefaults {
   return {
-    runtime: 'claude-sdk',
+    harness: 'claude-sdk',
     reasoningLevel: 'default',
     model: 'claude-sonnet-4-5',
     phases: [
@@ -36,7 +36,7 @@ function baseDefaults(
 
 function emptyForm(over: Partial<OverridesFormState> = {}): OverridesFormState {
   return {
-    runtime: undefined,
+    harness: undefined,
     reasoningLevel: undefined,
     model: undefined,
     phases: {},
@@ -51,7 +51,7 @@ describe('buildExecutionOverrides', () => {
 
   it('returns undefined when every form field matches the default', () => {
     const form = emptyForm({
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       reasoningLevel: 'default',
       model: 'claude-sonnet-4-5',
       phases: {
@@ -68,10 +68,10 @@ describe('buildExecutionOverrides', () => {
     });
   });
 
-  it('emits only the runtime override when that is the only change', () => {
-    const form = emptyForm({ runtime: 'openai-agents' });
+  it('emits only the harness override when that is the only change', () => {
+    const form = emptyForm({ harness: 'openai-agents' });
     expect(buildExecutionOverrides(form, baseDefaults())).toEqual({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
     });
   });
 
@@ -154,7 +154,7 @@ describe('buildExecutionOverrides', () => {
   it('handles defaults with no phases array (single-query tasks)', () => {
     const form = emptyForm({ reasoningLevel: 'low' });
     const defaults: EffectiveDefaults = {
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       reasoningLevel: 'default',
       model: 'claude-sonnet-4-5',
     };
@@ -183,7 +183,7 @@ describe('countOverrides', () => {
 
   it('counts each top-level change', () => {
     const form = emptyForm({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       reasoningLevel: 'high',
       model: 'custom-model',
     });
@@ -207,13 +207,11 @@ describe('countOverrides', () => {
 
 describe('buildExecutionOverrides — provider/maxTurns overrides', () => {
   const lmStudio: ProviderConfig = {
-    runtime: 'claude-sdk',
     type: 'lmstudio',
     base_url: 'http://localhost:1234',
     model: 'qwen3-30b',
   };
   const ollama: ProviderConfig = {
-    runtime: 'claude-sdk',
     type: 'ollama',
     base_url: 'http://localhost:11434',
     model: 'qwen3:30b',
@@ -223,7 +221,7 @@ describe('buildExecutionOverrides — provider/maxTurns overrides', () => {
     over: Partial<EffectiveDefaults> = {},
   ): EffectiveDefaults {
     return {
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       reasoningLevel: 'default',
       model: 'qwen3-30b',
       provider: lmStudio,
@@ -310,7 +308,6 @@ describe('buildExecutionOverrides — provider/maxTurns overrides', () => {
       type: 'ollama',
       baseUrl: 'http://localhost:11434',
       model: 'qwen3:30b',
-      runtime: 'claude-sdk',
     });
   });
 
@@ -346,7 +343,6 @@ describe('toWireProvider', () => {
 
   it('renames snake_case keys to camelCase', () => {
     const snake: ProviderConfig = {
-      runtime: 'claude-sdk',
       type: 'lmstudio',
       local_backend: 'lmstudio',
       base_url: 'http://localhost:1234',
@@ -355,7 +351,6 @@ describe('toWireProvider', () => {
       context_length: 32768,
     };
     expect(toWireProvider(snake)).toEqual({
-      runtime: 'claude-sdk',
       type: 'lmstudio',
       localBackend: 'lmstudio',
       baseUrl: 'http://localhost:1234',

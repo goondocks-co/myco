@@ -20,9 +20,9 @@ const COST_PROVIDERS: CostProviderResolver[] = [
     resolve: async (input) => estimateOpenRouterCost(input.model, input.usage, input.provider?.baseUrl),
   },
   {
-    id: 'anthropic-runtime',
+    id: 'anthropic-harness',
     matches: (input) => input.provider?.type === 'anthropic',
-    resolve: async (input) => resolveUnavailableCost(input, 'Anthropic runtime did not report cost for this run'),
+    resolve: async (input) => resolveUnavailableCost(input, 'Anthropic harness did not report cost for this run'),
   },
   {
     id: 'generic-configured',

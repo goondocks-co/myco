@@ -34,6 +34,7 @@ import {
 import { loadSystemPrompt } from './loader.js';
 import { buildVaultContext } from './context.js';
 import { resolveRunConfig } from './config-resolver.js';
+import { inferHarnessFromProviderType } from './provider-harness.js';
 import { resolveOllamaContextVariants } from './ollama-context.js';
 import { resolveLmStudioContextLoads } from './lmstudio-context.js';
 import { resolveReasoningModel } from './reasoning-levels.js';
@@ -49,11 +50,11 @@ import { resolveCost } from './cost/index.js';
 import {
   aggregateUsage,
   buildUsageData,
-  isExpiredSessionError,
   parseCheckpointState,
   resolveProviderForResume,
   serializeCheckpointState,
 } from './executor-state.js';
+import { getAgentHarness } from './harness/index.js';
 import {
   analyzeRuntimeTokenBudget,
   buildRunAccountingUpdate,
@@ -174,10 +175,14 @@ export async function runAgent(
   // Build an effective config for this run by layering per-run overrides
   // on top of the resolved config WITHOUT mutating the resolveRunConfig
   // return value. Each cell in an evaluation matrix reuses the task's
-  // resolved config and varies one or more of runtime / reasoning / model —
-  // downstream code (provider selection, model routing, runtime dispatch)
+  // resolved config and varies one or more of harness / reasoning / model —
+  // downstream code (provider selection, model routing, harness dispatch)
   // reads from these fields, so we produce a fresh EffectiveConfig here.
-  const overrideRuntime = options?.executionOverrides?.runtime;
+  const overrideHarness = options?.executionOverrides?.harness;
+  const overrideProvider = options?.executionOverrides?.provider;
+  const runHarness = overrideHarness
+    ?? inferHarnessFromProviderType(overrideProvider?.type)
+    ?? resolvedConfig.harness;
   const overrideReasoning = options?.executionOverrides?.reasoningLevel;
   const overrideModel = options?.executionOverrides?.model;
   const taskParams = options?.taskParams
@@ -185,9 +190,9 @@ export async function runAgent(
     : resolvedTaskParams;
   const config: EffectiveConfig = {
     ...resolvedConfig,
+    harness: runHarness,
     dryRun: options?.dryRun ?? false,
     ...(taskParams ? { taskParams } : {}),
-    ...(overrideRuntime ? { runtime: overrideRuntime } : {}),
     ...(overrideReasoning ? { reasoningLevel: overrideReasoning } : {}),
     ...(overrideModel ? { model: overrideModel } : {}),
     ...(overrideReasoning && resolvedConfig.execution
@@ -217,20 +222,20 @@ export async function runAgent(
   // If a top-level provider override was supplied via RunOptions, treat it as
   // the task-level provider for this run so phased + single-query paths see
   // it uniformly. Phase-level overrides still win at the phase boundary.
-  let taskProviderOverride = options?.executionOverrides?.provider ?? resolvedTaskProvider;
+  let taskProviderOverride = overrideProvider ?? resolvedTaskProvider;
   let phaseProviderOverrides = resolvedPhaseOverrides;
 
-  const runId = options?.resumeRunId ?? crypto.randomUUID();
-  const now = epochSeconds();
-  let runtimeId = config.runtime;
   // Top-level provider override from RunOptions.executionOverrides wins over
   // both the myco.yaml task override AND the task YAML execution provider.
   // This lets an operator (RunTaskDialog / eval matrix) swap provider/base URL/
   // context length for a single run without modifying any persistent config.
   const baseProvider =
-    options?.executionOverrides?.provider
+    overrideProvider
     ?? taskProviderOverride
     ?? config.execution?.provider;
+  const runId = options?.resumeRunId ?? crypto.randomUUID();
+  const now = epochSeconds();
+  let harnessId = runHarness;
   let effectiveModel = resolveReasoningModel(
     config.execution?.reasoningLevel ?? config.reasoningLevel,
     baseProvider,
@@ -239,30 +244,31 @@ export async function runAgent(
   const checkpointState: RunCheckpointState = resumedRun
     ? parseCheckpointState(resumedRun.checkpoints)
     : {
-      runtime: runtimeId,
+      schemaVersion: 2,
+      harness: harnessId,
       provider: baseProvider?.type,
       providerConfig: baseProvider,
       model: effectiveModel,
       phases: {},
     };
   if (resumedRun) {
-    runtimeId = resumedRun.runtime ?? checkpointState.runtime ?? runtimeId;
+    harnessId = resumedRun.harness ?? checkpointState.harness ?? harnessId;
     effectiveModel = resumedRun.model ?? checkpointState.model ?? effectiveModel;
   }
+  const harness = getAgentHarness(harnessId);
   const effectiveProvider = resolveProviderForResume(
     baseProvider,
     resumedRun,
     checkpointState,
-    runtimeId,
     effectiveModel,
   );
   if (!resumedRun) {
-    checkpointState.runtime = runtimeId;
+    checkpointState.harness = harnessId;
     checkpointState.provider = effectiveProvider?.type;
     checkpointState.providerConfig = effectiveProvider;
     checkpointState.model = effectiveModel;
   } else {
-    checkpointState.runtime = checkpointState.runtime ?? runtimeId;
+    checkpointState.harness = checkpointState.harness ?? harnessId;
     checkpointState.provider = checkpointState.provider ?? effectiveProvider?.type;
     checkpointState.providerConfig = checkpointState.providerConfig ?? effectiveProvider;
     checkpointState.model = checkpointState.model ?? effectiveModel;
@@ -270,7 +276,7 @@ export async function runAgent(
 
   const runStart = {
     status: STATUS_RUNNING,
-    runtime: runtimeId,
+    harness: harnessId,
     model: effectiveModel,
     checkpoints: serializeCheckpointState(checkpointState),
     started_at: now,
@@ -383,16 +389,16 @@ export async function runAgent(
     let costUsd: number | null;
     let costData: CostResolution;
     let usage: RuntimeUsage;
-    let runSessionRef = checkpointState.sessionRef;
+    let runSessionRef = checkpointState.harnessState?.ref ?? checkpointState.sessionRef;
 
-    const persistRuntimeState = async (
+    const persistHarnessState = async (
       currentCheckpointState: RunCheckpointState,
       currentPhaseResults: PhaseResult[] = [],
       currentUsage: RuntimeUsage = aggregateUsage(currentPhaseResults.map((phase) => phase.usage)),
       currentCost: CostResolution = summarizePhaseCosts(currentPhaseResults),
     ) => {
       applyRunUpdate(runId, buildRunAccountingUpdate({
-        runtime: runtimeId,
+        harness: harnessId,
         provider: effectiveProvider,
         model: effectiveModel,
         checkpointState: currentCheckpointState,
@@ -422,7 +428,7 @@ export async function runAgent(
       vaultDir,
       options,
       checkpointState,
-      persistCheckpoints: persistRuntimeState,
+      persistCheckpoints: persistHarnessState,
     };
 
     if (config.phases && config.phases.length > 0) {
@@ -459,8 +465,8 @@ export async function runAgent(
         ctx,
         taskPrompt,
         singleProvider,
-        checkpointState.sessionRef,
-        checkpointState.sessionData,
+        checkpointState.harnessState?.ref ?? checkpointState.sessionRef,
+        checkpointState.harnessState?.data ?? checkpointState.sessionData,
       );
       tokensUsed = result.tokensUsed;
       costUsd = result.costUsd;
@@ -469,7 +475,11 @@ export async function runAgent(
       runSessionRef = result.sessionRef;
       checkpointState.sessionRef = result.sessionRef;
       checkpointState.sessionData = result.sessionData;
-      await persistRuntimeState(checkpointState, undefined, usage, costData);
+      checkpointState.harnessState = {
+        ...(result.sessionRef ? { ref: result.sessionRef } : {}),
+        ...(result.sessionData !== undefined ? { data: result.sessionData } : {}),
+      };
+      await persistHarnessState(checkpointState, undefined, usage, costData);
 
       // dry-run: postconditions verify real writes landed; no writes happened, so nothing to validate.
       if (!options?.dryRun) {
@@ -501,7 +511,7 @@ export async function runAgent(
       completed_at: completedAt,
       tokens_used: tokensUsed,
       ...buildRunAccountingUpdate({
-        runtime: runtimeId,
+        harness: harnessId,
         provider: effectiveProvider,
         model: effectiveModel,
         checkpointState,
@@ -519,7 +529,7 @@ export async function runAgent(
       costUsd,
       costSource: costData.source,
       costData,
-      runtime: runtimeId,
+      harness: harnessId,
       provider: effectiveProvider?.type,
       model: effectiveModel,
       ...(phaseResults ? { phases: phaseResults } : {}),
@@ -549,31 +559,31 @@ export async function runAgent(
       const usage = aggregateUsage(phaseResults?.map((phase) => phase.usage) ?? []);
       logTokenBudgetPressure(config.taskName, usage, effectiveProvider, options?.logger);
       const costData = phaseResults ? summarizePhaseCosts(phaseResults) : await resolveCost({
-        runtime: runtimeId,
+        harness: harnessId,
         provider: effectiveProvider,
         model: effectiveModel,
         usage,
       });
 
       // Detect the "expired SDK session" zombie-run pattern: we were
-      // resuming a run whose checkpoint carried a sessionRef, the runtime
+      // resuming a run whose checkpoint carried a sessionRef, the harness
       // crashed without producing any turns, and the error message looks
       // like an expired/missing session. Marking it `resumable=1, ready`
       // here would re-enqueue it next scheduler tick and loop forever
       // (37 zombies accumulated in issue #118). Terminal-mark it instead
       // and null the checkpoint so nothing else tries to reuse the dead
       // session id.
-      const hadPriorSession = Boolean(checkpointState.sessionRef)
+      const hadPriorSession = Boolean(checkpointState.harnessState?.ref ?? checkpointState.sessionRef)
         || Object.values(checkpointState.phases).some((phase) => Boolean(phase.sessionRef));
       const recordedAnyTurns = (usage.requests ?? 0) > 0
         || (phaseResults?.some((phase) => phase.turnsUsed > 0) ?? false);
       const sessionExpired = Boolean(options?.resumeRunId)
         && hadPriorSession
         && !recordedAnyTurns
-        && isExpiredSessionError(err);
+        && (harness.classifyError?.(err, { attemptedResume: true }) === 'session-expired');
 
       const accountingUpdate = buildRunAccountingUpdate({
-        runtime: runtimeId,
+        harness: harnessId,
         provider: effectiveProvider,
         model: effectiveModel,
         checkpointState,
@@ -611,7 +621,7 @@ export async function runAgent(
       runId,
       status: STATUS_FAILED,
       error: errorMessage,
-      runtime: runtimeId,
+      harness: harnessId,
       provider: effectiveProvider?.type,
       model: effectiveModel,
       ...(phaseResults ? { phases: phaseResults } : {}),

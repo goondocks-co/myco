@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { describe, expect, it, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
@@ -75,7 +75,7 @@ mock.module('@myco/agent/loader.js', () => ({
   loadAgentDefinition: () => mockDefinition,
   resolveEffectiveConfig: (_definition: AgentDefinition, _agentRow: AgentRow | null, taskOverrides?: AgentTask) => ({
     agentId: 'myco-agent',
-    runtime: 'claude-sdk' as const,
+    harness: taskOverrides?.execution?.harness ?? 'claude-sdk',
     model: taskOverrides?.model ?? mockDefinition.model,
     ...(taskOverrides?.reasoningLevel ? { reasoningLevel: taskOverrides.reasoningLevel } : {}),
     maxTurns: taskOverrides?.maxTurns ?? mockDefinition.maxTurns,
@@ -85,6 +85,7 @@ mock.module('@myco/agent/loader.js', () => ({
     taskName: taskOverrides?.name ?? 'title-summary',
     taskDisplayName: taskOverrides?.displayName ?? 'Title & Summary',
     taskPrompt: taskOverrides?.prompt ?? 'Summarize the target session.',
+    ...(taskOverrides?.execution ? { execution: taskOverrides.execution } : {}),
   }),
 }));
 
@@ -101,6 +102,11 @@ mock.module('@myco/config/loader.js', () => ({
 describe('resolveRunConfig', () => {
   beforeEach(() => {
     mockLoadMergedConfig.mockReset();
+    delete mockYamlTask.execution;
+  });
+
+  afterAll(() => {
+    mock.restore();
   });
 
   it('applies task-level maxTurns and timeoutSeconds from myco.yaml', () => {
@@ -116,7 +122,7 @@ describe('resolveRunConfig', () => {
         event_tasks_enabled: true,
         tasks: {
           'title-summary': {
-            runtime: 'openai-agents',
+            harness: 'openai-agents',
             maxTurns: 30,
             timeoutSeconds: 900,
           },
@@ -133,8 +139,8 @@ describe('resolveRunConfig', () => {
 
     const resolved = resolveRunConfig('myco-agent', 'title-summary', TEST_VAULT_DIR);
 
-    expect(resolved.runtime).toBe('openai-agents');
-    expect(resolved.config.runtime).toBe('openai-agents');
+    expect(resolved.harness).toBe('openai-agents');
+    expect(resolved.config.harness).toBe('openai-agents');
     expect(resolved.config.maxTurns).toBe(30);
     expect(resolved.config.timeoutSeconds).toBe(900);
   });
@@ -209,6 +215,35 @@ describe('resolveRunConfig', () => {
       baseUrl: 'http://localhost:11434',
       model: 'gemma4:26b',
     }));
-    expect(resolved.runtime).toBe('openai-agents');
+    expect(resolved.harness).toBe('openai-agents');
+  });
+
+  it('lets global harness override task YAML execution harness', () => {
+    mockYamlTask.execution = { harness: 'claude-sdk' };
+    mockLoadMergedConfig.mockReturnValue({
+      version: 3,
+      config_version: 5,
+      embedding: { provider: 'ollama', model: 'bge-m3:latest' },
+      daemon: { port: 21039, log_level: 'debug', log_retention_days: 30, stale_session_threshold_ms: 3600000 },
+      capture: { transcript_paths: [], plan_dirs: [], ignore_plan_dirs_in_git: false, artifact_extensions: ['.md'], buffer_max_events: 500 },
+      agent: {
+        summary_batch_interval: 5,
+        scheduled_tasks_enabled: false,
+        event_tasks_enabled: true,
+        harness: 'openai-agents',
+      },
+      cortex: { digest: { tier: 5000 }, spores: { inject_on_prompt_submit: true, max_per_prompt: 3 } },
+      backup: {},
+      maintenance: { auto_optimize: true, auto_optimize_interval_hours: 24 },
+      team: { enabled: false, interval_minutes: 15 },
+      skills: { confidence_threshold: 0.7, usage_stale_days: 30 },
+      notifications: { enabled: true, system_notifications: false, default_mode: 'summary', domains: {} },
+      appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
+    });
+
+    const resolved = resolveRunConfig('myco-agent', 'title-summary', TEST_VAULT_DIR);
+
+    expect(resolved.harness).toBe('openai-agents');
+    expect(resolved.config.harness).toBe('openai-agents');
   });
 });

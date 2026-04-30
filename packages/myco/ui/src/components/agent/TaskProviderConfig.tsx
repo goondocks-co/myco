@@ -14,7 +14,7 @@ import {
   useTaskConfig,
   useTestProvider,
   useUpdateTaskConfig,
-  maybeInferRuntimeFromProviderType,
+  maybeInferHarnessFromProviderType,
   type ProviderConfig,
   type PhaseOverride,
   type ScheduleOverride,
@@ -40,7 +40,7 @@ interface TaskProviderConfigProps {
   taskId: string;
   phases?: PhaseDefinition[];
   defaults?: {
-    runtime?: string;
+    harness?: string;
     providerType?: string;
     localBackend?: 'ollama' | 'lmstudio';
     reasoningLevel?: 'low' | 'default' | 'high';
@@ -104,7 +104,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const [savedTaskSnapshot, setSavedTaskSnapshot] = useState(initialTaskSnapshot);
   const providers = providersData?.providers ?? [];
   const providerDraftDefaults = {
-    runtime: defaults?.runtime,
+    harness: defaults?.harness,
     providerType: defaults?.providerType,
     localBackend: defaults?.localBackend,
     model: defaults?.model,
@@ -116,7 +116,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     draft,
     isDirty: isProviderDirty,
     commitDraft,
-    handleRuntimeChange: handleDraftRuntimeChange,
+    handleHarnessChange: handleDraftHarnessChange,
     handleProviderChange: handleDraftProviderChange,
     handleModelChange: handleDraftModelChange,
     handleLocalBackendChange: handleDraftLocalBackendChange,
@@ -125,14 +125,14 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
     handleContextLengthChange: handleDraftContextLengthChange,
   } = useProviderConfigDraft({
     source: {
-      runtime: currentConfig?.runtime,
+      harness: currentConfig?.harness,
       provider: currentConfig?.provider,
       model: currentConfig?.model,
     },
     defaults: providerDraftDefaults,
     providers,
   });
-  const runtime = draft.runtime;
+  const harness = draft.harness;
   const providerType = draft.type;
   const model = draft.model;
   const reasoningLow = draft.reasoningLow;
@@ -143,10 +143,10 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   const resolvedTaskBaseUrl = baseUrl || defaultBaseUrlForProvider(providerType, draft.localBackend);
   const reasoningModelsQuery = useModels(providerType || null, resolvedTaskBaseUrl || undefined, 'llm', draft.localBackend || null);
   const reasoningModels = reasoningModelsQuery.data?.models ?? providers.find((provider) => provider.type === providerType)?.models ?? [];
-  const effectiveRuntime = runtime
-    || maybeInferRuntimeFromProviderType(providerType)
-    || defaults?.runtime
-    || maybeInferRuntimeFromProviderType(defaults?.providerType)
+  const effectiveHarness = harness
+    || maybeInferHarnessFromProviderType(providerType)
+    || defaults?.harness
+    || maybeInferHarnessFromProviderType(defaults?.providerType)
     || 'claude-sdk';
   const isDirty = isProviderDirty
     || maxTurns !== savedTaskSnapshot.maxTurns
@@ -194,7 +194,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
   function handleSave() {
     const provider = draftToNormalizedProviderConfig(
-      { ...draft, runtime: effectiveRuntime as ProviderConfig['runtime'] },
+      { ...draft, harness: effectiveHarness as 'claude-sdk' | 'openai-agents' },
       reasoningModels,
     );
     if (!provider) {
@@ -215,7 +215,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
-          runtime: effectiveRuntime as 'claude-sdk' | 'openai-agents',
+          harness: effectiveHarness as 'claude-sdk' | 'openai-agents',
           provider,
           maxTurns: maxTurns ? Number(maxTurns) : null,
           timeoutSeconds: timeoutSeconds ? Number(timeoutSeconds) : null,
@@ -227,7 +227,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         onSuccess: () => {
           commitDraft(providerDraftFromSource(
-            { runtime: effectiveRuntime, provider },
+            { harness: effectiveHarness, provider },
             providerDraftDefaults,
           ));
           setSavedTaskSnapshot({
@@ -247,7 +247,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
       {
         taskId,
         config: {
-          runtime: null,
+          harness: null,
           provider: null,
           model: null,
           maxTurns: null,
@@ -275,7 +275,6 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
   function handleTest() {
     const isLocal = providerType === 'ollama' || providerType === 'lmstudio' || providerType === 'openai-compatible';
     const config: ProviderConfig = {
-      runtime: effectiveRuntime as ProviderConfig['runtime'],
       type: providerType as ProviderConfig['type'],
       ...(providerType === 'openai-compatible' && draft.localBackend ? { local_backend: draft.localBackend } : {}),
       ...(isLocal && baseUrl ? { base_url: baseUrl } : {}),
@@ -298,7 +297,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
 
       {/* Task-level provider/model */}
       <ProviderModelSelector
-        runtime={effectiveRuntime}
+        harness={effectiveHarness}
         providerType={providerType}
         localBackend={draft.localBackend}
         model={model}
@@ -307,8 +306,8 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
         modelPlaceholder={defaults?.model}
         providers={providers}
         isLoadingProviders={isLoadingProviders}
-        onRuntimeChange={(nextRuntime) => {
-          handleDraftRuntimeChange(nextRuntime);
+        onHarnessChange={(nextHarness) => {
+          handleDraftHarnessChange(nextHarness);
         }}
         onProviderChange={handleProviderChange}
         onLocalBackendChange={handleDraftLocalBackendChange}
@@ -561,7 +560,7 @@ export function TaskProviderConfig({ taskId, phases, defaults, schedule, params 
               key={phase.name}
               phase={phase}
               override={phaseOverrides[phase.name] ?? {}}
-              taskRuntime={effectiveRuntime}
+              taskHarness={effectiveHarness}
               taskProviderType={providerType}
               taskModel={model || defaults?.model || ''}
               taskReasoningMap={{

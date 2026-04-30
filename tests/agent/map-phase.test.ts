@@ -1,32 +1,34 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { z } from 'zod/v4';
-import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { executeMapPhase } from '@myco/agent/map-phase.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
+import type { MycoToolDefinition } from '@myco/agent/tools/types.js';
 
 function makeSinkSpy() {
   const calls: any[] = [];
-  const sink = tool(
-    'test_write',
-    'sink',
-    { path: z.string(), description: z.string() },
-    async (args) => {
+  const sink: MycoToolDefinition = {
+    name: 'test_write',
+    description: 'sink',
+    inputSchema: { path: z.string(), description: z.string() },
+    async handler(args: Record<string, unknown>) {
       calls.push(args);
       return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
     },
-    { annotations: {} },
-  );
+    annotations: {},
+  };
   return { sink, calls };
 }
 
 function makeSource(items: any[]) {
-  return tool(
-    'test_source',
-    'src',
-    { limit: z.number().optional() },
-    async () => ({ content: [{ type: 'text', text: JSON.stringify({ entries: items }) }] }),
-    { annotations: { readOnlyHint: true } },
-  );
+  return {
+    name: 'test_source',
+    description: 'src',
+    inputSchema: { limit: z.number().optional() },
+    async handler() {
+      return { content: [{ type: 'text', text: JSON.stringify({ entries: items }) }] };
+    },
+    annotations: { readOnlyHint: true },
+  } satisfies MycoToolDefinition;
 }
 
 const happyPhase: PhaseDefinition = {
@@ -67,7 +69,7 @@ describe('executeMapPhase — happy path', () => {
     const result = await executeMapPhase({
       phase: happyPhase,
       allTools: [source, sink],
-      runtime: stubRuntime as any,
+      harness: stubRuntime as any,
       params: {},
       systemPrompt: 'sys',
       runId: 'r1',
@@ -97,7 +99,7 @@ describe('executeMapPhase — skip modes', () => {
     const result = await executeMapPhase({
       phase: happyPhase,
       allTools: [source, sink],
-      runtime: stubRuntime as any,
+      harness: stubRuntime as any,
       params: {},
       systemPrompt: 's',
       runId: 'r',
@@ -110,9 +112,15 @@ describe('executeMapPhase — skip modes', () => {
   });
 
   it('records skip when sink returns ok:false', async () => {
-    const sink = tool('test_write', 'sink', { path: z.string(), description: z.string() },
-      async () => ({ content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'boilerplate' }) }] }),
-      { annotations: {} });
+    const sink: MycoToolDefinition = {
+      name: 'test_write',
+      description: 'sink',
+      inputSchema: { path: z.string(), description: z.string() },
+      async handler() {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'boilerplate' }) }] };
+      },
+      annotations: {},
+    };
     const source = makeSource([{ path: 'a.ts' }]);
     const stubRuntime = {
       id: 'claude-sdk' as const,
@@ -124,7 +132,7 @@ describe('executeMapPhase — skip modes', () => {
       }),
     };
     const result = await executeMapPhase({
-      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase: happyPhase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
     expect(result.written).toBe(0);
@@ -134,19 +142,23 @@ describe('executeMapPhase — skip modes', () => {
 
   it('keeps a successful sink outcome when a later duplicate call fails', async () => {
     let calls = 0;
-    const sink = tool('test_write', 'sink', { path: z.string(), description: z.string() },
-      async () => {
+    const sink: MycoToolDefinition = {
+      name: 'test_write',
+      description: 'sink',
+      inputSchema: { path: z.string(), description: z.string() },
+      async handler() {
         calls += 1;
         return {
           content: [{
             type: 'text',
             text: JSON.stringify(calls === 1
               ? { ok: true }
-              : { ok: false, reason: 'duplicate_rejected' }),
+            : { ok: false, reason: 'duplicate_rejected' }),
           }],
         };
       },
-      { annotations: {} });
+      annotations: {},
+    };
     const source = makeSource([{ path: 'a.ts' }]);
     const stubRuntime = {
       id: 'claude-sdk' as const,
@@ -160,7 +172,7 @@ describe('executeMapPhase — skip modes', () => {
     };
 
     const result = await executeMapPhase({
-      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase: happyPhase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
 
@@ -185,7 +197,7 @@ describe('executeMapPhase — skip modes', () => {
       }),
     };
     const result = await executeMapPhase({
-      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase: happyPhase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
     expect(result.written).toBe(2);
@@ -216,7 +228,7 @@ describe('executeMapPhase — per-item timeout', () => {
     };
     const phase = { ...happyPhase, perItemTimeoutSeconds: 0.05 }; // 50ms
     const result = await executeMapPhase({
-      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
     expect(result.written).toBe(2);
@@ -246,7 +258,7 @@ describe('executeMapPhase — run abort', () => {
     await expect(executeMapPhase({
       phase: happyPhase,
       allTools: [source, sink],
-      runtime: stubRuntime as any,
+      harness: stubRuntime as any,
       params: {},
       systemPrompt: 's',
       runId: 'r',
@@ -274,16 +286,22 @@ describe('executeMapPhase — abort + source-failure', () => {
     };
     const phase = { ...happyPhase, onItemError: 'abort' as const };
     await expect(executeMapPhase({
-      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     })).rejects.toThrow('boom');
     expect(calls).toBe(2); // item 3 was never reached
   });
 
   it('throws when source tool errors during fetch', async () => {
-    const errSource = tool('test_source', 'src', { limit: z.number().optional() },
-      async () => { throw new Error('db blown'); },
-      { annotations: { readOnlyHint: true } });
+    const errSource: MycoToolDefinition = {
+      name: 'test_source',
+      description: 'src',
+      inputSchema: { limit: z.number().optional() },
+      async handler() {
+        throw new Error('db blown');
+      },
+      annotations: { readOnlyHint: true },
+    };
     const { sink } = makeSinkSpy();
     const stubRuntime = {
       id: 'claude-sdk' as const,
@@ -291,7 +309,7 @@ describe('executeMapPhase — abort + source-failure', () => {
       execute: mock(() => Promise.resolve({ finalText: "", turnsUsed: 0, usage: { totalTokens: 0, requests: 0 } })),
     };
     await expect(executeMapPhase({
-      phase: happyPhase, allTools: [errSource, sink], runtime: stubRuntime as any,
+      phase: happyPhase, allTools: [errSource, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     })).rejects.toThrow('db blown');
     expect(stubRuntime.execute).not.toHaveBeenCalled();
@@ -306,7 +324,7 @@ describe('executeMapPhase — abort + source-failure', () => {
       execute: mock(() => Promise.resolve({ finalText: "", turnsUsed: 0, usage: { totalTokens: 0, requests: 0 } })),
     };
     const result = await executeMapPhase({
-      phase: happyPhase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase: happyPhase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     });
     expect(result).toMatchObject({
@@ -346,7 +364,7 @@ describe('executeMapPhase — scoped fast path', () => {
     const result = await executeMapPhase({
       phase: happyPhase,
       allTools: [source, sink],
-      runtime: stubRuntime as any,
+      harness: stubRuntime as any,
       params: {},
       systemPrompt: 'sys',
       runId: 'r',
@@ -380,7 +398,7 @@ describe('executeMapPhase — scoped fast path', () => {
     };
     const phase = { ...happyPhase, onItemError: 'abort' as const };
     await expect(executeMapPhase({
-      phase, allTools: [source, sink], runtime: stubRuntime as any,
+      phase, allTools: [source, sink], harness: stubRuntime as any,
       params: {}, systemPrompt: 's', runId: 'r', agentId: 'a',
     })).rejects.toThrow('item exploded');
     expect(scopeCloses).toBe(1);

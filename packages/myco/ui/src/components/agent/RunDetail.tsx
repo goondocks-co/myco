@@ -27,7 +27,7 @@ import { formatEpochRelative, truncate, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
-import type { RuntimeTokenBudget } from '@myco/agent/types';
+import type { HarnessTokenBudget } from '@myco/agent/types';
 import { tryParseJson } from '@myco/utils/json';
 
 /* ---------- Constants ---------- */
@@ -61,7 +61,7 @@ function truncatePreview(text: string | null, limit: number): string {
   return truncate(text, limit) || '\u2014';
 }
 
-function formatBudgetSource(source: RuntimeTokenBudget['contextWindowSource'] | undefined): string {
+function formatBudgetSource(source: HarnessTokenBudget['contextWindowSource'] | undefined): string {
   if (!source) return '\u2014';
   switch (source) {
     case 'provider-config':
@@ -86,7 +86,7 @@ interface ParsedUsageData {
     cachedTokens?: number;
     requests?: number;
   };
-  runBudget?: RuntimeTokenBudget;
+  runBudget?: HarnessTokenBudget;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -702,11 +702,11 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       </div>
 
       {/* Model / Provider info */}
-      {(run.runtime || run.provider || run.model) && (
+      {(run.harness || run.provider || run.model) && (
         <div className="flex items-center gap-4 px-1">
-          {run.runtime && (
+          {run.harness && (
             <span className="font-sans text-xs text-on-surface-variant">
-              Runtime: <span className="font-mono text-on-surface">{run.runtime}</span>
+              Harness: <span className="font-mono text-on-surface">{run.harness}</span>
             </span>
           )}
           {run.provider && (

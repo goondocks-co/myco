@@ -39,7 +39,7 @@ export const AGENT_RUNS_DEFAULT_LIMIT = 50;
 
 /**
  * Per-run execution overrides. Clients (eval CLI, RunTaskDialog, etc.) use
- * these to pin runtime/provider/reasoning/model/phase-config without touching
+ * these to pin harness/provider/reasoning/model/phase-config without touching
  * the task YAML. Shape mirrors `RunOptions.executionOverrides` in
  * `@myco/agent/types.ts`. The canonical zod schemas live in
  * `./schemas/execution-overrides.ts` and are reused by the evaluation
@@ -88,7 +88,7 @@ const AgentRunBody = z.object({
    * recorded to `agent_run_write_intents` instead of mutating the vault.
    */
   dryRun: z.boolean().optional(),
-  /** Per-run runtime/reasoning/model overrides; also per-phase overrides. */
+  /** Per-run harness/reasoning/model overrides; also per-phase overrides. */
   executionOverrides: ExecutionOverrideBody,
 });
 
@@ -119,13 +119,24 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** POST /api/agent/run — trigger an agent run. */
   async function handleRun(req: RouteRequest): Promise<RouteResponse> {
+    const parsedBody = AgentRunBody.safeParse(req.body);
+    if (!parsedBody.success) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: parsedBody.error.message,
+        },
+      };
+    }
+
     const {
       task,
       instruction: rawInstruction,
       agentId,
       dryRun,
       executionOverrides: rawExecutionOverrides,
-    } = AgentRunBody.parse(req.body);
+    } = parsedBody.data;
 
     // SSRF defense: strip caller-supplied baseUrl from any remote-provider
     // override. The daemon's bearer key cannot follow a redirected URL.
@@ -309,7 +320,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
         logger.info(LOG_KINDS.AGENT_RUN, 'Agent run resumed', {
           runId: result.runId,
           status: result.status,
-          runtime: result.runtime,
+          harness: result.harness,
           provider: result.provider,
           model: result.model,
         });

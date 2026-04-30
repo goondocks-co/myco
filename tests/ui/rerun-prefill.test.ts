@@ -27,7 +27,7 @@ function makeRun(over: Partial<RunRow> = {}): RunRow {
     task: 'vault-evolve',
     instruction: null,
     status: 'completed',
-    runtime: null,
+    harness: null,
     provider: null,
     model: null,
     session_ref: null,
@@ -75,7 +75,7 @@ describe('buildRerunPrefill', () => {
     expect(prefill.instruction).toBe('plain reminder');
     expect(prefill.dryRun).toBe(true);
     expect(prefill.hasAnyOverride).toBe(false);
-    expect(prefill.runtime).toBeUndefined();
+    expect(prefill.harness).toBeUndefined();
     expect(prefill.reasoningLevel).toBeUndefined();
     expect(prefill.model).toBeUndefined();
     expect(prefill.provider).toBeUndefined();
@@ -83,16 +83,15 @@ describe('buildRerunPrefill', () => {
     expect(prefill.taskMissing).toBe(false);
   });
 
-  it('seeds full override shape when source has runtime/reasoning/model/provider/phases', () => {
+  it('seeds full override shape when source has harness/reasoning/model/provider/phases', () => {
     const run = makeRun({
       instruction: 'just rerun',
       execution_overrides: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         reasoningLevel: 'high',
         model: 'gpt-5',
         provider: {
           type: 'openai',
-          runtime: 'openai-agents',
           model: 'gpt-5',
           reasoningMap: { low: 'gpt-4', default: 'gpt-5', high: 'gpt-5-thinking' },
         },
@@ -109,12 +108,11 @@ describe('buildRerunPrefill', () => {
       },
     });
     const prefill = buildRerunPrefill(run, [makeTask()]);
-    expect(prefill.runtime).toBe('openai-agents');
+    expect(prefill.harness).toBe('openai-agents');
     expect(prefill.reasoningLevel).toBe('high');
     expect(prefill.model).toBe('gpt-5');
     expect(prefill.provider).toEqual({
       type: 'openai',
-      runtime: 'openai-agents',
       model: 'gpt-5',
       reasoning_map: { low: 'gpt-4', default: 'gpt-5', high: 'gpt-5-thinking' },
     });
@@ -165,7 +163,7 @@ describe('buildRerunPrefill', () => {
     const run = makeRun({ execution_overrides: null });
     const prefill = buildRerunPrefill(run, [makeTask()]);
     expect(prefill.hasAnyOverride).toBe(false);
-    expect(prefill.runtime).toBeUndefined();
+    expect(prefill.harness).toBeUndefined();
     expect(prefill.provider).toBeUndefined();
     expect(prefill.phaseOverrides).toEqual({});
   });
@@ -180,16 +178,16 @@ describe('buildRerunPrefill', () => {
     expect(prefill.varValues).toEqual({ session_id: 'keep-me' });
   });
 
-  it('ignores unknown runtime / reasoning values and leaves overrides undefined', () => {
+  it('ignores unknown harness / reasoning values and leaves overrides undefined', () => {
     const run = makeRun({
       execution_overrides: {
-        runtime: 'bogus',
+        harness: 'bogus',
         reasoningLevel: 'extreme',
         model: 'gpt-5',
       },
     });
     const prefill = buildRerunPrefill(run, [makeTask()]);
-    expect(prefill.runtime).toBeUndefined();
+    expect(prefill.harness).toBeUndefined();
     expect(prefill.reasoningLevel).toBeUndefined();
     expect(prefill.model).toBe('gpt-5');
     // Model alone still counts as an override.

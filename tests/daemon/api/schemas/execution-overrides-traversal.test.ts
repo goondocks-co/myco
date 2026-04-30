@@ -83,7 +83,7 @@ describe('transformProviderOverrides', () => {
     const providerObj = { type: 'openai', apiKey: 'sk-abc', baseUrl: 'https://x' };
     const phaseObj = { provider: { type: 'openrouter', apiKey: 'sk-xyz' }, model: 'm' };
     const input = {
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       provider: providerObj,
       phases: { compose: phaseObj },
     };
@@ -105,7 +105,7 @@ describe('transformProviderOverrides', () => {
 
     // Output has apiKey stripped
     expect(out).toEqual({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       provider: { type: 'openai', baseUrl: 'https://x' },
       phases: { compose: { provider: { type: 'openrouter' }, model: 'm' } },
     });
@@ -113,7 +113,7 @@ describe('transformProviderOverrides', () => {
 
   it('preserves unrelated top-level and per-phase fields', () => {
     const input = {
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       reasoningLevel: 'high',
       model: 'claude-opus',
       provider: { type: 'anthropic' },
@@ -130,7 +130,7 @@ describe('transformProviderOverrides', () => {
     };
     const out = transformProviderOverrides(input, (p) => ({ ...p, tagged: true }));
     expect(out).toEqual({
-      runtime: 'claude-sdk',
+      harness: 'claude-sdk',
       reasoningLevel: 'high',
       model: 'claude-opus',
       provider: { type: 'anthropic', tagged: true },

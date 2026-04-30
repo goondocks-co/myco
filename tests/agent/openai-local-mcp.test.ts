@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createLocalVaultMcpServer } from '@myco/agent/runtime/openai-local-mcp.js';
+import { createLocalVaultMcpServer } from '@myco/agent/harness/openai-local-mcp.js';
 
 describe('createLocalVaultMcpServer', () => {
   it('exports JSON Schema for Anthropic SDK tools', async () => {

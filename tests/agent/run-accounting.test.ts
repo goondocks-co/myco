@@ -168,7 +168,7 @@ describe('buildRunAccountingUpdate', () => {
     };
 
     const update = buildRunAccountingUpdate({
-      runtime: 'openai-agents',
+      harness: 'openai-agents',
       provider: {
         type: 'lmstudio',
         model: 'google/gemma-4-26b-a4b',
@@ -176,7 +176,7 @@ describe('buildRunAccountingUpdate', () => {
       },
       model: 'google/gemma-4-26b-a4b',
       checkpointState: {
-        runtime: 'openai-agents',
+        harness: 'openai-agents',
         provider: 'lmstudio',
         phases: {},
       },

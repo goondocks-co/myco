@@ -30,9 +30,9 @@ import { createObservabilityTools } from './tools/observability-tools.js';
 import { createSkillTools } from './tools/skill-tools.js';
 import { createExplorationTools } from './tools/exploration-tools.js';
 import { createCanopyTools } from './tools/canopy-tools.js';
-import { textResult } from './tools/types.js';
+import { textResult, toSdkMcpToolDefinitions } from './tools/types.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import type { SdkMcpToolDefinition, VaultToolDeps } from './tools/types.js';
+import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 
@@ -285,7 +285,7 @@ function buildRepeatedReadSuppressionResult(
   };
 }
 
-function shouldGuardRepeatedRead(toolDef: SdkMcpToolDefinition<any>): boolean {
+function shouldGuardRepeatedRead(toolDef: MycoToolDefinition<any>): boolean {
   return toolDef.annotations?.readOnlyHint === true && LOOP_GUARDED_READ_TOOL_NAMES.has(toolDef.name);
 }
 
@@ -373,7 +373,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
   ];
 
   return tools.map((toolDef) => {
-    const typed = toolDef as SdkMcpToolDefinition<any>;
+    const typed = toolDef as MycoToolDefinition<any>;
     // Dry-run interceptor is applied FIRST (replacing the handler),
     // THEN the audit wrapper wraps on top. This way the audit trail
     // still records a turn for every intercepted call — the audit
@@ -401,7 +401,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
    * write-intent log must not cascade into tool failures that confuse
    * the dry-run agent.
    */
-  function wrapToolWithDryRun(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
+  function wrapToolWithDryRun(toolDef: MycoToolDefinition<any>): MycoToolDefinition<any> {
     return {
       ...toolDef,
       handler: async (args) => {
@@ -495,7 +495,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     };
   }
 
-  function wrapToolWithAudit(toolDef: SdkMcpToolDefinition<any>): SdkMcpToolDefinition<any> {
+  function wrapToolWithAudit(toolDef: MycoToolDefinition<any>): MycoToolDefinition<any> {
     const originalHandler = toolDef.handler;
     // Reject args keys not in the tool's declared schema. Without this,
     // Zod silently strips unknown keys, which lets a prompt reference a
@@ -627,7 +627,7 @@ export function createVaultToolServer(agentId: string, runId: string, options?: 
   return createSdkMcpServer({
     name: 'myco-vault',
     version: getPluginVersion(),
-    tools,
+    tools: toSdkMcpToolDefinitions(tools),
   });
 }
 
@@ -660,24 +660,24 @@ export function createScopedVaultToolServer(
   return createSdkMcpServer({
     name: 'myco-vault',
     version: getPluginVersion(),
-    tools: scopedTools,
+    tools: toSdkMcpToolDefinitions(scopedTools),
   });
 }
 
 /**
  * Build a vault MCP tool server from a pre-materialized tool list.
  *
- * Used by map-phase mode (in both runtime adapters) when the harness has
+ * Used by map-phase mode (in harness adapters) when the harness has
  * already constructed a constrained per-item surface — argMap-pinned
  * fields stripped from the sink schema, outcome-capture wrapper applied.
  * Rebuilding via createVaultTools() would discard those modifications,
  * so map-phase passes the materialized tools through `toolSurface.tools`
- * and the runtime adapter calls this entrypoint instead.
+ * and the harness adapter calls this entrypoint instead.
  */
-export function createMaterializedVaultToolServer(tools: SdkMcpToolDefinition<any>[]) {
+export function createMaterializedVaultToolServer(tools: MycoToolDefinition<any>[]) {
   return createSdkMcpServer({
     name: 'myco-vault',
     version: getPluginVersion(),
-    tools,
+    tools: toSdkMcpToolDefinitions(tools),
   });
 }

@@ -4,7 +4,7 @@
  * Extracted from `executor.ts` to keep that file focused on orchestrator-
  * level concerns (run lifecycle, DB bookkeeping, finalization hooks). The
  * functions here own the actual per-phase / per-query dispatch into the
- * runtime adapter — `executePhase`, `executeSingleQuery`, and the wave-
+ * harness adapter — `executePhase`, `executeSingleQuery`, and the wave-
  * based loop in `executePhasedQuery`.
  *
  * The functions take a `PhaseLoopContext` parameter object that groups the
@@ -30,12 +30,10 @@ import {
   abortReasonMessage,
   buildPhaseResult,
   checkpointResultsForResume,
-  isExpiredSessionError,
-  isSessionResumeFailure,
   type RunCheckpointState,
 } from './executor-state.js';
-import { getAgentRuntime } from './runtime/index.js';
-import { RuntimeExecutionError, type RuntimeToolSurface } from './runtime/types.js';
+import { getAgentHarness } from './harness/index.js';
+import { HarnessExecutionError, type HarnessToolSurface } from './harness/types.js';
 import { composePhasePrompt } from './prompt-composition.js';
 import { resolvePhaseExecution, type MycoYamlPhaseOverrides } from './phase-resolver.js';
 import type { CostResolution } from './cost/types.js';
@@ -103,10 +101,10 @@ export interface PhaseLoopContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a single phase query through the selected runtime adapter.
+ * Execute a single phase query through the selected harness adapter.
  *
  * Separated from `executePhasedQuery` so waves can dispatch it via
- * `Promise.allSettled`. Emits a runtime retry when session-resume fails
+ * `Promise.allSettled`. Emits a harness retry when session-resume fails
  * against an adapter that advertises `supportsSessionResume`.
  */
 export interface ExecutePhaseInput {
@@ -114,7 +112,7 @@ export interface ExecutePhaseInput {
   phasePrompt: string;
   phaseModel: string;
   phase: PhaseDefinition;
-  toolSurface: RuntimeToolSurface;
+  toolSurface: HarnessToolSurface;
   provider?: ProviderConfig;
   sessionId?: string;
   sessionData?: unknown;
@@ -130,7 +128,7 @@ export async function executePhase(
   }
 
   const logger = ctx.options?.logger;
-  const runtime = getAgentRuntime(ctx.config.runtime);
+  const harness = getAgentHarness(ctx.config.harness);
   logger?.debug('agent.phase.start', `Phase ${phase.name} starting`, {
     runId: ctx.runId,
     phase: phase.name,
@@ -143,7 +141,7 @@ export async function executePhase(
   try {
     let result;
     try {
-      result = await runtime.execute({
+      result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
         maxTurns: phase.maxTurns,
@@ -158,8 +156,8 @@ export async function executePhase(
     } catch (error) {
       if (
         !sessionId
-        || !runtime.supports('supportsSessionResume')
-        || (!isSessionResumeFailure(error) && !isExpiredSessionError(error))
+        || !harness.supports('supportsSessionResume')
+        || harness.classifyError?.(error, { attemptedResume: true }) === 'unknown'
       ) {
         throw error;
       }
@@ -169,7 +167,7 @@ export async function executePhase(
         priorSession: sessionId,
         error: toErrorMessage(error),
       });
-      result = await runtime.execute({
+      result = await harness.execute({
         prompt: phasePrompt,
         model: phaseModel,
         maxTurns: phase.maxTurns,
@@ -199,7 +197,7 @@ export async function executePhase(
     }
 
     const costData = await resolveCost({
-      runtime: ctx.config.runtime,
+      harness: ctx.config.harness,
       provider,
       model: phaseModel,
       usage: result.usage,
@@ -216,10 +214,10 @@ export async function executePhase(
     });
   } catch (err) {
     const abortReason = abortReasonMessage(ctx.abortController);
-    const telemetry = err instanceof RuntimeExecutionError ? err.telemetry : undefined;
+    const telemetry = err instanceof HarnessExecutionError ? err.telemetry : undefined;
     const costData = telemetry
       ? await resolveCost({
-          runtime: ctx.config.runtime,
+          harness: ctx.config.harness,
           provider,
           model: phaseModel,
           usage: telemetry.usage,
@@ -252,7 +250,7 @@ export async function executePhase(
 async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult & { sessionData?: unknown }> {
   const { ctx, phase, phaseModel, provider } = input;
   const logger = ctx.options?.logger;
-  const runtime = getAgentRuntime(ctx.config.runtime);
+  const harness = getAgentHarness(ctx.config.harness);
   const allTools = createVaultTools(ctx.agentId, ctx.runId, {
     embeddingManager: ctx.embeddingManager,
     projectRoot: ctx.projectRoot,
@@ -268,7 +266,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     const mapResult = await executeMapPhase({
       phase,
       allTools,
-      runtime,
+      harness,
       params: ((ctx.config.taskParams ?? {}) as Record<string, unknown>),
       systemPrompt: ctx.systemPrompt,
       runId: ctx.runId,
@@ -291,7 +289,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
       costUsd: mapResult.usage.costUsd ?? null,
     });
     const costData = await resolveCost({
-      runtime: ctx.config.runtime,
+      harness: ctx.config.harness,
       provider,
       model: phaseModel,
       usage: mapResult.usage,
@@ -324,7 +322,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a single `runtime.execute()` call for tasks without a `phases`
+ * Execute a single `harness.execute()` call for tasks without a `phases`
  * array. Returns tokens used, cost, and session data for resume support.
  */
 export async function executeSingleQuery(
@@ -341,7 +339,7 @@ export async function executeSingleQuery(
   sessionRef?: string;
   sessionData?: unknown;
 }> {
-  const runtime = getAgentRuntime(ctx.config.runtime);
+  const harness = getAgentHarness(ctx.config.harness);
   const effectiveModel = resolveReasoningModel(
     ctx.config.execution?.reasoningLevel ?? ctx.config.reasoningLevel,
     provider,
@@ -366,17 +364,21 @@ export async function executeSingleQuery(
   };
   let result;
   try {
-    result = await runtime.execute({ ...baseInput, sessionRef, sessionData });
+    result = await harness.execute({ ...baseInput, sessionRef, sessionData });
   } catch (err) {
-    // Mirror executePhase's retry: if we had a sessionRef and the runtime
+    const resumeClassification = harness.classifyError?.(err, { attemptedResume: true });
+    // Mirror executePhase's retry: if we had a sessionRef and the harness
     // supports resume, try once more with a fresh session. Without this,
     // single-query tasks (title-summary, review-session) loop forever in
     // the scheduler whenever their SDK session TTLs out — the caller sees
     // "exited with code 1" and has no way to recover.
     if (
       !sessionRef
-      || !runtime.supports('supportsSessionResume')
-      || (!isSessionResumeFailure(err) && !isExpiredSessionError(err))
+      || !harness.supports('supportsSessionResume')
+      || (
+        resumeClassification !== 'session-resume-failed'
+        && resumeClassification !== 'session-expired'
+      )
     ) {
       throw err;
     }
@@ -389,10 +391,10 @@ export async function executeSingleQuery(
         error: toErrorMessage(err),
       },
     );
-    result = await runtime.execute(baseInput);
+    result = await harness.execute(baseInput);
   }
   const costData = await resolveCost({
-    runtime: ctx.config.runtime,
+    harness: ctx.config.harness,
     provider,
     model: effectiveModel,
     usage: result.usage,
@@ -413,7 +415,7 @@ export async function executeSingleQuery(
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a phased task — wave-based parallel `runtime.execute()` calls.
+ * Execute a phased task — wave-based parallel `harness.execute()` calls.
  *
  * Phases are sorted into waves via `computeWaves()`. Phases within the same
  * wave execute concurrently via `Promise.allSettled()`. Each phase gets:
@@ -463,8 +465,8 @@ export async function executePhasedQuery(
       config.model,
     );
     const orchestratorMaxTurns = config.orchestrator.maxTurns ?? DEFAULT_ORCHESTRATOR_MAX_TURNS;
-    const runtime = getAgentRuntime(config.runtime);
-    const planResponse = await runtime.execute({
+    const harness = getAgentHarness(config.harness);
+    const planResponse = await harness.execute({
       prompt: orchestratorPrompt,
       model: orchestratorModel,
       maxTurns: orchestratorMaxTurns,
@@ -508,7 +510,7 @@ export async function executePhasedQuery(
 
     const waveInputs = runnableWave.map((phase, indexInWave) => {
       // Resolve execution config FIRST so the prompt can be templated
-      // with the resolved `maxTurns` (and future per-phase runtime
+      // with the resolved `maxTurns` (and future per-phase harness
       // knobs). Single canonical precedence resolution — covers run
       // overrides, phase YAML, myco.yaml per-phase overrides, top-level
       // run override, and the task default. See `resolvePhaseExecution`

@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import type { ProviderType, ReasoningLevel, RuntimeId } from '@myco/agent/types.js';
+import type { ProviderType, ReasoningLevel, HarnessId } from '@myco/agent/types.js';
 import type { CostSource } from '@myco/agent/cost/types.js';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export interface RunInsert {
   task?: string | null;
   instruction?: string | null;
   status?: string;
-  runtime?: RuntimeId | null;
+  harness?: HarnessId | null;
   provider?: ProviderType | null;
   model?: string | null;
   session_ref?: string | null;
@@ -92,7 +92,7 @@ export interface RunRow {
   task: string | null;
   instruction: string | null;
   status: string;
-  runtime: RuntimeId | null;
+  harness: HarnessId | null;
   provider: ProviderType | null;
   model: string | null;
   session_ref: string | null;
@@ -127,7 +127,7 @@ export interface RunUpdate {
   status?: string;
   task?: string | null;
   instruction?: string | null;
-  runtime?: RuntimeId | null;
+  harness?: HarnessId | null;
   provider?: ProviderType | null;
   model?: string | null;
   session_ref?: string | null;
@@ -171,7 +171,7 @@ const RUN_COLUMNS = [
   'task',
   'instruction',
   'status',
-  'runtime',
+  'harness',
   'provider',
   'model',
   'session_ref',
@@ -260,7 +260,7 @@ function toRunRow(row: Record<string, unknown>): RunRow {
     task: (row.task as string) ?? null,
     instruction: (row.instruction as string) ?? null,
     status: row.status as string,
-    runtime: (row.runtime as RuntimeId) ?? null,
+    harness: (row.harness as HarnessId) ?? null,
     provider: (row.provider as ProviderType) ?? null,
     model: (row.model as string) ?? null,
     session_ref: (row.session_ref as string) ?? null,
@@ -325,7 +325,7 @@ const UPDATE_COLUMNS: readonly (keyof RunUpdate)[] = [
   'status',
   'task',
   'instruction',
-  'runtime',
+  'harness',
   'provider',
   'model',
   'session_ref',
@@ -381,7 +381,7 @@ export function insertRun(data: RunInsert): RunRow {
   db.prepare(
     `INSERT INTO agent_runs (
        id, agent_id, task, instruction, status,
-       runtime, provider, model, session_ref, resumable,
+       harness, provider, model, session_ref, resumable,
        resume_status, resume_mode, resumed_at, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
        actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
@@ -402,7 +402,7 @@ export function insertRun(data: RunInsert): RunRow {
     data.task ?? null,
     data.instruction ?? null,
     data.status ?? DEFAULT_STATUS,
-    data.runtime ?? null,
+    data.harness ?? null,
     data.provider ?? null,
     data.model ?? null,
     data.session_ref ?? null,

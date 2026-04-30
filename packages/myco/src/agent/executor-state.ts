@@ -1,44 +1,13 @@
-import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import type { CostResolution, CostSource } from './cost/types.js';
 import type {
   EffectiveConfig,
   PhaseResult,
   ProviderConfig,
   ProviderType,
-  RuntimeId,
+  HarnessId,
   RuntimeTokenBudget,
   RuntimeUsage,
 } from './types.js';
-
-/** Error patterns that indicate an SDK/runtime session could not be resumed. */
-const SESSION_RESUME_ERROR_PATTERNS = [
-  /session/,
-  /resume/,
-  /previous[_ ]response/,
-  /conversation/,
-];
-
-/**
- * Error patterns that specifically indicate the Claude Agent SDK subprocess
- * crashed while trying to attach to an expired or missing session.
- *
- * The SDK TTLs its sessions on Anthropic's side (hours to days). When the
- * scheduler resumes a run after that TTL, the `claude` subprocess exits 1
- * within ~100 seconds with 0 turns recorded — the generic "Claude Code
- * process exited with code 1" message contains no `session`/`resume`
- * substring, so `SESSION_RESUME_ERROR_PATTERNS` misses it and the resume
- * keeps re-queuing forever.
- *
- * These patterns are only safe to apply in contexts where a `sessionRef`
- * was passed to the runtime (see `isExpiredSessionError` callers), since
- * "exited with code" also fires on unrelated SDK crashes.
- */
-const EXPIRED_SESSION_ERROR_PATTERNS = [
-  /exited with code/i,
-  /session[\s_-]*not[\s_-]*found/i,
-  /session[\s_-]*expired/i,
-  /session[\s_-]*(is|was)?[\s_-]*(gone|missing|invalid)/i,
-];
 
 export interface PhaseCheckpoint {
   name: string;
@@ -56,10 +25,15 @@ export interface PhaseCheckpoint {
 }
 
 export interface RunCheckpointState {
-  runtime: RuntimeId;
+  schemaVersion: 2;
+  harness: HarnessId;
   provider?: ProviderType;
   providerConfig?: ProviderConfig;
   model?: string;
+  harnessState?: {
+    ref?: string;
+    data?: unknown;
+  };
   sessionRef?: string;
   sessionData?: unknown;
   phases: Record<string, PhaseCheckpoint>;
@@ -73,40 +47,29 @@ export function abortReasonMessage(abortController?: AbortController): string | 
   return 'Agent run aborted';
 }
 
-export function isSessionResumeFailure(error: unknown): boolean {
-  const message = toErrorMessage(error).toLowerCase();
-  return SESSION_RESUME_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-/**
- * Matches errors that look like "the Claude SDK session we tried to resume
- * is no longer alive." Callers MUST gate this on actually having passed a
- * `sessionRef` — otherwise an unrelated "exited with code" SDK crash would
- * be falsely classified as expired-session and the run would stop being
- * retried.
- */
-export function isExpiredSessionError(error: unknown): boolean {
-  const message = toErrorMessage(error);
-  return EXPIRED_SESSION_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
 export function parseCheckpointState(raw: string | null | undefined): RunCheckpointState {
   if (!raw) {
-    return { runtime: 'claude-sdk', phases: {} };
+    return { schemaVersion: 2, harness: 'claude-sdk', phases: {} };
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<RunCheckpointState>;
+    const parsed = JSON.parse(raw) as Partial<RunCheckpointState> & { harness?: HarnessId };
+    const harnessState = parsed.harnessState ?? {
+      ...(parsed.sessionRef ? { ref: parsed.sessionRef } : {}),
+      ...(parsed.sessionData !== undefined ? { data: parsed.sessionData } : {}),
+    };
     return {
-      runtime: parsed.runtime ?? 'claude-sdk',
+      schemaVersion: 2,
+      harness: parsed.harness ?? parsed.harness ?? 'claude-sdk',
       provider: parsed.provider,
       providerConfig: parsed.providerConfig,
       model: parsed.model,
-      sessionRef: parsed.sessionRef,
-      sessionData: parsed.sessionData,
+      ...(Object.keys(harnessState).length > 0 ? { harnessState } : {}),
+      sessionRef: parsed.sessionRef ?? harnessState.ref,
+      sessionData: parsed.sessionData ?? harnessState.data,
       phases: parsed.phases ?? {},
     };
   } catch {
-    return { runtime: 'claude-sdk', phases: {} };
+    return { schemaVersion: 2, harness: 'claude-sdk', phases: {} };
   }
 }
 
@@ -138,7 +101,7 @@ export function checkpointResultsForResume(
  *
  * Three callers hit this: (1) executePhase's success path has a full
  * `RuntimeUsage` + `CostResolution`; (2) executePhase's failure path has
- * partial telemetry attached to a `RuntimeExecutionError`; (3)
+ * partial telemetry attached to a `HarnessExecutionError`; (3)
  * `checkpointResultsForResume` has pre-computed scalar fields from a
  * persisted checkpoint. Each caller passes what it has — the helper
  * derives `turnsUsed`/`tokensUsed`/`costUsd` from `usage` + `costData`
@@ -237,13 +200,13 @@ export function buildUsageData(
 }
 
 export function buildActionsTaken(
-  runtime: RuntimeId,
+  harness: HarnessId,
   provider: ProviderConfig | undefined,
   model: string,
   phaseResults?: PhaseResult[],
 ): string {
   return JSON.stringify({
-    runtime,
+    harness,
     model,
     provider: provider?.type ?? 'anthropic',
     ...(provider?.baseUrl ? { baseUrl: provider.baseUrl } : {}),
@@ -257,7 +220,6 @@ export function resolveProviderForResume(
     provider: ProviderType | null;
   } | null,
   checkpointState: RunCheckpointState,
-  runtime: RuntimeId,
   model: string,
 ): ProviderConfig | undefined {
   const persistedType = resumedRun?.provider ?? checkpointState.provider;
@@ -268,7 +230,6 @@ export function resolveProviderForResume(
   return {
     ...(persistedProvider ?? {}),
     ...(matchingCurrentProvider ?? {}),
-    runtime,
     type: persistedType ?? persistedProvider?.type ?? currentProvider?.type ?? 'anthropic',
     model,
   };

@@ -131,7 +131,7 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     task: run.task,
     instruction: run.instruction,
     status: run.status,
-    runtime: run.runtime,
+    harness: run.harness,
     provider: run.provider,
     model: run.model,
     session_ref: run.session_ref,

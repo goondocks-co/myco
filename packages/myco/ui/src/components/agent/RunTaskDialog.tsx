@@ -33,7 +33,7 @@ import {
 } from '../../hooks/use-provider-config-draft';
 import {
   parseProviderType,
-  parseRuntimeId,
+  parseHarnessId,
   resolveReasoningModel,
   useProviders,
   type PhaseOverride,
@@ -41,7 +41,7 @@ import {
 } from '../../hooks/use-providers';
 import { useTaskExecutionDefaults } from '../../hooks/use-task-execution-defaults';
 import { useModels } from '../../hooks/use-models';
-import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';
+import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import {
   buildExecutionOverrides,
   countOverrides,
@@ -130,7 +130,7 @@ export function RunTaskDialog({
 
   const {
     taskRow: resolvedTaskRow,
-    runtime: taskDefaultRuntime,
+    harness: taskDefaultHarness,
     provider: taskDefaultProvider,
     providerType: taskDefaultProviderType,
     modelFallback: taskDefaultModelFallback,
@@ -144,7 +144,7 @@ export function RunTaskDialog({
   const {
     draft,
     isDirty: isProviderDirty,
-    handleRuntimeChange: handleDraftRuntimeChange,
+    handleHarnessChange: handleDraftHarnessChange,
     handleProviderChange: handleDraftProviderChange,
     handleModelChange: handleDraftModelChange,
     handleLocalBackendChange: handleDraftLocalBackendChange,
@@ -213,7 +213,7 @@ export function RunTaskDialog({
     // but points at the source run's provider shape.
     if (prefill.provider) {
       setProviderDraft({
-        runtime: parseRuntimeId(prefill.runtime ?? prefill.provider.runtime ?? providerDraftDefaults.runtime ?? 'claude-sdk') || 'claude-sdk',
+        harness: parseHarnessId(prefill.harness ?? providerDraftDefaults.harness ?? 'claude-sdk') || 'claude-sdk',
         type: parseProviderType(prefill.provider.type),
         localBackend: prefill.provider.local_backend ?? '',
         model: prefill.provider.model ?? '',
@@ -225,10 +225,10 @@ export function RunTaskDialog({
           ? String(prefill.provider.context_length)
           : '',
       });
-    } else if (prefill.runtime) {
-      // Runtime-only override (no full provider reseed): flip the draft's
-      // runtime so the displayed "runtime" chip matches what will submit.
-      setProviderDraft((prev) => ({ ...prev, runtime: prefill.runtime! }));
+    } else if (prefill.harness) {
+      // Harness-only override (no full provider reseed): flip the draft's
+      // harness so the displayed "harness" chip matches what will submit.
+      setProviderDraft((prev) => ({ ...prev, harness: prefill.harness! }));
     }
     // Auto-expand the Override section when any override field is set.
     if (prefill.hasAnyOverride) setOverridesOpen(true);
@@ -264,16 +264,16 @@ export function RunTaskDialog({
     return draftToNormalizedProviderConfig(draft, availableModels);
   }, [draft, availableModels, isProviderDirty]);
 
-  const runtimeOverride: RuntimeId | undefined = useMemo(() => {
+  const harnessOverride: HarnessId | undefined = useMemo(() => {
     if (!isProviderDirty) return undefined;
-    if (!draft.runtime) return undefined;
-    return draft.runtime === taskDefaultRuntime ? undefined : (draft.runtime as RuntimeId);
-  }, [draft.runtime, taskDefaultRuntime, isProviderDirty]);
+    if (!draft.harness) return undefined;
+    return draft.harness === taskDefaultHarness ? undefined : (draft.harness as HarnessId);
+  }, [draft.harness, taskDefaultHarness, isProviderDirty]);
 
   const effectiveDefaults: EffectiveDefaults = useMemo(() => {
     const phaseDefs = activeTaskRow?.phases ?? [];
     return {
-      runtime: taskDefaultRuntime,
+      harness: taskDefaultHarness,
       reasoningLevel: taskDefaultReasoning,
       model: taskDefaultModel || undefined,
       provider: taskDefaultProvider,
@@ -286,7 +286,7 @@ export function RunTaskDialog({
     };
   }, [
     activeTaskRow?.phases,
-    taskDefaultRuntime,
+    taskDefaultHarness,
     taskDefaultReasoning,
     taskDefaultModel,
     taskDefaultProvider,
@@ -294,18 +294,18 @@ export function RunTaskDialog({
 
   const formState: OverridesFormState = useMemo(
     () => ({
-      runtime: runtimeOverride,
+      harness: harnessOverride,
       reasoningLevel: reasoning,
       model: undefined,
       provider: providerFromDraft,
       phases: phaseOverrides,
     }),
-    [runtimeOverride, reasoning, providerFromDraft, phaseOverrides],
+    [harnessOverride, reasoning, providerFromDraft, phaseOverrides],
   );
 
   const overrideCount = countOverrides(formState, effectiveDefaults);
 
-  const resolvedRuntime = runtimeOverride ?? taskDefaultRuntime;
+  const resolvedHarness = harnessOverride ?? taskDefaultHarness;
   const resolvedReasoning = reasoning ?? taskDefaultReasoning;
   const resolvedProvider = providerFromDraft ?? taskDefaultProvider;
   const resolvedProviderType = resolvedProvider?.type ?? taskDefaultProviderType;
@@ -438,7 +438,7 @@ export function RunTaskDialog({
             <div className="rounded-md bg-surface-container-low p-3">
               <p className="font-sans text-xs text-on-surface-variant">Effective execution</p>
               <div className="mt-1 flex flex-wrap gap-4 font-mono text-xs text-on-surface">
-                <span>runtime: {resolvedRuntime}</span>
+                <span>harness: {resolvedHarness}</span>
                 <span>provider: {resolvedProviderType}</span>
                 {resolvedReasoning && <span>reasoning: {resolvedReasoning}</span>}
                 {resolvedModel && <span>model: {resolvedModel}</span>}
@@ -509,7 +509,7 @@ export function RunTaskDialog({
                     <div className="space-y-4">
 
                   <ProviderModelSelector
-                    runtime={draft.runtime || taskDefaultRuntime}
+                    harness={draft.harness || taskDefaultHarness}
                     providerType={draft.type || ''}
                     localBackend={draft.localBackend}
                     model={draft.model}
@@ -518,8 +518,8 @@ export function RunTaskDialog({
                     modelPlaceholder={taskDefaultModel || undefined}
                     providers={providers}
                     isLoadingProviders={isLoadingProviders}
-                    showRuntimeSelector
-                    onRuntimeChange={handleDraftRuntimeChange}
+                    showHarnessSelector
+                    onHarnessChange={handleDraftHarnessChange}
                     onProviderChange={handleDraftProviderChange}
                     onLocalBackendChange={handleDraftLocalBackendChange}
                     onModelChange={handleDraftModelChange}
@@ -564,7 +564,7 @@ export function RunTaskDialog({
                         setReasoning(undefined);
                         setPhaseOverrides({});
                         setProviderDraft({
-                          runtime: parseRuntimeId(providerDraftDefaults.runtime ?? 'claude-sdk') || 'claude-sdk',
+                          harness: parseHarnessId(providerDraftDefaults.harness ?? 'claude-sdk') || 'claude-sdk',
                           type: parseProviderType(providerDraftDefaults.providerType ?? ''),
                           localBackend: providerDraftDefaults.localBackend ?? '',
                           model: providerDraftDefaults.model ?? '',
@@ -594,7 +594,7 @@ export function RunTaskDialog({
                             key={phase.name}
                             phase={phase}
                             override={phaseOverrides[phase.name] ?? {}}
-                            taskRuntime={draft.runtime || taskDefaultRuntime}
+                            taskHarness={draft.harness || taskDefaultHarness}
                             taskProviderType={draft.type || taskDefaultProviderType}
                             taskModel={draft.model || taskDefaultModelFallback || ''}
                             taskReasoningMap={{

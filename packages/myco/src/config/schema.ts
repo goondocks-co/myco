@@ -1,7 +1,22 @@
 import { z } from 'zod';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
-import { AcceleratorConfigSchema, ReasoningLevelSchema, RuntimeIdSchema } from '@myco/agent/schemas.js';
+import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
 import { DEFAULT_HUB_URL } from '../constants/hub.js';
+
+function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
+  return z.unknown().superRefine((value, ctx) => {
+    if (
+      value
+      && typeof value === 'object'
+      && Object.prototype.hasOwnProperty.call(value, 'runtime')
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Use "harness" instead of legacy "runtime"',
+      });
+    }
+  }).pipe(schema);
+}
 
 const EmbeddingProviderSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
@@ -44,8 +59,7 @@ const CaptureSchema = z.object({
 });
 
 /** Provider config shape used in both task-level and phase-level overrides. */
-const ProviderOverrideSchema = z.object({
-  runtime: RuntimeIdSchema.optional(),
+const ProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
   local_backend: z.enum(['ollama', 'lmstudio']).optional(),
   base_url: z.string().optional(),
@@ -57,14 +71,14 @@ const ProviderOverrideSchema = z.object({
   }).optional(),
   /** Context window size for local models (Ollama num_ctx, LM Studio context_length). */
   context_length: z.number().int().positive().optional(),
-});
+}));
 
 /** Per-phase overrides within a task — keyed by phase name. */
-const PhaseOverrideSchema = z.object({
+const PhaseOverrideSchema = rejectLegacyRuntimeKey(z.object({
   provider: ProviderOverrideSchema.optional(),
   model: z.string().optional(),
   maxTurns: z.number().int().positive().optional(),
-});
+}));
 
 /** Per-task schedule override — partial, merges with YAML defaults. */
 const ScheduleOverrideSchema = z.object({
@@ -76,9 +90,9 @@ const ScheduleOverrideSchema = z.object({
 }).optional();
 
 /** Per-task config override — stored in myco.yaml under agent.tasks. */
-const TaskProviderOverrideSchema = z.object({
+const TaskProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   provider: ProviderOverrideSchema.optional(),
-  runtime: RuntimeIdSchema.optional(),
+  harness: HarnessIdSchema.optional(),
   model: z.string().optional(),
   maxTurns: z.number().int().positive().optional(),
   timeoutSeconds: z.number().int().positive().optional(),
@@ -86,12 +100,12 @@ const TaskProviderOverrideSchema = z.object({
   schedule: ScheduleOverrideSchema,
   /** Task-specific params — keys and types vary per task. */
   params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-});
+}));
 
 // (Legacy `context.*` and root `canopy.*` blocks unified into `cortex.*`
 // in config_version 8. See migrations.ts:migrateV7ToV8.)
 
-const AgentSchema = z.object({
+const AgentSchema = rejectLegacyRuntimeKey(z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
   /** Global toggle for PowerManager-scheduled agent tasks. */
@@ -100,13 +114,13 @@ const AgentSchema = z.object({
   event_tasks_enabled: z.boolean().default(true),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
-  /** Global default runtime — applies to all tasks unless overridden per-task. */
-  runtime: RuntimeIdSchema.optional(),
+  /** Global default harness — applies to all tasks unless overridden per-task. */
+  harness: HarnessIdSchema.optional(),
   /** Global default model — applies to all tasks unless overridden per-task. */
   model: z.string().optional(),
   /** Per-task overrides keyed by task name. */
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
-});
+}));
 
 const BackupSchema = z.object({
   /** Override directory for backup files. Supports ~ for home directory. When unset, defaults to .myco/backups. */

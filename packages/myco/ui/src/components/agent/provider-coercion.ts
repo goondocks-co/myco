@@ -51,7 +51,6 @@ function coerceProviderType(type: string | undefined): ProviderConfig['type'] {
  * shape the UI uses internally.
  */
 export interface WireProviderConfig {
-  runtime?: 'claude-sdk' | 'openai-agents';
   type: ProviderConfig['type'];
   localBackend?: 'ollama' | 'lmstudio';
   baseUrl?: string;
@@ -62,11 +61,10 @@ export interface WireProviderConfig {
 
 /**
  * Loose wire provider — tolerates unknown `type` strings and an
- * unconstrained runtime. Used for values coming back off
+ * unconstrained older fields. Used for values coming back off
  * `execution_overrides`, which may predate a type narrowing.
  */
 export interface LooseWireProviderConfig {
-  runtime?: string;
   type: string;
   localBackend?: 'ollama' | 'lmstudio';
   baseUrl?: string;
@@ -88,7 +86,6 @@ export function toWireProvider(
 ): WireProviderConfig | undefined {
   if (!p) return undefined;
   const out: WireProviderConfig = { type: p.type };
-  if (p.runtime) out.runtime = p.runtime;
   if (p.local_backend) out.localBackend = p.local_backend;
   if (p.base_url) out.baseUrl = p.base_url;
   if (p.model) out.model = p.model;
@@ -100,16 +97,13 @@ export function toWireProvider(
 /**
  * Convert a wire-shape provider (as persisted on `execution_overrides`) to
  * the UI-internal snake_case shape. Unknown provider types fall back to
- * `openai-compatible`; unknown runtimes are dropped.
+ * `openai-compatible`.
  */
 export function fromWireProvider(
   wire: LooseWireProviderConfig | undefined,
 ): ProviderConfig | undefined {
   if (!wire) return undefined;
   const out: ProviderConfig = { type: coerceProviderType(wire.type) };
-  if (wire.runtime === 'claude-sdk' || wire.runtime === 'openai-agents') {
-    out.runtime = wire.runtime;
-  }
   if (wire.localBackend) out.local_backend = wire.localBackend;
   if (wire.baseUrl) out.base_url = wire.baseUrl;
   if (wire.model) out.model = wire.model;

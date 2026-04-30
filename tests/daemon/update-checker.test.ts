@@ -65,7 +65,7 @@ import {
   resolveMycoBinary,
   resolveRuntimeCommand,
   isManagedProjectRuntime,
-  getRuntimeScope,
+  getHarnessScope,
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
   readUpdateConfig,
@@ -248,10 +248,10 @@ describe('isManagedProjectRuntime()', () => {
   });
 });
 
-describe('getRuntimeScope()', () => {
+describe('getHarnessScope()', () => {
   it('returns `machine` when no runtime.command exists', () => {
     mockNoFiles();
-    expect(getRuntimeScope('/vault/.myco')).toBe('machine');
+    expect(getHarnessScope('/vault/.myco')).toBe('machine');
   });
 
   it('returns `project` when runtime.command points at the managed runtime', () => {
@@ -259,12 +259,12 @@ describe('getRuntimeScope()', () => {
       '/vault/.myco/runtime.command',
       '/vault/.myco/runtime/node_modules/.bin/myco\n',
     );
-    expect(getRuntimeScope('/vault/.myco')).toBe('project');
+    expect(getHarnessScope('/vault/.myco')).toBe('project');
   });
 
   it('returns `machine` when runtime.command points outside the managed runtime', () => {
     mockFileContent('/vault/.myco/runtime.command', 'myco-dev\n');
-    expect(getRuntimeScope('/vault/.myco')).toBe('machine');
+    expect(getHarnessScope('/vault/.myco')).toBe('machine');
   });
 });
 

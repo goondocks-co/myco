@@ -6,8 +6,8 @@ import {
   serializeCheckpointState,
   type RunCheckpointState,
 } from './executor-state.js';
-import { inferDefaultContextWindowFromProviderType } from './provider-runtime.js';
-import type { PhaseResult, ProviderConfig, RuntimeId, RuntimeTokenBudget, RuntimeUsage } from './types.js';
+import { inferDefaultContextWindowFromProviderType } from './provider-harness.js';
+import type { PhaseResult, ProviderConfig, HarnessId, RuntimeTokenBudget, RuntimeUsage } from './types.js';
 
 const TOKEN_BUDGET_WARNING_PERCENT = 75;
 const TOKEN_BUDGET_CRITICAL_PERCENT = 90;
@@ -222,7 +222,7 @@ export function summarizePhaseCosts(phaseResults: PhaseResult[]): CostResolution
 }
 
 interface RunAccountingUpdateInput {
-  runtime: RuntimeId;
+  harness: HarnessId;
   provider?: ProviderConfig;
   model: string;
   checkpointState: RunCheckpointState;
@@ -234,7 +234,7 @@ interface RunAccountingUpdateInput {
 
 interface RunAccountingUpdateFields extends Pick<
   RunUpdate,
-  | 'runtime'
+  | 'harness'
   | 'provider'
   | 'model'
   | 'session_ref'
@@ -252,10 +252,10 @@ interface RunAccountingUpdateFields extends Pick<
 export function buildRunAccountingUpdate(input: RunAccountingUpdateInput): RunAccountingUpdateFields {
   const tokenBudget = analyzeRuntimeTokenBudget(input.usage, input.provider);
   return {
-    runtime: input.runtime,
+    harness: input.harness,
     provider: input.provider?.type ?? null,
     model: input.model,
-    session_ref: input.sessionRef ?? input.checkpointState.sessionRef ?? null,
+    session_ref: input.sessionRef ?? input.checkpointState.harnessState?.ref ?? input.checkpointState.sessionRef ?? null,
     checkpoints: serializeCheckpointState(input.checkpointState),
     usage_data: buildUsageData(input.usage, input.costData, input.phaseResults, tokenBudget),
     cost_usd: input.costData.costUsd ?? null,
@@ -263,6 +263,6 @@ export function buildRunAccountingUpdate(input: RunAccountingUpdateInput): RunAc
     estimated_cost_usd: input.costData.estimatedCostUsd,
     cost_source: input.costData.source,
     cost_data: serializeCostData(input.costData),
-    actions_taken: buildActionsTaken(input.runtime, input.provider, input.model, input.phaseResults),
+    actions_taken: buildActionsTaken(input.harness, input.provider, input.model, input.phaseResults),
   };
 }

@@ -13,7 +13,7 @@
  * here, so the dialog itself can stay small and the pre-fill logic is unit
  * testable without spinning up a React harness.
  */
-import type { RuntimeId, ReasoningLevel } from '@myco/agent/types';
+import type { HarnessId, ReasoningLevel } from '@myco/agent/types';
 import type { RunRow, TaskRow } from '../../hooks/use-agent';
 import type { ProviderConfig, PhaseOverride } from '../../hooks/use-providers';
 import { extractSharedInputs, extractTemplateVars } from './shared-inputs';
@@ -37,7 +37,7 @@ export interface RerunPrefill {
   instruction: string;
   dryRun: boolean;
   varValues: Record<string, string>;
-  runtime?: RuntimeId;
+  harness?: HarnessId;
   reasoningLevel?: ReasoningLevel;
   model?: string;
   provider?: ProviderConfig;
@@ -54,12 +54,12 @@ function coerceReasoning(value: string | undefined): ReasoningLevel | undefined 
     : undefined;
 }
 
-const RUNTIME_IDS: ReadonlyArray<RuntimeId> = ['claude-sdk', 'openai-agents'];
+const HARNESS_IDS: ReadonlyArray<HarnessId> = ['claude-sdk', 'openai-agents'];
 
-function coerceRuntime(value: string | undefined): RuntimeId | undefined {
+function coerceHarness(value: string | undefined): HarnessId | undefined {
   if (!value) return undefined;
-  return (RUNTIME_IDS as ReadonlyArray<string>).includes(value)
-    ? (value as RuntimeId)
+  return (HARNESS_IDS as ReadonlyArray<string>).includes(value)
+    ? (value as HarnessId)
     : undefined;
 }
 
@@ -97,7 +97,7 @@ export function buildRerunPrefill(
 
   const overrides = sourceRun.execution_overrides ?? null;
 
-  const runtime = coerceRuntime(overrides?.runtime);
+  const harness = coerceHarness(overrides?.harness);
   const reasoningLevel = coerceReasoning(overrides?.reasoningLevel);
   const model = overrides?.model || undefined;
   const provider = fromWireProvider(overrides?.provider);
@@ -119,7 +119,7 @@ export function buildRerunPrefill(
   }
 
   const hasAnyOverride =
-    runtime !== undefined
+    harness !== undefined
     || reasoningLevel !== undefined
     || model !== undefined
     || provider !== undefined
@@ -131,7 +131,7 @@ export function buildRerunPrefill(
     instruction,
     dryRun: sourceRun.dry_run === true,
     varValues,
-    runtime,
+    harness,
     reasoningLevel,
     model,
     provider,
