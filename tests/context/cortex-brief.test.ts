@@ -45,9 +45,9 @@ describe('buildRetrievalGuidanceLines', () => {
       collectiveCapabilities: [],
     });
 
-    expect(lines.join('\n')).toContain('`myco_context`');
+    expect(lines.join('\n')).toContain('`myco_cortex`');
     expect(lines.join('\n')).toContain('`myco_search`');
-    expect(lines.join('\n')).toContain('`myco_save_plan`');
+    expect(lines.join('\n')).toContain('`myco_plans`');
     expect(lines.join('\n')).not.toContain('`myco_skills`');
   });
 
@@ -66,9 +66,9 @@ describe('buildRetrievalGuidanceLines', () => {
 describe('RETRIEVAL_GUIDANCE', () => {
   it('orders Cortex-enabled tools by priority', () => {
     expect(RETRIEVAL_GUIDANCE.map((entry) => entry.tool).slice(0, 3)).toEqual([
-      'myco_context',
+      'myco_cortex',
       'myco_search',
-      'myco_recall',
+      'myco_sessions',
     ]);
   });
 
@@ -76,7 +76,7 @@ describe('RETRIEVAL_GUIDANCE', () => {
   // so a future refactor can't silently drop them from the brief.
   it('includes the canonical retrieval tools by name', () => {
     const names = RETRIEVAL_GUIDANCE.map((entry) => entry.tool);
-    expect(names).toContain('myco_runs');
+    expect(names).toContain('myco_agent');
     expect(names).toContain('myco_plans');
   });
 
@@ -87,7 +87,7 @@ describe('RETRIEVAL_GUIDANCE', () => {
       collectiveCapabilities: [],
     });
     const body = lines.join('\n');
-    expect(body).toContain('`myco_runs`');
+    expect(body).toContain('`myco_agent`');
   });
 
   // Anti-drift for the 2026-04-22 retirements — none of these tools must
@@ -97,7 +97,11 @@ describe('RETRIEVAL_GUIDANCE', () => {
     for (const retired of [
       'myco_team',
       'myco_graph',
-      'myco_cortex',
+      'myco_recall',
+      'myco_remember',
+      'myco_save_plan',
+      'myco_context',
+      'myco_runs',
       'myco_skill_candidates',
       'myco_evaluations',
       'myco_write_intents',
@@ -228,6 +232,15 @@ describe('buildCortexInstructionsInput', () => {
       status: 'active',
       session_id: 'sess-cortex-1',
     });
+    insertSpore({
+      id: 'spore-cortex-retired-tool',
+      agent_id: 'agent-cortex',
+      observation_type: 'decision',
+      content: 'A prior note mentioned myco_recall, but generated instructions should not repeat obsolete tool names.',
+      created_at: NOW + 1,
+      status: 'active',
+      session_id: 'sess-cortex-1',
+    });
 
     upsertPlan({
       id: buildPlanId('session:sess-cortex-1:key:primary'),
@@ -252,12 +265,15 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('## Recent plans');
     expect(result.instruction).toContain('not a task list for this session');
     expect(result.instruction).toContain('Finish Cortex instruction refresh');
-    expect(result.instruction).toContain('`myco_save_plan`');
-    expect(result.instruction).toContain('Pass `source_path` when the plan is also written to disk');
+    expect(result.instruction).toContain('`myco_plans`');
+    expect(result.instruction).toContain('op: "save"');
     expect(result.instruction).toContain('do not instruct it to call `myco_skills`');
+    expect(result.instruction).toContain('Do not mention retired tool names');
+    expect(result.instruction).toContain('[retired Myco tool]');
+    expect(result.instruction).not.toContain('myco_recall');
   });
 
-  it('emits the canopy_map() directive only when a populated map exists for the project', async () => {
+  it('emits the myco_cortex canopy_map directive only when a populated map exists for the project', async () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
@@ -273,12 +289,13 @@ describe('buildCortexInstructionsInput', () => {
 
     const result = await buildCortexInstructionsInput(config, vaultDir);
     cleanup();
-    expect(result.instruction).toContain('canopy_map()');
-    expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call canopy_map --json');
+    expect(result.instruction).toContain('myco_cortex');
+    expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call myco_cortex --json');
+    expect(result.instruction).toContain('"op":"canopy_map"');
     expect(result.instruction).toContain('default opener');
   });
 
-  it('omits the canopy_map() directive when the project has no map yet', async () => {
+  it('omits the myco_cortex canopy_map directive when the project has no map yet', async () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
@@ -286,10 +303,10 @@ describe('buildCortexInstructionsInput', () => {
     // No writeCanopyMap — the map row is missing.
     const result = await buildCortexInstructionsInput(config, vaultDir);
     cleanup();
-    expect(result.instruction).not.toContain('canopy_map()');
+    expect(result.instruction).not.toContain('"op":"canopy_map"');
   });
 
-  it('omits the canopy_map() directive when the stored map is empty', async () => {
+  it('omits the myco_cortex canopy_map directive when the stored map is empty', async () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
@@ -304,10 +321,10 @@ describe('buildCortexInstructionsInput', () => {
     });
     const result = await buildCortexInstructionsInput(config, vaultDir);
     cleanup();
-    expect(result.instruction).not.toContain('canopy_map()');
+    expect(result.instruction).not.toContain('"op":"canopy_map"');
   });
 
-  it('omits the canopy_map() directive when Cortex is disabled, even with a populated map', async () => {
+  it('omits the myco_cortex canopy_map directive when Cortex is disabled, even with a populated map', async () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: false } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
@@ -322,6 +339,6 @@ describe('buildCortexInstructionsInput', () => {
     });
     const result = await buildCortexInstructionsInput(config, vaultDir);
     cleanup();
-    expect(result.instruction).not.toContain('canopy_map()');
+    expect(result.instruction).not.toContain('"op":"canopy_map"');
   });
 });

@@ -56,7 +56,7 @@ Descriptions stay fresh automatically: when a file changes, its description is r
 
 Beyond the per-file anatomy, Canopy synthesizes a single-page **project map**: a directory skeleton plus 4–8 domain clusters of representative files, each annotated with what it does. The map is the answer to "what is this project, and where do things live?" — the orientation a new contributor would get on day one.
 
-Agents pull it via the `canopy_map()` MCP tool. One call returns the whole map (1.5K–3K tokens of markdown), letting an unfamiliar agent skip a half-dozen `Glob` and `Grep` calls before it even knows where to look. You see and refresh it from **Cortex → Canopy → Map**.
+Agents pull it via `myco_cortex` op `"canopy_map"`. One call returns the whole map (1.5K–3K tokens of markdown), letting an unfamiliar agent skip a half-dozen `Glob` and `Grep` calls before it even knows where to look. You see and refresh it from **Cortex → Canopy → Map**.
 
 The map refreshes itself when the underlying file descriptions drift — and short-circuits silently when nothing has changed, so it costs nothing to keep on. Use **Rebuild** in the Map sub-panel to regenerate from scratch when you want a fully fresh take.
 

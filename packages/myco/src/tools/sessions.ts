@@ -1,10 +1,11 @@
 /**
- * myco_sessions — list past coding sessions with summaries.
+ * myco_sessions — list or retrieve past coding sessions.
  *
  * Proxies through the daemon HTTP API via DaemonClient.
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type { ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -12,6 +13,8 @@ import { buildEndpoint } from './shared.js';
 // ---------------------------------------------------------------------------
 
 interface SessionsInput {
+  op?: 'list' | 'get';
+  id?: string;
   plan?: string;
   branch?: string;
   user?: string;
@@ -42,7 +45,15 @@ interface SessionSummary {
 export async function handleMycoSessions(
   input: SessionsInput,
   client: DaemonClient,
-): Promise<SessionSummary[]> {
+): Promise<SessionSummary[] | unknown | ToolFailure> {
+  const op = input.op ?? 'list';
+  if (op === 'get') {
+    if (!input.id) return { ok: false, error: 'id is required for op: get' };
+    const result = await client.get(`/api/sessions/${encodeURIComponent(input.id)}`);
+    if (!result.ok || !result.data) return { ok: false, error: 'Session not found' };
+    return result.data;
+  }
+
   const endpoint = buildEndpoint('/api/mcp/sessions', {
     plan: input.plan,
     branch: input.branch,

@@ -20,9 +20,13 @@ describe('handleSearch', () => {
     const parsed = parseToolResult(result);
     expect(parsed.results).toHaveLength(1);
     expect(parsed.results[0].id).toBe('sp1');
-    expect(parsed.results[0].type).toBe('spores');
+    expect(parsed.results[0].type).toBe('spore');
     expect(parsed.results[0].score).toBe(0.95);
     expect(parsed.results[0].data.content).toBe('test spore');
+    expect(parsed.results[0].retrieve).toEqual({
+      tool: 'myco_spores',
+      input: { op: 'get', id: 'sp1', machine_id: 'm1' },
+    });
     expect(parsed.results[0].metadata.observation_type).toBeUndefined();
   });
 
@@ -43,7 +47,7 @@ describe('handleSearch', () => {
 
     const parsed = parseToolResult(result);
     expect(parsed.results).toHaveLength(1);
-    expect(parsed.results[0].type).toBe('spores');
+    expect(parsed.results[0].type).toBe('spore');
   });
 
   it('respects limit parameter', async () => {

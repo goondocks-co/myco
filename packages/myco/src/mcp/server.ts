@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { getPluginVersion } from '../version.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
-import { TOOL_CONTEXT, type ToolDefinition } from '../tools/definitions.js';
+import { TOOL_CORTEX, type ToolDefinition } from '../tools/definitions.js';
 import { createMycoTools, type MycoTools } from '../tools/index.js';
 
 export interface MycoServer {
@@ -33,14 +33,16 @@ export function createMcpProtocolServer(tools: MycoTools): Server {
 }
 
 export function serializeToolResult(name: string, result: unknown): string {
-  if (name === TOOL_CONTEXT && isContextResult(result)) return result.content;
+  if (name === TOOL_CORTEX && isDigestResult(result)) return result.content;
   return JSON.stringify(result);
 }
 
-function isContextResult(result: unknown): result is { content: string } {
+function isDigestResult(result: unknown): result is { content: string; tier: number; fallback: boolean } {
   return typeof result === 'object'
     && result !== null
-    && typeof (result as { content?: unknown }).content === 'string';
+    && typeof (result as { content?: unknown }).content === 'string'
+    && typeof (result as { tier?: unknown }).tier === 'number'
+    && typeof (result as { fallback?: unknown }).fallback === 'boolean';
 }
 
 export function createMycoServer(vaultDir: string, client: DaemonClient): MycoServer {

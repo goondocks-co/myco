@@ -88,6 +88,41 @@ describe('collective query dispatch', () => {
     expect(body.projects.map((project) => project.name)).toEqual(['Alpha', 'Beta']);
   });
 
+  it('allows collective_settings through the worker query dispatcher', async () => {
+    const { dispatchApiQuery } = await import('../../packages/myco-collective/worker/src/index.js');
+
+    const env = {
+      MYCO_COLLECTIVE_DB: {
+        prepare(sql: string) {
+          return {
+            all: async () => {
+              if (sql.includes('settings_overrides')) {
+                return {
+                  results: [
+                    { key: 'cortex.digest.tier', value: '5000', description: 'tier', updated_at: 1, updated_by: 'test' },
+                  ],
+                };
+              }
+              return { results: [] };
+            },
+          };
+        },
+      },
+      MYCO_SECRETS: { get: async () => null },
+    } as unknown as Parameters<typeof dispatchApiQuery>[0];
+
+    const response = await dispatchApiQuery(env, { tool: 'collective_settings', args: {} });
+    const body = await response.json() as { settings_overrides: Record<string, unknown> };
+
+    expect(response.status).toBe(200);
+    expect(body.settings_overrides['cortex.digest.tier']).toEqual({
+      value: 5000,
+      description: 'tier',
+      updated_at: 1,
+      updated_by: 'test',
+    });
+  });
+
   it('fans out search results across multiple projects from the parsed-body dispatcher', async () => {
     const { dispatchApiQuery } = await import('../../packages/myco-collective/worker/src/index.js');
 

@@ -1,5 +1,5 @@
 /**
- * Shared record-lookup helper for the MCP `myco_recall` tool and the plain
+ * Shared record-lookup helper for entity retrieval tools and the plain
  * HTTP `/records/:type/:id` route. The MCP tool speaks singular (`session`),
  * the HTTP route speaks plural (`sessions`) to match daemon/outbox conventions;
  * both resolve to the same D1 table here.
@@ -36,12 +36,13 @@ export async function fetchRecord(
   env: Pick<Env, 'MYCO_TEAM_DB'>,
   type: string,
   id: string,
+  machineId?: string,
 ): Promise<Record<string, unknown> | null> {
   const table = resolveTable(type);
   if (!table) return null;
-  const row = await env.MYCO_TEAM_DB
-    .prepare(`SELECT * FROM ${table} WHERE id = ? LIMIT 1`)
-    .bind(id)
-    .first<Record<string, unknown>>();
+  const statement = machineId
+    ? env.MYCO_TEAM_DB.prepare(`SELECT * FROM ${table} WHERE id = ? AND machine_id = ? LIMIT 1`).bind(id, machineId)
+    : env.MYCO_TEAM_DB.prepare(`SELECT * FROM ${table} WHERE id = ? LIMIT 1`).bind(id);
+  const row = await statement.first<Record<string, unknown>>();
   return row ?? null;
 }

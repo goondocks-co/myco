@@ -105,12 +105,12 @@ describe('MCP transport parity', () => {
       const httpList = await httpClient.listTools();
       const stdioNames = stdioList.tools.map((tool) => tool.name).sort();
       const httpNames = httpList.tools.map((tool) => tool.name).sort();
-      const stdioCall = await stdioClient.callTool({ name: 'myco_context', arguments: { tier: 5000 } });
-      const httpCall = await httpClient.callTool({ name: 'myco_context', arguments: { tier: 5000 } });
+      const stdioCall = await stdioClient.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+      const httpCall = await httpClient.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
 
       expect(stdioNames).toEqual(httpNames);
-      expect(stdioNames).toContain('myco_context');
-      expect(stdioNames).toContain('canopy_map');
+      expect(stdioNames).toContain('myco_cortex');
+      expect(stdioNames).toContain('myco_spores');
       expect(stdioCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
       expect(httpCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
     } finally {

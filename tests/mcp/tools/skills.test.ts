@@ -33,7 +33,7 @@ describe('myco_skills', () => {
     const skill = { id: 's1', name: 'demo', status: 'active' };
     const client = mockClient(skill);
 
-    const result = await handleMycoSkills({ id: 'demo' }, client);
+    const result = await handleMycoSkills({ op: 'get', id: 'demo' }, client);
 
     expect(result).toEqual(skill);
     expect(client.get).toHaveBeenCalledWith('/api/skill-records/demo');
@@ -41,14 +41,14 @@ describe('myco_skills', () => {
 
   it('url-encodes the id', async () => {
     const client = mockClient({ id: 'abc' });
-    await handleMycoSkills({ id: 'weird name/with slashes' }, client);
+    await handleMycoSkills({ op: 'get', id: 'weird name/with slashes' }, client);
     expect(client.get).toHaveBeenCalledWith('/api/skill-records/weird%20name%2Fwith%20slashes');
   });
 
   it('returns error shape when looking up a non-existent skill', async () => {
     const client = mockClient(null, false);
-    const result = await handleMycoSkills({ id: 'missing' }, client);
-    expect(result).toEqual({ error: 'Skill not found' });
+    const result = await handleMycoSkills({ op: 'get', id: 'missing' }, client);
+    expect(result).toEqual({ ok: false, error: 'Skill not found' });
   });
 
   it('returns empty array when list call fails', async () => {

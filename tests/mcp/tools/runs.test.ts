@@ -1,5 +1,5 @@
 /**
- * Tests for myco_runs tool handler.
+ * Tests for myco_agent tool handler.
  *
  * Mirrors /api/agent/runs[/:id]. These tests verify the MCP adapter
  * layer only — the serializeRun path is exercised by HTTP tests.
@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
-import { handleMycoRuns } from '@myco/tools/runs.js';
+import { handleMycoAgent } from '@myco/tools/agent.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
@@ -19,11 +19,11 @@ function mockClient(data: unknown = null, ok = true): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-describe('myco_runs op: list (default)', () => {
+describe('myco_agent op: runs (default)', () => {
   it('lists runs from /api/agent/runs and defers the default limit to the HTTP route', async () => {
     const payload = { runs: [{ id: 'run-1', agent_id: 'myco-agent', tokens_used: 100 }], total: 1, offset: 0, limit: 50 };
     const client = mockClient(payload);
-    const result = await handleMycoRuns({}, client);
+    const result = await handleMycoAgent({}, client);
     expect(result.ok).toBe(true);
     expect(result.data).toEqual(payload);
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
@@ -35,8 +35,8 @@ describe('myco_runs op: list (default)', () => {
 
   it('forwards task, agent_id, and limit', async () => {
     const client = mockClient({ runs: [], total: 0 });
-    await handleMycoRuns(
-      { op: 'list', task: 'skill-generate', agent_id: 'myco-agent', limit: 5 },
+    await handleMycoAgent(
+      { op: 'runs', task: 'skill-generate', agent_id: 'myco-agent', limit: 5 },
       client,
     );
     const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
@@ -47,16 +47,16 @@ describe('myco_runs op: list (default)', () => {
 
   it('returns fetch_failed when daemon is unhealthy', async () => {
     const client = mockClient(null, false);
-    const result = await handleMycoRuns({ op: 'list' }, client);
+    const result = await handleMycoAgent({ op: 'runs' }, client);
     expect(result.ok).toBe(false);
     expect(result.error).toBe('fetch_failed');
   });
 });
 
-describe('myco_runs op: get', () => {
+describe('myco_agent op: run', () => {
   it('requires id', async () => {
     const client = mockClient({});
-    const result = await handleMycoRuns({ op: 'get' }, client);
+    const result = await handleMycoAgent({ op: 'run' }, client);
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/id is required/);
     expect(client.get).not.toHaveBeenCalled();
@@ -77,16 +77,23 @@ describe('myco_runs op: get', () => {
       },
     };
     const client = mockClient(payload);
-    const result = await handleMycoRuns({ op: 'get', id: 'run-42' }, client);
+    const result = await handleMycoAgent({ op: 'run', id: 'run-42' }, client);
     expect(client.get).toHaveBeenCalledWith('/api/agent/runs/run-42');
     expect(result.ok).toBe(true);
     expect(result.data).toEqual(payload);
   });
 
-  it('returns not_found when the daemon returns 404', async () => {
-    const client = mockClient(null, false);
-    const result = await handleMycoRuns({ op: 'get', id: 'missing' }, client);
+  it('returns the daemon error when the daemon returns 404', async () => {
+    const client = mockClient({ error: 'not_found' }, false);
+    const result = await handleMycoAgent({ op: 'run', id: 'missing' }, client);
     expect(result.ok).toBe(false);
     expect(result.error).toBe('not_found');
+  });
+
+  it('does not report daemon transport failures as not_found', async () => {
+    const client = mockClient(null, false);
+    const result = await handleMycoAgent({ op: 'run', id: 'broken' }, client);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('fetch_failed');
   });
 });

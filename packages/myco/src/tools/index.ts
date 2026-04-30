@@ -5,23 +5,18 @@ import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
 import {
   COLLECTIVE_TOOL_DEFINITIONS,
-  TOOL_CANOPY_MAP,
+  TOOL_AGENT,
   TOOL_COLLECTIVE_PROJECT,
   TOOL_COLLECTIVE_PROJECTS,
   TOOL_COLLECTIVE_SEARCH,
   TOOL_COLLECTIVE_SETTINGS,
-  TOOL_CONSOLIDATE,
-  TOOL_CONTEXT,
+  TOOL_CORTEX,
   TOOL_DEFINITIONS,
   TOOL_PLANS,
-  TOOL_RECALL,
-  TOOL_REMEMBER,
-  TOOL_RUNS,
-  TOOL_SAVE_PLAN,
   TOOL_SEARCH,
   TOOL_SESSIONS,
   TOOL_SKILLS,
-  TOOL_SUPERSEDE,
+  TOOL_SPORES,
   type ToolDefinition,
 } from './definitions.js';
 
@@ -52,31 +47,14 @@ interface ToolEntry {
 
 type ToolLoader = () => Promise<ToolEntry>;
 
-// canopy_map is dispatched separately: it needs vault DB init, env vars,
-// and a session counter that the table contract doesn't carry.
+// myco_cortex is dispatched separately for Canopy ops: they need vault DB
+// init, env vars, and a session counter that the table contract doesn't carry.
 const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SEARCH, async () => {
     const { handleMycoSearch } = await import('./search.js');
     return {
       handle: (input, client) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client),
       summarize: (input, result) => ({ query: input.query, matches: (result as unknown[]).length }),
-    };
-  }],
-  [TOOL_RECALL, async () => {
-    const { handleMycoRecall } = await import('./recall.js');
-    return {
-      handle: (input, client) => handleMycoRecall(input as unknown as Parameters<typeof handleMycoRecall>[0], client),
-      summarize: (input) => ({ note_id: input.note_id }),
-    };
-  }],
-  [TOOL_REMEMBER, async () => {
-    const { handleMycoRemember } = await import('./remember.js');
-    return {
-      handle: (input, client) => handleMycoRemember(input as unknown as Parameters<typeof handleMycoRemember>[0], client),
-      summarize: (_input, result) => {
-        const r = result as { id: unknown; observation_type: unknown };
-        return { id: r.id, observation_type: r.observation_type };
-      },
     };
   }],
   [TOOL_PLANS, async () => {
@@ -91,56 +69,34 @@ const HANDLERS = new Map<string, ToolLoader>([
       }),
     };
   }],
-  [TOOL_SAVE_PLAN, async () => {
-    const { handleMycoSavePlan } = await import('./save-plan.js');
-    return {
-      handle: (input, client) => handleMycoSavePlan(input as unknown as Parameters<typeof handleMycoSavePlan>[0], client),
-      summarize: (input) => ({
-        session_id: input.session_id,
-        source_path: input.source_path,
-        plan_key: input.plan_key,
-      }),
-    };
-  }],
   [TOOL_SESSIONS, async () => {
     const { handleMycoSessions } = await import('./sessions.js');
     return {
       handle: (input, client) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client),
-      summarize: (_input, result) => ({ count: (result as unknown[]).length }),
-    };
-  }],
-  [TOOL_SUPERSEDE, async () => {
-    const { handleMycoSupersede } = await import('./supersede.js');
-    return {
-      handle: (input, client) => handleMycoSupersede(input as unknown as Parameters<typeof handleMycoSupersede>[0], client),
-      summarize: (_input, result) => {
-        const r = result as { old_spore: unknown; new_spore: unknown; status: unknown };
-        return { old: r.old_spore, new: r.new_spore, status: r.status };
-      },
-    };
-  }],
-  [TOOL_CONSOLIDATE, async () => {
-    const { handleMycoConsolidate } = await import('./consolidate.js');
-    return {
-      handle: (input, client) => handleMycoConsolidate(input as unknown as Parameters<typeof handleMycoConsolidate>[0], client),
-      summarize: (_input, result) => {
-        const r = result as { status: unknown; new_spore_id: unknown; sources_superseded: unknown[] };
-        return { status: r.status, new_spore_id: r.new_spore_id, sources: r.sources_superseded.length };
-      },
-    };
-  }],
-  [TOOL_CONTEXT, async () => {
-    const { handleMycoContext } = await import('./context.js');
-    return {
-      handle: (input, client) => handleMycoContext(input as unknown as Parameters<typeof handleMycoContext>[0], client),
-      summarize: (input) => ({ tier: input.tier }),
+      summarize: (input, result) => ({ op: input.op ?? 'list', id: input.id, count: Array.isArray(result) ? result.length : undefined }),
     };
   }],
   [TOOL_SKILLS, async () => {
     const { handleMycoSkills } = await import('./skills.js');
     return {
       handle: (input, client) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client),
-      summarize: (input) => ({ id: input.id, status: input.status }),
+      summarize: (input) => ({ op: input.op ?? 'list', id: input.id, status: input.status }),
+    };
+  }],
+  [TOOL_SPORES, async () => {
+    const { handleMycoSpores } = await import('./spores.js');
+    return {
+      handle: (input, client) => handleMycoSpores(input as unknown as Parameters<typeof handleMycoSpores>[0], client),
+      summarize: (input, result) => {
+        const r = result as { id?: unknown; observation_type?: unknown; spores?: unknown[]; status?: unknown };
+        return {
+          op: input.op ?? 'list',
+          id: input.id ?? r.id,
+          observation_type: input.observation_type ?? input.type ?? r.observation_type,
+          count: Array.isArray(r.spores) ? r.spores.length : undefined,
+          status: r.status,
+        };
+      },
     };
   }],
   [TOOL_COLLECTIVE_SEARCH, async () => {
@@ -169,13 +125,13 @@ const HANDLERS = new Map<string, ToolLoader>([
       handle: (_input, client) => handleCollectiveSettings(client),
     };
   }],
-  [TOOL_RUNS, async () => {
-    const { handleMycoRuns } = await import('./runs.js');
+  [TOOL_AGENT, async () => {
+    const { handleMycoAgent } = await import('./agent.js');
     return {
-      handle: (input, client) => handleMycoRuns(input as unknown as Parameters<typeof handleMycoRuns>[0], client),
+      handle: (input, client) => handleMycoAgent(input as unknown as Parameters<typeof handleMycoAgent>[0], client),
       summarize: (input, result) => {
         const r = result as { ok: unknown };
-        return { op: input.op ?? 'list', id: input.id, ok: r.ok };
+        return { op: input.op ?? 'runs', id: input.id, ok: r.ok };
       },
     };
   }],
@@ -305,22 +261,55 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     void client.post('/api/log', { level: 'info', component: 'mcp', message: `Tool call: ${tool}`, data: { tool, ...detail } }).catch(() => { /* non-fatal */ });
   }
 
-  async function dispatchCanopyMap(start: number): Promise<unknown> {
-    const { handleCanopyMap, emptyCanopyMap } = await import('./canopy-map.js');
-    if (!(await ensureDb())) {
-      return emptyCanopyMap('Vault database is not available; the canopy map cannot be read right now.');
+  async function dispatchCortex(input: ToolInput, start: number): Promise<unknown> {
+    const op = input.op ?? 'digest';
+    const {
+      handleCortexCanopyEntry,
+      handleCortexCanopyMap,
+      handleCortexDigest,
+      handleCortexInstructions,
+    } = await import('./cortex.js');
+
+    switch (op) {
+      case 'digest': {
+        const result = await handleCortexDigest(input as unknown as Parameters<typeof handleCortexDigest>[0], client);
+        logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'instructions': {
+        const result = await handleCortexInstructions(client);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'canopy_entry':
+      case 'canopy_map':
+        break;
+      default:
+        throw new ToolError('invalid_input', `Unknown op '${String(op)}' for tool ${TOOL_CORTEX}`);
     }
+
+    const { emptyCanopyMap } = await import('./canopy-map.js');
+    if (!(await ensureDb())) {
+      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
+    }
+    if (op === 'canopy_entry') {
+      const result = await handleCortexCanopyEntry(input as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
+      logActivity(TOOL_CORTEX, { op, id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
+      return result;
+    }
+
     const { resolveCanopyProjectId } = await import('@myco/canopy/identity.js');
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
     const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
-    const projectId = resolveCanopyProjectId(vaultDir);
+    const projectId = typeof input.project_id === 'string' ? input.project_id : resolveCanopyProjectId(vaultDir);
     const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
     const sessionId = process.env.MYCO_SESSION_ID ?? null;
-    const result = await handleCanopyMap({ projectId, machineId });
+    const result = await handleCortexCanopyMap({ projectId, machineId });
     if (sessionId) {
       try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
     }
-    logActivity(TOOL_CANOPY_MAP, {
+    logActivity(TOOL_CORTEX, {
+      op,
       is_empty: (result as { is_empty?: boolean }).is_empty === true,
       token_estimate: (result as { token_estimate?: number }).token_estimate,
       session_id: sessionId,
@@ -344,8 +333,8 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       validateInput(definition, input);
       const start = Date.now();
 
-      if (name === TOOL_CANOPY_MAP) {
-        return dispatchCanopyMap(start);
+      if (name === TOOL_CORTEX) {
+        return dispatchCortex(input, start);
       }
 
       const loader = HANDLERS.get(name);

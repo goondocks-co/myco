@@ -128,9 +128,11 @@ curl https://your-team-worker.workers.dev/health
 curl https://your-team-worker.workers.dev/mcp/call
 ```
 
-The cloud MCP server exposes **5 read-only tools** with two-tier access:
-- Anonymous: `myco_search`, `myco_context`  
-- Authenticated: `myco_recall`, `myco_sessions`, `myco_skills`
+The cloud MCP server exposes read-only Myco tools over authenticated Streamable HTTP:
+- Discovery: `myco_search`, `myco_cortex`
+- Entity reads: `myco_plans`, `myco_sessions`, `myco_skills`, `myco_spores`
+
+`myco_search` results include stable IDs and `retrieve` hints. Follow those hints with the owning entity tool instead of using legacy recall-style retrieval.
 
 ### Auth Token Lifecycle
 

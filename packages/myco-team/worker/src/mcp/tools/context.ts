@@ -1,4 +1,7 @@
 import type { Env } from '../../index';
+import { textJson } from '../result-shape';
+
+const NO_DIGEST_MESSAGE = 'Digest context is not yet available. The first digest cycle has not completed.';
 
 export async function handleContext(args: { tier?: number }, env: Pick<Env, 'MYCO_TEAM_DB'>) {
   const tier = args.tier ?? 5000;
@@ -7,7 +10,7 @@ export async function handleContext(args: { tier?: number }, env: Pick<Env, 'MYC
   ).bind(tier).first<{ id: string; tier: number; content: string; generated_at: number }>();
 
   if (!row) {
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ content: null, tier, message: `No digest available at tier ${tier}` }) }] };
+    return textJson({ content: NO_DIGEST_MESSAGE, tier, fallback: false });
   }
-  return { content: [{ type: 'text' as const, text: JSON.stringify({ content: row.content, tier: row.tier, generated_at: row.generated_at }) }] };
+  return textJson({ content: row.content, tier: row.tier, fallback: false, generated_at: row.generated_at });
 }
