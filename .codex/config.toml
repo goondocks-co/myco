@@ -2,7 +2,9 @@
 inherit = "core"
 
 [mcp_servers.myco]
-url = "http://127.0.0.1:21039/mcp"
+command = "myco-run"
+args = ["mcp"]
+cwd = "."
 
 [features]
 codex_hooks = true
