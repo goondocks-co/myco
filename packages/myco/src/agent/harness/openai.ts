@@ -250,8 +250,8 @@ async function prepareLocalProviderExecution(
   };
 }
 
-function createProvider(input: HarnessExecuteInput): OpenAIProvider {
-  const { apiKey, baseURL } = resolveOpenAIClientConfig(input.provider);
+function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
+  const { apiKey, baseURL } = resolveOpenAIClientConfig(provider);
   const client = new OpenAI({
     apiKey,
     ...(baseURL ? { baseURL } : {}),
@@ -259,8 +259,64 @@ function createProvider(input: HarnessExecuteInput): OpenAIProvider {
 
   return new OpenAIProvider({
     openAIClient: client,
-    useResponses: shouldUseResponsesApi(input.provider),
+    useResponses: shouldUseResponsesApi(provider),
   });
+}
+
+/**
+ * Drive a single SDK turn-loop with a configured runner+agent. Used by
+ * both `OpenAIAgentsHarness.execute` (which feeds in any prior session
+ * data + sessionRef) and `scope.run` (always a fresh session). Centralized
+ * here so usage accounting, partial-usage rescue on throw, and result-shape
+ * construction stay in one place — without it the two call sites had
+ * already drifted.
+ */
+async function runOpenAIAgent(
+  runner: Runner,
+  agent: Agent,
+  prompt: string,
+  options: {
+    maxTurns?: number;
+    sessionRef: string;
+    sessionData: AgentInputItem[];
+    abortController?: AbortController;
+  },
+): Promise<HarnessExecuteResult> {
+  let persistedItems: AgentInputItem[] = [...options.sessionData];
+  const session = new PersistedSession(options.sessionRef, persistedItems, (items) => {
+    persistedItems = [...items];
+  });
+
+  let result;
+  try {
+    result = await runner.run(agent, prompt, {
+      maxTurns: options.maxTurns,
+      session,
+      ...(options.abortController ? { signal: options.abortController.signal } : {}),
+    });
+  } catch (err) {
+    const partialRaw = extractPartialRawResponses(err);
+    const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
+    throw new HarnessExecutionError(
+      err instanceof Error ? err.message : String(err),
+      { usage, sessionRef: options.sessionRef, sessionData: persistedItems },
+      { cause: err instanceof Error ? err : undefined },
+    );
+  }
+
+  const usage = toOpenAIUsage(result.rawResponses);
+  usage.providerData = { lastResponseId: result.lastResponseId };
+
+  return {
+    finalText: typeof result.finalOutput === 'string'
+      ? result.finalOutput
+      : JSON.stringify(result.finalOutput ?? ''),
+    turnsUsed: result.rawResponses.length,
+    usage,
+    sessionRef: options.sessionRef,
+    sessionData: persistedItems,
+    rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
+  };
 }
 
 export class OpenAIAgentsHarness implements AgentHarness {
@@ -279,13 +335,6 @@ export class OpenAIAgentsHarness implements AgentHarness {
 
   async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
     const preparedExecution = await prepareLocalProviderExecution(input.provider, input.model);
-    let persistedItems = Array.isArray(input.sessionData)
-      ? (input.sessionData as AgentInputItem[])
-      : [];
-    const sessionRef = input.sessionRef ?? crypto.randomUUID();
-    const session = new PersistedSession(sessionRef, persistedItems, (items) => {
-      persistedItems = [...items];
-    });
     const mcpServer = createLocalVaultMcpServer(input.toolSurface);
     await mcpServer.connect();
 
@@ -297,44 +346,14 @@ export class OpenAIAgentsHarness implements AgentHarness {
         mcpServers: [mcpServer],
       });
       const runner = new Runner({
-        modelProvider: createProvider({
-          ...input,
-          provider: preparedExecution.provider,
-        }),
+        modelProvider: createProvider(preparedExecution.provider),
       });
-      let result;
-      try {
-        result = await runner.run(agent, input.prompt, {
-          maxTurns: input.maxTurns,
-          session,
-          ...(input.abortController ? { signal: input.abortController.signal } : {}),
-        });
-      } catch (err) {
-        const partialRaw = extractPartialRawResponses(err);
-        const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-        throw new HarnessExecutionError(
-          err instanceof Error ? err.message : String(err),
-          { usage, sessionRef, sessionData: persistedItems },
-          { cause: err instanceof Error ? err : undefined },
-        );
-      }
-      const usage = toOpenAIUsage(result.rawResponses);
-      usage.providerData = {
-        lastResponseId: result.lastResponseId,
-      };
-
-      return {
-        finalText: typeof result.finalOutput === 'string'
-          ? result.finalOutput
-          : JSON.stringify(result.finalOutput ?? ''),
-        turnsUsed: result.rawResponses.length,
-        usage,
-        sessionRef,
-        sessionData: persistedItems,
-        rawRuntimeMetadata: {
-          lastResponseId: result.lastResponseId,
-        },
-      };
+      return await runOpenAIAgent(runner, agent, input.prompt, {
+        maxTurns: input.maxTurns,
+        sessionRef: input.sessionRef ?? crypto.randomUUID(),
+        sessionData: Array.isArray(input.sessionData) ? (input.sessionData as AgentInputItem[]) : [],
+        abortController: input.abortController,
+      });
     } finally {
       await mcpServer.close();
     }
@@ -352,9 +371,7 @@ export class OpenAIAgentsHarness implements AgentHarness {
       mcpServers: [mcpServer],
     });
     const runner = new Runner({
-      modelProvider: createProvider({
-        provider: preparedExecution.provider,
-      } as HarnessExecuteInput),
+      modelProvider: createProvider(preparedExecution.provider),
     });
 
     let closed = false;
@@ -362,39 +379,12 @@ export class OpenAIAgentsHarness implements AgentHarness {
     return {
       async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
         if (closed) throw new Error('OpenAIAgentsHarness: scope.run() called after close()');
-        const sessionRef = crypto.randomUUID();
-        let persistedItems: AgentInputItem[] = [];
-        const session = new PersistedSession(sessionRef, persistedItems, (items) => {
-          persistedItems = [...items];
+        return runOpenAIAgent(runner, agent, input.prompt, {
+          maxTurns: input.maxTurns,
+          sessionRef: crypto.randomUUID(),
+          sessionData: [],
+          abortController: input.abortController,
         });
-        let result;
-        try {
-          result = await runner.run(agent, input.prompt, {
-            maxTurns: input.maxTurns,
-            session,
-            ...(input.abortController ? { signal: input.abortController.signal } : {}),
-          });
-        } catch (err) {
-          const partialRaw = extractPartialRawResponses(err);
-          const usage = partialRaw ? toOpenAIUsage(partialRaw) : ({} as RuntimeUsage);
-          throw new HarnessExecutionError(
-            err instanceof Error ? err.message : String(err),
-            { usage, sessionRef, sessionData: persistedItems },
-            { cause: err instanceof Error ? err : undefined },
-          );
-        }
-        const usage = toOpenAIUsage(result.rawResponses);
-        usage.providerData = { lastResponseId: result.lastResponseId };
-        return {
-          finalText: typeof result.finalOutput === 'string'
-            ? result.finalOutput
-            : JSON.stringify(result.finalOutput ?? ''),
-          turnsUsed: result.rawResponses.length,
-          usage,
-          sessionRef,
-          sessionData: persistedItems,
-          rawRuntimeMetadata: { lastResponseId: result.lastResponseId },
-        };
       },
       async close(): Promise<void> {
         if (closed) return;

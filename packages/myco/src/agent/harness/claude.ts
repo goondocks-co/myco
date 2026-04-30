@@ -79,6 +79,71 @@ function suppressEffortLeakForLocalProvider(
   return isLocalProvider(provider) ? { thinking: { type: 'disabled' as const } } : {};
 }
 
+/**
+ * Drain a Claude SDK message stream into a final text + usage tally.
+ *
+ * Both `execute` and `openScope.run` produce identical message-stream
+ * shapes — only their `query()` options differ (resume + persistSession in
+ * `execute`, fresh + ephemeral in `openScope`). Centralizing the loop
+ * keeps usage accounting, partial-usage rescue on stream errors, and the
+ * assistant-message turn fallback consistent across both paths; without it
+ * the two had already drifted (e.g., `assistantMessages` rescue was added
+ * to one and not the other).
+ */
+async function consumeClaudeMessageStream(
+  messageStream: AsyncIterable<SDKMessage>,
+  options: { localProvider: boolean; sessionRef?: string },
+): Promise<{ finalText: string; turnsUsed: number; usage: HarnessExecuteResult['usage'] }> {
+  let finalText = '';
+  let turnsUsed = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let costUsd = 0;
+  let assistantMessages = 0;
+
+  const buildUsage = () => ({
+    requests: turnsUsed,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    costUsd,
+    requestUsageEntries: turnsUsed > 0
+      ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
+      : [],
+  });
+
+  try {
+    for await (const message of messageStream) {
+      if (message.type === 'assistant') {
+        assistantMessages += 1;
+        continue;
+      }
+      if (message.type === 'result') {
+        // Capture usage on any subtype — error variants still burn tokens.
+        // finalText only exists on a successful result.
+        turnsUsed = message.num_turns ?? assistantMessages;
+        inputTokens = message.usage?.input_tokens ?? 0;
+        outputTokens = message.usage?.output_tokens ?? 0;
+        costUsd = options.localProvider ? 0 : (message.total_cost_usd ?? 0);
+        if (message.subtype === 'success') {
+          finalText = message.result;
+        }
+      }
+    }
+  } catch (err) {
+    if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
+      throw new HarnessExecutionError(
+        errorMessage(err),
+        { usage: buildUsage(), ...(options.sessionRef ? { sessionRef: options.sessionRef } : {}) },
+        { cause: err },
+      );
+    }
+    throw err;
+  }
+
+  return { finalText, turnsUsed, usage: buildUsage() };
+}
+
 function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'] }) {
   const { toolSurface } = input;
   // Map-phase fast path: pre-materialized tool list. Bypasses both
@@ -169,12 +234,6 @@ export class ClaudeSdkHarness implements AgentHarness {
       });
     }
 
-    let finalText = '';
-    let turnsUsed = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let costUsd = 0;
-    let assistantMessages = 0;
     const claudeCodeExecutable = resolveClaudeCodeExecutable();
     const localProvider = isLocalProvider(input.provider);
 
@@ -213,54 +272,13 @@ export class ClaudeSdkHarness implements AgentHarness {
       },
     });
 
-    const buildUsage = () => ({
-      requests: turnsUsed,
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-      costUsd,
-      requestUsageEntries: turnsUsed > 0
-        ? [{
-            inputTokens,
-            outputTokens,
-            totalTokens: inputTokens + outputTokens,
-          }]
-        : [],
+    const drained = await consumeClaudeMessageStream(messageStream, {
+      localProvider,
+      sessionRef: input.sessionRef,
     });
 
-    try {
-      for await (const message of messageStream) {
-        if (message.type === 'assistant') {
-          assistantMessages += 1;
-          continue;
-        }
-        if (message.type === 'result') {
-          // Capture usage on any subtype — error variants still burn tokens.
-          // finalText only exists on a successful result.
-          turnsUsed = message.num_turns ?? assistantMessages;
-          inputTokens = message.usage?.input_tokens ?? 0;
-          outputTokens = message.usage?.output_tokens ?? 0;
-          costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
-          if (message.subtype === 'success') {
-            finalText = message.result;
-          }
-        }
-      }
-    } catch (err) {
-      if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
-        throw new HarnessExecutionError(
-          errorMessage(err),
-          { usage: buildUsage(), sessionRef: input.sessionRef },
-          { cause: err },
-        );
-      }
-      throw err;
-    }
-
     return {
-      finalText,
-      turnsUsed,
-      usage: buildUsage(),
+      ...drained,
       sessionRef: input.sessionRef,
     };
   }
@@ -295,13 +313,6 @@ export class ClaudeSdkHarness implements AgentHarness {
       async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
         if (closed) throw new Error('ClaudeSdkHarness: scope.run() called after close()');
 
-        let finalText = '';
-        let turnsUsed = 0;
-        let inputTokens = 0;
-        let outputTokens = 0;
-        let costUsd = 0;
-        let assistantMessages = 0;
-
         const messageStream: AsyncIterable<SDKMessage> = query({
           prompt: input.prompt,
           options: {
@@ -322,45 +333,7 @@ export class ClaudeSdkHarness implements AgentHarness {
           },
         });
 
-        const buildUsage = () => ({
-          requests: turnsUsed,
-          inputTokens,
-          outputTokens,
-          totalTokens: inputTokens + outputTokens,
-          costUsd,
-          requestUsageEntries: turnsUsed > 0
-            ? [{ inputTokens, outputTokens, totalTokens: inputTokens + outputTokens }]
-            : [],
-        });
-
-        try {
-          for await (const message of messageStream) {
-            if (message.type === 'assistant') {
-              assistantMessages += 1;
-              continue;
-            }
-            if (message.type === 'result') {
-              turnsUsed = message.num_turns ?? assistantMessages;
-              inputTokens = message.usage?.input_tokens ?? 0;
-              outputTokens = message.usage?.output_tokens ?? 0;
-              costUsd = localProvider ? 0 : (message.total_cost_usd ?? 0);
-              if (message.subtype === 'success') {
-                finalText = message.result;
-              }
-            }
-          }
-        } catch (err) {
-          if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {
-            throw new HarnessExecutionError(
-              errorMessage(err),
-              { usage: buildUsage() },
-              { cause: err },
-            );
-          }
-          throw err;
-        }
-
-        return { finalText, turnsUsed, usage: buildUsage() };
+        return consumeClaudeMessageStream(messageStream, { localProvider });
       },
       async close(): Promise<void> {
         // The Claude SDK MCP server is in-process — no async resource to

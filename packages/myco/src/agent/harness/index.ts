@@ -11,6 +11,9 @@ const HARNESS_REGISTRY = new Map<HarnessId, AgentHarnessFactory>();
 
 export function registerAgentHarness(id: HarnessId, factory: AgentHarnessFactory): void {
   if (!id.trim()) throw new Error('Harness id must be non-empty');
+  if (HARNESS_REGISTRY.has(id)) {
+    throw new Error(`Harness id already registered: ${id}`);
+  }
   HARNESS_REGISTRY.set(id, factory);
 }
 

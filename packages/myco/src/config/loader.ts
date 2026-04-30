@@ -117,6 +117,7 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(configPath, YAML.stringify(validated), 'utf-8');
+  invalidateMergedConfigCache(vaultDir);
 }
 
 export function updateConfig(
@@ -213,12 +214,89 @@ export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
   return doc as Partial<MycoConfig>;
 }
 
+/**
+ * Cache for `loadMergedConfig` keyed by (vaultDir, mtime+size of myco.yaml,
+ * mtime+size of local.yaml). The merge involves two YAML parses, two
+ * migration walks, a deep-merge, and a Zod re-parse — `resolveRunConfig`
+ * calls it on every `runAgent` invocation, so under busy task scheduling
+ * the cost compounds. Mtime+size invalidation handles both internal writes
+ * (loaders write back after migrating, save*Config helpers mutate) and
+ * external edits (operator hand-edits myco.yaml).
+ */
+interface CachedMergedConfig {
+  configMtimeMs: number | null;
+  configSize: number | null;
+  localMtimeMs: number | null;
+  localSize: number | null;
+  config: MycoConfig;
+}
+
+const mergedConfigCache = new Map<string, CachedMergedConfig>();
+
+function statOrNull(filePath: string): fs.Stats | null {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function fingerprintMatches(
+  cached: CachedMergedConfig,
+  configStat: fs.Stats | null,
+  localStat: fs.Stats | null,
+): boolean {
+  return (
+    cached.configMtimeMs === (configStat?.mtimeMs ?? null)
+    && cached.configSize === (configStat?.size ?? null)
+    && cached.localMtimeMs === (localStat?.mtimeMs ?? null)
+    && cached.localSize === (localStat?.size ?? null)
+  );
+}
+
+/**
+ * Drop any cached merged config for `vaultDir`. Any write path that
+ * mutates `myco.yaml` or `local.yaml` calls this so the next read can't
+ * serve a stale value before its mtime ticks past the cached one.
+ */
+export function invalidateMergedConfigCache(vaultDir?: string): void {
+  if (vaultDir === undefined) {
+    mergedConfigCache.clear();
+    return;
+  }
+  mergedConfigCache.delete(vaultDir);
+}
+
 /** Load project config and overlay local overrides on top (leaf-level deep merge). */
 export function loadMergedConfig(vaultDir: string): MycoConfig {
+  const configPath = path.join(vaultDir, CONFIG_FILENAME);
+  const localPath = localConfigPath(vaultDir);
+
+  const configStat = statOrNull(configPath);
+  const localStat = statOrNull(localPath);
+  const cached = mergedConfigCache.get(vaultDir);
+  if (cached && fingerprintMatches(cached, configStat, localStat)) {
+    return cached.config;
+  }
+
   const project = loadConfig(vaultDir);
   const local = loadLocalConfig(vaultDir);
   const merged = deepMergeConfig(project as Record<string, unknown>, local as Record<string, unknown>);
-  return MycoConfigSchema.parse(merged);
+  const result = MycoConfigSchema.parse(merged);
+
+  // Re-stat after load — `loadConfig`/`loadLocalConfig` may have written a
+  // migrated config back, advancing the mtime. Cache against the
+  // post-write fingerprint so the next call hits cleanly.
+  const finalConfigStat = statOrNull(configPath);
+  const finalLocalStat = statOrNull(localPath);
+  mergedConfigCache.set(vaultDir, {
+    configMtimeMs: finalConfigStat?.mtimeMs ?? null,
+    configSize: finalConfigStat?.size ?? null,
+    localMtimeMs: finalLocalStat?.mtimeMs ?? null,
+    localSize: finalLocalStat?.size ?? null,
+    config: result,
+  });
+  return result;
 }
 
 /**
@@ -232,6 +310,7 @@ function writeLocalYamlIfChanged<T>(vaultDir: string, current: T, next: T): T {
 
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
+  invalidateMergedConfigCache(vaultDir);
   return next;
 }
 

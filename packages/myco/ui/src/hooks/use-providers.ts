@@ -1,5 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, putJson, postJson } from '../lib/api';
+import {
+  PROVIDER_METADATA_BY_TYPE,
+  getSupportedHarnessesForProviderType,
+  inferHarnessFromProviderType as inferHarnessFromProviderTypeServer,
+  providerTypeSupportsHarness,
+} from '@myco/agent/provider-harness';
+import { PROVIDER_TYPES, type HarnessId, type ProviderType } from '@myco/agent/types';
 
 /* ---------- Constants ---------- */
 
@@ -9,34 +16,36 @@ const PROVIDERS_STALE_TIME = 30_000;
 /* ---------- Types ---------- */
 
 export interface ProviderInfo {
-  type: 'anthropic' | 'ollama' | 'lmstudio' | 'openai' | 'openrouter' | 'openai-compatible';
-  harness: 'claude-sdk' | 'openai-agents';
+  type: ProviderType;
+  harness: HarnessId;
+  /** Every harness this provider type can run on. Server-supplied; falls
+   *  back to the canonical metadata if an older daemon omits the field. */
+  availableHarnesses?: readonly HarnessId[];
   available: boolean;
   authConfigured?: boolean;
   baseUrl?: string;
   models: string[];
 }
 
-export type HarnessIdUi = ProviderInfo['harness'];
-export type ProviderTypeUi = ProviderInfo['type'];
+export type HarnessIdUi = HarnessId;
+export type ProviderTypeUi = ProviderType;
 
-const RUNTIME_IDS: readonly HarnessIdUi[] = ['claude-sdk', 'openai-agents'];
-const PROVIDER_TYPES_UI: readonly ProviderTypeUi[] = [
-  'anthropic',
-  'ollama',
-  'lmstudio',
-  'openai',
-  'openrouter',
-  'openai-compatible',
-];
+/** Closed set of harness ids the canonical metadata knows about. Derived
+ *  rather than hand-maintained — adding PI-Core to PROVIDER_METADATA_BY_TYPE
+ *  flows through to UI narrowing without a UI edit. */
+const KNOWN_HARNESS_IDS: readonly HarnessId[] = Array.from(
+  new Set(
+    Object.values(PROVIDER_METADATA_BY_TYPE).flatMap((meta) => meta.supportedHarnesses),
+  ),
+);
 
 /**
- * Narrow an arbitrary string to HarnessIdUi. Returns '' when the input
- * isn't a known harness id — callers can then treat '' as "no harness
- * selected" without blanket casting.
+ * Narrow an arbitrary string to a known HarnessId. Returns '' when the
+ * input isn't a known harness id — callers can then treat '' as "no
+ * harness selected" without blanket casting.
  */
 export function parseHarnessId(value: string): HarnessIdUi | '' {
-  return (RUNTIME_IDS as readonly string[]).includes(value) ? (value as HarnessIdUi) : '';
+  return KNOWN_HARNESS_IDS.includes(value) ? (value as HarnessIdUi) : '';
 }
 
 /**
@@ -44,7 +53,7 @@ export function parseHarnessId(value: string): HarnessIdUi | '' {
  * isn't a known provider type.
  */
 export function parseProviderType(value: string): ProviderTypeUi | '' {
-  return (PROVIDER_TYPES_UI as readonly string[]).includes(value) ? (value as ProviderTypeUi) : '';
+  return (PROVIDER_TYPES as readonly string[]).includes(value) ? (value as ProviderTypeUi) : '';
 }
 
 export interface ProvidersResponse {
@@ -74,7 +83,7 @@ export interface ScheduleOverride {
 }
 
 export interface TaskConfigOverride {
-  harness?: 'claude-sdk' | 'openai-agents';
+  harness?: HarnessId;
   provider?: ProviderConfig;
   model?: string;
   maxTurns?: number;
@@ -120,44 +129,40 @@ export function defaultBaseUrlForProvider(
   return fallbackBaseUrl ?? '';
 }
 
-const PROVIDER_HARNESS_BY_TYPE: Record<ProviderInfo['type'], ProviderInfo['harness']> = {
-  anthropic: 'claude-sdk',
-  ollama: 'claude-sdk',
-  lmstudio: 'claude-sdk',
-  openai: 'openai-agents',
-  openrouter: 'openai-agents',
-  'openai-compatible': 'openai-agents',
-};
-
 export function inferHarnessFromProviderType(
   type: ProviderDraft['type'] | undefined,
 ): ProviderDraft['harness'] | '' {
   if (!type) return '';
-  return PROVIDER_HARNESS_BY_TYPE[type];
+  return inferHarnessFromProviderTypeServer(type) ?? '';
 }
 
 export function maybeInferHarnessFromProviderType(
   type: ProviderDraft['type'] | undefined,
 ): ProviderDraft['harness'] | undefined {
-  const harness = inferHarnessFromProviderType(type);
-  return harness || undefined;
+  return type ? inferHarnessFromProviderTypeServer(type) : undefined;
 }
-
-const PROVIDER_HARNESS_SUPPORT: Record<ProviderInfo['type'], Array<ProviderInfo['harness']>> = {
-  anthropic: ['claude-sdk'],
-  ollama: ['claude-sdk', 'openai-agents'],
-  lmstudio: ['claude-sdk', 'openai-agents'],
-  openai: ['openai-agents'],
-  openrouter: ['openai-agents'],
-  'openai-compatible': ['openai-agents'],
-};
 
 export function providerSupportsHarness(
   type: ProviderDraft['type'] | undefined,
   harness: ProviderDraft['harness'] | '' | undefined,
 ): boolean {
-  if (!type || !harness) return false;
-  return PROVIDER_HARNESS_SUPPORT[type]?.includes(harness) ?? false;
+  return providerTypeSupportsHarness(
+    type || undefined,
+    harness || undefined,
+  );
+}
+
+/** Resolve the supported harnesses for a provider type, preferring the
+ *  server-supplied list on a ProviderInfo (so a future server can extend
+ *  the set without a UI redeploy) and falling back to the canonical
+ *  metadata bundled with the UI. */
+export function supportedHarnessesForProviderInfo(
+  info: ProviderInfo | undefined,
+): readonly HarnessId[] {
+  if (info?.availableHarnesses && info.availableHarnesses.length > 0) {
+    return info.availableHarnesses;
+  }
+  return getSupportedHarnessesForProviderType(info?.type);
 }
 
 export function resolveReasoningModel(

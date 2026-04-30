@@ -54,11 +54,11 @@ function coerceReasoning(value: string | undefined): ReasoningLevel | undefined 
     : undefined;
 }
 
-const RUNTIME_IDS: ReadonlyArray<HarnessId> = ['claude-sdk', 'openai-agents'];
+const HARNESS_IDS: ReadonlyArray<HarnessId> = ['claude-sdk', 'openai-agents'];
 
 function coerceHarness(value: string | undefined): HarnessId | undefined {
   if (!value) return undefined;
-  return (RUNTIME_IDS as ReadonlyArray<string>).includes(value)
+  return (HARNESS_IDS as ReadonlyArray<string>).includes(value)
     ? (value as HarnessId)
     : undefined;
 }

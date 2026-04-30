@@ -33,20 +33,6 @@ export interface Migration {
 /** Regex matching both quoted and unquoted YAML: type: memory, type: "memory", type: 'memory' */
 const MEMORY_TYPE_PATTERN = /type:\s*["']?memory["']?/g;
 
-function inferLegacyHarnessFromProviderType(type: unknown): string | undefined {
-  switch (type) {
-    case 'openai':
-    case 'openrouter':
-    case 'openai-compatible':
-      return 'openai-agents';
-    case 'anthropic':
-    case 'ollama':
-    case 'lmstudio':
-      return 'claude-sdk';
-    default:
-      return undefined;
-  }
-}
 
 export const MIGRATIONS: Migration[] = [
   {
@@ -431,6 +417,25 @@ export const MIGRATIONS: Migration[] = [
       const agent = doc.agent as Record<string, unknown> | undefined;
       if (!agent) return;
 
+      // Frozen snapshot of the provider→harness mapping as of v9. Intentionally
+      // not importing the live helper from `provider-harness.ts`: if a future
+      // provider type changes its harness home, this migration must keep
+      // migrating old configs the v9 way, not the new way.
+      const harnessForProviderTypeAtV9 = (type: unknown): string | undefined => {
+        switch (type) {
+          case 'openai':
+          case 'openrouter':
+          case 'openai-compatible':
+            return 'openai-agents';
+          case 'anthropic':
+          case 'ollama':
+          case 'lmstudio':
+            return 'claude-sdk';
+          default:
+            return undefined;
+        }
+      };
+
       const providerRuntime = agent.provider && typeof agent.provider === 'object'
         ? (agent.provider as Record<string, unknown>).runtime
         : undefined;
@@ -440,12 +445,12 @@ export const MIGRATIONS: Migration[] = [
       if ('runtime' in agent) {
         if (!('harness' in agent)) {
           agent.harness = providerRuntime
-            ?? inferLegacyHarnessFromProviderType(providerType)
+            ?? harnessForProviderTypeAtV9(providerType)
             ?? agent.runtime;
         }
         delete agent.runtime;
       } else if (!('harness' in agent)) {
-        const inferred = providerRuntime ?? inferLegacyHarnessFromProviderType(providerType);
+        const inferred = providerRuntime ?? harnessForProviderTypeAtV9(providerType);
         if (inferred) {
           agent.harness = inferred;
         }

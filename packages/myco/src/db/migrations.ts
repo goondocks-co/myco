@@ -153,10 +153,14 @@ function migrateAgentRunEnvelope(column: string, value: unknown): string | null 
 }
 
 function migrateAgentRunJsonColumnKey(db: Database, column: string, fromKey: string, toKey: string): void {
-  const rows = db.prepare(`SELECT id, ${column} AS payload FROM agent_runs WHERE ${column} IS NOT NULL`).all() as Array<{
-    id: string;
-    payload: string | null;
-  }>;
+  // Pre-filter rows that mention the legacy key in their JSON payload so untouched
+  // envelopes don't round-trip through JSON.parse/stringify on every vault startup.
+  const rows = db
+    .prepare(
+      `SELECT id, ${column} AS payload FROM agent_runs
+       WHERE ${column} IS NOT NULL AND ${column} LIKE ?`,
+    )
+    .all(`%"${fromKey}"%`) as Array<{ id: string; payload: string | null }>;
   const update = db.prepare(`UPDATE agent_runs SET ${column} = ? WHERE id = ?`);
   for (const row of rows) {
     const next = fromKey === 'runtime' && toKey === 'harness'

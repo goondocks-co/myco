@@ -208,8 +208,13 @@ export function resolveRunConfig(
     if (yamlParams || configParams) {
       taskParams = { ...yamlParams, ...configParams };
     }
-  } catch {
-    // Config load failure is non-fatal — proceed without overrides
+  } catch (err) {
+    // Config load failure is non-fatal — proceed without overrides — but
+    // surface it so a malformed myco.yaml doesn't silently fall back to the
+    // default harness with no signal.
+    console.warn(
+      `[agent] Failed to load myco.yaml overrides for run resolution: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return {
