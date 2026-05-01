@@ -1020,10 +1020,7 @@ export default function (pi: ExtensionAPI) {
       if (!result.ok) {
         return { content: [{ type: "text" as const, text: "Session query unavailable." }], details: {} };
       }
-      const sessions = (params.op ?? "list") === "get"
-        ? result.data
-        : (result.data as { sessions?: unknown } | undefined)?.sessions ?? [];
-      return { content: [{ type: "text" as const, text: formatToolOutput(sessions) }], details: result.data ?? {} };
+      return { content: [{ type: "text" as const, text: formatToolOutput(result.data ?? []) }], details: result.data ?? {} };
     },
   });
 
