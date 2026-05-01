@@ -259,6 +259,26 @@ Resource location: remote
     expect(patchedToml).toContain('id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"');
   });
 
+  it('treats existing queues as a successful upgrade (CF "is already taken")', async () => {
+    // KV exists; wrangler queues create reports the collision shape we hit
+    // live ("is already taken", error code 11009). ensureQueue must swallow
+    // both shapes so re-running upgrade is idempotent.
+    const tomlWithKv = LEGACY_TOML + '\n[[kv_namespaces]]\nbinding = "MYCO_SECRETS"\nid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n';
+    fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), tomlWithKv, 'utf-8');
+
+    execHandlers.push(
+      () => new Error("Queue name 'myco-team-abc12345-sync' is already taken. [code: 11009]"),
+      () => new Error("Queue name 'myco-team-abc12345-sync-dlq' is already taken. [code: 11009]"),
+      () => '',
+      () => '',
+      () => 'https://myco-team-abc12345.test.workers.dev\n',
+    );
+
+    const { upgradeWorker } = await importTeamCli();
+    const result = upgradeWorker(vaultDir);
+    expect(result.success).toBe(true);
+  });
+
   it('returns error when KV provisioning fails', async () => {
     execHandlers.push(() => new Error('Cloudflare API: authentication failed'));
 

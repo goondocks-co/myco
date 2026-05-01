@@ -404,12 +404,16 @@ function ensureQueue(queueName: string): void {
     wrangler(['queues', 'create', queueName]);
   } catch (err) {
     const errMsg = (err as Error).message;
-    // Wrangler reports collisions in a few different shapes depending on
-    // version; treat any "already exists" variant as success.
+    // Wrangler reports collisions in several shapes depending on version
+    // and the underlying CF API response. The current 4.x + Queues API
+    // returns "is already taken" with code 11009; older variants used
+    // "already exists" / "duplicate". Treat any of them as success so
+    // re-running install/upgrade is idempotent.
     if (
       errMsg.includes('already exists')
+      || errMsg.includes('is already taken')
       || errMsg.includes('duplicate')
-      || errMsg.includes('queue with this name already exists')
+      || errMsg.includes('11009')
     ) {
       return;
     }
