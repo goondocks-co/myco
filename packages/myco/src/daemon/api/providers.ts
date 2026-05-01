@@ -25,7 +25,7 @@ import {
 } from './models.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
-import { PROVIDER_TYPES, type HarnessId, type ProviderType } from '@myco/agent/types.js';
+import { PROVIDER_TYPES, HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS, type HarnessId, type ProviderType } from '@myco/agent/types.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { getSupportedHarnessesForProviderType } from '@myco/agent/provider-harness.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -81,7 +81,7 @@ export async function handleGetProviders(logger?: DaemonLogger): Promise<RouteRe
     extras: Omit<ProviderInfo, 'type' | 'harness' | 'availableHarnesses'>,
   ): ProviderInfo => ({
     type,
-    harness: getSupportedHarnessesForProviderType(type)[0] ?? 'claude-sdk',
+    harness: getSupportedHarnessesForProviderType(type)[0] ?? HARNESS_CLAUDE_SDK,
     availableHarnesses: getSupportedHarnessesForProviderType(type),
     ...extras,
   });
@@ -209,7 +209,7 @@ async function detectLocalProviderInfo(
   const supported = getSupportedHarnessesForProviderType(type);
   return {
     type,
-    harness: type === 'openai-compatible' ? 'openai-agents' : 'claude-sdk',
+    harness: type === 'openai-compatible' ? HARNESS_OPENAI_AGENTS : HARNESS_CLAUDE_SDK,
     availableHarnesses: supported,
     available: status.available,
     baseUrl: defaultBaseUrl,
@@ -230,7 +230,7 @@ async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
   if (anthropicModelsCache && now - anthropicModelsCache.ts < ANTHROPIC_MODELS_CACHE_TTL_MS) {
     return {
       type: 'anthropic',
-      harness: 'claude-sdk',
+      harness: HARNESS_CLAUDE_SDK,
       availableHarnesses: getSupportedHarnessesForProviderType('anthropic'),
       available: true,
       models: anthropicModelsCache.models,
@@ -261,7 +261,7 @@ async function detectAnthropic(logger?: DaemonLogger): Promise<ProviderInfo> {
   anthropicModelsCache = { ts: now, models };
   return {
     type: 'anthropic',
-    harness: 'claude-sdk',
+    harness: HARNESS_CLAUDE_SDK,
     availableHarnesses: getSupportedHarnessesForProviderType('anthropic'),
     available: true,
     models,
@@ -292,7 +292,7 @@ async function detectRemoteProviderInfo(
 
   return {
     type,
-    harness: 'openai-agents',
+    harness: HARNESS_OPENAI_AGENTS,
     availableHarnesses: getSupportedHarnessesForProviderType(type),
     available,
     authConfigured,

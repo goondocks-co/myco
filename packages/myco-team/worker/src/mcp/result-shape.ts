@@ -2,12 +2,25 @@ import type { HydratedResult } from '../search-helpers';
 
 type RetrieveHint = { tool: string; input: Record<string, unknown> };
 
+/**
+ * Table-name → canonical entity-type mapping. Mirrors the core
+ * `normalizeResultType` mapping in `packages/myco/src/search-results.ts`
+ * so a worker-side hint and a daemon-side hint produce the same result.
+ *
+ * `agent_runs` and `canopy_*` entries are present even though those tables
+ * aren't synced to D1 today — keeping the mapping complete prevents silent
+ * drift if a future sync expansion does start surfacing them.
+ */
 const TABLE_TO_ENTITY: Record<string, string> = {
   plans: 'plan',
   sessions: 'session',
   spores: 'spore',
   skill_records: 'skill',
   skills: 'skill',
+  agent_runs: 'agent_run',
+  runs: 'agent_run',
+  canopy_entries: 'canopy_entry',
+  canopy_file: 'canopy_entry',
 };
 
 const ENTITY_TO_TOOL: Record<string, string> = {
@@ -15,6 +28,8 @@ const ENTITY_TO_TOOL: Record<string, string> = {
   session: 'myco_sessions',
   spore: 'myco_spores',
   skill: 'myco_skills',
+  agent_run: 'myco_agent',
+  canopy_entry: 'myco_cortex',
 };
 
 export interface CloudSearchResult {
@@ -31,7 +46,7 @@ export interface CloudSearchResult {
 
 export function toCloudSearchResult(result: HydratedResult): CloudSearchResult {
   const type = normalizeEntityType(result.type);
-  const retrieve = retrieveHint(type, result.id, result.machine_id);
+  const retrieve = retrieveHint(type, result.id, result.machine_id, result.data);
   return {
     id: result.id,
     machine_id: result.machine_id,
@@ -49,9 +64,30 @@ export function normalizeEntityType(table: string): string {
   return TABLE_TO_ENTITY[table] ?? table;
 }
 
-function retrieveHint(type: string, id: string, machineId: string): RetrieveHint | undefined {
+function retrieveHint(
+  type: string,
+  id: string,
+  machineId: string,
+  data: Record<string, unknown>,
+): RetrieveHint | undefined {
   const tool = ENTITY_TO_TOOL[type];
   if (!tool) return undefined;
+  if (type === 'agent_run') {
+    return { tool, input: { op: 'run', id } };
+  }
+  if (type === 'canopy_entry') {
+    const projectId = typeof data.project_id === 'string' ? data.project_id : undefined;
+    const path = typeof data.path === 'string' ? data.path : undefined;
+    return {
+      tool,
+      input: {
+        op: 'canopy_entry',
+        id,
+        ...(projectId ? { project_id: projectId } : {}),
+        ...(path ? { path } : {}),
+      },
+    };
+  }
   return { tool, input: { op: 'get', id, machine_id: machineId } };
 }
 
@@ -71,4 +107,9 @@ function previewFor(data: Record<string, unknown>): string {
 
 export function textJson(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+}
+
+/** Standard error envelope for worker tool handlers. */
+export function textJsonError(error: string) {
+  return textJson({ ok: false, error });
 }

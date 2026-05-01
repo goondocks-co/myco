@@ -35,6 +35,14 @@ export interface TeamStatusResponse {
   sync_protocol_version: number;
   mcp_token: string | null;
   mcp_endpoint: string | null;
+  local_only_disclosures: LocalOnlyDisclosure[];
+}
+
+/** Server-canonical "what stays local" disclosure surfaced on the Team page. */
+export interface LocalOnlyDisclosure {
+  table: string;
+  columns: string[];
+  rationale: string;
 }
 
 export function useTeamStatus() {
@@ -51,7 +59,8 @@ export function useTeamStatus() {
 // ---------------------------------------------------------------------------
 
 export interface QueueStats {
-  depth: number;
+  /** null until CF Queues GraphQL Analytics is wired; UI renders "—". */
+  depth: number | null;
   oldest_msg_age_s: number | null;
 }
 

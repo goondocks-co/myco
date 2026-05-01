@@ -18,6 +18,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { upsertTask } from '@myco/db/queries/tasks.js';
 import type { AgentRow } from '@myco/db/queries/agents.js';
 import type { AgentDefinition, AgentTask, EffectiveConfig } from './types.js';
+import { HARNESS_CLAUDE_SDK } from './types.js';
 import { AgentDefinitionSchema, AgentTaskSchema } from './schemas.js';
 import { BUNDLED_AGENT_DEFINITION, BUNDLED_AGENT_PROMPTS, BUNDLED_AGENT_TASKS } from './definitions.generated.js';
 
@@ -204,7 +205,7 @@ export function resolveEffectiveConfig(
   agentOverrides?: AgentRow | null,
   taskOverrides?: AgentTask,
 ): EffectiveConfig {
-  let harness = taskOverrides?.execution?.harness ?? 'claude-sdk';
+  let harness = taskOverrides?.execution?.harness ?? HARNESS_CLAUDE_SDK;
   // Start with definition defaults
   let model = definition.model;
   let reasoningLevel = taskOverrides?.reasoningLevel;

@@ -12,6 +12,7 @@ import type {
   HarnessScopeSetup,
 } from './types.js';
 import { HarnessExecutionError } from './types.js';
+import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
 import {
   createMaterializedVaultToolServer,
   createScopedVaultToolServer,
@@ -182,7 +183,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
 }
 
 export class ClaudeSdkHarness implements AgentHarness {
-  readonly id = 'claude-sdk' as const;
+  readonly id = HARNESS_CLAUDE_SDK;
 
   supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
@@ -203,144 +204,170 @@ export class ClaudeSdkHarness implements AgentHarness {
   }
 
   async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
-    const toolServer = buildToolServer(input);
-    const baseEnv = buildPhaseEnv(input.provider);
-    const env = {
-      ...(baseEnv ?? process.env),
-      MYCO_AGENT_SESSION: '1',
-      // Isolate from the user's Claude Code plugin registry — see
-      // `getIsolatedPluginCacheDir()` docs above. Only honored when the
-      // user hasn't explicitly overridden the cache dir themselves.
-      CLAUDE_CODE_PLUGIN_CACHE_DIR:
-        process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
-    };
-
-    // Debug-level record of the per-request tool surface. Filtered out
-    // unless daemon.log_level is set to 'debug' — when it is, operators
-    // can grep the log viewer for `agent.harness.request` to see what
-    // tools each phase actually sent, which is how you catch a plugin
-    // leak before it blows up a real run with a 400 tool-schema error.
-    if (input.logger) {
-      const mcpToolNames = input.toolSurface.toolNames
-        ?? (toolServer ? ['<full-vault-surface>'] : []);
-      input.logger.debug('agent.harness.request', 'Agent harness request', {
-        runId: input.toolSurface.runId,
-        agentId: input.toolSurface.agentId,
-        model: input.model,
-        mcpToolCount: mcpToolNames.length,
-        mcpTools: mcpToolNames,
-        pluginCacheDir: env.CLAUDE_CODE_PLUGIN_CACHE_DIR,
-        sessionRef: input.sessionRef ?? null,
-      });
-    }
-
-    const claudeCodeExecutable = resolveClaudeCodeExecutable();
-    const localProvider = isLocalProvider(input.provider);
-
-    // Always pass `strictMcpConfig: true`, even when the phase wants no
-    // MCP tools (e.g., the orchestrator planner with `toolNames: []`).
-    // Without strict mode, the SDK falls back to loading every MCP server
-    // the user has configured in ~/.claude/mcp.json, ~/.claude.json, and
-    // every installed plugin — 130+ unrelated tools leak into the agent's
-    // tool surface, inflating context and occasionally triggering API
-    // schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
-    //
-    // `settingSources: []` completes the isolation: the SDK's plugin-sync
-    // path reads `enabledPlugins` from `~/.claude/settings.json` / project
-    // settings and syncs them into our "isolated" plugin cache dir,
-    // re-introducing every developer plugin we meant to exclude. Per the
-    // SDK docs: "When omitted or empty, no filesystem settings are
-    // loaded (SDK isolation mode)."
-    const messageStream: AsyncIterable<SDKMessage> = query({
+    const setup = pickClaudeSetup(input);
+    const prepared = prepareClaudeRun(setup);
+    logClaudeRequest('agent.harness.request', 'Agent harness request', setup, prepared, {
+      sessionRef: input.sessionRef,
+    });
+    const drained = await runClaudeQuery(setup, prepared, {
       prompt: input.prompt,
-      options: {
-        model: input.model,
-        systemPrompt: input.systemPrompt,
-        tools: [],
-        mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
-        strictMcpConfig: true,
-        settingSources: [],
-        maxTurns: input.maxTurns,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        persistSession: true,
-        env,
-        ...suppressEffortLeakForLocalProvider(input.provider),
-        ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
-        ...(input.sessionRef ? { sessionId: input.sessionRef } : {}),
-        ...(input.abortController ? { abortController: input.abortController } : {}),
-      },
-    });
-
-    const drained = await consumeClaudeMessageStream(messageStream, {
-      localProvider,
+      maxTurns: input.maxTurns,
       sessionRef: input.sessionRef,
+      persistSession: true,
+      abortController: input.abortController,
     });
-
-    return {
-      ...drained,
-      sessionRef: input.sessionRef,
-    };
+    return { ...drained, sessionRef: input.sessionRef };
   }
 
   async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
-    const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
-    const claudeCodeExecutable = resolveClaudeCodeExecutable();
-    const baseEnv = buildPhaseEnv(setup.provider);
-    const env = {
-      ...(baseEnv ?? process.env),
-      MYCO_AGENT_SESSION: '1',
-      CLAUDE_CODE_PLUGIN_CACHE_DIR:
-        process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
-    };
-    const localProvider = isLocalProvider(setup.provider);
-
-    if (setup.logger) {
-      const mcpToolNames = setup.toolSurface.toolNames
-        ?? (toolServer ? ['<full-vault-surface>'] : []);
-      setup.logger.debug('agent.harness.scope-open', 'Claude SDK scope opened', {
-        runId: setup.toolSurface.runId,
-        agentId: setup.toolSurface.agentId,
-        model: setup.model,
-        mcpToolCount: mcpToolNames.length,
-        mcpTools: mcpToolNames,
-      });
-    }
+    const prepared = prepareClaudeRun(setup);
+    logClaudeRequest('agent.harness.scope-open', 'Claude SDK scope opened', setup, prepared);
 
     let closed = false;
-
     return {
       async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
         if (closed) throw new Error('ClaudeSdkHarness: scope.run() called after close()');
-
-        const messageStream: AsyncIterable<SDKMessage> = query({
+        return runClaudeQuery(setup, prepared, {
           prompt: input.prompt,
-          options: {
-            model: setup.model,
-            systemPrompt: setup.systemPrompt,
-            tools: [],
-            mcpServers: toolServer ? { [MCP_SERVER_NAME]: toolServer } : {},
-            strictMcpConfig: true,
-            settingSources: [],
-            maxTurns: input.maxTurns,
-            permissionMode: 'bypassPermissions',
-            allowDangerouslySkipPermissions: true,
-            persistSession: false,
-            env,
-            ...suppressEffortLeakForLocalProvider(setup.provider),
-            ...(claudeCodeExecutable ? { pathToClaudeCodeExecutable: claudeCodeExecutable } : {}),
-            ...(input.abortController ? { abortController: input.abortController } : {}),
-          },
+          maxTurns: input.maxTurns,
+          persistSession: false,
+          abortController: input.abortController,
         });
-
-        return consumeClaudeMessageStream(messageStream, { localProvider });
       },
       async close(): Promise<void> {
         // The Claude SDK MCP server is in-process — no async resource to
         // release. Just gate further run() calls.
-        if (closed) return;
         closed = true;
       },
     };
   }
+}
+
+/**
+ * Per-setup state both `execute` and `openScope` need: the in-process MCP
+ * tool server, the merged env, the resolved Claude Code executable path,
+ * and the `localProvider` flag. Computed once per `execute` call (or once
+ * per scope, reused across N scope.run calls).
+ */
+interface PreparedClaudeRun {
+  toolServer: ReturnType<typeof buildToolServer>;
+  env: Record<string, string | undefined>;
+  claudeCodeExecutable: string | undefined;
+  localProvider: boolean;
+}
+
+interface ClaudeRunOptions {
+  prompt: string;
+  maxTurns?: number;
+  sessionRef?: string;
+  persistSession: boolean;
+  abortController?: AbortController;
+}
+
+/** Narrow an ExecuteInput down to the setup-only fields shared with HarnessScopeSetup. */
+function pickClaudeSetup(input: HarnessExecuteInput): HarnessScopeSetup {
+  return {
+    systemPrompt: input.systemPrompt,
+    model: input.model,
+    provider: input.provider,
+    toolSurface: input.toolSurface,
+    logger: input.logger,
+  };
+}
+
+function prepareClaudeRun(setup: HarnessScopeSetup): PreparedClaudeRun {
+  const toolServer = buildToolServer({ toolSurface: setup.toolSurface });
+  const baseEnv = buildPhaseEnv(setup.provider);
+  const env = {
+    ...(baseEnv ?? process.env),
+    MYCO_AGENT_SESSION: '1',
+    // Isolate from the user's Claude Code plugin registry — see
+    // `getIsolatedPluginCacheDir()` docs. Only honored when the user hasn't
+    // overridden the cache dir themselves.
+    CLAUDE_CODE_PLUGIN_CACHE_DIR:
+      process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? getIsolatedPluginCacheDir(),
+  };
+  return {
+    toolServer,
+    env,
+    claudeCodeExecutable: resolveClaudeCodeExecutable(),
+    localProvider: isLocalProvider(setup.provider),
+  };
+}
+
+/**
+ * Debug-level record of the per-request tool surface. Filtered out unless
+ * daemon.log_level is 'debug' — when it is, operators can grep the log
+ * viewer for `agent.harness.request` to see what tools each phase actually
+ * sent, which is how you catch a plugin leak before it blows up a real run
+ * with a 400 tool-schema error.
+ */
+function logClaudeRequest(
+  kind: string,
+  message: string,
+  setup: HarnessScopeSetup,
+  prepared: PreparedClaudeRun,
+  extra: { sessionRef?: string } = {},
+): void {
+  if (!setup.logger) return;
+  const mcpToolNames = setup.toolSurface.toolNames
+    ?? (prepared.toolServer ? ['<full-vault-surface>'] : []);
+  setup.logger.debug(kind, message, {
+    runId: setup.toolSurface.runId,
+    agentId: setup.toolSurface.agentId,
+    model: setup.model,
+    mcpToolCount: mcpToolNames.length,
+    mcpTools: mcpToolNames,
+    pluginCacheDir: prepared.env.CLAUDE_CODE_PLUGIN_CACHE_DIR,
+    ...(extra.sessionRef !== undefined ? { sessionRef: extra.sessionRef ?? null } : {}),
+  });
+}
+
+/**
+ * Run a single Claude SDK query against the prepared setup.
+ *
+ * Always passes `strictMcpConfig: true`, even when the phase wants no
+ * MCP tools (e.g., the orchestrator planner with `toolNames: []`).
+ * Without strict mode, the SDK falls back to loading every MCP server
+ * the user has configured in ~/.claude/mcp.json, ~/.claude.json, and
+ * every installed plugin — 130+ unrelated tools leak into the agent's
+ * tool surface, inflating context and occasionally triggering API
+ * schema rejections (Anthropic's 400 on top-level oneOf/allOf/anyOf).
+ *
+ * `settingSources: []` completes the isolation: the SDK's plugin-sync
+ * path reads `enabledPlugins` from settings.json and syncs them into our
+ * isolated plugin cache dir, re-introducing every developer plugin we
+ * meant to exclude. Per the SDK docs: "When omitted or empty, no
+ * filesystem settings are loaded (SDK isolation mode)."
+ */
+async function runClaudeQuery(
+  setup: HarnessScopeSetup,
+  prepared: PreparedClaudeRun,
+  options: ClaudeRunOptions,
+): Promise<HarnessExecuteResult> {
+  const messageStream: AsyncIterable<SDKMessage> = query({
+    prompt: options.prompt,
+    options: {
+      model: setup.model,
+      systemPrompt: setup.systemPrompt,
+      tools: [],
+      mcpServers: prepared.toolServer ? { [MCP_SERVER_NAME]: prepared.toolServer } : {},
+      strictMcpConfig: true,
+      settingSources: [],
+      maxTurns: options.maxTurns,
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      persistSession: options.persistSession,
+      env: prepared.env,
+      ...suppressEffortLeakForLocalProvider(setup.provider),
+      ...(prepared.claudeCodeExecutable ? { pathToClaudeCodeExecutable: prepared.claudeCodeExecutable } : {}),
+      ...(options.sessionRef ? { sessionId: options.sessionRef } : {}),
+      ...(options.abortController ? { abortController: options.abortController } : {}),
+    },
+  });
+
+  return consumeClaudeMessageStream(messageStream, {
+    localProvider: prepared.localProvider,
+    sessionRef: options.sessionRef,
+  });
 }

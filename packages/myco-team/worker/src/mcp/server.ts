@@ -8,6 +8,17 @@ import { handleSessions } from './tools/sessions';
 import { handleSkills } from './tools/skills';
 import { handleSpores } from './tools/spores';
 
+/**
+ * MCP tool surface for the team Cloudflare Worker.
+ *
+ * Mirrors the core daemon's read tools (search, cortex, plans, sessions,
+ * skills, spores). `myco_agent` is intentionally absent: agent run history
+ * is per-machine and `agent_runs` is not in the synced-tables list, so a
+ * worker-side handler would always return empty results. If a future
+ * release starts syncing `agent_runs` to D1, also register `myco_agent`
+ * here and update `result-shape.ts` callers — the entity→tool mapping
+ * already covers it.
+ */
 export function createMcpServerInstance(env: Env): McpServer {
   const server = new McpServer({ name: 'myco', version: '1.0.0' });
 
@@ -25,12 +36,12 @@ export function createMcpServerInstance(env: Env): McpServer {
   }, async (args) => handleSearch(args, env));
 
   server.tool('myco_cortex', 'Retrieve Cortex project intelligence. This team surface currently supports op="digest". Three tiers: 1500 (executive), 5000 (deep onboarding), 10000 (comprehensive).', {
-    op: z.enum(['digest']).default('digest').optional().describe('Operation; only digest is available on the team worker surface'),
+    op: z.enum(['digest']).default('digest').describe('Operation; only digest is available on the team worker surface'),
     tier: z.number().optional().describe('Digest depth: 1500, 5000 (default), or 10000'),
   }, async (args) => handleContext(args, env));
 
   server.tool('myco_plans', 'List or retrieve synced plans. op="list" returns summaries; op="get" returns one full plan by id and optional machine_id from search retrieve hints.', {
-    op: z.enum(['list', 'get']).default('list').optional().describe('Operation; cloud plans are read-only'),
+    op: z.enum(['list', 'get']).default('list').describe('Operation; cloud plans are read-only'),
     id: z.string().optional().describe('Plan id for op="get"'),
     machine_id: z.string().optional().describe('Machine id from a search retrieve hint for disambiguation'),
     status: z.string().optional().describe('Filter by plan status'),
@@ -39,7 +50,7 @@ export function createMcpServerInstance(env: Env): McpServer {
   }, async (args) => handlePlans(args, env));
 
   server.tool('myco_sessions', 'List or retrieve synced coding sessions. Useful for recent activity, work by branch or agent.', {
-    op: z.enum(['list', 'get']).default('list').optional().describe('Operation; cloud sessions are read-only'),
+    op: z.enum(['list', 'get']).default('list').describe('Operation; cloud sessions are read-only'),
     id: z.string().optional().describe('Session id for op="get"'),
     machine_id: z.string().optional().describe('Machine id from a search retrieve hint for disambiguation'),
     limit: z.number().min(1).max(100).default(20).optional().describe('Maximum sessions'),
@@ -50,7 +61,7 @@ export function createMcpServerInstance(env: Env): McpServer {
   }, async (args) => handleSessions(args, env));
 
   server.tool('myco_skills', 'List or retrieve synced project skills — reusable patterns extracted from project knowledge.', {
-    op: z.enum(['list', 'get']).default('list').optional().describe('Operation; cloud skills are read-only'),
+    op: z.enum(['list', 'get']).default('list').describe('Operation; cloud skills are read-only'),
     id: z.string().optional().describe('Skill id or name for op="get"'),
     machine_id: z.string().optional().describe('Machine id from a search retrieve hint for disambiguation'),
     status: z.string().optional().describe('Filter: active, stale, retired'),
@@ -58,7 +69,7 @@ export function createMcpServerInstance(env: Env): McpServer {
   }, async (args) => handleSkills(args, env));
 
   server.tool('myco_spores', 'List or retrieve synced spores. op="list" filters durable observations; op="get" returns one full spore by id and optional machine_id from search retrieve hints. Cloud spores are read-only.', {
-    op: z.enum(['list', 'get']).default('list').optional().describe('Operation; cloud spores are read-only'),
+    op: z.enum(['list', 'get']).default('list').describe('Operation; cloud spores are read-only'),
     id: z.string().optional().describe('Spore id for op="get"'),
     machine_id: z.string().optional().describe('Machine id from a search retrieve hint for disambiguation'),
     status: z.string().optional().describe('Filter by spore status'),

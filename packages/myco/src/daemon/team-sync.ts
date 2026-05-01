@@ -314,15 +314,23 @@ export class TeamSyncClient {
     return res as T;
   }
 
-  /** Fetch queue + DLQ depth/age stats. Returns null if the worker has no
-   *  CF API token configured yet (UI prompts the operator to set one). */
+  /**
+   * Fetch queue + DLQ depth/age stats. Returns the
+   * `cf_api_token_not_configured` discriminator when the worker has no CF
+   * API token yet — the UI uses that to surface the token-config form.
+   * Pass-through 412 keeps the body accessible instead of throwing.
+   */
   async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', '/queue-stats') as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+    return await this.request('GET', '/queue-stats', undefined, {
+      passthroughStatuses: [412],
+    }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
   }
 
   /** List a page of DLQ messages. */
   async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
-    return await this.request('GET', `/dlq?limit=${limit}`) as DlqListResponse | { error: 'cf_api_token_not_configured' };
+    return await this.request('GET', `/dlq?limit=${limit}`, undefined, {
+      passthroughStatuses: [412],
+    }) as DlqListResponse | { error: 'cf_api_token_not_configured' };
   }
 
   /** Re-publish DLQ messages back onto the main queue. */
@@ -403,7 +411,7 @@ export class TeamSyncClient {
     method: string,
     path: string,
     body?: unknown,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; passthroughStatuses?: number[] } = {},
   ): Promise<unknown> {
     const timeoutMs = options.timeoutMs ?? TEAM_REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
@@ -417,7 +425,10 @@ export class TeamSyncClient {
         signal: controller.signal,
       });
 
-      if (!res.ok) {
+      // passthroughStatuses are surfaces where the worker's body is the
+      // discriminated response shape (e.g. 412 cf_api_token_not_configured)
+      // and the caller wants to inspect it rather than catch a throw.
+      if (!res.ok && !options.passthroughStatuses?.includes(res.status)) {
         const text = await res.text().catch(() => '');
         throw new Error(`Team sync request ${method} ${path} failed: ${res.status} ${text}`);
       }
