@@ -2,7 +2,14 @@ import { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useTeamStatus, type TeamStatusResponse } from '../hooks/use-team';
+import {
+  useTeamStatus,
+  useTeamQueueStats,
+  useTeamDlq,
+  isTokenMissing,
+  type TeamStatusResponse,
+  type DlqMessage,
+} from '../hooks/use-team';
 import { postJson, ApiError } from '../lib/api';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
@@ -13,6 +20,39 @@ import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { StatCard } from '../components/ui/stat-card';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
+import type { Tab } from '../components/ui/tab-switcher';
+
+/* ---------- Tabs ---------- */
+
+type ActiveTab = 'status' | 'outbox' | 'synced';
+
+const TEAM_TABS: Tab[] = [
+  { id: 'status', label: 'Status' },
+  { id: 'outbox', label: 'Outbox' },
+  { id: 'synced', label: 'Synced data' },
+];
+
+const TAB_SUBTITLES: Record<ActiveTab, string> = {
+  status: 'Connection, MCP endpoint, and team credentials',
+  outbox: 'Local hand-off, Cloudflare queue depth, and dead-letter replay',
+  synced: 'Per-table sync coverage and what stays local',
+};
+
+const VALID_TABS = new Set<ActiveTab>(['status', 'outbox', 'synced']);
+const PARAM_TAB = 'tab';
+
+function readTabFromUrl(): ActiveTab {
+  const raw = new URLSearchParams(window.location.search).get(PARAM_TAB);
+  return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'status';
+}
+
+function writeTabToUrl(tab: ActiveTab): void {
+  const params = new URLSearchParams();
+  if (tab !== 'status') params.set(PARAM_TAB, tab);
+  const search = params.toString();
+  const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
+  window.history.replaceState(null, '', url);
+}
 
 /* ---------- Helpers ---------- */
 
@@ -157,7 +197,7 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
   );
 }
 
-function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
+function StatusTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
   const [disconnecting, setDisconnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -530,11 +570,309 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
   );
 }
 
+/* ---------- OutboxTab ---------- */
+
+const SECONDS_PER_MIN = 60;
+const SECONDS_PER_HOUR = 3600;
+
+function formatAge(seconds: number | null): string {
+  if (seconds === null) return '—';
+  if (seconds < SECONDS_PER_MIN) return `${seconds}s`;
+  if (seconds < SECONDS_PER_HOUR) return `${Math.floor(seconds / SECONDS_PER_MIN)}m`;
+  return `${Math.floor(seconds / SECONDS_PER_HOUR)}h`;
+}
+
+function CfApiTokenForm({ onConfigured }: { onConfigured: () => void }) {
+  const [token, setToken] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await postJson('/team/cf-api-token', { token: token.trim(), account_id: accountId.trim() });
+      setToken('');
+      setAccountId('');
+      onConfigured();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to configure token');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Surface level="low" ghostBorder className="p-5 space-y-3 border-l-2 border-l-ochre">
+      <SectionHeader>Configure Cloudflare API token</SectionHeader>
+      <p className="text-xs text-on-surface-variant">
+        Queue depth + DLQ inspection require a Cloudflare API token with <code className="font-mono">queues:read</code> and <code className="font-mono">queues:write</code> scope. The token is stored in the worker's KV namespace and never sent back to the daemon.
+      </p>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="space-y-1">
+          <label className="text-xs text-on-surface-variant">Account ID</label>
+          <Input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="abcdef0123456789..." />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-on-surface-variant">API token</label>
+          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste token" />
+        </div>
+        {error && <p className="text-sm text-tertiary">{error}</p>}
+        <Button type="submit" size="sm" disabled={submitting || !token.trim() || !accountId.trim()}>
+          {submitting ? 'Saving…' : 'Save token'}
+        </Button>
+      </form>
+    </Surface>
+  );
+}
+
+function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (action: 'retry' | 'discard', leaseId: string) => void; busy: boolean }) {
+  const body = message.body as { table?: string; id?: string; machine_id?: string };
+  return (
+    <div className="flex items-center justify-between gap-3 py-2 border-b border-outline-variant/10 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-on-surface font-mono truncate">
+          {body.table ?? '?'} / {body.id ?? '?'}
+        </p>
+        <p className="text-xs text-on-surface-variant truncate">
+          machine={body.machine_id ?? '?'} attempts={message.attempts} {message.last_failure ? `· ${message.last_failure}` : ''}
+        </p>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('retry', message.msg_id)}>Retry</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAction('discard', message.msg_id)}>Discard</Button>
+      </div>
+    </div>
+  );
+}
+
+function OutboxTab({ status }: { status: TeamStatusResponse }) {
+  const queryClient = useQueryClient();
+  const enabled = status.enabled && status.healthy;
+  const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
+  const { data: dlq, isLoading: dlqLoading } = useTeamDlq(enabled);
+  const [busy, setBusy] = useState(false);
+  const [draining, setDraining] = useState(false);
+  const [drainMessage, setDrainMessage] = useState<string | null>(null);
+
+  const tokenMissing = isTokenMissing(queueStats) || isTokenMissing(dlq);
+
+  const handleDrain = useCallback(async () => {
+    setDraining(true);
+    setDrainMessage(null);
+    try {
+      const res = await postJson<{ enqueued: number }>('/team/backfill');
+      setDrainMessage(res.enqueued > 0 ? `Backfilled ${res.enqueued} unsynced records.` : 'Nothing to backfill.');
+      queryClient.invalidateQueries({ queryKey: ['team-status'] });
+    } catch {
+      setDrainMessage('Backfill failed.');
+    } finally {
+      setDraining(false);
+    }
+  }, [queryClient]);
+
+  const handleDlqAction = useCallback(async (action: 'retry' | 'discard', leaseId: string) => {
+    setBusy(true);
+    try {
+      await postJson(`/team/dlq/${action}`, { lease_ids: [leaseId] });
+      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
+      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+    } finally {
+      setBusy(false);
+    }
+  }, [queryClient]);
+
+  const handleReplayAll = useCallback(async () => {
+    if (!dlq || isTokenMissing(dlq) || dlq.messages.length === 0) return;
+    setBusy(true);
+    try {
+      await postJson('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.msg_id) });
+      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
+      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+    } finally {
+      setBusy(false);
+    }
+  }, [dlq, queryClient]);
+
+  const main = !isTokenMissing(queueStats) ? queueStats?.main : undefined;
+  const dlqStats = !isTokenMissing(queueStats) ? queueStats?.dlq : undefined;
+  const dlqMessages = !isTokenMissing(dlq) ? dlq?.messages ?? [] : [];
+
+  return (
+    <div className="space-y-4">
+      {/* Local hand-off */}
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <SectionHeader>Local hand-off</SectionHeader>
+          <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
+            {draining ? 'Backfilling…' : 'Backfill now'}
+          </Button>
+        </div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Pending sync"
+            value={String(status.pending_sync_count)}
+            accent={status.pending_sync_count > 0 ? 'sage' : 'outline'}
+            href="/logs?component=team-sync"
+          />
+        </div>
+        <p className="text-xs text-on-surface-variant">
+          Records waiting to hand off to the team worker. Once accepted, Cloudflare Queues owns delivery, retries, and dead-lettering.
+        </p>
+        {drainMessage && <p className="text-sm text-primary">{drainMessage}</p>}
+      </Surface>
+
+      {/* Cloudflare-side: queue stats + DLQ */}
+      {tokenMissing ? (
+        <CfApiTokenForm onConfigured={() => {
+          queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+          queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
+        }} />
+      ) : (
+        <>
+          <Surface level="low" ghostBorder className="p-5 space-y-3">
+            <SectionHeader>Cloudflare queue</SectionHeader>
+            {queueLoading ? (
+              <p className="text-xs text-on-surface-variant">Loading…</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label="Main depth" value={String(main?.depth ?? '—')} accent="outline" />
+                <StatCard label="Main oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
+                <StatCard
+                  label="DLQ depth"
+                  value={String(dlqStats?.depth ?? dlqMessages.length)}
+                  accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+                />
+                <StatCard label="DLQ oldest" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
+              </div>
+            )}
+            <p className="text-xs text-on-surface-variant">
+              Live depth + age require a CF API token with the queues GraphQL Analytics scope. The DLQ list below uses the documented HTTP pull-consumer API and is reliable today.
+            </p>
+          </Surface>
+
+          <Surface level="low" ghostBorder className="p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <SectionHeader>Dead letter</SectionHeader>
+              {dlqMessages.length > 0 && (
+                <Button size="sm" variant="outline" disabled={busy} onClick={handleReplayAll}>
+                  Replay all ({dlqMessages.length})
+                </Button>
+              )}
+            </div>
+            {dlqLoading ? (
+              <p className="text-xs text-on-surface-variant">Loading…</p>
+            ) : dlqMessages.length === 0 ? (
+              <p className="text-sm text-on-surface-variant">No messages in the dead-letter queue.</p>
+            ) : (
+              <div className="divide-y divide-outline-variant/10">
+                {dlqMessages.map((message) => (
+                  <DlqRow key={message.msg_id} message={message} onAction={handleDlqAction} busy={busy} />
+                ))}
+              </div>
+            )}
+          </Surface>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- SyncedTab ---------- */
+
+interface LocalOnlyDisclosure {
+  table: string;
+  columns: string[];
+  rationale: string;
+}
+
+const LOCAL_ONLY_DISCLOSURES: LocalOnlyDisclosure[] = [
+  {
+    table: 'cortex_instructions',
+    columns: ['(entire table)'],
+    rationale: 'Per-machine operating guidance generated from local digest substrate; never synced to the team.',
+  },
+  {
+    table: 'sessions',
+    columns: [
+      'embedded',
+      'canopy_injections_offered',
+      'canopy_injection_total_tokens',
+      'canopy_skips_after_injection',
+      'canopy_reads_after_injection',
+      'canopy_tokens_saved',
+      'canopy_redundant_reads',
+      'canopy_map_tool_calls',
+    ],
+    rationale: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
+  },
+];
+
+function SyncedTab({ status }: { status: TeamStatusResponse }) {
+  return (
+    <div className="space-y-4">
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <SectionHeader>Per-table sync</SectionHeader>
+        <p className="text-xs text-on-surface-variant">
+          A per-table progress view (synced / total per table) will land here once the daemon exposes the summary endpoint. Today the Status tab's pending-sync counter is the single number to watch — local rows enqueue immediately on write, so a healthy steady-state shows a small pending count and a moving sync-protocol version.
+        </p>
+        <div className="text-xs text-on-surface-variant grid gap-1 sm:grid-cols-2">
+          <div>Sync protocol: <span className="text-on-surface font-mono">v{status.sync_protocol_version}</span></div>
+          <div>Schema: <span className="text-on-surface font-mono">v{status.schema_version}</span></div>
+          <div>Worker: <span className="text-on-surface font-mono">{status.deployed_worker_version ?? '—'}</span></div>
+          <div>Machine ID: <span className="text-on-surface font-mono break-all">{status.machine_id}</span></div>
+        </div>
+      </Surface>
+
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <SectionHeader>What stays local</SectionHeader>
+        <p className="text-xs text-on-surface-variant">
+          These tables and columns are intentionally excluded from team sync. Read this if you're surprised that something doesn't appear on a teammate's machine.
+        </p>
+        <div className="space-y-3">
+          {LOCAL_ONLY_DISCLOSURES.map((d) => (
+            <div key={d.table} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <code className="text-sm text-on-surface font-mono">{d.table}</code>
+                <span className="text-xs text-on-surface-variant">({d.columns.length === 1 ? d.columns[0] : `${d.columns.length} columns`})</span>
+              </div>
+              <p className="text-xs text-on-surface-variant">{d.rationale}</p>
+              {d.columns.length > 1 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {d.columns.map((c) => (
+                    <Badge key={c} variant="outline" className="font-mono text-xs">{c}</Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Surface>
+
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <SectionHeader>Recent activity</SectionHeader>
+        <p className="text-xs text-on-surface-variant">
+          A live feed of recent sync events lives in <Link to="/logs?component=team-sync" className="underline hover:text-on-surface">team-sync logs</Link> for now. Per-record activity attribution will land here in a follow-up.
+        </p>
+      </Surface>
+    </div>
+  );
+}
+
 /* ---------- Page ---------- */
 
 export default function Team() {
   const { data: status, isLoading } = useTeamStatus();
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<ActiveTab>(readTabFromUrl);
+
+  const handleTabChange = useCallback((tabId: string) => {
+    const tab = tabId as ActiveTab;
+    setActiveTab(tab);
+    writeTabToUrl(tab);
+  }, []);
 
   if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
 
@@ -544,11 +882,18 @@ export default function Team() {
     <div className="p-6 max-w-4xl">
       <PageHeader
         title="Team"
-        subtitle="Share knowledge across machines with team sync"
+        subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : 'Share knowledge across machines with team sync'}
+        tabs={isConnected ? TEAM_TABS : undefined}
+        activeTab={isConnected ? activeTab : undefined}
+        onTabChange={isConnected ? handleTabChange : undefined}
       />
 
       {isConnected && status ? (
-        <ConnectedStatus status={status} />
+        <>
+          {activeTab === 'status' && <StatusTab status={status} />}
+          {activeTab === 'outbox' && <OutboxTab status={status} />}
+          {activeTab === 'synced' && <SyncedTab status={status} />}
+        </>
       ) : (
         <div className="space-y-4">
           {/* Setup guide */}
