@@ -1,16 +1,15 @@
 /**
  * myco_sessions — list or retrieve past coding sessions.
  *
- * Proxies through the daemon HTTP API via DaemonClient.
+ * `op:list` reads via the in-process service in `sessions/list-for-mcp.ts`
+ * (formerly the GET /api/mcp/sessions endpoint). `op:get` still uses the
+ * daemon's `/api/sessions/:id` REST endpoint, which serves the daemon UI and
+ * is not under retirement scope.
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { listSessionsForMcp, type SessionSummary } from '@myco/sessions/list-for-mcp.js';
 import type { ToolFailure } from './error.js';
-import { buildEndpoint } from './shared.js';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 interface SessionsInput {
   op?: 'list' | 'get';
@@ -22,25 +21,6 @@ interface SessionsInput {
   status?: string;
   limit?: number;
 }
-
-interface SessionSummary {
-  id: string;
-  agent: string;
-  user: string | null;
-  branch: string | null;
-  started_at: number;
-  ended_at: number | null;
-  status: string;
-  title: string | null;
-  summary: string;
-  prompt_count: number;
-  tool_count: number;
-  parent_session_id: string | null;
-}
-
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
 
 export async function handleMycoSessions(
   input: SessionsInput,
@@ -54,7 +34,7 @@ export async function handleMycoSessions(
     return result.data;
   }
 
-  const endpoint = buildEndpoint('/api/mcp/sessions', {
+  return listSessionsForMcp({
     plan: input.plan,
     branch: input.branch,
     user: input.user,
@@ -62,9 +42,4 @@ export async function handleMycoSessions(
     status: input.status,
     limit: input.limit,
   });
-  const result = await client.get(endpoint);
-
-  if (!result.ok || !result.data?.sessions) return [];
-
-  return result.data.sessions as SessionSummary[];
 }

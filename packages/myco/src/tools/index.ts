@@ -41,7 +41,7 @@ interface JsonSchemaProperty {
 type ToolInput = Record<string, unknown>;
 
 interface ToolEntry {
-  handle: (input: ToolInput, client: DaemonClient) => Promise<unknown>;
+  handle: (input: ToolInput, client: DaemonClient, vaultDir: string) => Promise<unknown>;
   summarize?: (input: ToolInput, result: unknown) => Record<string, unknown>;
 }
 
@@ -60,7 +60,7 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_PLANS, async () => {
     const { handleMycoPlans } = await import('./plans.js');
     return {
-      handle: (input, client) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client),
+      handle: (input, client, vaultDir) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client, vaultDir),
       summarize: (input, result) => ({
         op: input.op ?? 'list',
         id: input.id,
@@ -358,7 +358,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       const loader = HANDLERS.get(name);
       if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
       const entry = await loader();
-      const result = await entry.handle(input, client);
+      const result = await entry.handle(input, client, vaultDir);
       logActivity(name, {
         ...(entry.summarize?.(input, result) ?? {}),
         duration_ms: Date.now() - start,

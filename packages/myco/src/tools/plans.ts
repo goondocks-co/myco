@@ -1,18 +1,17 @@
 /**
  * myco_plans — list, retrieve, save, or delete implementation plans.
  *
- * Proxies through the daemon HTTP API via DaemonClient.
- *
- * Ops:
- *   - list: list plans, filterable by status or session.
- *   - get: retrieve one plan by id.
- *   - save: persist a plan for a session.
- *   - delete: remove a plan; cross-machine rows require {force_remote: true}.
+ * `save`, `get`, `list` call in-process services in `plans/save-mcp.ts` and
+ * `plans/list-for-mcp.ts` directly. `delete` still goes through the daemon's
+ * `/api/plans/:id` REST endpoint, which is the regular plans REST surface
+ * (also used by the daemon UI) and is not under retirement scope.
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { saveMcpPlan } from '@myco/plans/save-mcp.js';
+import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { extractErrorMessage, type ToolFailure } from './error.js';
-import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,13 +75,15 @@ export type PlansResult = PlanSummary[] | PlanSummary | PlanDeleteResult | PlanS
 export async function handleMycoPlans(
   input: PlansInput,
   client: DaemonClient,
+  vaultDir: string,
 ): Promise<PlansResult> {
   const op = input.op ?? 'list';
 
   if (op === 'save') {
     if (!input.session_id) return { ok: false, error: 'session_id is required for op: save' };
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
-    const result = await client.post('/api/mcp/plans', {
+
+    const result = saveMcpPlan({
       session_id: input.session_id,
       content: input.content,
       source_path: input.source_path,
@@ -90,12 +91,25 @@ export async function handleMycoPlans(
       title: input.title,
       status: input.status,
       tags: input.tags,
+      projectRoot: resolveProjectRoot(vaultDir),
     });
 
-    if (!result.ok || !result.data) {
-      return { ok: false, error: extractErrorMessage(result.data, 'unknown') };
-    }
-    return { ok: true, ...(result.data as Omit<PlanSaveSuccess, 'ok'>) };
+    if (!result.ok) return { ok: false, error: result.message };
+
+    const row = result.plan;
+    return {
+      ok: true,
+      id: row.id,
+      logical_key: row.logical_key,
+      title: row.title,
+      status: row.status,
+      source_path: row.source_path,
+      session_id: row.session_id,
+      prompt_batch_id: row.prompt_batch_id,
+      tags: row.tags ? row.tags.split(',').map((tag) => tag.trim()) : [],
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
   }
 
   if (op === 'delete') {
@@ -116,28 +130,22 @@ export async function handleMycoPlans(
 
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
-    const endpoint = buildEndpoint('/api/mcp/plans', { id: input.id });
-    const result = await client.get(endpoint);
-    const plans = result.data?.plans as PlanSummary[] | undefined;
-    if (!result.ok || !plans?.length) return { ok: false, error: 'Plan not found' };
-    return plans[0];
+    const result = listPlansForMcp({ id: input.id });
+    if (!result.ok) return { ok: false, error: result.message };
+    if (!result.plans.length) return { ok: false, error: 'Plan not found' };
+    return result.plans[0];
   }
 
   // op === 'list' (default)
   if (input.id && input.session) {
-    // Match the daemon's /api/mcp/plans 400 behavior — surface the rejection
-    // as a structured error instead of silently returning [].
     return { ok: false, error: 'Pass either id or session, not both' };
   }
 
-  const endpoint = buildEndpoint('/api/mcp/plans', {
+  const result = listPlansForMcp({
     session: input.session,
     status: input.status,
     limit: input.limit,
   });
-  const result = await client.get(endpoint);
-
-  if (!result.ok || !result.data?.plans) return [];
-
-  return result.data.plans as PlanSummary[];
+  if (!result.ok) return { ok: false, error: result.message };
+  return result.plans;
 }

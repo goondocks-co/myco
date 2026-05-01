@@ -23,10 +23,7 @@ import {
   COLLECTIVE_TOOL_DEFINITIONS,
 } from '@myco/tools/definitions.js';
 import { RETRIEVAL_GUIDANCE } from '@myco/context/cortex-brief.js';
-import { handleMycoPlans } from '@myco/tools/plans.js';
 import { handleMycoSearch } from '@myco/tools/search.js';
-import { handleMycoSessions } from '@myco/tools/sessions.js';
-import { handleMycoSpores } from '@myco/tools/spores.js';
 import {
   handleCollectiveSearch,
   handleCollectiveProject,
@@ -181,34 +178,15 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
  * For each tool whose schema advertises query or body parameters, assert the
  * handler actually forwards them to the daemon. These tests exist specifically
  * to catch silent schema-vs-handler drift.
+ *
+ * Note: write-op drift coverage for myco_spores (save/supersede/consolidate)
+ * and myco_plans (save) and read-op coverage for myco_plans and myco_sessions
+ * lives in the per-tool integration tests under `tests/mcp/tools/` — those
+ * call the in-process services and assert against the persisted DB state,
+ * which catches the same class of drift end-to-end. This file only covers
+ * tools that still go over HTTP (myco_search, collective_*).
  */
 describe('handler forwards every documented schema property', () => {
-  it('myco_plans forwards list filters', async () => {
-    const client = mockClient({ plans: [] });
-    await handleMycoPlans({ op: 'list', status: 'active', limit: 7 }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('status=active');
-    expect(url).toContain('limit=7');
-  });
-
-  it('myco_plans forwards get id', async () => {
-    const client = mockClient({ plans: [] });
-    await handleMycoPlans({ op: 'get', id: 'p1' }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('id=p1');
-  });
-
-  it('myco_sessions forwards all documented filters', async () => {
-    const client = mockClient({ sessions: [] });
-    await handleMycoSessions({ plan: 'x', branch: 'main', user: 'alice', since: '2024-01-01', limit: 9 }, client);
-    const url = (client.get as unknown as { mock: { calls: string[][] } }).mock.calls[0][0];
-    expect(url).toContain('plan=x');
-    expect(url).toContain('branch=main');
-    expect(url).toContain('user=alice');
-    expect(url).toContain('since=2024-01-01');
-    expect(url).toContain('limit=9');
-  });
-
   it('myco_search forwards every documented filter', async () => {
     const client = mockClient({ results: [] });
     await handleMycoSearch({
@@ -230,83 +208,6 @@ describe('handler forwards every documented schema property', () => {
     expect(url).toContain('since=10');
     expect(url).toContain('until=20');
     expect(url).toContain('language=typescript');
-  });
-
-  it('myco_spores op save forwards content, type, tags via POST body', async () => {
-    const client = mockClient({ id: 'g-1', observation_type: 'gotcha', status: 'active', created_at: 1 });
-    await handleMycoSpores({ op: 'save', content: 'x', type: 'gotcha', tags: ['t1', 't2'] }, client);
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/remember', {
-      content: 'x',
-      type: 'gotcha',
-      tags: ['t1', 't2'],
-    });
-  });
-
-  it('myco_plans op save forwards session_id, content, source_path/plan_key, title, status, tags via POST body', async () => {
-    const client = mockClient({
-      id: 'plan-1',
-      logical_key: 'session:s1:key:primary',
-      title: 'Plan',
-      status: 'active',
-      source_path: null,
-      session_id: 's1',
-      prompt_batch_id: 3,
-      tags: ['planning'],
-      created_at: 1,
-      updated_at: 1,
-    });
-    await handleMycoPlans({
-      op: 'save',
-      session_id: 's1',
-      content: '# Plan',
-      plan_key: 'primary',
-      title: 'Plan',
-      status: 'active',
-      tags: ['planning'],
-    }, client);
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/plans', {
-      session_id: 's1',
-      content: '# Plan',
-      source_path: undefined,
-      plan_key: 'primary',
-      title: 'Plan',
-      status: 'active',
-      tags: ['planning'],
-    });
-  });
-
-  it('myco_spores op supersede forwards old_spore_id, new_spore_id, reason via POST body', async () => {
-    const client = mockClient({ old_spore: 'a', new_spore: 'b', status: 'superseded' });
-    await handleMycoSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', reason: 'because' }, client);
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/supersede', {
-      old_spore_id: 'a',
-      new_spore_id: 'b',
-      reason: 'because',
-    });
-  });
-
-  it('myco_spores op consolidate forwards source_spore_ids, consolidated_content, observation_type, tags, reason', async () => {
-    const client = mockClient({
-      new_spore_id: 'w-1',
-      sources_superseded: ['a', 'b'],
-      status: 'consolidated',
-      created_at: 1,
-    });
-    await handleMycoSpores({
-      op: 'consolidate',
-      source_spore_ids: ['a', 'b'],
-      consolidated_content: 'merged',
-      observation_type: 'gotcha',
-      tags: ['t1'],
-      reason: 'merge',
-    }, client);
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/consolidate', {
-      source_spore_ids: ['a', 'b'],
-      consolidated_content: 'merged',
-      observation_type: 'gotcha',
-      tags: ['t1'],
-      reason: 'merge',
-    });
   });
 
   it('collective_search forwards query, project, limit, and semantic filters', async () => {

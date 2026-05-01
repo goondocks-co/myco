@@ -1,12 +1,18 @@
 /**
  * myco_spores — list, retrieve, save, supersede, or consolidate spores.
  *
- * Proxies through the daemon HTTP API via DaemonClient. The daemon owns
- * spore insertion, embedding, and resolution event recording.
+ * Write ops (`save`, `supersede`, `consolidate`) call in-process services in
+ * `spores/write.ts` directly; SQLite WAL mode handles multi-process safety,
+ * and the daemon's embedding worker sweeps unembedded rows independently.
+ *
+ * Read ops (`get`, `list`) still go through the daemon's regular `/api/spores`
+ * REST surface — those endpoints serve the daemon UI and are not under
+ * retirement scope.
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';
-import { extractErrorMessage, type ToolFailure } from './error.js';
+import { saveSpore, supersedeSpore, consolidateSpores } from '@myco/spores/write.js';
+import { type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
 export interface SporesInput {
@@ -44,46 +50,30 @@ export async function handleMycoSpores(
   if (op === 'save') {
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
     if (!input.type) return { ok: false, error: 'type is required for op: save' };
-    const result = await client.post('/api/mcp/remember', {
-      content: input.content,
-      type: input.type,
-      tags: input.tags,
-    });
-    if (!result.ok || !result.data) {
-      return { ok: false, error: extractErrorMessage(result.data, 'Failed to save spore') };
-    }
-    return result.data;
+    return saveSpore({ content: input.content, type: input.type, tags: input.tags });
   }
 
   if (op === 'supersede') {
     if (!input.old_spore_id) return { ok: false, error: 'old_spore_id is required for op: supersede' };
     if (!input.new_spore_id) return { ok: false, error: 'new_spore_id is required for op: supersede' };
-    const result = await client.post('/api/mcp/supersede', {
+    return supersedeSpore({
       old_spore_id: input.old_spore_id,
       new_spore_id: input.new_spore_id,
       reason: input.reason,
     });
-    if (!result.ok || !result.data) {
-      return { ok: false, error: extractErrorMessage(result.data, 'Failed to supersede spore') };
-    }
-    return result.data;
   }
 
   if (op === 'consolidate') {
     if (!input.source_spore_ids?.length) return { ok: false, error: 'source_spore_ids is required for op: consolidate' };
     if (!input.consolidated_content) return { ok: false, error: 'consolidated_content is required for op: consolidate' };
     if (!input.observation_type) return { ok: false, error: 'observation_type is required for op: consolidate' };
-    const result = await client.post('/api/mcp/consolidate', {
+    return consolidateSpores({
       source_spore_ids: input.source_spore_ids,
       consolidated_content: input.consolidated_content,
       observation_type: input.observation_type,
       tags: input.tags,
       reason: input.reason,
     });
-    if (!result.ok || !result.data) {
-      return { ok: false, error: extractErrorMessage(result.data, 'Failed to consolidate spores') };
-    }
-    return result.data;
   }
 
   const endpoint = buildEndpoint('/api/spores', {

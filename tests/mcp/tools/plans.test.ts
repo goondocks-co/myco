@@ -1,11 +1,10 @@
 /**
  * Tests for myco_plans tool handler.
  *
- * The list-op tests mock DaemonClient to verify endpoint shape. The delete-op
- * tests spin up a real DaemonServer with the real /api/plans/:id route and
- * drive the real DaemonClient, so the 403 / force_remote / local branches of
- * handleDeletePlan are actually exercised end-to-end (Bundle D spec review
- * flagged this surface as under-covered).
+ * `op:list` and `op:get` call the in-process service `listPlansForMcp` against
+ * a real in-memory DB. `op:delete` still goes through the daemon's regular
+ * `/api/plans/:id` REST endpoint, so that suite drives a real DaemonServer
+ * end-to-end.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
@@ -21,108 +20,130 @@ import { createSessionMutationHandlers } from '@myco/daemon/api/sessions.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
+import { getDatabase } from '@myco/db/client.js';
 import { initTeamContext } from '@myco/daemon/team-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
-  const client = {
+  return {
     get: vi.fn().mockResolvedValue({ ok, data: getData }),
     post: vi.fn().mockResolvedValue({ ok, data: getData }),
     delete: vi.fn().mockResolvedValue({ ok, data: getData }),
   } as unknown as DaemonClient;
-  return client;
 }
 
-describe('myco_plans op: list (default)', () => {
-  it('lists plans from daemon response', async () => {
-    const plans = [
-      { id: 'auth', title: 'Auth Redesign', status: 'active', progress: '1/2', tags: [], created_at: 1700000000 },
-      { id: 'done', title: 'Completed Plan', status: 'completed', progress: '1/1', tags: [], created_at: 1699999900 },
-    ];
-    const client = mockClient({ plans });
+const VAULT_DIR_FOR_TESTS = path.join(os.tmpdir(), 'myco-plans-test-stub');
 
-    const results = await handleMycoPlans({}, client);
+function seedSession(id: string): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT OR IGNORE INTO sessions (id, agent, started_at, created_at, machine_id, status)
+    VALUES (?, 'claude-code', ?, ?, 'local', 'active')
+  `).run(id, 1700000000, 1700000000);
+}
+
+function seedPlan(input: {
+  id: string;
+  logical_key: string;
+  title?: string;
+  status?: string;
+  content?: string;
+  tags?: string;
+  session_id?: string;
+  created_at?: number;
+}): void {
+  upsertPlan({
+    id: input.id,
+    logical_key: input.logical_key,
+    title: input.title ?? null,
+    content: input.content ?? null,
+    tags: input.tags ?? null,
+    status: input.status ?? 'active',
+    session_id: input.session_id ?? null,
+    created_at: input.created_at ?? 1700000000,
+    machine_id: 'local',
+  });
+}
+
+describe('myco_plans op: list / get (in-process)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('lists plans from the DB', async () => {
+    seedPlan({ id: 'auth', logical_key: 'session:s:key:auth', title: 'Auth Redesign', status: 'active', content: '- [x] one\n- [ ] two' });
+    seedPlan({ id: 'done', logical_key: 'session:s:key:done', title: 'Completed Plan', status: 'completed', content: '- [x] one' });
+
+    const results = await handleMycoPlans({}, mockClient(), VAULT_DIR_FOR_TESTS);
     expect(Array.isArray(results)).toBe(true);
     expect((results as unknown[]).length).toBe(2);
   });
 
-  it('passes status filter to daemon', async () => {
-    const client = mockClient({ plans: [{ id: 'auth', title: 'Auth', status: 'active', progress: '1/2', tags: [], created_at: 1700000000 }] });
+  it('filters by status', async () => {
+    seedPlan({ id: 'auth', logical_key: 'session:s:key:auth', status: 'active', content: '' });
+    seedPlan({ id: 'done', logical_key: 'session:s:key:done', status: 'completed', content: '' });
 
-    const results = await handleMycoPlans({ status: 'active' }, client);
-    expect((results as unknown[]).length).toBe(1);
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('status=active'));
+    const results = await handleMycoPlans({ status: 'active' }, mockClient(), VAULT_DIR_FOR_TESTS) as Array<{ id: string }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('auth');
   });
 
-  it('returns empty on daemon failure', async () => {
-    const client = mockClient(null, false);
-    const results = await handleMycoPlans({}, client);
+  it('respects limit', async () => {
+    seedPlan({ id: 'a', logical_key: 'session:s:key:a', created_at: 1700000000, content: '' });
+    seedPlan({ id: 'b', logical_key: 'session:s:key:b', created_at: 1700000100, content: '' });
+    seedPlan({ id: 'c', logical_key: 'session:s:key:c', created_at: 1700000200, content: '' });
+
+    const results = await handleMycoPlans({ limit: 1 }, mockClient(), VAULT_DIR_FOR_TESTS) as unknown[];
+    expect(results).toHaveLength(1);
+  });
+
+  it('returns empty array when DB has no plans', async () => {
+    const results = await handleMycoPlans({}, mockClient(), VAULT_DIR_FOR_TESTS);
     expect(results).toEqual([]);
   });
 
-  it('passes limit to daemon', async () => {
-    const client = mockClient({ plans: [] });
-    await handleMycoPlans({ limit: 5 }, client);
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('limit=5'));
-  });
-
-  it('forwards id to daemon for op: get', async () => {
-    const client = mockClient({
-      plans: [{
-        id: 'plan-auth',
-        title: 'Auth',
-        status: 'active',
-        progress: '0/3',
-        tags: [],
-        created_at: 1700000000,
-        content: '# Plan content here',
-      }],
-    });
-    await handleMycoPlans({ op: 'get', id: 'plan-auth' }, client);
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('id=plan-auth'));
-  });
-
-  it('surfaces plan content on op: get response', async () => {
+  it('op:get returns a single plan with content', async () => {
+    seedSession('sess-1');
     const content = '# Auth Redesign\n\n- [x] Step 1\n- [ ] Step 2';
-    const client = mockClient({
-      plans: [{ id: 'plan-auth', title: 'Auth', status: 'active', progress: '1/2', tags: [], created_at: 1700000000, content }],
-    });
-    const result = await handleMycoPlans({ op: 'get', id: 'plan-auth' }, client);
-    expect((result as { content?: string }).content).toBe(content);
+    seedPlan({ id: 'plan-auth', logical_key: 'session:sess-1:key:auth', title: 'Auth', session_id: 'sess-1', content });
+
+    const result = await handleMycoPlans({ op: 'get', id: 'plan-auth' }, mockClient(), VAULT_DIR_FOR_TESTS) as { id: string; content: string };
+    expect(result.id).toBe('plan-auth');
+    expect(result.content).toBe(content);
   });
 
-  it('forwards session filter to daemon', async () => {
-    const client = mockClient({ plans: [] });
-    await handleMycoPlans({ session: 'sess-abc' }, client);
-    expect(client.get).toHaveBeenCalledWith(expect.stringContaining('session=sess-abc'));
+  it('op:get returns Plan-not-found when the id is unknown', async () => {
+    const result = await handleMycoPlans({ op: 'get', id: 'nope' }, mockClient(), VAULT_DIR_FOR_TESTS);
+    expect(result).toEqual({ ok: false, error: 'Plan not found' });
+  });
+
+  it('filters by session', async () => {
+    seedSession('sess-a');
+    seedSession('sess-b');
+    seedPlan({ id: 'a1', logical_key: 'session:sess-a:key:1', session_id: 'sess-a', content: '' });
+    seedPlan({ id: 'b1', logical_key: 'session:sess-b:key:1', session_id: 'sess-b', content: '' });
+
+    const results = await handleMycoPlans({ session: 'sess-a' }, mockClient(), VAULT_DIR_FOR_TESTS) as Array<{ id: string }>;
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe('a1');
   });
 
   it('refuses both id and session in same list call with a structured error', async () => {
-    const client = mockClient({ plans: [] });
-    const result = await handleMycoPlans({ id: 'p1', session: 'sess-1' }, client);
-    // Match the daemon's /api/mcp/plans 400 behavior — surface the rejection
-    // explicitly so agents can correct the call, rather than swallowing into [].
+    const result = await handleMycoPlans({ id: 'p1', session: 'sess-1' }, mockClient(), VAULT_DIR_FOR_TESTS);
     expect(result).toEqual({ ok: false, error: 'Pass either id or session, not both' });
-    // No HTTP roundtrip should happen when the input is contradictory.
-    expect(client.get).not.toHaveBeenCalled();
   });
 
   it('explicit op: "list" works the same as default', async () => {
-    const plans = [{ id: 'auth', title: 'A', status: 'active', progress: '0/0', tags: [], created_at: 0 }];
-    const client = mockClient({ plans });
-    const r = await handleMycoPlans({ op: 'list' }, client);
-    expect((r as unknown[]).length).toBe(1);
+    seedPlan({ id: 'auth', logical_key: 'session:s:key:auth', status: 'active', content: '' });
+    const r = await handleMycoPlans({ op: 'list' }, mockClient(), VAULT_DIR_FOR_TESTS) as unknown[];
+    expect(r).toHaveLength(1);
   });
 });
 
 /**
  * Integration suite — drives handleMycoPlans through the real DaemonClient
  * and a real in-process DaemonServer so handleDeletePlan's ownership check
- * actually runs. Catches two regressions:
- *   1. Silent fallback to 'delete_failed' when the daemon returned a helpful
- *      403 body (Wrong #2 from Bundle D review).
- *   2. Any future route-level behavior change (e.g. status code, error
- *      wording) that the hand-mocked tests would miss.
+ * actually runs.
  */
 describe('myco_plans op: delete (integration against real HTTP router)', () => {
   const LOCAL_MACHINE = 'local-machine';
@@ -140,8 +161,6 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     setupTestDb();
 
-    // Pin the daemon's machine identity so we can deterministically seed
-    // rows that are "local" vs "remote" relative to this test.
     initTeamContext(false, LOCAL_MACHINE);
 
     server = new DaemonServer({ vaultDir, logger });
@@ -161,7 +180,6 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
 
     await server.start();
 
-    // Write daemon.json so DaemonClient can discover the test server.
     fs.writeFileSync(
       path.join(vaultDir, 'daemon.json'),
       JSON.stringify({ pid: process.pid, port: server.port }),
@@ -185,10 +203,8 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
   });
 
   it('requires id', async () => {
-    // Input validation happens before any HTTP roundtrip, so a mock client
-    // suffices for this shape check.
     const mc = mockClient({ ok: true });
-    const result = await handleMycoPlans({ op: 'delete' }, mc);
+    const result = await handleMycoPlans({ op: 'delete' }, mc, vaultDir);
     expect(result).toMatchObject({ ok: false, error: expect.stringContaining('id is required') });
     expect(mc.delete).not.toHaveBeenCalled();
   });
@@ -204,7 +220,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
       machine_id: LOCAL_MACHINE,
     });
 
-    const result = await handleMycoPlans({ op: 'delete', id: 'plan-local' }, client);
+    const result = await handleMycoPlans({ op: 'delete', id: 'plan-local' }, client, vaultDir);
 
     expect(result).toMatchObject({ ok: true, id: 'plan-local', session_id: 'sess-1' });
     expect(getPlan('plan-local')).toBeNull();
@@ -224,6 +240,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     const result = await handleMycoPlans(
       { op: 'delete', id: 'plan-remote-force', force_remote: true },
       client,
+      vaultDir,
     );
 
     expect(result).toMatchObject({ ok: true, id: 'plan-remote-force' });
@@ -244,15 +261,13 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     const result = await handleMycoPlans(
       { op: 'delete', id: 'plan-remote-naked' },
       client,
+      vaultDir,
     );
 
-    // Wrong #2 fix: the real 403 body must reach the MCP caller instead of
-    // the generic 'delete_failed' string.
     expect(result).toMatchObject({
       ok: false,
       error: expect.stringContaining('force_remote'),
     });
-    // Row must still exist — the daemon rejected the delete.
     expect(getPlan('plan-remote-naked')).not.toBeNull();
   });
 });
