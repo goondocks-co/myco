@@ -98,6 +98,19 @@ export interface TeamCollectiveSettingsResponse {
   last_sync: number | null;
 }
 
+/** Per-record validation failure returned by the worker's /enqueue. */
+export interface RecordRejection {
+  id: string;
+  table: string;
+  error: string;
+}
+
+/** Worker /enqueue response shape. */
+export interface EnqueueBatchResponse {
+  accepted: number;
+  rejected: RecordRejection[];
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -157,10 +170,7 @@ export class TeamSyncClient {
    * @returns counts and per-record rejections (validation failures only —
    *   downstream queue failures land in the DLQ, not in this response).
    */
-  async enqueueBatch(records: OutboxRow[]): Promise<{
-    accepted: number;
-    rejected: Array<{ id: string; table: string; error: string }>;
-  }> {
+  async enqueueBatch(records: OutboxRow[]): Promise<EnqueueBatchResponse> {
     const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
@@ -176,7 +186,7 @@ export class TeamSyncClient {
         };
       }),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
-    const body = res as { accepted?: number; rejected?: Array<{ id: string; table: string; error: string }> };
+    const body = res as Partial<EnqueueBatchResponse>;
     return {
       accepted: body.accepted ?? 0,
       rejected: body.rejected ?? [],

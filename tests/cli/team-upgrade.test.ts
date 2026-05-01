@@ -152,6 +152,28 @@ describe('upgradeWorker', () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * Push the trailing 5 handlers every happy-path upgrade test needs after
+   * its KV-mode prefix: queues create sync, queues create dlq, npm install,
+   * wrangler secret put, wrangler deploy. Override individual stages by
+   * passing them in `overrides`.
+   */
+  function pushUpgradeTailHandlers(overrides: {
+    queueSync?: () => string | Error;
+    queueDlq?: () => string | Error;
+    npmInstall?: () => string | Error;
+    secretPut?: () => string | Error;
+    deploy?: () => string | Error;
+  } = {}): void {
+    execHandlers.push(
+      overrides.queueSync ?? (() => ''),
+      overrides.queueDlq ?? (() => ''),
+      overrides.npmInstall ?? (() => ''),
+      overrides.secretPut ?? (() => ''),
+      overrides.deploy ?? (() => 'https://myco-team-abc12345.test.workers.dev\n'),
+    );
+  }
+
   it('provisions a KV namespace on existing deployments that lack one', async () => {
     // Simulate wrangler's actual output format: a JSON config snippet with "id": "..."
     // Real-world observation: KV IDs can be 31 hex chars, not always 32.
@@ -162,14 +184,8 @@ Resource location: remote
 { "kv_namespaces": [ { "binding": "myco_team_abc12345_secrets", "id": "7cc069cb32b4438b29079cca4714056" } ] }
 `;
 
-    execHandlers.push(
-      () => wranglerKvCreateOutput,
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => wranglerKvCreateOutput);
+    pushUpgradeTailHandlers();
 
     const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
@@ -213,12 +229,8 @@ Resource location: remote
     execHandlers.push(
       () => new Error('A namespace with the same title already exists'),
       () => listOutput,
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
     );
+    pushUpgradeTailHandlers();
 
     const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
@@ -235,13 +247,7 @@ Resource location: remote
     fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), tomlWithKv, 'utf-8');
 
     // KV is preserved (no create); queue creates still run; then npm install, secret put, deploy
-    execHandlers.push(
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    pushUpgradeTailHandlers();
 
     const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
@@ -266,13 +272,10 @@ Resource location: remote
     const tomlWithKv = LEGACY_TOML + '\n[[kv_namespaces]]\nbinding = "MYCO_SECRETS"\nid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n';
     fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), tomlWithKv, 'utf-8');
 
-    execHandlers.push(
-      () => new Error("Queue name 'myco-team-abc12345-sync' is already taken. [code: 11009]"),
-      () => new Error("Queue name 'myco-team-abc12345-sync-dlq' is already taken. [code: 11009]"),
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    pushUpgradeTailHandlers({
+      queueSync: () => new Error("Queue name 'myco-team-abc12345-sync' is already taken. [code: 11009]"),
+      queueDlq: () => new Error("Queue name 'myco-team-abc12345-sync-dlq' is already taken. [code: 11009]"),
+    });
 
     const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
@@ -291,12 +294,10 @@ Resource location: remote
   });
 
   it('returns error when npm install fails', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => new Error('npm ERR! ENOENT package.json'),
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers({
+      npmInstall: () => new Error('npm ERR! ENOENT package.json'),
+    });
 
     const { upgradeWorker } = await importTeamCli();
     const result = upgradeWorker(vaultDir);
@@ -306,14 +307,8 @@ Resource location: remote
   });
 
   it('runs npm install in the deploy dir before wrangler deploy', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
 
     const { upgradeWorker } = await importTeamCli();
     upgradeWorker(vaultDir);
@@ -327,14 +322,8 @@ Resource location: remote
   });
 
   it('teamUpgrade does not trigger remote vector reindex by default', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
 
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir);
@@ -345,14 +334,8 @@ Resource location: remote
   });
 
   it('teamUpgrade triggers remote vector reindex when explicitly requested', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
 
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir, { reindexVectors: true });
@@ -367,14 +350,8 @@ Resource location: remote
   });
 
   it('retries remote vector reindex when the new route is not ready immediately after deploy', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
 
     const fetchMock = vi.mocked(fetch);
     fetchMock
@@ -391,14 +368,8 @@ Resource location: remote
   });
 
   it('retries remote vector reindex when a batch request times out', async () => {
-    execHandlers.push(
-      () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
-      () => '', // wrangler queues create <sync>
-      () => '', // wrangler queues create <dlq>
-      () => '',
-      () => '',
-      () => 'https://myco-team-abc12345.test.workers.dev\n',
-    );
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
 
     const fetchMock = vi.mocked(fetch);
     fetchMock

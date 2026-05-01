@@ -1690,8 +1690,14 @@ function migrateV28ToV29(db: Database): void {
  *     they need to reach the team they'll re-enqueue via backfill on
  *     next daemon startup with the sanitize fix from PR1 in place.
  *  2. Drop `retry_count` and `last_attempt_at` columns. SQLite ≥ 3.35
- *     supports DROP COLUMN; we guard with PRAGMA so re-running on an
- *     already-migrated DB is a no-op.
+ *     supports DROP COLUMN; we guard via PRAGMA so re-running is a no-op.
+ *
+ * Cost note: SQLite DROP COLUMN rewrites the table internally. Two
+ * consecutive drops mean two rewrites. On the dogfood vault (~840
+ * outbox rows) this is sub-second; on a hypothetical heavy vault with
+ * 100k+ rows it would take a few seconds but still bounded. If that
+ * ever becomes a problem the fix is to collapse into a single
+ * CREATE/INSERT/DROP/RENAME rebuild.
  */
 function migrateV29ToV30(db: Database): void {
   db.prepare('BEGIN').run();

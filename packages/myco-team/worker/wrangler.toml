@@ -10,6 +10,10 @@ compatibility_flags = [ "nodejs_compat", "global_fetch_strictly_public" ]
 SYNC_PROTOCOL_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"
 MYCO_SCHEMA_VERSION = "<MYCO_SCHEMA_VERSION>"
+# Mirror the queue names into env vars so the queue() handler can route on
+# equality (batch.queue === env.SYNC_QUEUE_NAME) instead of suffix-matching.
+SYNC_QUEUE_NAME = "<YOUR_SYNC_QUEUE_NAME>"
+SYNC_DLQ_NAME = "<YOUR_SYNC_DLQ_NAME>"
 
 # D1 database — fill database_id after `wrangler d1 create myco-team`
 [[d1_databases]]

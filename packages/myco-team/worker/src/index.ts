@@ -32,6 +32,10 @@ export interface Env {
    * (`myco-team-<hash>-sync`) and provisioned by `myco-team init`.
    */
   SYNC_QUEUE: Queue<SyncRecord>;
+  /** Name of the project's main sync queue — bound from wrangler.toml [vars]. */
+  SYNC_QUEUE_NAME: string;
+  /** Name of the project's dead-letter queue — bound from wrangler.toml [vars]. */
+  SYNC_DLQ_NAME: string;
   MYCO_TEAM_PACKAGE_VERSION?: string;
   MYCO_SCHEMA_VERSION?: string;
 }
@@ -61,6 +65,8 @@ const SYNCED_TABLES = [
   'skill_records',
   'skill_usage',
 ] as const;
+
+const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
 
 type SyncedTable = (typeof SYNCED_TABLES)[number];
 
@@ -444,7 +450,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   const acceptedRecords: SyncRecord[] = [];
   const rejected: Array<{ id: string; table: string; error: string }> = [];
   for (const record of body.records) {
-    if (!SYNCED_TABLES.includes(record.table)) {
+    if (!SYNCED_TABLES_SET.has(record.table)) {
       rejected.push({ id: record.id, table: record.table, error: `Unknown table: ${record.table}` });
       continue;
     }
@@ -1084,15 +1090,20 @@ export default {
   },
   /**
    * Queue consumer entry point. Cloudflare invokes this with a MessageBatch
-   * for whichever consumer matched in wrangler.toml; we discriminate by
-   * `batch.queue` name. The DLQ path is the same Worker by design — keeping
-   * one Worker means one deploy and shared types/helpers.
+   * for whichever consumer matched in wrangler.toml. Discriminate by exact
+   * queue name from the env binding so unrelated future queues on this
+   * Worker can't be silently routed to the sync handler.
    */
   async queue(batch: MessageBatch<SyncRecord>, env: Env, _ctx: ExecutionContext): Promise<void> {
-    if (batch.queue.endsWith('-sync-dlq')) {
+    if (batch.queue === env.SYNC_DLQ_NAME) {
       await handleDlqBatch(batch, env);
       return;
     }
-    await handleSyncBatch(batch, env);
+    if (batch.queue === env.SYNC_QUEUE_NAME) {
+      await handleSyncBatch(batch, env);
+      return;
+    }
+    console.error(`team-sync.queue.unknown queue=${batch.queue}; ack-and-drop`);
+    for (const message of batch.messages) message.ack();
   },
 } satisfies ExportedHandler<Env, SyncRecord>;

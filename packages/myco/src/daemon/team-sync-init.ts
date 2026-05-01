@@ -120,13 +120,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     setTeamClient: (client) => { teamClient = client; },
     reconcileClient,
     registerFlushJob: (powerManager) => {
-      // Always register the flush job; gate at run time so toggling
-      // team.enabled in Settings takes effect without a daemon restart.
-      //
-      // With queues, this loop's only job is to hand outbox rows off to the
-      // worker's /enqueue endpoint. Once the worker accepts a payload it
-      // owns delivery via Cloudflare Queues — backoff, retries, and the
-      // DLQ are queue-runtime concerns, not daemon concerns.
+      // Registered unconditionally; team.enabled is checked at run time so
+      // Settings toggles take effect without a daemon restart.
       powerManager.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
@@ -144,26 +139,30 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
             const result = await client.enqueueBatch(pending);
             const now = epochSeconds();
 
-            // Validation rejections (unknown table, etc.) are permanent —
-            // they will never succeed, so discard rather than re-buffer.
+            // Partition pending rows by the worker's per-record outcome in
+            // a single pass. Rejections are validation failures (unknown
+            // table, etc.) and will never succeed, so they're discarded
+            // outright — re-buffering would grow the outbox forever.
             const rejectedIds = new Set(result.rejected.map((e) => e.id));
-            const rejectedOutboxIds = pending
-              .filter((r) => rejectedIds.has(String(r.row_id)))
-              .map((r) => r.id);
+            const rejectedOutboxIds: number[] = [];
+            const handedOff: typeof pending = [];
+            for (const row of pending) {
+              if (rejectedIds.has(String(row.row_id))) {
+                rejectedOutboxIds.push(row.id);
+              } else {
+                handedOff.push(row);
+              }
+            }
+
             if (rejectedOutboxIds.length > 0) {
-              logger.warn(LOG_KINDS.TEAM_SYNC_RETRY, `Discarding ${rejectedOutboxIds.length} rejected records`, {
+              logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
                 rejected: result.rejected.slice(0, 5),
               });
               discardRows(rejectedOutboxIds);
             }
 
-            // Everything else was handed off to the queue. Mark sent on
-            // local outbox + source rows. If the queue consumer later
-            // dead-letters one of these, the DLQ surface (PR2) is where
-            // operators see and resolve it.
-            const handedOff = pending.filter((r) => !rejectedIds.has(String(r.row_id)));
-            const handedOffIds = handedOff.map((r) => r.id);
-            if (handedOffIds.length > 0) {
+            if (handedOff.length > 0) {
+              const handedOffIds = handedOff.map((r) => r.id);
               markSent(handedOffIds, now);
               markSourceRowsSynced(handedOff, now);
             }
@@ -175,9 +174,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
               total: pending.length,
             });
           } catch (err) {
-            // Network/server failure: leave pending — next tick retries.
-            // No counter to increment; if the worker is down, every tick
-            // tries again until it comes back.
+            // Network/server failure: leave pending for the next tick. No
+            // per-row counter — if the worker is down, every tick retries.
             logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
           }
         },
