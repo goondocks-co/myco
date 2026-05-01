@@ -111,6 +111,29 @@ export interface EnqueueBatchResponse {
   rejected: RecordRejection[];
 }
 
+export interface QueueStats {
+  depth: number;
+  oldest_msg_age_s: number | null;
+}
+
+export interface QueueStatsResponse {
+  main: QueueStats;
+  dlq: QueueStats;
+}
+
+export interface DlqMessage {
+  msg_id: string;
+  body: Record<string, unknown>;
+  attempts: number;
+  last_failure?: string;
+  enqueued_at?: number;
+}
+
+export interface DlqListResponse {
+  messages: DlqMessage[];
+  next_cursor: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -174,17 +197,14 @@ export class TeamSyncClient {
     const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
-      records: records.map((r) => {
-        const data = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
-        return {
-          table: r.table_name,
-          id: String(r.row_id),
-          machine_id: r.machine_id,
-          operation: r.operation,
-          data,
-          content_hash: data.content_hash ?? null,
-        };
-      }),
+      records: records.map((r) => ({
+        table: r.table_name,
+        id: String(r.row_id),
+        machine_id: r.machine_id,
+        operation: r.operation,
+        data: r.payload,
+        content_hash: r.payload.content_hash ?? null,
+      })),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
     const body = res as Partial<EnqueueBatchResponse>;
     return {
@@ -292,6 +312,37 @@ export class TeamSyncClient {
   async collectiveQuery<T = unknown>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
     const res = await this.request('POST', '/collective/query', { tool, args });
     return res as T;
+  }
+
+  /** Fetch queue + DLQ depth/age stats. Returns null if the worker has no
+   *  CF API token configured yet (UI prompts the operator to set one). */
+  async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
+    return await this.request('GET', '/queue-stats') as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  /** List a page of DLQ messages. */
+  async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
+    return await this.request('GET', `/dlq?limit=${limit}`) as DlqListResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  /** Re-publish DLQ messages back onto the main queue. */
+  async retryDlq(leaseIds: string[]): Promise<{ retried: number }> {
+    return await this.request('POST', '/dlq/retry', { lease_ids: leaseIds }) as { retried: number };
+  }
+
+  /** Permanently discard DLQ messages. */
+  async discardDlq(leaseIds: string[]): Promise<{ discarded: number }> {
+    return await this.request('POST', '/dlq/discard', { lease_ids: leaseIds }) as { discarded: number };
+  }
+
+  /** Stash a CF API token (queues:read,write scope) on the worker. */
+  async setCfApiToken(token: string, accountId: string): Promise<{ configured: true }> {
+    return await this.request('POST', '/tokens/cf-api', { token, account_id: accountId }) as { configured: true };
+  }
+
+  /** Clear the worker's stashed CF API token. */
+  async clearCfApiToken(): Promise<{ cleared: true }> {
+    return await this.request('DELETE', '/tokens/cf-api') as { cleared: true };
   }
 
   /**

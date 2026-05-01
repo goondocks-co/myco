@@ -1106,6 +1106,12 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
   server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
   server.registerRoute('POST', '/api/team/rotate-mcp-token', teamHandlers.handleRotateMcpToken);
+  server.registerRoute('GET', '/api/team/queue-stats', teamHandlers.handleQueueStats);
+  server.registerRoute('GET', '/api/team/dlq', teamHandlers.handleDlqList);
+  server.registerRoute('POST', '/api/team/dlq/retry', teamHandlers.handleDlqRetry);
+  server.registerRoute('POST', '/api/team/dlq/discard', teamHandlers.handleDlqDiscard);
+  server.registerRoute('POST', '/api/team/cf-api-token', teamHandlers.handleSetCfApiToken);
+  server.registerRoute('DELETE', '/api/team/cf-api-token', teamHandlers.handleClearCfApiToken);
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),

@@ -43,6 +43,8 @@ Each teammate opens the **Team** page in their Myco dashboard (`http://localhost
 
 On first connect, all existing local knowledge is backfilled into the outbox and pushed to the team store in batches. New writes sync automatically going forward.
 
+The daemon hands records off to the Worker via `POST /enqueue`. The Worker fans them into a project-scoped Cloudflare Queue (`myco-team-<hash>-sync`); a queue consumer in the same Worker writes to D1 + Vectorize. Cloudflare's queue runtime owns retries, exponential backoff, and dead-lettering — once a payload is accepted by `/enqueue`, the daemon's job is done. Failures past `max_retries` (default 10) land in a project-scoped DLQ (`myco-team-<hash>-sync-dlq`) where operators can replay or discard them from the Team page.
+
 ## What syncs
 
 | Synced | Not synced |
@@ -118,7 +120,8 @@ The Worker is stateless — no WebSocket connections, no in-memory state. Each r
 
 Two Worker route groups:
 
-- **Sync routes** (`/connect`, `/sync`, `/search`, `/config`, `/health`) — authenticated with the team API key, used by your daemon
+- **Sync routes** (`/connect`, `/enqueue`, `/search`, `/config`, `/health`) — authenticated with the team API key, used by your daemon. `/enqueue` replaces the legacy `/sync` route; the new path hands records to a managed Cloudflare Queue rather than writing to D1 directly.
+- **Operator routes** (`/queue-stats`, `/dlq`, `/dlq/retry`, `/dlq/discard`, `/tokens/cf-api`) — also team-API-key-authenticated; back the Outbox tab on the Team page. Require a Cloudflare API token with `queues:read,write` scope, set via the Outbox tab's first-run prompt and stored in the Worker's KV namespace.
 - **MCP routes** (`/mcp/*`, `/mcp/rotate`) — the [Cloud MCP Server](cloud-mcp.md) that cloud agents connect to
 
 ### Cost
@@ -130,8 +133,11 @@ A small team (2-5 developers) stays comfortably within the Cloudflare free tier.
 ### Team page
 
 - **Not connected** — setup instructions and connect form (Worker URL + API key)
-- **Connected** — connection health, pending sync count, team credentials (with show/hide for the API key), machine identity, and a "Sync All" button for backfilling historical data
-- **Cloud MCP Endpoint** — once the Worker supports Cloud MCP, this section shows the MCP URL, a redacted bearer token, a pre-formatted config snippet for Anthropic Managed Agents, and a "Rotate token" action. See [Cloud MCP docs](cloud-mcp.md).
+- **Connected** — three tabs:
+  - **Status** — connection health, team credentials (with show/hide for the API key), machine identity, MCP endpoint + token + rotate, remote vector index status
+  - **Outbox** — local hand-off counters + Cloudflare queue depth + dead-letter list with per-message **Replay** and **Discard** actions, plus **Replay all**. First-run requires a Cloudflare API token with `queues:read,write` scope (paste into the inline form; stored in the Worker's KV namespace, never sent back to the daemon)
+  - **Synced data** — version + machine identity overview and an explicit "What stays local" disclosure (`cortex_instructions` plus the Canopy injection telemetry columns on `sessions`)
+- **Cloud MCP Endpoint** — on the Status tab. Shows the MCP URL, a redacted bearer token, a pre-formatted config snippet for Anthropic Managed Agents, and a "Rotate token" action. See [Cloud MCP docs](cloud-mcp.md).
 
 ### Operations page
 

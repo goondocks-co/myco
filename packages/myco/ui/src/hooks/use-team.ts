@@ -44,3 +44,61 @@ export function useTeamStatus() {
     pollCategory: 'standard',
   });
 }
+
+// ---------------------------------------------------------------------------
+// Outbox / DLQ surfaces (queue-aware operator UI)
+// ---------------------------------------------------------------------------
+
+export interface QueueStats {
+  depth: number;
+  oldest_msg_age_s: number | null;
+}
+
+export interface QueueStatsResponse {
+  main: QueueStats;
+  dlq: QueueStats;
+}
+
+export interface DlqMessage {
+  msg_id: string;
+  body: Record<string, unknown>;
+  attempts: number;
+  last_failure?: string;
+  enqueued_at?: number;
+}
+
+export interface DlqListResponse {
+  messages: DlqMessage[];
+  next_cursor: string | null;
+}
+
+/** Worker discriminator for the "no CF API token configured" response. */
+export type CfApiTokenMissing = { error: 'cf_api_token_not_configured' };
+
+export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && (value as { error?: string }).error === 'cf_api_token_not_configured'
+  );
+}
+
+export function useTeamQueueStats(enabled: boolean) {
+  return usePowerQuery<QueueStatsResponse | CfApiTokenMissing>({
+    queryKey: ['team-queue-stats'],
+    queryFn: ({ signal }) => fetchJson<QueueStatsResponse | CfApiTokenMissing>('/team/queue-stats', { signal }),
+    refetchInterval: POLL_INTERVALS.STATS,
+    pollCategory: 'standard',
+    enabled,
+  });
+}
+
+export function useTeamDlq(enabled: boolean) {
+  return usePowerQuery<DlqListResponse | CfApiTokenMissing>({
+    queryKey: ['team-dlq'],
+    queryFn: ({ signal }) => fetchJson<DlqListResponse | CfApiTokenMissing>('/team/dlq', { signal }),
+    refetchInterval: POLL_INTERVALS.STATS,
+    pollCategory: 'standard',
+    enabled,
+  });
+}

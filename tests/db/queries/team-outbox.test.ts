@@ -94,10 +94,10 @@ describe('team outbox query helpers', () => {
       expect(row.operation).toBe('delete');
     });
 
-    it('stores payload as JSON string', () => {
-      const payload = JSON.stringify({ id: 'test', content: 'hello' });
-      const row = enqueueOutbox(makeOutbox({ payload }));
-      expect(row.payload).toBe(payload);
+    it('parses payload back to its structured shape on read', () => {
+      const data = { id: 'test', content: 'hello' };
+      const row = enqueueOutbox(makeOutbox({ payload: JSON.stringify(data) }));
+      expect(row.payload).toEqual(data);
     });
 
     it('auto-increments id', () => {
