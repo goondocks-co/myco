@@ -70,13 +70,19 @@ export interface OutboxInsert {
   created_at: number;
 }
 
-/** Row shape returned from outbox queries. */
+/**
+ * Row shape returned from outbox queries.
+ *
+ * `payload` is the parsed JSON object — `toOutboxRow` parses on read so
+ * consumers don't have to remember to. The persisted storage column is
+ * still TEXT (JSON-encoded); only the in-memory shape is structured.
+ */
 export interface OutboxRow {
   id: number;
   table_name: string;
   row_id: string;
   operation: string;
-  payload: string;
+  payload: Record<string, unknown>;
   machine_id: string;
   created_at: number;
   sent_at: number | null;
@@ -103,14 +109,24 @@ const SELECT_COLUMNS = OUTBOX_COLUMNS.join(', ');
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Normalize a SQLite result row into a typed OutboxRow. */
+/** Normalize a SQLite result row into a typed OutboxRow. Parses the JSON
+ *  payload column once so consumers operate on the structured shape. */
 function toOutboxRow(row: Record<string, unknown>): OutboxRow {
+  const rawPayload = row.payload;
+  let payload: Record<string, unknown>;
+  try {
+    payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : (rawPayload as Record<string, unknown>);
+  } catch {
+    // Persisted payload is corrupt — surface the raw string under a known
+    // key so downstream code can still log + discard rather than crashing.
+    payload = { __raw: rawPayload };
+  }
   return {
     id: row.id as number,
     table_name: row.table_name as string,
     row_id: row.row_id as string,
     operation: row.operation as string,
-    payload: row.payload as string,
+    payload,
     machine_id: row.machine_id as string,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,

@@ -174,17 +174,14 @@ export class TeamSyncClient {
     const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
-      records: records.map((r) => {
-        const data = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
-        return {
-          table: r.table_name,
-          id: String(r.row_id),
-          machine_id: r.machine_id,
-          operation: r.operation,
-          data,
-          content_hash: data.content_hash ?? null,
-        };
-      }),
+      records: records.map((r) => ({
+        table: r.table_name,
+        id: String(r.row_id),
+        machine_id: r.machine_id,
+        operation: r.operation,
+        data: r.payload,
+        content_hash: r.payload.content_hash ?? null,
+      })),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
     const body = res as Partial<EnqueueBatchResponse>;
     return {

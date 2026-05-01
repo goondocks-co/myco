@@ -113,6 +113,16 @@ interface VectorReindexCursor {
 /** Whether initD1Schema has already run for this Worker instance. */
 let schemaInitialized = false;
 
+/**
+ * Module-scope memo of last `nodes.last_seen` write per machine. Lets warm
+ * Worker isolates skip the D1 UPDATE on every flush request; cold starts
+ * write once and remember. The interval is intentionally identical to the
+ * collective heartbeat cadence so observed last_seen lag is at most one
+ * heartbeat window.
+ */
+const lastSeenWritten = new Map<string, number>();
+const NODE_LAST_SEEN_UPDATE_INTERVAL_SECONDS = 5 * 60;
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 const DEFAULT_TOP_K = 10;
 const MAX_TOP_K = 50;
@@ -463,13 +473,25 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     await env.SYNC_QUEUE.sendBatch(acceptedRecords.map((record) => ({ body: record })));
   }
 
-  // Update node last_seen — proxies the previous /sync semantics so existing
-  // collective heartbeats keep working without waiting on queue drain.
-  await env.MYCO_TEAM_DB.prepare('UPDATE nodes SET last_seen = ? WHERE machine_id = ?')
-    .bind(epochSeconds(), body.machine_id)
-    .run();
+  await touchNodeLastSeen(env, body.machine_id);
 
   return jsonResponse({ accepted: acceptedRecords.length, rejected });
+}
+
+/**
+ * Conditionally bump nodes.last_seen for the given machine. Worker-side
+ * memo skips the D1 UPDATE when the last write for this machine landed
+ * inside the heartbeat window — at PowerManager's 5min cadence this turns
+ * 12 D1 writes/hr/machine into ~1.
+ */
+async function touchNodeLastSeen(env: Env, machineId: string): Promise<void> {
+  const now = epochSeconds();
+  const last = lastSeenWritten.get(machineId) ?? 0;
+  if (now - last < NODE_LAST_SEEN_UPDATE_INTERVAL_SECONDS) return;
+  await env.MYCO_TEAM_DB.prepare('UPDATE nodes SET last_seen = ? WHERE machine_id = ?')
+    .bind(now, machineId)
+    .run();
+  lastSeenWritten.set(machineId, now);
 }
 
 /**
@@ -522,10 +544,21 @@ async function writeRecordToD1(
 }
 
 /**
- * Sync-queue consumer. Receives a batch of SyncRecord messages, applies each
- * one to D1, and runs any embedding work after the D1 batch settles. Per-
- * message ack/retry: a single broken message does not block its batch-mates,
- * and CF Queues handles backoff + DLQ routing once `max_retries` is hit.
+ * Sync-queue consumer. Coalesces D1 work per-table:
+ *   1. Group messages by (table, operation).
+ *   2. For each upsert group, one batched SELECT for content_hash filtering,
+ *      then one db.batch() of INSERT OR REPLACE for survivors.
+ *   3. For each delete group, one db.batch() of DELETE statements.
+ *
+ * Optimistic batch + per-record fallback preserves per-message ack/retry:
+ * a successful batch acks all messages; a failed batch falls back to
+ * sequential `writeRecordToD1` so individual offenders can retry while
+ * their batch-mates progress. CF Queues handles backoff + DLQ once
+ * `max_retries` is hit.
+ *
+ * For a typical 100-message batch hitting 2–4 distinct tables, this cuts
+ * D1 round-trips from ~200 (1 SELECT + 1 INSERT per message) to ~2N
+ * (one SELECT and one INSERT batch per table).
  */
 async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (!schemaInitialized) {
@@ -534,27 +567,151 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   }
 
   const embeddingTasks: Array<() => Promise<void>> = [];
+  const groups = new Map<string, Array<Message<SyncRecord>>>();
   for (const message of batch.messages) {
-    try {
-      const result = await writeRecordToD1(env, message.body);
-      if (result.embedTask) embeddingTasks.push(result.embedTask);
-      message.ack();
-    } catch (err) {
-      // Throwing in the consumer function would fail the entire batch.
-      // Per-message retry confines the failure to this record so siblings
-      // still progress; CF will DLQ the message once max_retries is hit.
-      const reason = err instanceof Error ? err.message : String(err);
-      console.error(`team-sync.queue.write_failed ${message.body.table}/${message.body.id}: ${reason}`);
-      message.retry();
+    const key = `${message.body.table}\t${message.body.operation}`;
+    const list = groups.get(key);
+    if (list) list.push(message);
+    else groups.set(key, [message]);
+  }
+
+  for (const [key, messages] of groups) {
+    const [table, operation] = key.split('\t');
+    if (operation === 'delete') {
+      await coalescedDeleteBatch(env, table, messages);
+    } else {
+      await coalescedUpsertBatch(env, table, messages, embeddingTasks);
     }
   }
 
-  // Embedding failures are non-fatal — Vectorize is a best-effort companion
-  // index and a missed upsert is recoverable via /vectors/reindex. We still
-  // run them in parallel for throughput.
+  // Vectorize is a best-effort companion index — embedding failures don't
+  // fail the batch (recoverable via /vectors/reindex). Run in parallel.
   if (embeddingTasks.length > 0) {
     await Promise.allSettled(embeddingTasks.map((task) => task()));
   }
+}
+
+/**
+ * Coalesced upsert path: one SELECT + one db.batch INSERT for the survivors.
+ * Falls back to per-record `writeRecordToD1` on batch failure so a single
+ * poison message doesn't trap its batch-mates.
+ */
+async function coalescedUpsertBatch(
+  env: Env,
+  table: string,
+  messages: Array<Message<SyncRecord>>,
+  embeddingTasks: Array<() => Promise<void>>,
+): Promise<void> {
+  // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
+  // tuples we're about to write. Records without content_hash skip the
+  // filter and write unconditionally.
+  const filterCandidates = messages.filter((m) => Boolean(m.body.content_hash));
+  const existingHashes = new Map<string, string | null>();
+  if (filterCandidates.length > 0) {
+    const tuples = filterCandidates.map(() => '(?, ?)').join(', ');
+    const binds = filterCandidates.flatMap((m) => [m.body.id, m.body.machine_id]);
+    try {
+      const result = await env.MYCO_TEAM_DB.prepare(
+        `SELECT id, machine_id, content_hash FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+      ).bind(...binds).all<{ id: string; machine_id: string; content_hash: string | null }>();
+      for (const row of result.results ?? []) {
+        existingHashes.set(`${row.id}\t${row.machine_id}`, row.content_hash);
+      }
+    } catch (err) {
+      // SELECT failure is unusual — fall through; the survivors path will
+      // attempt the inserts and surface specific errors per-message.
+      console.error(`team-sync.queue.select_failed table=${table}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  const survivors: Array<Message<SyncRecord>> = [];
+  for (const message of messages) {
+    const hash = message.body.content_hash;
+    if (hash && existingHashes.get(`${message.body.id}\t${message.body.machine_id}`) === hash) {
+      message.ack();
+      continue;
+    }
+    survivors.push(message);
+  }
+  if (survivors.length === 0) return;
+
+  // Phase 2: try a single batched INSERT OR REPLACE. CF D1 batch wraps in
+  // an implicit transaction — all succeed or all fail. On failure we fall
+  // back to per-record writes so we can ack/retry individually.
+  const statements = survivors.map((message) => {
+    const { sql, values } = buildInsertParts(table, message.body.data, message.body.id, message.body.machine_id);
+    return env.MYCO_TEAM_DB.prepare(sql).bind(...values);
+  });
+
+  try {
+    await env.MYCO_TEAM_DB.batch(statements);
+    for (const message of survivors) {
+      const embedTask = buildEmbedTask(env, message.body);
+      if (embedTask) embeddingTasks.push(embedTask);
+      message.ack();
+    }
+  } catch (err) {
+    console.error(`team-sync.queue.batch_upsert_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
+    for (const message of survivors) {
+      try {
+        const result = await writeRecordToD1(env, message.body);
+        if (result.embedTask) embeddingTasks.push(result.embedTask);
+        message.ack();
+      } catch (perRecordErr) {
+        const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
+        console.error(`team-sync.queue.write_failed ${table}/${message.body.id}: ${reason}`);
+        message.retry();
+      }
+    }
+  }
+}
+
+/** Coalesced delete path: one db.batch of DELETE per (id, machine_id). */
+async function coalescedDeleteBatch(
+  env: Env,
+  table: string,
+  messages: Array<Message<SyncRecord>>,
+): Promise<void> {
+  const deleteSql = `DELETE FROM ${table} WHERE id = ? AND machine_id = ?`;
+  const statements = messages.map((message) =>
+    env.MYCO_TEAM_DB.prepare(deleteSql).bind(message.body.id, message.body.machine_id),
+  );
+
+  try {
+    await env.MYCO_TEAM_DB.batch(statements);
+    for (const message of messages) {
+      // Vectorize cleanup is best-effort and parallel-safe.
+      if (message.body.table in EMBEDDABLE_TABLES) {
+        void deleteVector(env, message.body.table, message.body.id, message.body.machine_id);
+      }
+      message.ack();
+    }
+  } catch (err) {
+    console.error(`team-sync.queue.batch_delete_failed table=${table}: ${err instanceof Error ? err.message : err}; falling back to per-record`);
+    for (const message of messages) {
+      try {
+        await handleDelete(env, message.body);
+        message.ack();
+      } catch (perRecordErr) {
+        const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
+        console.error(`team-sync.queue.delete_failed ${table}/${message.body.id}: ${reason}`);
+        message.retry();
+      }
+    }
+  }
+}
+
+/** Build an embedding task for a record if its table is embeddable. */
+function buildEmbedTask(env: Env, record: SyncRecord): (() => Promise<void>) | null {
+  const embeddableField = EMBEDDABLE_TABLES[record.table];
+  if (!embeddableField) return null;
+  const textContent = record.data[embeddableField] as string | undefined;
+  if (!textContent) return null;
+  const { table, id, machine_id } = record;
+  if (table === 'spores' && record.data.status !== 'active') {
+    return () => deleteVector(env, table, id, machine_id);
+  }
+  return () => embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data));
 }
 
 /**
