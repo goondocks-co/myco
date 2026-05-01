@@ -24,7 +24,11 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Type } from "@sinclair/typebox";
+
+const execFileP = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,21 +134,65 @@ async function getJson(
   }
 }
 
-async function deleteJson(
+// ---------------------------------------------------------------------------
+// CLI tool dispatch — invokes `myco-run tool call <name> --json --input <json>`
+// via the project-local launcher (.agents/myco-run.cjs) for ALL Myco tool
+// calls (myco_search, myco_cortex, myco_plans, myco_sessions, myco_skills,
+// myco_spores, myco_agent, collective_*).
+//
+// Why CLI shell-out instead of HTTP REST: Pi has no native MCP transport, so
+// the standard pattern for non-MCP symbionts is to invoke the Myco CLI for
+// tool calls — the same binary the hook config invokes for capture
+// lifecycle. Tool execution happens in a fresh subprocess that loads the
+// Myco runtime, runs the in-process tool registry, and writes directly to
+// SQLite. This eliminates Pi's previous use of the `/api/mcp/*` REST surface
+// (which existed only as Pi's tool API and is now retired).
+//
+// Capture/lifecycle/context HTTP (postEventWithBuffer, postJson) is
+// untouched — those endpoints are universal symbiont infrastructure.
+//
+// Degraded mode: if Myco isn't installed locally, .agents/myco-run.cjs
+// emits a `runtime_unavailable` envelope and exits non-zero. The catch
+// path returns `{ ok: false }` so the calling tool wrapper can surface the
+// failure to the LLM as "tool unavailable" rather than crashing the
+// extension.
+// ---------------------------------------------------------------------------
+
+const MYCO_TOOL_TIMEOUT_MS = 10000;
+
+interface ToolCliEnvelope {
+  ok: boolean;
+  tool?: string;
+  result?: unknown;
+  error?: { code: string; message: string };
+}
+
+async function execMycoTool(
   directory: string,
-  urlPath: string,
-  body?: Record<string, unknown>,
+  toolName: string,
+  input: unknown,
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const res = await fetchFromDaemon(directory, urlPath, {
-    method: "DELETE",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res) return { ok: false };
+  const launcher = join(directory, ".agents", "myco-run.cjs");
+  const inputJson = JSON.stringify(input ?? {});
+
   try {
-    return { ok: true, data: await res.json() };
+    const { stdout } = await execFileP(
+      "node",
+      [launcher, "tool", "call", toolName, "--json", "--input", inputJson],
+      {
+        cwd: directory,
+        timeout: MYCO_TOOL_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    const envelope = JSON.parse(stdout) as ToolCliEnvelope;
+    if (!envelope.ok) return { ok: false };
+    return { ok: true, data: envelope.result };
   } catch {
-    return { ok: true };
+    // ENOENT (myco-run not on PATH / no local launcher), non-zero exit
+    // (tool error or runtime unavailable), JSON parse failure, timeout —
+    // all collapse to the existing degraded-mode signal.
+    return { ok: false };
   }
 }
 
@@ -372,55 +420,7 @@ async function mycoCortex(
   directory: string,
   input: { op?: string; tier?: number; id?: string; project_id?: string; path?: string },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "digest";
-  if (op === "instructions") return getJson(directory, "/api/cortex/instructions");
-  if (op === "canopy_map") return getJson(directory, "/api/canopy/map");
-  if (op === "canopy_entry") {
-    const path = input.path ?? (input.id ? input.id.slice(input.id.indexOf(":") + 1) : "");
-    return getJson(directory, `/api/canopy/entries/${encodeURIComponent(path)}`);
-  }
-
-  const requestedTier = input.tier ?? 5000;
-  const result = await getJson(directory, "/api/digest");
-  if (!result.ok || !result.data) {
-    return { ok: true, data: {
-      content: "Digest context is not yet available. The first digest cycle has not completed.",
-      tier: requestedTier,
-      fallback: false,
-    } };
-  }
-
-  // Daemon contract: /api/digest responses carry a `tiers` array.
-  const tiers = (result.data as {
-    tiers: Array<{ tier: number; content: string; generated_at: number }>;
-  }).tiers;
-  const exact = tiers.find((entry) => entry.tier === requestedTier);
-  if (exact) {
-    return { ok: true, data: {
-      content: exact.content,
-      tier: exact.tier,
-      fallback: false,
-      generated_at: exact.generated_at,
-    } };
-  }
-
-  if (tiers.length > 0) {
-    const nearest = [...tiers].sort(
-      (left, right) => Math.abs(left.tier - requestedTier) - Math.abs(right.tier - requestedTier),
-    )[0];
-    return { ok: true, data: {
-      content: nearest.content,
-      tier: nearest.tier,
-      fallback: true,
-      generated_at: nearest.generated_at,
-    } };
-  }
-
-  return { ok: true, data: {
-    content: "Digest context is not yet available. The first digest cycle has not completed.",
-    tier: requestedTier,
-    fallback: false,
-  } };
+  return execMycoTool(directory, "myco_cortex", input);
 }
 
 async function mycoSearch(
@@ -436,15 +436,7 @@ async function mycoSearch(
     language?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams({ q: input.query });
-  if (input.type) query.set("type", input.type);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  if (input.observation_type) query.set("observation_type", input.observation_type);
-  if (input.status) query.set("status", input.status);
-  if (input.since !== undefined) query.set("since", String(input.since));
-  if (input.until !== undefined) query.set("until", String(input.until));
-  if (input.language) query.set("language", input.language);
-  return getJson(directory, `/api/search?${query.toString()}`);
+  return execMycoTool(directory, "myco_search", input);
 }
 
 async function mycoPlans(
@@ -464,37 +456,7 @@ async function mycoPlans(
     force_remote?: boolean;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "list";
-  if (op === "save") {
-    return postJson(directory, "/api/mcp/plans", {
-      session_id: input.session_id,
-      content: input.content,
-      source_path: input.source_path,
-      plan_key: input.plan_key,
-      title: input.title,
-      status: input.status,
-      tags: input.tags,
-    });
-  }
-  if (op === "delete") {
-    return deleteJson(
-      directory,
-      `/api/plans/${encodeURIComponent(input.id ?? "")}`,
-      input.force_remote ? { force_remote: true } : undefined,
-    );
-  }
-  if (op === "get") {
-    const result = await getJson(directory, `/api/mcp/plans?id=${encodeURIComponent(input.id ?? "")}`);
-    const plans = (result.data as { plans?: unknown[] } | undefined)?.plans;
-    if (result.ok && Array.isArray(plans) && plans[0]) return { ok: true, data: plans[0] };
-    return result.ok ? { ok: false, data: { error: "Plan not found" } } : result;
-  }
-
-  const query = new URLSearchParams();
-  if (input.session) query.set("session", input.session);
-  if (input.status) query.set("status", input.status);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/mcp/plans?${query.toString()}`);
+  return execMycoTool(directory, "myco_plans", input);
 }
 
 async function mycoSessions(
@@ -510,17 +472,7 @@ async function mycoSessions(
     limit?: number;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  if ((input.op ?? "list") === "get") {
-    return getJson(directory, `/api/sessions/${encodeURIComponent(input.id ?? "")}`);
-  }
-  const query = new URLSearchParams();
-  if (input.plan) query.set("plan", input.plan);
-  if (input.branch) query.set("branch", input.branch);
-  if (input.user) query.set("user", input.user);
-  if (input.since) query.set("since", input.since);
-  if (input.status) query.set("status", input.status);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/mcp/sessions?${query.toString()}`);
+  return execMycoTool(directory, "myco_sessions", input);
 }
 
 async function fetchTeamStatus(directory: string): Promise<{ ok: boolean; data?: unknown }> {
@@ -548,74 +500,36 @@ async function mycoSpores(
     reason?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "list";
-  if (op === "get") return getJson(directory, `/api/spores/${encodeURIComponent(input.id ?? "")}`);
-  if (op === "save") return postJson(directory, "/api/mcp/remember", {
-    content: input.content,
-    type: input.type,
-    tags: input.tags,
-  });
-  if (op === "supersede") return postJson(directory, "/api/mcp/supersede", {
-    old_spore_id: input.old_spore_id,
-    new_spore_id: input.new_spore_id,
-    reason: input.reason,
-  });
-  if (op === "consolidate") return postJson(directory, "/api/mcp/consolidate", {
-    source_spore_ids: input.source_spore_ids,
-    consolidated_content: input.consolidated_content,
-    observation_type: input.observation_type,
-    tags: input.tags,
-    reason: input.reason,
-  });
-  const query = new URLSearchParams();
-  if (input.agent_id) query.set("agent_id", input.agent_id);
-  if (input.observation_type ?? input.type) query.set("type", input.observation_type ?? input.type ?? "");
-  if (input.status) query.set("status", input.status);
-  if (input.search) query.set("search", input.search);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  if (input.offset !== undefined) query.set("offset", String(input.offset));
-  return getJson(directory, `/api/spores?${query.toString()}`);
+  return execMycoTool(directory, "myco_spores", input);
 }
 
 async function mycoSkills(
   directory: string,
   input: { op?: string; id?: string; status?: string; limit?: number },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  if ((input.op ?? "list") === "get") return getJson(directory, `/api/skill-records/${encodeURIComponent(input.id ?? "")}`);
-  const query = new URLSearchParams();
-  if (input.status) query.set("status", input.status);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/skill-records?${query.toString()}`);
+  return execMycoTool(directory, "myco_skills", input);
 }
 
 async function mycoAgent(
   directory: string,
   input: { op?: string; id?: string; task?: string; agent_id?: string; limit?: number },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const op = input.op ?? "runs";
-  if (op === "run") return getJson(directory, `/api/agent/runs/${encodeURIComponent(input.id ?? "")}`);
-  const query = new URLSearchParams();
-  if (input.task) query.set("task", input.task);
-  if (input.agent_id) query.set("agentId", input.agent_id);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  return getJson(directory, `/api/agent/runs?${query.toString()}`);
+  return execMycoTool(directory, "myco_agent", input);
 }
 
 async function collectiveProjects(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, "/api/collective/projects");
+  return execMycoTool(directory, "collective_projects", {});
 }
 
 async function collectiveSettings(directory: string): Promise<{ ok: boolean; data?: unknown }> {
-  return getJson(directory, "/api/collective/settings");
+  return execMycoTool(directory, "collective_settings", {});
 }
 
 async function collectiveProject(
   directory: string,
   input: { project: string; include_digest?: boolean },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams({ project: input.project });
-  if (input.include_digest) query.set("include_digest", "true");
-  return getJson(directory, `/api/collective/project?${query.toString()}`);
+  return execMycoTool(directory, "collective_project", input);
 }
 
 async function collectiveSearch(
@@ -634,18 +548,7 @@ async function collectiveSearch(
     name?: string;
   },
 ): Promise<{ ok: boolean; data?: unknown }> {
-  const query = new URLSearchParams({ q: input.query });
-  if (input.project) query.set("project", input.project);
-  if (input.limit !== undefined) query.set("limit", String(input.limit));
-  if (input.types && input.types.length > 0) query.set("types", input.types.join(","));
-  if (input.status) query.set("status", input.status);
-  if (input.observation_type) query.set("observation_type", input.observation_type);
-  if (input.since !== undefined) query.set("since", String(input.since));
-  if (input.until !== undefined) query.set("until", String(input.until));
-  if (input.session_id) query.set("session_id", input.session_id);
-  if (input.source_path) query.set("source_path", input.source_path);
-  if (input.name) query.set("name", input.name);
-  return getJson(directory, `/api/collective/search?${query.toString()}`);
+  return execMycoTool(directory, "collective_search", input);
 }
 
 // ---------------------------------------------------------------------------

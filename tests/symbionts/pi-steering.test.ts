@@ -76,12 +76,13 @@ describe('Pi plugin', () => {
     expect(source).toContain('BATCH_KIND.STEERING');
   });
 
-  it('trusts the /api/digest response shape without defensive Array.isArray gating', () => {
-    // The daemon owns the digest contract and always returns `tiers: []`.
-    // Defensive `!Array.isArray(...)` branching on our own response just
-    // masks real bugs, so it was dropped.
+  it('does not duplicate digest fallback logic — the in-process myco_cortex tool owns it', () => {
+    // After the /api/mcp/* retirement, all Pi tool wrappers delegate to
+    // `myco-run tool call`. The cortex tier-fallback logic now lives in the
+    // in-daemon myco_cortex tool, so Pi's plugin should not contain its own
+    // tiers/Array.isArray reasoning.
     const source = pluginSource();
-    expect(source).not.toMatch(/!Array\.isArray\([\s\S]*tiers/);
+    expect(source).not.toMatch(/Array\.isArray\([\s\S]*tiers/);
   });
 
   it('postEventWithBuffer returns the daemon response and detects ignored drops', () => {
@@ -121,10 +122,30 @@ describe('Pi plugin', () => {
     expect(source).not.toContain('name: "myco_observe"');
   });
 
-  it('uses /api/digest for myco_cortex digest and /context for session-start injection', () => {
+  it('routes all tool calls through the myco-run CLI; capture/lifecycle stays on HTTP', () => {
     const source = pluginSource();
-    expect(source).toContain('getJson(directory, "/api/digest")');
+    // Tool calls (myco_cortex, myco_spores, etc.) shell out to `myco-run`
+    // — this is the standard non-MCP-symbiont pattern after the
+    // /api/mcp/* retirement. Each tool wrapper delegates via execMycoTool.
+    expect(source).toContain('execMycoTool(directory, "myco_cortex"');
+    expect(source).toContain('execMycoTool(directory, "myco_spores"');
+    expect(source).toContain('execMycoTool(directory, "myco_plans"');
+    expect(source).toContain('execMycoTool(directory, "myco_sessions"');
+    expect(source).toContain('execMycoTool(directory, "myco_search"');
+    // Capture/lifecycle/context endpoints remain HTTP — they are universal
+    // symbiont infrastructure (the daemon's EventBuffer + reconciliation
+    // path), not tool calls. Pi must keep using them directly.
     expect(source).toContain('postJson(directory, "/context", { session_id: sessionId })');
     expect(source).toContain('postJson(directory, "/context/resume", {');
+    expect(source).toContain('postJson(directory, "/sessions/register"');
+    expect(source).toContain('postJson(directory, "/events"');
+  });
+
+  it('does not call any /api/mcp/* endpoint (those routes were deleted)', () => {
+    // Match actual HTTP call sites, not doc-comment mentions of the retired
+    // surface. The plugin's header comment narrates the migration and is
+    // expected to reference `/api/mcp/*` historically.
+    const source = pluginSource();
+    expect(source).not.toMatch(/(?:postJson|getJson|deleteJson|fetch)\([^)]*["']\/api\/mcp\//);
   });
 });

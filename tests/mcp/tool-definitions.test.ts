@@ -269,13 +269,16 @@ describe('cross-surface tool-name drift', () => {
     expect(new Set(names)).toEqual(expected);
   });
 
-  it('Pi myco_search mirrors the canonical language filter', () => {
+  it('Pi myco_search declares the canonical language filter in its tool schema', () => {
+    // After the /api/mcp/* retirement, Pi wrappers no longer build URL
+    // query strings — they shell out to `myco-run tool call`. The schema
+    // declaration on the registerTool() call still has to mirror the
+    // canonical TOOL_DEFINITIONS shape so the LLM sees the right surface.
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../packages/myco/src/symbionts/templates/pi/plugin.ts'),
       'utf-8',
     );
     expect(source).toContain('language?: string');
-    expect(source).toContain('query.set("language", input.language)');
     expect(source).toContain('language: Type.Optional(Type.String');
   });
 
