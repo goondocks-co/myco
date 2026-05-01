@@ -1,3 +1,4 @@
+import { keepPreviousData } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
 import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
@@ -84,12 +85,17 @@ export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
 }
 
 export function useTeamQueueStats(enabled: boolean) {
+  // Polled slowly because the live values (depth, oldest_msg_age_s) are
+  // stubbed until the GraphQL Analytics wiring lands; the data effectively
+  // doesn't change. keepPreviousData prevents the UI from flashing the
+  // empty state on refetch.
   return usePowerQuery<QueueStatsResponse | CfApiTokenMissing>({
     queryKey: ['team-queue-stats'],
     queryFn: ({ signal }) => fetchJson<QueueStatsResponse | CfApiTokenMissing>('/team/queue-stats', { signal }),
-    refetchInterval: POLL_INTERVALS.STATS,
+    refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     enabled,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -97,8 +103,9 @@ export function useTeamDlq(enabled: boolean) {
   return usePowerQuery<DlqListResponse | CfApiTokenMissing>({
     queryKey: ['team-dlq'],
     queryFn: ({ signal }) => fetchJson<DlqListResponse | CfApiTokenMissing>('/team/dlq', { signal }),
-    refetchInterval: POLL_INTERVALS.STATS,
+    refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     enabled,
+    placeholderData: keepPreviousData,
   });
 }
