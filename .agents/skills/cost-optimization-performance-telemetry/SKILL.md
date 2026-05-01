@@ -45,7 +45,7 @@ Identify cost leak patterns and calibrate budgets for sustainable operation.
    - Establish performance vs cost trade-off curves by model class
 
 4. **Implement cost kill switches**:
-   - Add `settingSources: []` in `packages/myco/src/agent/runtime/claude.ts` where appropriate
+   - Add `settingSources: []` in `packages/myco/src/agent/harness/claude.ts` where appropriate
    - Use early termination conditions in expensive loops
    - Gate expensive operations behind session-terminal checks
 

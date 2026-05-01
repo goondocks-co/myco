@@ -127,7 +127,6 @@ import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
-import { createMcpProxyHandlers } from './api/mcp-proxy.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
 import { createAgentRunHandlers } from './api/agent-runs.js';
 import { createDigestRevisionHandlers } from './api/digest-revisions.js';
@@ -1043,17 +1042,10 @@ export async function main(): Promise<void> {
   server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(vaultDir, req));
   server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(vaultDir, req));
 
-  // --- MCP proxy routes ---
-  // These routes exist so the MCP server can proxy tool calls through the
-  // daemon instead of opening its own SQLite connection.
-  const mcpProxy = createMcpProxyHandlers({ machineId, embeddingManager, projectRoot, logger });
-  server.registerRoute('POST', '/api/mcp/remember', mcpProxy.handleRemember);
-  server.registerRoute('POST', '/api/mcp/supersede', mcpProxy.handleSupersede);
-  server.registerRoute('POST', '/api/mcp/consolidate', mcpProxy.handleConsolidate);
-  server.registerRoute('GET', '/api/mcp/plans', mcpProxy.handlePlans);
-  server.registerRoute('POST', '/api/mcp/plans', mcpProxy.handleSavePlan);
-  server.registerRoute('GET', '/api/mcp/sessions', mcpProxy.handleSessions);
-  server.registerRoute('GET', '/api/mcp/team', mcpProxy.handleTeam);
+  // --- In-process MCP server (streamable HTTP) ---
+  // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
+  // agents (codex) connect to it directly. Tool execution happens in-process
+  // via the shared tool runtime — no internal HTTP RPC layer.
   server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir));
 
   // --- Backup routes ---

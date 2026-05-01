@@ -1,33 +1,63 @@
 /**
- * Tests for myco_plans save handler.
+ * Tests for myco_plans op:save.
+ *
+ * Calls the in-process service `saveMcpPlan` (no HTTP). Verifies the plan lands
+ * in the DB with the correct logical key, status, and tags, and that the result
+ * envelope echoes the persisted shape.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoPlans } from '@myco/tools/plans.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 
-function mockClient(data: unknown = null, ok = true): DaemonClient {
+function mockClient(): DaemonClient {
   return {
-    get: vi.fn().mockResolvedValue({ ok, data }),
-    post: vi.fn().mockResolvedValue({ ok, data }),
+    get: vi.fn(),
+    post: vi.fn(),
+    delete: vi.fn(),
   } as unknown as DaemonClient;
 }
 
-describe('myco_plans op: save', () => {
-  it('posts the save-plan request to the daemon and returns saved metadata', async () => {
-    const client = mockClient({
-      id: 'plan-1234',
-      logical_key: 'session:sess-1:key:primary',
-      title: 'Primary Plan',
-      status: 'active',
-      source_path: null,
-      session_id: 'sess-1',
-      prompt_batch_id: 9,
-      tags: ['planning'],
-      created_at: 1700000000,
-      updated_at: 1700000000,
-    });
+function seedSession(id: string): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT INTO sessions (id, agent, started_at, created_at, machine_id, status)
+    VALUES (?, 'claude-code', ?, ?, 'local', 'active')
+  `).run(id, 1700000000, 1700000000);
+}
+
+interface PlanSaveSuccess {
+  ok: true;
+  id: string;
+  logical_key: string;
+  title: string | null;
+  status: string;
+  source_path: string | null;
+  session_id: string | null;
+  tags: string[];
+}
+
+describe('myco_plans op: save (in-process)', () => {
+  const vaultDir = path.join(os.tmpdir(), 'myco-save-plan-test');
+
+  beforeAll(() => {
+    fs.mkdirSync(vaultDir, { recursive: true });
+    setupTestDb();
+  });
+  afterAll(() => {
+    teardownTestDb();
+    fs.rmSync(vaultDir, { recursive: true, force: true });
+  });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('persists a plan with a session-key logical key and returns the saved metadata', async () => {
+    seedSession('sess-1');
 
     const result = await handleMycoPlans({
       op: 'save',
@@ -35,45 +65,69 @@ describe('myco_plans op: save', () => {
       content: '# Primary Plan',
       plan_key: 'primary',
       tags: ['planning'],
-    }, client);
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
 
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/plans', {
-      session_id: 'sess-1',
-      content: '# Primary Plan',
-      source_path: undefined,
-      plan_key: 'primary',
-      title: undefined,
-      status: undefined,
-      tags: ['planning'],
-    });
     expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.id).toBe('plan-1234');
-      expect(result.logical_key).toBe('session:sess-1:key:primary');
-    }
+    expect(result.logical_key).toBe('session:sess-1:key:primary');
+    expect(result.session_id).toBe('sess-1');
+    expect(result.tags).toEqual(['planning']);
+    expect(result.title).toBe('Primary Plan');
+    expect(result.status).toBe('active');
+
+    const db = getDatabase();
+    const row = db.prepare('SELECT logical_key, content, tags FROM plans WHERE id = ?').get(result.id) as {
+      logical_key: string;
+      content: string;
+      tags: string;
+    };
+    expect(row.logical_key).toBe('session:sess-1:key:primary');
+    expect(row.content).toBe('# Primary Plan');
+    expect(row.tags).toBe('planning');
   });
 
-  it('returns a structured error when the daemon save fails', async () => {
-    const client = mockClient({ error: 'save-failed' }, false);
+  it('returns session-not-found when the session does not exist', async () => {
+    const result = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-missing',
+      content: '# Plan',
+      plan_key: 'primary',
+    }, mockClient(), vaultDir);
+
+    expect(result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('rejects op:save when both source_path and plan_key are passed', async () => {
+    seedSession('sess-1');
+
     const result = await handleMycoPlans({
       op: 'save',
       session_id: 'sess-1',
       content: '# Plan',
+      source_path: 'docs/plan.md',
       plan_key: 'primary',
-    }, client);
+    }, mockClient(), vaultDir);
 
-    expect(result).toEqual({ ok: false, error: 'save-failed' });
+    expect(result).toEqual({
+      ok: false,
+      error: 'Provide exactly one of source_path or plan_key',
+    });
   });
 
-  it('falls back to "unknown" when the failure payload lacks an error string', async () => {
-    const client = mockClient(null, false);
+  it('rejects op:save without session_id', async () => {
+    const result = await handleMycoPlans({
+      op: 'save',
+      content: '# Plan',
+      plan_key: 'p',
+    }, mockClient(), vaultDir);
+    expect(result).toEqual({ ok: false, error: 'session_id is required for op: save' });
+  });
+
+  it('rejects op:save without content', async () => {
     const result = await handleMycoPlans({
       op: 'save',
       session_id: 'sess-1',
-      content: '# Plan',
-      plan_key: 'primary',
-    }, client);
-
-    expect(result).toEqual({ ok: false, error: 'unknown' });
+      plan_key: 'p',
+    }, mockClient(), vaultDir);
+    expect(result).toEqual({ ok: false, error: 'content is required for op: save' });
   });
 });

@@ -28,7 +28,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   if (subcommand === 'list') {
     const definitions = await listToolDefinitions(vaultDir);
     if (json) {
-      console.log(JSON.stringify({ ok: true, result: definitions }, null, 2));
+      await writeEnvelope({ ok: true, result: definitions });
       return;
     }
     for (const definition of definitions) console.log(definition.name);
@@ -40,13 +40,13 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     try {
       parsed = parseCallArgs(rest);
     } catch (error) {
-      writeEnvelope({ ok: false, error: { code: 'invalid_arguments', message: (error as Error).message } });
+      await writeEnvelope({ ok: false, error: { code: 'invalid_arguments', message: (error as Error).message } });
       process.exitCode = 1;
       return;
     }
     const tool = parsed.tool;
     if (!tool) {
-      writeEnvelope({ ok: false, error: { code: 'missing_tool', message: 'Usage: tool call <tool-name> --json --input <json|@file>' } });
+      await writeEnvelope({ ok: false, error: { code: 'missing_tool', message: 'Usage: tool call <tool-name> --json --input <json|@file>' } });
       process.exitCode = 1;
       return;
     }
@@ -56,9 +56,9 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       const { createMycoTools } = await import('@myco/tools/index.js');
       const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir));
       const result = await tools.callTool(tool, input);
-      writeEnvelope({ ok: true, tool, result });
+      await writeEnvelope({ ok: true, tool, result });
     } catch (error) {
-      writeEnvelope({
+      await writeEnvelope({
         ok: false,
         tool,
         error: {
@@ -71,7 +71,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     return;
   }
 
-  writeEnvelope({ ok: false, error: { code: 'unknown_command', message: 'Usage: tool <list|call> [args]' } });
+  await writeEnvelope({ ok: false, error: { code: 'unknown_command', message: 'Usage: tool <list|call> [args]' } });
   process.exitCode = 1;
 }
 
@@ -119,8 +119,17 @@ function parseInput(value: string): unknown {
 
 class ToolJsonError extends Error {}
 
-function writeEnvelope(envelope: ToolCliEnvelope): void {
-  console.log(JSON.stringify(envelope, null, 2));
+function writeEnvelope(envelope: ToolCliEnvelope): Promise<void> {
+  return writeStdout(`${JSON.stringify(envelope, null, 2)}\n`);
+}
+
+function writeStdout(output: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(output, (error?: Error | null) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function classifyError(error: unknown): string {

@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { createMycoServer } from '@myco/mcp/server';
+import { createMycoTools } from '@myco/tools/index';
 import { DaemonClient } from '@myco/hooks/client';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-describe('MCP Server', () => {
+/**
+ * Tool-surface guards. After Phase 1 of the MCP transport standardization,
+ * `mcp/server.ts` no longer owns a tool registry — `createMycoTools()` is the
+ * single source of truth, consumed by both the in-daemon HTTP MCP handler
+ * (`mcp/http.ts`) and (transitively, via the stdio bridge) every stdio agent.
+ * These tests live here to keep guarding the surface those transports expose.
+ */
+describe('MCP tool surface (createMycoTools)', () => {
   let tmpDir: string;
   let client: DaemonClient;
 
@@ -19,8 +26,7 @@ describe('MCP Server', () => {
   });
 
   it('registers the consolidated 7-tool core surface', () => {
-    const server = createMycoServer(tmpDir, client);
-    const tools = server.getRegisteredTools();
+    const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
     expect(tools).toContain('myco_plans');
@@ -32,8 +38,7 @@ describe('MCP Server', () => {
   });
 
   it('no longer registers the retired MCP surfaces', () => {
-    const server = createMycoServer(tmpDir, client);
-    const tools = server.getRegisteredTools();
+    const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     // These were retired in the 2026-04-22 MCP surface cleanup.
     for (const retired of [
       'myco_team',
@@ -58,16 +63,10 @@ describe('MCP Server', () => {
   });
 
   it('does not leak collective tools into the core registration', () => {
-    const server = createMycoServer(tmpDir, client);
-    const tools = server.getRegisteredTools();
+    const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).not.toContain('collective_search');
     expect(tools).not.toContain('collective_projects');
     expect(tools).not.toContain('collective_project');
     expect(tools).not.toContain('collective_settings');
-  });
-
-  it('exports server name and version', () => {
-    const server = createMycoServer(tmpDir, client);
-    expect(server.name).toBe('myco');
   });
 });
