@@ -301,18 +301,12 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
         </Surface>
       )}
 
-      {/* Status overview */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Status overview — sync queue counters live on the Outbox tab. */}
+      <div className="grid grid-cols-3 gap-3">
         <StatCard
           label="Status"
           value={status.healthy ? 'Connected' : 'Unhealthy'}
           accent={status.healthy ? 'sage' : 'terracotta'}
-        />
-        <StatCard
-          label="Pending sync"
-          value={String(status.pending_sync_count)}
-          accent={status.pending_sync_count > 0 ? 'sage' : 'outline'}
-          href="/logs?component=team-sync"
         />
         <StatCard
           label="Protocol"
@@ -879,64 +873,68 @@ export default function Team() {
   const isConnected = status?.enabled && status?.worker_url;
 
   return (
-    <div className="p-6 max-w-4xl">
-      <PageHeader
-        title="Team"
-        subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : 'Share knowledge across machines with team sync'}
-        tabs={isConnected ? TEAM_TABS : undefined}
-        activeTab={isConnected ? activeTab : undefined}
-        onTabChange={isConnected ? handleTabChange : undefined}
-      />
+    <div className="flex h-full flex-col">
+      <div className="px-6 pt-6">
+        <PageHeader
+          title="Team"
+          subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : 'Share knowledge across machines with team sync'}
+          tabs={isConnected ? TEAM_TABS : undefined}
+          activeTab={isConnected ? activeTab : undefined}
+          onTabChange={isConnected ? handleTabChange : undefined}
+        />
+      </div>
 
-      {isConnected && status ? (
-        <>
-          {activeTab === 'status' && <StatusTab status={status} />}
-          {activeTab === 'outbox' && <OutboxTab status={status} />}
-          {activeTab === 'synced' && <SyncedTab status={status} />}
-        </>
-      ) : (
-        <div className="space-y-4">
-          {/* Setup guide */}
-          <Surface level="low" ghostBorder className="p-6 space-y-4">
-            <SectionHeader>Getting Started</SectionHeader>
-            <p className="text-sm text-on-surface-variant">
-              Team sync lets multiple machines share captured knowledge through a Cloudflare Worker.
-              One team member provisions the infrastructure, then shares the connection details.
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
-                <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                  npm install -g @goondocks/myco-team wrangler && wrangler login
-                </code>
-              </div>
-
-              <div>
-                <p className="text-sm font-medium text-on-surface mb-1">2. Provision the team</p>
-                <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                  myco-team install
-                </code>
-                <p className="text-xs text-on-surface-variant mt-1">
-                  Creates a D1 database, Vectorize index, and deploys the sync worker.
-                  Outputs a Worker URL and API key to share with teammates.
+      <div className="flex-1 overflow-auto">
+        <div className="px-6 pb-6">
+          {isConnected && status ? (
+            <>
+              {activeTab === 'status' && <StatusTab status={status} />}
+              {activeTab === 'outbox' && <OutboxTab status={status} />}
+              {activeTab === 'synced' && <SyncedTab status={status} />}
+            </>
+          ) : (
+            <div className="space-y-4">
+              <Surface level="low" ghostBorder className="p-6 space-y-4">
+                <SectionHeader>Getting Started</SectionHeader>
+                <p className="text-sm text-on-surface-variant">
+                  Team sync lets multiple machines share captured knowledge through a Cloudflare Worker.
+                  One team member provisions the infrastructure, then shares the connection details.
                 </p>
-              </div>
 
-              <div>
-                <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
-                <p className="text-xs text-on-surface-variant">
-                  Paste the Worker URL and API key below, or if you ran <code className="font-mono">myco-team install</code>,
-                  you're already connected.
-                </p>
-              </div>
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
+                    <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
+                      npm install -g @goondocks/myco-team wrangler && wrangler login
+                    </code>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-on-surface mb-1">2. Provision the team</p>
+                    <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
+                      myco-team install
+                    </code>
+                    <p className="text-xs text-on-surface-variant mt-1">
+                      Creates a D1 database, Vectorize index, and deploys the sync worker.
+                      Outputs a Worker URL and API key to share with teammates.
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
+                    <p className="text-xs text-on-surface-variant">
+                      Paste the Worker URL and API key below, or if you ran <code className="font-mono">myco-team install</code>,
+                      you're already connected.
+                    </p>
+                  </div>
+                </div>
+              </Surface>
+
+              <ConnectForm onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })} />
             </div>
-          </Surface>
-
-          {/* Connect form */}
-          <ConnectForm onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })} />
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
