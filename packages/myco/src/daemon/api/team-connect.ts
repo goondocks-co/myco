@@ -306,6 +306,71 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: { enqueued: count } };
   }
 
+  function clientOrError(): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
+    const client = deps.getTeamClient();
+    if (!client) return { ok: false, response: { status: 503, body: { error: 'team_not_configured' } } };
+    return { ok: true, client };
+  }
+
+  /** GET /api/team/queue-stats — proxies CF queue depth + DLQ depth from the worker. */
+  async function handleQueueStats(_req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const stats = await guard.client.getQueueStats();
+    return { body: stats };
+  }
+
+  /** GET /api/team/dlq — list a page of DLQ messages from the worker. */
+  async function handleDlqList(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const limit = Number(req.query.limit ?? '50') || 50;
+    const result = await guard.client.listDlq(limit);
+    return { body: result };
+  }
+
+  /** POST /api/team/dlq/retry — re-publish DLQ messages back to the main queue. */
+  async function handleDlqRetry(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const body = (req.body ?? {}) as { lease_ids?: unknown };
+    const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+    if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
+    const result = await guard.client.retryDlq(leaseIds);
+    return { body: result };
+  }
+
+  /** POST /api/team/dlq/discard — permanently drop DLQ messages. */
+  async function handleDlqDiscard(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const body = (req.body ?? {}) as { lease_ids?: unknown };
+    const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+    if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
+    const result = await guard.client.discardDlq(leaseIds);
+    return { body: result };
+  }
+
+  /** POST /api/team/cf-api-token — stash a CF API token + account id on the worker. */
+  async function handleSetCfApiToken(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const body = (req.body ?? {}) as { token?: string; account_id?: string };
+    if (!body.token || !body.account_id) {
+      return { status: 400, body: { error: 'token and account_id are required' } };
+    }
+    const result = await guard.client.setCfApiToken(body.token, body.account_id);
+    return { body: result };
+  }
+
+  /** DELETE /api/team/cf-api-token — clear the worker's CF API token. */
+  async function handleClearCfApiToken(_req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError();
+    if (!guard.ok) return guard.response;
+    const result = await guard.client.clearCfApiToken();
+    return { body: result };
+  }
+
   /**
    * POST /api/team/upgrade-worker — spawn `myco-team upgrade --json` and
    * reinitialize the team client against the post-upgrade config.
@@ -451,5 +516,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
   }
 
-  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken };
+  return {
+    handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken,
+    handleQueueStats, handleDlqList, handleDlqRetry, handleDlqDiscard, handleSetCfApiToken, handleClearCfApiToken,
+  };
 }
