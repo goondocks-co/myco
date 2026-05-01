@@ -146,12 +146,22 @@ export class TeamSyncClient {
   }
 
   /**
-   * Push a batch of outbox records to the team worker.
+   * Hand a batch of outbox records off to the team worker's sync queue.
    *
-   * @returns the number of records accepted by the worker.
+   * The worker validates table names up-front and fans the rest into
+   * Cloudflare Queues; the queue consumer (also part of the worker) does
+   * the actual D1 + Vectorize writes. Daemon-side retry semantics shrink
+   * to "did the handoff succeed?" — once the worker accepts the payload,
+   * Cloudflare's queue runtime owns delivery, retries, and DLQ.
+   *
+   * @returns counts and per-record rejections (validation failures only —
+   *   downstream queue failures land in the DLQ, not in this response).
    */
-  async pushBatch(records: OutboxRow[]): Promise<{ synced: number; skipped: number; errors: Array<{ id: string; table: string; error: string }> }> {
-    const res = await this.request('POST', '/sync', {
+  async enqueueBatch(records: OutboxRow[]): Promise<{
+    accepted: number;
+    rejected: Array<{ id: string; table: string; error: string }>;
+  }> {
+    const res = await this.request('POST', '/enqueue', {
       machine_id: this.machineId,
       sync_protocol_version: this.syncProtocolVersion,
       records: records.map((r) => {
@@ -166,7 +176,11 @@ export class TeamSyncClient {
         };
       }),
     }, { timeoutMs: TEAM_SYNC_TIMEOUT_MS });
-    return res as { synced: number; skipped: number; errors: Array<{ id: string; table: string; error: string }> };
+    const body = res as { accepted?: number; rejected?: Array<{ id: string; table: string; error: string }> };
+    return {
+      accepted: body.accepted ?? 0,
+      rejected: body.rejected ?? [],
+    };
   }
 
   /**

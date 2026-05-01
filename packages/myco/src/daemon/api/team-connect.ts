@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
-import { countPending, countDeadLettered, backfillUnsynced, retryDeadLettered } from '@myco/db/queries/team-outbox.js';
+import { countPending, backfillUnsynced } from '@myco/db/queries/team-outbox.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
@@ -216,15 +216,13 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
 
     let pendingCount = 0;
-    let deadLetterCount = 0;
     try {
       pendingCount = countPending();
-      deadLetterCount = countDeadLettered();
     } catch (err) {
       // DB may not have the table yet — log so we don't silently report
       // "0 pending" when the team-outbox queries are actually broken.
       const detail = errorMessage(err);
-      logger.warn('team-sync.outbox.count-failed', 'team-outbox counts unavailable', { error: detail });
+      logger.warn('team-sync.outbox.count-failed', 'team-outbox count unavailable', { error: detail });
     }
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
@@ -270,7 +268,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         healthy,
         health_error: healthError,
         pending_sync_count: pendingCount,
-        dead_letter_count: deadLetterCount,
         machine_id: machineId,
         package_version: getPluginVersion(),
         local_team_package_version: localTeamPackageVersion,
@@ -307,12 +304,6 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   async function handleBackfill(_req: RouteRequest): Promise<RouteResponse> {
     const count = backfillUnsynced(machineId);
     return { body: { enqueued: count } };
-  }
-
-  /** POST /api/team/retry-failed — move dead-lettered outbox rows back to pending. */
-  async function handleRetryFailed(_req: RouteRequest): Promise<RouteResponse> {
-    const count = retryDeadLettered();
-    return { body: { retried: count } };
   }
 
   /**
@@ -460,5 +451,5 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     }
   }
 
-  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleRetryFailed, handleUpgradeWorker, handleRotateMcpToken };
+  return { handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken };
 }

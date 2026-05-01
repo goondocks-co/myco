@@ -9,13 +9,10 @@ import {
   enqueueOutbox,
   listPending,
   markSent,
-  markForRetry,
   pruneOld,
   countPending,
-  incrementRetryCount,
-  countDeadLettered,
+  discardRows,
   sanitizeSyncPayload,
-  MAX_OUTBOX_RETRIES,
 } from '@myco/db/queries/team-outbox.js';
 import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
 
@@ -205,32 +202,25 @@ describe('team outbox query helpers', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // markForRetry
+  // discardRows
   // ---------------------------------------------------------------------------
 
-  describe('markForRetry', () => {
-    it('resets sent_at to NULL for re-processing', () => {
-      const row = enqueueOutbox(makeOutbox());
-      markSent([row.id], epochNow());
+  describe('discardRows', () => {
+    it('deletes the matching rows outright (used for worker-rejected payloads)', () => {
+      const a = enqueueOutbox(makeOutbox());
+      const b = enqueueOutbox(makeOutbox());
 
-      // Verify it's marked as sent
-      expect(listPending()).toHaveLength(0);
+      discardRows([a.id]);
 
-      // Mark for retry
-      markForRetry([row.id]);
-
-      // Now it should be pending again
       const pending = listPending();
       expect(pending).toHaveLength(1);
-      expect(pending[0].id).toBe(row.id);
+      expect(pending[0].id).toBe(b.id);
     });
 
-    it('does nothing for empty ids array', () => {
-      const row = enqueueOutbox(makeOutbox());
-      markSent([row.id], epochNow());
-      markForRetry([]);
-
-      expect(listPending()).toHaveLength(0);
+    it('is a no-op for empty ids', () => {
+      enqueueOutbox(makeOutbox());
+      discardRows([]);
+      expect(listPending()).toHaveLength(1);
     });
   });
 
@@ -297,101 +287,6 @@ describe('team outbox query helpers', () => {
 
       enqueueOutbox(makeOutbox());
       expect(countPending()).toBe(2);
-    });
-
-    it('excludes dead-lettered records', () => {
-      const row = enqueueOutbox(makeOutbox());
-      // Push retry count to max
-      for (let i = 0; i < MAX_OUTBOX_RETRIES; i++) {
-        incrementRetryCount([row.id], epochNow());
-      }
-
-      expect(countPending()).toBe(0);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // incrementRetryCount
-  // ---------------------------------------------------------------------------
-
-  describe('incrementRetryCount', () => {
-    it('increments retry_count and sets last_attempt_at', () => {
-      const row = enqueueOutbox(makeOutbox());
-      const now = epochNow();
-
-      incrementRetryCount([row.id], now);
-
-      const pending = listPending();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].retry_count).toBe(1);
-      expect(pending[0].last_attempt_at).toBe(now);
-    });
-
-    it('returns empty when no records reach max retries', () => {
-      const row = enqueueOutbox(makeOutbox());
-      const deadLettered = incrementRetryCount([row.id], epochNow());
-
-      expect(deadLettered).toEqual([]);
-    });
-
-    it('returns ids of newly dead-lettered records', () => {
-      const row = enqueueOutbox(makeOutbox());
-      // Increment to one below max
-      for (let i = 0; i < MAX_OUTBOX_RETRIES - 1; i++) {
-        incrementRetryCount([row.id], epochNow());
-      }
-
-      // This push should dead-letter it
-      const deadLettered = incrementRetryCount([row.id], epochNow());
-      expect(deadLettered).toEqual([row.id]);
-    });
-
-    it('does nothing for empty ids array', () => {
-      enqueueOutbox(makeOutbox());
-      const deadLettered = incrementRetryCount([], epochNow());
-
-      expect(deadLettered).toEqual([]);
-      expect(listPending()).toHaveLength(1);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // dead-lettering (listPending / countDeadLettered)
-  // ---------------------------------------------------------------------------
-
-  describe('dead-lettering', () => {
-    it('listPending excludes records at max retries', () => {
-      const row = enqueueOutbox(makeOutbox());
-      for (let i = 0; i < MAX_OUTBOX_RETRIES; i++) {
-        incrementRetryCount([row.id], epochNow());
-      }
-
-      expect(listPending()).toHaveLength(0);
-    });
-
-    it('countDeadLettered counts records at max retries', () => {
-      expect(countDeadLettered()).toBe(0);
-
-      const row = enqueueOutbox(makeOutbox());
-      for (let i = 0; i < MAX_OUTBOX_RETRIES; i++) {
-        incrementRetryCount([row.id], epochNow());
-      }
-
-      expect(countDeadLettered()).toBe(1);
-    });
-
-    it('dead-lettered records are not returned by listPending but counted by countDeadLettered', () => {
-      const good = enqueueOutbox(makeOutbox());
-      const bad = enqueueOutbox(makeOutbox());
-
-      for (let i = 0; i < MAX_OUTBOX_RETRIES; i++) {
-        incrementRetryCount([bad.id], epochNow());
-      }
-
-      expect(listPending()).toHaveLength(1);
-      expect(listPending()[0].id).toBe(good.id);
-      expect(countPending()).toBe(1);
-      expect(countDeadLettered()).toBe(1);
     });
   });
 });

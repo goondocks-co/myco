@@ -26,6 +26,12 @@ export interface Env {
   MYCO_TEAM_API_KEY: string;
   SYNC_PROTOCOL_VERSION: string;
   MYCO_SECRETS: KVNamespace;
+  /**
+   * Producer binding for the project's sync queue. Bound at deploy time via
+   * the wrangler.toml [[queues.producers]] block; queue name is project-scoped
+   * (`myco-team-<hash>-sync`) and provisioned by `myco-team init`.
+   */
+  SYNC_QUEUE: Queue<SyncRecord>;
   MYCO_TEAM_PACKAGE_VERSION?: string;
   MYCO_SCHEMA_VERSION?: string;
 }
@@ -410,10 +416,16 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleSync(request: Request, env: Env): Promise<Response> {
+/**
+ * Producer endpoint — receives a SyncPayload and fans the records out into
+ * the project's sync queue. The queue consumer (defined in this Worker's
+ * `queue()` handler) is what actually writes to D1 and Vectorize. This
+ * decoupling lets Cloudflare handle batching, retries, and dead-lettering;
+ * the daemon's local outbox shrinks to a thin offline buffer.
+ */
+async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as SyncPayload;
 
-  // Version check
   const serverVersion = parseInt(env.SYNC_PROTOCOL_VERSION, 10);
   if (body.sync_protocol_version !== serverVersion) {
     return errorResponse(
@@ -423,79 +435,134 @@ async function handleSync(request: Request, env: Env): Promise<Response> {
   }
 
   if (!Array.isArray(body.records) || body.records.length === 0) {
-    return jsonResponse({ synced: 0, skipped: 0, errors: [] });
+    return jsonResponse({ accepted: 0 });
   }
 
-  let synced = 0;
-  let skipped = 0;
-  const errors: Array<{ id: string; table: string; error: string }> = [];
-
-  // Collect embedding tasks so they can be parallelized after DB writes
-  const embeddingTasks: Array<() => Promise<void>> = [];
-
+  // Validate table names up-front so the daemon can't poison the queue with
+  // payloads the consumer would always reject. Unknown tables are reported in
+  // the response so the daemon surfaces them during its flush.
+  const acceptedRecords: SyncRecord[] = [];
+  const rejected: Array<{ id: string; table: string; error: string }> = [];
   for (const record of body.records) {
-    try {
-      if (!SYNCED_TABLES.includes(record.table)) {
-        errors.push({ id: record.id, table: record.table, error: `Unknown table: ${record.table}` });
-        continue;
-      }
-
-      if (record.operation === 'delete') {
-        await handleDelete(env, record);
-        synced++;
-        continue;
-      }
-
-      // Check content_hash — skip if unchanged
-      if (record.content_hash) {
-        const existing = await env.MYCO_TEAM_DB.prepare(
-          `SELECT content_hash FROM ${record.table} WHERE id = ? AND machine_id = ?`,
-        )
-          .bind(record.id, record.machine_id)
-          .first<{ content_hash: string | null }>();
-
-        if (existing?.content_hash === record.content_hash) {
-          skipped++;
-          continue;
-        }
-      }
-
-      // INSERT OR REPLACE into D1
-      const { sql, values } = buildInsertParts(record.table, record.data, record.id, record.machine_id);
-      await env.MYCO_TEAM_DB.prepare(sql).bind(...values).run();
-
-      // Queue embedding if the table has embeddable content
-      const embeddableField = EMBEDDABLE_TABLES[record.table];
-      if (embeddableField) {
-        const textContent = record.data[embeddableField] as string | undefined;
-        if (textContent) {
-          const { table, id, machine_id } = record;
-          if (table === 'spores' && record.data.status !== 'active') {
-            embeddingTasks.push(() => deleteVector(env, table, id, machine_id));
-          } else {
-            embeddingTasks.push(() => embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data)));
-          }
-        }
-      }
-
-      synced++;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push({ id: record.id, table: record.table, error: message });
+    if (!SYNCED_TABLES.includes(record.table)) {
+      rejected.push({ id: record.id, table: record.table, error: `Unknown table: ${record.table}` });
+      continue;
     }
+    acceptedRecords.push(record);
   }
 
-  // Run all embedding tasks in parallel
-  if (embeddingTasks.length > 0) {
-    await Promise.allSettled(embeddingTasks.map((t) => t()));
+  if (acceptedRecords.length > 0) {
+    // sendBatch caps at 100 messages or 256KB per call — the daemon batches
+    // its flush in 100-message chunks, so a single sendBatch covers a tick.
+    await env.SYNC_QUEUE.sendBatch(acceptedRecords.map((record) => ({ body: record })));
   }
 
-  // Update node last_seen
+  // Update node last_seen — proxies the previous /sync semantics so existing
+  // collective heartbeats keep working without waiting on queue drain.
   await env.MYCO_TEAM_DB.prepare('UPDATE nodes SET last_seen = ? WHERE machine_id = ?')
     .bind(epochSeconds(), body.machine_id)
     .run();
 
-  return jsonResponse({ synced, skipped, errors });
+  return jsonResponse({ accepted: acceptedRecords.length, rejected });
+}
+
+/**
+ * Apply one sync record to D1. Returns whether the write was skipped (no-op
+ * because the content_hash matched) and an optional embedding task that the
+ * caller should run after committing the D1 batch.
+ *
+ * Throws on D1 error so the queue runtime treats the message as failed and
+ * applies its retry policy. The DLQ catches messages that keep failing past
+ * the configured max_retries.
+ */
+async function writeRecordToD1(
+  env: Env,
+  record: SyncRecord,
+): Promise<{ skipped: boolean; embedTask?: () => Promise<void> }> {
+  if (record.operation === 'delete') {
+    await handleDelete(env, record);
+    return { skipped: false };
+  }
+
+  if (record.content_hash) {
+    const existing = await env.MYCO_TEAM_DB.prepare(
+      `SELECT content_hash FROM ${record.table} WHERE id = ? AND machine_id = ?`,
+    )
+      .bind(record.id, record.machine_id)
+      .first<{ content_hash: string | null }>();
+    if (existing?.content_hash === record.content_hash) {
+      return { skipped: true };
+    }
+  }
+
+  const { sql, values } = buildInsertParts(record.table, record.data, record.id, record.machine_id);
+  await env.MYCO_TEAM_DB.prepare(sql).bind(...values).run();
+
+  const embeddableField = EMBEDDABLE_TABLES[record.table];
+  if (!embeddableField) return { skipped: false };
+
+  const textContent = record.data[embeddableField] as string | undefined;
+  if (!textContent) return { skipped: false };
+
+  const { table, id, machine_id } = record;
+  if (table === 'spores' && record.data.status !== 'active') {
+    return { skipped: false, embedTask: () => deleteVector(env, table, id, machine_id) };
+  }
+  return {
+    skipped: false,
+    embedTask: () =>
+      embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data)),
+  };
+}
+
+/**
+ * Sync-queue consumer. Receives a batch of SyncRecord messages, applies each
+ * one to D1, and runs any embedding work after the D1 batch settles. Per-
+ * message ack/retry: a single broken message does not block its batch-mates,
+ * and CF Queues handles backoff + DLQ routing once `max_retries` is hit.
+ */
+async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
+  if (!schemaInitialized) {
+    await initD1Schema(env.MYCO_TEAM_DB);
+    schemaInitialized = true;
+  }
+
+  const embeddingTasks: Array<() => Promise<void>> = [];
+  for (const message of batch.messages) {
+    try {
+      const result = await writeRecordToD1(env, message.body);
+      if (result.embedTask) embeddingTasks.push(result.embedTask);
+      message.ack();
+    } catch (err) {
+      // Throwing in the consumer function would fail the entire batch.
+      // Per-message retry confines the failure to this record so siblings
+      // still progress; CF will DLQ the message once max_retries is hit.
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(`team-sync.queue.write_failed ${message.body.table}/${message.body.id}: ${reason}`);
+      message.retry();
+    }
+  }
+
+  // Embedding failures are non-fatal — Vectorize is a best-effort companion
+  // index and a missed upsert is recoverable via /vectors/reindex. We still
+  // run them in parallel for throughput.
+  if (embeddingTasks.length > 0) {
+    await Promise.allSettled(embeddingTasks.map((task) => task()));
+  }
+}
+
+/**
+ * Dead-letter consumer. Logs each failed message so operators can see the
+ * tail-end record id and table without leaving the Worker logs view; the
+ * daemon UI's Outbox tab (PR2) provides the structured replay/discard path.
+ */
+async function handleDlqBatch(batch: MessageBatch<SyncRecord>, _env: Env): Promise<void> {
+  for (const message of batch.messages) {
+    console.error(
+      `team-sync.dlq received ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
+    );
+    message.ack();
+  }
 }
 
 async function handleDelete(env: Env, record: SyncRecord): Promise<void> {
@@ -963,8 +1030,8 @@ export default {
       if (method === 'POST' && path === '/connect') {
         return await handleConnect(request, env);
       }
-      if (method === 'POST' && path === '/sync') {
-        return await handleSync(request, env);
+      if (method === 'POST' && path === '/enqueue') {
+        return await handleEnqueue(request, env);
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);
@@ -1015,4 +1082,17 @@ export default {
     await syncCollectiveSettings(env);
     await sendCollectiveHeartbeat(env);
   },
-} satisfies ExportedHandler<Env>;
+  /**
+   * Queue consumer entry point. Cloudflare invokes this with a MessageBatch
+   * for whichever consumer matched in wrangler.toml; we discriminate by
+   * `batch.queue` name. The DLQ path is the same Worker by design — keeping
+   * one Worker means one deploy and shared types/helpers.
+   */
+  async queue(batch: MessageBatch<SyncRecord>, env: Env, _ctx: ExecutionContext): Promise<void> {
+    if (batch.queue.endsWith('-sync-dlq')) {
+      await handleDlqBatch(batch, env);
+      return;
+    }
+    await handleSyncBatch(batch, env);
+  },
+} satisfies ExportedHandler<Env, SyncRecord>;

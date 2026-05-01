@@ -164,6 +164,8 @@ Resource location: remote
 
     execHandlers.push(
       () => wranglerKvCreateOutput,
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -178,6 +180,14 @@ Resource location: remote
     expect(execCalls[0]).toMatchObject({
       command: 'wrangler',
       args: ['kv', 'namespace', 'create', 'myco-team-abc12345-secrets'],
+    });
+    expect(execCalls[1]).toMatchObject({
+      command: 'wrangler',
+      args: ['queues', 'create', 'myco-team-abc12345-sync'],
+    });
+    expect(execCalls[2]).toMatchObject({
+      command: 'wrangler',
+      args: ['queues', 'create', 'myco-team-abc12345-sync-dlq'],
     });
 
     const npmCall = execCalls.find((c) => c.command === 'npm' && c.args[0] === 'install');
@@ -203,6 +213,8 @@ Resource location: remote
     execHandlers.push(
       () => new Error('A namespace with the same title already exists'),
       () => listOutput,
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -222,8 +234,10 @@ Resource location: remote
     const tomlWithKv = LEGACY_TOML + '\n[[kv_namespaces]]\nbinding = "MYCO_SECRETS"\nid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n';
     fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), tomlWithKv, 'utf-8');
 
-    // Only npm install + secret put + deploy should run; NO kv namespace create
+    // KV is preserved (no create); queue creates still run; then npm install, secret put, deploy
     execHandlers.push(
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -259,6 +273,8 @@ Resource location: remote
   it('returns error when npm install fails', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => new Error('npm ERR! ENOENT package.json'),
     );
 
@@ -272,6 +288,8 @@ Resource location: remote
   it('runs npm install in the deploy dir before wrangler deploy', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -291,6 +309,8 @@ Resource location: remote
   it('teamUpgrade does not trigger remote vector reindex by default', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -307,6 +327,8 @@ Resource location: remote
   it('teamUpgrade triggers remote vector reindex when explicitly requested', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -327,6 +349,8 @@ Resource location: remote
   it('retries remote vector reindex when the new route is not ready immediately after deploy', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',
@@ -349,6 +373,8 @@ Resource location: remote
   it('retries remote vector reindex when a batch request times out', async () => {
     execHandlers.push(
       () => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n',
+      () => '', // wrangler queues create <sync>
+      () => '', // wrangler queues create <dlq>
       () => '',
       () => '',
       () => 'https://myco-team-abc12345.test.workers.dev\n',

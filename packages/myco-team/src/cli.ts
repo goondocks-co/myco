@@ -101,6 +101,15 @@ const TOML_KV_PLACEHOLDER_REGEX = /<YOUR_KV_NAMESPACE_ID>/g;
 /** Regex to extract the KV namespace ID from an existing wrangler.toml. */
 const TOML_KV_ID_REGEX = /\[\[kv_namespaces\]\][\s\S]*?id\s*=\s*"([0-9a-f]+)"/;
 
+/** Regex to match wrangler.toml sync queue placeholder. */
+const TOML_SYNC_QUEUE_PLACEHOLDER_REGEX = /<YOUR_SYNC_QUEUE_NAME>/g;
+
+/** Regex to match wrangler.toml sync DLQ placeholder. */
+const TOML_SYNC_DLQ_PLACEHOLDER_REGEX = /<YOUR_SYNC_DLQ_NAME>/g;
+
+/** Regex to extract the bound sync queue name from an existing wrangler.toml producer block. */
+const TOML_SYNC_QUEUE_NAME_REGEX = /\[\[queues\.producers\]\][\s\S]*?queue\s*=\s*"([^"]+)"/;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -345,6 +354,16 @@ function locateWorkerSource(): string {
   throw new Error(`Cannot find ${WORKER_SOURCE_DIR} — are you running from the myco-team package?`);
 }
 
+/** Compute the sync queue name for this project. */
+function syncQueueName(name: string): string {
+  return `${name}-sync`;
+}
+
+/** Compute the sync dead-letter queue name for this project. */
+function syncDlqName(name: string): string {
+  return `${name}-sync-dlq`;
+}
+
 /**
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
@@ -365,12 +384,37 @@ function prepareDeployDir(vaultDir: string, d1Id: string, kvId: string): string 
         (toml) => toml.replace(TOML_DB_NAME_REGEX, `database_name = "${name}"`),
         (toml) => toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${name}-vectors"`),
         (toml) => toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId),
+        (toml) => toml.replace(TOML_SYNC_QUEUE_PLACEHOLDER_REGEX, syncQueueName(name)),
+        (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(name)),
         (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
         (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
       ],
     }],
     installDepsTimeoutMs: WRANGLER_COMMAND_TIMEOUT_MS * 3,
   });
+}
+
+/**
+ * Ensure a Cloudflare Queue exists for this project. Idempotent — treats
+ * "already exists" as success. Queues are bound by name in wrangler.toml,
+ * so no ID lookup is needed.
+ */
+function ensureQueue(queueName: string): void {
+  try {
+    wrangler(['queues', 'create', queueName]);
+  } catch (err) {
+    const errMsg = (err as Error).message;
+    // Wrangler reports collisions in a few different shapes depending on
+    // version; treat any "already exists" variant as success.
+    if (
+      errMsg.includes('already exists')
+      || errMsg.includes('duplicate')
+      || errMsg.includes('queue with this name already exists')
+    ) {
+      return;
+    }
+    throw err;
+  }
 }
 
 /** Ensure a KV namespace exists for this project. Returns the namespace ID. */
@@ -498,10 +542,21 @@ export async function teamInit(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  // 6. Generate API key
+  // 6. Create Cloudflare Queues for sync + dead-letter (idempotent)
+  console.log('Creating sync queues...');
+  try {
+    ensureQueue(syncQueueName(name));
+    ensureQueue(syncDlqName(name));
+    console.log(`Sync queues ready: ${syncQueueName(name)}, ${syncDlqName(name)}\n`);
+  } catch (err) {
+    console.error(`Failed to create sync queues: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  // 7. Generate API key
   const apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
 
-  // 7. Prepare deployment directory
+  // 8. Prepare deployment directory
   console.log('Preparing worker deployment...');
   const deployDir = prepareDeployDir(vaultDir, d1Id, kvId);
 
@@ -639,6 +694,15 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
     }
   }
 
+  // Sync queues may not exist on pre-queues deployments — create idempotently.
+  // ensureQueue is a no-op when the queue is already provisioned.
+  try {
+    ensureQueue(syncQueueName(workerName));
+    ensureQueue(syncDlqName(workerName));
+  } catch (err) {
+    return { success: false, error: `Failed to provision sync queues: ${(err as Error).message}` };
+  }
+
   try {
     stageDeploymentDir({
       sourceDir: locateWorkerSource(),
@@ -651,6 +715,8 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
           (toml) => toml.replace(TOML_DB_NAME_REGEX, `database_name = "${dbNameMatch?.[1] ?? workerName}"`),
           (toml) => toml.replace(TOML_INDEX_NAME_REGEX, `index_name = "${indexNameMatch?.[1] ?? `${workerName}-vectors`}"`),
           (toml) => toml.replace(TOML_KV_PLACEHOLDER_REGEX, kvId),
+          (toml) => toml.replace(TOML_SYNC_QUEUE_PLACEHOLDER_REGEX, syncQueueName(workerName)),
+          (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(workerName)),
           (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
           (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
         ],
@@ -824,6 +890,18 @@ export async function teamDestroy(vaultDir: string): Promise<void> {
     }
   } catch (error) {
     errors.push(`kv delete failed: ${(error as Error).message}`);
+  }
+
+  // Delete sync queues. Missing queues (older deployments) yield a not-found
+  // error from wrangler, which we swallow.
+  for (const queueName of [syncQueueName(config.worker_name), syncDlqName(config.worker_name)]) {
+    try {
+      wrangler(['queues', 'delete', queueName]);
+    } catch (error) {
+      const errMsg = (error as Error).message;
+      if (errMsg.includes('not found') || errMsg.includes('does not exist') || errMsg.includes('no queue')) continue;
+      errors.push(`queue ${queueName} delete failed: ${errMsg}`);
+    }
   }
 
   if (errors.length > 0) {

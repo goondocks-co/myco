@@ -164,8 +164,6 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [upgrading, setUpgrading] = useState(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const [showMcpSnippet, setShowMcpSnippet] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
   const [rotating, setRotating] = useState(false);
@@ -226,24 +224,6 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
     }
   }, [queryClient]);
 
-  const handleRetryFailed = useCallback(async () => {
-    setRetrying(true);
-    setRetryMessage(null);
-    try {
-      const res = await postJson<{ retried: number }>('/team/retry-failed');
-      setRetryMessage(
-        res.retried > 0
-          ? `Re-queued ${res.retried} record${res.retried > 1 ? 's' : ''} for sync.`
-          : 'No failed records to retry.',
-      );
-      queryClient.invalidateQueries({ queryKey: ['team-status'] });
-    } catch {
-      setRetryMessage('Retry failed.');
-    } finally {
-      setRetrying(false);
-    }
-  }, [queryClient]);
-
   return (
     <div className="space-y-4">
       {/* Worker update banner */}
@@ -291,8 +271,7 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         <StatCard
           label="Pending sync"
           value={String(status.pending_sync_count)}
-          accent={status.dead_letter_count > 0 ? 'terracotta' : 'outline'}
-          sublabel={status.dead_letter_count > 0 ? `${status.dead_letter_count} failed` : undefined}
+          accent={status.pending_sync_count > 0 ? 'sage' : 'outline'}
           href="/logs?component=team-sync"
         />
         <StatCard
@@ -476,25 +455,6 @@ function ConnectedStatus({ status }: { status: TeamStatusResponse }) {
         </p>
         {syncMessage && (
           <p className="text-sm text-primary">{syncMessage}</p>
-        )}
-        {status.dead_letter_count > 0 && (
-          <div className="flex items-center justify-between pt-2 border-t border-outline-variant/10">
-            <p className="text-xs text-on-surface-variant">
-              <span className="text-tertiary font-medium">{status.dead_letter_count} failed</span> record{status.dead_letter_count > 1 ? 's' : ''} — exceeded max retries.{' '}
-              <Link to="/logs?component=team-sync&level=error" className="underline hover:text-on-surface">View logs</Link>
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRetryFailed}
-              disabled={retrying}
-            >
-              {retrying ? 'Retrying...' : 'Retry Failed'}
-            </Button>
-          </div>
-        )}
-        {retryMessage && (
-          <p className="text-xs text-primary">{retryMessage}</p>
         )}
       </Surface>
 
