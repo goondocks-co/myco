@@ -14,9 +14,15 @@ export const CF_API_TOKEN_KV = 'cf_queues_api_token';
 export const CF_ACCOUNT_ID_KV = 'cf_account_id';
 
 export interface QueueStats {
-  /** Approximate number of messages currently in the queue. */
-  depth: number;
-  /** Age (epoch seconds) of the oldest in-queue message, or null if empty. */
+  /**
+   * Approximate number of messages currently in the queue.
+   * `null` means the metric is not available — today every value is null
+   * because CF Queues exposes backlog metrics only via GraphQL Analytics
+   * (separate API not yet wired). The UI renders "—" rather than "0" so
+   * an empty stat doesn't masquerade as a healthy zero.
+   */
+  depth: number | null;
+  /** Age (epoch seconds) of the oldest in-queue message, or null if unknown. */
   oldest_msg_age_s: number | null;
 }
 
@@ -104,10 +110,11 @@ async function fetchQueueStatsForQueue(
   if (!queue) {
     throw new Error(`CF queue not found: ${queueName}`);
   }
-  // Backlog stats live behind a separate GraphQL endpoint; for the v1 of
-  // this surface we return depth=0 when unavailable. The PR2 plan tracks
-  // wiring full GraphQL-driven stats as a later refinement.
-  return { depth: 0, oldest_msg_age_s: null };
+  // Backlog stats live behind the CF Queues GraphQL Analytics endpoint
+  // which isn't wired yet. Return null/null so the UI clearly distinguishes
+  // "stat not yet available" from "queue is empty" — emitting `0` here
+  // would silently lie when a queue is actually backed up.
+  return { depth: null, oldest_msg_age_s: null };
 }
 
 /**
@@ -128,7 +135,11 @@ export async function pullDlqMessages(
   const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ batch_size: batchSize, visibility_timeout_ms: 30_000 }),
+    // Visibility timeout is human-paced: an operator inspects the DLQ row
+    // and decides whether to retry/discard, possibly after a coffee break.
+    // 5 min is long enough to not surprise the user; CF max is 12h if we
+    // ever need to support batch operator review.
+    body: JSON.stringify({ batch_size: batchSize, visibility_timeout_ms: 5 * 60 * 1000 }),
   });
   if (!res.ok) {
     throw new Error(`CF queues pull failed: ${res.status} ${await res.text()}`);
@@ -188,26 +199,50 @@ export async function discardDlqMessages(
   }
 }
 
-const queueIdCache = new Map<string, string>();
+/**
+ * TTL'd queue-id cache with single-flight dedup.
+ *
+ * - 10-minute TTL so a recreated queue (e.g. after destroy + reinstall)
+ *   eventually heals without a Worker redeploy.
+ * - In-flight Promise dedup so concurrent DLQ requests on a cold isolate
+ *   share a single CF API call instead of racing.
+ * - Callers can invoke `invalidateQueueIdCache(queueName)` on a 404 from
+ *   any downstream API to force a refetch on the next call.
+ */
+const QUEUE_ID_CACHE_TTL_MS = 10 * 60 * 1000;
+const queueIdCache = new Map<string, { id: string; expires_at: number }>();
+const queueIdInFlight = new Map<string, Promise<string>>();
+
+export function invalidateQueueIdCache(queueName: string): void {
+  queueIdCache.delete(queueName);
+  queueIdInFlight.delete(queueName);
+}
 
 async function resolveQueueId(
   creds: { token: string; accountId: string },
   queueName: string,
 ): Promise<string> {
   const cached = queueIdCache.get(queueName);
-  if (cached) return cached;
-  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues?name=${encodeURIComponent(queueName)}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
-  });
-  if (!res.ok) {
-    throw new Error(`CF queues list failed: ${res.status} ${await res.text()}`);
-  }
-  const body = await res.json() as { result?: Array<{ queue_id?: string }> };
-  const id = body.result?.[0]?.queue_id;
-  if (!id) {
-    throw new Error(`CF queue not found: ${queueName}`);
-  }
-  queueIdCache.set(queueName, id);
-  return id;
+  if (cached && cached.expires_at > Date.now()) return cached.id;
+
+  const inFlight = queueIdInFlight.get(queueName);
+  if (inFlight) return inFlight;
+
+  const fetchPromise = (async () => {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues?name=${encodeURIComponent(queueName)}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${creds.token}`, 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) {
+      throw new Error(`CF queues list failed: ${res.status} ${await res.text()}`);
+    }
+    const body = await res.json() as { result?: Array<{ queue_id?: string }> };
+    const id = body.result?.[0]?.queue_id;
+    if (!id) throw new Error(`CF queue not found: ${queueName}`);
+    queueIdCache.set(queueName, { id, expires_at: Date.now() + QUEUE_ID_CACHE_TTL_MS });
+    return id;
+  })().finally(() => queueIdInFlight.delete(queueName));
+
+  queueIdInFlight.set(queueName, fetchPromise);
+  return fetchPromise;
 }

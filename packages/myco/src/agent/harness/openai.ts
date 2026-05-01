@@ -19,6 +19,7 @@ import {
 } from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
+import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
 import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
@@ -320,7 +321,7 @@ async function runOpenAIAgent(
 }
 
 export class OpenAIAgentsHarness implements AgentHarness {
-  readonly id = 'openai-agents' as const;
+  readonly id = HARNESS_OPENAI_AGENTS;
 
   supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';

@@ -13,6 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
 
 export interface Migration {
   version: number;
@@ -426,11 +427,11 @@ export const MIGRATIONS: Migration[] = [
           case 'openai':
           case 'openrouter':
           case 'openai-compatible':
-            return 'openai-agents';
+            return HARNESS_OPENAI_AGENTS;
           case 'anthropic':
           case 'ollama':
           case 'lmstudio':
-            return 'claude-sdk';
+            return HARNESS_CLAUDE_SDK;
           default:
             return undefined;
         }

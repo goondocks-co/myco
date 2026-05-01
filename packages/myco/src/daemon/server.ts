@@ -166,6 +166,11 @@ export class DaemonServer {
         res.writeHead(status, headers);
         res.end(JSON.stringify(result.body));
       } catch (error) {
+        if (error instanceof RequestBodyTooLarge) {
+          res.writeHead(413, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({ error: 'request_body_too_large', limit_bytes: MAX_REQUEST_BODY_BYTES }));
+          return;
+        }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
           path: req.url,
           error: (error as Error).message,
@@ -352,13 +357,38 @@ export class DaemonServer {
   }
 }
 
+/**
+ * Hard cap on request body size. The daemon binds 127.0.0.1 only and is
+ * gated by loopback CSRF, so this is defense-in-depth rather than a
+ * security boundary — but unbounded reads from a misbehaving local
+ * client (or a swap-thrashed hung browser) could OOM the daemon.
+ * 8 MB is well above the largest legitimate API request shape.
+ */
+const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+
+class RequestBodyTooLarge extends Error {
+  constructor() { super('Request body exceeds maximum size'); }
+}
+
 function readBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: string) => { data += chunk; });
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_REQUEST_BODY_BYTES) {
+        reject(new RequestBodyTooLarge());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => {
-      try { resolve(data ? JSON.parse(data) : {}); }
-      catch (e) { reject(e); }
+      if (total > MAX_REQUEST_BODY_BYTES) return;
+      try {
+        const text = Buffer.concat(chunks).toString('utf-8');
+        resolve(text ? JSON.parse(text) : {});
+      } catch (e) { reject(e); }
     });
     req.on('error', reject);
   });

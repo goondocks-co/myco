@@ -162,7 +162,16 @@ export interface ContextQuery {
   required: boolean;
 }
 
-export type BuiltinHarnessId = 'claude-sdk' | 'openai-agents';
+/**
+ * Canonical identifiers for the two built-in agent harnesses. Use these
+ * constants instead of literal strings — every cross-file dispatch table,
+ * config migration, provider→harness map, and test fixture should import
+ * from here so a future rename happens in one place.
+ */
+export const HARNESS_CLAUDE_SDK = 'claude-sdk' as const;
+export const HARNESS_OPENAI_AGENTS = 'openai-agents' as const;
+export const BUILTIN_HARNESS_IDS = [HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS] as const;
+export type BuiltinHarnessId = typeof BUILTIN_HARNESS_IDS[number];
 export type HarnessId = string;
 export type ReasoningLevel = 'low' | 'default' | 'high';
 

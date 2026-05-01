@@ -8,6 +8,7 @@ import type {
   RuntimeTokenBudget,
   RuntimeUsage,
 } from './types.js';
+import { HARNESS_CLAUDE_SDK } from './types.js';
 
 export interface PhaseCheckpoint {
   name: string;
@@ -49,7 +50,7 @@ export function abortReasonMessage(abortController?: AbortController): string | 
 
 export function parseCheckpointState(raw: string | null | undefined): RunCheckpointState {
   if (!raw) {
-    return { schemaVersion: 2, harness: 'claude-sdk', phases: {} };
+    return { schemaVersion: 2, harness: HARNESS_CLAUDE_SDK, phases: {} };
   }
   try {
     const parsed = JSON.parse(raw) as Partial<RunCheckpointState> & { harness?: HarnessId };
@@ -59,7 +60,7 @@ export function parseCheckpointState(raw: string | null | undefined): RunCheckpo
     };
     return {
       schemaVersion: 2,
-      harness: parsed.harness ?? parsed.harness ?? 'claude-sdk',
+      harness: parsed.harness ?? parsed.harness ?? HARNESS_CLAUDE_SDK,
       provider: parsed.provider,
       providerConfig: parsed.providerConfig,
       model: parsed.model,
@@ -69,7 +70,7 @@ export function parseCheckpointState(raw: string | null | undefined): RunCheckpo
       phases: parsed.phases ?? {},
     };
   } catch {
-    return { schemaVersion: 2, harness: 'claude-sdk', phases: {} };
+    return { schemaVersion: 2, harness: HARNESS_CLAUDE_SDK, phases: {} };
   }
 }
 

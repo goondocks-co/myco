@@ -12,6 +12,7 @@ import type {
   HarnessScopeSetup,
 } from './types.js';
 import { HarnessExecutionError } from './types.js';
+import { HARNESS_CLAUDE_SDK } from '@myco/agent/types.js';
 import {
   createMaterializedVaultToolServer,
   createScopedVaultToolServer,
@@ -182,7 +183,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
 }
 
 export class ClaudeSdkHarness implements AgentHarness {
-  readonly id = 'claude-sdk' as const;
+  readonly id = HARNESS_CLAUDE_SDK;
 
   supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';

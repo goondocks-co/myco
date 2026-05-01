@@ -1,4 +1,5 @@
 import type { ProviderType, HarnessId } from './types.js';
+import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS } from './types.js';
 import {
   DEFAULT_COMPATIBLE_CONTEXT_WINDOW_TOKENS,
   DEFAULT_FRONTIER_CONTEXT_WINDOW_TOKENS,
@@ -22,33 +23,33 @@ export interface ProviderMetadata {
 
 export const PROVIDER_METADATA_BY_TYPE: Record<ProviderType, ProviderMetadata> = {
   anthropic: {
-    harness: 'claude-sdk',
-    supportedHarnesses: ['claude-sdk'],
+    harness: HARNESS_CLAUDE_SDK,
+    supportedHarnesses: [HARNESS_CLAUDE_SDK],
     defaultContextWindowTokens: DEFAULT_FRONTIER_CONTEXT_WINDOW_TOKENS,
   },
   ollama: {
-    harness: 'claude-sdk',
-    supportedHarnesses: ['claude-sdk', 'openai-agents'],
+    harness: HARNESS_CLAUDE_SDK,
+    supportedHarnesses: [HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS],
     defaultContextWindowTokens: DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS,
   },
   lmstudio: {
-    harness: 'claude-sdk',
-    supportedHarnesses: ['claude-sdk', 'openai-agents'],
+    harness: HARNESS_CLAUDE_SDK,
+    supportedHarnesses: [HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS],
     defaultContextWindowTokens: DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS,
   },
   openai: {
-    harness: 'openai-agents',
-    supportedHarnesses: ['openai-agents'],
+    harness: HARNESS_OPENAI_AGENTS,
+    supportedHarnesses: [HARNESS_OPENAI_AGENTS],
     defaultContextWindowTokens: DEFAULT_FRONTIER_CONTEXT_WINDOW_TOKENS,
   },
   openrouter: {
-    harness: 'openai-agents',
-    supportedHarnesses: ['openai-agents'],
+    harness: HARNESS_OPENAI_AGENTS,
+    supportedHarnesses: [HARNESS_OPENAI_AGENTS],
     defaultContextWindowTokens: DEFAULT_FRONTIER_CONTEXT_WINDOW_TOKENS,
   },
   'openai-compatible': {
-    harness: 'openai-agents',
-    supportedHarnesses: ['openai-agents'],
+    harness: HARNESS_OPENAI_AGENTS,
+    supportedHarnesses: [HARNESS_OPENAI_AGENTS],
     defaultContextWindowTokens: DEFAULT_COMPATIBLE_CONTEXT_WINDOW_TOKENS,
   },
 };
