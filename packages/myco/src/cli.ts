@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     console.log(getPluginVersion());
     return;
   }
-  if (cmd === 'mcp') return (await import('./mcp/server.js')).main();
+  if (cmd === 'mcp') return (await import('./mcp/stdio-bridge.js')).main();
   if (cmd === 'hook') {
     const hookName = args[0];
     const HOOK_DISPATCH: Record<string, () => Promise<{ main: () => Promise<void> }>> = {
