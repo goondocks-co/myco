@@ -22,14 +22,14 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   markSourceRowsSynced: vi.fn(),
   pruneOld: vi.fn(),
   backfillUnsynced: backfillUnsyncedMock,
-  incrementRetryCount: vi.fn(() => []),
+  discardRows: vi.fn(),
   countPending: vi.fn(() => 0),
 }));
 
 mock.module('@myco/daemon/team-sync.js', () => ({
   TeamSyncClient: class {
     connect = connectMock;
-    pushBatch = vi.fn();
+    enqueueBatch = vi.fn();
     getCollectiveStatus = vi.fn();
     getMcpToken = vi.fn(() => null);
     getMcpEndpoint = vi.fn(() => null);

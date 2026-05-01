@@ -70,6 +70,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 27, migrate: (db) => migrateV26ToV27(db) },
   { version: 28, migrate: (db) => migrateV27ToV28(db) },
   { version: 29, migrate: (db) => migrateV28ToV29(db) },
+  { version: 30, migrate: (db) => migrateV29ToV30(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1669,6 +1670,57 @@ function migrateV28ToV29(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(29, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 30 retires the daemon-side dead-letter machinery now that team
+ * sync routes through Cloudflare Queues. The queue runtime owns retry +
+ * DLQ semantics; the daemon's outbox shrinks to a thin offline buffer.
+ *
+ * Steps (in order, inside one transaction):
+ *  1. Discard any rows that the old code had marked dead-lettered. Their
+ *     payloads were rejected by the worker before the queue path existed
+ *     (typically because they carried local-only columns the worker D1
+ *     never had a place for). The source rows still exist locally; if
+ *     they need to reach the team they'll re-enqueue via backfill on
+ *     next daemon startup with the sanitize fix from PR1 in place.
+ *  2. Drop `retry_count` and `last_attempt_at` columns. SQLite ≥ 3.35
+ *     supports DROP COLUMN; we guard via PRAGMA so re-running is a no-op.
+ *
+ * Cost note: SQLite DROP COLUMN rewrites the table internally. Two
+ * consecutive drops mean two rewrites. On the dogfood vault (~840
+ * outbox rows) this is sub-second; on a hypothetical heavy vault with
+ * 100k+ rows it would take a few seconds but still bounded. If that
+ * ever becomes a problem the fix is to collapse into a single
+ * CREATE/INSERT/DROP/RENAME rebuild.
+ */
+function migrateV29ToV30(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'team_outbox');
+
+    if (cols.has('retry_count')) {
+      // Pre-queue dead-lettered rows have stale payloads — delete rather
+      // than re-enqueue. Backfill will re-create them with sanitized
+      // payloads if the source rows are still unsynced.
+      db.prepare(`DELETE FROM team_outbox WHERE sent_at IS NULL AND retry_count >= 10`).run();
+      db.prepare('ALTER TABLE team_outbox DROP COLUMN retry_count').run();
+    }
+
+    if (cols.has('last_attempt_at')) {
+      db.prepare('ALTER TABLE team_outbox DROP COLUMN last_attempt_at').run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(30, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

@@ -10,6 +10,10 @@ compatibility_flags = [ "nodejs_compat", "global_fetch_strictly_public" ]
 SYNC_PROTOCOL_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"
 MYCO_SCHEMA_VERSION = "<MYCO_SCHEMA_VERSION>"
+# Mirror the queue names into env vars so the queue() handler can route on
+# equality (batch.queue === env.SYNC_QUEUE_NAME) instead of suffix-matching.
+SYNC_QUEUE_NAME = "<YOUR_SYNC_QUEUE_NAME>"
+SYNC_DLQ_NAME = "<YOUR_SYNC_DLQ_NAME>"
 
 # D1 database — fill database_id after `wrangler d1 create myco-team`
 [[d1_databases]]
@@ -30,6 +34,30 @@ id = "<YOUR_KV_NAMESPACE_ID>"
 # Workers AI binding
 [ai]
 binding = "AI"
+
+# Sync queue — producer binding for /api/team/enqueue.
+# Queue name is project-scoped; provisioning fills <YOUR_SYNC_QUEUE_NAME>.
+[[queues.producers]]
+binding = "SYNC_QUEUE"
+queue = "<YOUR_SYNC_QUEUE_NAME>"
+
+# Sync queue consumer — receives MessageBatch<SyncPayload>, writes to D1.
+# Failures retry with exponential backoff up to max_retries, then route to
+# the project's DLQ. Batch tuning kept conservative; revisit after
+# operating data lands.
+[[queues.consumers]]
+queue = "<YOUR_SYNC_QUEUE_NAME>"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 10
+dead_letter_queue = "<YOUR_SYNC_DLQ_NAME>"
+
+# Dead-letter consumer — logs failed messages for operator visibility.
+# No automatic recovery; the daemon UI's Outbox tab surfaces replay/discard.
+[[queues.consumers]]
+queue = "<YOUR_SYNC_DLQ_NAME>"
+max_batch_size = 10
+max_batch_timeout = 30
 
 [triggers]
 crons = ["*/5 * * * *"]
