@@ -263,40 +263,58 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 
   async function dispatchCortex(input: ToolInput, start: number): Promise<unknown> {
     const op = input.op ?? 'digest';
-    const {
-      handleCortexCanopyEntry,
-      handleCortexCanopyMap,
-      handleCortexDigest,
-      handleCortexInstructions,
-    } = await import('./cortex.js');
+    const cortex = await import('./cortex.js');
 
     switch (op) {
       case 'digest': {
-        const result = await handleCortexDigest(input as unknown as Parameters<typeof handleCortexDigest>[0], client);
+        const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client);
         logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
         return result;
       }
       case 'instructions': {
-        const result = await handleCortexInstructions(client);
+        const result = await cortex.handleCortexInstructions(client);
         logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       case 'canopy_entry':
+        return await dispatchCanopyEntry(input, start, cortex.handleCortexCanopyEntry);
       case 'canopy_map':
-        break;
+        return await dispatchCanopyMap(input, start, cortex.handleCortexCanopyMap);
       default:
         throw new ToolError('invalid_input', `Unknown op '${String(op)}' for tool ${TOOL_CORTEX}`);
     }
+  }
 
+  /**
+   * Both Canopy ops need vault DB init before reading. When the DB isn't
+   * available we return the empty-map sentinel so callers see a typed
+   * "no data yet" payload rather than a hard error.
+   */
+  async function ensureCanopyDb(): Promise<{ ready: true } | { ready: false; emptyResult: unknown }> {
+    if (await ensureDb()) return { ready: true };
     const { emptyCanopyMap } = await import('./canopy-map.js');
-    if (!(await ensureDb())) {
-      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
-    }
-    if (op === 'canopy_entry') {
-      const result = await handleCortexCanopyEntry(input as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
-      logActivity(TOOL_CORTEX, { op, id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
-      return result;
-    }
+    return { ready: false, emptyResult: emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.') };
+  }
+
+  async function dispatchCanopyEntry(
+    input: ToolInput,
+    start: number,
+    handleCortexCanopyEntry: typeof import('./cortex.js')['handleCortexCanopyEntry'],
+  ): Promise<unknown> {
+    const guard = await ensureCanopyDb();
+    if (!guard.ready) return guard.emptyResult;
+    const result = await handleCortexCanopyEntry(input as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
+    logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
+    return result;
+  }
+
+  async function dispatchCanopyMap(
+    input: ToolInput,
+    start: number,
+    handleCortexCanopyMap: typeof import('./cortex.js')['handleCortexCanopyMap'],
+  ): Promise<unknown> {
+    const guard = await ensureCanopyDb();
+    if (!guard.ready) return guard.emptyResult;
 
     const { resolveCanopyProjectId } = await import('@myco/canopy/identity.js');
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
@@ -309,7 +327,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
     }
     logActivity(TOOL_CORTEX, {
-      op,
+      op: 'canopy_map',
       is_empty: (result as { is_empty?: boolean }).is_empty === true,
       token_estimate: (result as { token_estimate?: number }).token_estimate,
       session_id: sessionId,

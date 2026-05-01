@@ -19,6 +19,7 @@ import {
 } from './types.js';
 import { createLocalVaultMcpServer } from './openai-local-mcp.js';
 import type { ProviderConfig, RuntimeUsage } from '@myco/agent/types.js';
+import { HARNESS_OPENAI_AGENTS } from '@myco/agent/types.js';
 import { DEFAULT_LOCAL_AGENT_CONTEXT_WINDOW_TOKENS } from '@myco/agent/context-windows.js';
 import { ensureOllamaContextVariant } from '@myco/agent/ollama-context.js';
 import { OPENAI_API_KEY_ENV } from '@myco/cli/providers/openai-embeddings.js';
@@ -320,7 +321,7 @@ async function runOpenAIAgent(
 }
 
 export class OpenAIAgentsHarness implements AgentHarness {
-  readonly id = 'openai-agents' as const;
+  readonly id = HARNESS_OPENAI_AGENTS;
 
   supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
@@ -334,52 +335,33 @@ export class OpenAIAgentsHarness implements AgentHarness {
   }
 
   async execute(input: HarnessExecuteInput): Promise<HarnessExecuteResult> {
-    const preparedExecution = await prepareLocalProviderExecution(input.provider, input.model);
-    const mcpServer = createLocalVaultMcpServer(input.toolSurface);
-    await mcpServer.connect();
-
+    const setup: HarnessScopeSetup = {
+      systemPrompt: input.systemPrompt,
+      model: input.model,
+      provider: input.provider,
+      toolSurface: input.toolSurface,
+      logger: input.logger,
+    };
+    const prepared = await prepareOpenAIRun(setup);
     try {
-      const agent = new Agent({
-        name: 'myco-agent',
-        instructions: input.systemPrompt ?? 'You are the Myco agent harness.',
-        model: preparedExecution.model,
-        mcpServers: [mcpServer],
-      });
-      const runner = new Runner({
-        modelProvider: createProvider(preparedExecution.provider),
-      });
-      return await runOpenAIAgent(runner, agent, input.prompt, {
+      return await runOpenAIAgent(prepared.runner, prepared.agent, input.prompt, {
         maxTurns: input.maxTurns,
         sessionRef: input.sessionRef ?? crypto.randomUUID(),
         sessionData: Array.isArray(input.sessionData) ? (input.sessionData as AgentInputItem[]) : [],
         abortController: input.abortController,
       });
     } finally {
-      await mcpServer.close();
+      await prepared.mcpServer.close();
     }
   }
 
   async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
-    const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
-    const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
-    await mcpServer.connect();
-
-    const agent = new Agent({
-      name: 'myco-agent',
-      instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
-      model: preparedExecution.model,
-      mcpServers: [mcpServer],
-    });
-    const runner = new Runner({
-      modelProvider: createProvider(preparedExecution.provider),
-    });
-
+    const prepared = await prepareOpenAIRun(setup);
     let closed = false;
-
     return {
       async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
         if (closed) throw new Error('OpenAIAgentsHarness: scope.run() called after close()');
-        return runOpenAIAgent(runner, agent, input.prompt, {
+        return runOpenAIAgent(prepared.runner, prepared.agent, input.prompt, {
           maxTurns: input.maxTurns,
           sessionRef: crypto.randomUUID(),
           sessionData: [],
@@ -389,10 +371,36 @@ export class OpenAIAgentsHarness implements AgentHarness {
       async close(): Promise<void> {
         if (closed) return;
         closed = true;
-        await mcpServer.close();
+        await prepared.mcpServer.close();
       },
     };
   }
+}
+
+/**
+ * Build the per-setup SDK machinery: connect the MCP server, construct
+ * the Agent + Runner pair. Both `execute` (single-shot, runs once and
+ * closes) and `openScope` (long-lived, scope.run() called N times) share
+ * this — they only diverge in resource lifetime.
+ */
+async function prepareOpenAIRun(setup: HarnessScopeSetup): Promise<{
+  agent: Agent;
+  runner: Runner;
+  mcpServer: ReturnType<typeof createLocalVaultMcpServer>;
+}> {
+  const preparedExecution = await prepareLocalProviderExecution(setup.provider, setup.model);
+  const mcpServer = createLocalVaultMcpServer(setup.toolSurface);
+  await mcpServer.connect();
+  const agent = new Agent({
+    name: 'myco-agent',
+    instructions: setup.systemPrompt ?? 'You are the Myco agent harness.',
+    model: preparedExecution.model,
+    mcpServers: [mcpServer],
+  });
+  const runner = new Runner({
+    modelProvider: createProvider(preparedExecution.provider),
+  });
+  return { agent, runner, mcpServer };
 }
 
 /**

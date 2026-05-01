@@ -12,7 +12,13 @@ import { promisify } from 'node:util';
 import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { writeSecret, readSecrets } from '@myco/config/secrets.js';
-import { countPending, backfillUnsynced } from '@myco/db/queries/team-outbox.js';
+import {
+  countPending,
+  backfillUnsynced,
+  LOCAL_ONLY_OUTBOX_TABLES,
+  LOCAL_ONLY_SYNC_COLUMNS,
+  LOCAL_ONLY_RATIONALES,
+} from '@myco/db/queries/team-outbox.js';
 import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
@@ -296,8 +302,34 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
+        local_only_disclosures: buildLocalOnlyDisclosures(),
       },
     };
+  }
+
+  /**
+   * Snapshot the local-only sync policy for the UI's "What stays local"
+   * disclosure on the Synced data tab. Derived from the canonical
+   * LOCAL_ONLY_OUTBOX_TABLES + LOCAL_ONLY_SYNC_COLUMNS + LOCAL_ONLY_RATIONALES
+   * exports so the UI can never drift from the enforcement.
+   */
+  function buildLocalOnlyDisclosures(): Array<{ table: string; columns: string[]; rationale: string }> {
+    const disclosures: Array<{ table: string; columns: string[]; rationale: string }> = [];
+    for (const table of LOCAL_ONLY_OUTBOX_TABLES) {
+      disclosures.push({
+        table,
+        columns: ['(entire table)'],
+        rationale: LOCAL_ONLY_RATIONALES[table] ?? 'Local-only by policy.',
+      });
+    }
+    for (const [table, columns] of Object.entries(LOCAL_ONLY_SYNC_COLUMNS)) {
+      disclosures.push({
+        table,
+        columns: [...columns],
+        rationale: LOCAL_ONLY_RATIONALES[table] ?? 'Local-only columns by policy.',
+      });
+    }
+    return disclosures;
   }
 
   /** POST /api/team/backfill — enqueue all unsynced rows to the outbox. */

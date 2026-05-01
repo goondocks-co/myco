@@ -23,6 +23,7 @@ import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig, HarnessId } from './types.js';
+import { HARNESS_CLAUDE_SDK } from './types.js';
 import { inferHarnessFromProviderType } from './provider-harness.js';
 
 /**
@@ -170,7 +171,7 @@ export function resolveRunConfig(
   let phaseProviderOverrides: Record<string, { provider?: ProviderConfig; model?: string; maxTurns?: number }> = {};
   let taskParams: Record<string, string | number | boolean> | undefined;
   let harness: HarnessId = config.execution?.harness
-    ?? 'claude-sdk';
+    ?? HARNESS_CLAUDE_SDK;
   try {
     const mycoConfig = loadMergedConfig(vaultDir);
 
@@ -183,7 +184,7 @@ export function resolveRunConfig(
       ?? inferHarnessFromProviderType(globalProvider?.type)
       ?? config.execution?.harness
       ?? inferHarnessFromProviderType(config.execution?.provider?.type)
-      ?? 'claude-sdk';
+      ?? HARNESS_CLAUDE_SDK;
 
     if (taskConfig?.provider) {
       taskProviderOverride = toProviderConfig(taskConfig.provider);

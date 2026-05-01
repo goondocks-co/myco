@@ -43,7 +43,7 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
   'cortex_instructions',
 ]);
 
-const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
+export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
   sessions: [
     'embedded',
     'canopy_injections_offered',
@@ -54,6 +54,17 @@ const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
     'canopy_redundant_reads',
     'canopy_map_tool_calls',
   ],
+};
+
+/**
+ * Human-readable rationale for each local-only table/column group. The Team
+ * page UI surfaces this so operators can see why their data isn't
+ * appearing on a teammate's machine. Co-located with the policy itself so
+ * the disclosure can't drift from the enforcement.
+ */
+export const LOCAL_ONLY_RATIONALES: Record<string, string> = {
+  cortex_instructions: 'Per-machine operating guidance generated from local digest substrate; never synced to the team.',
+  sessions: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
 };
 
 // ---------------------------------------------------------------------------

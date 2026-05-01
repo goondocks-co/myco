@@ -732,11 +732,11 @@ function OutboxTab({ status }: { status: TeamStatusResponse }) {
               <p className="text-xs text-on-surface-variant">Loading…</p>
             ) : (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatCard label="Main depth" value={String(main?.depth ?? '—')} accent="outline" />
+                <StatCard label="Main depth" value={main?.depth == null ? '—' : String(main.depth)} accent="outline" />
                 <StatCard label="Main oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
                 <StatCard
                   label="DLQ depth"
-                  value={String(dlqStats?.depth ?? dlqMessages.length)}
+                  value={dlqStats?.depth == null ? String(dlqMessages.length) : String(dlqStats.depth)}
                   accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
                 />
                 <StatCard label="DLQ oldest" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
@@ -776,35 +776,8 @@ function OutboxTab({ status }: { status: TeamStatusResponse }) {
 
 /* ---------- SyncedTab ---------- */
 
-interface LocalOnlyDisclosure {
-  table: string;
-  columns: string[];
-  rationale: string;
-}
-
-const LOCAL_ONLY_DISCLOSURES: LocalOnlyDisclosure[] = [
-  {
-    table: 'cortex_instructions',
-    columns: ['(entire table)'],
-    rationale: 'Per-machine operating guidance generated from local digest substrate; never synced to the team.',
-  },
-  {
-    table: 'sessions',
-    columns: [
-      'embedded',
-      'canopy_injections_offered',
-      'canopy_injection_total_tokens',
-      'canopy_skips_after_injection',
-      'canopy_reads_after_injection',
-      'canopy_tokens_saved',
-      'canopy_redundant_reads',
-      'canopy_map_tool_calls',
-    ],
-    rationale: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
-  },
-];
-
 function SyncedTab({ status }: { status: TeamStatusResponse }) {
+  const disclosures = status.local_only_disclosures ?? [];
   return (
     <div className="space-y-4">
       <Surface level="low" ghostBorder className="p-5 space-y-3">
@@ -826,7 +799,7 @@ function SyncedTab({ status }: { status: TeamStatusResponse }) {
           These tables and columns are intentionally excluded from team sync. Read this if you're surprised that something doesn't appear on a teammate's machine.
         </p>
         <div className="space-y-3">
-          {LOCAL_ONLY_DISCLOSURES.map((d) => (
+          {disclosures.map((d) => (
             <div key={d.table} className="space-y-1">
               <div className="flex items-center gap-2">
                 <code className="text-sm text-on-surface font-mono">{d.table}</code>

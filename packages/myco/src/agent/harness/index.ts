@@ -1,7 +1,7 @@
 import { ClaudeSdkHarness } from './claude.js';
 import { OpenAIAgentsHarness } from './openai.js';
 import type { AgentHarness } from './types.js';
-import type { HarnessId } from '@myco/agent/types.js';
+import { HARNESS_CLAUDE_SDK, HARNESS_OPENAI_AGENTS, type HarnessId } from '@myco/agent/types.js';
 
 export * from './types.js';
 
@@ -29,5 +29,5 @@ export function listAgentHarnessIds(): HarnessId[] {
   return [...HARNESS_REGISTRY.keys()];
 }
 
-registerAgentHarness('claude-sdk', () => new ClaudeSdkHarness());
-registerAgentHarness('openai-agents', () => new OpenAIAgentsHarness());
+registerAgentHarness(HARNESS_CLAUDE_SDK, () => new ClaudeSdkHarness());
+registerAgentHarness(HARNESS_OPENAI_AGENTS, () => new OpenAIAgentsHarness());
