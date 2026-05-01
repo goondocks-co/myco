@@ -136,26 +136,18 @@ async function getJson(
 
 // ---------------------------------------------------------------------------
 // CLI tool dispatch — invokes `myco-run tool call <name> --json --input <json>`
-// via the project-local launcher (.agents/myco-run.cjs) for ALL Myco tool
-// calls (myco_search, myco_cortex, myco_plans, myco_sessions, myco_skills,
-// myco_spores, myco_agent, collective_*).
+// via the project-local launcher (.agents/myco-run.cjs).
 //
-// Why CLI shell-out instead of HTTP REST: Pi has no native MCP transport, so
-// the standard pattern for non-MCP symbionts is to invoke the Myco CLI for
-// tool calls — the same binary the hook config invokes for capture
-// lifecycle. Tool execution happens in a fresh subprocess that loads the
-// Myco runtime, runs the in-process tool registry, and writes directly to
-// SQLite. This eliminates Pi's previous use of the `/api/mcp/*` REST surface
-// (which existed only as Pi's tool API and is now retired).
+// Pi has no native MCP transport, so the standard pattern for non-MCP
+// symbionts is to invoke the Myco CLI for tool calls — same binary as the
+// hook config. Capture/lifecycle/context HTTP (postEventWithBuffer, postJson)
+// is a separate concern and stays unchanged: those endpoints are universal
+// symbiont infrastructure feeding the daemon's EventBuffer.
 //
-// Capture/lifecycle/context HTTP (postEventWithBuffer, postJson) is
-// untouched — those endpoints are universal symbiont infrastructure.
-//
-// Degraded mode: if Myco isn't installed locally, .agents/myco-run.cjs
-// emits a `runtime_unavailable` envelope and exits non-zero. The catch
-// path returns `{ ok: false }` so the calling tool wrapper can surface the
-// failure to the LLM as "tool unavailable" rather than crashing the
-// extension.
+// Degraded mode: when Myco isn't installed locally, the launcher emits a
+// `runtime_unavailable` envelope and exits non-zero; collapsing every
+// failure mode to `{ ok: false }` lets the LLM see "tool unavailable"
+// instead of an extension crash.
 // ---------------------------------------------------------------------------
 
 const MYCO_TOOL_TIMEOUT_MS = 10000;

@@ -1,21 +1,15 @@
 /**
- * Spore write operations callable from any process that has initialized the
- * vault DB connection.
+ * Spore write operations callable from any process that has the vault DB
+ * initialized. Multi-process safety relies on SQLite WAL mode.
  *
- * The same functions back the daemon's in-process MCP runtime
- * (`mcp/http.ts`) and the `myco tool call` CLI subprocess. Both write directly
- * to SQLite via `getDatabase()`; SQLite WAL mode handles multi-process safety.
- *
- * No HTTP. No DaemonClient. No /api/mcp/* loopback.
- *
- * Embedding side-effect: there is no synchronous embedding nudge here. The
- * daemon's embedding worker (`daemon/embedding/manager.ts`) sweeps unembedded
- * rows on its reconcile schedule, so spores written from any process get
- * embedded without an explicit notification path.
+ * No synchronous embedding nudge: the daemon's reconcile sweep
+ * (`daemon/embedding/manager.ts`) picks up unembedded rows on its own
+ * schedule, so writes from non-daemon processes get embedded without an
+ * explicit notification path.
  */
 
 import { randomBytes } from 'node:crypto';
-import { USER_AGENT_ID, USER_AGENT_NAME } from '@myco/constants.js';
+import { epochSeconds, USER_AGENT_ID, USER_AGENT_NAME } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
@@ -24,10 +18,6 @@ import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;
 const DEFAULT_OBSERVATION_TYPE = 'discovery';
-
-function epochSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
 
 function registerMcpUserAgent(createdAt: number): void {
   registerAgent({

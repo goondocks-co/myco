@@ -1,10 +1,9 @@
 /**
  * myco_sessions — list or retrieve past coding sessions.
  *
- * `op:list` reads via the in-process service in `sessions/list-for-mcp.ts`
- * (formerly the GET /api/mcp/sessions endpoint). `op:get` still uses the
- * daemon's `/api/sessions/:id` REST endpoint, which serves the daemon UI and
- * is not under retirement scope.
+ * `op:list` reads via the in-process service in `sessions/list-for-mcp.ts`.
+ * `op:get` proxies through the daemon's `/api/sessions/:id` REST endpoint
+ * (the surface the daemon UI also consumes).
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';

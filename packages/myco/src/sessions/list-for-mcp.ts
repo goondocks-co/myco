@@ -1,9 +1,7 @@
 /**
- * Session list with the MCP response shape (formerly GET /api/mcp/sessions).
- *
- * Wraps `listSessions` with: plan-id resolution to a single session, ISO date
- * parsing for the `since` filter, and the trimmed projection (summary preview,
- * dropping internal-only fields).
+ * Session list with the MCP response shape. Wraps `listSessions` with plan-id
+ * resolution, ISO date parsing for the `since` filter, and the trimmed
+ * projection (summary preview, internal-only fields dropped).
  */
 
 import { MCP_SESSIONS_DEFAULT_LIMIT, SESSION_SUMMARY_PREVIEW_CHARS } from '@myco/constants.js';

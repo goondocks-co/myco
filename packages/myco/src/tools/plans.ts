@@ -1,10 +1,9 @@
 /**
  * myco_plans — list, retrieve, save, or delete implementation plans.
  *
- * `save`, `get`, `list` call in-process services in `plans/save-mcp.ts` and
- * `plans/list-for-mcp.ts` directly. `delete` still goes through the daemon's
- * `/api/plans/:id` REST endpoint, which is the regular plans REST surface
- * (also used by the daemon UI) and is not under retirement scope.
+ * `save`, `get`, `list` call the in-process services in `plans/save-mcp.ts`
+ * and `plans/list-for-mcp.ts`. `delete` proxies through the daemon's
+ * `/api/plans/:id` REST endpoint (the surface the daemon UI also consumes).
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';

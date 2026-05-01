@@ -1,13 +1,9 @@
 /**
  * myco_spores — list, retrieve, save, supersede, or consolidate spores.
  *
- * Write ops (`save`, `supersede`, `consolidate`) call in-process services in
- * `spores/write.ts` directly; SQLite WAL mode handles multi-process safety,
- * and the daemon's embedding worker sweeps unembedded rows independently.
- *
- * Read ops (`get`, `list`) still go through the daemon's regular `/api/spores`
- * REST surface — those endpoints serve the daemon UI and are not under
- * retirement scope.
+ * Write ops call the in-process services in `spores/write.ts`. Read ops go
+ * through the daemon's `/api/spores` REST surface (the same endpoints that
+ * back the daemon UI).
  */
 
 import type { DaemonClient } from '@myco/hooks/client.js';

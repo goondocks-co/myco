@@ -1,10 +1,7 @@
 /**
- * Save a plan from the MCP write path (formerly POST /api/mcp/plans).
- *
- * Wraps the daemon's `persistPlan` with the validation and logical-key
- * construction the route handler used to do. Callable from any process —
- * daemon-internal MCP runtime or `myco tool call` CLI subprocess — that has
- * the vault DB initialized.
+ * Save a plan from the MCP write path. Wraps `persistPlan` with the session
+ * validation and logical-key construction that the MCP shape requires.
+ * Callable from any process with the vault DB initialized.
  */
 
 import { getLatestOpenBatch } from '@myco/db/queries/batches.js';

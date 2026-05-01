@@ -1,9 +1,7 @@
 /**
- * Plan list/get with the MCP response shape (formerly GET /api/mcp/plans).
- *
- * Centralizes the `PlanSummary` projection — task-list progress fraction,
- * tag splitting — so callers in any process get the same shape without
- * reaching back over HTTP.
+ * Plan list/get with the MCP response shape — the `PlanSummary` projection
+ * (task-list progress fraction, tag splitting) is centralized here so every
+ * caller produces the same wire shape without an HTTP round-trip.
  */
 
 import {
