@@ -111,6 +111,29 @@ export interface EnqueueBatchResponse {
   rejected: RecordRejection[];
 }
 
+export interface QueueStats {
+  depth: number;
+  oldest_msg_age_s: number | null;
+}
+
+export interface QueueStatsResponse {
+  main: QueueStats;
+  dlq: QueueStats;
+}
+
+export interface DlqMessage {
+  msg_id: string;
+  body: Record<string, unknown>;
+  attempts: number;
+  last_failure?: string;
+  enqueued_at?: number;
+}
+
+export interface DlqListResponse {
+  messages: DlqMessage[];
+  next_cursor: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -289,6 +312,37 @@ export class TeamSyncClient {
   async collectiveQuery<T = unknown>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
     const res = await this.request('POST', '/collective/query', { tool, args });
     return res as T;
+  }
+
+  /** Fetch queue + DLQ depth/age stats. Returns null if the worker has no
+   *  CF API token configured yet (UI prompts the operator to set one). */
+  async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
+    return await this.request('GET', '/queue-stats') as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  /** List a page of DLQ messages. */
+  async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
+    return await this.request('GET', `/dlq?limit=${limit}`) as DlqListResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  /** Re-publish DLQ messages back onto the main queue. */
+  async retryDlq(leaseIds: string[]): Promise<{ retried: number }> {
+    return await this.request('POST', '/dlq/retry', { lease_ids: leaseIds }) as { retried: number };
+  }
+
+  /** Permanently discard DLQ messages. */
+  async discardDlq(leaseIds: string[]): Promise<{ discarded: number }> {
+    return await this.request('POST', '/dlq/discard', { lease_ids: leaseIds }) as { discarded: number };
+  }
+
+  /** Stash a CF API token (queues:read,write scope) on the worker. */
+  async setCfApiToken(token: string, accountId: string): Promise<{ configured: true }> {
+    return await this.request('POST', '/tokens/cf-api', { token, account_id: accountId }) as { configured: true };
+  }
+
+  /** Clear the worker's stashed CF API token. */
+  async clearCfApiToken(): Promise<{ cleared: true }> {
+    return await this.request('DELETE', '/tokens/cf-api') as { cleared: true };
   }
 
   /**

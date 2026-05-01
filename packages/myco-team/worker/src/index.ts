@@ -14,6 +14,15 @@ import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash
 import { toCloudSearchResult } from './mcp/result-shape';
 import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
+import {
+  clearCfApiCredentials,
+  discardDlqMessages,
+  fetchQueueStats,
+  pullDlqMessages,
+  readCfApiCredentials,
+  retryDlqMessages,
+  writeCfApiCredentials,
+} from './cf-api';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1102,6 +1111,90 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
   });
 }
 
+/**
+ * Operator surface for queue diagnostics + DLQ management. All endpoints
+ * require the project's CF API token (queues:read,write) stashed in KV.
+ * Daemon flows the token through `POST /tokens/cf-api`; the UI prompts
+ * for it when missing.
+ */
+async function handleQueueStats(env: Env): Promise<Response> {
+  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
+  if (!creds) {
+    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
+  }
+  try {
+    const stats = await fetchQueueStats(creds, env.SYNC_QUEUE_NAME, env.SYNC_DLQ_NAME);
+    return jsonResponse(stats);
+  } catch (err) {
+    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  }
+}
+
+async function handleDlqList(request: Request, env: Env): Promise<Response> {
+  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
+  if (!creds) {
+    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
+  }
+  const url = new URL(request.url);
+  const limit = Number(url.searchParams.get('limit') ?? '50');
+  try {
+    const result = await pullDlqMessages(creds, env.SYNC_DLQ_NAME, limit);
+    return jsonResponse(result);
+  } catch (err) {
+    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  }
+}
+
+async function handleDlqRetry(request: Request, env: Env): Promise<Response> {
+  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
+  if (!creds) {
+    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
+  }
+  const body = await request.json() as { lease_ids?: string[] };
+  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  if (leaseIds.length === 0) {
+    return errorResponse('lease_ids array is required', 400);
+  }
+  try {
+    await retryDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
+    return jsonResponse({ retried: leaseIds.length });
+  } catch (err) {
+    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  }
+}
+
+async function handleDlqDiscard(request: Request, env: Env): Promise<Response> {
+  const creds = await readCfApiCredentials(env.MYCO_SECRETS);
+  if (!creds) {
+    return jsonResponse({ error: 'cf_api_token_not_configured' }, 412);
+  }
+  const body = await request.json() as { lease_ids?: string[] };
+  const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
+  if (leaseIds.length === 0) {
+    return errorResponse('lease_ids array is required', 400);
+  }
+  try {
+    await discardDlqMessages(creds, env.SYNC_DLQ_NAME, leaseIds);
+    return jsonResponse({ discarded: leaseIds.length });
+  } catch (err) {
+    return errorResponse(err instanceof Error ? err.message : String(err), 502);
+  }
+}
+
+async function handleSetCfApiToken(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as { token?: string; account_id?: string };
+  if (!body.token || !body.account_id) {
+    return errorResponse('token and account_id are required', 400);
+  }
+  await writeCfApiCredentials(env.MYCO_SECRETS, body.token, body.account_id);
+  return jsonResponse({ configured: true });
+}
+
+async function handleClearCfApiToken(env: Env): Promise<Response> {
+  await clearCfApiCredentials(env.MYCO_SECRETS);
+  return jsonResponse({ cleared: true });
+}
+
 async function handleCollectiveQuery(request: Request, env: Env): Promise<Response> {
   const config = await readTeamConfig(env);
   if (config.collective_enabled !== 'true' || !config.collective_url) {
@@ -1229,6 +1322,24 @@ export default {
       }
       if (method === 'POST' && path === '/collective/query') {
         return await handleCollectiveQuery(request, env);
+      }
+      if (method === 'GET' && path === '/queue-stats') {
+        return await handleQueueStats(env);
+      }
+      if (method === 'GET' && path === '/dlq') {
+        return await handleDlqList(request, env);
+      }
+      if (method === 'POST' && path === '/dlq/retry') {
+        return await handleDlqRetry(request, env);
+      }
+      if (method === 'POST' && path === '/dlq/discard') {
+        return await handleDlqDiscard(request, env);
+      }
+      if (method === 'POST' && path === '/tokens/cf-api') {
+        return await handleSetCfApiToken(request, env);
+      }
+      if (method === 'DELETE' && path === '/tokens/cf-api') {
+        return await handleClearCfApiToken(env);
       }
 
       return errorResponse('Not found', 404);
