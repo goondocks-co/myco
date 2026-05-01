@@ -133,31 +133,32 @@ describe('TeamSyncClient', () => {
     });
   });
 
-  describe('pushBatch', () => {
-    it('POSTs records to /sync', async () => {
+  describe('enqueueBatch', () => {
+    it('POSTs records to /enqueue', async () => {
       const mockFetch = createMockFetch({
-        '/sync': { status: 200, body: { accepted: 2 } },
+        '/enqueue': { status: 200, body: { accepted: 2, rejected: [] } },
       });
 
       const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
       const records = [makeOutboxRow({ id: 1 }), makeOutboxRow({ id: 2 })];
 
-      const result = await client.pushBatch(records);
+      const result = await client.enqueueBatch(records);
       expect(result.accepted).toBe(2);
+      expect(result.rejected).toEqual([]);
     });
 
     it('includes machine_id and sync_protocol_version', async () => {
       let capturedBody: unknown;
       const mockFetch = vi.fn(async (url: string, init: RequestInit) => {
         capturedBody = JSON.parse(init.body as string);
-        return new Response(JSON.stringify({ accepted: 1 }), {
+        return new Response(JSON.stringify({ accepted: 1, rejected: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }) as unknown as typeof globalThis.fetch;
 
       const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
-      await client.pushBatch([makeOutboxRow()]);
+      await client.enqueueBatch([makeOutboxRow()]);
 
       const body = capturedBody as { machine_id: string; sync_protocol_version: number; records: unknown[] };
       expect(body.machine_id).toBe('test_abc123');
@@ -165,13 +166,28 @@ describe('TeamSyncClient', () => {
       expect(body.records).toHaveLength(1);
     });
 
-    it('throws on sync error', async () => {
+    it('throws on enqueue error', async () => {
       const mockFetch = createMockFetch({
-        '/sync': { status: 409, body: { error: 'version_mismatch' } },
+        '/enqueue': { status: 409, body: { error: 'version_mismatch' } },
       });
 
       const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
-      await expect(client.pushBatch([makeOutboxRow()])).rejects.toThrow(/failed: 409/);
+      await expect(client.enqueueBatch([makeOutboxRow()])).rejects.toThrow(/failed: 409/);
+    });
+
+    it('returns per-record validation rejections', async () => {
+      const mockFetch = createMockFetch({
+        '/enqueue': {
+          status: 200,
+          body: { accepted: 1, rejected: [{ id: 'r2', table: 'unknown_table', error: 'Unknown table: unknown_table' }] },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      const result = await client.enqueueBatch([makeOutboxRow({ id: 1 }), makeOutboxRow({ id: 2 })]);
+      expect(result.accepted).toBe(1);
+      expect(result.rejected).toHaveLength(1);
+      expect(result.rejected[0].error).toContain('Unknown table');
     });
   });
 

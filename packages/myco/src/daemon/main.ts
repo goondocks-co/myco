@@ -1104,7 +1104,6 @@ export async function main(): Promise<void> {
   });
   server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
   server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
-  server.registerRoute('POST', '/api/team/retry-failed', teamHandlers.handleRetryFailed);
   server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
   server.registerRoute('POST', '/api/team/rotate-mcp-token', teamHandlers.handleRotateMcpToken);
 

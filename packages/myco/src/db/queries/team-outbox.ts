@@ -1,8 +1,10 @@
 /**
  * Team outbox CRUD query helpers.
  *
- * The outbox pattern: write paths enqueue records here when team sync is enabled.
- * The sync client flushes pending records in batches to the Cloudflare Worker.
+ * The outbox is a thin local buffer for the daemon → team Worker hop.
+ * Cloudflare Queues handle retries, exponential backoff, and dead-lettering
+ * once a record reaches the worker; the outbox just remembers what we still
+ * need to hand off when the Worker is reachable.
  *
  * All functions obtain the SQLite instance internally via `getDatabase()`.
  * Queries use positional `?` placeholders throughout (better-sqlite3).
@@ -20,9 +22,6 @@ const BURST_BATCH_SIZE = 200;
 
 /** Age in seconds after which sent records are pruned (24 hours). */
 const SENT_PRUNE_AGE_SECONDS = 86_400;
-
-/** Max retry attempts before a record is dead-lettered. */
-export const MAX_OUTBOX_RETRIES = 10;
 
 /** Milliseconds-per-second multiplier for epoch math. */
 const MS_PER_SECOND = 1000;
@@ -81,8 +80,6 @@ export interface OutboxRow {
   machine_id: string;
   created_at: number;
   sent_at: number | null;
-  retry_count: number;
-  last_attempt_at: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +95,6 @@ const OUTBOX_COLUMNS = [
   'machine_id',
   'created_at',
   'sent_at',
-  'retry_count',
-  'last_attempt_at',
 ] as const;
 
 const SELECT_COLUMNS = OUTBOX_COLUMNS.join(', ');
@@ -119,8 +114,6 @@ function toOutboxRow(row: Record<string, unknown>): OutboxRow {
     machine_id: row.machine_id as string,
     created_at: row.created_at as number,
     sent_at: (row.sent_at as number) ?? null,
-    retry_count: (row.retry_count as number) ?? 0,
-    last_attempt_at: (row.last_attempt_at as number) ?? null,
   };
 }
 
@@ -168,7 +161,7 @@ export function syncRow(
  *
  * Inserted with `sent_at = NULL` (pending). Rejects attempts to enqueue
  * tables listed in `LOCAL_ONLY_OUTBOX_TABLES` so private per-machine data
- * can never leak into team sync via a stray call site. Finding #58.
+ * can never leak into team sync via a stray call site.
  */
 export function enqueueOutbox(data: OutboxInsert): OutboxRow {
   if (LOCAL_ONLY_OUTBOX_TABLES.has(data.table_name)) {
@@ -199,30 +192,22 @@ export function enqueueOutbox(data: OutboxInsert): OutboxRow {
   );
 }
 
-/**
- * List pending outbox records (oldest-first).
- *
- * Uses burst sizing: fetches BURST_BATCH_SIZE rows and returns them all.
- * If fewer than BURST_THRESHOLD rows come back, callers get a normal-size
- * batch; if more, the full burst. This avoids a separate COUNT query.
- */
+/** List pending outbox records (oldest-first). */
 export function listPending(limit?: number): OutboxRow[] {
   const db = getDatabase();
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM team_outbox
-     WHERE sent_at IS NULL AND retry_count < ?
+     WHERE sent_at IS NULL
      ORDER BY created_at ASC
      LIMIT ?`,
-  ).all(MAX_OUTBOX_RETRIES, limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
+  ).all(limit ?? BURST_BATCH_SIZE) as Record<string, unknown>[];
 
   return rows.map(toOutboxRow);
 }
 
-/**
- * Mark outbox records as sent by setting sent_at.
- */
+/** Mark outbox records as sent by setting sent_at. */
 export function markSent(ids: number[], sentAt: number): void {
   if (ids.length === 0) return;
 
@@ -237,77 +222,19 @@ export function markSent(ids: number[], sentAt: number): void {
 }
 
 /**
- * Reset sent_at to NULL for records that need to be retried.
- *
- * This allows the sync client to re-enqueue specific records for retry.
+ * Discard outbox rows that the worker rejected at validation time
+ * (e.g. unknown table). These will never succeed; retrying them is
+ * pointless and they would otherwise grow the buffer indefinitely.
  */
-export function markForRetry(ids: number[]): void {
+export function discardRows(ids: number[]): void {
   if (ids.length === 0) return;
 
   const db = getDatabase();
   const placeholders = ids.map(() => '?').join(', ');
 
   db.prepare(
-    `UPDATE team_outbox
-     SET sent_at = NULL
-     WHERE id IN (${placeholders})`,
+    `DELETE FROM team_outbox WHERE id IN (${placeholders})`,
   ).run(...ids);
-}
-
-/**
- * Increment retry_count and set last_attempt_at for failed outbox records.
- *
- * @returns IDs of records that have now reached MAX_OUTBOX_RETRIES (newly dead-lettered).
- */
-export function incrementRetryCount(ids: number[], attemptAt: number): number[] {
-  if (ids.length === 0) return [];
-
-  const db = getDatabase();
-  const placeholders = ids.map(() => '?').join(', ');
-
-  db.prepare(
-    `UPDATE team_outbox
-     SET retry_count = retry_count + 1, last_attempt_at = ?
-     WHERE id IN (${placeholders})`,
-  ).run(attemptAt, ...ids);
-
-  // Return IDs that just hit the threshold
-  const deadLettered = db.prepare(
-    `SELECT id FROM team_outbox
-     WHERE id IN (${placeholders}) AND retry_count >= ?`,
-  ).all(...ids, MAX_OUTBOX_RETRIES) as Array<{ id: number }>;
-
-  return deadLettered.map((r) => r.id);
-}
-
-/**
- * Reset all dead-lettered records back to pending for retry.
- *
- * @returns the number of records reset.
- */
-export function retryDeadLettered(): number {
-  const db = getDatabase();
-
-  const info = db.prepare(
-    `UPDATE team_outbox
-     SET retry_count = 0, last_attempt_at = NULL
-     WHERE sent_at IS NULL AND retry_count >= ?`,
-  ).run(MAX_OUTBOX_RETRIES);
-
-  return info.changes;
-}
-
-/**
- * Count dead-lettered outbox records (exceeded max retries, never sent).
- */
-export function countDeadLettered(): number {
-  const db = getDatabase();
-
-  const row = db.prepare(
-    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL AND retry_count >= ?`,
-  ).get(MAX_OUTBOX_RETRIES) as { count: number };
-
-  return row.count;
 }
 
 /**
@@ -329,15 +256,13 @@ export function pruneOld(): number {
   return info.changes;
 }
 
-/**
- * Count pending (unsent) outbox records.
- */
+/** Count pending (unsent) outbox records. */
 export function countPending(): number {
   const db = getDatabase();
 
   const row = db.prepare(
-    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL AND retry_count < ?`,
-  ).get(MAX_OUTBOX_RETRIES) as { count: number };
+    `SELECT COUNT(*) as count FROM team_outbox WHERE sent_at IS NULL`,
+  ).get() as { count: number };
 
   return row.count;
 }
@@ -372,6 +297,11 @@ const BACKFILL_TABLE_SET = new Set<string>(BACKFILL_TABLES);
  * corresponding source rows. This closes the re-enqueue loop: once
  * synced_at is non-NULL, `backfillUnsynced` skips the row even after
  * the outbox entry is pruned.
+ *
+ * Note: with queues, `synced_at` records that the daemon handed the row
+ * off to the worker — not that the queue consumer wrote it to D1. A
+ * record that ends up in the DLQ will still show synced_at on the local
+ * side; the DLQ surface (PR2) is where operators see and resolve those.
  */
 export function markSourceRowsSynced(records: OutboxRow[], syncedAt: number): void {
   const db = getDatabase();
@@ -433,7 +363,7 @@ export function backfillUnsynced(machineId: string): number {
       for (const row of batchRows) {
         // Strip local-only columns before serializing — backfill must follow
         // the same contract as syncRow(), or restart-driven re-enqueues will
-        // ship columns the worker D1 has no place for and dead-letter them.
+        // ship columns the worker D1 has no place for.
         stmt.run(table, String(row.id), JSON.stringify(sanitizeSyncPayload(table, row)), machineId, now);
       }
     });

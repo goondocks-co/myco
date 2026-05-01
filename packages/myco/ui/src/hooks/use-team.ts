@@ -10,7 +10,6 @@ export interface TeamStatusResponse {
   healthy: boolean;
   health_error?: string;
   pending_sync_count: number;
-  dead_letter_count: number;
   local_team_package_version: string | null;
   cached_team_package_version: string | null;
   deployed_worker_version: string | null;

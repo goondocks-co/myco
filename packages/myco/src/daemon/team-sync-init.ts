@@ -17,7 +17,7 @@ import {
   markSourceRowsSynced,
   pruneOld,
   backfillUnsynced,
-  incrementRetryCount,
+  discardRows,
   countPending,
 } from '@myco/db/queries/team-outbox.js';
 import {
@@ -120,14 +120,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     setTeamClient: (client) => { teamClient = client; },
     reconcileClient,
     registerFlushJob: (powerManager) => {
-      // Always register the flush job; gate at run time so toggling
-      // team.enabled in Settings takes effect without a daemon restart.
-      const logDeadLettered = (ids: number[]) => {
-        if (ids.length > 0) {
-          logger.error(LOG_KINDS.TEAM_SYNC_DEAD_LETTER, `Dead-lettered ${ids.length} records after max retries`, { ids });
-        }
-      };
-
+      // Registered unconditionally; team.enabled is checked at run time so
+      // Settings toggles take effect without a daemon restart.
       powerManager.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
@@ -142,49 +136,46 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
           try {
             logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
-            const result = await client.pushBatch(pending);
+            const result = await client.enqueueBatch(pending);
             const now = epochSeconds();
 
-            // Mark successfully synced records as sent
-            const failedIds = new Set(result.errors.map((e) => e.id));
-            const sentRecords = pending.filter((r) => !failedIds.has(String(r.row_id)));
-            const sentIds = sentRecords.map((r) => r.id);
-            if (sentIds.length > 0) {
-              markSent(sentIds, now);
-              markSourceRowsSynced(sentRecords, now);
+            // Partition pending rows by the worker's per-record outcome in
+            // a single pass. Rejections are validation failures (unknown
+            // table, etc.) and will never succeed, so they're discarded
+            // outright — re-buffering would grow the outbox forever.
+            const rejectedIds = new Set(result.rejected.map((e) => e.id));
+            const rejectedOutboxIds: number[] = [];
+            const handedOff: typeof pending = [];
+            for (const row of pending) {
+              if (rejectedIds.has(String(row.row_id))) {
+                rejectedOutboxIds.push(row.id);
+              } else {
+                handedOff.push(row);
+              }
             }
 
-            // Increment retry count on per-record failures
-            if (result.errors.length > 0) {
-              const failedOutboxIds = pending
-                .filter((r) => failedIds.has(String(r.row_id)))
-                .map((r) => r.id);
-              const deadLettered = incrementRetryCount(failedOutboxIds, now);
-
-              logger.warn(LOG_KINDS.TEAM_SYNC_RETRY, `Retrying ${failedOutboxIds.length} records`, {
-                errors: result.errors.slice(0, 5),
+            if (rejectedOutboxIds.length > 0) {
+              logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
+                rejected: result.rejected.slice(0, 5),
               });
+              discardRows(rejectedOutboxIds);
+            }
 
-              logDeadLettered(deadLettered);
+            if (handedOff.length > 0) {
+              const handedOffIds = handedOff.map((r) => r.id);
+              markSent(handedOffIds, now);
+              markSourceRowsSynced(handedOff, now);
             }
 
             pruneOld();
             logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
-              synced: result.synced, skipped: result.skipped, errors: result.errors.length, total: pending.length,
+              accepted: result.accepted,
+              rejected: result.rejected.length,
+              total: pending.length,
             });
           } catch (err) {
-            // Batch-level failure: increment retry count on all records
-            try {
-              const now = epochSeconds();
-              const allIds = pending.map((r) => r.id);
-              const deadLettered = incrementRetryCount(allIds, now);
-
-              logger.warn(LOG_KINDS.TEAM_SYNC_RETRY, `Batch failed, retrying ${allIds.length} records`, {
-                error: (err as Error).message,
-              });
-
-              logDeadLettered(deadLettered);
-            } catch { /* best-effort retry tracking */ }
+            // Network/server failure: leave pending for the next tick. No
+            // per-row counter — if the worker is down, every tick retries.
             logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
           }
         },
