@@ -1,31 +1,55 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'bun:test';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/tool.js';
+import { upsertPlan } from '@myco/db/queries/plans.js';
+import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 
 describe('myco tool CLI', () => {
   let tmpDir: string;
-  let originalLog: typeof console.log;
-  let logged: string[];
+  let originalStdoutWrite: typeof process.stdout.write;
+  let written: string[];
   let servers: http.Server[];
+
+  beforeAll(() => {
+    setupTestDb();
+  });
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tool-cli-'));
-    logged = [];
+    written = [];
     servers = [];
-    originalLog = console.log;
-    console.log = (...args: unknown[]) => logged.push(args.join(' '));
+    cleanTestDb();
+    originalStdoutWrite = process.stdout.write;
+    process.stdout.write = ((chunk: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+      written.push(Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk));
+      const done = typeof encodingOrCallback === 'function'
+        ? encodingOrCallback
+        : typeof callback === 'function'
+          ? callback
+          : undefined;
+      if (done) done();
+      return true;
+    }) as typeof process.stdout.write;
     process.exitCode = 0;
   });
 
   afterEach(() => {
-    console.log = originalLog;
+    process.stdout.write = originalStdoutWrite;
     for (const server of servers) server.close();
     process.exitCode = 0;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  afterAll(() => {
+    teardownTestDb();
+  });
+
+  function outputJson<T>(): T {
+    return JSON.parse(written.join('')) as T;
+  }
 
   async function startDaemonStub(): Promise<void> {
     const server = http.createServer((req, res) => {
@@ -37,6 +61,23 @@ describe('myco tool CLI', () => {
       if (req.url === '/api/log') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.url?.startsWith('/api/mcp/plans')) {
+        const url = new URL(req.url, 'http://127.0.0.1');
+        const id = url.searchParams.get('id') ?? 'plan-1';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          plans: [{
+            id,
+            title: 'Large plan',
+            status: 'active',
+            progress: 'planned',
+            tags: [],
+            created_at: Date.now(),
+            content: 'x'.repeat(70_000),
+          }],
+        }));
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -51,7 +92,7 @@ describe('myco tool CLI', () => {
   it('lists tools as JSON', async () => {
     await run(['list', '--json'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; result: Array<{ name: string }> };
+    const output = outputJson<{ ok: boolean; result: Array<{ name: string }> }>();
     expect(output.ok).toBe(true);
     expect(output.result.map((tool) => tool.name)).toContain('myco_cortex');
   });
@@ -60,7 +101,7 @@ describe('myco tool CLI', () => {
     await startDaemonStub();
     await run(['call', 'myco_cortex', '--json', '--input', '{"op":"digest","tier":5000}'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; tool: string; result: { tier: number } };
+    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
     expect(output.ok).toBe(true);
     expect(output.tool).toBe('myco_cortex');
     expect(output.result.tier).toBe(5000);
@@ -73,7 +114,7 @@ describe('myco tool CLI', () => {
 
     await run(['call', 'myco_cortex', '--json', '--input', `@${inputPath}`], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; result: { tier: number } };
+    const output = outputJson<{ ok: boolean; result: { tier: number } }>();
     expect(output.ok).toBe(true);
     expect(output.result.tier).toBe(1500);
   });
@@ -82,16 +123,39 @@ describe('myco tool CLI', () => {
     await startDaemonStub();
     await run(['call', '--json', '--input', '{"op":"digest","tier":5000}', 'myco_cortex'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; tool: string; result: { tier: number } };
+    const output = outputJson<{ ok: boolean; tool: string; result: { tier: number } }>();
     expect(output.ok).toBe(true);
     expect(output.tool).toBe('myco_cortex');
     expect(output.result.tier).toBe(5000);
   });
 
+  it('flushes large JSON tool output before returning', async () => {
+    await startDaemonStub();
+    upsertPlan({
+      id: 'large-plan',
+      logical_key: 'session:s:key:large-plan',
+      title: 'Large plan',
+      content: 'x'.repeat(70_000),
+      tags: null,
+      status: 'active',
+      created_at: 1700000000,
+      machine_id: 'local',
+    });
+
+    await run(['call', 'myco_plans', '--json', '--input', '{"op":"get","id":"large-plan"}'], tmpDir);
+
+    const raw = written.join('');
+    const output = JSON.parse(raw) as { ok: boolean; result: { id: string; content: string } };
+    expect(output.ok).toBe(true);
+    expect(output.result.id).toBe('large-plan');
+    expect(output.result.content.length).toBe(70_000);
+    expect(raw.length).toBeGreaterThan(65_536);
+  });
+
   it('returns an error when --input is missing its value', async () => {
     await run(['call', 'myco_cortex', '--json', '--input'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
+    const output = outputJson<{ ok: boolean; error: { code: string } }>();
     expect(output.ok).toBe(false);
     expect(output.error.code).toBe('invalid_arguments');
     expect(process.exitCode).toBe(1);
@@ -100,7 +164,7 @@ describe('myco tool CLI', () => {
   it('returns invalid_input for non-object JSON input', async () => {
     await run(['call', 'myco_cortex', '--json', '--input', '"bad"'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
+    const output = outputJson<{ ok: boolean; error: { code: string } }>();
     expect(output.ok).toBe(false);
     expect(output.error.code).toBe('invalid_input');
     expect(process.exitCode).toBe(1);
@@ -109,7 +173,7 @@ describe('myco tool CLI', () => {
   it('returns JSON error envelope for invalid JSON', async () => {
     await run(['call', 'myco_cortex', '--json', '--input', '{bad'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
+    const output = outputJson<{ ok: boolean; error: { code: string } }>();
     expect(output.ok).toBe(false);
     expect(output.error.code).toBe('invalid_json');
     expect(process.exitCode).toBe(1);
@@ -118,7 +182,7 @@ describe('myco tool CLI', () => {
   it('returns JSON error envelope for unknown tools', async () => {
     await run(['call', 'missing_tool', '--json', '--input', '{}'], tmpDir);
 
-    const output = JSON.parse(logged[0]) as { ok: boolean; error: { code: string } };
+    const output = outputJson<{ ok: boolean; error: { code: string } }>();
     expect(output.ok).toBe(false);
     expect(output.error.code).toBe('unknown_tool');
     expect(process.exitCode).toBe(1);

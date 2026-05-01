@@ -34,16 +34,26 @@ function mockClient(): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-async function listen(handler: http.RequestListener): Promise<URL> {
-  const server = http.createServer(handler);
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-  const address = server.address() as { port: number };
-  return new URL(`http://127.0.0.1:${address.port}/mcp`);
-}
-
-async function startDaemonStub(vaultDir: string): Promise<void> {
+/**
+ * Stub daemon that serves the same routes the real daemon serves to both the
+ * MCP HTTP transport and to the stdio bridge:
+ *   - `/health` so `DaemonClient.ensureRunning()` returns true.
+ *   - `/mcp` via the real `createStreamableMcpHttpHandler` so the bridge
+ *     forwards into the same in-process tool runtime the HTTP client uses.
+ *   - `/api/digest` and `/api/log` so the cortex tool's daemon round-trips
+ *     resolve. (DaemonClient calls these from the in-process tool runtime.)
+ */
+async function startDaemonStub(vaultDir: string, mcpHandler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>): Promise<URL> {
   const server = http.createServer((req, res) => {
+    if (req.url === '/mcp') {
+      void mcpHandler(req, res);
+      return;
+    }
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ myco: true }));
+      return;
+    }
     if (req.url === '/api/digest') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tiers: [{ tier: 5000, content: 'transport digest', generated_at: 1 }] }));
@@ -61,6 +71,7 @@ async function startDaemonStub(vaultDir: string): Promise<void> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address() as { port: number };
   fs.writeFileSync(path.join(vaultDir, 'daemon.json'), JSON.stringify({ pid: process.pid, port: address.port }), 'utf-8');
+  return new URL(`http://127.0.0.1:${address.port}/mcp`);
 }
 
 function childEnv(): Record<string, string> {
@@ -73,18 +84,18 @@ function childEnv(): Record<string, string> {
 }
 
 describe('MCP transport parity', () => {
-  it('stdio and streamable HTTP expose the same tool surface and read-only call shape', async () => {
+  it('stdio bridge and streamable HTTP route into the same in-process tool runtime', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stdio-mcp-'));
     tmpDirs.push(projectRoot);
     const vaultDir = path.join(projectRoot, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
-    await startDaemonStub(vaultDir);
 
-    const httpHandler = createStreamableMcpHttpHandler(vaultDir, mockClient());
-    const httpUrl = await listen((req, res) => {
-      void httpHandler(req, res);
-    });
+    // Single MCP handler serves both transports. The stdio subprocess is a
+    // forwarder; the HTTP client connects to the same `/mcp` URL the bridge
+    // forwards to. Parity is structural: there is only one runtime.
+    const mcpHandler = createStreamableMcpHttpHandler(vaultDir, mockClient());
+    const httpUrl = await startDaemonStub(vaultDir, mcpHandler);
 
     const stdioClient = new Client({ name: 'myco-stdio-test', version: '1.0.0' });
     const httpClient = new Client({ name: 'myco-http-test', version: '1.0.0' });

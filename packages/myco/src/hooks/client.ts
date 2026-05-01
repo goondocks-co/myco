@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { getPluginVersion } from '../version.js';
 
-interface DaemonInfo {
+export interface DaemonInfo {
   pid: number;
   port: number;
 }
@@ -259,6 +259,15 @@ export class DaemonClient {
       if (await this.isHealthy()) return true;
     }
     return false;
+  }
+
+  /**
+   * Public read of the daemon info file. Pairs with `ensureRunning()` for
+   * callers that need the port after confirming the daemon is up (e.g., the
+   * stdio MCP bridge connecting to the in-process tool runtime).
+   */
+  getInfo(): DaemonInfo | null {
+    return this.readDaemonJson();
   }
 
   async restart(opts?: { checkStale?: boolean }): Promise<boolean> {

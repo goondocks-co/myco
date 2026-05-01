@@ -118,6 +118,7 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
    ```typescript
    import type { DaemonClient } from '@myco/hooks/client.js';
    import { buildEndpoint } from './shared.js';
+   import { ToolFailure } from './error.js';
    ```
 
 2. **Define input and result types**:
@@ -134,7 +135,7 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
    }
    ```
 
-3. **Implement the handler function**:
+3. **Implement the handler function with canonical error handling**:
    ```typescript
    export async function handleMyNewTool(
      input: MyNewToolInput,
@@ -143,13 +144,22 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
      // Validate all schema-declared parameters are consumed
      const { param_name, optional_param = defaultValue } = input;
      
-     const endpoint = buildEndpoint('/api/some-operation', {
-       param_name,
-       optional_param,
-     });
-     
-     const response = await client.get(endpoint);
-     return response as MyNewToolResult;
+     try {
+       const endpoint = buildEndpoint('/api/some-operation', {
+         param_name,
+         optional_param,
+       });
+       
+       const response = await client.get(endpoint);
+       return response as MyNewToolResult;
+     } catch (error) {
+       // Use ToolFailure for consistent agent-facing error structure
+       throw new ToolFailure(`Failed to execute ${TOOL_MY_NEW_TOOL}`, {
+         cause: error,
+         context: { param_name, optional_param },
+         retriable: true, // Set false for permanent failures
+       });
+     }
    }
    ```
 
@@ -157,7 +167,23 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
 
 5. **Use DaemonClient for vault access** — all tools proxy through the daemon HTTP API via `client.get()`, `client.post()`, etc.
 
-6. **Handle errors gracefully** — let DaemonClient errors bubble up; they're already structured for agent consumption.
+6. **Handle errors with ToolFailure interface** — import from `packages/myco/src/tools/error.ts` and wrap operational failures with structured context agents can understand:
+   ```typescript
+   import { ToolFailure } from './error.js';
+   
+   // For parameter validation errors
+   throw new ToolFailure('Invalid parameter format', {
+     context: { param_name, expected: 'uuid format' },
+     retriable: false,
+   });
+   
+   // For network/service failures  
+   throw new ToolFailure('Daemon API unavailable', {
+     cause: originalError,
+     context: { endpoint, attempt: retryCount },
+     retriable: true,
+   });
+   ```
 
 ## Procedure C: Multi-Transport Registration
 
@@ -452,6 +478,65 @@ Integrate with the shared tool-runtime supporting multiple transports:
 
 5. **Document transport differences** — note any transport-specific behaviors or limitations in tool documentation.
 
+## Procedure J: Grove Migration Context Handling
+
+Handle project context changes with Grove migration architecture:
+
+1. **Update context injection patterns** for Grove migration compatibility:
+   ```typescript
+   // Old: Direct project context injection
+   const context = await injectProjectContext(sessionId);
+   
+   // New: Grove-aware context injection with fallback
+   const context = await injectGroveContext(sessionId, {
+     fallbackToLocal: true,
+     respectGroveConfig: true,
+   });
+   ```
+
+2. **Handle Grove project boundaries** when tools access cross-project resources:
+   ```typescript
+   export async function handleCrossProjectTool(
+     input: CrossProjectInput,
+     client: DaemonClient,
+   ): Promise<CrossProjectResult> {
+     // Validate Grove project permissions before access
+     const groveAccess = await client.get('/api/grove/validate-access', {
+       targetProject: input.project_id,
+       operation: 'read',
+     });
+     
+     if (!groveAccess.allowed) {
+       throw new ToolFailure('Grove access denied', {
+         context: { project_id: input.project_id, reason: groveAccess.reason },
+         retriable: false,
+       });
+     }
+     
+     // Proceed with Grove-scoped operation
+     return await performGroveOperation(input, client);
+   }
+   ```
+
+3. **Configure Grove-aware tool definitions** with proper scope annotations:
+   ```typescript
+   {
+     name: TOOL_GROVE_AWARE,
+     description: 'Tool that operates across Grove project boundaries',
+     cortex: {
+       guidance: 'Use for cross-project operations in Grove environments',
+       requiresGrove: true, // New Grove requirement flag
+     },
+     annotations: {
+       crossProjectHint: true, // Indicates Grove boundary crossing
+     },
+   }
+   ```
+
+4. **Test Grove project isolation** — verify tools respect Grove project boundaries and fail gracefully when Grove is not configured.
+
+5. **Document Grove migration impact** — note how tools behave differently in Grove vs traditional project structures.
+
 ## Cross-Cutting Gotchas
 
 **Silent parameter drops**: When schema defines a parameter but handler ignores it, agents receive no error — their input is silently dropped. This is the most common drift failure.
@@ -477,3 +562,9 @@ Integrate with the shared tool-runtime supporting multiple transports:
 **Multi-transport registration complexity**: Shared tool-runtime requires consistent registration across MCP stdio, HTTP MCP, and CLI transports. Test all transports when adding new tools.
 
 **Transport-specific error handling**: Different transports expect different response formats. Implement transport-aware error formatting to prevent agent confusion.
+
+**ToolFailure anti-pattern**: Never throw raw Error objects from handlers — always wrap with ToolFailure interface for consistent agent error handling. Missing structured error context causes agent confusion across all transports.
+
+**Code duplication across tool surface**: Avoid copy-pasting handler patterns between tools. Extract shared utilities to `packages/myco/src/tools/shared.js` and import consistently. Duplicated validation logic, error handling, and response formatting patterns create maintenance burden and drift risks.
+
+**Grove context injection failures**: Tools accessing project context must handle Grove migration gracefully. Missing Grove-aware context injection causes failures in Grove environments while working in traditional project structures, creating environment-specific bugs.

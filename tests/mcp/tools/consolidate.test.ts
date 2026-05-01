@@ -1,30 +1,57 @@
 /**
- * Tests for myco_spores consolidate handler.
+ * Tests for myco_spores op:consolidate.
  *
- * The handler proxies through DaemonClient to POST /api/mcp/consolidate.
- * Tests mock the client to verify endpoint usage and response mapping.
+ * Calls the in-process service `consolidateSpores` (no HTTP). Verifies the new
+ * wisdom spore is created, all sources are flipped to 'superseded' inside one
+ * transaction, and a resolution_events row is recorded for each source.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 
-function mockClient(data: unknown = null, ok = true): DaemonClient {
+function mockClient(): DaemonClient {
   return {
-    get: vi.fn().mockResolvedValue({ ok, data }),
-    post: vi.fn().mockResolvedValue({ ok, data }),
+    get: vi.fn(),
+    post: vi.fn(),
   } as unknown as DaemonClient;
 }
 
-describe('myco_spores op: consolidate', () => {
-  it('posts to daemon with full body and returns the consolidation result', async () => {
-    const client = mockClient({
-      new_spore_id: 'gotcha-newwisdom',
-      sources_superseded: ['g-1', 'g-2', 'g-3'],
-      status: 'consolidated',
-      created_at: 1700000000,
-    });
+function seedAgent(id = 'user'): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+  ).run(id, 'User', 1700000000);
+}
+
+function seedSpore(id: string, agentId = 'user'): void {
+  const db = getDatabase();
+  db.prepare(`
+    INSERT INTO spores (id, agent_id, observation_type, status, content, created_at, machine_id)
+    VALUES (?, ?, 'gotcha', 'active', 'seed', ?, 'local')
+  `).run(id, agentId, 1700000000);
+}
+
+interface ConsolidateResult {
+  new_spore_id: string;
+  sources_superseded: string[];
+  status: string;
+  created_at: number;
+}
+
+describe('myco_spores op: consolidate (in-process)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('inserts a wisdom spore and supersedes all sources', async () => {
+    seedAgent();
+    seedSpore('g-1');
+    seedSpore('g-2');
+    seedSpore('g-3');
 
     const result = await handleMycoSpores({
       op: 'consolidate',
@@ -33,51 +60,71 @@ describe('myco_spores op: consolidate', () => {
       observation_type: 'gotcha',
       tags: ['sqlite'],
       reason: 'Three SQLite gotchas',
-    }, client);
+    }, mockClient()) as ConsolidateResult;
 
     expect(result.status).toBe('consolidated');
-    expect(result.new_spore_id).toBe('gotcha-newwisdom');
+    expect(result.new_spore_id).toMatch(/^gotcha-[0-9a-f]+$/);
     expect(result.sources_superseded).toEqual(['g-1', 'g-2', 'g-3']);
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/consolidate', {
-      source_spore_ids: ['g-1', 'g-2', 'g-3'],
-      consolidated_content: '# Merged gotchas',
-      observation_type: 'gotcha',
-      tags: ['sqlite'],
-      reason: 'Three SQLite gotchas',
-    });
+
+    const db = getDatabase();
+    const wisdom = db.prepare('SELECT content, tags FROM spores WHERE id = ?').get(result.new_spore_id) as {
+      content: string;
+      tags: string;
+    };
+    expect(wisdom.content).toBe('# Merged gotchas');
+    expect(wisdom.tags).toBe('sqlite');
+
+    const sourceStatuses = db.prepare("SELECT id, status FROM spores WHERE id IN ('g-1', 'g-2', 'g-3') ORDER BY id").all() as Array<{ id: string; status: string }>;
+    expect(sourceStatuses.map((r) => r.status)).toEqual(['superseded', 'superseded', 'superseded']);
   });
 
-  it('forwards undefined optional fields rather than fabricating them', async () => {
-    const client = mockClient({
-      new_spore_id: 'decision-xyz',
-      sources_superseded: ['d-1', 'd-2'],
-      status: 'consolidated',
-      created_at: 1700000000,
-    });
+  it('records a resolution_events row per source', async () => {
+    seedAgent();
+    seedSpore('d-1');
+    seedSpore('d-2');
 
-    await handleMycoSpores({
+    const result = await handleMycoSpores({
       op: 'consolidate',
       source_spore_ids: ['d-1', 'd-2'],
       consolidated_content: 'merged',
       observation_type: 'decision',
-    }, client);
+    }, mockClient()) as ConsolidateResult;
 
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/consolidate', {
-      source_spore_ids: ['d-1', 'd-2'],
-      consolidated_content: 'merged',
-      observation_type: 'decision',
-      tags: undefined,
-      reason: undefined,
-    });
+    const db = getDatabase();
+    const events = db.prepare(`
+      SELECT action, spore_id, new_spore_id FROM resolution_events
+      WHERE new_spore_id = ? ORDER BY spore_id
+    `).all(result.new_spore_id) as Array<{ action: string; spore_id: string; new_spore_id: string }>;
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.action === 'consolidate')).toBe(true);
+    expect(events.map((e) => e.spore_id)).toEqual(['d-1', 'd-2']);
   });
 
-  it('returns a structured error on daemon failure', async () => {
-    const client = mockClient(null, false);
-    await expect(handleMycoSpores({
+  it('rejects op:consolidate when source_spore_ids is empty', async () => {
+    const result = await handleMycoSpores({
+      op: 'consolidate',
+      source_spore_ids: [],
+      consolidated_content: 'x',
+      observation_type: 'gotcha',
+    }, mockClient());
+    expect(result).toEqual({ ok: false, error: 'source_spore_ids is required for op: consolidate' });
+  });
+
+  it('rejects op:consolidate when consolidated_content is missing', async () => {
+    const result = await handleMycoSpores({
+      op: 'consolidate',
+      source_spore_ids: ['a', 'b'],
+      observation_type: 'gotcha',
+    }, mockClient());
+    expect(result).toEqual({ ok: false, error: 'consolidated_content is required for op: consolidate' });
+  });
+
+  it('rejects op:consolidate when observation_type is missing', async () => {
+    const result = await handleMycoSpores({
       op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       consolidated_content: 'x',
-      observation_type: 'gotcha',
-    }, client)).resolves.toEqual({ ok: false, error: 'Failed to consolidate spores' });
+    }, mockClient());
+    expect(result).toEqual({ ok: false, error: 'observation_type is required for op: consolidate' });
   });
 });

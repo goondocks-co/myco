@@ -1,81 +1,95 @@
 /**
- * Tests for myco_spores save handler.
+ * Tests for myco_spores write paths.
  *
- * The handler now proxies through DaemonClient. Tests mock the client
- * to verify correct endpoint usage and response mapping.
+ * `op:save` calls `saveSpore` against the in-process DB (no HTTP).
+ * `op:get` and `op:list` still proxy through DaemonClient to /api/spores; those
+ * paths keep their mock-based tests.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
+import { getDatabase } from '@myco/db/client.js';
+import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
-  const client = {
+  return {
     get: vi.fn().mockResolvedValue({ ok, data: getData }),
     post: vi.fn().mockResolvedValue({ ok, data: getData }),
   } as unknown as DaemonClient;
-  return client;
 }
 
-describe('myco_spores op: save', () => {
-  it('creates a spore and returns its ID', async () => {
-    const client = mockClient({
-      id: 'gotcha-abcd1234',
-      observation_type: 'gotcha',
-      status: 'active',
-      created_at: 1700000000,
-    });
+interface SporeSaveResult {
+  id: string;
+  observation_type: string;
+  status: string;
+  created_at: number;
+}
 
+describe('myco_spores op: save (in-process)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('creates a spore and returns its envelope', async () => {
     const result = await handleMycoSpores({
       op: 'save',
       content: 'CORS proxy strips auth headers',
       type: 'gotcha',
       tags: ['cors', 'auth'],
-    }, client);
+    }, mockClient()) as SporeSaveResult;
 
-    expect(result.id).toBe('gotcha-abcd1234');
+    expect(result.id).toMatch(/^gotcha-[0-9a-f]+$/);
     expect(result.observation_type).toBe('gotcha');
     expect(result.status).toBe('active');
     expect(typeof result.created_at).toBe('number');
   });
 
-  it('posts to daemon with correct body', async () => {
-    const client = mockClient({
-      id: 'discovery-1234',
-      observation_type: 'discovery',
-      status: 'active',
-      created_at: 1700000000,
-    });
-
-    await handleMycoSpores({
-      op: 'save',
-      content: 'Decision: use RS256',
-      type: 'decision',
-      tags: ['auth'],
-    }, client);
-
-    expect(client.post).toHaveBeenCalledWith('/api/mcp/remember', {
-      content: 'Decision: use RS256',
-      type: 'decision',
-      tags: ['auth'],
-    });
-  });
-
-  it('returns error shape on daemon failure', async () => {
-    const client = mockClient(null, false);
-
+  it('persists spore content + tags to the DB', async () => {
     const result = await handleMycoSpores({
       op: 'save',
-      content: 'Something',
-    }, client);
+      content: 'Decision: use RS256',
+      type: 'decision',
+      tags: ['auth', 'jwt'],
+    }, mockClient()) as SporeSaveResult;
 
+    const db = getDatabase();
+    const row = db.prepare('SELECT id, content, observation_type, tags FROM spores WHERE id = ?').get(result.id) as {
+      content: string;
+      observation_type: string;
+      tags: string;
+    };
+    expect(row.content).toBe('Decision: use RS256');
+    expect(row.observation_type).toBe('decision');
+    expect(row.tags).toBe('auth, jwt');
+  });
+
+  it('registers the user agent on first write', async () => {
+    await handleMycoSpores({
+      op: 'save',
+      content: 'first ever spore',
+      type: 'discovery',
+    }, mockClient());
+
+    const db = getDatabase();
+    const agent = db.prepare("SELECT id FROM agents WHERE id = 'user'").get();
+    expect(agent).toBeTruthy();
+  });
+
+  it('rejects op:save without content', async () => {
+    const result = await handleMycoSpores({ op: 'save', type: 'gotcha' }, mockClient());
+    expect(result).toEqual({ ok: false, error: 'content is required for op: save' });
+  });
+
+  it('rejects op:save without type', async () => {
+    const result = await handleMycoSpores({ op: 'save', content: 'Something' }, mockClient());
     expect(result).toEqual({ ok: false, error: 'type is required for op: save' });
   });
 });
 
-describe('myco_spores op: get', () => {
-  it('requires id', async () => {
+describe('myco_spores op: get (HTTP, unchanged)', () => {
+  it('rejects without id', async () => {
     const client = mockClient({});
     const result = await handleMycoSpores({ op: 'get' }, client);
     expect(result).toEqual({ ok: false, error: 'id is required for op: get' });
@@ -96,7 +110,7 @@ describe('myco_spores op: get', () => {
   });
 });
 
-describe('myco_spores op: list', () => {
+describe('myco_spores op: list (HTTP, unchanged)', () => {
   it('forwards list filters to /api/spores', async () => {
     const client = mockClient({ spores: [{ id: 's1' }], total: 1, offset: 2, limit: 5 });
     const result = await handleMycoSpores({
