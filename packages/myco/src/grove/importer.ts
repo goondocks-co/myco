@@ -22,7 +22,9 @@ export interface ImportProjectCoreResult {
   sessions: number;
   prompt_batches: number;
   activities: number;
+  attachments: number;
   plans: number;
+  artifacts: number;
 }
 
 interface ImportContext {
@@ -106,6 +108,18 @@ interface SourceActivityRow {
   canopy_injection_tokens: number | null;
 }
 
+interface SourceAttachmentRow {
+  id: string;
+  session_id: string | null;
+  prompt_batch_id: number | null;
+  file_path: string;
+  media_type: string | null;
+  description: string | null;
+  data: Uint8Array | null;
+  content_hash: string | null;
+  created_at: number;
+}
+
 interface SourcePlanRow {
   id: string;
   logical_key: string;
@@ -126,7 +140,28 @@ interface SourcePlanRow {
   synced_at: number | null;
 }
 
-type TargetTable = 'sessions' | 'prompt_batches' | 'activities' | 'plans';
+interface SourceArtifactRow {
+  id: string;
+  artifact_type: string | null;
+  source_path: string;
+  title: string;
+  content: string | null;
+  last_captured_by: string | null;
+  tags: string | null;
+  created_at: number;
+  updated_at: number | null;
+  embedded: number | null;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+type TargetTable =
+  | 'sessions'
+  | 'prompt_batches'
+  | 'activities'
+  | 'attachments'
+  | 'plans'
+  | 'artifacts';
 
 const IMPORT_ORIGIN = 'legacy_project_vault';
 
@@ -136,7 +171,9 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     sessions: 0,
     prompt_batches: 0,
     activities: 0,
+    attachments: 0,
     plans: 0,
+    artifacts: 0,
   };
 
   ctx.targetDb.transaction(() => {
@@ -162,6 +199,19 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       if (importActivity(ctx, row)) result.activities += 1;
     }
 
+    const attachments = listSourceAttachments(ctx.sourceDb);
+    for (const row of attachments) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'attachments',
+        sourceId: row.id,
+        targetTable: 'attachments',
+        targetId: () => createGroveEraId('attachment'),
+      });
+    }
+    for (const row of attachments) {
+      if (importAttachment(ctx, row)) result.attachments += 1;
+    }
+
     const plans = listSourcePlans(ctx.sourceDb);
     for (const row of plans) {
       ensureTextMapping(ctx, {
@@ -174,6 +224,20 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     }
     for (const row of plans) {
       if (importPlan(ctx, row)) result.plans += 1;
+    }
+
+    const artifacts = listSourceArtifacts(ctx.sourceDb);
+    for (const row of artifacts) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'artifacts',
+        sourceId: row.id,
+        targetTable: 'artifacts',
+        targetId: () => createGroveEraId('artifact'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of artifacts) {
+      if (importArtifact(ctx, row)) result.artifacts += 1;
     }
 
     rebuildCoreFtsIndexes(ctx.targetDb);
@@ -423,6 +487,41 @@ function insertActivity(ctx: ImportContext, row: SourceActivityRow, targetId?: n
     : ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
+function importAttachment(ctx: ImportContext, row: SourceAttachmentRow): boolean {
+  const mapping = requireMapping(ctx, 'attachments', row.id);
+  if (targetRowExists(ctx.targetDb, 'attachments', mapping.target_id)) {
+    markImported(ctx, 'attachments', row.id);
+    return false;
+  }
+
+  const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
+  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+
+  ctx.targetDb.prepare(
+    `INSERT INTO attachments (
+       id, project_id, session_id, prompt_batch_id, file_path,
+       media_type, description, data, content_hash, created_at
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    sessionId,
+    promptBatchId,
+    row.file_path,
+    row.media_type,
+    row.description,
+    row.data,
+    row.content_hash,
+    row.created_at,
+  );
+
+  markImported(ctx, 'attachments', row.id);
+  return true;
+}
+
 function importPlan(ctx: ImportContext, row: SourcePlanRow): boolean {
   const mapping = requireMapping(ctx, 'plans', row.id);
   if (targetRowExists(ctx.targetDb, 'plans', mapping.target_id)) {
@@ -466,6 +565,45 @@ function importPlan(ctx: ImportContext, row: SourcePlanRow): boolean {
   );
 
   markImported(ctx, 'plans', row.id);
+  return true;
+}
+
+function importArtifact(ctx: ImportContext, row: SourceArtifactRow): boolean {
+  const mapping = requireMapping(ctx, 'artifacts', row.id);
+  if (targetRowExists(ctx.targetDb, 'artifacts', mapping.target_id)) {
+    markImported(ctx, 'artifacts', row.id);
+    return false;
+  }
+
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO artifacts (
+       id, project_id, artifact_type, source_path, title, content,
+       last_captured_by, tags, created_at, updated_at, embedded,
+       machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    row.artifact_type,
+    row.source_path,
+    row.title,
+    row.content,
+    row.last_captured_by,
+    row.tags,
+    row.created_at,
+    row.updated_at,
+    0,
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'artifacts', row.id);
   return true;
 }
 
@@ -618,6 +756,16 @@ function listSourceActivities(db: Database): SourceActivityRow[] {
   ).all() as SourceActivityRow[];
 }
 
+function listSourceAttachments(db: Database): SourceAttachmentRow[] {
+  return db.prepare(
+    `SELECT
+       id, session_id, prompt_batch_id, file_path, media_type,
+       description, data, content_hash, created_at
+     FROM attachments
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceAttachmentRow[];
+}
+
 function listSourcePlans(db: Database): SourcePlanRow[] {
   return db.prepare(
     `SELECT
@@ -627,6 +775,16 @@ function listSourcePlans(db: Database): SourcePlanRow[] {
      FROM plans
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourcePlanRow[];
+}
+
+function listSourceArtifacts(db: Database): SourceArtifactRow[] {
+  return db.prepare(
+    `SELECT
+       id, artifact_type, source_path, title, content, last_captured_by,
+       tags, created_at, updated_at, embedded, machine_id, synced_at
+     FROM artifacts
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceArtifactRow[];
 }
 
 function assertNonEmpty(value: string, fieldName: string): void {

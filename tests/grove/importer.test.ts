@@ -50,7 +50,9 @@ describe('Grove project core importer', () => {
       sessions: 2,
       prompt_batches: 2,
       activities: 1,
+      attachments: 1,
       plans: 1,
+      artifacts: 1,
     });
 
     const parentSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-parent', targetDb)?.target_id;
@@ -58,13 +60,19 @@ describe('Grove project core importer', () => {
     const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 1, targetDb)?.target_id);
     const childBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
     const activityId = Number(lookupImportMappingBySource(migrationId, 'activities', 1, targetDb)?.target_id);
+    const attachmentId = lookupImportMappingBySource(migrationId, 'attachments', 'legacy-attachment', targetDb)?.target_id;
     const planId = lookupImportMappingBySource(migrationId, 'plans', 'legacy-plan', targetDb)?.target_id;
+    const artifactId = lookupImportMappingBySource(migrationId, 'artifacts', 'legacy-artifact', targetDb)?.target_id;
 
     expect(parentSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).not.toBe('legacy-session');
+    expect(attachmentId).toMatch(/^att_[0-9a-f]{32}$/);
+    expect(attachmentId).not.toBe('legacy-attachment');
     expect(planId).toMatch(/^plan_[0-9a-f]{32}$/);
     expect(planId).not.toBe('legacy-plan');
+    expect(artifactId).toMatch(/^art_[0-9a-f]{32}$/);
+    expect(artifactId).not.toBe('legacy-artifact');
     expect(parentBatchId).not.toBe(1);
     expect(childBatchId).not.toBe(2);
     expect(activityId).not.toBe(1);
@@ -107,6 +115,23 @@ describe('Grove project core importer', () => {
     expect(activity.prompt_batch_id).toBe(childBatchId);
     expect(activity.tool_name).toBe('Read');
 
+    const attachment = getRow<{
+      project_id: string;
+      session_id: string;
+      prompt_batch_id: number;
+      file_path: string;
+      media_type: string;
+      description: string;
+      data: Uint8Array;
+    }>(targetDb, 'SELECT project_id, session_id, prompt_batch_id, file_path, media_type, description, data FROM attachments WHERE id = ?', attachmentId);
+    expect(attachment.project_id).toBe(TARGET_PROJECT_ID);
+    expect(attachment.session_id).toBe(childSessionId);
+    expect(attachment.prompt_batch_id).toBe(childBatchId);
+    expect(attachment.file_path).toBe('attachments/legacy-session-2.png');
+    expect(attachment.media_type).toBe('image/png');
+    expect(attachment.description).toBe('Prompt image');
+    expect(Array.from(attachment.data)).toEqual([1, 2, 3, 4]);
+
     const plan = getRow<{
       id: string;
       project_id: string;
@@ -123,12 +148,30 @@ describe('Grove project core importer', () => {
     expect(plan.embedded).toBe(0);
     expect(plan.machine_id).toBe('source-machine');
 
+    const artifact = getRow<{
+      id: string;
+      project_id: string;
+      artifact_type: string;
+      source_path: string;
+      title: string;
+      content: string;
+      embedded: number;
+      machine_id: string;
+    }>(targetDb, 'SELECT id, project_id, artifact_type, source_path, title, content, embedded, machine_id FROM artifacts WHERE id = ?', artifactId);
+    expect(artifact.project_id).toBe(TARGET_PROJECT_ID);
+    expect(artifact.artifact_type).toBe('doc');
+    expect(artifact.source_path).toBe('docs/legacy.md');
+    expect(artifact.title).toBe('Legacy artifact');
+    expect(artifact.content).toContain('expensive artifact content');
+    expect(artifact.embedded).toBe(0);
+    expect(artifact.machine_id).toBe('source-machine');
+
     expect(matchCount(targetDb, 'sessions_fts', 'child')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'prompt_batches_fts', 'steering')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'activities_fts', 'README')).toBeGreaterThan(0);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(6);
+    expect(mappings).toHaveLength(8);
     expect(new Set(mappings.map((mapping) => mapping.status))).toEqual(new Set(['imported']));
   });
 
@@ -158,13 +201,17 @@ describe('Grove project core importer', () => {
       sessions: 0,
       prompt_batches: 0,
       activities: 0,
+      attachments: 0,
       plans: 0,
+      artifacts: 0,
     });
     expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'prompt_batches', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'activities', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'attachments', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'plans', TARGET_PROJECT_ID)).toBe(1);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(6);
+    expect(countRows(targetDb, 'artifacts', TARGET_PROJECT_ID)).toBe(1);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(8);
   });
 });
 
@@ -308,6 +355,23 @@ function seedSourceProject(db: Database): void {
   );
 
   db.prepare(
+    `INSERT INTO attachments (
+       id, session_id, prompt_batch_id, file_path, media_type,
+       description, data, content_hash, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-attachment',
+    'legacy-session',
+    2,
+    'attachments/legacy-session-2.png',
+    'image/png',
+    'Prompt image',
+    new Uint8Array([1, 2, 3, 4]),
+    'attachment-hash',
+    226,
+  );
+
+  db.prepare(
     `INSERT INTO plans (
        id, logical_key, status, author, title, content, source_path, tags,
        session_id, prompt_batch_id, content_hash, processed, created_at,
@@ -331,6 +395,26 @@ function seedSourceProject(db: Database): void {
     1,
     'source-machine',
     250,
+  );
+
+  db.prepare(
+    `INSERT INTO artifacts (
+       id, artifact_type, source_path, title, content, last_captured_by,
+       tags, created_at, updated_at, embedded, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-artifact',
+    'doc',
+    'docs/legacy.md',
+    'Legacy artifact',
+    'Preserve expensive artifact content.',
+    'codex',
+    '["doc","migration"]',
+    260,
+    265,
+    1,
+    'source-machine',
+    270,
   );
 }
 
