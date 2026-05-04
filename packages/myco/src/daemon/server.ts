@@ -8,6 +8,7 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import { requestContextFromHttpHeaders } from '../tools/request-context.js';
 
 const DEFAULT_STATUS = 200;
 
@@ -150,11 +151,14 @@ export class DaemonServer {
       try {
         const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
         const body = needsBody ? await readBody(req) : undefined;
+        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir);
         const result = await match.handler({
           body,
           query: match.query,
           params: match.params,
           pathname: match.pathname,
+          headers: req.headers,
+          requestContext,
         });
         const status = result.status ?? DEFAULT_STATUS;
         if (Buffer.isBuffer(result.body)) {

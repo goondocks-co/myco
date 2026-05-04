@@ -3,6 +3,29 @@ import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 
 export interface StatsResponse {
+  context: {
+    project: {
+      id: string;
+      name: string;
+      root: string;
+      manifest_state: 'present' | 'missing' | 'invalid';
+    };
+    grove: {
+      id: string | null;
+      name: string | null;
+      slug: string | null;
+      mode: 'local' | null;
+      binding_id: string | null;
+      connection_state: 'local-only' | 'pending' | 'legacy';
+    };
+    request: {
+      source: string;
+      project_id: string;
+      grove_id: string | null;
+      machine_id: string;
+      session_id: string | null;
+    };
+  };
   daemon: {
     pid: number;
     port: number;

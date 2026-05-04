@@ -370,7 +370,7 @@ function SidebarContent({
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
   const { data: stats } = useDaemon();
-  const vaultName = stats?.vault.name;
+  const vaultName = stats?.context.project.name ?? stats?.vault.name;
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const { data: unreadData } = useUnreadCount();

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
+import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,6 +51,33 @@ describe('DaemonServer', () => {
 
     const res = await fetch(`http://127.0.0.1:${server.port}/unknown`);
     expect(res.status).toBe(404);
+
+    await server.stop();
+  });
+
+  it('attaches request context to daemon routes', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    server.registerRoute('GET', '/api/context-echo', async (req) => ({
+      body: { context: req.requestContext },
+    }));
+    await server.start();
+
+    const context = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/tmp/project-a',
+      projectId: 'project-a',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/context-echo`, {
+      headers: requestContextHeaders(context),
+    });
+    const body = await res.json() as { context: { projectId: string; groveId: string; source: string } };
+
+    expect(body.context.projectId).toBe('project-a');
+    expect(body.context.groveId).toBe('grove-a');
+    expect(body.context.source).toBe('headers');
 
     await server.stop();
   });

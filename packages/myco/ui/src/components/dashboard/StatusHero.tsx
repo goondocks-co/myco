@@ -29,6 +29,14 @@ function isProcessing(stats: StatsResponse): boolean {
   return stats.embedding.queue_depth > 0 || stats.unprocessed_batches > 0;
 }
 
+function contextLabel(stats: StatsResponse): string {
+  const projectName = stats.context.project.name || stats.vault.name;
+  const groveName = stats.context.grove.name ?? stats.context.grove.slug;
+  if (groveName) return `${projectName} / ${groveName}`;
+  if (stats.context.grove.connection_state === 'pending') return `${projectName} / pending Grove`;
+  return `${projectName} / legacy vault`;
+}
+
 /* ---------- SVG Decoration ---------- */
 
 function MycelialTree({ active }: { active: boolean }) {
@@ -86,6 +94,10 @@ export function StatusHero({ stats }: { stats: StatsResponse }) {
         <h1 className="font-serif text-5xl italic text-on-surface drop-shadow-xs">
           Myco
         </h1>
+
+        <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-on-surface-variant/80">
+          {contextLabel(stats)}
+        </p>
 
         <p className="font-mono text-sm text-outline">
           Node connectivity at {connectivity}% capacity

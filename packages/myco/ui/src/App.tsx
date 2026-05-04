@@ -20,7 +20,7 @@ import { useDaemon } from './hooks/use-daemon';
  */
 function useDocumentTitle() {
   const { data } = useDaemon();
-  const name = data?.vault.name ?? null;
+  const name = data?.context.project.name ?? data?.vault.name ?? null;
   useEffect(() => {
     document.title = name ? `${name} \u2014 Myco` : 'Myco';
   }, [name]);
