@@ -54,6 +54,8 @@ export async function run(args: string[]): Promise<void> {
   const embeddingUrl = parseStringFlag(args, '--embedding-url');
   const groveRef = parseStringFlag(args, '--grove');
   const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
+  const existingProjectManifest = loadProjectManifest(vaultDir);
+  const grove = resolveGrove(groveRef ?? existingProjectManifest?.grove?.slug);
 
   // Flag-based embedding config for new vaults via non-interactive / scripted installs.
   // Existing vaults are configured through the dashboard, not CLI flags.
@@ -107,8 +109,6 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Symbiont selection and registration ---
 
-  const existingProjectManifest = loadProjectManifest(vaultDir);
-  const grove = resolveGrove(groveRef ?? existingProjectManifest?.grove?.slug);
   const projectManifest = ensureProjectManifest(vaultDir, {
     projectName: path.basename(projectRoot),
     groveSlug: grove.slug,

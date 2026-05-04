@@ -116,6 +116,21 @@ describe('myco init', () => {
     expect(fs.existsSync(path.join(targetVault, 'myco.yaml'))).toBe(true);
   });
 
+  it('rejects an unknown --grove before creating a partial vault', async () => {
+    const target = path.join(testDir, 'unknown-grove-project');
+    fs.mkdirSync(target, { recursive: true });
+
+    await expect(run([
+      '--project', target,
+      '--grove', 'does-not-exist',
+      '--embedding-model', 'bge-m3',
+      '--non-interactive',
+    ])).rejects.toThrow(/Unknown Grove: does-not-exist/);
+
+    expect(fs.existsSync(path.join(target, '.myco'))).toBe(false);
+    expect(initDatabase).not.toHaveBeenCalled();
+  });
+
   it('writes valid v3 config with explicit values', async () => {
     await run([
       '--embedding-provider', 'ollama',
