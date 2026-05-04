@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
+import { parse as parseToml } from 'smol-toml';
 
 // Mock SQLite database layer — avoid native extension dependency in tests
 const { mockDb } = vi.hoisted(() => {
@@ -52,11 +53,13 @@ describe('myco init', () => {
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-init-test-'));
     vault = path.join(testDir, '.myco');
+    process.env.MYCO_HOME = path.join(testDir, '.home');
     vi.clearAllMocks();
     vi.mocked(resolveVaultDir).mockReturnValue(vault);
   });
 
   afterEach(() => {
+    delete process.env.MYCO_HOME;
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -64,6 +67,7 @@ describe('myco init', () => {
     await run(['--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
+    expect(fs.existsSync(path.join(vault, 'project.toml'))).toBe(true);
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
   });
 
@@ -77,10 +81,39 @@ describe('myco init', () => {
   it('creates all required subdirectories', async () => {
     await run(['--embedding-model', 'bge-m3']);
 
-    const dirs = ['buffer', 'attachments', 'logs'];
+    const dirs = ['buffer', 'attachments', 'logs', 'migration', 'tasks'];
     for (const dir of dirs) {
       expect(fs.existsSync(path.join(vault, dir))).toBe(true);
     }
+  });
+
+  it('writes project manifest and registers into the default Grove', async () => {
+    await run(['--embedding-model', 'bge-m3']);
+
+    const manifest = parseToml(fs.readFileSync(path.join(vault, 'project.toml'), 'utf-8')) as Record<string, any>;
+    expect(manifest.project.id).toStartWith('proj_');
+    expect(manifest.grove.binding_id).toStartWith('gbind_');
+    expect(manifest.grove.slug).toBe('default');
+
+    const grovesDir = path.join(process.env.MYCO_HOME!, 'groves');
+    const groveIds = fs.readdirSync(grovesDir);
+    expect(groveIds).toHaveLength(1);
+    expect(fs.existsSync(path.join(grovesDir, groveIds[0], 'registry', 'projects.toml'))).toBe(true);
+  });
+
+  it('honors --project and --grove for explicit project registration', async () => {
+    const home = process.env.MYCO_HOME!;
+    const { createGrove } = await import('@myco/grove/registry.js');
+    createGrove('Work', home);
+    const target = path.join(testDir, 'target-project');
+    fs.mkdirSync(target, { recursive: true });
+
+    await run(['--project', target, '--grove', 'work', '--embedding-model', 'bge-m3', '--non-interactive']);
+
+    const targetVault = path.join(target, '.myco');
+    const manifest = parseToml(fs.readFileSync(path.join(targetVault, 'project.toml'), 'utf-8')) as Record<string, any>;
+    expect(manifest.grove.slug).toBe('work');
+    expect(fs.existsSync(path.join(targetVault, 'myco.yaml'))).toBe(true);
   });
 
   it('writes valid v3 config with explicit values', async () => {

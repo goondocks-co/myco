@@ -1,6 +1,9 @@
 import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
+import { resolveProjectVaultDir } from '../grove/paths.js';
+import { registerProjectInGrove, resolveGrove } from '../grove/registry.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
@@ -15,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Directories that must exist inside a vault for correct operation. */
-const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs'] as const;
+const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs', 'migration', 'tasks'] as const;
 
 function printBanner(): void {
   const version = getPluginVersion();
@@ -38,7 +41,10 @@ export async function run(args: string[]): Promise<void> {
   // Vaults are always project-local at `<projectRoot>/.myco/`. There is no
   // escape hatch — resolveVaultDir walks up from cwd (worktree-aware) to
   // find the right project root.
-  const vaultDir = resolveVaultDir();
+  const projectArg = parseStringFlag(args, '--project');
+  const explicitProjectRoot = projectArg ? path.resolve(projectArg) : undefined;
+  const vaultDir = explicitProjectRoot ? resolveProjectVaultDir(explicitProjectRoot) : resolveVaultDir();
+  const projectRoot = explicitProjectRoot ?? resolveProjectRoot(vaultDir);
 
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 
@@ -46,6 +52,7 @@ export async function run(args: string[]): Promise<void> {
   const embeddingProvider = parseStringFlag(args, '--embedding-provider');
   const embeddingModel = parseStringFlag(args, '--embedding-model');
   const embeddingUrl = parseStringFlag(args, '--embedding-url');
+  const groveRef = parseStringFlag(args, '--grove');
   const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
 
   // Flag-based embedding config for new vaults via non-interactive / scripted installs.
@@ -100,7 +107,20 @@ export async function run(args: string[]): Promise<void> {
 
   // --- Symbiont selection and registration ---
 
-  const projectRoot = resolveProjectRoot(vaultDir);
+  const existingProjectManifest = loadProjectManifest(vaultDir);
+  const grove = resolveGrove(groveRef ?? existingProjectManifest?.grove?.slug);
+  const projectManifest = ensureProjectManifest(vaultDir, {
+    projectName: path.basename(projectRoot),
+    groveSlug: grove.slug,
+    groveBindingId: existingProjectManifest?.grove?.binding_id,
+  });
+  registerProjectInGrove(grove.id, {
+    projectId: projectManifest.project.id,
+    projectName: projectManifest.project.name ?? path.basename(projectRoot),
+    projectRoot,
+    bindingId: projectManifest.grove?.binding_id,
+  });
+
   const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);
   const detectedNames = new Set(detected.map((d) => d.manifest.name));
@@ -180,6 +200,7 @@ export async function run(args: string[]): Promise<void> {
     console.log('=== Myco Updated ===');
   }
   console.log(`Project:  ${path.basename(projectRoot)}`);
+  console.log(`Grove:    ${grove.name} (${grove.slug})`);
   console.log(`Vault:    ${vaultDir}`);
   if (daemonUrl) {
     console.log(`Dashboard: ${daemonUrl}`);
@@ -200,4 +221,3 @@ export async function run(args: string[]): Promise<void> {
   console.log('');
   console.log('Start a coding session -- Myco will begin capturing automatically.');
 }
-
