@@ -53,6 +53,8 @@ export interface ImportProjectCoreResult {
   digest_extracts: number;
   digest_extract_revisions: number;
   cortex_instructions: number;
+  notifications: number;
+  log_entries: number;
 }
 
 interface ImportContext {
@@ -454,6 +456,31 @@ interface SourceSkillUsageRow {
   detected_at: number;
 }
 
+interface SourceNotificationRow {
+  id: string;
+  domain: string;
+  type: string;
+  level: string | null;
+  title: string;
+  message: string | null;
+  mode: string | null;
+  status: string | null;
+  link: string | null;
+  metadata: string | null;
+  created_at: number;
+}
+
+interface SourceLogEntryRow {
+  id: number;
+  timestamp: string;
+  level: string;
+  component: string;
+  kind: string;
+  message: string;
+  data: string | null;
+  session_id: string | null;
+}
+
 type TargetTable =
   | 'agents'
   | 'agent_runs'
@@ -479,7 +506,9 @@ type TargetTable =
   | 'skill_candidates'
   | 'skill_records'
   | 'skill_lineage'
-  | 'skill_usage';
+  | 'skill_usage'
+  | 'notifications'
+  | 'log_entries';
 
 const IMPORT_ORIGIN = 'legacy_project_vault';
 
@@ -520,6 +549,8 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     digest_extracts: 0,
     digest_extract_revisions: 0,
     cortex_instructions: 0,
+    notifications: 0,
+    log_entries: 0,
   };
 
   ctx.targetDb.transaction(() => {
@@ -855,6 +886,30 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     }
     for (const row of cortexInstructions) {
       if (importCortexInstructions(ctx, row)) result.cortex_instructions += 1;
+    }
+
+    const notifications = listSourceNotifications(ctx.sourceDb);
+    for (const row of notifications) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'notifications',
+        sourceId: row.id,
+        targetTable: 'notifications',
+        targetId: () => createGroveEraId('notification'),
+      });
+    }
+    for (const row of notifications) {
+      if (importNotification(ctx, row)) result.notifications += 1;
+    }
+
+    const logEntries = listSourceLogEntries(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: logEntries,
+      sourceTable: 'log_entries',
+      targetTable: 'log_entries',
+      sourceId: (row) => row.id,
+    });
+    for (const row of logEntries) {
+      if (importLogEntry(ctx, row)) result.log_entries += 1;
     }
 
     rebuildCoreFtsIndexes(ctx.targetDb);
@@ -2107,6 +2162,74 @@ function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructi
   return true;
 }
 
+function importNotification(ctx: ImportContext, row: SourceNotificationRow): boolean {
+  const mapping = requireMapping(ctx, 'notifications', row.id);
+  if (targetRowExists(ctx.targetDb, 'notifications', mapping.target_id)) {
+    markImported(ctx, 'notifications', row.id);
+    return false;
+  }
+
+  ctx.targetDb.prepare(
+    `INSERT INTO notifications (
+       id, project_id, domain, type, level, title, message,
+       mode, status, link, metadata, created_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    row.domain,
+    row.type,
+    row.level ?? 'info',
+    row.title,
+    row.message,
+    row.mode ?? 'banner',
+    row.status ?? 'unread',
+    row.link,
+    row.metadata,
+    row.created_at,
+  );
+
+  markImported(ctx, 'notifications', row.id);
+  return true;
+}
+
+function importLogEntry(ctx: ImportContext, row: SourceLogEntryRow): boolean {
+  const mapping = requireMapping(ctx, 'log_entries', row.id);
+  const targetId = parseMappedInteger(mapping);
+  if (targetRowExists(ctx.targetDb, 'log_entries', targetId)) {
+    markImported(ctx, 'log_entries', row.id);
+    return false;
+  }
+
+  const sessionId = mapOptionalTextIdIfMapped(ctx, 'sessions', row.session_id);
+
+  ctx.targetDb.prepare(
+    `INSERT INTO log_entries (
+       id, project_id, timestamp, level, component, kind,
+       message, data, session_id
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    targetId,
+    ctx.targetProjectId,
+    row.timestamp,
+    row.level,
+    row.component,
+    row.kind,
+    row.message,
+    row.data,
+    sessionId,
+  );
+
+  markImported(ctx, 'log_entries', row.id);
+  return true;
+}
+
 function ensureTextMapping(
   ctx: ImportContext,
   input: {
@@ -2477,7 +2600,7 @@ function canopyMapMachineIdFromTargetId(targetId: string): string {
 }
 
 function rebuildCoreFtsIndexes(db: Database): void {
-  for (const table of ['sessions_fts', 'prompt_batches_fts', 'activities_fts', 'spores_fts'] as const) {
+  for (const table of ['sessions_fts', 'prompt_batches_fts', 'activities_fts', 'spores_fts', 'log_entries_fts'] as const) {
     db.prepare(`INSERT INTO ${table}(${table}) VALUES('rebuild')`).run();
   }
 }
@@ -2747,6 +2870,26 @@ function listSourceCortexInstructions(db: Database): SourceCortexInstructionsRow
      FROM cortex_instructions
      ORDER BY generated_at ASC, id ASC`,
   ).all() as SourceCortexInstructionsRow[];
+}
+
+function listSourceNotifications(db: Database): SourceNotificationRow[] {
+  return db.prepare(
+    `SELECT
+       id, domain, type, level, title, message, mode,
+       status, link, metadata, created_at
+     FROM notifications
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceNotificationRow[];
+}
+
+function listSourceLogEntries(db: Database): SourceLogEntryRow[] {
+  return db.prepare(
+    `SELECT
+       id, timestamp, level, component, kind,
+       message, data, session_id
+     FROM log_entries
+     ORDER BY id ASC`,
+  ).all() as SourceLogEntryRow[];
 }
 
 function assertNonEmpty(value: string, fieldName: string): void {

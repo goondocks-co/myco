@@ -81,6 +81,8 @@ describe('Grove project core importer', () => {
       digest_extracts: 1,
       digest_extract_revisions: 2,
       cortex_instructions: 1,
+      notifications: 1,
+      log_entries: 2,
     });
 
     const agentId = lookupImportMappingBySource(migrationId, 'agents', 'myco-agent', targetDb)?.target_id;
@@ -127,6 +129,9 @@ describe('Grove project core importer', () => {
     const digestRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 8, targetDb)?.target_id);
     const digestParentRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 9, targetDb)?.target_id);
     const cortexInstructionsId = lookupImportMappingBySource(migrationId, 'cortex_instructions', 'myco-agent:session-start', targetDb)?.target_id;
+    const notificationId = lookupImportMappingBySource(migrationId, 'notifications', 'legacy-notification', targetDb)?.target_id;
+    const logEntryId = Number(lookupImportMappingBySource(migrationId, 'log_entries', 42, targetDb)?.target_id);
+    const orphanLogEntryId = Number(lookupImportMappingBySource(migrationId, 'log_entries', 43, targetDb)?.target_id);
 
     expect(agentId).toBe('myco-agent');
     expect(parentSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
@@ -171,6 +176,10 @@ describe('Grove project core importer', () => {
     expect(digestRevisionId).not.toBe(8);
     expect(digestParentRevisionId).not.toBe(9);
     expect(cortexInstructionsId).toBe('myco-agent:session-start');
+    expect(notificationId).toMatch(/^notif_[0-9a-f]{32}$/);
+    expect(notificationId).not.toBe('legacy-notification');
+    expect(logEntryId).not.toBe(42);
+    expect(orphanLogEntryId).not.toBe(43);
     expect(parentBatchId).not.toBe(2);
     expect(childBatchId).not.toBe(1);
     expect(activityId).not.toBe(1);
@@ -659,14 +668,83 @@ describe('Grove project core importer', () => {
     expect(cortexInstructions.source_run_id).toBe(agentRunId);
     expect(cortexInstructions.machine_id).toBe('source-machine');
 
+    const notification = getRow<{
+      project_id: string;
+      domain: string;
+      type: string;
+      level: string;
+      title: string;
+      message: string;
+      mode: string;
+      status: string;
+      link: string;
+      metadata: string;
+      created_at: number;
+    }>(
+      targetDb,
+      `SELECT project_id, domain, type, level, title, message,
+              mode, status, link, metadata, created_at
+         FROM notifications WHERE id = ?`,
+      notificationId,
+    );
+    expect(notification.project_id).toBe(TARGET_PROJECT_ID);
+    expect(notification.domain).toBe('settings');
+    expect(notification.type).toBe('settings-saved');
+    expect(notification.level).toBe('success');
+    expect(notification.title).toBe('Settings saved');
+    expect(notification.message).toContain('legacy notification');
+    expect(notification.mode).toBe('summary');
+    expect(notification.status).toBe('read');
+    expect(notification.link).toBe('/settings');
+    expect(notification.metadata).toBe('{"scope":"project"}');
+    expect(notification.created_at).toBe(480);
+
+    const logEntry = getRow<{
+      project_id: string;
+      timestamp: string;
+      level: string;
+      component: string;
+      kind: string;
+      message: string;
+      data: string;
+      session_id: string;
+    }>(
+      targetDb,
+      `SELECT project_id, timestamp, level, component, kind, message, data, session_id
+         FROM log_entries WHERE id = ?`,
+      logEntryId,
+    );
+    expect(logEntry.project_id).toBe(TARGET_PROJECT_ID);
+    expect(logEntry.timestamp).toBe('2026-05-01T10:00:00.000Z');
+    expect(logEntry.level).toBe('info');
+    expect(logEntry.component).toBe('grove-importer');
+    expect(logEntry.kind).toBe('migration:smoke');
+    expect(logEntry.message).toContain('GroveLog imported linked session');
+    expect(logEntry.data).toBe('{"source":"fixture"}');
+    expect(logEntry.session_id).toBe(childSessionId);
+
+    const orphanLogEntry = getRow<{
+      project_id: string;
+      message: string;
+      session_id: string | null;
+    }>(
+      targetDb,
+      'SELECT project_id, message, session_id FROM log_entries WHERE id = ?',
+      orphanLogEntryId,
+    );
+    expect(orphanLogEntry.project_id).toBe(TARGET_PROJECT_ID);
+    expect(orphanLogEntry.message).toContain('GroveLog imported dangling session');
+    expect(orphanLogEntry.session_id).toBeNull();
+
     expect(matchCount(targetDb, 'sessions_fts', 'child')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'prompt_batches_fts', 'steering')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'activities_fts', 'README')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'spores_fts', 'durable')).toBeGreaterThan(0);
+    expect(matchCount(targetDb, 'log_entries_fts', 'GroveLog')).toBe(2);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(38);
-    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(32);
+    expect(mappings).toHaveLength(41);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(35);
     expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(6);
   });
 
@@ -727,6 +805,8 @@ describe('Grove project core importer', () => {
       digest_extracts: 0,
       digest_extract_revisions: 0,
       cortex_instructions: 0,
+      notifications: 0,
+      log_entries: 0,
     });
     expect(countRows(targetDb, 'agents')).toBe(1);
     expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
@@ -753,7 +833,9 @@ describe('Grove project core importer', () => {
     expect(countRows(targetDb, 'digest_extracts', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'digest_extract_revisions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'cortex_instructions', TARGET_PROJECT_ID)).toBe(1);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(38);
+    expect(countRows(targetDb, 'notifications', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'log_entries', TARGET_PROJECT_ID)).toBe(2);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(41);
   });
 });
 
@@ -1540,6 +1622,60 @@ function seedSourceProject(db: Database): void {
     450,
     'source-machine',
     455,
+  );
+
+  db.prepare(
+    `INSERT INTO notifications (
+       id, project_id, domain, type, level, title, message,
+       mode, status, link, metadata, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-notification',
+    SOURCE_PROJECT_ROOT,
+    'settings',
+    'settings-saved',
+    'success',
+    'Settings saved',
+    'A legacy notification from project settings.',
+    'summary',
+    'read',
+    '/settings',
+    '{"scope":"project"}',
+    480,
+  );
+
+  db.prepare(
+    `INSERT INTO log_entries (
+       id, project_id, timestamp, level, component, kind,
+       message, data, session_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    42,
+    SOURCE_PROJECT_ROOT,
+    '2026-05-01T10:00:00.000Z',
+    'info',
+    'grove-importer',
+    'migration:smoke',
+    'GroveLog imported linked session',
+    '{"source":"fixture"}',
+    'legacy-session',
+  );
+
+  db.prepare(
+    `INSERT INTO log_entries (
+       id, project_id, timestamp, level, component, kind,
+       message, data, session_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    43,
+    SOURCE_PROJECT_ROOT,
+    '2026-05-01T10:01:00.000Z',
+    'warn',
+    'grove-importer',
+    'migration:smoke',
+    'GroveLog imported dangling session',
+    null,
+    'missing-session',
   );
 }
 
