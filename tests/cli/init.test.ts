@@ -14,6 +14,13 @@ const { mockDb } = vi.hoisted(() => {
 
 mock.module('@myco/db/client.js', () => ({
   initDatabase: vi.fn().mockReturnValue(mockDb),
+  openDatabase: vi.fn().mockReturnValue({
+    prepare: vi.fn().mockReturnValue({
+      get: vi.fn().mockReturnValue({ version: 31 }),
+    }),
+    run: vi.fn(),
+    close: vi.fn(),
+  }),
   vaultDbPath: vi.fn((dir: string) => `${dir}/myco.db`),
   closeDatabase: vi.fn(),
 }));
@@ -43,7 +50,7 @@ mock.module('@myco/vault/resolve.js', () => ({
 }));
 
 import { run } from '@myco/cli/init.js';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { initDatabase, openDatabase, closeDatabase } from '@myco/db/client.js';
 import { resolveVaultDir } from '@myco/vault/resolve.js';
 
 describe('myco init', () => {
@@ -75,7 +82,19 @@ describe('myco init', () => {
     await run(['--embedding-model', 'bge-m3']);
 
     expect(initDatabase).toHaveBeenCalled();
+    expect(openDatabase).toHaveBeenCalled();
     expect(closeDatabase).toHaveBeenCalled();
+  });
+
+  it('initializes the Grove database under the global Myco home', async () => {
+    await run(['--embedding-model', 'bge-m3']);
+
+    const groveDbCall = vi.mocked(openDatabase).mock.calls.find(([dbPath]) =>
+      typeof dbPath === 'string' && dbPath.includes(`${path.sep}groves${path.sep}`),
+    );
+
+    expect(groveDbCall?.[0]).toEndWith(path.join('myco.db'));
+    expect(groveDbCall?.[0]).toContain(process.env.MYCO_HOME!);
   });
 
   it('creates all required subdirectories', async () => {

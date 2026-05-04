@@ -3,6 +3,7 @@ import { createSchema } from '../db/schema.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
+import { ensureGroveDatabase } from '../grove/database.js';
 import { registerProjectInGrove, resolveGrove } from '../grove/registry.js';
 import {
   parseStringFlag,
@@ -120,6 +121,7 @@ export async function run(args: string[]): Promise<void> {
     projectRoot,
     bindingId: projectManifest.grove?.binding_id,
   });
+  ensureGroveDatabase(grove.id);
 
   const allManifests = loadManifests();
   const detected = detectSymbionts(projectRoot);

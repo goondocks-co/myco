@@ -519,6 +519,30 @@ export const DIGEST_EXTRACT_REVISIONS_TABLE = `
     created_at          INTEGER NOT NULL
   )`;
 
+export const MIGRATION_IMPORT_JOURNAL_TABLE = `
+  CREATE TABLE IF NOT EXISTS migration_import_journal (
+    id                   TEXT PRIMARY KEY,
+    migration_id         TEXT NOT NULL,
+    source_project_root  TEXT NOT NULL,
+    source_db_path       TEXT NOT NULL,
+    target_grove_id      TEXT NOT NULL,
+    target_project_id    TEXT NOT NULL,
+    source_table         TEXT NOT NULL,
+    source_id            TEXT NOT NULL,
+    target_table         TEXT NOT NULL,
+    target_id            TEXT NOT NULL,
+    source_machine_id    TEXT,
+    target_machine_id    TEXT,
+    import_origin        TEXT NOT NULL DEFAULT 'local',
+    status               TEXT NOT NULL DEFAULT 'mapped',
+    notes                TEXT,
+    error                TEXT,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL,
+    UNIQUE (migration_id, source_table, source_id),
+    UNIQUE (migration_id, target_table, target_id)
+  )`;
+
 export const CANOPY_ENTRIES_TABLE = `
   CREATE TABLE IF NOT EXISTS canopy_entries (
     project_id             TEXT    NOT NULL,
@@ -575,6 +599,13 @@ export const CANOPY_ACTIVITY_COLUMN: readonly [string, string] = [
 export const CANOPY_INDEX_DDLS: readonly string[] = [
   'CREATE INDEX IF NOT EXISTS idx_canopy_hash ON canopy_entries (project_id, content_hash)',
   'CREATE INDEX IF NOT EXISTS idx_canopy_updated ON canopy_entries (project_id, mechanical_updated_at)',
+];
+
+export const MIGRATION_IMPORT_JOURNAL_INDEX_DDLS: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_source ON migration_import_journal (migration_id, source_table, source_id)',
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_target ON migration_import_journal (migration_id, target_table, target_id)',
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_project ON migration_import_journal (target_grove_id, target_project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_status ON migration_import_journal (migration_id, status)',
 ];
 
 // -- FTS5 Virtual Tables ----------------------------------------------------
@@ -776,6 +807,9 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_write_intents_run_id_tool ON agent_run_write_intents (run_id, tool_name)',
   'CREATE INDEX IF NOT EXISTS idx_digest_revisions_agent_tier ON digest_extract_revisions (agent_id, tier, created_at DESC)',
 
+  // Grove migration import journal
+  ...MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
+
   // Canopy
   ...CANOPY_INDEX_DDLS,
 ];
@@ -822,6 +856,7 @@ export const TABLE_DDLS = [
   // Eval harness layer
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
+  MIGRATION_IMPORT_JOURNAL_TABLE,
   // Canopy layer
   CANOPY_ENTRIES_TABLE,
   CANOPY_MAPS_TABLE,

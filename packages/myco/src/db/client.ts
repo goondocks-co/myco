@@ -22,6 +22,15 @@ function ensureNativeDepsResolved(): void {
   resolveDevNativeDeps();
 }
 
+function configureDatabase(db: Database): Database {
+  db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA foreign_keys = ON');
+  db.run('PRAGMA busy_timeout = 5000');
+  db.run('PRAGMA cache_size = -64000');
+  db.run('PRAGMA temp_store = MEMORY');
+  return db;
+}
+
 /** Re-export for callers that need the concrete type. */
 export type { Database };
 
@@ -30,17 +39,17 @@ export type { Database };
  */
 export function initDatabase(dbPath?: string): Database {
   if (instance) return instance;
-  ensureNativeDepsResolved();
-
-  instance = new Database(dbPath ?? ':memory:');
-
-  instance.run('PRAGMA journal_mode = WAL');
-  instance.run('PRAGMA foreign_keys = ON');
-  instance.run('PRAGMA busy_timeout = 5000');
-  instance.run('PRAGMA cache_size = -64000');
-  instance.run('PRAGMA temp_store = MEMORY');
-
+  instance = openDatabase(dbPath);
   return instance;
+}
+
+/**
+ * Open an independent SQLite connection with the same runtime pragmas as the
+ * process-wide singleton.
+ */
+export function openDatabase(dbPath?: string): Database {
+  ensureNativeDepsResolved();
+  return configureDatabase(new Database(dbPath ?? ':memory:'));
 }
 
 /**

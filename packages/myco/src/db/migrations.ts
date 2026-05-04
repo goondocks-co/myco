@@ -26,6 +26,8 @@ import {
   CANOPY_SESSION_COLUMNS,
   CANOPY_ACTIVITY_COLUMN,
   CANOPY_INDEX_DDLS,
+  MIGRATION_IMPORT_JOURNAL_TABLE,
+  MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -71,6 +73,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 28, migrate: (db) => migrateV27ToV28(db) },
   { version: 29, migrate: (db) => migrateV28ToV29(db) },
   { version: 30, migrate: (db) => migrateV29ToV30(db) },
+  { version: 31, migrate: (db) => migrateV30ToV31(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1721,6 +1724,30 @@ function migrateV29ToV30(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(30, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 31 adds the Grove import mapping journal used by the schema-reset
+ * importer to rekey legacy project-local rows into Grove-era rows while
+ * preserving an auditable old-id -> new-id mapping.
+ */
+function migrateV30ToV31(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(MIGRATION_IMPORT_JOURNAL_TABLE).run();
+    for (const ddl of MIGRATION_IMPORT_JOURNAL_INDEX_DDLS) {
+      db.prepare(ddl).run();
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(31, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
