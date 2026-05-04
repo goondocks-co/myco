@@ -20,7 +20,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
-import { requestContextHeaders, resolveLegacyRequestContext } from '../tools/request-context.js';
+import { requestContextFromEnvironment, requestContextHeaders } from '../tools/request-context.js';
 
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
@@ -44,7 +44,7 @@ export async function main(): Promise<void> {
     new URL(`http://127.0.0.1:${info.port}/mcp`),
     {
       requestInit: {
-        headers: requestContextHeaders(resolveLegacyRequestContext(vaultDir)),
+        headers: requestContextHeaders(requestContextFromEnvironment(process.env, vaultDir)),
       },
     },
   );

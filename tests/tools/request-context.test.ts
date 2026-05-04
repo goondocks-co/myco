@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import {
+  REQUEST_CONTEXT_ENV,
   REQUEST_CONTEXT_HEADERS,
+  requestContextFromEnvironment,
   requestContextFromHttpHeaders,
   requestContextHeaders,
   rowProjectIdFromRequestContext,
@@ -49,6 +51,27 @@ describe('tool request context', () => {
 
     expect(resolved.projectRoot).toBe(path.join('/tmp', 'daemon-project'));
     expect(resolved.source).toBe('legacy-vault');
+  });
+
+  it('resolves explicit CLI environment request context', () => {
+    const fallbackVaultDir = path.join('/tmp', 'fallback', '.myco');
+    const projectRoot = path.join('/tmp', 'env-project');
+    const resolved = requestContextFromEnvironment({
+      [REQUEST_CONTEXT_ENV.projectRoot]: projectRoot,
+      [REQUEST_CONTEXT_ENV.projectId]: 'project-a',
+      [REQUEST_CONTEXT_ENV.groveId]: 'grove-a',
+      [REQUEST_CONTEXT_ENV.machineId]: 'machine-a',
+      [REQUEST_CONTEXT_ENV.sessionId]: 'sess-a',
+    }, fallbackVaultDir);
+
+    expect(resolved.projectRoot).toBe(projectRoot);
+    expect(resolved.projectId).toBe('project-a');
+    expect(resolved.groveId).toBe('grove-a');
+    expect(resolved.machineId).toBe('machine-a');
+    expect(resolved.sessionId).toBe('sess-a');
+    expect(resolved.projectVaultDir).toBe(path.join(projectRoot, '.myco'));
+    expect(resolved.databasePath).toBe(path.join(projectRoot, '.myco', 'myco.db'));
+    expect(resolved.source).toBe('explicit');
   });
 
   it('does not emit empty optional headers', () => {

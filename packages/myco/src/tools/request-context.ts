@@ -13,6 +13,14 @@ export const REQUEST_CONTEXT_HEADERS = {
   sessionId: 'x-myco-session-id',
 } as const;
 
+export const REQUEST_CONTEXT_ENV = {
+  projectRoot: 'MYCO_PROJECT_ROOT',
+  projectId: 'MYCO_PROJECT_ID',
+  groveId: 'MYCO_GROVE_ID',
+  machineId: 'MYCO_MACHINE_ID',
+  sessionId: 'MYCO_SESSION_ID',
+} as const;
+
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
 
 export interface MycoRequestContext {
@@ -90,6 +98,49 @@ export function requestContextFromHttpHeaders(
   };
 }
 
+export function requestContextFromEnvironment(
+  env: Record<string, string | undefined>,
+  fallbackVaultDir: string,
+): MycoRequestContext {
+  const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
+  const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
+  const fallbackProjectRoot = resolveProjectRoot(fallbackVaultDir);
+  const fallback: MycoRequestContext = {
+    projectRoot: fallbackProjectRoot,
+    projectId: resolveCanopyProjectId(fallbackVaultDir),
+    groveId: null,
+    machineId: machineId ?? getMachineId(fallbackVaultDir),
+    sessionId: sessionId ?? null,
+    projectVaultDir: fallbackVaultDir,
+    databasePath: vaultDbPath(fallbackVaultDir),
+    source: 'legacy-vault',
+  };
+  const hasExplicitProjectContext = [
+    REQUEST_CONTEXT_ENV.projectRoot,
+    REQUEST_CONTEXT_ENV.projectId,
+    REQUEST_CONTEXT_ENV.groveId,
+  ].some((key) => readEnv(env, key) !== undefined);
+
+  if (!hasExplicitProjectContext) return fallback;
+
+  const projectRoot = readEnv(env, REQUEST_CONTEXT_ENV.projectRoot) ?? fallback.projectRoot;
+  const projectVaultDir = projectRoot === fallback.projectRoot
+    ? fallback.projectVaultDir
+    : path.join(projectRoot, '.myco');
+
+  return {
+    ...fallback,
+    projectRoot,
+    projectId: readEnv(env, REQUEST_CONTEXT_ENV.projectId) ?? fallback.projectId,
+    groveId: readEnv(env, REQUEST_CONTEXT_ENV.groveId) ?? fallback.groveId,
+    machineId: machineId ?? fallback.machineId,
+    sessionId: sessionId ?? fallback.sessionId,
+    projectVaultDir,
+    databasePath: vaultDbPath(projectVaultDir),
+    source: 'explicit',
+  };
+}
+
 /**
  * Translate a transport-level request context into the project_id predicate
  * expected by first-generation Grove-aware row helpers.
@@ -118,6 +169,13 @@ function compactHeaders(values: Record<string, string | null | undefined>): Reco
 function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {
   const value = headers[name];
   const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readEnv(env: Record<string, string | undefined>, name: string): string | undefined {
+  const raw = env[name];
   if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : undefined;

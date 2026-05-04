@@ -5,13 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/tool.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
+import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
+import { vi } from '../helpers/vi-shim.js';
 
 describe('myco tool CLI', () => {
   let tmpDir: string;
   let originalStdoutWrite: typeof process.stdout.write;
   let written: string[];
   let servers: http.Server[];
+  let digestHeaders: http.IncomingHttpHeaders[];
 
   beforeAll(() => {
     setupTestDb();
@@ -21,6 +24,7 @@ describe('myco tool CLI', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tool-cli-'));
     written = [];
     servers = [];
+    digestHeaders = [];
     cleanTestDb();
     originalStdoutWrite = process.stdout.write;
     process.stdout.write = ((chunk: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
@@ -38,6 +42,7 @@ describe('myco tool CLI', () => {
 
   afterEach(() => {
     process.stdout.write = originalStdoutWrite;
+    vi.unstubAllEnvs();
     for (const server of servers) server.close();
     process.exitCode = 0;
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -54,6 +59,7 @@ describe('myco tool CLI', () => {
   async function startDaemonStub(): Promise<void> {
     const server = http.createServer((req, res) => {
       if (req.url === '/api/digest') {
+        digestHeaders.push(req.headers);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ tiers: [] }));
         return;
@@ -105,6 +111,25 @@ describe('myco tool CLI', () => {
     expect(output.ok).toBe(true);
     expect(output.tool).toBe('myco_cortex');
     expect(output.result.tier).toBe(5000);
+  });
+
+  it('forwards explicit environment request context to daemon-backed tools', async () => {
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, '/workspace/project-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, 'project-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, 'grove-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.machineId, 'machine-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.sessionId, 'sess-a');
+    await startDaemonStub();
+
+    await run(['call', 'myco_cortex', '--json', '--input', '{"op":"digest","tier":5000}'], tmpDir);
+
+    const output = outputJson<{ ok: boolean }>();
+    expect(output.ok).toBe(true);
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
   });
 
   it('calls a tool with @file input', async () => {

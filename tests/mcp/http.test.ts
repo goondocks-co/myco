@@ -4,6 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const servers: http.Server[] = [];
@@ -13,9 +14,15 @@ afterEach(async () => {
   servers.length = 0;
 });
 
-function mockClient(): DaemonClient {
+interface CapturedGet {
+  endpoint: string;
+  options?: { headers?: Record<string, string> };
+}
+
+function mockClient(capturedGets: CapturedGet[] = []): DaemonClient {
   return {
-    get: vi.fn(async (endpoint: string) => {
+    get: vi.fn(async (endpoint: string, options?: { headers?: Record<string, string> }) => {
+      capturedGets.push({ endpoint, options });
       if (endpoint === '/api/digest') {
         return { ok: true, data: { tiers: [{ tier: 5000, content: 'HTTP MCP digest', generated_at: 1 }] } };
       }
@@ -54,5 +61,38 @@ describe('streamable HTTP MCP', () => {
     expect(called.content[0]).toEqual({ type: 'text', text: 'HTTP MCP digest' });
 
     await client.close();
+  });
+
+  it('passes HTTP request context headers into the shared tool runtime', async () => {
+    const capturedGets: CapturedGet[] = [];
+    const handler = createStreamableMcpHttpHandler('/tmp/myco-http-mcp', mockClient(capturedGets));
+    const url = await listen((req, res) => {
+      void handler(req, res);
+    });
+    const requestContext = resolveLegacyRequestContext('/tmp/project-a/.myco', {
+      projectRoot: '/tmp/project-a',
+      projectId: 'project-a',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
+    const client = new Client({ name: 'myco-http-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: requestContextHeaders(requestContext) },
+    });
+
+    await client.connect(transport);
+    await client.callTool({ name: 'myco_cortex', arguments: { op: 'digest', tier: 5000 } });
+    await client.close();
+
+    const digestCall = capturedGets.find((call) => call.endpoint === '/api/digest');
+    expect(digestCall?.options?.headers).toMatchObject({
+      'x-myco-project-root': '/tmp/project-a',
+      'x-myco-project-id': 'project-a',
+      'x-myco-grove-id': 'grove-a',
+      'x-myco-machine-id': 'machine-a',
+      'x-myco-session-id': 'sess-a',
+    });
   });
 });
