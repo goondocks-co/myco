@@ -17,6 +17,7 @@ Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) an
 - Check the current highest version in the `MIGRATIONS` array in `packages/myco/src/db/migrations.ts`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
 - Understand Grove architecture implications for multi-project data coordination
+- For Grove migrations: understand project-scoped row management and migration_import_journal patterns
 
 ## Procedure A: Adding a New Table
 
@@ -560,6 +561,141 @@ sqlite3 .myco/myco.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY create
 | `db.prepare()` inside function | Move to module scope |
 | `/regex/` inside function | Move to module scope |
 
+## Procedure G: Grove Project-Scoped Schema Architecture
+
+Grove's global daemon architecture introduces project-scoped row management patterns requiring specialized schema design considerations.
+
+### Project-Scoped Row Management
+
+Grove migration (v31-v32) adds `project_id` columns across 24+ tables for proper project-scoped access:
+
+```typescript
+{
+  version: 31,
+  name: 'add_project_id_columns',
+  description: 'Add project_id columns for Grove multi-project isolation',
+  up: (db: Database) => {
+    // Add project_id to existing tables
+    const tables = ['sessions', 'spores', 'prompt_batches', 'entities', 'edges'];
+    for (const table of tables) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT;`);
+    }
+
+    // Backfill current rows with default project_id
+    const projectId = getDefaultProjectId(db);
+    for (const table of tables) {
+      db.exec(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL;`, projectId);
+    }
+  }
+}
+```
+
+### Migration Import Journal Pattern
+
+Grove migration introduces `migration_import_journal` tables for tracking data imports from legacy project vaults into a Grove:
+
+```typescript
+{
+  version: 32,
+  name: 'add_migration_import_journal',
+  description: 'Add migration import journal for Grove data coordination',
+  up: (db: Database) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS migration_import_journal (
+        id              TEXT PRIMARY KEY,
+        source_vault    TEXT NOT NULL,
+        target_project  TEXT NOT NULL,
+        import_type     TEXT NOT NULL,
+        imported_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+        row_count       INTEGER NOT NULL,
+        checksum        TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_import_journal_target_project
+        ON migration_import_journal(target_project);
+      CREATE INDEX IF NOT EXISTS idx_import_journal_source_vault
+        ON migration_import_journal(source_vault);
+    `);
+  }
+}
+```
+
+### Import Rekey Patterns
+
+Grove migration requires rekey patterns when importing data from legacy project vaults to avoid ID collisions:
+
+```typescript
+export function rekeyImportedRows(
+  db: Database,
+  sourceRows: any[],
+  targetProjectId: string
+): any[] {
+  const keyMapping = new Map<string, string>();
+
+  return sourceRows.map(row => {
+    // Generate new ID for target project
+    const newId = generateId();
+    keyMapping.set(row.id, newId);
+
+    return {
+      ...row,
+      id: newId,
+      project_id: targetProjectId,
+      imported_from: row.id, // Track original for debugging
+      imported_at: Math.floor(Date.now() / 1000)
+    };
+  });
+}
+```
+
+### Grove Schema Initialization
+
+Grove DB initialization follows a specific sequence at schema versions v31-v32:
+
+```typescript
+export function initializeGroveSchema(db: Database): void {
+  // 1. Ensure base schema is current (v30+)
+  runMigrations(db);
+
+  // 2. Add project_id columns if not already present
+  if (getCurrentSchemaVersion(db) < 31) {
+    runMigration(db, 31);
+  }
+
+  // 3. Add Grove coordination tables
+  if (getCurrentSchemaVersion(db) < 32) {
+    runMigration(db, 32);
+  }
+
+  // 4. Initialize default project if needed
+  ensureDefaultProject(db);
+}
+```
+
+### Project-Scoped Query Patterns
+
+When querying in Grove context, always scope by project_id to maintain proper isolation:
+
+```typescript
+// ❌ Cross-project data leak
+export function getSpores(db: Database, agentId: string) {
+  return db.prepare(`
+    SELECT * FROM spores WHERE agent_id = ?
+  `).all(agentId);
+}
+
+// ✅ Project-scoped isolation
+export function getSpores(
+  db: Database,
+  agentId: string,
+  projectId: string
+) {
+  return db.prepare(`
+    SELECT * FROM spores
+    WHERE agent_id = ? AND project_id = ?
+  `).all(agentId, projectId);
+}
+```
+
 ## File Layout Reference
 
 ```
@@ -568,9 +704,16 @@ packages/myco/
     db/
       migrations.ts            # MIGRATIONS array with declarative Migration entries
       schema-ddl.ts            # Table DDL definitions and constants (includes CANOPY_*, CORTEX_*, and other subsystem tables)
+      grove/                   # Grove-specific schema modules
+        project-management.ts  # Project-scoped row management
+        import-journal.ts      # Migration import journal functions
 packages/myco-team/
   migrations/                  # Parallel D1 SQL migration files
     0021_add_my_new_table.sql
+packages/grove/
+  schema/                      # Grove global daemon schema
+    initialization.ts          # Grove DB initialization patterns
+    multi-project-queries.ts   # Project-scoped query helpers
 ```
 
 ## Cross-Cutting Gotchas
@@ -584,4 +727,7 @@ packages/myco-team/
 - **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing a registration in `TABLE_DDLS` or `FTS_TABLES` silently limits the feature surface.
 - **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface. Expect additive growth with new subsystem tables like CANOPY_* exports for code intelligence features.
 - **Migration test functions for complex transformations** — include test helpers like `resolveV20PlanIdentityCollisionsForTest` for migrations that involve data conflicts or complex transformations.
-- **Grove multi-project coordination** — consider whether new tables need project-level isolation or grove-wide coordination when designing schema for Grove's global daemon architecture.
+- **Grove project-scoped coordination** — consider whether new tables need project-level scoping or Grove-wide coordination when designing schema for Grove's global daemon architecture.
+- **Grove project_id is mandatory in v31+** — all new project-scoped tables must include a project_id column and all project-scoped queries must scope by project_id.
+- **Import rekey patterns required for Grove migration** — when importing data from legacy project vaults, use rekey patterns to avoid ID collisions and maintain referential integrity.
+- **Grove schema initialization sequence** — follow v31-v32 initialization pattern when setting up Grove databases to ensure proper multi-project support.

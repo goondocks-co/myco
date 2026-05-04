@@ -82,6 +82,8 @@ The tool is defined in `packages/myco/src/tools/definitions.ts` and implemented 
 
 ```typescript
 // MCP tool handler in plans.ts
+import { saveMcpPlan } from '@myco/plans/save-mcp.js';
+
 export async function handleMycoPlans(
   input: PlansInput,
   client: DaemonClient,
@@ -89,7 +91,9 @@ export async function handleMycoPlans(
   if (input.op !== 'save') {
     // list/get/delete handled separately
   }
-  const result = await client.post('/api/mcp/plans', {
+
+  // Use direct saveMcpPlan() call instead of API endpoint
+  const result = await saveMcpPlan({
     session_id: input.session_id,
     content: input.content,
     source_path: input.source_path,
