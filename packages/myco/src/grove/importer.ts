@@ -40,6 +40,14 @@ export interface ImportProjectCoreResult {
   skipped_agent_turns: number;
   agent_run_write_intents: number;
   skipped_agent_run_write_intents: number;
+  skill_records: number;
+  skipped_skill_records: number;
+  skill_candidates: number;
+  skipped_skill_candidates: number;
+  skill_lineage: number;
+  skipped_skill_lineage: number;
+  skill_usage: number;
+  skipped_skill_usage: number;
   canopy_entries: number;
   canopy_maps: number;
   digest_extracts: number;
@@ -389,6 +397,63 @@ interface SourceCortexInstructionsRow {
   synced_at: number | null;
 }
 
+interface SourceSkillCandidateRow {
+  id: string;
+  agent_id: string;
+  machine_id: string | null;
+  topic: string;
+  rationale: string;
+  confidence: number | null;
+  status: string | null;
+  source_ids: string | null;
+  skill_id: string | null;
+  supersedes: string | null;
+  created_at: number;
+  updated_at: number;
+  approved_at: number | null;
+  synced_at: number | null;
+}
+
+interface SourceSkillRecordRow {
+  id: string;
+  agent_id: string;
+  machine_id: string | null;
+  name: string;
+  display_name: string;
+  description: string;
+  status: string | null;
+  embedded: number | null;
+  generation: number | null;
+  candidate_id: string | null;
+  source_ids: string | null;
+  path: string;
+  usage_count: number | null;
+  last_used_at: number | null;
+  created_at: number;
+  updated_at: number;
+  properties: string | null;
+  synced_at: number | null;
+}
+
+interface SourceSkillLineageRow {
+  id: string;
+  skill_id: string;
+  generation: number;
+  action: string;
+  rationale: string;
+  source_ids_added: string | null;
+  content_snapshot: string;
+  created_at: number;
+}
+
+interface SourceSkillUsageRow {
+  id: string;
+  skill_id: string;
+  session_id: string;
+  machine_id: string | null;
+  detected_at: number;
+}
+
 type TargetTable =
   | 'agents'
   | 'agent_runs'
@@ -410,7 +475,11 @@ type TargetTable =
   | 'canopy_maps'
   | 'digest_extracts'
   | 'digest_extract_revisions'
-  | 'cortex_instructions';
+  | 'cortex_instructions'
+  | 'skill_candidates'
+  | 'skill_records'
+  | 'skill_lineage'
+  | 'skill_usage';
 
 const IMPORT_ORIGIN = 'legacy_project_vault';
 
@@ -438,6 +507,14 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     skipped_agent_turns: 0,
     agent_run_write_intents: 0,
     skipped_agent_run_write_intents: 0,
+    skill_records: 0,
+    skipped_skill_records: 0,
+    skill_candidates: 0,
+    skipped_skill_candidates: 0,
+    skill_lineage: 0,
+    skipped_skill_lineage: 0,
+    skill_usage: 0,
+    skipped_skill_usage: 0,
     canopy_entries: 0,
     canopy_maps: 0,
     digest_extracts: 0,
@@ -644,6 +721,75 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       const imported = importAgentRunWriteIntent(ctx, row);
       if (imported === 'imported') result.agent_run_write_intents += 1;
       if (imported === 'skipped') result.skipped_agent_run_write_intents += 1;
+    }
+
+    const skillRecords = listSourceSkillRecords(ctx.sourceDb);
+    for (const row of skillRecords) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'skill_records',
+        sourceId: row.id,
+        targetTable: 'skill_records',
+        targetId: () => createGroveEraId('skill_record'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+
+    const skillCandidates = listSourceSkillCandidates(ctx.sourceDb);
+    for (const row of skillCandidates) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'skill_candidates',
+        sourceId: row.id,
+        targetTable: 'skill_candidates',
+        targetId: () => createGroveEraId('skill_candidate'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+
+    for (const row of skillRecords) {
+      const imported = importSkillRecord(ctx, row);
+      if (imported === 'imported') result.skill_records += 1;
+      if (imported === 'skipped') result.skipped_skill_records += 1;
+    }
+
+    for (const row of skillCandidates) {
+      const imported = importSkillCandidate(ctx, row);
+      if (imported === 'imported') result.skill_candidates += 1;
+      if (imported === 'skipped') result.skipped_skill_candidates += 1;
+    }
+
+    for (const row of skillRecords) {
+      linkSkillRecordCandidate(ctx, row);
+    }
+
+    const skillLineage = listSourceSkillLineage(ctx.sourceDb);
+    for (const row of skillLineage) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'skill_lineage',
+        sourceId: row.id,
+        targetTable: 'skill_lineage',
+        targetId: () => createGroveEraId('skill_lineage'),
+      });
+    }
+    for (const row of skillLineage) {
+      const imported = importSkillLineage(ctx, row);
+      if (imported === 'imported') result.skill_lineage += 1;
+      if (imported === 'skipped') result.skipped_skill_lineage += 1;
+    }
+
+    const skillUsage = listSourceSkillUsage(ctx.sourceDb);
+    for (const row of skillUsage) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'skill_usage',
+        sourceId: row.id,
+        targetTable: 'skill_usage',
+        targetId: () => createGroveEraId('skill_usage'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of skillUsage) {
+      const imported = importSkillUsage(ctx, row);
+      if (imported === 'imported') result.skill_usage += 1;
+      if (imported === 'skipped') result.skipped_skill_usage += 1;
     }
 
     const canopyEntries = listSourceCanopyEntries(ctx.sourceDb);
@@ -1546,6 +1692,194 @@ function insertAgentRunWriteIntent(
   return ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
+function importSkillRecord(ctx: ImportContext, row: SourceSkillRecordRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'skill_records', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'skill_records', mapping.target_id)) {
+    markImported(ctx, 'skill_records', row.id);
+    return 'unchanged';
+  }
+
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!agentId) {
+    markSkipped(ctx, 'skill_records', row.id, `unmapped agent reference ${row.agent_id}`);
+    return 'skipped';
+  }
+
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO skill_records (
+       id, project_id, agent_id, machine_id, name, display_name,
+       description, status, embedded, generation, candidate_id,
+       source_ids, path, usage_count, last_used_at, created_at,
+       updated_at, properties, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    machineId,
+    row.name,
+    row.display_name,
+    row.description,
+    row.status ?? 'active',
+    0,
+    row.generation ?? 1,
+    null,
+    row.source_ids ?? '[]',
+    row.path,
+    row.usage_count ?? 0,
+    row.last_used_at,
+    row.created_at,
+    row.updated_at,
+    row.properties ?? '{}',
+    row.synced_at,
+  );
+
+  markImported(ctx, 'skill_records', row.id);
+  return 'imported';
+}
+
+function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'skill_candidates', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'skill_candidates', mapping.target_id)) {
+    markImported(ctx, 'skill_candidates', row.id);
+    return 'unchanged';
+  }
+
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!agentId) {
+    markSkipped(ctx, 'skill_candidates', row.id, `unmapped agent reference ${row.agent_id}`);
+    return 'skipped';
+  }
+
+  const skillId = mapOptionalTextIdIfMapped(ctx, 'skill_records', row.skill_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO skill_candidates (
+       id, project_id, agent_id, machine_id, topic, rationale,
+       confidence, status, source_ids, skill_id, supersedes,
+       created_at, updated_at, approved_at, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    machineId,
+    row.topic,
+    row.rationale,
+    row.confidence ?? 0,
+    row.status ?? 'identified',
+    row.source_ids ?? '[]',
+    skillId,
+    row.supersedes,
+    row.created_at,
+    row.updated_at,
+    row.approved_at,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'skill_candidates', row.id);
+  return 'imported';
+}
+
+function linkSkillRecordCandidate(ctx: ImportContext, row: SourceSkillRecordRow): void {
+  if (!row.candidate_id) return;
+  const record = lookupImportMappingBySource(ctx.migrationId, 'skill_records', row.id, ctx.targetDb);
+  if (!record || record.status === 'skipped' || record.status === 'error') return;
+
+  const candidateId = mapOptionalTextIdIfMapped(ctx, 'skill_candidates', row.candidate_id);
+  if (!candidateId || !targetRowExists(ctx.targetDb, 'skill_records', record.target_id)) return;
+
+  ctx.targetDb.prepare(
+    `UPDATE skill_records
+        SET candidate_id = ?
+      WHERE id = ?
+        AND (candidate_id IS NULL OR candidate_id != ?)`,
+  ).run(candidateId, record.target_id, candidateId);
+}
+
+function importSkillLineage(ctx: ImportContext, row: SourceSkillLineageRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'skill_lineage', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'skill_lineage', mapping.target_id)) {
+    markImported(ctx, 'skill_lineage', row.id);
+    return 'unchanged';
+  }
+
+  const skillId = mapOptionalTextIdIfMapped(ctx, 'skill_records', row.skill_id);
+  if (!skillId) {
+    markSkipped(ctx, 'skill_lineage', row.id, `unmapped skill reference ${row.skill_id}`);
+    return 'skipped';
+  }
+
+  ctx.targetDb.prepare(
+    `INSERT INTO skill_lineage (
+       id, project_id, skill_id, generation, action, rationale,
+       source_ids_added, content_snapshot, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    skillId,
+    row.generation,
+    row.action,
+    row.rationale,
+    row.source_ids_added ?? '[]',
+    row.content_snapshot,
+    row.created_at,
+  );
+
+  markImported(ctx, 'skill_lineage', row.id);
+  return 'imported';
+}
+
+function importSkillUsage(ctx: ImportContext, row: SourceSkillUsageRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'skill_usage', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'skill_usage', mapping.target_id)) {
+    markImported(ctx, 'skill_usage', row.id);
+    return 'unchanged';
+  }
+
+  const skillId = mapOptionalTextIdIfMapped(ctx, 'skill_records', row.skill_id);
+  const sessionId = mapOptionalTextIdIfMapped(ctx, 'sessions', row.session_id);
+  if (!skillId || !sessionId) {
+    markSkipped(ctx, 'skill_usage', row.id, skillUsageSkipReason(row, skillId, sessionId));
+    return 'skipped';
+  }
+
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO skill_usage (
+       id, project_id, skill_id, session_id, machine_id, detected_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    skillId,
+    sessionId,
+    machineId,
+    row.detected_at,
+  );
+
+  markImported(ctx, 'skill_usage', row.id);
+  return 'imported';
+}
+
 function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): boolean {
   const sourceId = canopyEntrySourceId(row);
   requireMapping(ctx, 'canopy_entries', sourceId);
@@ -1982,6 +2316,17 @@ function agentOperationSkipReason(
   return reasons.join('; ');
 }
 
+function skillUsageSkipReason(
+  row: SourceSkillUsageRow,
+  mappedSkillId: string | null,
+  mappedSessionId: string | null,
+): string {
+  const reasons: string[] = [];
+  if (!mappedSkillId) reasons.push(`unmapped skill reference ${row.skill_id}`);
+  if (!mappedSessionId) reasons.push(`unmapped session reference ${row.session_id}`);
+  return reasons.join('; ');
+}
+
 function mapRequiredTextId(ctx: ImportContext, sourceTable: TargetTable, sourceId: string): string {
   return requireMapping(ctx, sourceTable, sourceId).target_id;
 }
@@ -2308,6 +2653,48 @@ function listSourceAgentRunWriteIntents(db: Database): SourceAgentRunWriteIntent
      FROM agent_run_write_intents
      ORDER BY id ASC`,
   ).all() as SourceAgentRunWriteIntentRow[];
+}
+
+function listSourceSkillCandidates(db: Database): SourceSkillCandidateRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, machine_id, topic, rationale, confidence,
+       status, source_ids, skill_id, supersedes, created_at,
+       updated_at, approved_at, synced_at
+     FROM skill_candidates
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceSkillCandidateRow[];
+}
+
+function listSourceSkillRecords(db: Database): SourceSkillRecordRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, machine_id, name, display_name, description,
+       status, embedded, generation, candidate_id, source_ids, path,
+       usage_count, last_used_at, created_at, updated_at, properties,
+       synced_at
+     FROM skill_records
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceSkillRecordRow[];
+}
+
+function listSourceSkillLineage(db: Database): SourceSkillLineageRow[] {
+  return db.prepare(
+    `SELECT
+       id, skill_id, generation, action, rationale,
+       source_ids_added, content_snapshot, created_at
+     FROM skill_lineage
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceSkillLineageRow[];
+}
+
+function listSourceSkillUsage(db: Database): SourceSkillUsageRow[] {
+  return db.prepare(
+    `SELECT
+       id, skill_id, session_id, machine_id, detected_at
+     FROM skill_usage
+     ORDER BY detected_at ASC, id ASC`,
+  ).all() as SourceSkillUsageRow[];
 }
 
 function listSourceCanopyEntries(db: Database): SourceCanopyEntryRow[] {

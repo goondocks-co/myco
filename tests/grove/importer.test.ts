@@ -68,6 +68,14 @@ describe('Grove project core importer', () => {
       skipped_agent_turns: 1,
       agent_run_write_intents: 1,
       skipped_agent_run_write_intents: 1,
+      skill_records: 1,
+      skipped_skill_records: 0,
+      skill_candidates: 1,
+      skipped_skill_candidates: 0,
+      skill_lineage: 1,
+      skipped_skill_lineage: 1,
+      skill_usage: 1,
+      skipped_skill_usage: 1,
       canopy_entries: 1,
       canopy_maps: 1,
       digest_extracts: 1,
@@ -97,6 +105,12 @@ describe('Grove project core importer', () => {
     const skippedAgentTurn = lookupImportMappingBySource(migrationId, 'agent_turns', 40, targetDb);
     const writeIntentId = Number(lookupImportMappingBySource(migrationId, 'agent_run_write_intents', 5, targetDb)?.target_id);
     const skippedWriteIntent = lookupImportMappingBySource(migrationId, 'agent_run_write_intents', 50, targetDb);
+    const skillRecordId = lookupImportMappingBySource(migrationId, 'skill_records', 'legacy-skill', targetDb)?.target_id;
+    const skillCandidateId = lookupImportMappingBySource(migrationId, 'skill_candidates', 'legacy-candidate', targetDb)?.target_id;
+    const skillLineageId = lookupImportMappingBySource(migrationId, 'skill_lineage', 'legacy-lineage', targetDb)?.target_id;
+    const skippedSkillLineage = lookupImportMappingBySource(migrationId, 'skill_lineage', 'legacy-orphan-lineage', targetDb);
+    const skillUsageId = lookupImportMappingBySource(migrationId, 'skill_usage', 'legacy-usage', targetDb)?.target_id;
+    const skippedSkillUsage = lookupImportMappingBySource(migrationId, 'skill_usage', 'legacy-orphan-usage', targetDb);
     const canopyEntryId = lookupImportMappingBySource(
       migrationId,
       'canopy_entries',
@@ -141,6 +155,16 @@ describe('Grove project core importer', () => {
     expect(skippedAgentTurn?.notes).toContain('unmapped run reference missing-run');
     expect(skippedWriteIntent?.status).toBe('skipped');
     expect(skippedWriteIntent?.notes).toContain('unmapped run reference missing-run');
+    expect(skillRecordId).toMatch(/^skill_[0-9a-f]{32}$/);
+    expect(skillRecordId).not.toBe('legacy-skill');
+    expect(skillCandidateId).toMatch(/^skcand_[0-9a-f]{32}$/);
+    expect(skillCandidateId).not.toBe('legacy-candidate');
+    expect(skillLineageId).toMatch(/^sklin_[0-9a-f]{32}$/);
+    expect(skillUsageId).toMatch(/^skuse_[0-9a-f]{32}$/);
+    expect(skippedSkillLineage?.status).toBe('skipped');
+    expect(skippedSkillLineage?.notes).toContain('unmapped skill reference missing-skill');
+    expect(skippedSkillUsage?.status).toBe('skipped');
+    expect(skippedSkillUsage?.notes).toContain('unmapped session reference missing-session');
     expect(canopyEntryId).toBe(`${TARGET_PROJECT_ID}\u001fpackages/myco/src/grove/importer.ts`);
     expect(canopyMapId).toBe(`${TARGET_PROJECT_ID}\u001fsource-machine`);
     expect(digestExtractId).not.toBe(7);
@@ -433,6 +457,117 @@ describe('Grove project core importer', () => {
     expect(writeIntent.synthetic_output).toBe('{"id":"stub-spore"}');
     expect(writeIntent.stub_id).toBe('stub-spore');
 
+    const skillRecord = getRow<{
+      project_id: string;
+      agent_id: string;
+      machine_id: string;
+      name: string;
+      display_name: string;
+      description: string;
+      status: string;
+      embedded: number;
+      generation: number;
+      candidate_id: string;
+      source_ids: string;
+      path: string;
+      usage_count: number;
+      last_used_at: number;
+      properties: string;
+    }>(
+      targetDb,
+      `SELECT project_id, agent_id, machine_id, name, display_name, description,
+              status, embedded, generation, candidate_id, source_ids, path,
+              usage_count, last_used_at, properties
+         FROM skill_records WHERE id = ?`,
+      skillRecordId,
+    );
+    expect(skillRecord.project_id).toBe(TARGET_PROJECT_ID);
+    expect(skillRecord.agent_id).toBe(agentId);
+    expect(skillRecord.machine_id).toBe('source-machine');
+    expect(skillRecord.name).toBe('myco:legacy-grove-import');
+    expect(skillRecord.display_name).toBe('Legacy Grove Import');
+    expect(skillRecord.description).toContain('Grove importer skill');
+    expect(skillRecord.status).toBe('active');
+    expect(skillRecord.embedded).toBe(0);
+    expect(skillRecord.generation).toBe(2);
+    expect(skillRecord.candidate_id).toBe(skillCandidateId);
+    expect(skillRecord.source_ids).toBe('["legacy-spore"]');
+    expect(skillRecord.path).toBe('.agents/skills/legacy-grove-import/SKILL.md');
+    expect(skillRecord.usage_count).toBe(3);
+    expect(skillRecord.last_used_at).toBe(471);
+    expect(skillRecord.properties).toBe('{"quality":"validated"}');
+
+    const skillCandidate = getRow<{
+      project_id: string;
+      agent_id: string;
+      machine_id: string;
+      topic: string;
+      rationale: string;
+      confidence: number;
+      status: string;
+      source_ids: string;
+      skill_id: string;
+      supersedes: string;
+      approved_at: number;
+    }>(
+      targetDb,
+      `SELECT project_id, agent_id, machine_id, topic, rationale, confidence,
+              status, source_ids, skill_id, supersedes, approved_at
+         FROM skill_candidates WHERE id = ?`,
+      skillCandidateId,
+    );
+    expect(skillCandidate.project_id).toBe(TARGET_PROJECT_ID);
+    expect(skillCandidate.agent_id).toBe(agentId);
+    expect(skillCandidate.machine_id).toBe('source-machine');
+    expect(skillCandidate.topic).toBe('Grove importer operations');
+    expect(skillCandidate.rationale).toContain('Importer work repeats');
+    expect(skillCandidate.confidence).toBe(0.87);
+    expect(skillCandidate.status).toBe('generated');
+    expect(skillCandidate.source_ids).toBe('["legacy-spore"]');
+    expect(skillCandidate.skill_id).toBe(skillRecordId);
+    expect(skillCandidate.supersedes).toBe('["myco:old-importer"]');
+    expect(skillCandidate.approved_at).toBe(462);
+
+    const skillLineage = getRow<{
+      project_id: string;
+      skill_id: string;
+      generation: number;
+      action: string;
+      rationale: string;
+      source_ids_added: string;
+      content_snapshot: string;
+    }>(
+      targetDb,
+      `SELECT project_id, skill_id, generation, action, rationale,
+              source_ids_added, content_snapshot
+         FROM skill_lineage WHERE id = ?`,
+      skillLineageId,
+    );
+    expect(skillLineage.project_id).toBe(TARGET_PROJECT_ID);
+    expect(skillLineage.skill_id).toBe(skillRecordId);
+    expect(skillLineage.generation).toBe(2);
+    expect(skillLineage.action).toBe('evolve');
+    expect(skillLineage.rationale).toContain('Added Grove import detail');
+    expect(skillLineage.source_ids_added).toBe('["legacy-wisdom"]');
+    expect(skillLineage.content_snapshot).toContain('Preserve lineage content');
+
+    const skillUsage = getRow<{
+      project_id: string;
+      skill_id: string;
+      session_id: string;
+      machine_id: string;
+      detected_at: number;
+    }>(
+      targetDb,
+      'SELECT project_id, skill_id, session_id, machine_id, detected_at FROM skill_usage WHERE id = ?',
+      skillUsageId,
+    );
+    expect(skillUsage.project_id).toBe(TARGET_PROJECT_ID);
+    expect(skillUsage.skill_id).toBe(skillRecordId);
+    expect(skillUsage.session_id).toBe(childSessionId);
+    expect(skillUsage.machine_id).toBe('source-machine');
+    expect(skillUsage.detected_at).toBe(475);
+
     const canopyEntry = getRow<{
       project_id: string;
       machine_id: string;
@@ -530,9 +665,9 @@ describe('Grove project core importer', () => {
     expect(matchCount(targetDb, 'spores_fts', 'durable')).toBeGreaterThan(0);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(32);
-    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(28);
-    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(4);
+    expect(mappings).toHaveLength(38);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(32);
+    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(6);
   });
 
   it('uses existing journal mappings on retry instead of duplicating rows', () => {
@@ -579,6 +714,14 @@ describe('Grove project core importer', () => {
       skipped_agent_turns: 0,
       agent_run_write_intents: 0,
       skipped_agent_run_write_intents: 0,
+      skill_records: 0,
+      skipped_skill_records: 0,
+      skill_candidates: 0,
+      skipped_skill_candidates: 0,
+      skill_lineage: 0,
+      skipped_skill_lineage: 0,
+      skill_usage: 0,
+      skipped_skill_usage: 0,
       canopy_entries: 0,
       canopy_maps: 0,
       digest_extracts: 0,
@@ -601,12 +744,16 @@ describe('Grove project core importer', () => {
     expect(countRows(targetDb, 'agent_reports', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'agent_turns', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'agent_run_write_intents', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'skill_records', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'skill_candidates', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'skill_lineage', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'skill_usage', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'canopy_entries', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'canopy_maps', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'digest_extracts', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'digest_extract_revisions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'cortex_instructions', TARGET_PROJECT_ID)).toBe(1);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(32);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(38);
   });
 });
 
@@ -1167,6 +1314,125 @@ function seedSourceProject(db: Database): void {
     'source-machine',
     339,
   );
+
+  db.prepare(
+    `INSERT INTO skill_candidates (
+       id, project_id, agent_id, machine_id, topic, rationale,
+       confidence, status, source_ids, skill_id, supersedes,
+       created_at, updated_at, approved_at, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-candidate',
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    'source-machine',
+    'Grove importer operations',
+    'Importer work repeats across Grove migration slices.',
+    0.87,
+    'generated',
+    '["legacy-spore"]',
+    'legacy-skill',
+    '["myco:old-importer"]',
+    460,
+    465,
+    462,
+    466,
+  );
+
+  db.prepare(
+    `INSERT INTO skill_records (
+       id, project_id, agent_id, machine_id, name, display_name,
+       description, status, embedded, generation, candidate_id,
+       source_ids, path, usage_count, last_used_at, created_at,
+       updated_at, properties, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    'legacy-skill',
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    'source-machine',
+    'myco:legacy-grove-import',
+    'Legacy Grove Import',
+    'A Grove importer skill with expensive generated description.',
+    'active',
+    1,
+    2,
+    'legacy-candidate',
+    '["legacy-spore"]',
+    '.agents/skills/legacy-grove-import/SKILL.md',
+    3,
+    471,
+    468,
+    472,
+    '{"quality":"validated"}',
+    473,
+  );
+
+  db.prepare(
+    `INSERT INTO skill_lineage (
+       id, project_id, skill_id, generation, action, rationale,
+       source_ids_added, content_snapshot, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-lineage',
+    SOURCE_PROJECT_ROOT,
+    'legacy-skill',
+    2,
+    'evolve',
+    'Added Grove import detail from migration work.',
+    '["legacy-wisdom"]',
+    '# Legacy Grove Import\n\nPreserve lineage content.',
+    474,
+  );
+
+  db.prepare(
+    `INSERT INTO skill_usage (
+       id, project_id, skill_id, session_id, machine_id, detected_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-usage',
+    SOURCE_PROJECT_ROOT,
+    'legacy-skill',
+    'legacy-session',
+    'source-machine',
+    475,
+  );
+
+  db.run('PRAGMA foreign_keys = OFF');
+  db.prepare(
+    `INSERT INTO skill_lineage (
+       id, project_id, skill_id, generation, action, rationale,
+       source_ids_added, content_snapshot, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-orphan-lineage',
+    SOURCE_PROJECT_ROOT,
+    'missing-skill',
+    1,
+    'generate',
+    'Lineage whose skill was pruned before migration.',
+    '[]',
+    '# Missing skill',
+    476,
+  );
+  db.prepare(
+    `INSERT INTO skill_usage (
+       id, project_id, skill_id, session_id, machine_id, detected_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-orphan-usage',
+    SOURCE_PROJECT_ROOT,
+    'legacy-skill',
+    'missing-session',
+    'source-machine',
+    477,
+  );
+  db.run('PRAGMA foreign_keys = ON');
 
   db.prepare(
     `INSERT INTO canopy_entries (
