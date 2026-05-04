@@ -37,7 +37,7 @@
     "test": "echo 'myco-hub tests run from repo root'"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@goondocks/myco-shared": "*",
