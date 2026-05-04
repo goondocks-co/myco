@@ -61,6 +61,11 @@ describe('Grove project core importer', () => {
       skipped_resolution_events: 0,
       graph_edges: 4,
       skipped_graph_edges: 1,
+      canopy_entries: 1,
+      canopy_maps: 1,
+      digest_extracts: 1,
+      digest_extract_revisions: 2,
+      cortex_instructions: 1,
     });
 
     const agentId = lookupImportMappingBySource(migrationId, 'agents', 'myco-agent', targetDb)?.target_id;
@@ -78,6 +83,22 @@ describe('Grove project core importer', () => {
     const resolutionEventId = lookupImportMappingBySource(migrationId, 'resolution_events', 'legacy-resolution', targetDb)?.target_id;
     const graphEdgeId = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-spore-session', targetDb)?.target_id;
     const skippedGraphEdge = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-dangling-entity', targetDb);
+    const canopyEntryId = lookupImportMappingBySource(
+      migrationId,
+      'canopy_entries',
+      `${SOURCE_PROJECT_ROOT}\u001fpackages/myco/src/grove/importer.ts`,
+      targetDb,
+    )?.target_id;
+    const canopyMapId = lookupImportMappingBySource(
+      migrationId,
+      'canopy_maps',
+      `${SOURCE_PROJECT_ROOT}\u001fsource-machine`,
+      targetDb,
+    )?.target_id;
+    const digestExtractId = Number(lookupImportMappingBySource(migrationId, 'digest_extracts', 7, targetDb)?.target_id);
+    const digestRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 8, targetDb)?.target_id);
+    const digestParentRevisionId = Number(lookupImportMappingBySource(migrationId, 'digest_extract_revisions', 9, targetDb)?.target_id);
+    const cortexInstructionsId = lookupImportMappingBySource(migrationId, 'cortex_instructions', 'myco-agent:session-start', targetDb)?.target_id;
 
     expect(agentId).toBe('myco-agent');
     expect(parentSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
@@ -95,6 +116,12 @@ describe('Grove project core importer', () => {
     expect(entityId).toMatch(/^ent_[0-9a-f]{32}$/);
     expect(resolutionEventId).toMatch(/^res_[0-9a-f]{32}$/);
     expect(graphEdgeId).toMatch(/^edge_[0-9a-f]{32}$/);
+    expect(canopyEntryId).toBe(`${TARGET_PROJECT_ID}\u001fpackages/myco/src/grove/importer.ts`);
+    expect(canopyMapId).toBe(`${TARGET_PROJECT_ID}\u001fsource-machine`);
+    expect(digestExtractId).not.toBe(7);
+    expect(digestRevisionId).not.toBe(8);
+    expect(digestParentRevisionId).not.toBe(9);
+    expect(cortexInstructionsId).toBe('myco-agent:session-start');
     expect(parentBatchId).not.toBe(2);
     expect(childBatchId).not.toBe(1);
     expect(activityId).not.toBe(1);
@@ -276,14 +303,105 @@ describe('Grove project core importer', () => {
     expect(graphEdge.target_type).toBe('session');
     expect(graphEdge.session_id).toBe(childSessionId);
 
+    const canopyEntry = getRow<{
+      project_id: string;
+      machine_id: string;
+      path: string;
+      llm_description: string;
+      llm_updated_at: number;
+      embedded: number;
+    }>(
+      targetDb,
+      'SELECT project_id, machine_id, path, llm_description, llm_updated_at, embedded FROM canopy_entries WHERE project_id = ? AND path = ?',
+      TARGET_PROJECT_ID,
+      'packages/myco/src/grove/importer.ts',
+    );
+    expect(canopyEntry.project_id).toBe(TARGET_PROJECT_ID);
+    expect(canopyEntry.machine_id).toBe('source-machine');
+    expect(canopyEntry.path).toBe('packages/myco/src/grove/importer.ts');
+    expect(canopyEntry.llm_description).toContain('semantic Canopy summary');
+    expect(canopyEntry.llm_updated_at).toBe(405);
+    expect(canopyEntry.embedded).toBe(0);
+
+    const canopyMap = getRow<{
+      project_id: string;
+      machine_id: string;
+      content: string;
+      inputs_hash: string;
+      generated_by_run_id: string | null;
+    }>(
+      targetDb,
+      'SELECT project_id, machine_id, content, inputs_hash, generated_by_run_id FROM canopy_maps WHERE project_id = ? AND machine_id = ?',
+      TARGET_PROJECT_ID,
+      'source-machine',
+    );
+    expect(canopyMap.project_id).toBe(TARGET_PROJECT_ID);
+    expect(canopyMap.machine_id).toBe('source-machine');
+    expect(canopyMap.content).toContain('Project architecture map');
+    expect(canopyMap.inputs_hash).toBe('canopy-map-inputs');
+    expect(canopyMap.generated_by_run_id).toBeNull();
+
+    const digestExtract = getRow<{
+      project_id: string;
+      agent_id: string;
+      tier: number;
+      content: string;
+      substrate_hash: string;
+      machine_id: string;
+    }>(
+      targetDb,
+      'SELECT project_id, agent_id, tier, content, substrate_hash, machine_id FROM digest_extracts WHERE id = ?',
+      digestExtractId,
+    );
+    expect(digestExtract.project_id).toBe(TARGET_PROJECT_ID);
+    expect(digestExtract.agent_id).toBe(agentId);
+    expect(digestExtract.tier).toBe(5000);
+    expect(digestExtract.content).toContain('expensive digest content');
+    expect(digestExtract.substrate_hash).toBe('digest-substrate');
+    expect(digestExtract.machine_id).toBe('source-machine');
+
+    const digestRevision = getRow<{
+      project_id: string;
+      agent_id: string;
+      parent_revision_id: number;
+      run_id: string | null;
+      content: string;
+    }>(
+      targetDb,
+      'SELECT project_id, agent_id, parent_revision_id, run_id, content FROM digest_extract_revisions WHERE id = ?',
+      digestRevisionId,
+    );
+    expect(digestRevision.project_id).toBe(TARGET_PROJECT_ID);
+    expect(digestRevision.agent_id).toBe(agentId);
+    expect(digestRevision.parent_revision_id).toBe(digestParentRevisionId);
+    expect(digestRevision.run_id).toBeNull();
+    expect(digestRevision.content).toContain('newer digest revision');
+
+    const cortexInstructions = getRow<{
+      project_id: string;
+      agent_id: string;
+      content: string;
+      source_run_id: string | null;
+      machine_id: string;
+    }>(
+      targetDb,
+      'SELECT project_id, agent_id, content, source_run_id, machine_id FROM cortex_instructions WHERE id = ?',
+      cortexInstructionsId,
+    );
+    expect(cortexInstructions.project_id).toBe(TARGET_PROJECT_ID);
+    expect(cortexInstructions.agent_id).toBe(agentId);
+    expect(cortexInstructions.content).toContain('standing operating context');
+    expect(cortexInstructions.source_run_id).toBeNull();
+    expect(cortexInstructions.machine_id).toBe('source-machine');
+
     expect(matchCount(targetDb, 'sessions_fts', 'child')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'prompt_batches_fts', 'steering')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'activities_fts', 'README')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'spores_fts', 'durable')).toBeGreaterThan(0);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(19);
-    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(18);
+    expect(mappings).toHaveLength(25);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(24);
     expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(1);
   });
 
@@ -324,6 +442,11 @@ describe('Grove project core importer', () => {
       skipped_resolution_events: 0,
       graph_edges: 0,
       skipped_graph_edges: 0,
+      canopy_entries: 0,
+      canopy_maps: 0,
+      digest_extracts: 0,
+      digest_extract_revisions: 0,
+      cortex_instructions: 0,
     });
     expect(countRows(targetDb, 'agents')).toBe(1);
     expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
@@ -337,7 +460,12 @@ describe('Grove project core importer', () => {
     expect(countRows(targetDb, 'entity_mentions', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'resolution_events', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'graph_edges', TARGET_PROJECT_ID)).toBe(4);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(19);
+    expect(countRows(targetDb, 'canopy_entries', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'canopy_maps', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'digest_extracts', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'digest_extract_revisions', TARGET_PROJECT_ID)).toBe(2);
+    expect(countRows(targetDb, 'cortex_instructions', TARGET_PROJECT_ID)).toBe(1);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(25);
   });
 });
 
@@ -363,6 +491,26 @@ function seedSourceProject(db: Database): void {
     1,
     50,
     55,
+  );
+
+  db.prepare(
+    `INSERT INTO agent_runs (
+       id, agent_id, task, instruction, status, harness, provider,
+       model, session_ref, started_at, completed_at, dry_run
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-run',
+    'myco-agent',
+    'cortex-instructions',
+    'Generate cortex instructions',
+    'completed',
+    'openai',
+    'openai',
+    'gpt-test',
+    'legacy-session',
+    360,
+    400,
+    0,
   );
 
   db.prepare(
@@ -751,6 +899,114 @@ function seedSourceProject(db: Database): void {
     334,
     'source-machine',
     339,
+  );
+
+  db.prepare(
+    `INSERT INTO canopy_entries (
+       project_id, machine_id, path, content_hash, size_bytes,
+       token_estimate, line_count, language, exports_json, imports_json,
+       top_comment, mechanical_updated_at, llm_description, llm_updated_at,
+       embedded
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    SOURCE_PROJECT_ROOT,
+    'source-machine',
+    'packages/myco/src/grove/importer.ts',
+    'canopy-entry-hash',
+    1234,
+    456,
+    78,
+    'typescript',
+    '["importProjectCoreRows"]',
+    '["@myco/grove/ids.js"]',
+    'Importer top comment',
+    400,
+    'An expensive semantic Canopy summary of the importer.',
+    405,
+    1,
+  );
+
+  db.prepare(
+    `INSERT INTO canopy_maps (
+       project_id, machine_id, content, inputs_hash, generated_at,
+       generated_by_run_id, token_estimate
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    SOURCE_PROJECT_ROOT,
+    'source-machine',
+    '# Project architecture map\n\nProject architecture map content.',
+    'canopy-map-inputs',
+    410,
+    'legacy-run',
+    321,
+  );
+
+  db.prepare(
+    `INSERT INTO digest_extracts (
+       id, project_id, agent_id, tier, content, substrate_hash,
+       generated_at, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    7,
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    5000,
+    'Preserve expensive digest content for Grove migration.',
+    'digest-substrate',
+    420,
+    'source-machine',
+    425,
+  );
+
+  db.prepare(
+    `INSERT INTO digest_extract_revisions (
+       id, project_id, agent_id, tier, content, metadata,
+       run_id, parent_revision_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    9,
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    5000,
+    'Older digest revision.',
+    '{"phase":"parent"}',
+    'legacy-run',
+    null,
+    430,
+  );
+
+  db.prepare(
+    `INSERT INTO digest_extract_revisions (
+       id, project_id, agent_id, tier, content, metadata,
+       run_id, parent_revision_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    8,
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    5000,
+    'A newer digest revision with parent linkage.',
+    '{"phase":"child"}',
+    'legacy-run',
+    9,
+    440,
+  );
+
+  db.prepare(
+    `INSERT INTO cortex_instructions (
+       id, project_id, agent_id, content, input_hash, source_run_id,
+       generated_at, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'myco-agent:session-start',
+    SOURCE_PROJECT_ROOT,
+    'myco-agent',
+    'Preserve standing operating context for future sessions.',
+    'cortex-input-hash',
+    'legacy-run',
+    450,
+    'source-machine',
+    455,
   );
 }
 

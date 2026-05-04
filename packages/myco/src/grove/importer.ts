@@ -33,6 +33,11 @@ export interface ImportProjectCoreResult {
   skipped_resolution_events: number;
   graph_edges: number;
   skipped_graph_edges: number;
+  canopy_entries: number;
+  canopy_maps: number;
+  digest_extracts: number;
+  digest_extract_revisions: number;
+  cortex_instructions: number;
 }
 
 interface ImportContext {
@@ -252,8 +257,70 @@ interface SourceGraphEdgeRow {
   synced_at: number | null;
 }
 
+interface SourceCanopyEntryRow {
+  project_id: string;
+  machine_id: string | null;
+  path: string;
+  content_hash: string;
+  size_bytes: number;
+  token_estimate: number;
+  line_count: number;
+  language: string | null;
+  exports_json: string | null;
+  imports_json: string | null;
+  top_comment: string | null;
+  mechanical_updated_at: number;
+  llm_description: string | null;
+  llm_updated_at: number | null;
+  embedded: number | null;
+}
+
+interface SourceCanopyMapRow {
+  project_id: string;
+  machine_id: string | null;
+  content: string;
+  inputs_hash: string;
+  generated_at: number;
+  generated_by_run_id: string | null;
+  token_estimate: number;
+}
+
+interface SourceDigestExtractRow {
+  id: number;
+  agent_id: string;
+  tier: number;
+  content: string;
+  substrate_hash: string | null;
+  generated_at: number;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+interface SourceDigestExtractRevisionRow {
+  id: number;
+  agent_id: string;
+  tier: number;
+  content: string;
+  metadata: string | null;
+  run_id: string | null;
+  parent_revision_id: number | null;
+  created_at: number;
+}
+
+interface SourceCortexInstructionsRow {
+  id: string;
+  agent_id: string;
+  content: string;
+  input_hash: string;
+  source_run_id: string | null;
+  generated_at: number;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
 type TargetTable =
   | 'agents'
+  | 'agent_runs'
   | 'sessions'
   | 'prompt_batches'
   | 'activities'
@@ -264,7 +331,12 @@ type TargetTable =
   | 'entities'
   | 'entity_mentions'
   | 'resolution_events'
-  | 'graph_edges';
+  | 'graph_edges'
+  | 'canopy_entries'
+  | 'canopy_maps'
+  | 'digest_extracts'
+  | 'digest_extract_revisions'
+  | 'cortex_instructions';
 
 const IMPORT_ORIGIN = 'legacy_project_vault';
 
@@ -285,6 +357,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     skipped_resolution_events: 0,
     graph_edges: 0,
     skipped_graph_edges: 0,
+    canopy_entries: 0,
+    canopy_maps: 0,
+    digest_extracts: 0,
+    digest_extract_revisions: 0,
+    cortex_instructions: 0,
   };
 
   ctx.targetDb.transaction(() => {
@@ -434,6 +511,71 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       const imported = importGraphEdge(ctx, row);
       if (imported === 'imported') result.graph_edges += 1;
       if (imported === 'skipped') result.skipped_graph_edges += 1;
+    }
+
+    const canopyEntries = listSourceCanopyEntries(ctx.sourceDb);
+    for (const row of canopyEntries) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'canopy_entries',
+        sourceId: canopyEntrySourceId(row),
+        targetTable: 'canopy_entries',
+        targetId: () => canopyEntryTargetId(ctx, row),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of canopyEntries) {
+      if (importCanopyEntry(ctx, row)) result.canopy_entries += 1;
+    }
+
+    const canopyMaps = listSourceCanopyMaps(ctx.sourceDb);
+    for (const row of canopyMaps) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'canopy_maps',
+        sourceId: canopyMapSourceId(row),
+        targetTable: 'canopy_maps',
+        targetId: () => canopyMapTargetId(ctx, row),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of canopyMaps) {
+      if (importCanopyMap(ctx, row)) result.canopy_maps += 1;
+    }
+
+    const digestExtracts = listSourceDigestExtracts(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: digestExtracts,
+      sourceTable: 'digest_extracts',
+      targetTable: 'digest_extracts',
+      sourceId: (row) => row.id,
+      sourceMachineId: (row) => row.machine_id,
+    });
+    for (const row of digestExtracts) {
+      if (importDigestExtract(ctx, row)) result.digest_extracts += 1;
+    }
+
+    const digestExtractRevisions = listSourceDigestExtractRevisions(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: digestExtractRevisions,
+      sourceTable: 'digest_extract_revisions',
+      targetTable: 'digest_extract_revisions',
+      sourceId: (row) => row.id,
+    });
+    for (const row of sortDigestExtractRevisionsForImport(digestExtractRevisions)) {
+      if (importDigestExtractRevision(ctx, row)) result.digest_extract_revisions += 1;
+    }
+
+    const cortexInstructions = listSourceCortexInstructions(ctx.sourceDb);
+    for (const row of cortexInstructions) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'cortex_instructions',
+        sourceId: row.id,
+        targetTable: 'cortex_instructions',
+        targetId: () => row.id,
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of cortexInstructions) {
+      if (importCortexInstructions(ctx, row)) result.cortex_instructions += 1;
     }
 
     rebuildCoreFtsIndexes(ctx.targetDb);
@@ -1076,6 +1218,233 @@ function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): 'imported
   return 'imported';
 }
 
+function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): boolean {
+  const sourceId = canopyEntrySourceId(row);
+  requireMapping(ctx, 'canopy_entries', sourceId);
+  if (canopyEntryExists(ctx.targetDb, ctx.targetProjectId, row.path)) {
+    markImported(ctx, 'canopy_entries', sourceId);
+    return false;
+  }
+
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO canopy_entries (
+       project_id, machine_id, path, content_hash, size_bytes,
+       token_estimate, line_count, language, exports_json, imports_json,
+       top_comment, mechanical_updated_at, llm_description, llm_updated_at,
+       embedded
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?
+     )`,
+  ).run(
+    ctx.targetProjectId,
+    machineId,
+    row.path,
+    row.content_hash,
+    row.size_bytes,
+    row.token_estimate,
+    row.line_count,
+    row.language,
+    row.exports_json,
+    row.imports_json,
+    row.top_comment,
+    row.mechanical_updated_at,
+    row.llm_description,
+    row.llm_updated_at,
+    0,
+  );
+
+  markImported(ctx, 'canopy_entries', sourceId);
+  return true;
+}
+
+function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): boolean {
+  const sourceId = canopyMapSourceId(row);
+  const mapping = requireMapping(ctx, 'canopy_maps', sourceId);
+  const machineId = canopyMapMachineIdFromTargetId(mapping.target_id);
+  if (canopyMapExists(ctx.targetDb, ctx.targetProjectId, machineId)) {
+    markImported(ctx, 'canopy_maps', sourceId);
+    return false;
+  }
+
+  const generatedByRunId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.generated_by_run_id);
+
+  ctx.targetDb.prepare(
+    `INSERT INTO canopy_maps (
+       project_id, machine_id, content, inputs_hash, generated_at,
+       generated_by_run_id, token_estimate
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    ctx.targetProjectId,
+    machineId,
+    row.content,
+    row.inputs_hash,
+    row.generated_at,
+    generatedByRunId,
+    row.token_estimate,
+  );
+
+  markImported(ctx, 'canopy_maps', sourceId);
+  return true;
+}
+
+function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): boolean {
+  const existing = lookupImportMappingBySource(
+    ctx.migrationId,
+    'digest_extracts',
+    row.id,
+    ctx.targetDb,
+  );
+  if (existing) {
+    const targetId = parseMappedInteger(existing);
+    if (targetRowExists(ctx.targetDb, 'digest_extracts', targetId)) {
+      markImported(ctx, 'digest_extracts', row.id);
+      return false;
+    }
+    insertDigestExtract(ctx, row, targetId);
+    markImported(ctx, 'digest_extracts', row.id);
+    return true;
+  }
+
+  const info = insertDigestExtract(ctx, row);
+  const targetId = Number(info.lastInsertRowid);
+  recordImportedMapping(ctx, {
+    sourceTable: 'digest_extracts',
+    sourceId: row.id,
+    targetTable: 'digest_extracts',
+    targetId: String(targetId),
+    sourceMachineId: row.machine_id,
+  });
+  return true;
+}
+
+function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, targetId?: number) {
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  const sql = targetId == null
+    ? `INSERT INTO digest_extracts (
+         project_id, agent_id, tier, content, substrate_hash,
+         generated_at, machine_id, synced_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    : `INSERT INTO digest_extracts (
+         id, project_id, agent_id, tier, content, substrate_hash,
+         generated_at, machine_id, synced_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const params = [
+    ctx.targetProjectId,
+    agentId,
+    row.tier,
+    row.content,
+    row.substrate_hash,
+    row.generated_at,
+    machineId,
+    row.synced_at,
+  ];
+
+  return targetId == null
+    ? ctx.targetDb.prepare(sql).run(...params)
+    : ctx.targetDb.prepare(sql).run(targetId, ...params);
+}
+
+function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow): boolean {
+  const existing = lookupImportMappingBySource(
+    ctx.migrationId,
+    'digest_extract_revisions',
+    row.id,
+    ctx.targetDb,
+  );
+  if (existing) {
+    const targetId = parseMappedInteger(existing);
+    if (targetRowExists(ctx.targetDb, 'digest_extract_revisions', targetId)) {
+      markImported(ctx, 'digest_extract_revisions', row.id);
+      return false;
+    }
+    insertDigestExtractRevision(ctx, row, targetId);
+    markImported(ctx, 'digest_extract_revisions', row.id);
+    return true;
+  }
+
+  const info = insertDigestExtractRevision(ctx, row);
+  const targetId = Number(info.lastInsertRowid);
+  recordImportedMapping(ctx, {
+    sourceTable: 'digest_extract_revisions',
+    sourceId: row.id,
+    targetTable: 'digest_extract_revisions',
+    targetId: String(targetId),
+  });
+  return true;
+}
+
+function insertDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow, targetId?: number) {
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const runId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.run_id);
+  const parentRevisionId = mapOptionalIntegerId(ctx, 'digest_extract_revisions', row.parent_revision_id);
+
+  const sql = targetId == null
+    ? `INSERT INTO digest_extract_revisions (
+         project_id, agent_id, tier, content, metadata,
+         run_id, parent_revision_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    : `INSERT INTO digest_extract_revisions (
+         id, project_id, agent_id, tier, content, metadata,
+         run_id, parent_revision_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const params = [
+    ctx.targetProjectId,
+    agentId,
+    row.tier,
+    row.content,
+    row.metadata,
+    runId,
+    parentRevisionId,
+    row.created_at,
+  ];
+
+  return targetId == null
+    ? ctx.targetDb.prepare(sql).run(...params)
+    : ctx.targetDb.prepare(sql).run(targetId, ...params);
+}
+
+function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructionsRow): boolean {
+  const mapping = requireMapping(ctx, 'cortex_instructions', row.id);
+  if (targetRowExists(ctx.targetDb, 'cortex_instructions', mapping.target_id)) {
+    markImported(ctx, 'cortex_instructions', row.id);
+    return false;
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const sourceRunId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.source_run_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO cortex_instructions (
+       id, project_id, agent_id, content, input_hash,
+       source_run_id, generated_at, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    row.content,
+    row.input_hash,
+    sourceRunId,
+    row.generated_at,
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'cortex_instructions', row.id);
+  return true;
+}
+
 function ensureTextMapping(
   ctx: ImportContext,
   input: {
@@ -1236,6 +1605,35 @@ function sortPromptBatchesForImport(rows: readonly SourcePromptBatchRow[]): Sour
   return ordered;
 }
 
+function sortDigestExtractRevisionsForImport(rows: readonly SourceDigestExtractRevisionRow[]): SourceDigestExtractRevisionRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const visited = new Set<number>();
+  const visiting = new Set<number>();
+  const ordered: SourceDigestExtractRevisionRow[] = [];
+
+  function visit(row: SourceDigestExtractRevisionRow): void {
+    if (visited.has(row.id)) return;
+    if (visiting.has(row.id)) {
+      throw new Error(`Cycle in digest_extract_revisions parent chain at ${row.id}`);
+    }
+
+    visiting.add(row.id);
+    if (row.parent_revision_id != null) {
+      const parent = byId.get(row.parent_revision_id);
+      if (!parent) {
+        throw new Error(`Missing source digest_extract_revisions parent ${row.parent_revision_id} for ${row.id}`);
+      }
+      visit(parent);
+    }
+    visiting.delete(row.id);
+    visited.add(row.id);
+    ordered.push(row);
+  }
+
+  for (const row of rows) visit(row);
+  return ordered;
+}
+
 function markImported(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number): void {
   markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'imported', {}, ctx.targetDb);
 }
@@ -1336,6 +1734,26 @@ function entityMentionExists(
   return row?.present === 1;
 }
 
+function canopyEntryExists(db: Database, projectId: string, path: string): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present
+       FROM canopy_entries
+      WHERE project_id = ? AND path = ?
+      LIMIT 1`,
+  ).get(projectId, path) as { present: number } | undefined;
+  return row?.present === 1;
+}
+
+function canopyMapExists(db: Database, projectId: string, machineId: string): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present
+       FROM canopy_maps
+      WHERE project_id = ? AND machine_id = ?
+      LIMIT 1`,
+  ).get(projectId, machineId) as { present: number } | undefined;
+  return row?.present === 1;
+}
+
 function entityMentionSourceId(row: SourceEntityMentionRow): string {
   return [row.entity_id, row.note_id, row.note_type, row.agent_id].join('\u001f');
 }
@@ -1347,6 +1765,30 @@ function entityMentionTargetId(input: {
   agentId: string;
 }): string {
   return [input.entityId, input.noteId, input.noteType, input.agentId].join('\u001f');
+}
+
+function canopyEntrySourceId(row: SourceCanopyEntryRow): string {
+  return [row.project_id, row.path].join('\u001f');
+}
+
+function canopyEntryTargetId(ctx: ImportContext, row: SourceCanopyEntryRow): string {
+  return [ctx.targetProjectId, row.path].join('\u001f');
+}
+
+function canopyMapSourceId(row: SourceCanopyMapRow): string {
+  return [row.project_id, row.machine_id ?? 'local'].join('\u001f');
+}
+
+function canopyMapTargetId(ctx: ImportContext, row: SourceCanopyMapRow): string {
+  return [ctx.targetProjectId, row.machine_id ?? ctx.targetMachineId ?? 'local'].join('\u001f');
+}
+
+function canopyMapMachineIdFromTargetId(targetId: string): string {
+  const separatorIndex = targetId.indexOf('\u001f');
+  if (separatorIndex < 0 || separatorIndex === targetId.length - 1) {
+    throw new Error(`Invalid canopy_maps target id: ${targetId}`);
+  }
+  return targetId.slice(separatorIndex + 1);
 }
 
 function rebuildCoreFtsIndexes(db: Database): void {
@@ -1483,6 +1925,58 @@ function listSourceGraphEdges(db: Database): SourceGraphEdgeRow[] {
      FROM graph_edges
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourceGraphEdgeRow[];
+}
+
+function listSourceCanopyEntries(db: Database): SourceCanopyEntryRow[] {
+  return db.prepare(
+    `SELECT
+       project_id, machine_id, path, content_hash, size_bytes,
+       token_estimate, line_count, language, exports_json, imports_json,
+       top_comment, mechanical_updated_at, llm_description, llm_updated_at,
+       embedded
+     FROM canopy_entries
+     ORDER BY project_id ASC, path ASC`,
+  ).all() as SourceCanopyEntryRow[];
+}
+
+function listSourceCanopyMaps(db: Database): SourceCanopyMapRow[] {
+  return db.prepare(
+    `SELECT
+       project_id, machine_id, content, inputs_hash, generated_at,
+       generated_by_run_id, token_estimate
+     FROM canopy_maps
+     ORDER BY project_id ASC, machine_id ASC`,
+  ).all() as SourceCanopyMapRow[];
+}
+
+function listSourceDigestExtracts(db: Database): SourceDigestExtractRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, tier, content, substrate_hash,
+       generated_at, machine_id, synced_at
+     FROM digest_extracts
+     ORDER BY id ASC`,
+  ).all() as SourceDigestExtractRow[];
+}
+
+function listSourceDigestExtractRevisions(db: Database): SourceDigestExtractRevisionRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, tier, content, metadata,
+       run_id, parent_revision_id, created_at
+     FROM digest_extract_revisions
+     ORDER BY id ASC`,
+  ).all() as SourceDigestExtractRevisionRow[];
+}
+
+function listSourceCortexInstructions(db: Database): SourceCortexInstructionsRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, content, input_hash, source_run_id,
+       generated_at, machine_id, synced_at
+     FROM cortex_instructions
+     ORDER BY generated_at ASC, id ASC`,
+  ).all() as SourceCortexInstructionsRow[];
 }
 
 function assertNonEmpty(value: string, fieldName: string): void {
