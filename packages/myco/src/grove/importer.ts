@@ -191,7 +191,15 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       if (importSession(ctx, row)) result.sessions += 1;
     }
 
-    for (const row of listSourcePromptBatches(ctx.sourceDb)) {
+    const promptBatches = listSourcePromptBatches(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: promptBatches,
+      sourceTable: 'prompt_batches',
+      targetTable: 'prompt_batches',
+      sourceId: (row) => row.id,
+      sourceMachineId: (row) => row.machine_id,
+    });
+    for (const row of sortPromptBatchesForImport(promptBatches)) {
       if (importPromptBatch(ctx, row)) result.prompt_batches += 1;
     }
 
@@ -641,6 +649,57 @@ function ensureTextMapping(
   }, ctx.targetDb);
 }
 
+function ensureIntegerMappings<Row>(
+  ctx: ImportContext,
+  input: {
+    rows: readonly Row[];
+    sourceTable: TargetTable;
+    targetTable: TargetTable;
+    sourceId: (row: Row) => number;
+    sourceMachineId?: (row: Row) => string | null;
+  },
+): void {
+  const usedTargetIds = new Set<string>();
+  for (const row of input.rows) {
+    const mapping = lookupImportMappingBySource(
+      ctx.migrationId,
+      input.sourceTable,
+      input.sourceId(row),
+      ctx.targetDb,
+    );
+    if (mapping) usedTargetIds.add(mapping.target_id);
+  }
+
+  let nextTargetId = nextIntegerTargetId(ctx.targetDb, input.targetTable);
+  for (const row of input.rows) {
+    const sourceId = input.sourceId(row);
+    const existing = lookupImportMappingBySource(ctx.migrationId, input.sourceTable, sourceId, ctx.targetDb);
+    if (existing) continue;
+
+    while (usedTargetIds.has(String(nextTargetId)) || targetRowExists(ctx.targetDb, input.targetTable, nextTargetId)) {
+      nextTargetId += 1;
+    }
+    const targetId = String(nextTargetId);
+    usedTargetIds.add(targetId);
+    nextTargetId += 1;
+
+    recordImportMapping({
+      migration_id: ctx.migrationId,
+      source_project_root: ctx.sourceProjectRoot,
+      source_db_path: ctx.sourceDbPath,
+      target_grove_id: ctx.targetGroveId,
+      target_project_id: ctx.targetProjectId,
+      source_table: input.sourceTable,
+      source_id: sourceId,
+      target_table: input.targetTable,
+      target_id: targetId,
+      source_machine_id: input.sourceMachineId?.(row) ?? null,
+      target_machine_id: ctx.targetMachineId ?? input.sourceMachineId?.(row) ?? null,
+      import_origin: IMPORT_ORIGIN,
+    }, ctx.targetDb);
+  }
+}
+
 function recordImportedMapping(
   ctx: ImportContext,
   input: {
@@ -668,6 +727,13 @@ function recordImportedMapping(
   }, ctx.targetDb);
 }
 
+function nextIntegerTargetId(db: Database, table: TargetTable): number {
+  const row = db.prepare(`SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM ${table}`).get() as
+    | { next_id: number }
+    | undefined;
+  return row?.next_id ?? 1;
+}
+
 function requireMapping(
   ctx: ImportContext,
   sourceTable: TargetTable,
@@ -678,6 +744,35 @@ function requireMapping(
     throw new Error(`Missing import mapping for ${sourceTable}/${sourceId}`);
   }
   return mapping;
+}
+
+function sortPromptBatchesForImport(rows: readonly SourcePromptBatchRow[]): SourcePromptBatchRow[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const visited = new Set<number>();
+  const visiting = new Set<number>();
+  const ordered: SourcePromptBatchRow[] = [];
+
+  function visit(row: SourcePromptBatchRow): void {
+    if (visited.has(row.id)) return;
+    if (visiting.has(row.id)) {
+      throw new Error(`Cycle in prompt_batches parent chain at ${row.id}`);
+    }
+
+    visiting.add(row.id);
+    if (row.parent_prompt_batch_id != null) {
+      const parent = byId.get(row.parent_prompt_batch_id);
+      if (!parent) {
+        throw new Error(`Missing source prompt_batches parent ${row.parent_prompt_batch_id} for ${row.id}`);
+      }
+      visit(parent);
+    }
+    visiting.delete(row.id);
+    visited.add(row.id);
+    ordered.push(row);
+  }
+
+  for (const row of rows) visit(row);
+  return ordered;
 }
 
 function markImported(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number): void {

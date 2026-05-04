@@ -57,8 +57,8 @@ describe('Grove project core importer', () => {
 
     const parentSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-parent', targetDb)?.target_id;
     const childSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-session', targetDb)?.target_id;
-    const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 1, targetDb)?.target_id);
-    const childBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
+    const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
+    const childBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 1, targetDb)?.target_id);
     const activityId = Number(lookupImportMappingBySource(migrationId, 'activities', 1, targetDb)?.target_id);
     const attachmentId = lookupImportMappingBySource(migrationId, 'attachments', 'legacy-attachment', targetDb)?.target_id;
     const planId = lookupImportMappingBySource(migrationId, 'plans', 'legacy-plan', targetDb)?.target_id;
@@ -73,8 +73,8 @@ describe('Grove project core importer', () => {
     expect(planId).not.toBe('legacy-plan');
     expect(artifactId).toMatch(/^art_[0-9a-f]{32}$/);
     expect(artifactId).not.toBe('legacy-artifact');
-    expect(parentBatchId).not.toBe(1);
-    expect(childBatchId).not.toBe(2);
+    expect(parentBatchId).not.toBe(2);
+    expect(childBatchId).not.toBe(1);
     expect(activityId).not.toBe(1);
 
     const childSession = getRow<{
@@ -282,11 +282,12 @@ function seedSourceProject(db: Database): void {
 
   db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, parent_prompt_batch_id, kind, prompt_number, user_prompt,
+       id, session_id, parent_prompt_batch_id, kind, prompt_number, user_prompt,
        response_summary, classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id, synced_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    2,
     'legacy-session',
     null,
     'initial',
@@ -307,13 +308,14 @@ function seedSourceProject(db: Database): void {
 
   db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, parent_prompt_batch_id, kind, prompt_number, user_prompt,
+       id, session_id, parent_prompt_batch_id, kind, prompt_number, user_prompt,
        response_summary, classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id, synced_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    'legacy-session',
     1,
+    'legacy-session',
+    2,
     'steering',
     2,
     'Steering migration follow-up',
@@ -338,7 +340,7 @@ function seedSourceProject(db: Database): void {
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     'legacy-session',
-    2,
+    1,
     'Read',
     '{"file_path":"README.md"}',
     'Read README',
@@ -362,7 +364,7 @@ function seedSourceProject(db: Database): void {
   ).run(
     'legacy-attachment',
     'legacy-session',
-    2,
+    1,
     'attachments/legacy-session-2.png',
     'image/png',
     'Prompt image',
@@ -387,7 +389,7 @@ function seedSourceProject(db: Database): void {
     'plans/grove-core.md',
     '["grove","migration"]',
     'legacy-session',
-    2,
+    1,
     'plan-hash',
     1,
     240,
