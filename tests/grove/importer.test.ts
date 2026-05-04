@@ -48,6 +48,10 @@ describe('Grove project core importer', () => {
 
     expect(result).toEqual({
       agents: 1,
+      agent_tasks: 1,
+      skipped_agent_tasks: 1,
+      agent_state: 2,
+      skipped_agent_state: 1,
       sessions: 2,
       prompt_batches: 2,
       activities: 1,
@@ -86,6 +90,11 @@ describe('Grove project core importer', () => {
     });
 
     const agentId = lookupImportMappingBySource(migrationId, 'agents', 'myco-agent', targetDb)?.target_id;
+    const agentTaskId = lookupImportMappingBySource(migrationId, 'agent_tasks', 'skill-evolve', targetDb)?.target_id;
+    const skippedAgentTask = lookupImportMappingBySource(migrationId, 'agent_tasks', 'orphan-task', targetDb);
+    const phaseStateId = lookupImportMappingBySource(migrationId, 'agent_state', 'myco-agent\u001fskill-evolve-current-phase', targetDb)?.target_id;
+    const cursorStateId = lookupImportMappingBySource(migrationId, 'agent_state', 'myco-agent\u001fskill-evolve-assessment-cursor', targetDb)?.target_id;
+    const skippedAgentState = lookupImportMappingBySource(migrationId, 'agent_state', 'missing-agent\u001forphan-state', targetDb);
     const parentSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-parent', targetDb)?.target_id;
     const childSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-session', targetDb)?.target_id;
     const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
@@ -134,6 +143,13 @@ describe('Grove project core importer', () => {
     const orphanLogEntryId = Number(lookupImportMappingBySource(migrationId, 'log_entries', 43, targetDb)?.target_id);
 
     expect(agentId).toBe('myco-agent');
+    expect(agentTaskId).toBe('skill-evolve');
+    expect(skippedAgentTask?.status).toBe('skipped');
+    expect(skippedAgentTask?.notes).toContain('unmapped agent reference missing-agent');
+    expect(phaseStateId).toBe('myco-agent\u001fskill-evolve-current-phase');
+    expect(cursorStateId).toBe('myco-agent\u001fskill-evolve-assessment-cursor');
+    expect(skippedAgentState?.status).toBe('skipped');
+    expect(skippedAgentState?.notes).toContain('unmapped agent reference missing-agent');
     expect(parentSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).not.toBe('legacy-session');
@@ -185,6 +201,50 @@ describe('Grove project core importer', () => {
     expect(activityId).not.toBe(1);
     expect(skippedGraphEdge?.status).toBe('skipped');
     expect(skippedGraphEdge?.notes).toContain('unmapped endpoint entity/missing-entity');
+
+    const agentTask = getRow<{
+      id: string;
+      agent_id: string;
+      source: string;
+      display_name: string;
+      prompt: string;
+      is_default: number;
+      model: string;
+      config: string;
+      updated_at: number;
+    }>(
+      targetDb,
+      `SELECT id, agent_id, source, display_name, prompt,
+              is_default, model, config, updated_at
+         FROM agent_tasks WHERE id = ?`,
+      agentTaskId,
+    );
+    expect(agentTask.agent_id).toBe(agentId);
+    expect(agentTask.source).toBe('built-in');
+    expect(agentTask.display_name).toBe('Skill Evolution');
+    expect(agentTask.prompt).toContain('Evolve skills from persisted state');
+    expect(agentTask.is_default).toBe(0);
+    expect(agentTask.model).toBe('gpt-test');
+    expect(agentTask.config).toBe('{"phase":"assess"}');
+    expect(agentTask.updated_at).toBe(491);
+
+    const phaseState = getRow<{ agent_id: string; key: string; value: string; updated_at: number }>(
+      targetDb,
+      'SELECT agent_id, key, value, updated_at FROM agent_state WHERE agent_id = ? AND key = ?',
+      agentId,
+      'skill-evolve-current-phase',
+    );
+    expect(phaseState.value).toBe('assess');
+    expect(phaseState.updated_at).toBe(490);
+
+    const cursorState = getRow<{ agent_id: string; key: string; value: string; updated_at: number }>(
+      targetDb,
+      'SELECT agent_id, key, value, updated_at FROM agent_state WHERE agent_id = ? AND key = ?',
+      agentId,
+      'skill-evolve-assessment-cursor',
+    );
+    expect(cursorState.value).toBe('skill-a,skill-b');
+    expect(cursorState.updated_at).toBe(492);
 
     const childSession = getRow<{
       id: string;
@@ -743,9 +803,9 @@ describe('Grove project core importer', () => {
     expect(matchCount(targetDb, 'log_entries_fts', 'GroveLog')).toBe(2);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(41);
-    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(35);
-    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(6);
+    expect(mappings).toHaveLength(46);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(38);
+    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(8);
   });
 
   it('uses existing journal mappings on retry instead of duplicating rows', () => {
@@ -772,6 +832,10 @@ describe('Grove project core importer', () => {
 
     expect(retry).toEqual({
       agents: 0,
+      agent_tasks: 0,
+      skipped_agent_tasks: 0,
+      agent_state: 0,
+      skipped_agent_state: 0,
       sessions: 0,
       prompt_batches: 0,
       activities: 0,
@@ -809,6 +873,8 @@ describe('Grove project core importer', () => {
       log_entries: 0,
     });
     expect(countRows(targetDb, 'agents')).toBe(1);
+    expect(countRows(targetDb, 'agent_tasks')).toBe(1);
+    expect(countRows(targetDb, 'agent_state')).toBe(2);
     expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'prompt_batches', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'activities', TARGET_PROJECT_ID)).toBe(1);
@@ -835,7 +901,51 @@ describe('Grove project core importer', () => {
     expect(countRows(targetDb, 'cortex_instructions', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'notifications', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'log_entries', TARGET_PROJECT_ID)).toBe(2);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(41);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(46);
+  });
+
+  it('keeps newer target agent state when legacy imports collide', () => {
+    seedTargetAgent(targetDb);
+    targetDb.prepare(
+      `INSERT INTO agent_state (agent_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run('myco-agent', 'skill-evolve-current-phase', 'target-newer-phase', 999);
+    targetDb.prepare(
+      `INSERT INTO agent_state (agent_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run('myco-agent', 'skill-evolve-assessment-cursor', 'target-older-cursor', 100);
+
+    const result = importProjectCoreRows({
+      migrationId: createMigrationId(),
+      sourceDb,
+      targetDb,
+      sourceProjectRoot: SOURCE_PROJECT_ROOT,
+      sourceDbPath: SOURCE_DB_PATH,
+      targetGroveId: TARGET_GROVE_ID,
+      targetProjectId: TARGET_PROJECT_ID,
+    });
+
+    expect(result.agents).toBe(0);
+    expect(result.agent_state).toBe(1);
+    expect(result.skipped_agent_state).toBe(1);
+
+    const newerState = getRow<{ value: string; updated_at: number }>(
+      targetDb,
+      'SELECT value, updated_at FROM agent_state WHERE agent_id = ? AND key = ?',
+      'myco-agent',
+      'skill-evolve-current-phase',
+    );
+    expect(newerState.value).toBe('target-newer-phase');
+    expect(newerState.updated_at).toBe(999);
+
+    const updatedState = getRow<{ value: string; updated_at: number }>(
+      targetDb,
+      'SELECT value, updated_at FROM agent_state WHERE agent_id = ? AND key = ?',
+      'myco-agent',
+      'skill-evolve-assessment-cursor',
+    );
+    expect(updatedState.value).toBe('skill-a,skill-b');
+    expect(updatedState.updated_at).toBe(492);
   });
 });
 
@@ -862,6 +972,63 @@ function seedSourceProject(db: Database): void {
     50,
     55,
   );
+
+  db.prepare(
+    `INSERT INTO agent_tasks (
+       id, agent_id, source, display_name, description,
+       prompt, is_default, tool_overrides, model, config,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'skill-evolve',
+    'myco-agent',
+    'built-in',
+    'Skill Evolution',
+    'Evolve generated skills from persisted assessment state.',
+    'Evolve skills from persisted state.',
+    0,
+    '["myco_skills"]',
+    'gpt-test',
+    '{"phase":"assess"}',
+    486,
+    491,
+  );
+
+  db.prepare(
+    `INSERT INTO agent_state (agent_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run('myco-agent', 'skill-evolve-current-phase', 'assess', 490);
+  db.prepare(
+    `INSERT INTO agent_state (agent_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run('myco-agent', 'skill-evolve-assessment-cursor', 'skill-a,skill-b', 492);
+
+  db.run('PRAGMA foreign_keys = OFF');
+  db.prepare(
+    `INSERT INTO agent_tasks (
+       id, agent_id, source, display_name, description,
+       prompt, is_default, tool_overrides, model, config,
+       created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'orphan-task',
+    'missing-agent',
+    'user',
+    'Orphan Task',
+    'Task whose agent was pruned before migration.',
+    'This task should be skipped.',
+    0,
+    null,
+    null,
+    null,
+    487,
+    488,
+  );
+  db.prepare(
+    `INSERT INTO agent_state (agent_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run('missing-agent', 'orphan-state', 'skip me', 493);
+  db.run('PRAGMA foreign_keys = ON');
 
   db.prepare(
     `INSERT INTO agent_runs (
@@ -1720,6 +1887,31 @@ function seedTargetExistingRows(db: Database): void {
     2,
     2,
     'existing-activity-hash',
+  );
+}
+
+function seedTargetAgent(db: Database): void {
+  db.prepare(
+    `INSERT INTO agents (
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'myco-agent',
+    'Existing Myco Agent',
+    'openai',
+    'gpt-existing',
+    'existing-agent-hash',
+    '{}',
+    'built-in',
+    'Existing target agent.',
+    20,
+    120,
+    '[]',
+    1,
+    1,
+    2,
   );
 }
 

@@ -20,6 +20,10 @@ export interface ImportProjectCoreInput {
 
 export interface ImportProjectCoreResult {
   agents: number;
+  agent_tasks: number;
+  skipped_agent_tasks: number;
+  agent_state: number;
+  skipped_agent_state: number;
   sessions: number;
   prompt_batches: number;
   activities: number;
@@ -200,6 +204,28 @@ interface SourceAgentRow {
   enabled: number | null;
   created_at: number;
   updated_at: number | null;
+}
+
+interface SourceAgentTaskRow {
+  id: string;
+  agent_id: string;
+  source: string | null;
+  display_name: string | null;
+  description: string | null;
+  prompt: string;
+  is_default: number | null;
+  tool_overrides: string | null;
+  model: string | null;
+  config: string | null;
+  created_at: number;
+  updated_at: number | null;
+}
+
+interface SourceAgentStateRow {
+  agent_id: string;
+  key: string;
+  value: string;
+  updated_at: number;
 }
 
 interface SourceSporeRow {
@@ -483,6 +509,8 @@ interface SourceLogEntryRow {
 
 type TargetTable =
   | 'agents'
+  | 'agent_tasks'
+  | 'agent_state'
   | 'agent_runs'
   | 'sessions'
   | 'prompt_batches'
@@ -516,6 +544,10 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
   const ctx = normalizeInput(input);
   const result: ImportProjectCoreResult = {
     agents: 0,
+    agent_tasks: 0,
+    skipped_agent_tasks: 0,
+    agent_state: 0,
+    skipped_agent_state: 0,
     sessions: 0,
     prompt_batches: 0,
     activities: 0,
@@ -565,6 +597,36 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     }
     for (const row of agents) {
       if (importAgent(ctx, row)) result.agents += 1;
+    }
+
+    const agentTasks = listSourceAgentTasks(ctx.sourceDb);
+    for (const row of agentTasks) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'agent_tasks',
+        sourceId: row.id,
+        targetTable: 'agent_tasks',
+        targetId: () => row.id,
+      });
+    }
+    for (const row of agentTasks) {
+      const imported = importAgentTask(ctx, row);
+      if (imported === 'imported') result.agent_tasks += 1;
+      if (imported === 'skipped') result.skipped_agent_tasks += 1;
+    }
+
+    const agentState = listSourceAgentState(ctx.sourceDb);
+    for (const row of agentState) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'agent_state',
+        sourceId: agentStateSourceId(row),
+        targetTable: 'agent_state',
+        targetId: () => agentStateTargetId(ctx, row),
+      });
+    }
+    for (const row of agentState) {
+      const imported = importAgentState(ctx, row);
+      if (imported === 'imported') result.agent_state += 1;
+      if (imported === 'skipped') result.skipped_agent_state += 1;
     }
 
     const sessions = listSourceSessions(ctx.sourceDb);
@@ -973,6 +1035,87 @@ function importAgent(ctx: ImportContext, row: SourceAgentRow): boolean {
 
   markImported(ctx, 'agents', row.id);
   return true;
+}
+
+function importAgentTask(ctx: ImportContext, row: SourceAgentTaskRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'agent_tasks', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!agentId) {
+    markSkipped(ctx, 'agent_tasks', row.id, `unmapped agent reference ${row.agent_id}`);
+    return 'skipped';
+  }
+
+  if (targetRowExists(ctx.targetDb, 'agent_tasks', mapping.target_id)) {
+    markImported(ctx, 'agent_tasks', row.id);
+    return 'unchanged';
+  }
+
+  ctx.targetDb.prepare(
+    `INSERT INTO agent_tasks (
+       id, agent_id, source, display_name, description,
+       prompt, is_default, tool_overrides, model, config,
+       created_at, updated_at
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    agentId,
+    row.source ?? 'built-in',
+    row.display_name,
+    row.description,
+    row.prompt,
+    row.is_default ?? 0,
+    row.tool_overrides,
+    row.model,
+    row.config,
+    row.created_at,
+    row.updated_at,
+  );
+
+  markImported(ctx, 'agent_tasks', row.id);
+  return 'imported';
+}
+
+function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): 'imported' | 'skipped' | 'unchanged' {
+  const sourceId = agentStateSourceId(row);
+  const mapping = requireMapping(ctx, 'agent_state', sourceId);
+  if (mapping.status === 'skipped') return 'unchanged';
+
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!agentId) {
+    markSkipped(ctx, 'agent_state', sourceId, `unmapped agent reference ${row.agent_id}`);
+    return 'skipped';
+  }
+
+  const existing = getAgentStateUpdatedAt(ctx.targetDb, agentId, row.key);
+  if (existing == null) {
+    ctx.targetDb.prepare(
+      `INSERT INTO agent_state (agent_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(agentId, row.key, row.value, row.updated_at);
+    markImported(ctx, 'agent_state', sourceId);
+    return 'imported';
+  }
+
+  if (row.updated_at > existing) {
+    ctx.targetDb.prepare(
+      `UPDATE agent_state
+          SET value = ?,
+              updated_at = ?
+        WHERE agent_id = ?
+          AND key = ?`,
+    ).run(row.value, row.updated_at, agentId, row.key);
+    markImported(ctx, 'agent_state', sourceId);
+    return 'imported';
+  }
+
+  markImported(ctx, 'agent_state', sourceId);
+  return 'unchanged';
 }
 
 function importSession(ctx: ImportContext, row: SourceSessionRow): boolean {
@@ -2562,6 +2705,17 @@ function canopyMapExists(db: Database, projectId: string, machineId: string): bo
   return row?.present === 1;
 }
 
+function getAgentStateUpdatedAt(db: Database, agentId: string, key: string): number | null {
+  const row = db.prepare(
+    `SELECT updated_at
+       FROM agent_state
+      WHERE agent_id = ?
+        AND key = ?
+      LIMIT 1`,
+  ).get(agentId, key) as { updated_at: number } | undefined;
+  return row?.updated_at ?? null;
+}
+
 function entityMentionSourceId(row: SourceEntityMentionRow): string {
   return [row.entity_id, row.note_id, row.note_type, row.agent_id].join('\u001f');
 }
@@ -2573,6 +2727,15 @@ function entityMentionTargetId(input: {
   agentId: string;
 }): string {
   return [input.entityId, input.noteId, input.noteType, input.agentId].join('\u001f');
+}
+
+function agentStateSourceId(row: SourceAgentStateRow): string {
+  return [row.agent_id, row.key].join('\u001f');
+}
+
+function agentStateTargetId(ctx: ImportContext, row: SourceAgentStateRow): string {
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id) ?? row.agent_id;
+  return [agentId, row.key].join('\u001f');
 }
 
 function canopyEntrySourceId(row: SourceCanopyEntryRow): string {
@@ -2614,6 +2777,25 @@ function listSourceAgents(db: Database): SourceAgentRow[] {
      FROM agents
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourceAgentRow[];
+}
+
+function listSourceAgentTasks(db: Database): SourceAgentTaskRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, source, display_name, description,
+       prompt, is_default, tool_overrides, model, config,
+       created_at, updated_at
+     FROM agent_tasks
+     ORDER BY agent_id ASC, created_at ASC, id ASC`,
+  ).all() as SourceAgentTaskRow[];
+}
+
+function listSourceAgentState(db: Database): SourceAgentStateRow[] {
+  return db.prepare(
+    `SELECT agent_id, key, value, updated_at
+     FROM agent_state
+     ORDER BY agent_id ASC, key ASC`,
+  ).all() as SourceAgentStateRow[];
 }
 
 function listSourceSessions(db: Database): SourceSessionRow[] {
