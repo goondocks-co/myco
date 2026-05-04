@@ -34,6 +34,11 @@ export interface CortexCanopyArgs {
   machineId: string;
 }
 
+interface ResolvedCanopyEntry {
+  projectId: string;
+  path: string;
+}
+
 export async function handleCortexDigest(
   input: CortexInput,
   client: DaemonClient,
@@ -98,10 +103,16 @@ export async function handleCortexCanopyMap(args: CortexCanopyArgs): Promise<Can
   return handleCanopyMap(args);
 }
 
-export async function handleCortexCanopyEntry(input: CortexInput): Promise<unknown | CortexFailure> {
-  const resolved = resolveCanopyEntry(input);
+export async function handleCortexCanopyEntry(
+  input: CortexInput,
+  requestContext?: MycoRequestContext,
+): Promise<unknown | CortexFailure> {
+  const resolved = resolveCanopyEntry(input, requestContext);
   if (!resolved) {
     return { ok: false, error: 'id or project_id plus path is required for op: canopy_entry' };
+  }
+  if ('error' in resolved) {
+    return { ok: false, error: resolved.error };
   }
 
   try {
@@ -114,7 +125,21 @@ export async function handleCortexCanopyEntry(input: CortexInput): Promise<unkno
   }
 }
 
-function resolveCanopyEntry(input: CortexInput): { projectId: string; path: string } | null {
+function resolveCanopyEntry(
+  input: CortexInput,
+  requestContext?: MycoRequestContext,
+): ResolvedCanopyEntry | { error: string } | null {
+  if (requestContext && input.path) {
+    return { projectId: requestContext.projectId, path: input.path };
+  }
+  if (requestContext && input.id) {
+    const parsed = parseCanopyRecordId(input.id);
+    if (!parsed) return null;
+    if (parsed.projectId !== requestContext.projectId) {
+      return { error: 'Canopy entry is outside the current project context' };
+    }
+    return parsed;
+  }
   if (input.project_id && input.path) {
     return { projectId: input.project_id, path: input.path };
   }

@@ -4,6 +4,7 @@ import {
   REQUEST_CONTEXT_HEADERS,
   requestContextFromHttpHeaders,
   requestContextHeaders,
+  rowProjectIdFromRequestContext,
   resolveLegacyRequestContext,
 } from '@myco/tools/request-context.js';
 
@@ -62,5 +63,20 @@ describe('tool request context', () => {
     expect(headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(path.join('/tmp', 'project'));
     expect(headers[REQUEST_CONTEXT_HEADERS.groveId]).toBeUndefined();
     expect(headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBeUndefined();
+  });
+
+  it('maps request contexts to row project scope with legacy compatibility', () => {
+    const legacy = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+      projectId: 'project-a',
+      groveId: null,
+    });
+    const grove = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+      projectId: 'project-a',
+      groveId: 'grove-a',
+    });
+
+    expect(rowProjectIdFromRequestContext()).toBeUndefined();
+    expect(rowProjectIdFromRequestContext(legacy)).toBeNull();
+    expect(rowProjectIdFromRequestContext(grove)).toBe('project-a');
   });
 });

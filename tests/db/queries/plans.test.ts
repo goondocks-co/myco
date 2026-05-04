@@ -11,6 +11,7 @@ import {
   upsertPlan,
   deletePlan,
   getPlan,
+  getPlanByLogicalKey,
   listPlans,
   listPlansBySession,
 } from '@myco/db/queries/plans.js';
@@ -258,6 +259,34 @@ describe('plan query helpers', () => {
       const rows = listPlans();
       expect(rows).toEqual([]);
     });
+
+    it('filters by explicit project scope', async () => {
+      const now = epochNow();
+      const logicalKey = 'path:plans/shared.md';
+      upsertPlan(makePlan({
+        id: 'plan-legacy',
+        logical_key: logicalKey,
+        created_at: now,
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-a',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        created_at: now + 1,
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-b',
+        project_id: 'proj_b',
+        logical_key: logicalKey,
+        created_at: now + 2,
+      }));
+
+      expect(getPlan('plan-a', 'proj_a')?.project_id).toBe('proj_a');
+      expect(getPlan('plan-a', 'proj_b')).toBeNull();
+      expect(getPlanByLogicalKey(logicalKey, 'proj_b')?.id).toBe('plan-b');
+      expect(listPlans({ project_id: null }).map((row) => row.id)).toEqual(['plan-legacy']);
+      expect(listPlans({ project_id: 'proj_a' }).map((row) => row.id)).toEqual(['plan-a']);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -381,6 +410,18 @@ describe('plan query helpers', () => {
     it('returns empty array for unknown session id', async () => {
       const rows = listPlansBySession('nonexistent-session');
       expect(rows).toEqual([]);
+    });
+
+    it('filters session plans by explicit project scope', async () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      upsertPlan(makePlan({ id: 'plan-legacy', session_id: session.id, created_at: 1 }));
+      upsertPlan(makePlan({ id: 'plan-a', project_id: 'proj_a', session_id: session.id, created_at: 2 }));
+      upsertPlan(makePlan({ id: 'plan-b', project_id: 'proj_b', session_id: session.id, created_at: 3 }));
+
+      expect(listPlansBySession(session.id, null).map((row) => row.id)).toEqual(['plan-legacy']);
+      expect(listPlansBySession(session.id, 'proj_a').map((row) => row.id)).toEqual(['plan-a']);
     });
   });
 });

@@ -207,6 +207,19 @@ describe('session query helpers', () => {
       expect(rows[0].id).toBe('sess-cu');
     });
 
+    it('filters by explicit project scope', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'sess-legacy', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'sess-a', project_id: 'proj_a', created_at: now + 1, started_at: now + 1 }));
+      upsertSession(makeSession({ id: 'sess-b', project_id: 'proj_b', created_at: now + 2, started_at: now + 2 }));
+
+      expect(getSession('sess-a', 'proj_a')?.project_id).toBe('proj_a');
+      expect(getSession('sess-a', 'proj_b')).toBeNull();
+      expect(listSessions({ project_id: null }).map((row) => row.id)).toEqual(['sess-legacy']);
+      expect(listSessions({ project_id: 'proj_a' }).map((row) => row.id)).toEqual(['sess-a']);
+      expect(countSessions({ project_id: 'proj_b' })).toBe(1);
+    });
+
     it('returns empty array when no sessions match', async () => {
       const rows = listSessions({ status: 'completed' });
       expect(rows).toEqual([]);

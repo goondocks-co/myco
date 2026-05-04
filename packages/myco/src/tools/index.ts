@@ -309,11 +309,11 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   ): Promise<unknown> {
     const guard = await ensureCanopyDb();
     if (!guard.ready) return guard.emptyResult;
-    const scopedInput = input.path && !input.project_id && !input.id
-      ? { ...input, project_id: requestContext.projectId }
-      : input;
-    const result = await handleCortexCanopyEntry(scopedInput as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
-    logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
+    const result = await handleCortexCanopyEntry(
+      input as unknown as Parameters<typeof handleCortexCanopyEntry>[0],
+      requestContext,
+    );
+    logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: requestContext.projectId, path: input.path, duration_ms: Date.now() - start });
     return result;
   }
 
@@ -326,7 +326,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     if (!guard.ready) return guard.emptyResult;
 
     const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
-    const projectId = typeof input.project_id === 'string' ? input.project_id : requestContext.projectId;
+    const projectId = requestContext.projectId;
     const machineId = requestContext.machineId;
     const sessionId = requestContext.sessionId;
     const result = await handleCortexCanopyMap({ projectId, machineId });

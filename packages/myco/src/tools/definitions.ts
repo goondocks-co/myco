@@ -106,7 +106,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_CORTEX,
-    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map. op: "canopy_entry" retrieves one Canopy file summary by id (`project_id:path`) or by project_id plus path.',
+    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path.',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -123,7 +123,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry'], description: 'Operation (default: "digest")' },
         tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
         id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
-        project_id: { type: 'string', description: 'Canopy project id for op: "canopy_entry"; optional for op: "canopy_map"' },
+        project_id: { type: 'string', description: 'Legacy Canopy project id hint. The resolved request context is authoritative when available.' },
         path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
       },
     },

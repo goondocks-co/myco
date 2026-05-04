@@ -72,6 +72,7 @@ export interface PlanRow {
 
 /** Filter options for `listPlans`. */
 export interface ListPlansOptions {
+  project_id?: string | null;
   status?: string;
   limit?: number;
 }
@@ -231,12 +232,20 @@ export function upsertPlan(data: PlanInsert): PlanRow {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlan(id: string): PlanRow | null {
+export function getPlan(id: string, projectId?: string | null): PlanRow | null {
   const db = getDatabase();
 
-  const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+  const row = projectId === undefined
+    ? db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`,
+    ).get(id) as Record<string, unknown> | undefined
+    : projectId === null
+      ? db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ? AND project_id IS NULL`,
+      ).get(id) as Record<string, unknown> | undefined
+      : db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ? AND project_id = ?`,
+      ).get(id, projectId) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toPlanRow(row);
@@ -310,6 +319,15 @@ export function listPlans(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
+  }
+
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
     params.push(options.status);
@@ -334,15 +352,26 @@ export function listPlans(
 /**
  * List all plans associated with a specific session, ordered by created_at DESC.
  */
-export function listPlansBySession(sessionId: string): PlanRow[] {
+export function listPlansBySession(sessionId: string, projectId?: string | null): PlanRow[] {
   const db = getDatabase();
+  const conditions = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+
+  if (projectId !== undefined) {
+    if (projectId === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(projectId);
+    }
+  }
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM plans
-     WHERE session_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY created_at DESC`,
-  ).all(sessionId) as Record<string, unknown>[];
+  ).all(...params) as Record<string, unknown>[];
 
   return rows.map(toPlanRow);
 }

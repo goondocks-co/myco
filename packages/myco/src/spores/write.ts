@@ -14,7 +14,10 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 
 const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;
@@ -46,11 +49,13 @@ export function saveSpore(input: SaveSporeInput): SaveSporeResult {
   const observationType = input.type ?? DEFAULT_OBSERVATION_TYPE;
   const id = `${observationType}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
   const now = epochSeconds();
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
 
   registerMcpUserAgent(now);
 
   const spore = insertSpore({
     id,
+    project_id: projectId,
     agent_id: USER_AGENT_ID,
     observation_type: observationType,
     content: input.content,
@@ -81,12 +86,14 @@ export interface SupersedeSporeResult {
 
 export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult {
   const now = epochSeconds();
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
 
   updateSporeStatus(input.old_spore_id, 'superseded', now);
   registerMcpUserAgent(now);
 
   insertResolutionEvent({
     id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
+    project_id: projectId,
     agent_id: USER_AGENT_ID,
     spore_id: input.old_spore_id,
     action: 'supersede',
@@ -121,6 +128,7 @@ export interface ConsolidateSporesResult {
 export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSporesResult {
   const now = epochSeconds();
   const newSporeId = `${input.observation_type}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
 
   registerMcpUserAgent(now);
 
@@ -128,6 +136,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
   const sourcesSuperseded = db.transaction(() => {
     insertSpore({
       id: newSporeId,
+      project_id: projectId,
       agent_id: USER_AGENT_ID,
       observation_type: input.observation_type,
       content: input.consolidated_content,
@@ -140,6 +149,7 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
       updateSporeStatus(sourceId, 'superseded', now);
       insertResolutionEvent({
         id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
+        project_id: projectId,
         agent_id: USER_AGENT_ID,
         spore_id: sourceId,
         action: 'consolidate',

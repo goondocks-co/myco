@@ -180,6 +180,19 @@ describe('spore query helpers', () => {
       expect(rows[0].id).toBe('spore-c1');
     });
 
+    it('filters by explicit project scope', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'spore-legacy', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-a', project_id: 'proj_a', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-b', project_id: 'proj_b', created_at: now + 2 }));
+
+      expect(getSpore('spore-a', 'proj_a')?.project_id).toBe('proj_a');
+      expect(getSpore('spore-a', 'proj_b')).toBeNull();
+      expect(listSpores({ project_id: null }).map((row) => row.id)).toEqual(['spore-legacy']);
+      expect(listSpores({ project_id: 'proj_a' }).map((row) => row.id)).toEqual(['spore-a']);
+      expect(countSpores({ project_id: 'proj_b' })).toBe(1);
+    });
+
     it('filters by observation_type', () => {
       const now = epochNow();
       insertSpore(makeSpore(agentId, { id: 'spore-gotcha', observation_type: 'gotcha', created_at: now }));

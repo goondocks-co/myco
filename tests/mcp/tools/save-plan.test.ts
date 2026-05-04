@@ -15,6 +15,7 @@ import { handleMycoPlans } from '@myco/tools/plans.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
 function mockClient(): DaemonClient {
   return {
@@ -24,12 +25,12 @@ function mockClient(): DaemonClient {
   } as unknown as DaemonClient;
 }
 
-function seedSession(id: string): void {
+function seedSession(id: string, projectId?: string | null): void {
   const db = getDatabase();
   db.prepare(`
-    INSERT INTO sessions (id, agent, started_at, created_at, machine_id, status)
-    VALUES (?, 'claude-code', ?, ?, 'local', 'active')
-  `).run(id, 1700000000, 1700000000);
+    INSERT INTO sessions (id, project_id, agent, started_at, created_at, machine_id, status)
+    VALUES (?, ?, 'claude-code', ?, ?, 'local', 'active')
+  `).run(id, projectId ?? null, 1700000000, 1700000000);
 }
 
 interface PlanSaveSuccess {
@@ -94,6 +95,53 @@ describe('myco_plans op: save (in-process)', () => {
     }, mockClient(), vaultDir);
 
     expect(result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('stores file-backed plans under the resolved Grove project scope', async () => {
+    seedSession('sess-a', 'project-a');
+    seedSession('sess-b', 'project-b');
+    const contextA = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/workspace/project-a',
+      projectId: 'project-a',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      source: 'explicit',
+    });
+    const contextB = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/workspace/project-b',
+      projectId: 'project-b',
+      groveId: 'grove-a',
+      machineId: 'machine-b',
+      source: 'explicit',
+    });
+
+    const first = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-a',
+      content: '# Shared Plan A',
+      source_path: 'docs/shared-plan.md',
+    }, mockClient(), contextA) as PlanSaveSuccess;
+    const second = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-b',
+      content: '# Shared Plan B',
+      source_path: 'docs/shared-plan.md',
+    }, mockClient(), contextB) as PlanSaveSuccess;
+
+    expect(first.logical_key).toBe('path:docs/shared-plan.md');
+    expect(second.logical_key).toBe('path:docs/shared-plan.md');
+    expect(first.id).not.toBe(second.id);
+
+    const rows = getDatabase().prepare(
+      `SELECT id, project_id, title
+         FROM plans
+        WHERE logical_key = 'path:docs/shared-plan.md'
+        ORDER BY project_id`,
+    ).all() as Array<{ id: string; project_id: string; title: string }>;
+    expect(rows).toEqual([
+      { id: first.id, project_id: 'project-a', title: 'Shared Plan A' },
+      { id: second.id, project_id: 'project-b', title: 'Shared Plan B' },
+    ]);
   });
 
   it('rejects op:save when both source_path and plan_key are passed', async () => {

@@ -29,6 +29,7 @@ export const DEFAULT_IMPORTANCE = 5;
 /** Fields required (or optional) when inserting a spore. */
 export interface SporeInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   observation_type: string;
   content: string;
@@ -49,6 +50,7 @@ export interface SporeInsert {
 /** Row shape returned from spore queries (all columns). */
 export interface SporeRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   session_id: string | null;
   prompt_batch_id: number | null;
@@ -70,6 +72,7 @@ export interface SporeRow {
 
 /** Filter options for `listSpores`. */
 export interface ListSporesOptions {
+  project_id?: string | null;
   agent_id?: string;
   observation_type?: string;
   status?: string;
@@ -96,6 +99,7 @@ export interface ListSporesOptions {
 
 const SPORE_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'session_id',
   'prompt_batch_id',
@@ -125,6 +129,7 @@ const SELECT_COLUMNS = SPORE_COLUMNS.join(', ');
 function toSporeRow(row: Record<string, unknown>): SporeRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     session_id: (row.session_id as string) ?? null,
     prompt_batch_id: (row.prompt_batch_id as number) ?? null,
@@ -159,18 +164,19 @@ export function insertSpore(data: SporeInsert): SporeRow {
 
   db.prepare(
     `INSERT INTO spores (
-       id, agent_id, session_id, prompt_batch_id,
+       id, project_id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
        properties, created_at, updated_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.session_id ?? null,
     data.prompt_batch_id ?? null,
@@ -202,12 +208,20 @@ export function insertSpore(data: SporeInsert): SporeRow {
  *
  * @returns the spore row, or null if not found.
  */
-export function getSpore(id: string): SporeRow | null {
+export function getSpore(id: string, projectId?: string | null): SporeRow | null {
   const db = getDatabase();
 
-  const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+  const row = projectId === undefined
+    ? db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`,
+    ).get(id) as Record<string, unknown> | undefined
+    : projectId === null
+      ? db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ? AND project_id IS NULL`,
+      ).get(id) as Record<string, unknown> | undefined
+      : db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ? AND project_id = ?`,
+      ).get(id, projectId) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSporeRow(row);
@@ -226,6 +240,14 @@ function buildSporeWhere(
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
+  }
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
   }
   if (options.observation_type !== undefined) {
     conditions.push(`observation_type = ?`);

@@ -90,6 +90,22 @@ export function requestContextFromHttpHeaders(
   };
 }
 
+/**
+ * Translate a transport-level request context into the project_id predicate
+ * expected by first-generation Grove-aware row helpers.
+ *
+ * Undefined means the caller has no request context and should preserve the
+ * existing broad helper behavior. A legacy project-local context maps to
+ * NULL rows because pre-Grove vault data has no project_id. Once a Grove id
+ * is present, the resolved project id becomes mandatory row scope.
+ */
+export function rowProjectIdFromRequestContext(
+  context?: MycoRequestContext,
+): string | null | undefined {
+  if (!context) return undefined;
+  return context.groveId ? context.projectId : null;
+}
+
 function compactHeaders(values: Record<string, string | null | undefined>): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(values)) {

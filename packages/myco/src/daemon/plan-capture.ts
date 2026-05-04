@@ -17,7 +17,7 @@ import type { PlanRow } from '@myco/db/queries/plans.js';
 import type { Logger } from './logger.js';
 import {
   buildPathPlanLogicalKey,
-  buildPlanId,
+  buildScopedPlanId,
   buildSessionTagPlanLogicalKey,
   humanizePlanToken,
   normalizePlanSourcePath,
@@ -178,6 +178,7 @@ export function resolvePlanTitle(input: ResolvePlanTitleInput): string | null {
 
 export interface PersistPlanInput {
   sessionId: string;
+  projectId?: string | null;
   content: string;
   logicalKey: string;
   sourcePath?: string | null;
@@ -210,7 +211,8 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
   const updatedAt = input.updatedAt ?? createdAt;
   const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
-  const existingPlan = getPlanByLogicalKey(input.logicalKey);
+  const projectId = input.projectId ?? null;
+  const existingPlan = getPlanByLogicalKey(input.logicalKey, projectId);
   const status = input.status ?? existingPlan?.status ?? 'active';
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)
@@ -246,7 +248,8 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   }
 
   return upsertPlan({
-    id: buildPlanId(input.logicalKey),
+    id: buildScopedPlanId(input.logicalKey, projectId),
+    project_id: projectId,
     logical_key: input.logicalKey,
     title: resolvedTitle,
     content: input.content,

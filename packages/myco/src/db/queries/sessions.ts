@@ -38,6 +38,7 @@ const DEFAULT_PROCESSED = 0;
 /** Fields required (or optional) when inserting/upserting a session. */
 export interface SessionInsert {
   id: string;
+  project_id?: string | null;
   agent: string;
   started_at: number;
   created_at: number;
@@ -61,6 +62,7 @@ export interface SessionInsert {
 /** Row shape returned from session queries (all columns). */
 export interface SessionRow {
   id: string;
+  project_id: string | null;
   agent: string;
   user: string | null;
   project_root: string | null;
@@ -111,6 +113,7 @@ export interface SessionUpdate {
 
 /** Filter options for `listSessions`. */
 export interface ListSessionsOptions {
+  project_id?: string | null;
   limit?: number;
   offset?: number;
   status?: string;
@@ -138,6 +141,7 @@ export interface ListSessionsOptions {
 
 const SESSION_COLUMNS = [
   'id',
+  'project_id',
   'agent',
   '"user"',
   'project_root',
@@ -181,6 +185,7 @@ const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
 function toSessionRow(row: Record<string, unknown>): SessionRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent: row.agent as string,
     user: (row.user as string) ?? null,
     project_root: (row.project_root as string) ?? null,
@@ -226,19 +231,20 @@ export function upsertSession(data: SessionInsert): SessionRow {
 
   db.prepare(
     `INSERT INTO sessions (
-       id, agent, "user", project_root, branch,
+       id, project_id, agent, "user", project_root, branch,
        started_at, ended_at, status, prompt_count, tool_count,
        title, summary, transcript_path,
        parent_session_id, parent_session_reason,
        processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?,
        ?, ?,
        ?, ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
+       project_id            = COALESCE(EXCLUDED.project_id, sessions.project_id),
        agent                 = EXCLUDED.agent,
        "user"                = EXCLUDED."user",
        project_root          = EXCLUDED.project_root,
@@ -257,6 +263,7 @@ export function upsertSession(data: SessionInsert): SessionRow {
        content_hash          = EXCLUDED.content_hash`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent,
     data.user ?? null,
     data.project_root ?? null,
@@ -293,12 +300,20 @@ export function upsertSession(data: SessionInsert): SessionRow {
  *
  * @returns the session row, or null if not found.
  */
-export function getSession(id: string): SessionRow | null {
+export function getSession(id: string, projectId?: string | null): SessionRow | null {
   const db = getDatabase();
 
-  const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+  const row = projectId === undefined
+    ? db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
+    ).get(id) as Record<string, unknown> | undefined
+    : projectId === null
+      ? db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ? AND project_id IS NULL`,
+      ).get(id) as Record<string, unknown> | undefined
+      : db.prepare(
+        `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ? AND project_id = ?`,
+      ).get(id, projectId) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSessionRow(row);
@@ -314,6 +329,15 @@ function buildSessionsWhere(
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
     params.push(options.status);
+  }
+
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
   }
 
   if (options.agent !== undefined) {

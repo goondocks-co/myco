@@ -23,6 +23,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting a resolution event. */
 export interface ResolutionEventInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   spore_id: string;
   action: string;
@@ -36,6 +37,7 @@ export interface ResolutionEventInsert {
 /** Row shape returned from resolution_events queries (all columns). */
 export interface ResolutionEventRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   spore_id: string;
   action: string;
@@ -49,6 +51,7 @@ export interface ResolutionEventRow {
 
 /** Filter options for `listResolutionEvents`. */
 export interface ListResolutionEventsOptions {
+  project_id?: string | null;
   agent_id?: string;
   spore_id?: string;
   limit?: number;
@@ -60,6 +63,7 @@ export interface ListResolutionEventsOptions {
 
 const EVENT_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'spore_id',
   'action',
@@ -81,6 +85,7 @@ const SELECT_COLUMNS = EVENT_COLUMNS.join(', ');
 function toResolutionEventRow(row: Record<string, unknown>): ResolutionEventRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     spore_id: row.spore_id as string,
     action: row.action as string,
@@ -107,10 +112,11 @@ export function insertResolutionEvent(
 
   db.prepare(
     `INSERT INTO resolution_events (
-       id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at, machine_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       id, project_id, agent_id, spore_id, action, new_spore_id, reason, session_id, created_at, machine_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.spore_id,
     data.action,
@@ -144,6 +150,15 @@ export function listResolutionEvents(
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
+  }
+
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
   }
 
   if (options.spore_id !== undefined) {

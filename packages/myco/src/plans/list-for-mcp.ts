@@ -10,7 +10,10 @@ import {
   listPlansBySession,
   type PlanRow,
 } from '@myco/db/queries/plans.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 
 export interface PlanSummary {
   id: string;
@@ -61,6 +64,8 @@ export type ListPlansForMcpResult =
   | { ok: false; code: 'invalid-arguments'; message: string };
 
 export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpResult {
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
+
   if (input.id && input.session) {
     return {
       ok: false,
@@ -70,7 +75,7 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   }
 
   if (input.id) {
-    const row = getPlan(input.id);
+    const row = getPlan(input.id, projectId);
     if (!row) return { ok: true, plans: [] };
     return {
       ok: true,
@@ -79,11 +84,11 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   }
 
   if (input.session) {
-    const rows = listPlansBySession(input.session);
+    const rows = listPlansBySession(input.session, projectId);
     return { ok: true, plans: rows.map(toPlanSummary) };
   }
 
   const statusFilter = input.status === 'all' ? undefined : input.status;
-  const rows = listPlans({ status: statusFilter, limit: input.limit });
+  const rows = listPlans({ project_id: projectId, status: statusFilter, limit: input.limit });
   return { ok: true, plans: rows.map(toPlanSummary) };
 }

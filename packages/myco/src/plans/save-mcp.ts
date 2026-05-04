@@ -13,7 +13,10 @@ import {
 } from '@myco/plans/identity.js';
 import { persistPlan } from '../daemon/plan-capture.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 
 export interface SaveMcpPlanInput {
   session_id: string;
@@ -34,6 +37,7 @@ export type SaveMcpPlanResult =
   | { ok: false; code: 'invalid-arguments'; message: string };
 
 export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
+  const projectId = rowProjectIdFromRequestContext(input.requestContext);
   const hasSourcePath = Boolean(input.source_path);
   const hasPlanKey = Boolean(input.plan_key);
   if (hasSourcePath === hasPlanKey) {
@@ -44,7 +48,7 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
     };
   }
 
-  const session = getSession(input.session_id);
+  const session = getSession(input.session_id, projectId);
   if (!session) {
     return { ok: false, code: 'session-not-found', message: 'Session not found' };
   }
@@ -59,6 +63,7 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
 
   const plan = persistPlan({
     sessionId: input.session_id,
+    projectId,
     content: input.content,
     logicalKey,
     sourcePath: normalizedSourcePath,
