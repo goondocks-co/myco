@@ -19,12 +19,20 @@ export interface ImportProjectCoreInput {
 }
 
 export interface ImportProjectCoreResult {
+  agents: number;
   sessions: number;
   prompt_batches: number;
   activities: number;
   attachments: number;
   plans: number;
   artifacts: number;
+  spores: number;
+  entities: number;
+  entity_mentions: number;
+  resolution_events: number;
+  skipped_resolution_events: number;
+  graph_edges: number;
+  skipped_graph_edges: number;
 }
 
 interface ImportContext {
@@ -155,28 +163,144 @@ interface SourceArtifactRow {
   synced_at: number | null;
 }
 
+interface SourceAgentRow {
+  id: string;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  system_prompt_hash: string | null;
+  config: string | null;
+  source: string | null;
+  system_prompt: string | null;
+  max_turns: number | null;
+  timeout_seconds: number | null;
+  tool_access: string | null;
+  enabled: number | null;
+  created_at: number;
+  updated_at: number | null;
+}
+
+interface SourceSporeRow {
+  id: string;
+  agent_id: string;
+  session_id: string | null;
+  prompt_batch_id: number | null;
+  observation_type: string;
+  status: string | null;
+  content: string;
+  context: string | null;
+  importance: number | null;
+  file_path: string | null;
+  tags: string | null;
+  content_hash: string | null;
+  properties: string | null;
+  created_at: number;
+  updated_at: number | null;
+  embedded: number | null;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+interface SourceEntityRow {
+  id: string;
+  agent_id: string;
+  type: string;
+  name: string;
+  properties: string | null;
+  first_seen: number;
+  last_seen: number;
+  status: string | null;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+interface SourceEntityMentionRow {
+  entity_id: string;
+  note_id: string;
+  note_type: string;
+  agent_id: string;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+interface SourceResolutionEventRow {
+  id: string;
+  agent_id: string;
+  spore_id: string;
+  action: string;
+  new_spore_id: string | null;
+  reason: string | null;
+  session_id: string | null;
+  created_at: number;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
+interface SourceGraphEdgeRow {
+  id: string;
+  agent_id: string;
+  source_id: string;
+  source_type: string;
+  target_id: string;
+  target_type: string;
+  type: string;
+  session_id: string | null;
+  confidence: number | null;
+  properties: string | null;
+  created_at: number;
+  machine_id: string | null;
+  synced_at: number | null;
+}
+
 type TargetTable =
+  | 'agents'
   | 'sessions'
   | 'prompt_batches'
   | 'activities'
   | 'attachments'
   | 'plans'
-  | 'artifacts';
+  | 'artifacts'
+  | 'spores'
+  | 'entities'
+  | 'entity_mentions'
+  | 'resolution_events'
+  | 'graph_edges';
 
 const IMPORT_ORIGIN = 'legacy_project_vault';
 
 export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProjectCoreResult {
   const ctx = normalizeInput(input);
   const result: ImportProjectCoreResult = {
+    agents: 0,
     sessions: 0,
     prompt_batches: 0,
     activities: 0,
     attachments: 0,
     plans: 0,
     artifacts: 0,
+    spores: 0,
+    entities: 0,
+    entity_mentions: 0,
+    resolution_events: 0,
+    skipped_resolution_events: 0,
+    graph_edges: 0,
+    skipped_graph_edges: 0,
   };
 
   ctx.targetDb.transaction(() => {
+    const agents = listSourceAgents(ctx.sourceDb);
+    for (const row of agents) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'agents',
+        sourceId: row.id,
+        targetTable: 'agents',
+        targetId: () => row.id,
+      });
+    }
+    for (const row of agents) {
+      if (importAgent(ctx, row)) result.agents += 1;
+    }
+
     const sessions = listSourceSessions(ctx.sourceDb);
     for (const row of sessions) {
       ensureTextMapping(ctx, {
@@ -248,6 +372,70 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       if (importArtifact(ctx, row)) result.artifacts += 1;
     }
 
+    const spores = listSourceSpores(ctx.sourceDb);
+    for (const row of spores) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'spores',
+        sourceId: row.id,
+        targetTable: 'spores',
+        targetId: () => createGroveEraId('spore'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of spores) {
+      if (importSpore(ctx, row)) result.spores += 1;
+    }
+
+    const entities = listSourceEntities(ctx.sourceDb);
+    for (const row of entities) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'entities',
+        sourceId: row.id,
+        targetTable: 'entities',
+        targetId: () => createGroveEraId('entity'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of entities) {
+      if (importEntity(ctx, row)) result.entities += 1;
+    }
+
+    for (const row of listSourceEntityMentions(ctx.sourceDb)) {
+      if (importEntityMention(ctx, row)) result.entity_mentions += 1;
+    }
+
+    const resolutionEvents = listSourceResolutionEvents(ctx.sourceDb);
+    for (const row of resolutionEvents) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'resolution_events',
+        sourceId: row.id,
+        targetTable: 'resolution_events',
+        targetId: () => createGroveEraId('resolution_event'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of resolutionEvents) {
+      const imported = importResolutionEvent(ctx, row);
+      if (imported === 'imported') result.resolution_events += 1;
+      if (imported === 'skipped') result.skipped_resolution_events += 1;
+    }
+
+    const graphEdges = listSourceGraphEdges(ctx.sourceDb);
+    for (const row of graphEdges) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'graph_edges',
+        sourceId: row.id,
+        targetTable: 'graph_edges',
+        targetId: () => createGroveEraId('graph_edge'),
+        sourceMachineId: row.machine_id,
+      });
+    }
+    for (const row of graphEdges) {
+      const imported = importGraphEdge(ctx, row);
+      if (imported === 'imported') result.graph_edges += 1;
+      if (imported === 'skipped') result.skipped_graph_edges += 1;
+    }
+
     rebuildCoreFtsIndexes(ctx.targetDb);
   })();
 
@@ -271,6 +459,44 @@ function normalizeInput(input: ImportProjectCoreInput): ImportContext {
     targetProjectId: input.targetProjectId,
     targetMachineId: input.targetMachineId ?? null,
   };
+}
+
+function importAgent(ctx: ImportContext, row: SourceAgentRow): boolean {
+  const mapping = requireMapping(ctx, 'agents', row.id);
+  if (targetRowExists(ctx.targetDb, 'agents', mapping.target_id)) {
+    markImported(ctx, 'agents', row.id);
+    return false;
+  }
+
+  ctx.targetDb.prepare(
+    `INSERT INTO agents (
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    row.name,
+    row.provider,
+    row.model,
+    row.system_prompt_hash,
+    row.config,
+    row.source ?? 'built-in',
+    row.system_prompt,
+    row.max_turns,
+    row.timeout_seconds,
+    row.tool_access,
+    row.enabled ?? 1,
+    row.created_at,
+    row.updated_at,
+  );
+
+  markImported(ctx, 'agents', row.id);
+  return true;
 }
 
 function importSession(ctx: ImportContext, row: SourceSessionRow): boolean {
@@ -615,6 +841,241 @@ function importArtifact(ctx: ImportContext, row: SourceArtifactRow): boolean {
   return true;
 }
 
+function importSpore(ctx: ImportContext, row: SourceSporeRow): boolean {
+  const mapping = requireMapping(ctx, 'spores', row.id);
+  if (targetRowExists(ctx.targetDb, 'spores', mapping.target_id)) {
+    markImported(ctx, 'spores', row.id);
+    return false;
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
+  const promptBatchId = mapOptionalIntegerId(ctx, 'prompt_batches', row.prompt_batch_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO spores (
+       id, project_id, agent_id, session_id, prompt_batch_id,
+       observation_type, status, content, context, importance,
+       file_path, tags, content_hash, properties, created_at,
+       updated_at, embedded, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    sessionId,
+    promptBatchId,
+    row.observation_type,
+    row.status ?? 'active',
+    row.content,
+    row.context,
+    row.importance ?? 5,
+    row.file_path,
+    row.tags,
+    row.content_hash,
+    row.properties,
+    row.created_at,
+    row.updated_at,
+    0,
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'spores', row.id);
+  return true;
+}
+
+function importEntity(ctx: ImportContext, row: SourceEntityRow): boolean {
+  const mapping = requireMapping(ctx, 'entities', row.id);
+  if (targetRowExists(ctx.targetDb, 'entities', mapping.target_id)) {
+    markImported(ctx, 'entities', row.id);
+    return false;
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO entities (
+       id, project_id, agent_id, type, name, properties,
+       first_seen, last_seen, status, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    row.type,
+    row.name,
+    row.properties,
+    row.first_seen,
+    row.last_seen,
+    row.status ?? 'active',
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'entities', row.id);
+  return true;
+}
+
+function importEntityMention(ctx: ImportContext, row: SourceEntityMentionRow): boolean {
+  const sourceId = entityMentionSourceId(row);
+  const existing = lookupImportMappingBySource(ctx.migrationId, 'entity_mentions', sourceId, ctx.targetDb);
+  if (existing?.status === 'imported') return false;
+
+  const entityId = mapRequiredTextId(ctx, 'entities', row.entity_id);
+  const noteId = mapRequiredPolymorphicId(ctx, row.note_type, row.note_id);
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+  const targetId = entityMentionTargetId({
+    entityId,
+    noteId,
+    noteType: row.note_type,
+    agentId,
+  });
+
+  if (!existing) {
+    recordImportMapping({
+      migration_id: ctx.migrationId,
+      source_project_root: ctx.sourceProjectRoot,
+      source_db_path: ctx.sourceDbPath,
+      target_grove_id: ctx.targetGroveId,
+      target_project_id: ctx.targetProjectId,
+      source_table: 'entity_mentions',
+      source_id: sourceId,
+      target_table: 'entity_mentions',
+      target_id: targetId,
+      source_machine_id: row.machine_id,
+      target_machine_id: ctx.targetMachineId ?? row.machine_id ?? null,
+      import_origin: IMPORT_ORIGIN,
+    }, ctx.targetDb);
+  }
+
+  if (!entityMentionExists(ctx.targetDb, entityId, noteId, row.note_type, agentId)) {
+    ctx.targetDb.prepare(
+      `INSERT INTO entity_mentions (
+         project_id, entity_id, note_id, note_type, agent_id, machine_id, synced_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      ctx.targetProjectId,
+      entityId,
+      noteId,
+      row.note_type,
+      agentId,
+      machineId,
+      row.synced_at,
+    );
+    markImported(ctx, 'entity_mentions', sourceId);
+    return true;
+  }
+
+  markImported(ctx, 'entity_mentions', sourceId);
+  return false;
+}
+
+function importResolutionEvent(ctx: ImportContext, row: SourceResolutionEventRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'resolution_events', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'resolution_events', mapping.target_id)) {
+    markImported(ctx, 'resolution_events', row.id);
+    return 'unchanged';
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const sporeId = mapOptionalTextIdIfMapped(ctx, 'spores', row.spore_id);
+  const newSporeId = mapOptionalTextIdIfMapped(ctx, 'spores', row.new_spore_id);
+  if (!sporeId || (row.new_spore_id != null && !newSporeId)) {
+    markSkipped(ctx, 'resolution_events', row.id, `unmapped spore reference ${row.spore_id} -> ${row.new_spore_id ?? 'null'}`);
+    return 'skipped';
+  }
+  const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO resolution_events (
+       id, project_id, agent_id, spore_id, action, new_spore_id,
+       reason, session_id, created_at, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    sporeId,
+    row.action,
+    newSporeId,
+    row.reason,
+    sessionId,
+    row.created_at,
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'resolution_events', row.id);
+  return 'imported';
+}
+
+function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'graph_edges', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  if (targetRowExists(ctx.targetDb, 'graph_edges', mapping.target_id)) {
+    markImported(ctx, 'graph_edges', row.id);
+    return 'unchanged';
+  }
+
+  const sourceId = mapOptionalPolymorphicId(ctx, row.source_type, row.source_id);
+  const targetId = mapOptionalPolymorphicId(ctx, row.target_type, row.target_id);
+  if (!sourceId || !targetId) {
+    markSkipped(ctx, 'graph_edges', row.id, `unmapped endpoint ${row.source_type}/${row.source_id} -> ${row.target_type}/${row.target_id}`);
+    return 'skipped';
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
+  const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
+
+  ctx.targetDb.prepare(
+    `INSERT INTO graph_edges (
+       id, project_id, agent_id, source_id, source_type, target_id,
+       target_type, type, session_id, confidence, properties,
+       created_at, machine_id, synced_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    sourceId,
+    row.source_type,
+    targetId,
+    row.target_type,
+    row.type,
+    sessionId,
+    row.confidence ?? 1,
+    row.properties,
+    row.created_at,
+    machineId,
+    row.synced_at,
+  );
+
+  markImported(ctx, 'graph_edges', row.id);
+  return 'imported';
+}
+
 function ensureTextMapping(
   ctx: ImportContext,
   input: {
@@ -779,6 +1240,10 @@ function markImported(ctx: ImportContext, sourceTable: TargetTable, sourceId: st
   markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'imported', {}, ctx.targetDb);
 }
 
+function markSkipped(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number, reason: string): void {
+  markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'skipped', { notes: reason }, ctx.targetDb);
+}
+
 function mapRequiredTextId(ctx: ImportContext, sourceTable: TargetTable, sourceId: string): string {
   return requireMapping(ctx, sourceTable, sourceId).target_id;
 }
@@ -788,9 +1253,56 @@ function mapOptionalTextId(ctx: ImportContext, sourceTable: TargetTable, sourceI
   return mapRequiredTextId(ctx, sourceTable, sourceId);
 }
 
+function mapOptionalTextIdIfMapped(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | null): string | null {
+  if (sourceId == null) return null;
+  const mapping = lookupImportMappingBySource(ctx.migrationId, sourceTable, sourceId, ctx.targetDb);
+  if (!mapping || mapping.status === 'skipped' || mapping.status === 'error') return null;
+  return mapping.target_id;
+}
+
 function mapOptionalIntegerId(ctx: ImportContext, sourceTable: TargetTable, sourceId: number | null): number | null {
   if (sourceId == null) return null;
   return parseMappedInteger(requireMapping(ctx, sourceTable, sourceId));
+}
+
+function mapRequiredPolymorphicId(ctx: ImportContext, sourceType: string, sourceId: string): string {
+  const mapped = mapOptionalPolymorphicId(ctx, sourceType, sourceId);
+  if (!mapped) throw new Error(`Missing import mapping for ${sourceType}/${sourceId}`);
+  return mapped;
+}
+
+function mapOptionalPolymorphicId(ctx: ImportContext, sourceType: string, sourceId: string): string | null {
+  const mapping = lookupPolymorphicMapping(ctx, sourceType, sourceId);
+  if (!mapping || mapping.status === 'skipped' || mapping.status === 'error') return null;
+  return mapping.target_id;
+}
+
+function lookupPolymorphicMapping(ctx: ImportContext, sourceType: string, sourceId: string): ImportMappingRow | null {
+  switch (sourceType) {
+    case 'session':
+      return lookupImportMappingBySource(ctx.migrationId, 'sessions', sourceId, ctx.targetDb);
+    case 'batch':
+    case 'prompt_batch':
+      return lookupImportMappingBySource(ctx.migrationId, 'prompt_batches', parseIntegerSourceId(sourceType, sourceId), ctx.targetDb);
+    case 'spore':
+      return lookupImportMappingBySource(ctx.migrationId, 'spores', sourceId, ctx.targetDb);
+    case 'entity':
+      return lookupImportMappingBySource(ctx.migrationId, 'entities', sourceId, ctx.targetDb);
+    case 'plan':
+      return lookupImportMappingBySource(ctx.migrationId, 'plans', sourceId, ctx.targetDb);
+    case 'artifact':
+      return lookupImportMappingBySource(ctx.migrationId, 'artifacts', sourceId, ctx.targetDb);
+    default:
+      return null;
+  }
+}
+
+function parseIntegerSourceId(sourceType: string, sourceId: string): number {
+  const value = Number(sourceId);
+  if (!Number.isSafeInteger(value) || value <= 0 || String(value) !== sourceId) {
+    throw new Error(`Invalid integer ${sourceType} id: ${sourceId}`);
+  }
+  return value;
 }
 
 function parseMappedInteger(mapping: ImportMappingRow): number {
@@ -808,10 +1320,50 @@ function targetRowExists(db: Database, table: TargetTable, id: string | number):
   return row?.present === 1;
 }
 
+function entityMentionExists(
+  db: Database,
+  entityId: string,
+  noteId: string,
+  noteType: string,
+  agentId: string,
+): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present
+       FROM entity_mentions
+      WHERE entity_id = ? AND note_id = ? AND note_type = ? AND agent_id = ?
+      LIMIT 1`,
+  ).get(entityId, noteId, noteType, agentId) as { present: number } | undefined;
+  return row?.present === 1;
+}
+
+function entityMentionSourceId(row: SourceEntityMentionRow): string {
+  return [row.entity_id, row.note_id, row.note_type, row.agent_id].join('\u001f');
+}
+
+function entityMentionTargetId(input: {
+  entityId: string;
+  noteId: string;
+  noteType: string;
+  agentId: string;
+}): string {
+  return [input.entityId, input.noteId, input.noteType, input.agentId].join('\u001f');
+}
+
 function rebuildCoreFtsIndexes(db: Database): void {
-  for (const table of ['sessions_fts', 'prompt_batches_fts', 'activities_fts'] as const) {
+  for (const table of ['sessions_fts', 'prompt_batches_fts', 'activities_fts', 'spores_fts'] as const) {
     db.prepare(`INSERT INTO ${table}(${table}) VALUES('rebuild')`).run();
   }
+}
+
+function listSourceAgents(db: Database): SourceAgentRow[] {
+  return db.prepare(
+    `SELECT
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     FROM agents
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceAgentRow[];
 }
 
 function listSourceSessions(db: Database): SourceSessionRow[] {
@@ -880,6 +1432,57 @@ function listSourceArtifacts(db: Database): SourceArtifactRow[] {
      FROM artifacts
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourceArtifactRow[];
+}
+
+function listSourceSpores(db: Database): SourceSporeRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, session_id, prompt_batch_id, observation_type,
+       status, content, context, importance, file_path, tags,
+       content_hash, properties, created_at, updated_at, embedded,
+       machine_id, synced_at
+     FROM spores
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceSporeRow[];
+}
+
+function listSourceEntities(db: Database): SourceEntityRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, type, name, properties, first_seen, last_seen,
+       status, machine_id, synced_at
+     FROM entities
+     ORDER BY first_seen ASC, id ASC`,
+  ).all() as SourceEntityRow[];
+}
+
+function listSourceEntityMentions(db: Database): SourceEntityMentionRow[] {
+  return db.prepare(
+    `SELECT
+       entity_id, note_id, note_type, agent_id, machine_id, synced_at
+     FROM entity_mentions
+     ORDER BY entity_id ASC, note_type ASC, note_id ASC, agent_id ASC`,
+  ).all() as SourceEntityMentionRow[];
+}
+
+function listSourceResolutionEvents(db: Database): SourceResolutionEventRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, spore_id, action, new_spore_id, reason,
+       session_id, created_at, machine_id, synced_at
+     FROM resolution_events
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceResolutionEventRow[];
+}
+
+function listSourceGraphEdges(db: Database): SourceGraphEdgeRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, source_id, source_type, target_id, target_type,
+       type, session_id, confidence, properties, created_at, machine_id, synced_at
+     FROM graph_edges
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as SourceGraphEdgeRow[];
 }
 
 function assertNonEmpty(value: string, fieldName: string): void {

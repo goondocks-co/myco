@@ -47,14 +47,23 @@ describe('Grove project core importer', () => {
     });
 
     expect(result).toEqual({
+      agents: 1,
       sessions: 2,
       prompt_batches: 2,
       activities: 1,
       attachments: 1,
       plans: 1,
       artifacts: 1,
+      spores: 2,
+      entities: 1,
+      entity_mentions: 1,
+      resolution_events: 1,
+      skipped_resolution_events: 0,
+      graph_edges: 4,
+      skipped_graph_edges: 1,
     });
 
+    const agentId = lookupImportMappingBySource(migrationId, 'agents', 'myco-agent', targetDb)?.target_id;
     const parentSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-parent', targetDb)?.target_id;
     const childSessionId = lookupImportMappingBySource(migrationId, 'sessions', 'legacy-session', targetDb)?.target_id;
     const parentBatchId = Number(lookupImportMappingBySource(migrationId, 'prompt_batches', 2, targetDb)?.target_id);
@@ -63,7 +72,14 @@ describe('Grove project core importer', () => {
     const attachmentId = lookupImportMappingBySource(migrationId, 'attachments', 'legacy-attachment', targetDb)?.target_id;
     const planId = lookupImportMappingBySource(migrationId, 'plans', 'legacy-plan', targetDb)?.target_id;
     const artifactId = lookupImportMappingBySource(migrationId, 'artifacts', 'legacy-artifact', targetDb)?.target_id;
+    const sporeId = lookupImportMappingBySource(migrationId, 'spores', 'legacy-spore', targetDb)?.target_id;
+    const wisdomSporeId = lookupImportMappingBySource(migrationId, 'spores', 'legacy-wisdom', targetDb)?.target_id;
+    const entityId = lookupImportMappingBySource(migrationId, 'entities', 'legacy-entity', targetDb)?.target_id;
+    const resolutionEventId = lookupImportMappingBySource(migrationId, 'resolution_events', 'legacy-resolution', targetDb)?.target_id;
+    const graphEdgeId = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-spore-session', targetDb)?.target_id;
+    const skippedGraphEdge = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-dangling-entity', targetDb);
 
+    expect(agentId).toBe('myco-agent');
     expect(parentSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).toMatch(/^sess_[0-9a-f]{32}$/);
     expect(childSessionId).not.toBe('legacy-session');
@@ -73,9 +89,17 @@ describe('Grove project core importer', () => {
     expect(planId).not.toBe('legacy-plan');
     expect(artifactId).toMatch(/^art_[0-9a-f]{32}$/);
     expect(artifactId).not.toBe('legacy-artifact');
+    expect(sporeId).toMatch(/^spore_[0-9a-f]{32}$/);
+    expect(sporeId).not.toBe('legacy-spore');
+    expect(wisdomSporeId).toMatch(/^spore_[0-9a-f]{32}$/);
+    expect(entityId).toMatch(/^ent_[0-9a-f]{32}$/);
+    expect(resolutionEventId).toMatch(/^res_[0-9a-f]{32}$/);
+    expect(graphEdgeId).toMatch(/^edge_[0-9a-f]{32}$/);
     expect(parentBatchId).not.toBe(2);
     expect(childBatchId).not.toBe(1);
     expect(activityId).not.toBe(1);
+    expect(skippedGraphEdge?.status).toBe('skipped');
+    expect(skippedGraphEdge?.notes).toContain('unmapped endpoint entity/missing-entity');
 
     const childSession = getRow<{
       id: string;
@@ -166,13 +190,101 @@ describe('Grove project core importer', () => {
     expect(artifact.embedded).toBe(0);
     expect(artifact.machine_id).toBe('source-machine');
 
+    const spore = getRow<{
+      id: string;
+      project_id: string;
+      agent_id: string;
+      session_id: string;
+      prompt_batch_id: number;
+      content: string;
+      embedded: number;
+      machine_id: string;
+    }>(targetDb, 'SELECT id, project_id, agent_id, session_id, prompt_batch_id, content, embedded, machine_id FROM spores WHERE id = ?', sporeId);
+    expect(spore.project_id).toBe(TARGET_PROJECT_ID);
+    expect(spore.agent_id).toBe(agentId);
+    expect(spore.session_id).toBe(childSessionId);
+    expect(spore.prompt_batch_id).toBe(childBatchId);
+    expect(spore.content).toContain('durable Grove importer observation');
+    expect(spore.embedded).toBe(0);
+    expect(spore.machine_id).toBe('source-machine');
+
+    const entity = getRow<{
+      project_id: string;
+      agent_id: string;
+      type: string;
+      name: string;
+      status: string;
+    }>(targetDb, 'SELECT project_id, agent_id, type, name, status FROM entities WHERE id = ?', entityId);
+    expect(entity.project_id).toBe(TARGET_PROJECT_ID);
+    expect(entity.agent_id).toBe(agentId);
+    expect(entity.type).toBe('component');
+    expect(entity.name).toBe('Grove importer');
+    expect(entity.status).toBe('active');
+
+    const mention = getRow<{
+      project_id: string;
+      entity_id: string;
+      note_id: string;
+      note_type: string;
+      agent_id: string;
+    }>(
+      targetDb,
+      'SELECT project_id, entity_id, note_id, note_type, agent_id FROM entity_mentions WHERE entity_id = ?',
+      entityId,
+    );
+    expect(mention.project_id).toBe(TARGET_PROJECT_ID);
+    expect(mention.entity_id).toBe(entityId);
+    expect(mention.note_id).toBe(sporeId);
+    expect(mention.note_type).toBe('spore');
+    expect(mention.agent_id).toBe(agentId);
+
+    const resolutionEvent = getRow<{
+      project_id: string;
+      agent_id: string;
+      spore_id: string;
+      new_spore_id: string;
+      session_id: string;
+    }>(
+      targetDb,
+      'SELECT project_id, agent_id, spore_id, new_spore_id, session_id FROM resolution_events WHERE id = ?',
+      resolutionEventId,
+    );
+    expect(resolutionEvent.project_id).toBe(TARGET_PROJECT_ID);
+    expect(resolutionEvent.agent_id).toBe(agentId);
+    expect(resolutionEvent.spore_id).toBe(sporeId);
+    expect(resolutionEvent.new_spore_id).toBe(wisdomSporeId);
+    expect(resolutionEvent.session_id).toBe(childSessionId);
+
+    const graphEdge = getRow<{
+      project_id: string;
+      agent_id: string;
+      source_id: string;
+      source_type: string;
+      target_id: string;
+      target_type: string;
+      session_id: string;
+    }>(
+      targetDb,
+      'SELECT project_id, agent_id, source_id, source_type, target_id, target_type, session_id FROM graph_edges WHERE id = ?',
+      graphEdgeId,
+    );
+    expect(graphEdge.project_id).toBe(TARGET_PROJECT_ID);
+    expect(graphEdge.agent_id).toBe(agentId);
+    expect(graphEdge.source_id).toBe(sporeId);
+    expect(graphEdge.source_type).toBe('spore');
+    expect(graphEdge.target_id).toBe(childSessionId);
+    expect(graphEdge.target_type).toBe('session');
+    expect(graphEdge.session_id).toBe(childSessionId);
+
     expect(matchCount(targetDb, 'sessions_fts', 'child')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'prompt_batches_fts', 'steering')).toBeGreaterThan(0);
     expect(matchCount(targetDb, 'activities_fts', 'README')).toBeGreaterThan(0);
+    expect(matchCount(targetDb, 'spores_fts', 'durable')).toBeGreaterThan(0);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(8);
-    expect(new Set(mappings.map((mapping) => mapping.status))).toEqual(new Set(['imported']));
+    expect(mappings).toHaveLength(19);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(18);
+    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(1);
   });
 
   it('uses existing journal mappings on retry instead of duplicating rows', () => {
@@ -198,24 +310,61 @@ describe('Grove project core importer', () => {
     });
 
     expect(retry).toEqual({
+      agents: 0,
       sessions: 0,
       prompt_batches: 0,
       activities: 0,
       attachments: 0,
       plans: 0,
       artifacts: 0,
+      spores: 0,
+      entities: 0,
+      entity_mentions: 0,
+      resolution_events: 0,
+      skipped_resolution_events: 0,
+      graph_edges: 0,
+      skipped_graph_edges: 0,
     });
+    expect(countRows(targetDb, 'agents')).toBe(1);
     expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'prompt_batches', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'activities', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'attachments', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'plans', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'artifacts', TARGET_PROJECT_ID)).toBe(1);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(8);
+    expect(countRows(targetDb, 'spores', TARGET_PROJECT_ID)).toBe(2);
+    expect(countRows(targetDb, 'entities', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'entity_mentions', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'resolution_events', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'graph_edges', TARGET_PROJECT_ID)).toBe(4);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(19);
   });
 });
 
 function seedSourceProject(db: Database): void {
+  db.prepare(
+    `INSERT INTO agents (
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'myco-agent',
+    'Myco Agent',
+    'openai',
+    'gpt-test',
+    'agent-hash',
+    '{"temperature":0}',
+    'built-in',
+    'You are Myco.',
+    20,
+    120,
+    '["vault_spores"]',
+    1,
+    50,
+    55,
+  );
+
   db.prepare(
     `INSERT INTO sessions (
        id, agent, "user", project_root, branch, started_at, ended_at, status,
@@ -418,6 +567,191 @@ function seedSourceProject(db: Database): void {
     'source-machine',
     270,
   );
+
+  db.prepare(
+    `INSERT INTO spores (
+       id, agent_id, session_id, prompt_batch_id, observation_type, status,
+       content, context, importance, file_path, tags, content_hash, properties,
+       created_at, updated_at, embedded, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-spore',
+    'myco-agent',
+    'legacy-session',
+    1,
+    'discovery',
+    'active',
+    'A durable Grove importer observation from the legacy vault.',
+    'Importer context',
+    6,
+    'packages/myco/src/grove/importer.ts',
+    '["grove","importer"]',
+    'spore-hash',
+    '{"kind":"fixture"}',
+    280,
+    285,
+    1,
+    'source-machine',
+    290,
+  );
+
+  db.prepare(
+    `INSERT INTO spores (
+       id, agent_id, session_id, prompt_batch_id, observation_type, status,
+       content, context, importance, file_path, tags, content_hash, properties,
+       created_at, updated_at, embedded, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-wisdom',
+    'myco-agent',
+    null,
+    null,
+    'wisdom',
+    'active',
+    'A consolidated Grove importer wisdom note.',
+    null,
+    8,
+    null,
+    '["grove","wisdom"]',
+    'wisdom-hash',
+    '{"consolidated_from":["legacy-spore"]}',
+    300,
+    305,
+    1,
+    'source-machine',
+    310,
+  );
+
+  db.prepare(
+    `INSERT INTO entities (
+       id, agent_id, type, name, properties, first_seen, last_seen,
+       status, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-entity',
+    'myco-agent',
+    'component',
+    'Grove importer',
+    '{"path":"packages/myco/src/grove/importer.ts"}',
+    280,
+    285,
+    'active',
+    'source-machine',
+    290,
+  );
+
+  db.prepare(
+    `INSERT INTO entity_mentions (
+       entity_id, note_id, note_type, agent_id, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-entity',
+    'legacy-spore',
+    'spore',
+    'myco-agent',
+    'source-machine',
+    291,
+  );
+
+  db.prepare(
+    `INSERT INTO resolution_events (
+       id, agent_id, spore_id, action, new_spore_id, reason,
+       session_id, created_at, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'legacy-resolution',
+    'myco-agent',
+    'legacy-spore',
+    'supersede',
+    'legacy-wisdom',
+    'Consolidated into wisdom',
+    'legacy-session',
+    320,
+    'source-machine',
+    325,
+  );
+
+  const edge = db.prepare(
+    `INSERT INTO graph_edges (
+       id, agent_id, source_id, source_type, target_id, target_type,
+       type, session_id, confidence, properties, created_at, machine_id, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  edge.run(
+    'legacy-edge-session-batch',
+    'myco-agent',
+    'legacy-session',
+    'session',
+    '1',
+    'batch',
+    'HAS_BATCH',
+    'legacy-session',
+    1,
+    null,
+    330,
+    'source-machine',
+    335,
+  );
+  edge.run(
+    'legacy-edge-spore-session',
+    'myco-agent',
+    'legacy-spore',
+    'spore',
+    'legacy-session',
+    'session',
+    'FROM_SESSION',
+    'legacy-session',
+    1,
+    null,
+    331,
+    'source-machine',
+    336,
+  );
+  edge.run(
+    'legacy-edge-spore-batch',
+    'myco-agent',
+    'legacy-spore',
+    'spore',
+    '1',
+    'batch',
+    'EXTRACTED_FROM',
+    'legacy-session',
+    1,
+    null,
+    332,
+    'source-machine',
+    337,
+  );
+  edge.run(
+    'legacy-edge-wisdom-spore',
+    'myco-agent',
+    'legacy-wisdom',
+    'spore',
+    'legacy-spore',
+    'spore',
+    'DERIVED_FROM',
+    null,
+    0.9,
+    '{"kind":"consolidation"}',
+    333,
+    'source-machine',
+    338,
+  );
+  edge.run(
+    'legacy-edge-dangling-entity',
+    'myco-agent',
+    'missing-entity',
+    'entity',
+    'legacy-spore',
+    'spore',
+    'SUPERSEDED_BY',
+    null,
+    0.8,
+    null,
+    334,
+    'source-machine',
+    339,
+  );
 }
 
 function seedTargetExistingRows(db: Database): void {
@@ -470,12 +804,12 @@ function getRow<T>(db: Database, sql: string, ...params: unknown[]): T {
   return row;
 }
 
-function countRows(db: Database, table: string, projectId: string): number {
-  return getRow<{ count: number }>(
-    db,
-    `SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`,
-    projectId,
-  ).count;
+function countRows(db: Database, table: string, projectId?: string): number {
+  const sql = projectId
+    ? `SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`
+    : `SELECT COUNT(*) AS count FROM ${table}`;
+  const params = projectId ? [projectId] : [];
+  return getRow<{ count: number }>(db, sql, ...params).count;
 }
 
 function matchCount(db: Database, table: string, query: string): number {
