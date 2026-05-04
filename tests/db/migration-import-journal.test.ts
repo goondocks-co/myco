@@ -35,7 +35,7 @@ describe('migration import journal', () => {
   });
 
   it('is installed by the current schema', () => {
-    expect(SCHEMA_VERSION).toBe(31);
+    expect(SCHEMA_VERSION).toBe(32);
     expect(tableExists('migration_import_journal')).toBe(true);
     expect(indexExists('idx_migration_import_journal_source')).toBe(true);
     expect(indexExists('idx_migration_import_journal_target')).toBe(true);
@@ -122,7 +122,7 @@ describe('migration import journal', () => {
     expect(failed.error).toBe('missing parent batch');
   });
 
-  it('runs the v31 migration against a v30 database', () => {
+  it('runs the v31 migration against a v30 database on the way to current schema', () => {
     closeDatabase();
     const db = initDatabase();
     db.prepare('CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)').run();
@@ -132,6 +132,6 @@ describe('migration import journal', () => {
 
     expect(tableExists('migration_import_journal')).toBe(true);
     const version = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(version.version).toBe(31);
+    expect(version.version).toBe(32);
   });
 });

@@ -16,7 +16,7 @@ mock.module('@myco/db/client.js', () => ({
   initDatabase: vi.fn().mockReturnValue(mockDb),
   openDatabase: vi.fn().mockReturnValue({
     prepare: vi.fn().mockReturnValue({
-      get: vi.fn().mockReturnValue({ version: 31 }),
+      get: vi.fn().mockReturnValue({ version: 32 }),
     }),
     run: vi.fn(),
     close: vi.fn(),

@@ -28,6 +28,7 @@ import {
   CANOPY_INDEX_DDLS,
   MIGRATION_IMPORT_JOURNAL_TABLE,
   MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
+  GROVE_PROJECT_SCOPED_TABLES,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -74,6 +75,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 29, migrate: (db) => migrateV28ToV29(db) },
   { version: 30, migrate: (db) => migrateV29ToV30(db) },
   { version: 31, migrate: (db) => migrateV30ToV31(db) },
+  { version: 32, migrate: (db) => migrateV31ToV32(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1748,6 +1750,40 @@ function migrateV30ToV31(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(31, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 32 adds explicit project_id scope columns to active project-scoped
+ * Grove-era tables. The columns are nullable during the migration runway so
+ * existing project-local runtime writes keep working until request-context
+ * routing and importer activation start populating them.
+ */
+function migrateV31ToV32(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+      if (!tableExists(db, table)) continue;
+      const cols = getTableColumnSet(db, table);
+      if (!cols.has('project_id')) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`).run();
+      }
+    }
+
+    for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+      if (!tableExists(db, table)) continue;
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_${table}_project_id ON ${table} (project_id)`).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(32, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

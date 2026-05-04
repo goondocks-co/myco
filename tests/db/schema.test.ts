@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION, EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 import { MIGRATIONS } from '@myco/db/migrations.js';
+import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import type { Database } from 'bun:sqlite';
 
 /** Helper: check if a table exists in SQLite. */
@@ -47,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(31);
+      expect(SCHEMA_VERSION).toBe(32);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -145,6 +146,17 @@ describe('Database schema', () => {
       it.each(captureTables)('creates %s table', (table) => {
         createSchema(db);
         expect(tableExists(db, table)).toBe(true);
+      });
+
+      it('creates project scope columns and indexes on active Grove project tables', () => {
+        createSchema(db);
+        for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+          expect(getColumnNames(db, table), `${table}.project_id`).toContain('project_id');
+          expect(indexExists(db, `idx_${table}_project_id`), `idx_${table}_project_id`).toBe(true);
+        }
+
+        expect(getColumnNames(db, 'team_members')).not.toContain('project_id');
+        expect(getColumnNames(db, 'team_outbox')).not.toContain('project_id');
       });
 
       it('sessions table has correct columns', () => {
@@ -1336,18 +1348,43 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v31 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v32 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
+      });
+
+      it('v32: adds project_id scope columns and indexes to existing v31 databases', () => {
+        createSchema(db);
+        const sampleTables = ['sessions', 'plans', 'agent_runs', 'log_entries'];
+        for (const table of sampleTables) {
+          db.prepare(`DROP INDEX IF EXISTS idx_${table}_project_id`).run();
+          db.prepare(`ALTER TABLE ${table} DROP COLUMN project_id`).run();
+          expect(getColumnNames(db, table)).not.toContain('project_id');
+        }
+
+        db.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        db.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (31, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+
+        runMigration(db, 32);
+
+        for (const table of sampleTables) {
+          expect(getColumnNames(db, table), `${table}.project_id`).toContain('project_id');
+          expect(indexExists(db, `idx_${table}_project_id`), `idx_${table}_project_id`).toBe(true);
+        }
+        expect(() => runMigration(db, 32)).not.toThrow();
       });
 
       it('v29: renames agent_runs.runtime to harness and rewrites persisted JSON envelopes', () => {

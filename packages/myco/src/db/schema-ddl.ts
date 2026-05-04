@@ -31,6 +31,7 @@ const SESSIONS_TABLE = `
     agent                  TEXT NOT NULL,
     "user"                 TEXT,
     project_root           TEXT,
+    project_id             TEXT,
     branch                 TEXT,
     started_at             INTEGER NOT NULL,
     ended_at               INTEGER,
@@ -60,6 +61,7 @@ const SESSIONS_TABLE = `
 const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id             TEXT,
     session_id             TEXT NOT NULL REFERENCES sessions(id),
     parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id),
     kind                   TEXT NOT NULL DEFAULT 'initial',
@@ -81,6 +83,7 @@ const PROMPT_BATCHES_TABLE = `
 const ACTIVITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS activities (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id           TEXT,
     session_id           TEXT NOT NULL REFERENCES sessions(id),
     prompt_batch_id      INTEGER REFERENCES prompt_batches(id),
     tool_name            TEXT NOT NULL,
@@ -101,6 +104,7 @@ const ACTIVITIES_TABLE = `
 const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT PRIMARY KEY,
+    project_id       TEXT,
     logical_key      TEXT NOT NULL,
     status           TEXT DEFAULT 'active',
     author           TEXT,
@@ -122,6 +126,7 @@ const PLANS_TABLE = `
 const ARTIFACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS artifacts (
     id               TEXT PRIMARY KEY,
+    project_id       TEXT,
     artifact_type    TEXT,
     source_path      TEXT NOT NULL,
     title            TEXT NOT NULL,
@@ -149,6 +154,7 @@ const TEAM_MEMBERS_TABLE = `
 const ATTACHMENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS attachments (
     id              TEXT PRIMARY KEY,
+    project_id      TEXT,
     session_id      TEXT REFERENCES sessions(id),
     prompt_batch_id INTEGER REFERENCES prompt_batches(id),
     file_path       TEXT NOT NULL,
@@ -182,6 +188,7 @@ const AGENTS_TABLE = `
 const SPORES_TABLE = `
   CREATE TABLE IF NOT EXISTS spores (
     id                TEXT PRIMARY KEY,
+    project_id        TEXT,
     agent_id          TEXT NOT NULL REFERENCES agents(id),
     session_id        TEXT REFERENCES sessions(id),
     prompt_batch_id   INTEGER REFERENCES prompt_batches(id),
@@ -204,6 +211,7 @@ const SPORES_TABLE = `
 const ENTITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS entities (
     id          TEXT PRIMARY KEY,
+    project_id  TEXT,
     agent_id    TEXT NOT NULL REFERENCES agents(id),
     type        TEXT NOT NULL,
     name        TEXT NOT NULL,
@@ -219,6 +227,7 @@ const ENTITIES_TABLE = `
 const GRAPH_EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS graph_edges (
     id              TEXT PRIMARY KEY,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     source_id       TEXT NOT NULL,
     source_type     TEXT NOT NULL,
@@ -235,6 +244,7 @@ const GRAPH_EDGES_TABLE = `
 
 const ENTITY_MENTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS entity_mentions (
+    project_id  TEXT,
     entity_id   TEXT NOT NULL REFERENCES entities(id),
     note_id     TEXT NOT NULL,
     note_type   TEXT NOT NULL,
@@ -247,6 +257,7 @@ const ENTITY_MENTIONS_TABLE = `
 const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT PRIMARY KEY,
+    project_id    TEXT,
     agent_id      TEXT NOT NULL REFERENCES agents(id),
     spore_id      TEXT NOT NULL REFERENCES spores(id),
     action        TEXT NOT NULL,
@@ -261,6 +272,7 @@ const RESOLUTION_EVENTS_TABLE = `
 const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     tier            INTEGER NOT NULL,
     content         TEXT NOT NULL,
@@ -274,6 +286,7 @@ const DIGEST_EXTRACTS_TABLE = `
 export const CORTEX_INSTRUCTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS cortex_instructions (
     id            TEXT PRIMARY KEY,
+    project_id    TEXT,
     agent_id      TEXT NOT NULL,
     content       TEXT NOT NULL,
     input_hash    TEXT NOT NULL,
@@ -288,6 +301,7 @@ export const CORTEX_INSTRUCTIONS_TABLE = `
 const AGENT_RUNS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_runs (
     id             TEXT PRIMARY KEY,
+    project_id     TEXT,
     agent_id       TEXT NOT NULL REFERENCES agents(id),
     task           TEXT,
     instruction    TEXT,
@@ -320,6 +334,7 @@ const AGENT_RUNS_TABLE = `
 const AGENT_REPORTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_reports (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT,
     run_id      TEXT NOT NULL REFERENCES agent_runs(id),
     agent_id    TEXT NOT NULL REFERENCES agents(id),
     action      TEXT NOT NULL,
@@ -331,6 +346,7 @@ const AGENT_REPORTS_TABLE = `
 const AGENT_TURNS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id           TEXT,
     run_id               TEXT NOT NULL REFERENCES agent_runs(id),
     agent_id             TEXT NOT NULL REFERENCES agents(id),
     turn_number          INTEGER NOT NULL,
@@ -387,6 +403,7 @@ export const TEAM_OUTBOX_TABLE = `
 export const LOG_ENTRIES_TABLE = `
   CREATE TABLE IF NOT EXISTS log_entries (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  TEXT,
     timestamp   TEXT    NOT NULL,
     level       TEXT    NOT NULL,
     component   TEXT    NOT NULL,
@@ -401,6 +418,7 @@ export const LOG_ENTRIES_TABLE = `
 export const SKILL_CANDIDATES_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_candidates (
     id              TEXT PRIMARY KEY,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     machine_id      TEXT NOT NULL DEFAULT 'local',
     topic           TEXT NOT NULL,
@@ -419,6 +437,7 @@ export const SKILL_CANDIDATES_TABLE = `
 export const SKILL_RECORDS_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_records (
     id              TEXT PRIMARY KEY,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     machine_id      TEXT NOT NULL DEFAULT 'local',
     name            TEXT NOT NULL UNIQUE,
@@ -441,6 +460,7 @@ export const SKILL_RECORDS_TABLE = `
 export const SKILL_LINEAGE_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_lineage (
     id               TEXT PRIMARY KEY,
+    project_id       TEXT,
     skill_id         TEXT NOT NULL REFERENCES skill_records(id),
     generation       INTEGER NOT NULL,
     action           TEXT NOT NULL,
@@ -453,6 +473,7 @@ export const SKILL_LINEAGE_TABLE = `
 export const SKILL_USAGE_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_usage (
     id          TEXT PRIMARY KEY,
+    project_id  TEXT,
     skill_id    TEXT NOT NULL REFERENCES skill_records(id),
     session_id  TEXT NOT NULL REFERENCES sessions(id),
     machine_id  TEXT NOT NULL DEFAULT 'local',
@@ -464,6 +485,7 @@ export const SKILL_USAGE_TABLE = `
 export const NOTIFICATIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS notifications (
     id          TEXT PRIMARY KEY,
+    project_id  TEXT,
     domain      TEXT NOT NULL,
     type        TEXT NOT NULL,
     level       TEXT NOT NULL DEFAULT 'info',
@@ -492,6 +514,7 @@ export const NOTIFICATIONS_TABLE = `
 export const AGENT_RUN_WRITE_INTENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_run_write_intents (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        TEXT,
     run_id            TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
     phase_id          TEXT,
     tool_name         TEXT NOT NULL,
@@ -510,6 +533,7 @@ export const AGENT_RUN_WRITE_INTENTS_TABLE = `
 export const DIGEST_EXTRACT_REVISIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extract_revisions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          TEXT,
     agent_id            TEXT NOT NULL,
     tier                INTEGER NOT NULL,
     content             TEXT NOT NULL,
@@ -607,6 +631,38 @@ export const MIGRATION_IMPORT_JOURNAL_INDEX_DDLS: readonly string[] = [
   'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_project ON migration_import_journal (target_grove_id, target_project_id)',
   'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_status ON migration_import_journal (migration_id, status)',
 ];
+
+export const GROVE_PROJECT_SCOPED_TABLES = [
+  'sessions',
+  'prompt_batches',
+  'activities',
+  'plans',
+  'artifacts',
+  'attachments',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'digest_extracts',
+  'cortex_instructions',
+  'agent_runs',
+  'agent_reports',
+  'agent_turns',
+  'agent_run_write_intents',
+  'digest_extract_revisions',
+  'skill_candidates',
+  'skill_records',
+  'skill_lineage',
+  'skill_usage',
+  'notifications',
+  'log_entries',
+] as const;
+
+export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
+  GROVE_PROJECT_SCOPED_TABLES.map(
+    (table) => `CREATE INDEX IF NOT EXISTS idx_${table}_project_id ON ${table} (project_id)`,
+  );
 
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
@@ -809,6 +865,9 @@ export const SECONDARY_INDEXES = [
 
   // Grove migration import journal
   ...MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
+
+  // Grove project-scoped row filters
+  ...GROVE_PROJECT_SCOPE_INDEX_DDLS,
 
   // Canopy
   ...CANOPY_INDEX_DDLS,
