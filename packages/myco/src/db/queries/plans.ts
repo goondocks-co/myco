@@ -33,6 +33,7 @@ export interface PlanInsert {
   id: string;
   logical_key: string;
   created_at: number;
+  project_id?: string | null;
   status?: string;
   author?: string | null;
   title?: string | null;
@@ -50,6 +51,7 @@ export interface PlanInsert {
 /** Row shape returned from plan queries. */
 export interface PlanRow {
   id: string;
+  project_id: string | null;
   logical_key: string;
   status: string;
   author: string | null;
@@ -80,6 +82,7 @@ export interface ListPlansOptions {
 
 const PLAN_COLUMNS = [
   'id',
+  'project_id',
   'logical_key',
   'status',
   'author',
@@ -108,6 +111,7 @@ const SELECT_COLUMNS = PLAN_COLUMNS.join(', ');
 function toPlanRow(row: Record<string, unknown>): PlanRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     logical_key: row.logical_key as string,
     status: row.status as string,
     author: (row.author as string) ?? null,
@@ -138,36 +142,65 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
  */
 export function upsertPlan(data: PlanInsert): PlanRow {
   const db = getDatabase();
+  const projectId = data.project_id ?? null;
+  const existing = getPlanByLogicalKey(data.logical_key, projectId);
+
+  if (existing) {
+    db.prepare(
+      `UPDATE plans
+          SET id              = ?,
+              status          = ?,
+              author          = ?,
+              title           = ?,
+              content         = ?,
+              source_path     = ?,
+              tags            = ?,
+              session_id      = ?,
+              prompt_batch_id = ?,
+              content_hash    = ?,
+              processed       = ?,
+              updated_at      = ?,
+              embedded        = CASE
+                WHEN ? != content_hash THEN 0
+                ELSE embedded
+              END
+        WHERE id = ?`,
+    ).run(
+      data.id,
+      data.status ?? DEFAULT_STATUS,
+      data.author ?? null,
+      data.title ?? null,
+      data.content ?? null,
+      data.source_path ?? null,
+      data.tags ?? null,
+      data.session_id ?? null,
+      data.prompt_batch_id ?? null,
+      data.content_hash ?? null,
+      data.processed ?? DEFAULT_PROCESSED,
+      data.updated_at ?? null,
+      data.content_hash ?? null,
+      existing.id,
+    );
+
+    const row = getPlan(data.id);
+    if (!row) throw new Error(`Plan upsert failed for logical key: ${data.logical_key}`);
+    syncRow('plans', row);
+    return row;
+  }
 
   db.prepare(
     `INSERT INTO plans (
-       id, logical_key, status, author, title, content,
+       id, project_id, logical_key, status, author, title, content,
        source_path, tags, session_id, prompt_batch_id, content_hash,
        processed, created_at, updated_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?
-     )
-     ON CONFLICT (logical_key) DO UPDATE SET
-       id              = EXCLUDED.id,
-       status          = EXCLUDED.status,
-       author          = EXCLUDED.author,
-       title           = EXCLUDED.title,
-       content         = EXCLUDED.content,
-       source_path     = EXCLUDED.source_path,
-       tags            = EXCLUDED.tags,
-       session_id      = EXCLUDED.session_id,
-       prompt_batch_id = EXCLUDED.prompt_batch_id,
-       content_hash    = EXCLUDED.content_hash,
-       processed       = EXCLUDED.processed,
-       updated_at      = EXCLUDED.updated_at,
-       embedded        = CASE
-         WHEN EXCLUDED.content_hash != plans.content_hash THEN 0
-         ELSE plans.embedded
-       END`,
+     )`,
   ).run(
     data.id,
+    projectId,
     data.logical_key,
     data.status ?? DEFAULT_STATUS,
     data.author ?? null,
@@ -185,7 +218,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
   );
 
   const row = toPlanRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`).get(data.logical_key) as Record<string, unknown>,
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
 
   syncRow('plans', row);
@@ -214,12 +247,22 @@ export function getPlan(id: string): PlanRow | null {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlanByLogicalKey(logicalKey: string): PlanRow | null {
+export function getPlanByLogicalKey(logicalKey: string, projectId?: string | null): PlanRow | null {
   const db = getDatabase();
 
-  const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`,
-  ).get(logicalKey) as Record<string, unknown> | undefined;
+  const row = projectId == null
+    ? db.prepare(
+      `SELECT ${SELECT_COLUMNS}
+         FROM plans
+        WHERE project_id IS NULL
+          AND logical_key = ?`,
+    ).get(logicalKey) as Record<string, unknown> | undefined
+    : db.prepare(
+      `SELECT ${SELECT_COLUMNS}
+         FROM plans
+        WHERE project_id = ?
+          AND logical_key = ?`,
+    ).get(projectId, logicalKey) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toPlanRow(row);

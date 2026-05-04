@@ -29,6 +29,7 @@ import {
   MIGRATION_IMPORT_JOURNAL_TABLE,
   MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
   GROVE_PROJECT_SCOPED_TABLES,
+  PLAN_LOGICAL_KEY_INDEX_DDLS,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -76,6 +77,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 30, migrate: (db) => migrateV29ToV30(db) },
   { version: 31, migrate: (db) => migrateV30ToV31(db) },
   { version: 32, migrate: (db) => migrateV31ToV32(db) },
+  { version: 33, migrate: (db) => migrateV32ToV33(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1784,6 +1786,38 @@ function migrateV31ToV32(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(32, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 33 replaces the pre-Grove global plan logical-key uniqueness with
+ * project-aware uniqueness. Legacy project-local rows still have NULL
+ * project_id during the migration runway, so they keep a separate null-project
+ * unique index to preserve current upsert semantics.
+ */
+function migrateV32ToV33(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'plans')) {
+      const cols = getTableColumnSet(db, 'plans');
+      if (!cols.has('project_id')) {
+        db.prepare('ALTER TABLE plans ADD COLUMN project_id TEXT').run();
+      }
+      db.prepare('DROP INDEX IF EXISTS idx_plans_logical_key').run();
+      for (const ddl of PLAN_LOGICAL_KEY_INDEX_DDLS) {
+        db.prepare(ddl).run();
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(33, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

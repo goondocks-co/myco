@@ -664,6 +664,11 @@ export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
     (table) => `CREATE INDEX IF NOT EXISTS idx_${table}_project_id ON ${table} (project_id)`,
   );
 
+export const PLAN_LOGICAL_KEY_INDEX_DDLS: readonly string[] = [
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_legacy_logical_key ON plans (logical_key) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_project_logical_key ON plans (project_id, logical_key) WHERE project_id IS NOT NULL',
+];
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 export const FTS_TABLES = [
@@ -807,7 +812,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_id ON agent_tasks (agent_id)',
 
   // Plans
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
+  ...PLAN_LOGICAL_KEY_INDEX_DDLS,
   'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
   'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',

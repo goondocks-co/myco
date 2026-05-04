@@ -104,6 +104,37 @@ describe('plan query helpers', () => {
       expect(getPlan('plan-a')).toBeNull();
     });
 
+    it('allows the same logical_key in different project scopes', async () => {
+      const logicalKey = 'path:plans/roadmap.md';
+      upsertPlan(makePlan({
+        id: 'plan-project-a',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        title: 'Project A original',
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-project-b',
+        project_id: 'proj_b',
+        logical_key: logicalKey,
+        title: 'Project B',
+      }));
+
+      const updated = upsertPlan(makePlan({
+        id: 'plan-project-a-updated',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        title: 'Project A updated',
+      }));
+
+      expect(updated.id).toBe('plan-project-a-updated');
+      expect(updated.project_id).toBe('proj_a');
+      expect(listPlans()).toHaveLength(2);
+      expect(getPlan('plan-project-a')).toBeNull();
+      expect(getPlan('plan-project-a-updated')?.title).toBe('Project A updated');
+      expect(getPlan('plan-project-b')?.title).toBe('Project B');
+      expect(getPlan('plan-project-b')?.project_id).toBe('proj_b');
+    });
+
     it('is idempotent — second upsert updates without error', async () => {
       const data = makePlan({ title: 'Original' });
       upsertPlan(data);

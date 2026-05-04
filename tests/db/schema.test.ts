@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(32);
+      expect(SCHEMA_VERSION).toBe(33);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -672,7 +672,8 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_sessions_processed')).toBe(true);
         expect(indexExists(db, 'idx_prompt_batches_session_id')).toBe(true);
         expect(indexExists(db, 'idx_activities_session_id')).toBe(true);
-        expect(indexExists(db, 'idx_plans_logical_key')).toBe(true);
+        expect(indexExists(db, 'idx_plans_legacy_logical_key')).toBe(true);
+        expect(indexExists(db, 'idx_plans_project_logical_key')).toBe(true);
         expect(indexExists(db, 'idx_spores_agent_id')).toBe(true);
         expect(indexExists(db, 'idx_spores_status')).toBe(true);
         expect(indexExists(db, 'idx_entities_agent_id')).toBe(true);
@@ -1348,16 +1349,16 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v32 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v33 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
       });
@@ -1367,6 +1368,10 @@ describe('Database schema', () => {
         const sampleTables = ['sessions', 'plans', 'agent_runs', 'log_entries'];
         for (const table of sampleTables) {
           db.prepare(`DROP INDEX IF EXISTS idx_${table}_project_id`).run();
+          if (table === 'plans') {
+            db.prepare('DROP INDEX IF EXISTS idx_plans_legacy_logical_key').run();
+            db.prepare('DROP INDEX IF EXISTS idx_plans_project_logical_key').run();
+          }
           db.prepare(`ALTER TABLE ${table} DROP COLUMN project_id`).run();
           expect(getColumnNames(db, table)).not.toContain('project_id');
         }
@@ -1385,6 +1390,43 @@ describe('Database schema', () => {
           expect(indexExists(db, `idx_${table}_project_id`), `idx_${table}_project_id`).toBe(true);
         }
         expect(() => runMigration(db, 32)).not.toThrow();
+      });
+
+      it('v33: scopes plan logical-key uniqueness by project', () => {
+        createSchema(db);
+        db.prepare('DROP INDEX IF EXISTS idx_plans_legacy_logical_key').run();
+        db.prepare('DROP INDEX IF EXISTS idx_plans_project_logical_key').run();
+        db.prepare('CREATE UNIQUE INDEX idx_plans_logical_key ON plans (logical_key)').run();
+
+        db.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        db.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (32, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+
+        runMigration(db, 33);
+
+        expect(indexExists(db, 'idx_plans_logical_key')).toBe(false);
+        expect(indexExists(db, 'idx_plans_legacy_logical_key')).toBe(true);
+        expect(indexExists(db, 'idx_plans_project_logical_key')).toBe(true);
+
+        const insertPlan = db.prepare(
+          `INSERT INTO plans (id, project_id, logical_key, title, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        insertPlan.run('legacy-a', null, 'path:plans/roadmap.md', 'Legacy A', 1000);
+        insertPlan.run('project-a', 'proj_a', 'path:plans/roadmap.md', 'Project A', 1001);
+        insertPlan.run('project-b', 'proj_b', 'path:plans/roadmap.md', 'Project B', 1002);
+
+        expect(() =>
+          insertPlan.run('legacy-b', null, 'path:plans/roadmap.md', 'Legacy B', 1003),
+        ).toThrow();
+        expect(() =>
+          insertPlan.run('project-a-duplicate', 'proj_a', 'path:plans/roadmap.md', 'Project A duplicate', 1004),
+        ).toThrow();
+
+        expect(() => runMigration(db, 33)).not.toThrow();
       });
 
       it('v29: renames agent_runs.runtime to harness and rewrites persisted JSON envelopes', () => {
