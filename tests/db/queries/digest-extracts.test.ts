@@ -134,6 +134,47 @@ describe('digest extract revision helpers', () => {
       expect(t1500.map((r) => r.content)).toEqual(['a1']);
       expect(t5000.map((r) => r.content)).toEqual(['b1']);
     });
+
+    it('scopes live rows and revisions by project_id', () => {
+      upsertDigestExtract({
+        project_id: 'proj_a',
+        agent_id: TEST_AGENT_ID,
+        tier: 1500,
+        content: 'project-a v1',
+        generated_at: 1,
+      });
+      upsertDigestExtract({
+        project_id: 'proj_b',
+        agent_id: TEST_AGENT_ID,
+        tier: 1500,
+        content: 'project-b v1',
+        generated_at: 2,
+      });
+      upsertDigestExtract({
+        project_id: 'proj_a',
+        agent_id: TEST_AGENT_ID,
+        tier: 1500,
+        content: 'project-a v2',
+        generated_at: 3,
+      });
+
+      expect(getDigestExtract(TEST_AGENT_ID, 1500, 'proj_a')!.content).toBe('project-a v2');
+      expect(getDigestExtract(TEST_AGENT_ID, 1500, 'proj_b')!.content).toBe('project-b v1');
+      expect(getDigestExtract(TEST_AGENT_ID, 1500)).toBeNull();
+
+      const projectARevisions = listDigestRevisions({
+        agentId: TEST_AGENT_ID,
+        tier: 1500,
+        projectId: 'proj_a',
+      });
+      const projectBRevisions = listDigestRevisions({
+        agentId: TEST_AGENT_ID,
+        tier: 1500,
+        projectId: 'proj_b',
+      });
+      expect(projectARevisions.map((r) => r.content)).toEqual(['project-a v1']);
+      expect(projectBRevisions).toEqual([]);
+    });
   });
 
   describe('listDigestRevisions', () => {
@@ -270,10 +311,10 @@ describe('digest extract revision helpers', () => {
       const db = getDatabase();
       const originalPrepare = db.prepare.bind(db);
 
-      // Shim: force the live-row INSERT into digest_extracts to throw on run().
+      // Shim: force the live-row write into digest_extracts to throw on run().
       (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
         const stmt = originalPrepare(sql);
-        if (/INSERT INTO digest_extracts\b/i.test(sql)) {
+        if (/\b(?:INSERT INTO|UPDATE)\s+digest_extracts\b/i.test(sql)) {
           const original = stmt.run.bind(stmt);
           stmt.run = (() => {
             // Restore prepare immediately so the implicit post-throw cleanup
@@ -312,7 +353,7 @@ describe('digest extract revision helpers', () => {
 
       (db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
         const stmt = originalPrepare(sql);
-        if (/INSERT INTO digest_extracts\b/i.test(sql)) {
+        if (/\b(?:INSERT INTO|UPDATE)\s+digest_extracts\b/i.test(sql)) {
           stmt.run = (() => {
             (db as unknown as { prepare: typeof db.prepare }).prepare = originalPrepare;
             throw new Error('simulated rollback-restore failure');

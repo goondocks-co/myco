@@ -15,6 +15,7 @@ import { getTeamMachineId } from '@myco/daemon/team-context.js';
 
 /** Fields required when upserting a digest extract. */
 export interface DigestExtractUpsert {
+  project_id?: string | null;
   agent_id: string;
   tier: number;
   content: string;
@@ -47,6 +48,7 @@ export interface DigestExtractUpsertOptions {
 /** Row shape for entries in digest_extract_revisions. */
 export interface DigestExtractRevisionRow {
   id: number;
+  project_id: string | null;
   agent_id: string;
   tier: number;
   content: string;
@@ -66,6 +68,7 @@ export interface RollbackDigestExtractOptions {
 /** Row shape returned from digest_extracts queries (all columns). */
 export interface DigestExtractRow {
   id: number;
+  project_id: string | null;
   agent_id: string;
   tier: number;
   content: string;
@@ -81,6 +84,7 @@ export interface DigestExtractRow {
 
 const EXTRACT_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'tier',
   'content',
@@ -100,6 +104,7 @@ const SELECT_COLUMNS = EXTRACT_COLUMNS.join(', ');
 function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     tier: row.tier as number,
     content: row.content as string,
@@ -110,12 +115,27 @@ function toDigestExtractRow(row: Record<string, unknown>): DigestExtractRow {
   };
 }
 
+function normalizeProjectId(projectId: string | null | undefined): string | null {
+  return projectId ?? null;
+}
+
+function digestIdentityWhere(projectId: string | null): { where: string; params: unknown[] } {
+  return projectId === null
+    ? { where: 'project_id IS NULL AND agent_id = ? AND tier = ?', params: [] }
+    : { where: 'project_id = ? AND agent_id = ? AND tier = ?', params: [projectId] };
+}
+
+function digestIdentityParams(projectId: string | null, agentId: string, tier: number): unknown[] {
+  const { params } = digestIdentityWhere(projectId);
+  return [...params, agentId, tier];
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Upsert a digest extract. Uses ON CONFLICT on (agent_id, tier).
+ * Upsert a digest extract by project-scoped (agent_id, tier).
  *
  * Schema v15 behaviour: when an existing row would be overwritten, the
  * prior content is copied into digest_extract_revisions (linked to the
@@ -134,6 +154,10 @@ export function upsertDigestExtract(
   if (options.dryRun) return null;
 
   const db = getDatabase();
+  const projectId = normalizeProjectId(data.project_id);
+  const identity = digestIdentityWhere(projectId);
+  const identityParams = digestIdentityParams(projectId, data.agent_id, data.tier);
+  const machineId = data.machine_id ?? getTeamMachineId();
 
   // The revision snapshot and the live-row upsert MUST be atomic. Without
   // a transaction, a crash between the two writes would leave the revision
@@ -144,22 +168,23 @@ export function upsertDigestExtract(
     // Capture the row we're about to overwrite (if any) so we can copy it
     // into the revision history before mutating the live table.
     const existingRow = db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
-    ).get(data.agent_id, data.tier) as Record<string, unknown> | undefined;
+      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE ${identity.where}`,
+    ).get(...identityParams) as Record<string, unknown> | undefined;
 
     if (existingRow) {
       const priorRevisionId = db.prepare(
         `SELECT id FROM digest_extract_revisions
-         WHERE agent_id = ? AND tier = ?
+         WHERE ${identity.where}
          ORDER BY id DESC
          LIMIT 1`,
-      ).get(data.agent_id, data.tier) as { id: number } | undefined;
+      ).get(...identityParams) as { id: number } | undefined;
 
       db.prepare(
         `INSERT INTO digest_extract_revisions
-           (agent_id, tier, content, metadata, run_id, parent_revision_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (project_id, agent_id, tier, content, metadata, run_id, parent_revision_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
+        projectId,
         data.agent_id,
         data.tier,
         existingRow.content as string,
@@ -170,18 +195,22 @@ export function upsertDigestExtract(
       );
     }
 
-    db.prepare(
-      `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (agent_id, tier) DO UPDATE SET
-         content = EXCLUDED.content,
-         generated_at = EXCLUDED.generated_at`,
-    ).run(data.agent_id, data.tier, data.content, data.generated_at);
+    if (existingRow) {
+      db.prepare(
+        `UPDATE digest_extracts
+         SET content = ?, generated_at = ?, machine_id = ?
+         WHERE id = ?`,
+      ).run(data.content, data.generated_at, machineId, existingRow.id);
+    } else {
+      db.prepare(
+        `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at, machine_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, data.agent_id, data.tier, data.content, data.generated_at, machineId);
+    }
 
-    // Always look up by composite unique key — works for both insert and update cases.
     const row = db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
-    ).get(data.agent_id, data.tier);
+      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE ${identity.where}`,
+    ).get(...identityParams);
 
     return toDigestExtractRow(row as Record<string, unknown>);
   })();
@@ -195,13 +224,16 @@ export function upsertDigestExtract(
 export function getDigestExtract(
   agentId: string,
   tier: number,
+  projectIdInput?: string | null,
 ): DigestExtractRow | null {
   const db = getDatabase();
+  const projectId = normalizeProjectId(projectIdInput);
+  const identity = digestIdentityWhere(projectId);
 
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM digest_extracts
-     WHERE agent_id = ? AND tier = ?`,
-  ).get(agentId, tier) as Record<string, unknown> | undefined;
+     WHERE ${identity.where}`,
+  ).get(...digestIdentityParams(projectId, agentId, tier)) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toDigestExtractRow(row);
@@ -212,16 +244,21 @@ export function getDigestExtract(
  */
 export function listDigestExtracts(
   agentId: string,
+  projectIdInput?: string | null,
 ): DigestExtractRow[] {
   const db = getDatabase();
   const tierPlaceholders = DIGEST_TIERS.map(() => '?').join(', ');
+  const projectId = normalizeProjectId(projectIdInput);
+  const identity = projectId === null
+    ? { where: 'project_id IS NULL AND agent_id = ?', params: [agentId] }
+    : { where: 'project_id = ? AND agent_id = ?', params: [projectId, agentId] };
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM digest_extracts
-     WHERE agent_id = ? AND tier IN (${tierPlaceholders})
+     WHERE ${identity.where} AND tier IN (${tierPlaceholders})
      ORDER BY tier ASC`,
-  ).all(agentId, ...DIGEST_TIERS) as Record<string, unknown>[];
+  ).all(...identity.params, ...DIGEST_TIERS) as Record<string, unknown>[];
 
   return rows.map(toDigestExtractRow);
 }
@@ -232,6 +269,7 @@ export function listDigestExtracts(
 
 const REVISION_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'tier',
   'content',
@@ -246,6 +284,7 @@ const REVISION_SELECT = REVISION_COLUMNS.join(', ');
 function toRevisionRow(row: Record<string, unknown>): DigestExtractRevisionRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     tier: row.tier as number,
     content: row.content as string,
@@ -261,17 +300,19 @@ function toRevisionRow(row: Record<string, unknown>): DigestExtractRevisionRow {
  * Used by operators who want to roll back a digest to an earlier state.
  */
 export function listDigestRevisions(
-  options: { agentId: string; tier: number; limit?: number },
+  options: { agentId: string; tier: number; limit?: number; projectId?: string | null },
 ): DigestExtractRevisionRow[] {
   const db = getDatabase();
   const limit = options.limit ?? 50;
+  const projectId = normalizeProjectId(options.projectId);
+  const identity = digestIdentityWhere(projectId);
   const rows = db.prepare(
     `SELECT ${REVISION_SELECT}
      FROM digest_extract_revisions
-     WHERE agent_id = ? AND tier = ?
+     WHERE ${identity.where}
      ORDER BY created_at DESC, id DESC
      LIMIT ?`,
-  ).all(options.agentId, options.tier, limit) as Record<string, unknown>[];
+  ).all(...digestIdentityParams(projectId, options.agentId, options.tier), limit) as Record<string, unknown>[];
   return rows.map(toRevisionRow);
 }
 
@@ -313,8 +354,11 @@ export function rollbackDigestExtract(
 
   const agentId = revision.agent_id as string;
   const tier = revision.tier as number;
+  const projectId = normalizeProjectId(revision.project_id as string | null | undefined);
   const targetContent = revision.content as string;
   const now = epochSeconds();
+  const identity = digestIdentityWhere(projectId);
+  const identityParams = digestIdentityParams(projectId, agentId, tier);
 
   // Preservation of the pre-rollback state and the live-row restore must
   // be atomic — same invariant as `upsertDigestExtract`.
@@ -322,23 +366,24 @@ export function rollbackDigestExtract(
     // 1) Append a new revision that preserves the *current* live content
     //    (pre-rollback state) so the rollback itself is reversible.
     const currentRow = db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
-    ).get(agentId, tier) as Record<string, unknown> | undefined;
+      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE ${identity.where}`,
+    ).get(...identityParams) as Record<string, unknown> | undefined;
 
     let newRevisionId: number | null = null;
     if (currentRow) {
       const priorRevisionId = db.prepare(
         `SELECT id FROM digest_extract_revisions
-         WHERE agent_id = ? AND tier = ?
+         WHERE ${identity.where}
          ORDER BY id DESC
          LIMIT 1`,
-      ).get(agentId, tier) as { id: number } | undefined;
+      ).get(...identityParams) as { id: number } | undefined;
 
       const info = db.prepare(
         `INSERT INTO digest_extract_revisions
-           (agent_id, tier, content, metadata, run_id, parent_revision_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (project_id, agent_id, tier, content, metadata, run_id, parent_revision_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
+        projectId,
         agentId,
         tier,
         currentRow.content as string,
@@ -351,17 +396,22 @@ export function rollbackDigestExtract(
     }
 
     // 2) Restore the target revision's content into the live row.
-    db.prepare(
-      `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (agent_id, tier) DO UPDATE SET
-         content = EXCLUDED.content,
-         generated_at = EXCLUDED.generated_at`,
-    ).run(agentId, tier, targetContent, now);
+    if (currentRow) {
+      db.prepare(
+        `UPDATE digest_extracts
+         SET content = ?, generated_at = ?
+         WHERE id = ?`,
+      ).run(targetContent, now, currentRow.id);
+    } else {
+      db.prepare(
+        `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at, machine_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(projectId, agentId, tier, targetContent, now, getTeamMachineId());
+    }
 
     const restored = db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE agent_id = ? AND tier = ?`,
-    ).get(agentId, tier) as Record<string, unknown>;
+      `SELECT ${SELECT_COLUMNS} FROM digest_extracts WHERE ${identity.where}`,
+    ).get(...identityParams) as Record<string, unknown>;
 
     return {
       row: toDigestExtractRow(restored),

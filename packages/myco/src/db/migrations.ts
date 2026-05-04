@@ -10,8 +10,14 @@ import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import {
+  SESSIONS_TABLE,
+  PROMPT_BATCHES_TABLE,
+  ACTIVITIES_TABLE,
   LOG_ENTRIES_TABLE,
   TEAM_OUTBOX_TABLE,
+  SPORES_TABLE,
+  ENTITIES_TABLE,
+  DIGEST_EXTRACTS_TABLE,
   SKILL_CANDIDATES_TABLE,
   SKILL_RECORDS_TABLE,
   SKILL_LINEAGE_TABLE,
@@ -30,6 +36,9 @@ import {
   MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
   GROVE_PROJECT_SCOPED_TABLES,
   PLAN_LOGICAL_KEY_INDEX_DDLS,
+  TABLE_DDLS,
+  FTS_TABLES,
+  SECONDARY_INDEXES,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -78,6 +87,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 31, migrate: (db) => migrateV30ToV31(db) },
   { version: 32, migrate: (db) => migrateV31ToV32(db) },
   { version: 33, migrate: (db) => migrateV32ToV33(db) },
+  { version: 34, migrate: (db) => migrateV33ToV34(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1822,5 +1832,284 @@ function migrateV32ToV33(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+interface V34TableRebuild {
+  table: string;
+  ddl: string;
+  columns: readonly string[];
+}
+
+const V34_PROJECT_UNIQUE_REBUILDS: readonly V34TableRebuild[] = [
+  {
+    table: 'sessions',
+    ddl: SESSIONS_TABLE,
+    columns: [
+      'id',
+      'agent',
+      '"user"',
+      'project_root',
+      'project_id',
+      'branch',
+      'started_at',
+      'ended_at',
+      'status',
+      'prompt_count',
+      'tool_count',
+      'title',
+      'summary',
+      'transcript_path',
+      'parent_session_id',
+      'parent_session_reason',
+      'processed',
+      'content_hash',
+      'created_at',
+      'embedded',
+      'machine_id',
+      'synced_at',
+      'canopy_injections_offered',
+      'canopy_injection_total_tokens',
+      'canopy_skips_after_injection',
+      'canopy_reads_after_injection',
+      'canopy_tokens_saved',
+      'canopy_redundant_reads',
+      'canopy_map_tool_calls',
+    ],
+  },
+  {
+    table: 'prompt_batches',
+    ddl: PROMPT_BATCHES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'session_id',
+      'parent_prompt_batch_id',
+      'kind',
+      'prompt_number',
+      'user_prompt',
+      'response_summary',
+      'classification',
+      'started_at',
+      'ended_at',
+      'status',
+      'activity_count',
+      'processed',
+      'content_hash',
+      'created_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'activities',
+    ddl: ACTIVITIES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'session_id',
+      'prompt_batch_id',
+      'tool_name',
+      'tool_input',
+      'tool_output_summary',
+      'file_path',
+      'files_affected',
+      'duration_ms',
+      'success',
+      'error_message',
+      'timestamp',
+      'processed',
+      'content_hash',
+      'created_at',
+      'canopy_injection_tokens',
+    ],
+  },
+  {
+    table: 'spores',
+    ddl: SPORES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'session_id',
+      'prompt_batch_id',
+      'observation_type',
+      'status',
+      'content',
+      'context',
+      'importance',
+      'file_path',
+      'tags',
+      'content_hash',
+      'properties',
+      'created_at',
+      'updated_at',
+      'embedded',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'entities',
+    ddl: ENTITIES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'type',
+      'name',
+      'properties',
+      'first_seen',
+      'last_seen',
+      'status',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'digest_extracts',
+    ddl: DIGEST_EXTRACTS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'tier',
+      'content',
+      'substrate_hash',
+      'generated_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'skill_records',
+    ddl: SKILL_RECORDS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'machine_id',
+      'name',
+      'display_name',
+      'description',
+      'status',
+      'embedded',
+      'generation',
+      'candidate_id',
+      'source_ids',
+      'path',
+      'usage_count',
+      'last_used_at',
+      'created_at',
+      'updated_at',
+      'properties',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'cortex_instructions',
+    ddl: CORTEX_INSTRUCTIONS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'content',
+      'input_hash',
+      'source_run_id',
+      'generated_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+];
+
+const V34_FTS_REBUILD_TABLES = [
+  'sessions_fts',
+  'prompt_batches_fts',
+  'activities_fts',
+  'spores_fts',
+] as const;
+
+function readPragmaNumber(db: Database, name: string): number {
+  const row = db.prepare(`PRAGMA ${name}`).get() as Record<string, number | undefined>;
+  return Number(row[name] ?? 0);
+}
+
+function setPragmaBoolean(db: Database, name: string, value: number): void {
+  db.prepare(`PRAGMA ${name} = ${value ? 'ON' : 'OFF'}`).run();
+}
+
+function rebuildTableForV34(db: Database, rebuild: V34TableRebuild): void {
+  if (!tableExists(db, rebuild.table)) return;
+
+  const oldTable = `__myco_v34_${rebuild.table}`;
+
+  db.prepare(`DROP TABLE IF EXISTS ${oldTable}`).run();
+  db.prepare(`ALTER TABLE ${rebuild.table} RENAME TO ${oldTable}`).run();
+  db.exec(rebuild.ddl);
+
+  const oldColumns = getTableColumnSet(db, oldTable);
+  const columns = rebuild.columns
+    .filter((column) => oldColumns.has(column.replace(/"/g, '')))
+    .join(', ');
+  if (columns.length === 0) {
+    db.prepare(`DROP TABLE ${oldTable}`).run();
+    return;
+  }
+
+  db.prepare(
+    `INSERT INTO ${rebuild.table} (${columns})
+     SELECT ${columns} FROM ${oldTable}`,
+  ).run();
+  db.prepare(`DROP TABLE ${oldTable}`).run();
+}
+
+/**
+ * Version 34 removes global uniqueness from project-scoped tables and replaces
+ * it with partial unique indexes: one legacy NULL-project index that preserves
+ * current local writes, and one project_id-aware index for Grove imports.
+ */
+function migrateV33ToV34(db: Database): void {
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  const legacyAlterTable = readPragmaNumber(db, 'legacy_alter_table');
+
+  setPragmaBoolean(db, 'foreign_keys', 0);
+  setPragmaBoolean(db, 'legacy_alter_table', 1);
+
+  db.prepare('BEGIN').run();
+  try {
+    for (const rebuild of V34_PROJECT_UNIQUE_REBUILDS) {
+      rebuildTableForV34(db, rebuild);
+    }
+
+    for (const ddl of TABLE_DDLS) {
+      db.exec(ddl);
+    }
+    for (const ddl of FTS_TABLES) {
+      db.exec(ddl);
+    }
+    for (const ddl of SECONDARY_INDEXES) {
+      db.exec(ddl);
+    }
+
+    for (const ftsTable of V34_FTS_REBUILD_TABLES) {
+      if (tableExists(db, ftsTable)) {
+        db.prepare(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`).run();
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(34, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'legacy_alter_table', legacyAlterTable);
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
   }
 }

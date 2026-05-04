@@ -25,7 +25,7 @@ export const MIGRATION_TASKS_TABLE = `
 
 // -- Capture Layer ----------------------------------------------------------
 
-const SESSIONS_TABLE = `
+export const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
     id                     TEXT PRIMARY KEY,
     agent                  TEXT NOT NULL,
@@ -44,7 +44,7 @@ const SESSIONS_TABLE = `
     parent_session_id      TEXT,
     parent_session_reason  TEXT,
     processed              INTEGER DEFAULT 0,
-    content_hash           TEXT UNIQUE,
+    content_hash           TEXT,
     created_at             INTEGER NOT NULL,
     embedded               INTEGER DEFAULT 0,
     machine_id             TEXT NOT NULL DEFAULT 'local',
@@ -58,7 +58,7 @@ const SESSIONS_TABLE = `
     canopy_map_tool_calls          INTEGER NOT NULL DEFAULT 0
   )`;
 
-const PROMPT_BATCHES_TABLE = `
+export const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id             TEXT,
@@ -74,13 +74,13 @@ const PROMPT_BATCHES_TABLE = `
     status                 TEXT DEFAULT 'active',
     activity_count         INTEGER DEFAULT 0,
     processed              INTEGER DEFAULT 0,
-    content_hash           TEXT UNIQUE,
+    content_hash           TEXT,
     created_at             INTEGER NOT NULL,
     machine_id             TEXT NOT NULL DEFAULT 'local',
     synced_at              INTEGER
   )`;
 
-const ACTIVITIES_TABLE = `
+export const ACTIVITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS activities (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id           TEXT,
@@ -96,7 +96,7 @@ const ACTIVITIES_TABLE = `
     error_message        TEXT,
     timestamp            INTEGER NOT NULL,
     processed            INTEGER DEFAULT 0,
-    content_hash         TEXT UNIQUE,
+    content_hash         TEXT,
     created_at           INTEGER NOT NULL,
     canopy_injection_tokens INTEGER
   )`;
@@ -185,7 +185,7 @@ const AGENTS_TABLE = `
     updated_at          INTEGER
   )`;
 
-const SPORES_TABLE = `
+export const SPORES_TABLE = `
   CREATE TABLE IF NOT EXISTS spores (
     id                TEXT PRIMARY KEY,
     project_id        TEXT,
@@ -199,7 +199,7 @@ const SPORES_TABLE = `
     importance        INTEGER DEFAULT 5,
     file_path         TEXT,
     tags              TEXT,
-    content_hash      TEXT UNIQUE,
+    content_hash      TEXT,
     properties        TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER,
@@ -208,7 +208,7 @@ const SPORES_TABLE = `
     synced_at         INTEGER
   )`;
 
-const ENTITIES_TABLE = `
+export const ENTITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS entities (
     id          TEXT PRIMARY KEY,
     project_id  TEXT,
@@ -220,8 +220,7 @@ const ENTITIES_TABLE = `
     last_seen   INTEGER NOT NULL,
     status      TEXT DEFAULT 'active',
     machine_id  TEXT NOT NULL DEFAULT 'local',
-    synced_at   INTEGER,
-    UNIQUE (agent_id, type, name)
+    synced_at   INTEGER
   )`;
 
 const GRAPH_EDGES_TABLE = `
@@ -269,7 +268,7 @@ const RESOLUTION_EVENTS_TABLE = `
     synced_at     INTEGER
   )`;
 
-const DIGEST_EXTRACTS_TABLE = `
+export const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id      TEXT,
@@ -279,13 +278,12 @@ const DIGEST_EXTRACTS_TABLE = `
     substrate_hash  TEXT,
     generated_at    INTEGER NOT NULL,
     machine_id      TEXT NOT NULL DEFAULT 'local',
-    synced_at       INTEGER,
-    UNIQUE (agent_id, tier)
+    synced_at       INTEGER
   )`;
 
 export const CORTEX_INSTRUCTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS cortex_instructions (
-    id            TEXT PRIMARY KEY,
+    id            TEXT NOT NULL,
     project_id    TEXT,
     agent_id      TEXT NOT NULL,
     content       TEXT NOT NULL,
@@ -440,7 +438,7 @@ export const SKILL_RECORDS_TABLE = `
     project_id      TEXT,
     agent_id        TEXT NOT NULL REFERENCES agents(id),
     machine_id      TEXT NOT NULL DEFAULT 'local',
-    name            TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL,
     display_name    TEXT NOT NULL,
     description     TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'active',
@@ -669,6 +667,28 @@ export const PLAN_LOGICAL_KEY_INDEX_DDLS: readonly string[] = [
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_project_logical_key ON plans (project_id, logical_key) WHERE project_id IS NOT NULL',
 ];
 
+const PROJECT_SCOPED_CONTENT_HASH_TABLES = [
+  'sessions',
+  'prompt_batches',
+  'activities',
+  'spores',
+] as const;
+
+export const PROJECT_SCOPED_UNIQUE_INDEX_DDLS: readonly string[] = [
+  ...PROJECT_SCOPED_CONTENT_HASH_TABLES.flatMap((table) => [
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_legacy_content_hash ON ${table} (content_hash) WHERE project_id IS NULL AND content_hash IS NOT NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_project_content_hash ON ${table} (project_id, content_hash) WHERE project_id IS NOT NULL AND content_hash IS NOT NULL`,
+  ]),
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_legacy_identity ON entities (agent_id, type, name) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_project_identity ON entities (project_id, agent_id, type, name) WHERE project_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_extracts_legacy_agent_tier ON digest_extracts (agent_id, tier) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_digest_extracts_project_agent_tier ON digest_extracts (project_id, agent_id, tier) WHERE project_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_records_legacy_name ON skill_records (name) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_records_project_name ON skill_records (project_id, name) WHERE project_id IS NOT NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_cortex_instructions_legacy_id ON cortex_instructions (id) WHERE project_id IS NULL',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_cortex_instructions_project_logical_id ON cortex_instructions (project_id, id) WHERE project_id IS NOT NULL',
+];
+
 // -- FTS5 Virtual Tables ----------------------------------------------------
 
 export const FTS_TABLES = [
@@ -813,6 +833,7 @@ export const SECONDARY_INDEXES = [
 
   // Plans
   ...PLAN_LOGICAL_KEY_INDEX_DDLS,
+  ...PROJECT_SCOPED_UNIQUE_INDEX_DDLS,
   'CREATE INDEX IF NOT EXISTS idx_plans_session_id ON plans (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_plans_source_path ON plans (source_path)',
   'CREATE INDEX IF NOT EXISTS idx_plans_content_hash ON plans (content_hash)',

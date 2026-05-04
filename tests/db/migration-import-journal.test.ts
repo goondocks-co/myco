@@ -35,7 +35,7 @@ describe('migration import journal', () => {
   });
 
   it('is installed by the current schema', () => {
-    expect(SCHEMA_VERSION).toBe(33);
+    expect(SCHEMA_VERSION).toBe(34);
     expect(tableExists('migration_import_journal')).toBe(true);
     expect(indexExists('idx_migration_import_journal_source')).toBe(true);
     expect(indexExists('idx_migration_import_journal_target')).toBe(true);
@@ -132,6 +132,6 @@ describe('migration import journal', () => {
 
     expect(tableExists('migration_import_journal')).toBe(true);
     const version = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(version.version).toBe(33);
+    expect(version.version).toBe(34);
   });
 });

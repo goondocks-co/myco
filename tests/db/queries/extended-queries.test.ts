@@ -303,6 +303,52 @@ describe('extended list-by-parent query helpers', () => {
   // listEntities (extended filters: mentioned_in, offset)
   // =========================================================================
 
+  describe('insertEntity — project-scoped identity', () => {
+    it('keeps duplicate entity identities isolated by project', () => {
+      const now = epochNow();
+      const identity = { type: 'file', name: 'src/shared.ts' };
+
+      const legacy = insertEntity(makeEntity({
+        id: 'entity-legacy-shared',
+        ...identity,
+        properties: '{"scope":"legacy"}',
+        last_seen: now,
+      }));
+      const projectA = insertEntity(makeEntity({
+        id: 'entity-project-a-shared',
+        project_id: 'proj-entities-a',
+        ...identity,
+        properties: '{"scope":"a"}',
+        last_seen: now + 1,
+      }));
+      const projectB = insertEntity(makeEntity({
+        id: 'entity-project-b-shared',
+        project_id: 'proj-entities-b',
+        ...identity,
+        properties: '{"scope":"b"}',
+        last_seen: now + 2,
+      }));
+
+      const updatedA = insertEntity(makeEntity({
+        id: 'entity-project-a-replacement',
+        project_id: 'proj-entities-a',
+        ...identity,
+        last_seen: now + 10,
+      }));
+
+      expect(legacy.project_id).toBeNull();
+      expect(projectA.project_id).toBe('proj-entities-a');
+      expect(projectB.project_id).toBe('proj-entities-b');
+      expect(updatedA.id).toBe(projectA.id);
+      expect(updatedA.last_seen).toBe(now + 10);
+      expect(updatedA.properties).toBe('{"scope":"a"}');
+
+      expect(listEntities({ project_id: null, ...identity })).toHaveLength(1);
+      expect(listEntities({ project_id: 'proj-entities-a', ...identity })).toHaveLength(1);
+      expect(listEntities({ project_id: 'proj-entities-b', ...identity })).toHaveLength(1);
+    });
+  });
+
   describe('listEntities — mentioned_in filter', () => {
     it('returns entities mentioned in a specific note', () => {
       const db = getDatabase();

@@ -2272,7 +2272,7 @@ function insertDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtrac
 
 function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructionsRow): boolean {
   const mapping = requireMapping(ctx, 'cortex_instructions', row.id);
-  if (targetRowExists(ctx.targetDb, 'cortex_instructions', mapping.target_id)) {
+  if (cortexInstructionsExists(ctx.targetDb, ctx.targetProjectId, mapping.target_id)) {
     markImported(ctx, 'cortex_instructions', row.id);
     return false;
   }
@@ -2337,6 +2337,16 @@ function importNotification(ctx: ImportContext, row: SourceNotificationRow): boo
 
   markImported(ctx, 'notifications', row.id);
   return true;
+}
+
+function cortexInstructionsExists(db: Database, projectId: string, id: string): boolean {
+  const row = db.prepare(
+    `SELECT 1 AS present
+       FROM cortex_instructions
+      WHERE project_id = ? AND id = ?
+      LIMIT 1`,
+  ).get(projectId, id) as { present: number } | undefined;
+  return row?.present === 1;
 }
 
 function importLogEntry(ctx: ImportContext, row: SourceLogEntryRow): boolean {

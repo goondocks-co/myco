@@ -11,6 +11,7 @@ import { createMigrationId } from '@myco/grove/ids.js';
 
 const TARGET_GROVE_ID = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const TARGET_PROJECT_ID = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const TARGET_PROJECT_B_ID = 'proj_dddddddddddddddddddddddddddddddd';
 const SOURCE_PROJECT_ROOT = '/legacy/project';
 const SOURCE_DB_PATH = '/legacy/project/.myco/myco.db';
 
@@ -806,6 +807,71 @@ describe('Grove project core importer', () => {
     expect(mappings).toHaveLength(46);
     expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(38);
     expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(8);
+  });
+
+  it('imports overlapping legacy projects into one Grove without global project-row conflicts', () => {
+    const migrationA = createMigrationId();
+    const migrationB = createMigrationId();
+
+    importProjectCoreRows({
+      migrationId: migrationA,
+      sourceDb,
+      targetDb,
+      sourceProjectRoot: SOURCE_PROJECT_ROOT,
+      sourceDbPath: SOURCE_DB_PATH,
+      targetGroveId: TARGET_GROVE_ID,
+      targetProjectId: TARGET_PROJECT_ID,
+      targetMachineId: 'target-machine',
+    });
+
+    const resultB = importProjectCoreRows({
+      migrationId: migrationB,
+      sourceDb,
+      targetDb,
+      sourceProjectRoot: SOURCE_PROJECT_ROOT,
+      sourceDbPath: SOURCE_DB_PATH,
+      targetGroveId: TARGET_GROVE_ID,
+      targetProjectId: TARGET_PROJECT_B_ID,
+      targetMachineId: 'target-machine',
+    });
+
+    expect(resultB.sessions).toBe(2);
+    expect(resultB.prompt_batches).toBe(2);
+    expect(resultB.activities).toBe(1);
+    expect(resultB.plans).toBe(1);
+    expect(resultB.spores).toBe(2);
+    expect(resultB.entities).toBe(1);
+    expect(resultB.skill_records).toBe(1);
+    expect(resultB.digest_extracts).toBe(1);
+    expect(resultB.cortex_instructions).toBe(1);
+
+    for (const projectId of [TARGET_PROJECT_ID, TARGET_PROJECT_B_ID]) {
+      expect(countRows(targetDb, 'sessions', projectId), `${projectId}.sessions`).toBe(2);
+      expect(countRows(targetDb, 'prompt_batches', projectId), `${projectId}.prompt_batches`).toBe(2);
+      expect(countRows(targetDb, 'activities', projectId), `${projectId}.activities`).toBe(1);
+      expect(countRows(targetDb, 'plans', projectId), `${projectId}.plans`).toBe(1);
+      expect(countRows(targetDb, 'spores', projectId), `${projectId}.spores`).toBe(2);
+      expect(countRows(targetDb, 'entities', projectId), `${projectId}.entities`).toBe(1);
+      expect(countRows(targetDb, 'skill_records', projectId), `${projectId}.skill_records`).toBe(1);
+      expect(countRows(targetDb, 'digest_extracts', projectId), `${projectId}.digest_extracts`).toBe(1);
+      expect(countRows(targetDb, 'cortex_instructions', projectId), `${projectId}.cortex_instructions`).toBe(1);
+    }
+
+    const planLogicalKeyCount = getRow<{ count: number }>(
+      targetDb,
+      `SELECT COUNT(*) AS count
+         FROM plans
+        WHERE logical_key = 'plans/grove-core.md'`,
+    ).count;
+    expect(planLogicalKeyCount).toBe(2);
+
+    const cortexKeyCount = getRow<{ count: number }>(
+      targetDb,
+      `SELECT COUNT(*) AS count
+         FROM cortex_instructions
+        WHERE id = 'myco-agent:session-start'`,
+    ).count;
+    expect(cortexKeyCount).toBe(2);
   });
 
   it('uses existing journal mappings on retry instead of duplicating rows', () => {

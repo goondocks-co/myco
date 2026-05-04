@@ -24,6 +24,7 @@ const DEFAULT_GENERATION = 1;
 /** Fields required (or optional) when inserting a skill record. */
 export interface SkillRecordInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   machine_id?: string;
   name: string;
@@ -56,6 +57,7 @@ export interface SkillRecordUpdate {
 /** Row shape returned from skill record queries (all columns). */
 export interface SkillRecordRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   machine_id: string;
   name: string;
@@ -76,6 +78,7 @@ export interface SkillRecordRow {
 
 /** Filter options for `listSkillRecords`. */
 export interface ListSkillRecordsOptions {
+  project_id?: string | null;
   agent_id?: string;
   status?: string;
   limit?: number;
@@ -88,6 +91,7 @@ export interface ListSkillRecordsOptions {
 
 export const RECORD_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'machine_id',
   'name',
@@ -116,6 +120,7 @@ const SELECT_COLUMNS = RECORD_COLUMNS.join(', ');
 function toSkillRecordRow(row: Record<string, unknown>): SkillRecordRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     name: row.name as string,
@@ -141,6 +146,15 @@ function buildWhere(
 ): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
+  }
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -172,16 +186,17 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
 
   db.prepare(
     `INSERT INTO skill_records (
-       id, agent_id, machine_id, name, display_name,
+       id, project_id, agent_id, machine_id, name, display_name,
        description, status, generation, candidate_id,
        source_ids, path, created_at, updated_at, properties
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.machine_id ?? getTeamMachineId(),
     data.name,
@@ -227,12 +242,16 @@ export function getSkillRecord(id: string): SkillRecordRow | null {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecordByName(name: string): SkillRecordRow | null {
+export function getSkillRecordByName(name: string, projectId: string | null = null): SkillRecordRow | null {
   const db = getDatabase();
 
+  const where = projectId === null
+    ? 'project_id IS NULL AND name = ?'
+    : 'project_id = ? AND name = ?';
+  const params = projectId === null ? [name] : [projectId, name];
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE name = ?`,
-  ).get(name) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${where}`,
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSkillRecordRow(row);

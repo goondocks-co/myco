@@ -23,6 +23,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting an entity. */
 export interface EntityInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   type: string;
   name: string;
@@ -35,6 +36,7 @@ export interface EntityInsert {
 /** Row shape returned from entity queries (all columns). */
 export interface EntityRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   type: string;
   name: string;
@@ -48,6 +50,7 @@ export interface EntityRow {
 
 /** Filter options for `listEntities`. */
 export interface ListEntitiesOptions {
+  project_id?: string | null;
   agent_id?: string;
   type?: string;
   /** Filter by exact entity name. */
@@ -68,6 +71,7 @@ export interface ListEntitiesOptions {
 
 const ENTITY_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'type',
   'name',
@@ -89,6 +93,7 @@ const SELECT_COLUMNS = ENTITY_COLUMNS.join(', ');
 function toEntityRow(row: Record<string, unknown>): EntityRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     type: row.type as string,
     name: row.name as string,
@@ -101,41 +106,73 @@ function toEntityRow(row: Record<string, unknown>): EntityRow {
   };
 }
 
+function normalizeProjectId(projectId: string | null | undefined): string | null {
+  return projectId ?? null;
+}
+
+function entityIdentityWhere(projectId: string | null): { where: string; params: unknown[] } {
+  return projectId === null
+    ? { where: 'project_id IS NULL AND agent_id = ? AND type = ? AND name = ?', params: [] }
+    : { where: 'project_id = ? AND agent_id = ? AND type = ? AND name = ?', params: [projectId] };
+}
+
+function entityIdentityParams(
+  projectId: string | null,
+  agentId: string,
+  type: string,
+  name: string,
+): unknown[] {
+  const { params } = entityIdentityWhere(projectId);
+  return [...params, agentId, type, name];
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Insert or update an entity. Uses UPSERT on (agent_id, type, name).
+ * Insert or update an entity by project-scoped (agent_id, type, name).
  *
  * On conflict, updates properties (if provided) and last_seen.
  */
 export function insertEntity(data: EntityInsert): EntityRow {
   const db = getDatabase();
+  const projectId = normalizeProjectId(data.project_id);
+  const identity = entityIdentityWhere(projectId);
+  const identityParams = entityIdentityParams(projectId, data.agent_id, data.type, data.name);
 
-  db.prepare(
-    `INSERT INTO entities (id, agent_id, type, name, properties, first_seen, last_seen, machine_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (agent_id, type, name) DO UPDATE SET
-       properties = COALESCE(EXCLUDED.properties, entities.properties),
-       last_seen = EXCLUDED.last_seen`,
-  ).run(
-    data.id,
-    data.agent_id,
-    data.type,
-    data.name,
-    data.properties ?? null,
-    data.first_seen,
-    data.last_seen,
-    data.machine_id ?? getTeamMachineId(),
-  );
+  const existing = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM entities WHERE ${identity.where}`,
+  ).get(...identityParams) as Record<string, unknown> | undefined;
 
-  // On conflict, the passed-in id may not be the actual row id. Look up by unique key.
-  const row = toEntityRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM entities WHERE agent_id = ? AND type = ? AND name = ?`).get(
+  if (existing) {
+    db.prepare(
+      `UPDATE entities
+       SET properties = COALESCE(?, properties),
+           last_seen = ?
+       WHERE id = ?`,
+    ).run(data.properties ?? null, data.last_seen, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO entities (id, project_id, agent_id, type, name, properties, first_seen, last_seen, machine_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      data.id,
+      projectId,
       data.agent_id,
       data.type,
       data.name,
+      data.properties ?? null,
+      data.first_seen,
+      data.last_seen,
+      data.machine_id ?? getTeamMachineId(),
+    );
+  }
+
+  // On update, the passed-in id may not be the actual row id. Look up by unique key.
+  const row = toEntityRow(
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM entities WHERE ${identity.where}`).get(
+      ...identityParams,
     ) as Record<string, unknown>,
   );
 
@@ -177,6 +214,15 @@ export function listEntities(
 
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  if (options.project_id !== undefined) {
+    if (options.project_id === null) {
+      conditions.push(`project_id IS NULL`);
+    } else {
+      conditions.push(`project_id = ?`);
+      params.push(options.project_id);
+    }
+  }
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -228,4 +274,3 @@ export function listEntities(
 
   return rows.map(toEntityRow);
 }
-

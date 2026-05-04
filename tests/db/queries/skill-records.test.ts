@@ -61,6 +61,7 @@ describe('skill record query helpers', () => {
       const row = insertSkillRecord(data);
 
       expect(row.id).toBe(data.id);
+      expect(row.project_id).toBeNull();
       expect(row.agent_id).toBe('agent-test');
       expect(row.name).toBe(data.name);
       expect(row.display_name).toBe('Extract reusable DB helpers');
@@ -146,6 +147,26 @@ describe('skill record query helpers', () => {
       expect(fetched!.name).toBe('use-typed-errors');
     });
 
+    it('retrieves records with the same name by project scope', () => {
+      const name = 'use-project-scope';
+      insertSkillRecord(makeSkillRecord({
+        id: 'skill-project-a',
+        project_id: 'proj_a',
+        name,
+        path: '.myco/skills/a.md',
+      }));
+      insertSkillRecord(makeSkillRecord({
+        id: 'skill-project-b',
+        project_id: 'proj_b',
+        name,
+        path: '.myco/skills/b.md',
+      }));
+
+      expect(getSkillRecordByName(name)).toBeNull();
+      expect(getSkillRecordByName(name, 'proj_a')!.id).toBe('skill-project-a');
+      expect(getSkillRecordByName(name, 'proj_b')!.id).toBe('skill-project-b');
+    });
+
     it('returns null for non-existent name', () => {
       const row = getSkillRecordByName('no-such-skill');
       expect(row).toBeNull();
@@ -191,6 +212,16 @@ describe('skill record query helpers', () => {
       const rows = listSkillRecords({ agent_id: 'agent-test' });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('skill-a1');
+    });
+
+    it('filters by project_id when requested', () => {
+      const now = epochNow();
+      insertSkillRecord(makeSkillRecord({ id: 'skill-legacy', project_id: null, updated_at: now }));
+      insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'proj_a', updated_at: now + 1 }));
+      insertSkillRecord(makeSkillRecord({ id: 'skill-project-b', project_id: 'proj_b', updated_at: now + 2 }));
+
+      expect(listSkillRecords({ project_id: null }).map((r) => r.id)).toEqual(['skill-legacy']);
+      expect(listSkillRecords({ project_id: 'proj_a' }).map((r) => r.id)).toEqual(['skill-project-a']);
     });
 
     it('respects limit and offset', () => {
@@ -321,6 +352,36 @@ describe('skill record query helpers', () => {
 
       expect(() => {
         insertSkillRecord(makeSkillRecord({ name, path, created_at: now + 1 }));
+      }).toThrow();
+    });
+
+    it('allows the same name in different projects', () => {
+      const name = 'use-project-unique-skill';
+      const now = epochNow();
+
+      insertSkillRecord(makeSkillRecord({
+        id: 'skill-project-unique-a',
+        project_id: 'proj_a',
+        name,
+        path: '.myco/skills/project-a.md',
+        created_at: now,
+      }));
+      insertSkillRecord(makeSkillRecord({
+        id: 'skill-project-unique-b',
+        project_id: 'proj_b',
+        name,
+        path: '.myco/skills/project-b.md',
+        created_at: now + 1,
+      }));
+
+      expect(() => {
+        insertSkillRecord(makeSkillRecord({
+          id: 'skill-project-unique-a2',
+          project_id: 'proj_a',
+          name,
+          path: '.myco/skills/project-a2.md',
+          created_at: now + 2,
+        }));
       }).toThrow();
     });
   });

@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(33);
+      expect(SCHEMA_VERSION).toBe(34);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -577,7 +577,7 @@ describe('Database schema', () => {
     });
 
     describe('unique constraints', () => {
-      it('enforces content_hash uniqueness on sessions', () => {
+      it('scopes session content_hash uniqueness by project', () => {
         createSchema(db);
         db.prepare(
           `INSERT INTO sessions (id, agent, started_at, created_at, content_hash)
@@ -589,9 +589,24 @@ describe('Database schema', () => {
              VALUES ('s2', 'test', 1001, 1001, 'hash-abc')`,
           ).run(),
         ).toThrow();
+
+        db.prepare(
+          `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+           VALUES ('s3', 'proj_a', 'test', 1002, 1002, 'hash-abc')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+           VALUES ('s4', 'proj_b', 'test', 1003, 1003, 'hash-abc')`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+             VALUES ('s5', 'proj_a', 'test', 1004, 1004, 'hash-abc')`,
+          ).run(),
+        ).toThrow();
       });
 
-      it('enforces compound unique on entities (agent_id, type, name)', () => {
+      it('scopes entity identity uniqueness by project', () => {
         createSchema(db);
         db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
@@ -604,6 +619,21 @@ describe('Database schema', () => {
           db.prepare(
             `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
              VALUES ('e2', 'c1', 'component', 'AuthModule', 1001, 1001)`,
+          ).run(),
+        ).toThrow();
+
+        db.prepare(
+          `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+           VALUES ('e3', 'proj_a', 'c1', 'component', 'AuthModule', 1002, 1002)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+           VALUES ('e4', 'proj_b', 'c1', 'component', 'AuthModule', 1003, 1003)`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+             VALUES ('e5', 'proj_a', 'c1', 'component', 'AuthModule', 1004, 1004)`,
           ).run(),
         ).toThrow();
       });
@@ -629,7 +659,7 @@ describe('Database schema', () => {
         ).toThrow();
       });
 
-      it('enforces compound unique on digest_extracts (agent_id, tier)', () => {
+      it('scopes digest_extracts uniqueness by project', () => {
         createSchema(db);
         db.prepare(
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
@@ -642,6 +672,21 @@ describe('Database schema', () => {
           db.prepare(
             `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
              VALUES ('c1', 1500, 'updated context', 1001)`,
+          ).run(),
+        ).toThrow();
+
+        db.prepare(
+          `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+           VALUES ('proj_a', 'c1', 1500, 'context a', 1002)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+           VALUES ('proj_b', 'c1', 1500, 'context b', 1003)`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+             VALUES ('proj_a', 'c1', 1500, 'updated context a', 1004)`,
           ).run(),
         ).toThrow();
       });
@@ -674,6 +719,12 @@ describe('Database schema', () => {
         expect(indexExists(db, 'idx_activities_session_id')).toBe(true);
         expect(indexExists(db, 'idx_plans_legacy_logical_key')).toBe(true);
         expect(indexExists(db, 'idx_plans_project_logical_key')).toBe(true);
+        expect(indexExists(db, 'idx_sessions_legacy_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_sessions_project_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_entities_project_identity')).toBe(true);
+        expect(indexExists(db, 'idx_digest_extracts_project_agent_tier')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_project_name')).toBe(true);
+        expect(indexExists(db, 'idx_cortex_instructions_project_logical_id')).toBe(true);
         expect(indexExists(db, 'idx_spores_agent_id')).toBe(true);
         expect(indexExists(db, 'idx_spores_status')).toBe(true);
         expect(indexExists(db, 'idx_entities_agent_id')).toBe(true);
@@ -1349,16 +1400,16 @@ describe('Database schema', () => {
         expect(() => runMigration(db, 19)).not.toThrow();
       });
 
-      it('full v13 -> v33 chain reaches SCHEMA_VERSION and is replay-safe', () => {
+      it('full v13 -> v34 chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]) runMigration(db, v);
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]) {
+        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
       });
@@ -1367,10 +1418,15 @@ describe('Database schema', () => {
         createSchema(db);
         const sampleTables = ['sessions', 'plans', 'agent_runs', 'log_entries'];
         for (const table of sampleTables) {
-          db.prepare(`DROP INDEX IF EXISTS idx_${table}_project_id`).run();
-          if (table === 'plans') {
-            db.prepare('DROP INDEX IF EXISTS idx_plans_legacy_logical_key').run();
-            db.prepare('DROP INDEX IF EXISTS idx_plans_project_logical_key').run();
+          const projectIndexes = db.prepare(
+            `SELECT name
+               FROM sqlite_master
+              WHERE type = 'index'
+                AND tbl_name = ?
+                AND sql LIKE '%project_id%'`,
+          ).all(table) as Array<{ name: string }>;
+          for (const index of projectIndexes) {
+            db.prepare(`DROP INDEX IF EXISTS ${index.name}`).run();
           }
           db.prepare(`ALTER TABLE ${table} DROP COLUMN project_id`).run();
           expect(getColumnNames(db, table)).not.toContain('project_id');
@@ -1427,6 +1483,214 @@ describe('Database schema', () => {
         ).toThrow();
 
         expect(() => runMigration(db, 33)).not.toThrow();
+      });
+
+      it('v34: replaces global project-scoped uniqueness with project-aware indexes', () => {
+        createSchema(db);
+        db.prepare(`INSERT INTO agents (id, name, created_at) VALUES ('agent-test', 'Test', 1000)`).run();
+        db.prepare(
+          `INSERT INTO sessions (id, agent, started_at, created_at, content_hash, title)
+           VALUES ('sess-a', 'test', 1000, 1000, 'session-hash', 'searchabletitle')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO prompt_batches (session_id, user_prompt, created_at, content_hash)
+           VALUES ('sess-a', 'searchable prompt', 1000, 'batch-hash')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO activities (session_id, tool_name, timestamp, created_at, content_hash)
+           VALUES ('sess-a', 'Read', 1000, 1000, 'activity-hash')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO spores (id, agent_id, observation_type, content, content_hash, created_at)
+           VALUES ('spore-a', 'agent-test', 'discovery', 'searchable spore', 'spore-hash', 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO entities (id, agent_id, type, name, first_seen, last_seen)
+           VALUES ('entity-a', 'agent-test', 'component', 'Importer', 1000, 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO digest_extracts (agent_id, tier, content, generated_at)
+           VALUES ('agent-test', 1500, 'digest', 1000)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO skill_records (
+             id, agent_id, name, display_name, description, path, created_at, updated_at
+           ) VALUES (
+             'skill-a', 'agent-test', 'myco:test-skill', 'Test Skill',
+             'A test skill', '.agents/skills/test-skill/SKILL.md', 1000, 1000
+           )`,
+        ).run();
+        db.prepare(
+          `INSERT INTO cortex_instructions (
+             id, agent_id, content, input_hash, generated_at
+           ) VALUES (
+             'agent-test:session-start', 'agent-test', 'cortex', 'cortex-hash', 1000
+           )`,
+        ).run();
+
+        for (const index of [
+          'idx_sessions_legacy_content_hash',
+          'idx_sessions_project_content_hash',
+          'idx_prompt_batches_legacy_content_hash',
+          'idx_prompt_batches_project_content_hash',
+          'idx_activities_legacy_content_hash',
+          'idx_activities_project_content_hash',
+          'idx_spores_legacy_content_hash',
+          'idx_spores_project_content_hash',
+          'idx_entities_legacy_identity',
+          'idx_entities_project_identity',
+          'idx_digest_extracts_legacy_agent_tier',
+          'idx_digest_extracts_project_agent_tier',
+          'idx_skill_records_legacy_name',
+          'idx_skill_records_project_name',
+          'idx_cortex_instructions_legacy_id',
+          'idx_cortex_instructions_project_logical_id',
+        ]) {
+          db.prepare(`DROP INDEX IF EXISTS ${index}`).run();
+        }
+        db.prepare('CREATE UNIQUE INDEX idx_sessions_content_hash_old ON sessions (content_hash)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_prompt_batches_content_hash_old ON prompt_batches (content_hash)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_activities_content_hash_old ON activities (content_hash)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_spores_content_hash_old ON spores (content_hash)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_entities_identity_old ON entities (agent_id, type, name)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_digest_extracts_agent_tier_old ON digest_extracts (agent_id, tier)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_skill_records_name_old ON skill_records (name)').run();
+        db.prepare('CREATE UNIQUE INDEX idx_cortex_instructions_id_old ON cortex_instructions (id)').run();
+
+        db.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        db.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (33, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+
+        runMigration(db, 34);
+
+        expect(indexExists(db, 'idx_sessions_content_hash_old')).toBe(false);
+        expect(indexExists(db, 'idx_sessions_legacy_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_sessions_project_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_prompt_batches_project_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_activities_project_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_spores_project_content_hash')).toBe(true);
+        expect(indexExists(db, 'idx_entities_project_identity')).toBe(true);
+        expect(indexExists(db, 'idx_digest_extracts_project_agent_tier')).toBe(true);
+        expect(indexExists(db, 'idx_skill_records_project_name')).toBe(true);
+        expect(indexExists(db, 'idx_cortex_instructions_id_old')).toBe(false);
+        expect(indexExists(db, 'idx_cortex_instructions_project_logical_id')).toBe(true);
+
+        const promptBatchId = (db.prepare('SELECT id FROM prompt_batches').get() as { id: number }).id;
+        db.prepare(
+          `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+           VALUES ('sess-b', 'proj_a', 'test', 1001, 1001, 'session-hash')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+           VALUES ('sess-c', 'proj_b', 'test', 1002, 1002, 'session-hash')`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO sessions (id, project_id, agent, started_at, created_at, content_hash)
+             VALUES ('sess-d', 'proj_a', 'test', 1003, 1003, 'session-hash')`,
+          ).run(),
+        ).toThrow();
+        db.prepare(
+          `INSERT INTO prompt_batches (project_id, session_id, user_prompt, created_at, content_hash)
+           VALUES ('proj_a', 'sess-b', 'A', 1001, 'batch-hash')`,
+        ).run();
+        db.prepare(
+          `INSERT INTO prompt_batches (project_id, session_id, user_prompt, created_at, content_hash)
+           VALUES ('proj_b', 'sess-c', 'B', 1002, 'batch-hash')`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO prompt_batches (project_id, session_id, user_prompt, created_at, content_hash)
+             VALUES ('proj_a', 'sess-b', 'C', 1003, 'batch-hash')`,
+          ).run(),
+        ).toThrow();
+        db.prepare(
+          `INSERT INTO activities (project_id, session_id, prompt_batch_id, tool_name, timestamp, created_at, content_hash)
+           VALUES ('proj_a', 'sess-b', ?, 'Read', 1001, 1001, 'activity-hash')`,
+        ).run(promptBatchId);
+        db.prepare(
+          `INSERT INTO activities (project_id, session_id, prompt_batch_id, tool_name, timestamp, created_at, content_hash)
+           VALUES ('proj_b', 'sess-c', ?, 'Read', 1002, 1002, 'activity-hash')`,
+        ).run(promptBatchId);
+        db.prepare(
+          `INSERT INTO spores (id, project_id, agent_id, observation_type, content, content_hash, created_at)
+           VALUES ('spore-b', 'proj_a', 'agent-test', 'discovery', 'A', 'spore-hash', 1001)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO spores (id, project_id, agent_id, observation_type, content, content_hash, created_at)
+           VALUES ('spore-c', 'proj_b', 'agent-test', 'discovery', 'B', 'spore-hash', 1002)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+           VALUES ('entity-b', 'proj_a', 'agent-test', 'component', 'Importer', 1001, 1001)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+           VALUES ('entity-c', 'proj_b', 'agent-test', 'component', 'Importer', 1002, 1002)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+           VALUES ('proj_a', 'agent-test', 1500, 'digest a', 1001)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+           VALUES ('proj_b', 'agent-test', 1500, 'digest b', 1002)`,
+        ).run();
+        db.prepare(
+          `INSERT INTO skill_records (
+             id, project_id, agent_id, name, display_name, description, path, created_at, updated_at
+           ) VALUES (
+             'skill-b', 'proj_a', 'agent-test', 'myco:test-skill', 'A',
+             'A', '.agents/skills/a/SKILL.md', 1001, 1001
+           )`,
+        ).run();
+        db.prepare(
+          `INSERT INTO skill_records (
+             id, project_id, agent_id, name, display_name, description, path, created_at, updated_at
+           ) VALUES (
+             'skill-c', 'proj_b', 'agent-test', 'myco:test-skill', 'B',
+             'B', '.agents/skills/b/SKILL.md', 1002, 1002
+           )`,
+        ).run();
+        db.prepare(
+          `INSERT INTO cortex_instructions (
+             id, project_id, agent_id, content, input_hash, generated_at
+           ) VALUES (
+             'agent-test:session-start', 'proj_a', 'agent-test', 'cortex a', 'cortex-hash-a', 1001
+           )`,
+        ).run();
+        db.prepare(
+          `INSERT INTO cortex_instructions (
+             id, project_id, agent_id, content, input_hash, generated_at
+           ) VALUES (
+             'agent-test:session-start', 'proj_b', 'agent-test', 'cortex b', 'cortex-hash-b', 1002
+           )`,
+        ).run();
+        expect(() =>
+          db.prepare(
+            `INSERT INTO cortex_instructions (
+               id, project_id, agent_id, content, input_hash, generated_at
+             ) VALUES (
+               'agent-test:session-start', 'proj_a', 'agent-test', 'cortex a2', 'cortex-hash-a2', 1003
+             )`,
+          ).run(),
+        ).toThrow();
+
+        const sessionSql = (db.prepare(
+          `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'prompt_batches'`,
+        ).get() as { sql: string }).sql;
+        expect(sessionSql).toContain('REFERENCES sessions(id)');
+        expect(sessionSql).not.toContain('__myco_v34_sessions');
+
+        const ftsMatch = db.prepare(
+          `SELECT COUNT(*) AS n FROM sessions_fts WHERE sessions_fts MATCH ?`,
+        ).get('searchabletitle') as { n: number };
+        expect(ftsMatch.n).toBe(1);
+
+        expect(() => runMigration(db, 34)).not.toThrow();
       });
 
       it('v29: renames agent_runs.runtime to harness and rewrites persisted JSON envelopes', () => {
