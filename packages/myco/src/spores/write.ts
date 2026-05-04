@@ -14,6 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 const SPORE_ID_RANDOM_BYTES = 4;
 const RESOLUTION_ID_RANDOM_BYTES = 8;
@@ -31,6 +32,7 @@ export interface SaveSporeInput {
   content: string;
   type?: string;
   tags?: string[];
+  requestContext?: MycoRequestContext;
 }
 
 export interface SaveSporeResult {
@@ -68,6 +70,7 @@ export interface SupersedeSporeInput {
   old_spore_id: string;
   new_spore_id: string;
   reason?: string;
+  requestContext?: MycoRequestContext;
 }
 
 export interface SupersedeSporeResult {
@@ -105,6 +108,7 @@ export interface ConsolidateSporesInput {
   observation_type: string;
   tags?: string[];
   reason?: string;
+  requestContext?: MycoRequestContext;
 }
 
 export interface ConsolidateSporesResult {

@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Cloudflare Worker Infrastructure Lifecycle
 
-This skill covers comprehensive procedures for deploying, maintaining, and operating Myco's multi-worker Cloudflare infrastructure. The infrastructure spans team sync (D1/Vectorize), cloud MCP server, collective workers, and cross-worker coordination with specific gotchas around Wrangler upgrades, schema migrations, and auth token lifecycle management.
+This skill covers comprehensive procedures for deploying, maintaining, and operating Myco's multi-worker Cloudflare infrastructure. With Grove architecture, the infrastructure adapts to global daemon coordination while spanning team sync (D1/Vectorize), cloud MCP server, collective workers, and cross-worker coordination with specific gotchas around Wrangler upgrades, schema migrations, and auth token lifecycle management.
 
 ## Prerequisites
 
@@ -17,11 +17,11 @@ This skill covers comprehensive procedures for deploying, maintaining, and opera
 - Wrangler CLI installed and authenticated (`wrangler auth login`)
 - Grove-based installation with global daemon (`~/.myco/groves/` architecture)
 - For team sync: D1 database and Vectorize index provisioned
-- For collective: Multi-org setup with proper scoping
+- For collective: Multi-grove setup with proper scoping
 
 ## Procedure A: Team Sync D1/Vectorize Deployment
 
-Deploy and maintain the team sync infrastructure with proper schema migration handling. The team sync worker lives in `packages/myco-team/` as a standalone package.
+Deploy and maintain the team sync infrastructure with Grove-aware schema migration handling. The team sync worker lives in `packages/myco-team/` as a standalone package.
 
 ### Initial Deployment
 
@@ -29,135 +29,143 @@ Deploy and maintain the team sync infrastructure with proper schema migration ha
 # Navigate to team sync package
 cd packages/myco-team
 
-# Deploy with schema migration
+# Deploy with grove-aware schema migration
 npx wrangler deploy --config worker/wrangler.toml
 
-# Verify D1 binding
+# Verify D1 binding with grove context
 npx wrangler d1 list
 ```
 
-**Critical gotcha**: D1 schema migrations have **lazy execution behavior** — migrations apply on the first request to the worker, not at deploy time. This means deploy success doesn't guarantee schema correctness.
+**Critical gotcha**: D1 schema migrations have **lazy execution behavior** — migrations apply on the first request to the worker, not at deploy time. With Grove architecture, this means grove-scoped migrations may execute at different times.
 
-### Schema Migration Sequence
+### Grove-Scoped Schema Migration Sequence
 
-D1 migrations must follow strict DDL ordering to avoid constraint violations:
+D1 migrations must follow strict DDL ordering with Grove architecture considerations:
 
 ```sql
--- CORRECT: Add column first
-ALTER TABLE notifications ADD COLUMN machine_id TEXT;
+-- CORRECT: Add grove_id column first for Grove scoping
+ALTER TABLE notifications ADD COLUMN grove_id TEXT;
 
--- THEN create index
-CREATE INDEX IF NOT EXISTS idx_notifications_machine_id 
-ON notifications(machine_id);
+-- Backfill with grove context
+UPDATE notifications SET grove_id = 'user_primary' WHERE grove_id IS NULL;
+
+-- THEN create grove-scoped index
+CREATE INDEX IF NOT EXISTS idx_notifications_grove_id
+ON notifications(grove_id, machine_id);
 ```
 
-**Never reverse this order** — creating an index on a non-existent column fails even with `IF NOT EXISTS`.
+**Never reverse this order** — creating an index on a non-existent column fails even with `IF NOT EXISTS`. Grove architecture requires grove_id scoping in most tables.
 
-### Grove-Scoped Schema Sync
+### Grove-Coordinated Schema Sync
 
-With Grove architecture, schema migrations affect both local groves and D1:
+With Grove architecture, schema migrations coordinate between global daemon and D1:
 
 ```typescript
 // Grove-aware migration handling
 export const MIGRATIONS: Migration[] = [
   { version: 9, migrate: (db) => migrateV8ToV9(db) },
   { version: 10, migrate: (db) => migrateV9ToV10(db) },
-  // ..., now includes grove_id scoping
+  { version: 11, migrate: (db) => migrateV10ToV11Grove(db) }, // Grove migration
+  { version: 12, migrate: (db) => migrateV11ToV12(db) },
 ];
 ```
 
-The global daemon manages schema consistency across groves. Each grove maintains its local schema version while coordinating with D1 for team sync.
+The global daemon manages schema consistency across groves while coordinating with D1 for team sync. Each grove maintains its local schema version while participating in grove-wide coordination.
 
-### Debugging Schema Drift
+### Debugging Grove Schema Drift
 
-When local grove and deployed D1 schemas diverge:
+When grove-local and deployed D1 schemas diverge:
 
 ```bash
-# Export deployed schema
+# Export deployed schema with grove context
 npx wrangler d1 execute myco-team-sync --command=".schema" > deployed.sql
 
-# Compare with local migrations
+# Compare with grove-local migrations
 # Check CURRENT_SCHEMA_VERSION in packages/myco/src/db/schema-ddl.ts
 
-# Force re-run migration (if idempotent)
-npx wrangler d1 execute myco-team-sync --file=migration.sql
+# Force re-run grove migration (if idempotent)
+npx wrangler d1 execute myco-team-sync --file=grove-migration.sql
 ```
 
-### Vectorize Sync and Metadata
+### Grove-Aware Vectorize Sync
 
-Team sync uses Vectorize for semantic search across projects and groves:
+Team sync uses Vectorize for semantic search with grove boundaries:
 
 ```bash
-# Check index status
+# Check index status with grove awareness
 npx wrangler vectorize get myco-embeddings
 
 # Verify embedding sync with grove metadata
-npx wrangler vectorize query myco-embeddings --vector="[0.1,0.2,...]" --top-k=5
+npx wrangler vectorize query myco-embeddings \
+  --vector="[0.1,0.2,...]" \
+  --top-k=5 \
+  --metadata-filter="{\"grove_id\": \"user_primary\"}"
 ```
 
-Embeddings now include grove metadata for cross-grove filtering and project isolation. Ensure `grove_id` and `project_id` metadata are present for proper scoping.
+Embeddings now include grove metadata for cross-grove filtering and project isolation. Global daemon coordinates embedding sync across groves while maintaining proper access boundaries.
 
-### Backup and Restore Operations
+### Grove-Coordinated Backup and Restore
 
 ```bash
-# Export D1 for backup
-npx wrangler d1 export myco-team-sync --output=backup-$(date +%Y%m%d).sql
+# Export D1 with grove context
+npx wrangler d1 export myco-team-sync --output=grove-backup-$(date +%Y%m%d).sql
 
-# Restore from backup
-npx wrangler d1 execute myco-team-sync --file=backup-20240423.sql
+# Restore with grove awareness
+npx wrangler d1 execute myco-team-sync --file=grove-backup-20240423.sql
 ```
 
-**Outbox management gotcha**: Sleep/deep sleep states don't flush the outbox. Check outbox table after significant operations:
+**Grove outbox management gotcha**: Global daemon coordination may leave pending outbox entries during grove transitions. Check outbox table after grove operations:
 
 ```sql
-SELECT COUNT(*) FROM outbox WHERE status = 'pending';
+SELECT COUNT(*) FROM outbox WHERE status = 'pending' AND grove_id = 'user_primary';
 ```
 
 ## Procedure B: Cloud MCP Server Operations
 
-Deploy and maintain the cloud MCP server which runs **alongside** the team sync worker on the same Cloudflare Worker, not as a separate deployment. Grove architecture affects authentication and data scoping patterns.
+Deploy and maintain the cloud MCP server with Grove authentication patterns. The server runs **alongside** the team sync worker on the same Cloudflare Worker, not as a separate deployment.
 
-### Integrated Deployment
+### Grove-Integrated Deployment
 
-The cloud MCP server is deployed automatically with team sync:
+The cloud MCP server deploys automatically with team sync with grove awareness:
 
 ```bash
 cd packages/myco-team
 npx wrangler deploy --config worker/wrangler.toml
 
-# Verify both services on same worker
+# Verify both services with grove support
 curl https://your-team-worker.workers.dev/health
-curl https://your-team-worker.workers.dev/mcp/call
+curl https://your-team-worker.workers.dev/mcp/call \
+  -H "X-Grove-ID: user_primary"
 ```
 
-The cloud MCP server exposes read-only Myco tools over authenticated Streamable HTTP:
-- Discovery: `myco_search`, `myco_cortex`
-- Entity reads: `myco_plans`, `myco_sessions`, `myco_skills`, `myco_spores`
+The cloud MCP server exposes grove-scoped read-only Myco tools over authenticated Streamable HTTP:
+- Discovery: `myco_search`, `myco_cortex` (grove-filtered results)
+- Entity reads: `myco_plans`, `myco_sessions`, `myco_skills`, `myco_spores` (grove-scoped)
 
-`myco_search` results include stable IDs and `retrieve` hints. Follow those hints with the owning entity tool instead of using legacy recall-style retrieval.
+`myco_search` results include grove context and stable IDs with `retrieve` hints. Follow those hints with the owning entity tool for grove-appropriate access.
 
-### Grove-Aware Auth Token Lifecycle
+### Grove-Scoped Auth Token Lifecycle
 
-Auth tokens are now grove-scoped and auto-distributed via Workers KV with AES-256-GCM encryption:
+Auth tokens are grove-scoped and distributed via Workers KV with grove metadata:
 
 ```bash
-# Check current token in KV (now includes grove context)
-npx wrangler kv:key get mcp_token --binding=MCP_AUTH
+# Check grove-scoped token in KV
+npx wrangler kv:key get "mcp_token:user_primary" --binding=MCP_AUTH
 
-# Verify token hash in health endpoint
+# Verify token hash in health endpoint with grove context
 curl https://your-team-worker.workers.dev/health
-# Look for mcp_token_hash field with grove scoping
+# Look for mcp_token_hash field with grove_id scoping
 ```
 
-### Token Rotation Detection
+### Grove Token Rotation Detection
 
-Global daemon manages token rotation across groves via `/health` mismatch patterns:
+Global daemon manages token rotation across groves via `/health` grove-aware patterns:
 
 ```json
 {
   "status": "healthy",
-  "mcp_token_hash": "abc123...",
-  "grove_scope": "global",
+  "mcp_token_hash": "grove_abc123...",
+  "grove_scope": "user_primary",
   "timestamp": "2024-04-23T10:30:00Z"
 }
 ```
@@ -167,63 +175,75 @@ When grove-local token hash ≠ health response hash, global daemon triggers re-
 ```bash
 curl -X POST https://your-team-worker.workers.dev/connect \
   -H "Content-Type: application/json" \
-  -d '{"grove_id": "user_primary", "machine_id": "local"}'
+  -d '{
+    "grove_id": "user_primary",
+    "machine_id": "local",
+    "global_daemon": true
+  }'
 ```
 
-### Live Smoke Testing
+### Grove-Aware Live Smoke Testing
 
-After deployment, test each tool tier with grove scoping:
+Test each tool tier with grove scoping:
 
 ```bash
-# Anonymous tier
+# Anonymous tier with grove context
 curl "https://your-team-worker.workers.dev/mcp/call" \
-  -d '{"method": "myco_search", "params": {"query": "test", "limit": 1}}'
-
-# Authenticated tier (with grove-scoped token)
-curl "https://your-team-worker.workers.dev/mcp/call" \
-  -H "Authorization: Bearer $MCP_TOKEN" \
   -H "X-Grove-ID: user_primary" \
-  -d '{"method": "myco_sessions", "params": {"limit": 1}}'
+  -d '{
+    "method": "myco_search",
+    "params": {"query": "test", "limit": 1}
+  }'
+
+# Authenticated tier with grove-scoped token
+curl "https://your-team-worker.workers.dev/mcp/call" \
+  -H "Authorization: Bearer $GROVE_MCP_TOKEN" \
+  -H "X-Grove-ID: user_primary" \
+  -d '{
+    "method": "myco_sessions",
+    "params": {"limit": 1}
+  }'
 ```
 
-### Graceful Error Handling
+### Grove-Aware Error Handling
 
-The cloud MCP server includes graceful degradation with grove-aware error contexts:
+The cloud MCP server includes graceful degradation with grove-specific error contexts:
 - Database unavailable → 503 Service Unavailable
 - Auth failure → 401 Unauthorized with grove retry guidance
-- Grove isolation errors → 403 Forbidden with scoping details
-- Tool errors → wrapped in MCP error response format
+- Grove isolation errors → 403 Forbidden with specific grove details
+- Cross-grove access denied → 403 Forbidden with grove scope explanation
+- Tool errors → wrapped in MCP error response format with grove context
 
-Monitor error rates via Cloudflare Analytics, segmented by grove context.
+Monitor error rates via Cloudflare Analytics, segmented by grove and access pattern.
 
 ## Procedure C: Collective Worker Configuration
 
-Configure multi-org settings scoping with proper config isolation for the collective infrastructure. Grove architecture changes isolation boundaries and scoping patterns.
+Configure multi-grove settings scoping with proper config isolation for the collective infrastructure. Grove architecture changes isolation boundaries from organizations to grove-scoped hierarchies.
 
 ### Multi-Grove Settings Hierarchy
 
-Collective workers implement four-tier scoping with Grove architecture:
+Collective workers implement grove-aware four-tier scoping:
 - **Personal**: User-level preferences (grove-scoped)
-- **Grove**: Grove-specific configuration 
+- **Grove**: Grove-specific configuration
 - **Project**: Project-specific configuration (within grove)
-- **Team**: Organization-wide defaults
+- **Team**: Organization-wide defaults (cross-grove when applicable)
 
-### Config Isolation Patterns
+### Grove Config Isolation Patterns
 
-Each org gets isolated KV namespace with grove boundaries:
+Each grove gets isolated KV namespace with grove boundaries:
 
 ```toml
-# wrangler.toml for collective worker
-[[kv_namespaces]]
-binding = "ORG_SETTINGS"
-id = "org_12345_settings"
-preview_id = "org_12345_settings_preview"
-
-# Grove-aware namespace isolation
+# wrangler.toml for collective worker with grove support
 [[kv_namespaces]]
 binding = "GROVE_SETTINGS"
-id = "grove_settings"
+id = "grove_settings_production"
 preview_id = "grove_settings_preview"
+
+# Grove-scoped namespace isolation
+[[kv_namespaces]]
+binding = "CROSS_GROVE_SETTINGS"
+id = "cross_grove_settings"
+preview_id = "cross_grove_settings_preview"
 ```
 
 ### Cross-Grove Knowledge Sharing
@@ -231,179 +251,192 @@ preview_id = "grove_settings_preview"
 Enable knowledge sharing between groves within an org, respecting grove boundaries:
 
 ```javascript
-// In collective worker
-const groveProjects = await GROVE_SETTINGS.list({prefix: `grove:${grove_id}:projects:`});
-const sharedSpores = await Promise.all(
+// In collective worker with grove awareness
+const groveProjects = await GROVE_SETTINGS.list({
+  prefix: `grove:${grove_id}:projects:`
+});
+
+const groveSpores = await Promise.all(
   groveProjects.keys.map(key => GROVE_SETTINGS.get(key.name))
 );
 
 // Enforce grove-based access controls
 const userGroves = await getUserAuthorizedGroves(user_id);
-const accessibleSpores = sharedSpores.filter(spore => 
+const accessibleSpores = groveSpores.filter(spore =>
   userGroves.includes(spore.grove_id)
+);
+
+// Apply cross-grove sharing policies
+const sharedSpores = accessibleSpores.filter(spore =>
+  spore.sharing_policy === 'cross_grove' &&
+  userHasCrossGroveAccess(user_id, spore.grove_id)
 );
 ```
 
-Ensure proper access controls — only grove members can access grove-scoped knowledge, with org-level sharing requiring explicit permissions.
+Ensure proper grove access controls — only grove members can access grove-scoped knowledge, with cross-grove sharing requiring explicit policies and global daemon coordination.
 
 ## Procedure D: Wrangler Upgrade Hardening
 
-Handle the 5 common Wrangler upgrade failure modes with recovery procedures.
+Handle the 5 common Wrangler upgrade failure modes with grove-aware recovery procedures.
 
 ### Failure Mode 1: sqlite-vec Export Field Blocking
 
-**Symptom**: `npx wrangler d1 export` hangs on vector-enabled D1 databases.
+**Symptom**: `npx wrangler d1 export` hangs on vector-enabled D1 databases with grove metadata.
 
 **Recovery**:
 ```bash
-# Workaround: Export without vector fields
-npx wrangler d1 execute myco-team-sync --command=".schema" > schema-only.sql
+# Workaround: Export schema without grove-specific vector fields
+npx wrangler d1 execute myco-team-sync --command=".schema" > grove-schema-only.sql
 
-# Or downgrade temporarily
+# Or downgrade temporarily with grove coordination
 npm install wrangler@3.previous-version
 ```
 
 ### Failure Mode 2: Cross-Target Install Requiring --force
 
-**Symptom**: `npm ci` fails with target architecture mismatch.
+**Symptom**: `npm ci` fails with target architecture mismatch in grove environments.
 
 **Recovery**:
 ```bash
-# Clear npm cache and force reinstall
+# Clear npm cache and force reinstall with grove context
 npm cache clean --force
 rm -rf node_modules package-lock.json
 npm install --force wrangler@latest
 ```
 
-### Failure Mode 3: Worker npm ci Timeout Patterns  
+### Failure Mode 3: Worker npm ci Timeout Patterns
 
-**Symptom**: Worker builds timeout during dependency installation in CI.
+**Symptom**: Worker builds timeout during dependency installation in grove CI environments.
 
 **Recovery**:
 ```bash
-# Increase timeout and use frozen lockfile
+# Increase timeout and use frozen lockfile with grove coordination
 npm ci --timeout=300000 --frozen-lockfile
 
-# Or use alternative registry
+# Or use alternative registry for grove builds
 npm ci --registry=https://registry.npmmirror.com/
 ```
 
-### Failure Mode 4: Release Artifact Validation
+### Failure Mode 4: Grove Release Artifact Validation
 
-**Symptom**: Wrangler rejects build artifacts from different Node versions.
+**Symptom**: Wrangler rejects build artifacts from different Node versions in grove deployments.
 
 **Recovery**:
 ```bash
-# Rebuild with matching Node version
+# Rebuild with matching Node version for grove consistency
 nvm use $(cat .nvmrc)
 npm run build
-npx wrangler deploy
+npx wrangler deploy --env grove-production
 ```
 
-### Failure Mode 5: Publish-from-Artifact Discipline
+### Failure Mode 5: Grove Publish-from-Artifact Discipline
 
-**Always publish from CI-built artifacts**, never from local builds:
+**Always publish from CI-built artifacts**, never from local builds in grove environments:
 
 ```bash
-# WRONG: Local build + publish
+# WRONG: Local grove build + publish
 npm run build
-npx wrangler deploy
+npx wrangler deploy --env grove
 
-# RIGHT: Download CI artifact + publish  
-gh run download $RUN_ID --name worker-dist
-npx wrangler deploy --assets ./dist
+# RIGHT: Download CI artifact + grove publish
+gh run download $RUN_ID --name grove-worker-dist
+npx wrangler deploy --assets ./dist --env grove-production
 ```
 
-This prevents version skew between environments.
+This prevents version skew between grove environments and maintains consistency.
 
 ## Procedure E: Workers KV Auth Token Lifecycle
 
-Manage auth token rotation, validation, and daemon re-call cycles across the infrastructure. Grove architecture introduces grove-scoped token management.
+Manage grove-scoped auth token rotation, validation, and daemon re-call cycles across the infrastructure.
 
-### Grove-Scoped Token Embedding in /connect Response
+### Grove Token Embedding in /connect Response
 
-The `/connect` endpoint embeds tokens with grove context directly in JSON responses:
+The `/connect` endpoint embeds grove-scoped tokens directly in JSON responses:
 
 ```json
 {
   "mcp_server_url": "https://your-team-worker.workers.dev",
-  "auth_token": "encrypted_token_here",
+  "auth_token": "grove_encrypted_token_here",
   "grove_id": "user_primary",
-  "expires_at": "2024-04-30T10:30:00Z"
+  "expires_at": "2024-04-30T10:30:00Z",
+  "global_daemon_scope": true
 }
 ```
 
-### Rotation Detection Patterns
+### Grove Rotation Detection Patterns
 
 Global daemon polls `/health` and compares `mcp_token_hash` across grove contexts:
 
 ```javascript
-const healthResp = await fetch('/health');
+const healthResp = await fetch('/health', {
+  headers: { 'X-Grove-ID': grove_id }
+});
 const {mcp_token_hash, grove_scope} = await healthResp.json();
 
-if (mcp_token_hash !== local_stored_hash || grove_scope !== local_grove_scope) {
-  // Token rotated or grove scope changed, re-call /connect
-  await refreshToken();
+if (mcp_token_hash !== local_grove_hash || grove_scope !== local_grove_id) {
+  // Grove token rotated or scope changed, re-call /connect
+  await refreshGroveToken(grove_id);
 }
 ```
 
-### mcp_token_hash Validation
+### Grove mcp_token_hash Validation
 
 The hash includes grove context for rotation detection without exposing grove topology:
 
 ```javascript
-const tokenHash = crypto.subtle.digest('SHA-256', 
-  new TextEncoder().encode(`${grove_id}:${raw_token}`)
+const groveTokenHash = crypto.subtle.digest('SHA-256',
+  new TextEncoder().encode(`${grove_id}:${global_daemon_id}:${raw_token}`)
 );
 ```
 
-### Grove-Aware Daemon Re-call Cycles
+### Global Daemon Grove Re-call Cycles
 
-When token rotation is detected, global daemon should:
+When grove token rotation is detected, global daemon should:
 
 1. Call `/connect` with current `grove_id` and `machine_id`
-2. Extract new token and grove scope from response  
+2. Extract new grove-scoped token and expiration from response
 3. Update grove-local storage with new token and hash
 4. Retry failed MCP calls with new grove-scoped token
-5. Resume normal operation for all groves
+5. Resume normal operation for affected grove
+6. Coordinate token updates across other groves if necessary
 
-**Rate limiting**: Don't re-call `/connect` more than once per minute per grove to avoid token exhaustion.
+**Grove rate limiting**: Don't re-call `/connect` more than once per minute per grove to avoid token exhaustion.
 
 ## Procedure F: D1 Schema Migration Ordering
 
-Ensure correct DDL sequence for schema changes that affect D1 databases. Grove architecture requires migration coordination across grove boundaries.
+Ensure correct DDL sequence for schema changes that affect D1 databases. Grove architecture requires migration coordination across grove boundaries and global daemon.
 
-### Migration Version Management
+### Grove Migration Version Management
 
-Myco uses a version-based migration system in TypeScript with grove awareness:
+Myco uses a grove-aware version-based migration system in TypeScript:
 
 ```typescript
-// In packages/myco/src/db/migrations.ts
+// In packages/myco/src/db/migrations.ts with grove support
 export const MIGRATIONS: Migration[] = [
   { version: 9, migrate: migrateV8ToV9 },
   { version: 10, migrate: migrateV9ToV10 },
-  { version: 11, migrate: migrateV10ToV11 }, // Grove migration
+  { version: 11, migrate: migrateV10ToV11Grove }, // Grove migration
   { version: 12, migrate: migrateV11ToV12 },
 ];
 ```
 
-### DDL Sequence Correctness
+### Grove DDL Sequence Correctness
 
-**Always** add columns before creating indexes on them, with grove-aware constraints:
+**Always** add grove columns before creating grove-scoped indexes:
 
 ```sql
 -- Step 1: Add grove_id column for grove scoping
 ALTER TABLE notifications ADD COLUMN grove_id TEXT;
 
--- Step 2: Backfill with appropriate grove context
+-- Step 2: Backfill with grove context from global daemon
 UPDATE notifications SET grove_id = 'user_primary' WHERE grove_id IS NULL;
 
--- Step 3: Create index (separate transaction for D1)
-CREATE INDEX IF NOT EXISTS idx_notifications_grove_id 
+-- Step 3: Create grove-scoped index (separate transaction for D1)
+CREATE INDEX IF NOT EXISTS idx_notifications_grove_machine
 ON notifications(grove_id, machine_id);
 ```
 
-### Migration Idempotency
+### Grove Migration Idempotency
 
 Ensure migrations can be safely re-run across grove boundaries:
 
@@ -411,21 +444,21 @@ Ensure migrations can be safely re-run across grove boundaries:
 -- Good: Using IF NOT EXISTS with grove awareness
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS grove_id TEXT;
 
--- Good: Using conditional logic in TypeScript migration
+-- Good: Using conditional logic in grove TypeScript migration
 if (!tableHasColumn(db, 'sessions', 'grove_id')) {
   db.exec('ALTER TABLE sessions ADD COLUMN grove_id TEXT');
   // Backfill grove context for existing sessions
-  backfillGroveContext(db);
+  await backfillGroveContext(db, globalDaemonState);
 }
 ```
 
-### Schema Convergence
+### Grove Schema Convergence
 
-Local grove schemas and D1 must stay synchronized across grove boundaries:
+Grove-local schemas and D1 must stay synchronized across grove boundaries:
 
 ```bash
-# After grove-local migration
-myco daemon migrate
+# After grove-local migration coordinated by global daemon
+myco daemon migrate --grove user_primary
 
 # Deploy to sync D1 with grove metadata
 cd packages/myco-team
@@ -435,7 +468,7 @@ npx wrangler deploy --config worker/wrangler.toml
 npx wrangler d1 execute myco-team-sync --command=".schema"
 ```
 
-### Grove-Aware Backfill Safety Patterns
+### Grove Backfill Safety Patterns
 
 When adding grove-scoped constraints or indexes to existing data:
 
@@ -443,7 +476,7 @@ When adding grove-scoped constraints or indexes to existing data:
 -- Safe: Add grove_id column first
 ALTER TABLE spores ADD COLUMN grove_id TEXT;
 
--- Backfill with grove context from global daemon
+-- Backfill with grove context from global daemon coordination
 UPDATE spores SET grove_id = 'user_primary' WHERE grove_id IS NULL;
 
 -- Add grove-scoped constraints
@@ -454,7 +487,7 @@ CREATE INDEX idx_spores_grove_importance ON spores(grove_id, importance);
 
 ### Wrangler Version Sensitivity
 
-Different Wrangler versions handle D1 exports, bindings, and timeouts differently. Pin Wrangler version in package.json and CI:
+Different Wrangler versions handle D1 exports, bindings, and timeouts differently. Pin Wrangler version in package.json and grove CI:
 
 ```json
 {
@@ -464,25 +497,25 @@ Different Wrangler versions handle D1 exports, bindings, and timeouts differentl
 }
 ```
 
-### Environment Variable Propagation
+### Grove Environment Variable Propagation
 
-Workers inherit environment variables from wrangler.toml, but secrets must be set via `npx wrangler secret`:
+Workers inherit environment variables from wrangler.toml, but grove-scoped secrets must be set via `npx wrangler secret`:
 
 ```bash
-# Secrets (encrypted, now grove-aware)
-echo "secret_value" | npx wrangler secret put MCP_ENCRYPTION_KEY
+# Grove-scoped secrets (encrypted)
+echo "grove_secret_value" | npx wrangler secret put GROVE_MCP_KEY --env grove-production
 
 # Check propagation with grove context
-npx wrangler tail --format=pretty
+npx wrangler tail --format=pretty --env grove-production
 ```
 
-### D1 Transaction Limits
+### Grove D1 Transaction Limits
 
 D1 has strict transaction limits (1000 statements). Batch large operations with grove awareness:
 
 ```javascript
-const chunks = batchOf1000(statements);
-for (const chunk of chunks) {
+const groveChunks = batchOf1000(statements);
+for (const chunk of groveChunks) {
   await db.batch(chunk.map(stmt => ({
     ...stmt,
     grove_id: current_grove_id
@@ -490,29 +523,30 @@ for (const chunk of chunks) {
 }
 ```
 
-### Multi-Worker Coordination
+### Multi-Worker Grove Coordination
 
-When multiple workers share resources (D1, KV), use grove-aware optimistic locking:
+When multiple workers share grove resources (D1, KV), use grove-aware optimistic locking:
 
 ```javascript
-const version = await KV.get(`resource_version:${grove_id}`);
-const result = await updateResource(data);
-const success = await KV.put(`resource_version:${grove_id}`, version + 1, {
+const groveVersion = await KV.get(`resource_version:${grove_id}`);
+const result = await updateGroveResource(data, grove_id);
+const success = await KV.put(`resource_version:${grove_id}`, groveVersion + 1, {
   metadata: {
-    previous_version: version,
-    grove_id: grove_id
+    previous_version: groveVersion,
+    grove_id: grove_id,
+    global_daemon_id: global_daemon_id
   }
 });
 
 if (!success) {
-  // Concurrent update, retry with grove context
-  throw new ConflictError(`Resource updated by another worker in grove ${grove_id}`);
+  // Concurrent grove update, retry with coordination
+  throw new GroveConflictError(`Resource updated by another worker in grove ${grove_id}`);
 }
 ```
 
-This prevents race conditions in multi-worker environments while maintaining grove isolation.
+This prevents race conditions in multi-worker environments while maintaining grove isolation and global daemon coordination.
 
-### Team Sync Package Structure
+### Grove Team Sync Package Structure
 
 The team sync worker is a standalone npm package in `packages/myco-team/` with grove-aware routing:
 
@@ -521,9 +555,9 @@ packages/myco-team/
 ├── src/cli.ts          # myco-team CLI (grove-aware)
 ├── worker/
 │   ├── src/            # Worker source code (grove routing)
-│   ├── wrangler.toml   # Cloudflare configuration
+│   ├── wrangler.toml   # Cloudflare configuration (grove envs)
 │   └── package.json    # Worker dependencies
 └── package.json        # CLI package
 ```
 
-The cloud MCP server code is embedded within the worker source, not a separate deployment, and includes grove-scoped request routing.
+The cloud MCP server code is embedded within the worker source with grove-scoped request routing and global daemon coordination, not as a separate deployment.

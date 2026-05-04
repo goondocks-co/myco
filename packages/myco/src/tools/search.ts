@@ -8,6 +8,7 @@
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import { buildEndpoint } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ function requiresSemanticMode(input: SearchInput): boolean {
 export async function handleMycoSearch(
   input: SearchInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<NormalizedSearchResult[]> {
   const limit = input.limit ?? MCP_SEARCH_DEFAULT_LIMIT;
 
@@ -56,7 +58,9 @@ export async function handleMycoSearch(
     until: input.until,
     language: input.language,
   });
-  const result = await client.get(endpoint);
+  const result = requestContext
+    ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+    : await client.get(endpoint);
   if (!result.ok || !result.data?.results) return [];
 
   return normalizeSearchResults(result.data.results);

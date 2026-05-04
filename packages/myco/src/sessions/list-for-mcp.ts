@@ -7,6 +7,7 @@
 import { MCP_SESSIONS_DEFAULT_LIMIT, SESSION_SUMMARY_PREVIEW_CHARS } from '@myco/constants.js';
 import { getPlan } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface SessionSummary {
   id: string;
@@ -32,6 +33,7 @@ export interface ListSessionsForMcpInput {
   plan?: string;
   /** ISO-8601 string; parsed to epoch seconds. Invalid input yields no filter. */
   since?: string;
+  requestContext?: MycoRequestContext;
 }
 
 function isoToEpochSeconds(iso: string): number | undefined {

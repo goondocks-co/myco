@@ -1,7 +1,7 @@
 ---
 name: myco:vault-schema-extension
 description: |
-  Use this skill when adding or evolving Myco's SQLite vault database schema and its Cloudflare D1 cloud counterpart — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping local SQLite and D1 schemas in sync (including D1's lazy-migration behaviour where ALTER TABLE applies on the first request after deploy, not at deploy time), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
+  Use this skill when adding or evolving Myco's SQLite vault database schema and its Cloudflare D1 cloud counterpart — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping local SQLite and D1 schemas in sync (including D1's lazy-migration behaviour where ALTER TABLE applies on the first request after deploy, not at deploy time), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), Grove multi-tenant database design for global daemon architecture, and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,13 +9,14 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array.
+Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
 
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
 - Check the current highest version in the `MIGRATIONS` array in `packages/myco/src/db/migrations.ts`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
+- Understand Grove architecture implications for multi-project data coordination
 
 ## Procedure A: Adding a New Table
 
@@ -98,7 +99,7 @@ All SQL lives in the appropriate query modules — never inline SQL strings in M
 
 ### 3. Update schema constants
 
-Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants:
+Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants. The schema has grown with subsystem additions (like CANOPY_* tables for code intelligence) representing natural schema evolution:
 
 | Constant | Add the table if… |
 |---|---|
@@ -107,6 +108,8 @@ Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants:
 | `SECONDARY_INDEXES` | Table has custom indexes beyond primary key |
 
 Review the schema-ddl.ts file to identify other table registration constants that may apply to your new table. Look for patterns like how existing tables (sessions, spores, etc.) are registered and follow the same registration approach.
+
+**Grove considerations**: When designing tables for Grove's global daemon architecture, consider whether data needs project-level isolation or grove-wide coordination. Most tables remain project-scoped, but some Grove features may require cross-project data organization.
 
 Find all places a similar table name appears to avoid missing any registration point:
 
@@ -564,7 +567,7 @@ packages/myco/
   src/
     db/
       migrations.ts            # MIGRATIONS array with declarative Migration entries
-      schema-ddl.ts            # Table DDL definitions and constants
+      schema-ddl.ts            # Table DDL definitions and constants (includes CANOPY_*, CORTEX_*, and other subsystem tables)
 packages/myco-team/
   migrations/                  # Parallel D1 SQL migration files
     0021_add_my_new_table.sql
@@ -579,5 +582,6 @@ packages/myco-team/
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
 - **All SQL lives in the appropriate query modules** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
 - **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing a registration in `TABLE_DDLS` or `FTS_TABLES` silently limits the feature surface.
-- **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface.
+- **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface. Expect additive growth with new subsystem tables like CANOPY_* exports for code intelligence features.
 - **Migration test functions for complex transformations** — include test helpers like `resolveV20PlanIdentityCollisionsForTest` for migrations that involve data conflicts or complex transformations.
+- **Grove multi-project coordination** — consider whether new tables need project-level isolation or grove-wide coordination when designing schema for Grove's global daemon architecture.

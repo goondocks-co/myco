@@ -1,7 +1,7 @@
 ---
 name: myco:mcp-tool-development-lifecycle
 description: |
-  Comprehensive lifecycle for authoring, registering, documenting, and maintaining MCP tools in packages/myco/src/mcp/ — covering schema definition in TOOL_DEFINITIONS arrays, handler implementation with DaemonClient patterns, switch-based registration in server.ts, documentation bundling, anti-drift testing patterns, and cloud vs local placement decisions. Essential for maintaining the schema ↔ handler ↔ documentation triad that agents depend on for correct tool invocations, even when the user doesn't explicitly ask for MCP tool development.
+  Comprehensive lifecycle for authoring, registering, documenting, and maintaining MCP tools in packages/myco/src/tools/ — covering schema definition in TOOL_DEFINITIONS arrays, handler implementation with DaemonClient patterns, shared tool-runtime registration, documentation bundling, anti-drift testing patterns, and cloud vs local placement decisions. Essential for maintaining the schema ↔ handler ↔ documentation triad that agents depend on for correct tool invocations, even when the user doesn't explicitly ask for MCP tool development.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -13,7 +13,7 @@ MCP tools are the primary interface between agents and the Myco intelligence pip
 
 ## Prerequisites
 
-- Working Myco development environment with `packages/myco/src/tools/` and `packages/myco/src/mcp/` structure
+- Working Myco development environment with `packages/myco/src/tools/` structure
 - Understanding of JSON Schema for parameter definitions
 - Familiarity with TypeScript handler patterns and DaemonClient usage
 - Knowledge of local vs cloud MCP bifurcation model
@@ -79,7 +79,7 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
        description: 'Status value'
      }
    }
-   
+
    // GOOD: Use string with enum values in description
    {
      param_status: {
@@ -96,15 +96,15 @@ Define the tool interface in `packages/myco/src/tools/definitions.ts` (shared to
      limit: {
        type: 'number',
        default: 10,        // Zod .default() - causes registration failure
-       minimum: 1,         // Zod .min() - causes registration failure  
+       minimum: 1,         // Zod .min() - causes registration failure
        maximum: 100        // Zod .max() - causes registration failure
      }
    }
-   
+
    // GOOD: Use plain schema with behavior described in documentation
    {
      limit: {
-       type: 'number', 
+       type: 'number',
        description: 'Maximum items to return (1-100, defaults to 10 if omitted)'
      }
    }
@@ -143,13 +143,13 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
    ): Promise<MyNewToolResult> {
      // Validate all schema-declared parameters are consumed
      const { param_name, optional_param = defaultValue } = input;
-     
+
      try {
        const endpoint = buildEndpoint('/api/some-operation', {
          param_name,
          optional_param,
        });
-       
+
        const response = await client.get(endpoint);
        return response as MyNewToolResult;
      } catch (error) {
@@ -167,20 +167,40 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
 
 5. **Use DaemonClient for vault access** — all tools proxy through the daemon HTTP API via `client.get()`, `client.post()`, etc.
 
-6. **Handle errors with ToolFailure interface** — import from `packages/myco/src/tools/error.ts` and wrap operational failures with structured context agents can understand:
+6. **Handle errors with ToolFailure interface** — import from `packages/myco/src/tools/error.js` and wrap operational failures with structured context agents can understand:
    ```typescript
    import { ToolFailure } from './error.js';
-   
+
    // For parameter validation errors
    throw new ToolFailure('Invalid parameter format', {
      context: { param_name, expected: 'uuid format' },
      retriable: false,
    });
-   
-   // For network/service failures  
+
+   // For network/service failures
    throw new ToolFailure('Daemon API unavailable', {
      cause: originalError,
      context: { endpoint, attempt: retryCount },
+     retriable: true,
+   });
+   ```
+
+7. **Use canonical ToolFailure interface pattern** — `packages/myco/src/tools/error.ts` exports the standardized `ToolFailure` class with structured error context. Always import and use this interface for agent-facing errors:
+   ```typescript
+   import { ToolFailure, ToolErrorCode } from './error.js';
+
+   // Standard validation failure
+   throw new ToolFailure('Parameter validation failed', {
+     code: ToolErrorCode.INVALID_INPUT,
+     context: { param: value, constraint: 'must be uuid' },
+     retriable: false,
+   });
+
+   // Service availability failure
+   throw new ToolFailure('Daemon service unavailable', {
+     code: ToolErrorCode.SERVICE_UNAVAILABLE,
+     cause: networkError,
+     context: { endpoint, timeout_ms: 5000 },
      retriable: true,
    });
    ```
@@ -245,15 +265,15 @@ Implement systematic checks to catch schema-handler-documentation drift across t
    ```typescript
    test('all schema parameters referenced in handler source', () => {
      const allTools = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
-     
+
      for (const tool of allTools) {
        const handlerName = getHandlerNameForTool(tool.name);
        const handler = handlers[handlerName];
        if (!handler) continue; // Skip stubs
-       
+
        const schemaParams = Object.keys(tool.inputSchema.properties || {});
        const handlerSource = handler.toString();
-       
+
        schemaParams.forEach(param => {
          expect(handlerSource).toContain(param);
        });
@@ -273,7 +293,7 @@ Implement systematic checks to catch schema-handler-documentation drift across t
    ```typescript
    test('all tool names match exported constants', () => {
      const allTools = [...TOOL_DEFINITIONS, ...COLLECTIVE_TOOL_DEFINITIONS];
-     
+
      allTools.forEach(tool => {
        expect(tool.name).toMatch(/^(myco_|collective_)/);
        // Verify constant exists and matches
@@ -342,7 +362,7 @@ The skill lifecycle system requires specific tools that follow domain-specific r
    ```typescript
    // In packages/myco/src/tools/definitions.ts
    export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
-   
+
    {
      name: TOOL_SKILL_CANDIDATES,
      description: 'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
@@ -390,7 +410,7 @@ The skill lifecycle system requires specific tools that follow domain-specific r
 2. **Register skill record management tools**:
    ```typescript
    export const TOOL_SKILL_RECORDS = 'myco_skill_records';
-   
+
    {
      name: TOOL_SKILL_RECORDS,
      description: 'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
@@ -414,7 +434,7 @@ The skill lifecycle system requires specific tools that follow domain-specific r
 3. **Register skill file writing tools**:
    ```typescript
    export const TOOL_WRITE_SKILL = 'myco_write_skill';
-   
+
    {
      name: TOOL_WRITE_SKILL,
      description: 'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
@@ -486,7 +506,7 @@ Handle project context changes with Grove migration architecture:
    ```typescript
    // Old: Direct project context injection
    const context = await injectProjectContext(sessionId);
-   
+
    // New: Grove-aware context injection with fallback
    const context = await injectGroveContext(sessionId, {
      fallbackToLocal: true,
@@ -505,14 +525,14 @@ Handle project context changes with Grove migration architecture:
        targetProject: input.project_id,
        operation: 'read',
      });
-     
+
      if (!groveAccess.allowed) {
        throw new ToolFailure('Grove access denied', {
          context: { project_id: input.project_id, reason: groveAccess.reason },
          retriable: false,
        });
      }
-     
+
      // Proceed with Grove-scoped operation
      return await performGroveOperation(input, client);
    }
@@ -565,6 +585,35 @@ Handle project context changes with Grove migration architecture:
 
 **ToolFailure anti-pattern**: Never throw raw Error objects from handlers — always wrap with ToolFailure interface for consistent agent error handling. Missing structured error context causes agent confusion across all transports.
 
-**Code duplication across tool surface**: Avoid copy-pasting handler patterns between tools. Extract shared utilities to `packages/myco/src/tools/shared.js` and import consistently. Duplicated validation logic, error handling, and response formatting patterns create maintenance burden and drift risks.
+**Code duplication across tool surface**: Avoid copy-pasting handler patterns between tools. Extract shared utilities to `packages/myco/src/tools/shared.js` and import consistently. Duplicated validation logic, error handling, and response formatting patterns create maintenance burden and drift risks across the unified tool surface. Use composition patterns instead:
+```typescript
+// BAD: Duplicated validation across multiple tools
+function handleToolA(input) {
+  if (!input.session_id || !isValidUuid(input.session_id)) {
+    throw new ToolFailure('Invalid session_id');
+  }
+  // ... tool logic
+}
+
+function handleToolB(input) {
+  if (!input.session_id || !isValidUuid(input.session_id)) {
+    throw new ToolFailure('Invalid session_id');
+  }
+  // ... tool logic (nearly identical validation)
+}
+
+// GOOD: Shared validation utilities
+import { validateSessionId, validateRequiredString } from './shared.js';
+
+function handleToolA(input) {
+  validateSessionId(input.session_id);
+  // ... tool logic
+}
+
+function handleToolB(input) {
+  validateSessionId(input.session_id);
+  // ... tool logic
+}
+```
 
 **Grove context injection failures**: Tools accessing project context must handle Grove migration gracefully. Missing Grove-aware context injection causes failures in Grove environments while working in traditional project structures, creating environment-specific bugs.

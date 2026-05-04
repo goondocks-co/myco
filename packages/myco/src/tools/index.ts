@@ -4,6 +4,10 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
 import {
+  resolveLegacyRequestContext,
+  type MycoRequestContext,
+} from './request-context.js';
+import {
   COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_AGENT,
   TOOL_COLLECTIVE_PROJECT,
@@ -28,6 +32,7 @@ export interface MycoTools {
 
 export interface MycoToolsOptions {
   collectiveEnabled?: () => Promise<boolean>;
+  requestContext?: MycoRequestContext;
 }
 
 const COLLECTIVE_TOOL_NAMES = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((tool) => tool.name));
@@ -41,7 +46,7 @@ interface JsonSchemaProperty {
 type ToolInput = Record<string, unknown>;
 
 interface ToolEntry {
-  handle: (input: ToolInput, client: DaemonClient, vaultDir: string) => Promise<unknown>;
+  handle: (input: ToolInput, client: DaemonClient, context: MycoRequestContext) => Promise<unknown>;
   summarize?: (input: ToolInput, result: unknown) => Record<string, unknown>;
 }
 
@@ -53,14 +58,14 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SEARCH, async () => {
     const { handleMycoSearch } = await import('./search.js');
     return {
-      handle: (input, client) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client),
+      handle: (input, client, context) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client, context),
       summarize: (input, result) => ({ query: input.query, matches: (result as unknown[]).length }),
     };
   }],
   [TOOL_PLANS, async () => {
     const { handleMycoPlans } = await import('./plans.js');
     return {
-      handle: (input, client, vaultDir) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client, vaultDir),
+      handle: (input, client, context) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client, context),
       summarize: (input, result) => ({
         op: input.op ?? 'list',
         id: input.id,
@@ -72,7 +77,7 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SESSIONS, async () => {
     const { handleMycoSessions } = await import('./sessions.js');
     return {
-      handle: (input, client) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client),
+      handle: (input, client, context) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client, context),
       summarize: (input, result) => ({ op: input.op ?? 'list', id: input.id, count: Array.isArray(result) ? result.length : undefined }),
     };
   }],
@@ -86,7 +91,7 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SPORES, async () => {
     const { handleMycoSpores } = await import('./spores.js');
     return {
-      handle: (input, client) => handleMycoSpores(input as unknown as Parameters<typeof handleMycoSpores>[0], client),
+      handle: (input, client, context) => handleMycoSpores(input as unknown as Parameters<typeof handleMycoSpores>[0], client, context),
       summarize: (input, result) => {
         const r = result as { id?: unknown; observation_type?: unknown; spores?: unknown[]; status?: unknown };
         return {
@@ -142,12 +147,13 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   let logDirReady = false;
   const logDir = path.join(vaultDir, 'logs');
   let collectiveProbe: Promise<boolean> | null = null;
+  const requestContext = options.requestContext ?? resolveLegacyRequestContext(vaultDir);
 
   async function ensureDb(): Promise<boolean> {
     if (dbReady) return true;
     try {
-      const { initDatabase, vaultDbPath } = await import('@myco/db/client.js');
-      initDatabase(vaultDbPath(vaultDir));
+      const { initDatabase } = await import('@myco/db/client.js');
+      initDatabase(requestContext.databasePath);
       dbReady = true;
       return true;
     } catch {
@@ -267,12 +273,12 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 
     switch (op) {
       case 'digest': {
-        const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client);
+        const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client, requestContext);
         logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
         return result;
       }
       case 'instructions': {
-        const result = await cortex.handleCortexInstructions(client);
+        const result = await cortex.handleCortexInstructions(client, requestContext);
         logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
@@ -303,7 +309,10 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   ): Promise<unknown> {
     const guard = await ensureCanopyDb();
     if (!guard.ready) return guard.emptyResult;
-    const result = await handleCortexCanopyEntry(input as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
+    const scopedInput = input.path && !input.project_id && !input.id
+      ? { ...input, project_id: requestContext.projectId }
+      : input;
+    const result = await handleCortexCanopyEntry(scopedInput as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
     logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
     return result;
   }
@@ -316,12 +325,10 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     const guard = await ensureCanopyDb();
     if (!guard.ready) return guard.emptyResult;
 
-    const { resolveCanopyProjectId } = await import('@myco/canopy/identity.js');
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
     const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
-    const projectId = typeof input.project_id === 'string' ? input.project_id : resolveCanopyProjectId(vaultDir);
-    const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
-    const sessionId = process.env.MYCO_SESSION_ID ?? null;
+    const projectId = typeof input.project_id === 'string' ? input.project_id : requestContext.projectId;
+    const machineId = requestContext.machineId;
+    const sessionId = requestContext.sessionId;
     const result = await handleCortexCanopyMap({ projectId, machineId });
     if (sessionId) {
       try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
@@ -367,7 +374,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
         throw new ToolError('tool_call_failed', 'Vault database is not available');
       }
       const entry = await loader();
-      const result = await entry.handle(input, client, vaultDir);
+      const result = await entry.handle(input, client, requestContext);
       logActivity(name, {
         ...(entry.summarize?.(input, result) ?? {}),
         duration_ms: Date.now() - start,

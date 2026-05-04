@@ -13,6 +13,7 @@ import {
 } from '@myco/plans/identity.js';
 import { persistPlan } from '../daemon/plan-capture.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface SaveMcpPlanInput {
   session_id: string;
@@ -24,6 +25,7 @@ export interface SaveMcpPlanInput {
   tags?: string[];
   /** Project root used to canonicalize relative-vs-absolute file paths. */
   projectRoot: string;
+  requestContext?: MycoRequestContext;
 }
 
 export type SaveMcpPlanResult =

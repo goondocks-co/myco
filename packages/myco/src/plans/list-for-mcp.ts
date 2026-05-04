@@ -10,6 +10,7 @@ import {
   listPlansBySession,
   type PlanRow,
 } from '@myco/db/queries/plans.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface PlanSummary {
   id: string;
@@ -52,6 +53,7 @@ export interface ListPlansForMcpInput {
   session?: string;
   status?: string;
   limit?: number;
+  requestContext?: MycoRequestContext;
 }
 
 export type ListPlansForMcpResult =

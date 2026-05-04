@@ -44,6 +44,11 @@ interface ClientResult {
   data?: any;
 }
 
+interface ClientOptions {
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+}
+
 /**
  * Attempt to parse a non-ok response body as JSON so callers can surface
  * the daemon's structured error envelope (e.g. `{error: {code, message}}`).
@@ -81,7 +86,7 @@ export class DaemonClient {
     this.vaultDir = vaultDir;
   }
 
-  async post(endpoint: string, body: unknown, options?: { timeoutMs?: number }): Promise<ClientResult> {
+  async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -90,7 +95,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...options?.headers },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(options?.timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -104,7 +109,7 @@ export class DaemonClient {
     }
   }
 
-  async put(endpoint: string, body: unknown): Promise<ClientResult> {
+  async put(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -113,7 +118,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...options?.headers },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -127,7 +132,7 @@ export class DaemonClient {
     }
   }
 
-  async get(endpoint: string): Promise<ClientResult> {
+  async get(endpoint: string, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -135,6 +140,7 @@ export class DaemonClient {
     }
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+        headers: options?.headers,
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
@@ -147,7 +153,7 @@ export class DaemonClient {
     }
   }
 
-  async delete(endpoint: string, body?: unknown): Promise<ClientResult> {
+  async delete(endpoint: string, body?: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -159,8 +165,10 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       };
       if (body !== undefined) {
-        init.headers = { 'Content-Type': 'application/json' };
+        init.headers = { 'Content-Type': 'application/json', ...options?.headers };
         init.body = JSON.stringify(body);
+      } else if (options?.headers) {
+        init.headers = options.headers;
       }
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);

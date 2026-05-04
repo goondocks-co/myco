@@ -6,6 +6,7 @@ import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { handleCanopyEntryGet } from '@myco/daemon/api/canopy-read.js';
 import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import type { ToolFailure } from './error.js';
 
 export type CortexFailure = ToolFailure;
@@ -36,10 +37,13 @@ export interface CortexCanopyArgs {
 export async function handleCortexDigest(
   input: CortexInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<CortexDigestResult> {
   const requestedTier = input.tier ?? DEFAULT_CONTEXT_TIER;
 
-  const result = await client.get('/api/digest');
+  const result = requestContext
+    ? await client.get('/api/digest', { headers: requestContextHeaders(requestContext) })
+    : await client.get('/api/digest');
   if (!result.ok || !result.data?.tiers) {
     return {
       content: NO_DIGEST_MESSAGE,
@@ -79,8 +83,13 @@ export async function handleCortexDigest(
   };
 }
 
-export async function handleCortexInstructions(client: DaemonClient): Promise<unknown | CortexFailure> {
-  const result = await client.get('/api/cortex/instructions');
+export async function handleCortexInstructions(
+  client: DaemonClient,
+  requestContext?: MycoRequestContext,
+): Promise<unknown | CortexFailure> {
+  const result = requestContext
+    ? await client.get('/api/cortex/instructions', { headers: requestContextHeaders(requestContext) })
+    : await client.get('/api/cortex/instructions');
   if (!result.ok || !result.data) return { ok: false, error: 'Cortex instructions not available' };
   return result.data;
 }
