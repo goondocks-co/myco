@@ -33,6 +33,13 @@ export interface ImportProjectCoreResult {
   skipped_resolution_events: number;
   graph_edges: number;
   skipped_graph_edges: number;
+  agent_runs: number;
+  agent_reports: number;
+  skipped_agent_reports: number;
+  agent_turns: number;
+  skipped_agent_turns: number;
+  agent_run_write_intents: number;
+  skipped_agent_run_write_intents: number;
   canopy_entries: number;
   canopy_maps: number;
   digest_extracts: number;
@@ -275,6 +282,70 @@ interface SourceCanopyEntryRow {
   embedded: number | null;
 }
 
+interface SourceAgentRunRow {
+  id: string;
+  agent_id: string;
+  task: string | null;
+  instruction: string | null;
+  status: string | null;
+  harness: string | null;
+  provider: string | null;
+  model: string | null;
+  session_ref: string | null;
+  resumable: number | null;
+  resume_status: string | null;
+  resume_mode: string | null;
+  resumed_at: number | null;
+  checkpoints: string | null;
+  usage_data: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+  tokens_used: number | null;
+  cost_usd: number | null;
+  actual_cost_usd: number | null;
+  estimated_cost_usd: number | null;
+  cost_source: string | null;
+  cost_data: string | null;
+  actions_taken: string | null;
+  error: string | null;
+  dry_run: number | null;
+  reasoning_level: string | null;
+  execution_overrides: string | null;
+}
+
+interface SourceAgentReportRow {
+  id: number;
+  run_id: string;
+  agent_id: string;
+  action: string;
+  summary: string;
+  details: string | null;
+  created_at: number;
+}
+
+interface SourceAgentTurnRow {
+  id: number;
+  run_id: string;
+  agent_id: string;
+  turn_number: number;
+  tool_name: string;
+  tool_input: string | null;
+  tool_output_summary: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+interface SourceAgentRunWriteIntentRow {
+  id: number;
+  run_id: string;
+  phase_id: string | null;
+  tool_name: string;
+  tool_input: string;
+  synthetic_output: string;
+  stub_id: string | null;
+  recorded_at: number;
+}
+
 interface SourceCanopyMapRow {
   project_id: string;
   machine_id: string | null;
@@ -332,6 +403,9 @@ type TargetTable =
   | 'entity_mentions'
   | 'resolution_events'
   | 'graph_edges'
+  | 'agent_reports'
+  | 'agent_turns'
+  | 'agent_run_write_intents'
   | 'canopy_entries'
   | 'canopy_maps'
   | 'digest_extracts'
@@ -357,6 +431,13 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
     skipped_resolution_events: 0,
     graph_edges: 0,
     skipped_graph_edges: 0,
+    agent_runs: 0,
+    agent_reports: 0,
+    skipped_agent_reports: 0,
+    agent_turns: 0,
+    skipped_agent_turns: 0,
+    agent_run_write_intents: 0,
+    skipped_agent_run_write_intents: 0,
     canopy_entries: 0,
     canopy_maps: 0,
     digest_extracts: 0,
@@ -511,6 +592,58 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       const imported = importGraphEdge(ctx, row);
       if (imported === 'imported') result.graph_edges += 1;
       if (imported === 'skipped') result.skipped_graph_edges += 1;
+    }
+
+    const agentRuns = listSourceAgentRuns(ctx.sourceDb);
+    for (const row of agentRuns) {
+      ensureTextMapping(ctx, {
+        sourceTable: 'agent_runs',
+        sourceId: row.id,
+        targetTable: 'agent_runs',
+        targetId: () => createGroveEraId('agent_run'),
+      });
+    }
+    for (const row of agentRuns) {
+      if (importAgentRun(ctx, row)) result.agent_runs += 1;
+    }
+
+    const agentReports = listSourceAgentReports(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: agentReports,
+      sourceTable: 'agent_reports',
+      targetTable: 'agent_reports',
+      sourceId: (row) => row.id,
+    });
+    for (const row of agentReports) {
+      const imported = importAgentReport(ctx, row);
+      if (imported === 'imported') result.agent_reports += 1;
+      if (imported === 'skipped') result.skipped_agent_reports += 1;
+    }
+
+    const agentTurns = listSourceAgentTurns(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: agentTurns,
+      sourceTable: 'agent_turns',
+      targetTable: 'agent_turns',
+      sourceId: (row) => row.id,
+    });
+    for (const row of agentTurns) {
+      const imported = importAgentTurn(ctx, row);
+      if (imported === 'imported') result.agent_turns += 1;
+      if (imported === 'skipped') result.skipped_agent_turns += 1;
+    }
+
+    const writeIntents = listSourceAgentRunWriteIntents(ctx.sourceDb);
+    ensureIntegerMappings(ctx, {
+      rows: writeIntents,
+      sourceTable: 'agent_run_write_intents',
+      targetTable: 'agent_run_write_intents',
+      sourceId: (row) => row.id,
+    });
+    for (const row of writeIntents) {
+      const imported = importAgentRunWriteIntent(ctx, row);
+      if (imported === 'imported') result.agent_run_write_intents += 1;
+      if (imported === 'skipped') result.skipped_agent_run_write_intents += 1;
     }
 
     const canopyEntries = listSourceCanopyEntries(ctx.sourceDb);
@@ -1218,6 +1351,201 @@ function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): 'imported
   return 'imported';
 }
 
+function importAgentRun(ctx: ImportContext, row: SourceAgentRunRow): boolean {
+  const mapping = requireMapping(ctx, 'agent_runs', row.id);
+  if (targetRowExists(ctx.targetDb, 'agent_runs', mapping.target_id)) {
+    markImported(ctx, 'agent_runs', row.id);
+    return false;
+  }
+
+  const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
+  const sessionRef = mapOptionalTextIdIfMapped(ctx, 'sessions', row.session_ref) ?? row.session_ref;
+
+  ctx.targetDb.prepare(
+    `INSERT INTO agent_runs (
+       id, project_id, agent_id, task, instruction, status,
+       harness, provider, model, session_ref, resumable,
+       resume_status, resume_mode, resumed_at, checkpoints, usage_data,
+       started_at, completed_at, tokens_used, cost_usd, actual_cost_usd,
+       estimated_cost_usd, cost_source, cost_data, actions_taken, error,
+       dry_run, reasoning_level, execution_overrides
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  ).run(
+    mapping.target_id,
+    ctx.targetProjectId,
+    agentId,
+    row.task,
+    row.instruction,
+    row.status ?? 'pending',
+    row.harness,
+    row.provider,
+    row.model,
+    sessionRef,
+    row.resumable ?? 0,
+    row.resume_status,
+    row.resume_mode,
+    row.resumed_at,
+    row.checkpoints,
+    row.usage_data,
+    row.started_at,
+    row.completed_at,
+    row.tokens_used,
+    row.cost_usd,
+    row.actual_cost_usd,
+    row.estimated_cost_usd,
+    row.cost_source,
+    row.cost_data,
+    row.actions_taken,
+    row.error,
+    row.dry_run ?? 0,
+    row.reasoning_level,
+    row.execution_overrides,
+  );
+
+  markImported(ctx, 'agent_runs', row.id);
+  return true;
+}
+
+function importAgentReport(ctx: ImportContext, row: SourceAgentReportRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'agent_reports', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  const targetId = parseMappedInteger(mapping);
+  if (targetRowExists(ctx.targetDb, 'agent_reports', targetId)) {
+    markImported(ctx, 'agent_reports', row.id);
+    return 'unchanged';
+  }
+
+  const runId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.run_id);
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!runId || !agentId) {
+    markSkipped(ctx, 'agent_reports', row.id, agentOperationSkipReason(row.run_id, row.agent_id, runId, agentId));
+    return 'skipped';
+  }
+
+  insertAgentReport(ctx, row, targetId, { runId, agentId });
+  markImported(ctx, 'agent_reports', row.id);
+  return 'imported';
+}
+
+function insertAgentReport(
+  ctx: ImportContext,
+  row: SourceAgentReportRow,
+  targetId: number,
+  refs: { runId: string; agentId: string },
+) {
+  const sql = `INSERT INTO agent_reports (
+     id, project_id, run_id, agent_id, action, summary, details, created_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  const params = [
+    ctx.targetProjectId,
+    refs.runId,
+    refs.agentId,
+    row.action,
+    row.summary,
+    row.details,
+    row.created_at,
+  ];
+
+  return ctx.targetDb.prepare(sql).run(targetId, ...params);
+}
+
+function importAgentTurn(ctx: ImportContext, row: SourceAgentTurnRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'agent_turns', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  const targetId = parseMappedInteger(mapping);
+  if (targetRowExists(ctx.targetDb, 'agent_turns', targetId)) {
+    markImported(ctx, 'agent_turns', row.id);
+    return 'unchanged';
+  }
+
+  const runId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.run_id);
+  const agentId = mapOptionalTextIdIfMapped(ctx, 'agents', row.agent_id);
+  if (!runId || !agentId) {
+    markSkipped(ctx, 'agent_turns', row.id, agentOperationSkipReason(row.run_id, row.agent_id, runId, agentId));
+    return 'skipped';
+  }
+
+  insertAgentTurn(ctx, row, targetId, { runId, agentId });
+  markImported(ctx, 'agent_turns', row.id);
+  return 'imported';
+}
+
+function insertAgentTurn(
+  ctx: ImportContext,
+  row: SourceAgentTurnRow,
+  targetId: number,
+  refs: { runId: string; agentId: string },
+) {
+  const sql = `INSERT INTO agent_turns (
+     id, project_id, run_id, agent_id, turn_number, tool_name,
+     tool_input, tool_output_summary, started_at, completed_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const params = [
+    ctx.targetProjectId,
+    refs.runId,
+    refs.agentId,
+    row.turn_number,
+    row.tool_name,
+    row.tool_input,
+    row.tool_output_summary,
+    row.started_at,
+    row.completed_at,
+  ];
+
+  return ctx.targetDb.prepare(sql).run(targetId, ...params);
+}
+
+function importAgentRunWriteIntent(ctx: ImportContext, row: SourceAgentRunWriteIntentRow): 'imported' | 'skipped' | 'unchanged' {
+  const mapping = requireMapping(ctx, 'agent_run_write_intents', row.id);
+  if (mapping.status === 'skipped') return 'unchanged';
+  const targetId = parseMappedInteger(mapping);
+  if (targetRowExists(ctx.targetDb, 'agent_run_write_intents', targetId)) {
+    markImported(ctx, 'agent_run_write_intents', row.id);
+    return 'unchanged';
+  }
+
+  const runId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.run_id);
+  if (!runId) {
+    markSkipped(ctx, 'agent_run_write_intents', row.id, `unmapped run reference ${row.run_id}`);
+    return 'skipped';
+  }
+
+  insertAgentRunWriteIntent(ctx, row, targetId, runId);
+  markImported(ctx, 'agent_run_write_intents', row.id);
+  return 'imported';
+}
+
+function insertAgentRunWriteIntent(
+  ctx: ImportContext,
+  row: SourceAgentRunWriteIntentRow,
+  targetId: number,
+  runId: string,
+) {
+  const sql = `INSERT INTO agent_run_write_intents (
+     id, project_id, run_id, phase_id, tool_name, tool_input,
+     synthetic_output, stub_id, recorded_at
+   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const params = [
+    ctx.targetProjectId,
+    runId,
+    row.phase_id,
+    row.tool_name,
+    row.tool_input,
+    row.synthetic_output,
+    row.stub_id,
+    row.recorded_at,
+  ];
+
+  return ctx.targetDb.prepare(sql).run(targetId, ...params);
+}
+
 function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): boolean {
   const sourceId = canopyEntrySourceId(row);
   requireMapping(ctx, 'canopy_entries', sourceId);
@@ -1642,6 +1970,18 @@ function markSkipped(ctx: ImportContext, sourceTable: TargetTable, sourceId: str
   markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'skipped', { notes: reason }, ctx.targetDb);
 }
 
+function agentOperationSkipReason(
+  sourceRunId: string,
+  sourceAgentId: string,
+  mappedRunId: string | null,
+  mappedAgentId: string | null,
+): string {
+  const reasons: string[] = [];
+  if (!mappedRunId) reasons.push(`unmapped run reference ${sourceRunId}`);
+  if (!mappedAgentId) reasons.push(`unmapped agent reference ${sourceAgentId}`);
+  return reasons.join('; ');
+}
+
 function mapRequiredTextId(ctx: ImportContext, sourceTable: TargetTable, sourceId: string): string {
   return requireMapping(ctx, sourceTable, sourceId).target_id;
 }
@@ -1925,6 +2265,49 @@ function listSourceGraphEdges(db: Database): SourceGraphEdgeRow[] {
      FROM graph_edges
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourceGraphEdgeRow[];
+}
+
+function listSourceAgentRuns(db: Database): SourceAgentRunRow[] {
+  return db.prepare(
+    `SELECT
+       id, agent_id, task, instruction, status,
+       harness, provider, model, session_ref, resumable,
+       resume_status, resume_mode, resumed_at, checkpoints, usage_data,
+       started_at, completed_at, tokens_used, cost_usd, actual_cost_usd,
+       estimated_cost_usd, cost_source, cost_data, actions_taken, error,
+       dry_run, reasoning_level, execution_overrides
+     FROM agent_runs
+     ORDER BY started_at ASC, id ASC`,
+  ).all() as SourceAgentRunRow[];
+}
+
+function listSourceAgentReports(db: Database): SourceAgentReportRow[] {
+  return db.prepare(
+    `SELECT
+       id, run_id, agent_id, action, summary, details, created_at
+     FROM agent_reports
+     ORDER BY id ASC`,
+  ).all() as SourceAgentReportRow[];
+}
+
+function listSourceAgentTurns(db: Database): SourceAgentTurnRow[] {
+  return db.prepare(
+    `SELECT
+       id, run_id, agent_id, turn_number, tool_name,
+       tool_input, tool_output_summary, started_at, completed_at
+     FROM agent_turns
+     ORDER BY id ASC`,
+  ).all() as SourceAgentTurnRow[];
+}
+
+function listSourceAgentRunWriteIntents(db: Database): SourceAgentRunWriteIntentRow[] {
+  return db.prepare(
+    `SELECT
+       id, run_id, phase_id, tool_name, tool_input,
+       synthetic_output, stub_id, recorded_at
+     FROM agent_run_write_intents
+     ORDER BY id ASC`,
+  ).all() as SourceAgentRunWriteIntentRow[];
 }
 
 function listSourceCanopyEntries(db: Database): SourceCanopyEntryRow[] {

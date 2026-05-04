@@ -61,6 +61,13 @@ describe('Grove project core importer', () => {
       skipped_resolution_events: 0,
       graph_edges: 4,
       skipped_graph_edges: 1,
+      agent_runs: 1,
+      agent_reports: 1,
+      skipped_agent_reports: 1,
+      agent_turns: 1,
+      skipped_agent_turns: 1,
+      agent_run_write_intents: 1,
+      skipped_agent_run_write_intents: 1,
       canopy_entries: 1,
       canopy_maps: 1,
       digest_extracts: 1,
@@ -83,6 +90,13 @@ describe('Grove project core importer', () => {
     const resolutionEventId = lookupImportMappingBySource(migrationId, 'resolution_events', 'legacy-resolution', targetDb)?.target_id;
     const graphEdgeId = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-spore-session', targetDb)?.target_id;
     const skippedGraphEdge = lookupImportMappingBySource(migrationId, 'graph_edges', 'legacy-edge-dangling-entity', targetDb);
+    const agentRunId = lookupImportMappingBySource(migrationId, 'agent_runs', 'legacy-run', targetDb)?.target_id;
+    const agentReportId = Number(lookupImportMappingBySource(migrationId, 'agent_reports', 3, targetDb)?.target_id);
+    const skippedAgentReport = lookupImportMappingBySource(migrationId, 'agent_reports', 30, targetDb);
+    const agentTurnId = Number(lookupImportMappingBySource(migrationId, 'agent_turns', 4, targetDb)?.target_id);
+    const skippedAgentTurn = lookupImportMappingBySource(migrationId, 'agent_turns', 40, targetDb);
+    const writeIntentId = Number(lookupImportMappingBySource(migrationId, 'agent_run_write_intents', 5, targetDb)?.target_id);
+    const skippedWriteIntent = lookupImportMappingBySource(migrationId, 'agent_run_write_intents', 50, targetDb);
     const canopyEntryId = lookupImportMappingBySource(
       migrationId,
       'canopy_entries',
@@ -116,6 +130,17 @@ describe('Grove project core importer', () => {
     expect(entityId).toMatch(/^ent_[0-9a-f]{32}$/);
     expect(resolutionEventId).toMatch(/^res_[0-9a-f]{32}$/);
     expect(graphEdgeId).toMatch(/^edge_[0-9a-f]{32}$/);
+    expect(agentRunId).toMatch(/^run_[0-9a-f]{32}$/);
+    expect(agentRunId).not.toBe('legacy-run');
+    expect(agentReportId).not.toBe(3);
+    expect(agentTurnId).not.toBe(4);
+    expect(writeIntentId).not.toBe(5);
+    expect(skippedAgentReport?.status).toBe('skipped');
+    expect(skippedAgentReport?.notes).toContain('unmapped run reference missing-run');
+    expect(skippedAgentTurn?.status).toBe('skipped');
+    expect(skippedAgentTurn?.notes).toContain('unmapped run reference missing-run');
+    expect(skippedWriteIntent?.status).toBe('skipped');
+    expect(skippedWriteIntent?.notes).toContain('unmapped run reference missing-run');
     expect(canopyEntryId).toBe(`${TARGET_PROJECT_ID}\u001fpackages/myco/src/grove/importer.ts`);
     expect(canopyMapId).toBe(`${TARGET_PROJECT_ID}\u001fsource-machine`);
     expect(digestExtractId).not.toBe(7);
@@ -303,6 +328,111 @@ describe('Grove project core importer', () => {
     expect(graphEdge.target_type).toBe('session');
     expect(graphEdge.session_id).toBe(childSessionId);
 
+    const agentRun = getRow<{
+      project_id: string;
+      agent_id: string;
+      task: string;
+      instruction: string;
+      status: string;
+      harness: string;
+      provider: string;
+      model: string;
+      session_ref: string;
+      resumable: number;
+      tokens_used: number;
+      cost_usd: number;
+      actions_taken: string;
+      dry_run: number;
+      reasoning_level: string;
+      execution_overrides: string;
+    }>(
+      targetDb,
+      `SELECT project_id, agent_id, task, instruction, status, harness, provider,
+              model, session_ref, resumable, tokens_used, cost_usd, actions_taken,
+              dry_run, reasoning_level, execution_overrides
+         FROM agent_runs WHERE id = ?`,
+      agentRunId,
+    );
+    expect(agentRun.project_id).toBe(TARGET_PROJECT_ID);
+    expect(agentRun.agent_id).toBe(agentId);
+    expect(agentRun.task).toBe('cortex-instructions');
+    expect(agentRun.instruction).toContain('Generate cortex instructions');
+    expect(agentRun.status).toBe('completed');
+    expect(agentRun.harness).toBe('openai');
+    expect(agentRun.provider).toBe('openai');
+    expect(agentRun.model).toBe('gpt-test');
+    expect(agentRun.session_ref).toBe(childSessionId);
+    expect(agentRun.resumable).toBe(1);
+    expect(agentRun.tokens_used).toBe(1234);
+    expect(agentRun.cost_usd).toBe(0.42);
+    expect(agentRun.actions_taken).toBe('["wrote digest"]');
+    expect(agentRun.dry_run).toBe(0);
+    expect(agentRun.reasoning_level).toBe('medium');
+    expect(agentRun.execution_overrides).toBe('{"provider":{"model":"gpt-test"}}');
+
+    const agentReport = getRow<{
+      project_id: string;
+      run_id: string;
+      agent_id: string;
+      action: string;
+      summary: string;
+      details: string;
+    }>(
+      targetDb,
+      'SELECT project_id, run_id, agent_id, action, summary, details FROM agent_reports WHERE id = ?',
+      agentReportId,
+    );
+    expect(agentReport.project_id).toBe(TARGET_PROJECT_ID);
+    expect(agentReport.run_id).toBe(agentRunId);
+    expect(agentReport.agent_id).toBe(agentId);
+    expect(agentReport.action).toBe('digest_write');
+    expect(agentReport.summary).toContain('Wrote digest');
+    expect(agentReport.details).toBe('{"tier":5000}');
+
+    const agentTurn = getRow<{
+      project_id: string;
+      run_id: string;
+      agent_id: string;
+      turn_number: number;
+      tool_name: string;
+      tool_input: string;
+      tool_output_summary: string;
+    }>(
+      targetDb,
+      'SELECT project_id, run_id, agent_id, turn_number, tool_name, tool_input, tool_output_summary FROM agent_turns WHERE id = ?',
+      agentTurnId,
+    );
+    expect(agentTurn.project_id).toBe(TARGET_PROJECT_ID);
+    expect(agentTurn.run_id).toBe(agentRunId);
+    expect(agentTurn.agent_id).toBe(agentId);
+    expect(agentTurn.turn_number).toBe(1);
+    expect(agentTurn.tool_name).toBe('vault_write_digest');
+    expect(agentTurn.tool_input).toBe('{"tier":5000}');
+    expect(agentTurn.tool_output_summary).toContain('digest persisted');
+
+    const writeIntent = getRow<{
+      project_id: string;
+      run_id: string;
+      phase_id: string;
+      tool_name: string;
+      tool_input: string;
+      synthetic_output: string;
+      stub_id: string;
+    }>(
+      targetDb,
+      `SELECT project_id, run_id, phase_id, tool_name, tool_input,
+              synthetic_output, stub_id
+         FROM agent_run_write_intents WHERE id = ?`,
+      writeIntentId,
+    );
+    expect(writeIntent.project_id).toBe(TARGET_PROJECT_ID);
+    expect(writeIntent.run_id).toBe(agentRunId);
+    expect(writeIntent.phase_id).toBe('phase-digest');
+    expect(writeIntent.tool_name).toBe('vault_create_spore');
+    expect(writeIntent.tool_input).toBe('{"content":"synthetic"}');
+    expect(writeIntent.synthetic_output).toBe('{"id":"stub-spore"}');
+    expect(writeIntent.stub_id).toBe('stub-spore');
+
     const canopyEntry = getRow<{
       project_id: string;
       machine_id: string;
@@ -339,7 +469,7 @@ describe('Grove project core importer', () => {
     expect(canopyMap.machine_id).toBe('source-machine');
     expect(canopyMap.content).toContain('Project architecture map');
     expect(canopyMap.inputs_hash).toBe('canopy-map-inputs');
-    expect(canopyMap.generated_by_run_id).toBeNull();
+    expect(canopyMap.generated_by_run_id).toBe(agentRunId);
 
     const digestExtract = getRow<{
       project_id: string;
@@ -374,7 +504,7 @@ describe('Grove project core importer', () => {
     expect(digestRevision.project_id).toBe(TARGET_PROJECT_ID);
     expect(digestRevision.agent_id).toBe(agentId);
     expect(digestRevision.parent_revision_id).toBe(digestParentRevisionId);
-    expect(digestRevision.run_id).toBeNull();
+    expect(digestRevision.run_id).toBe(agentRunId);
     expect(digestRevision.content).toContain('newer digest revision');
 
     const cortexInstructions = getRow<{
@@ -391,7 +521,7 @@ describe('Grove project core importer', () => {
     expect(cortexInstructions.project_id).toBe(TARGET_PROJECT_ID);
     expect(cortexInstructions.agent_id).toBe(agentId);
     expect(cortexInstructions.content).toContain('standing operating context');
-    expect(cortexInstructions.source_run_id).toBeNull();
+    expect(cortexInstructions.source_run_id).toBe(agentRunId);
     expect(cortexInstructions.machine_id).toBe('source-machine');
 
     expect(matchCount(targetDb, 'sessions_fts', 'child')).toBeGreaterThan(0);
@@ -400,9 +530,9 @@ describe('Grove project core importer', () => {
     expect(matchCount(targetDb, 'spores_fts', 'durable')).toBeGreaterThan(0);
 
     const mappings = listImportMappingsForMigration(migrationId, targetDb);
-    expect(mappings).toHaveLength(25);
-    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(24);
-    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(1);
+    expect(mappings).toHaveLength(32);
+    expect(mappings.filter((mapping) => mapping.status === 'imported')).toHaveLength(28);
+    expect(mappings.filter((mapping) => mapping.status === 'skipped')).toHaveLength(4);
   });
 
   it('uses existing journal mappings on retry instead of duplicating rows', () => {
@@ -442,6 +572,13 @@ describe('Grove project core importer', () => {
       skipped_resolution_events: 0,
       graph_edges: 0,
       skipped_graph_edges: 0,
+      agent_runs: 0,
+      agent_reports: 0,
+      skipped_agent_reports: 0,
+      agent_turns: 0,
+      skipped_agent_turns: 0,
+      agent_run_write_intents: 0,
+      skipped_agent_run_write_intents: 0,
       canopy_entries: 0,
       canopy_maps: 0,
       digest_extracts: 0,
@@ -460,12 +597,16 @@ describe('Grove project core importer', () => {
     expect(countRows(targetDb, 'entity_mentions', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'resolution_events', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'graph_edges', TARGET_PROJECT_ID)).toBe(4);
+    expect(countRows(targetDb, 'agent_runs', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'agent_reports', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'agent_turns', TARGET_PROJECT_ID)).toBe(1);
+    expect(countRows(targetDb, 'agent_run_write_intents', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'canopy_entries', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'canopy_maps', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'digest_extracts', TARGET_PROJECT_ID)).toBe(1);
     expect(countRows(targetDb, 'digest_extract_revisions', TARGET_PROJECT_ID)).toBe(2);
     expect(countRows(targetDb, 'cortex_instructions', TARGET_PROJECT_ID)).toBe(1);
-    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(25);
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(32);
   });
 });
 
@@ -495,11 +636,21 @@ function seedSourceProject(db: Database): void {
 
   db.prepare(
     `INSERT INTO agent_runs (
-       id, agent_id, task, instruction, status, harness, provider,
-       model, session_ref, started_at, completed_at, dry_run
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       id, project_id, agent_id, task, instruction, status, harness, provider,
+       model, session_ref, resumable, resume_status, resume_mode, resumed_at,
+       checkpoints, usage_data, started_at, completed_at, tokens_used,
+       cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, cost_data,
+       actions_taken, error, dry_run, reasoning_level, execution_overrides
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?
+     )`,
   ).run(
     'legacy-run',
+    SOURCE_PROJECT_ROOT,
     'myco-agent',
     'cortex-instructions',
     'Generate cortex instructions',
@@ -508,10 +659,126 @@ function seedSourceProject(db: Database): void {
     'openai',
     'gpt-test',
     'legacy-session',
+    1,
+    'ready',
+    'resume',
+    390,
+    '{"phases":{"digest":{"status":"completed"}}}',
+    '{"input_tokens":100,"output_tokens":50}',
     360,
     400,
+    1234,
+    0.42,
+    0.4,
+    0.5,
+    'actual',
+    '{"source":"fixture"}',
+    '["wrote digest"]',
+    null,
     0,
+    'medium',
+    '{"provider":{"model":"gpt-test"}}',
   );
+
+  db.prepare(
+    `INSERT INTO agent_reports (
+       id, project_id, run_id, agent_id, action, summary, details, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    3,
+    SOURCE_PROJECT_ROOT,
+    'legacy-run',
+    'myco-agent',
+    'digest_write',
+    'Wrote digest report',
+    '{"tier":5000}',
+    401,
+  );
+
+  db.run('PRAGMA foreign_keys = OFF');
+  db.prepare(
+    `INSERT INTO agent_reports (
+       id, project_id, run_id, agent_id, action, summary, details, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    30,
+    SOURCE_PROJECT_ROOT,
+    'missing-run',
+    'myco-agent',
+    'orphaned_report',
+    'Report whose run was pruned before migration',
+    null,
+    401,
+  );
+
+  db.prepare(
+    `INSERT INTO agent_turns (
+       id, project_id, run_id, agent_id, turn_number, tool_name,
+       tool_input, tool_output_summary, started_at, completed_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    4,
+    SOURCE_PROJECT_ROOT,
+    'legacy-run',
+    'myco-agent',
+    1,
+    'vault_write_digest',
+    '{"tier":5000}',
+    'digest persisted',
+    402,
+    403,
+  );
+  db.prepare(
+    `INSERT INTO agent_turns (
+       id, project_id, run_id, agent_id, turn_number, tool_name,
+       tool_input, tool_output_summary, started_at, completed_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    40,
+    SOURCE_PROJECT_ROOT,
+    'missing-run',
+    'myco-agent',
+    2,
+    'vault_report',
+    '{}',
+    'orphaned turn',
+    402,
+    403,
+  );
+
+  db.prepare(
+    `INSERT INTO agent_run_write_intents (
+       id, project_id, run_id, phase_id, tool_name, tool_input,
+       synthetic_output, stub_id, recorded_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    5,
+    SOURCE_PROJECT_ROOT,
+    'legacy-run',
+    'phase-digest',
+    'vault_create_spore',
+    '{"content":"synthetic"}',
+    '{"id":"stub-spore"}',
+    'stub-spore',
+    404,
+  );
+  db.prepare(
+    `INSERT INTO agent_run_write_intents (
+       id, project_id, run_id, phase_id, tool_name, tool_input,
+       synthetic_output, stub_id, recorded_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    50,
+    SOURCE_PROJECT_ROOT,
+    'missing-run',
+    'phase-orphan',
+    'vault_create_spore',
+    '{}',
+    '{"id":"stub-orphan"}',
+    'stub-orphan',
+    404,
+  );
+  db.run('PRAGMA foreign_keys = ON');
 
   db.prepare(
     `INSERT INTO sessions (
