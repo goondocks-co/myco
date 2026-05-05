@@ -25,6 +25,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { buildCortexInstructionsInput } from '@myco/context/cortex-brief.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,
@@ -102,9 +103,20 @@ function createSpore(createdAt: number, content: string = 'Test spore content'):
   return id;
 }
 
-function createSession(id: string, status: 'active' | 'completed', createdAt: number): void {
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-instruction-builders-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
+}
+
+function createSession(id: string, status: 'active' | 'completed', createdAt: number, projectId?: string): void {
   upsertSession({
     id,
+    ...(projectId !== undefined ? { project_id: projectId } : {}),
     agent: 'claude-code',
     started_at: createdAt,
     created_at: createdAt,
@@ -588,6 +600,39 @@ describe('buildSkillSurveyInstruction', () => {
       reason: 'no-new-settled-knowledge',
     });
     expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+  });
+
+  it('evaluates eligibility inside the request-context project scope', () => {
+    const now = epochSeconds();
+    createSession('settled-project-a-1', 'completed', now - 300, 'project-a');
+    createSession('settled-project-a-2', 'completed', now - 200, 'project-a');
+    createSession('settled-project-b-1', 'completed', now - 100, 'project-b');
+    for (const [id, projectId] of [
+      ['spore-project-a-1', 'project-a'],
+      ['spore-project-a-2', 'project-a'],
+      ['spore-project-a-3', 'project-a'],
+      ['spore-project-b-1', 'project-b'],
+    ] as const) {
+      insertSpore({
+        id,
+        project_id: projectId,
+        agent_id: TEST_AGENT_ID,
+        session_id: projectId === 'project-a' ? 'settled-project-a-1' : 'settled-project-b-1',
+        observation_type: 'decision',
+        content: `${projectId} scoped observation`,
+        importance: 5,
+        created_at: now - 90,
+      });
+    }
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('project-a'))).toEqual({
+      eligible: true,
+      reason: null,
+    });
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('project-b'))).toEqual({
+      eligible: false,
+      reason: 'insufficient-settled-sessions',
+    });
   });
 });
 

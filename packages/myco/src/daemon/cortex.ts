@@ -31,6 +31,7 @@ import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
@@ -297,13 +298,15 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
+    const requestContext = resolveLegacyRequestContext(vaultDir);
+    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
     const resultPromise = runAgentFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       instruction: built.instruction,
       runContext: { cortex_instruction_input_hash: built.inputHash },
       embeddingManager,
+      requestContext,
     });
     const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK);
 

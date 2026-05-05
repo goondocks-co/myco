@@ -17,6 +17,10 @@ import {
   projectSessionForAgent,
   projectSporeForAgent,
 } from './tools/read-projections.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,17 +62,20 @@ export interface ContextQueryResult {
 export async function executeContextQueries(
   agentId: string,
   queries: ContextQuery[],
+  requestContext?: MycoRequestContext,
 ): Promise<ContextQueryResult[]> {
   // Validate all tool names upfront — unknown tools are a programming error.
   for (const query of queries) {
     validateTool(query.tool);
   }
 
+  const projectId = rowProjectIdFromRequestContext(requestContext);
+
   // Execute all queries in parallel — they hit independent DB tables.
   const settled = await Promise.allSettled(
     queries.map(async (query) => {
       const limit = query.limit ?? DEFAULT_CONTEXT_QUERY_LIMIT;
-      const data = await executeQuery(agentId, query.tool, limit);
+      const data = await executeQuery(agentId, query.tool, limit, projectId);
       return { tool: query.tool, purpose: query.purpose, data } satisfies ContextQueryResult;
     }),
   );
@@ -133,6 +140,7 @@ async function executeQuery(
   agentId: string,
   tool: string,
   limit: number,
+  projectId: string | null | undefined,
 ): Promise<unknown> {
   switch (tool) {
     case 'vault_unprocessed':
@@ -141,11 +149,20 @@ async function executeQuery(
       return getUnprocessedBatches({ limit, includeActive: false }).map(projectBatchForAgent);
 
     case 'vault_spores':
-      return listSpores({ agent_id: agentId, limit, includeActive: false })
+      return listSpores({
+        agent_id: agentId,
+        ...(projectId !== undefined ? { project_id: projectId } : {}),
+        limit,
+        includeActive: false,
+      })
         .map((spore) => projectSporeForAgent(spore, { exact: false }));
 
     case 'vault_sessions':
-      return listSessions({ limit, includeActive: false }).map(projectSessionForAgent);
+      return listSessions({
+        ...(projectId !== undefined ? { project_id: projectId } : {}),
+        limit,
+        includeActive: false,
+      }).map(projectSessionForAgent);
 
     case 'vault_state':
       return getStatesForAgent(agentId);

@@ -165,10 +165,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         const projectRoot = resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
+        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       } catch {
         const projectRoot = resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
+        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       }
       instruction = built?.instruction;
       runContext = built?.context;
@@ -196,6 +196,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       instruction,
       agentId,
       embeddingManager,
+      requestContext: req.requestContext,
       runContext,
       dryRun,
       executionOverrides,
@@ -312,6 +313,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       resumeRunId: run.id,
       resumeMode: mode ?? 'manual',
       embeddingManager,
+      requestContext: req.requestContext,
       logger,
     });
 

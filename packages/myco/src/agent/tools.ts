@@ -35,6 +35,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 // Re-exports for backward compatibility
 export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
@@ -51,6 +52,7 @@ export interface VaultToolOptions {
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;
+  requestContext?: MycoRequestContext;
   /**
    * When true, every vault-mutating tool (except the documented
    * exceptions below) is wrapped in a dry-run interceptor that records
@@ -299,7 +301,17 @@ function shouldGuardRepeatedRead(toolDef: MycoToolDefinition<any>): boolean {
  * Exposed for testing (call handler directly) and for the MCP server factory.
  */
 export function createVaultTools(agentId: string, runId: string, options?: VaultToolOptions & { onlyNames?: Set<string> }) {
-  const { turnOffset = 0, embeddingManager, teamClient, machineId, projectRoot, vaultDir, dryRun, onlyNames } = options ?? {};
+  const {
+    turnOffset = 0,
+    embeddingManager,
+    teamClient,
+    machineId,
+    projectRoot,
+    vaultDir,
+    requestContext,
+    dryRun,
+    onlyNames,
+  } = options ?? {};
 
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
@@ -354,9 +366,10 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     runId,
     embeddingManager,
     teamClient,
-    machineId,
+    machineId: machineId ?? requestContext?.machineId,
     projectRoot,
     vaultDir,
+    requestContext,
     dryRun,
     recordTurn,
   };
@@ -621,7 +634,11 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
  * @param runId — the current agent run ID, injected into reports and turns.
  * @returns an MCP server config with instance, suitable for the SDK.
  */
-export function createVaultToolServer(agentId: string, runId: string, options?: Pick<VaultToolOptions, 'embeddingManager' | 'vaultDir' | 'dryRun'>) {
+export function createVaultToolServer(
+  agentId: string,
+  runId: string,
+  options?: Pick<VaultToolOptions, 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun'>,
+) {
   const tools = createVaultTools(agentId, runId, options);
 
   return createSdkMcpServer({
@@ -646,7 +663,7 @@ export function createScopedVaultToolServer(
   agentId: string,
   runId: string,
   toolNames: string[],
-  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'dryRun'> & { readOnly?: boolean },
+  options?: Pick<VaultToolOptions, 'turnOffset' | 'embeddingManager' | 'projectRoot' | 'vaultDir' | 'requestContext' | 'dryRun'> & { readOnly?: boolean },
 ) {
   const nameSet = new Set(toolNames);
   const allTools = createVaultTools(agentId, runId, { ...options, onlyNames: nameSet });

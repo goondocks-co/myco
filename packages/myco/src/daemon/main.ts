@@ -17,6 +17,7 @@ import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { resolveLegacyRequestContext } from '../tools/request-context.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -880,6 +881,7 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const projectRoot = resolveProjectRoot(vaultDir);
+      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -893,6 +895,7 @@ export async function main(): Promise<void> {
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
+        requestContext,
         logger,
       });
 
@@ -922,6 +925,7 @@ export async function main(): Promise<void> {
 
       const mycoConfig = liveConfig.current;
       const projectRoot = resolveProjectRoot(vaultDir);
+      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
       const built = await buildTaskInstruction(
         task,
         params,
@@ -930,6 +934,7 @@ export async function main(): Promise<void> {
         embeddingManager,
         mycoConfig,
         () => teamSync.getTeamClient(),
+        requestContext,
       );
 
       const resultPromise = runAgent(vaultDir, {
@@ -939,6 +944,7 @@ export async function main(): Promise<void> {
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
+        requestContext,
         logger,
       });
 

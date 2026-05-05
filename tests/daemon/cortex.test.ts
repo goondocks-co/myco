@@ -109,13 +109,14 @@ describe('triggerCortexInstructions', () => {
       started: true,
       runId: 'run-cortex-1',
     });
-    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), '/tmp/myco', getTeamClient);
+    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), '/tmp/myco', getTeamClient, expect.any(Object));
     expect(runAgent).toHaveBeenCalledWith('/tmp/myco', {
       task: 'cortex-instructions',
       agentId: 'myco-agent',
       instruction: 'Cortex instruction payload',
       runContext: { cortex_instruction_input_hash: 'hash-1' },
       embeddingManager: expect.anything(),
+      requestContext: expect.any(Object),
     });
     expect(logger.warn).not.toHaveBeenCalled();
   });

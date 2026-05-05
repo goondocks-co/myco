@@ -19,6 +19,7 @@ import { insertSpore } from '@myco/db/queries/spores.js';
 import { buildPlanId } from '@myco/plans/identity.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 /**
@@ -33,6 +34,16 @@ function makeVaultDir(): { vaultDir: string; machineId: string; cleanup: () => v
   const machineId = 'test-machine';
   fs.writeFileSync(path.join(vaultDir, 'machine_id'), machineId, 'utf-8');
   return { vaultDir, machineId, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+function requestContext(vaultDir: string, projectId: string) {
+  return resolveLegacyRequestContext(vaultDir, {
+    projectRoot: path.dirname(vaultDir),
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'test-machine',
+    source: 'explicit',
+  });
 }
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -271,6 +282,94 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).toContain('Do not mention retired tool names');
     expect(result.instruction).toContain('[retired Myco tool]');
     expect(result.instruction).not.toContain('myco_recall');
+  });
+
+  it('uses request-context project scope for recent vault context', async () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
+
+    upsertDigestExtract({
+      project_id: 'project-a',
+      agent_id: DEFAULT_AGENT_ID,
+      tier: config.cortex.digest.tier,
+      content: 'Project A digest only.',
+      generated_at: NOW,
+    });
+    upsertDigestExtract({
+      project_id: 'project-b',
+      agent_id: DEFAULT_AGENT_ID,
+      tier: config.cortex.digest.tier,
+      content: 'Project B digest must stay hidden.',
+      generated_at: NOW,
+    });
+    upsertSession({
+      id: 'sess-cortex-project-a',
+      project_id: 'project-a',
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      title: 'Project A session',
+      summary: 'Project A session summary.',
+      status: 'completed',
+    });
+    upsertSession({
+      id: 'sess-cortex-project-b',
+      project_id: 'project-b',
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      title: 'Project B session',
+      summary: 'Project B session summary.',
+      status: 'completed',
+    });
+    insertSpore({
+      id: 'spore-cortex-project-a',
+      project_id: 'project-a',
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'Project A decision.',
+      created_at: NOW,
+      status: 'active',
+      session_id: 'sess-cortex-project-a',
+    });
+    insertSpore({
+      id: 'spore-cortex-project-b',
+      project_id: 'project-b',
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'Project B decision must stay hidden.',
+      created_at: NOW,
+      status: 'active',
+      session_id: 'sess-cortex-project-b',
+    });
+    upsertPlan({
+      id: 'plan-cortex-project-a',
+      project_id: 'project-a',
+      logical_key: 'project-a-plan',
+      created_at: NOW,
+      status: 'active',
+      title: 'Project A plan',
+      content: 'Project A plan body.',
+    });
+    upsertPlan({
+      id: 'plan-cortex-project-b',
+      project_id: 'project-b',
+      logical_key: 'project-b-plan',
+      created_at: NOW,
+      status: 'active',
+      title: 'Project B plan',
+      content: 'Project B plan body must stay hidden.',
+    });
+
+    const { vaultDir, cleanup } = makeVaultDir();
+    const result = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext(vaultDir, 'project-a'));
+    cleanup();
+
+    expect(result.instruction).toContain('Project A digest only');
+    expect(result.instruction).toContain('Project A session');
+    expect(result.instruction).toContain('Project A decision');
+    expect(result.instruction).toContain('Project A plan');
+    expect(result.instruction).not.toContain('Project B');
   });
 
   it('emits the myco_cortex canopy_map directive only when a populated map exists for the project', async () => {

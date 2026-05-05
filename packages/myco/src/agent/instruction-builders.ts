@@ -24,6 +24,10 @@ import {
 import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
@@ -101,17 +105,25 @@ export interface SkillSurveyEligibility {
   reason: 'insufficient-settled-sessions' | 'insufficient-settled-spores' | 'no-new-settled-knowledge' | null;
 }
 
+function scopedOptions(projectId: string | null | undefined): { project_id?: string | null } {
+  return projectId !== undefined ? { project_id: projectId } : {};
+}
+
 /**
  * Determine whether skill-survey has enough settled knowledge to produce
  * meaningful, project-specific candidates.
  */
-export function getSkillSurveyEligibility(agentId?: string): SkillSurveyEligibility {
-  const settledSessionCount = countSessions({ includeActive: false });
+export function getSkillSurveyEligibility(
+  agentId?: string,
+  requestContext?: MycoRequestContext,
+): SkillSurveyEligibility {
+  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const settledSessionCount = countSessions({ ...scopedOptions(projectId), includeActive: false });
   if (settledSessionCount < SURVEY_MIN_SETTLED_SESSIONS) {
     return { eligible: false, reason: 'insufficient-settled-sessions' };
   }
 
-  const settledSporeCount = countSpores({ includeActive: false, status: 'active' });
+  const settledSporeCount = countSpores({ ...scopedOptions(projectId), includeActive: false, status: 'active' });
   if (settledSporeCount < SURVEY_MIN_SETTLED_ACTIVE_SPORES) {
     return { eligible: false, reason: 'insufficient-settled-spores' };
   }
@@ -127,6 +139,7 @@ export function getSkillSurveyEligibility(agentId?: string): SkillSurveyEligibil
   }
 
   const hasNewSettledSessions = countSessions({
+    ...scopedOptions(projectId),
     includeActive: false,
     since: watermarkEpoch,
   }) > 0;
@@ -135,6 +148,7 @@ export function getSkillSurveyEligibility(agentId?: string): SkillSurveyEligibil
   }
 
   const hasNewSettledSpores = countSpores({
+    ...scopedOptions(projectId),
     includeActive: false,
     status: 'active',
     since: watermarkEpoch,
@@ -161,7 +175,10 @@ export function getSkillSurveyEligibility(agentId?: string): SkillSurveyEligibil
  * so the executor can read `candidate_id` without regex-parsing the
  * instruction string.
  */
-export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefined {
+export function buildSkillGenerateInstruction(
+  requestContext?: MycoRequestContext,
+): BuiltTaskInstruction | undefined {
+  const projectId = rowProjectIdFromRequestContext(requestContext);
   const candidates = listCandidates({ status: 'approved', limit: 1 });
   if (candidates.length === 0) return undefined;
   const c = candidates[0];
@@ -180,7 +197,7 @@ export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefine
 
   for (const src of sourceIds) {
     if (src.type === 'spore') {
-      const spore = getSpore(src.id);
+      const spore = getSpore(src.id, projectId);
       if (spore) {
         parts.push(`\n### Spore: ${src.id} (${spore.observation_type}, importance ${spore.importance})`);
         parts.push(spore.content);
@@ -188,7 +205,7 @@ export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefine
         if (spore.tags) parts.push(`Tags: ${spore.tags}`);
       }
     } else if (src.type === 'session') {
-      const session = getSession(src.id);
+      const session = getSession(src.id, projectId);
       if (session) {
         parts.push(`\n### Session: ${src.id}`);
         if (session.title) parts.push(`Title: ${session.title}`);
@@ -217,8 +234,10 @@ export function buildSkillGenerateInstruction(): BuiltTaskInstruction | undefine
  */
 export function buildSkillSurveyInstruction(
   agentId: string,
+  requestContext?: MycoRequestContext,
 ): BuiltTaskInstruction | undefined {
-  const eligibility = getSkillSurveyEligibility(agentId);
+  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const eligibility = getSkillSurveyEligibility(agentId, requestContext);
   if (!eligibility.eligible) {
     return undefined;
   }
@@ -246,7 +265,7 @@ export function buildSkillSurveyInstruction(
   // 1. Digest — smallest tier only (landscape overview without flooding context).
   // Full digests can be 50K+ chars across tiers; the smallest tier provides
   // sufficient orientation for the explore phase to direct follow-up queries.
-  const digests = listDigestExtracts(agentId);
+  const digests = listDigestExtracts(agentId, projectId);
   if (digests.length > 0) {
     const smallest = digests.reduce((a, b) => a.tier < b.tier ? a : b);
     parts.push('### Digest');
@@ -259,6 +278,7 @@ export function buildSkillSurveyInstruction(
   // Skill-survey runs against settled work only so spores from in-flight
   // sessions don't bait candidates for procedures that haven't stabilized.
   const wisdomSpores = listSpores({
+    ...scopedOptions(projectId),
     observation_type: 'wisdom',
     limit: SURVEY_MAX_WISDOM_SPORES,
     includeActive: false,
@@ -274,12 +294,14 @@ export function buildSkillSurveyInstruction(
 
   // 3. Recent decisions and gotchas
   const decisions = listSpores({
+    ...scopedOptions(projectId),
     observation_type: 'decision',
     limit: 20,
     includeActive: false,
     ...sinceFilter,
   });
   const gotchas = listSpores({
+    ...scopedOptions(projectId),
     observation_type: 'gotcha',
     limit: 10,
     includeActive: false,
@@ -295,6 +317,7 @@ export function buildSkillSurveyInstruction(
 
   // 4. Recent sessions
   const sessions = listSessions({
+    ...scopedOptions(projectId),
     limit: SURVEY_MAX_SESSIONS,
     includeActive: false,
     ...sinceFilter,
@@ -308,7 +331,7 @@ export function buildSkillSurveyInstruction(
   }
 
   // 5. Current skill inventory (for dedup awareness)
-  const activeSkills = listSkillRecords({ status: 'active', limit: 100 });
+  const activeSkills = listSkillRecords({ ...scopedOptions(projectId), status: 'active', limit: 100 });
   parts.push(`### Active Skills (${activeSkills.length})`);
   for (const s of activeSkills) {
     parts.push(`- **${s.name}**: ${s.description.slice(0, 150)}`);
@@ -417,8 +440,10 @@ async function selectRelevantSporeIdsForSkill(
   skill: { name: string; description: string },
   sinceEpoch: number,
   retrievalProvider?: SemanticSearchProvider,
+  projectId?: string | null,
 ): Promise<string[]> {
   const recentSpores = listSpores({
+    ...scopedOptions(projectId),
     status: 'active',
     since: sinceEpoch,
     includeActive: false,
@@ -541,14 +566,16 @@ export async function buildSkillEvolveInstruction(
   params?: Record<string, string | number | boolean>,
   projectRoot?: string,
   retrievalProvider?: SemanticSearchProvider,
+  requestContext?: MycoRequestContext,
 ): Promise<string | undefined> {
+  const projectId = rowProjectIdFromRequestContext(requestContext);
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
 
   const now = epochSeconds();
   const intervalSeconds = assessIntervalHours * 3600;
 
-  const allSkills = listSkillRecords({ status: 'active', limit: 100 });
+  const allSkills = listSkillRecords({ ...scopedOptions(projectId), status: 'active', limit: 100 });
   const needsAssessment: SkillAssessmentEntry[] = [];
 
   for (const skill of allSkills) {
@@ -564,7 +591,7 @@ export async function buildSkillEvolveInstruction(
 
     if (lastAssessedAt > 0 && (now - lastAssessedAt) < intervalSeconds) continue;
 
-    const newSporeIds = await selectRelevantSporeIdsForSkill(skill, knowledgeWatermark, retrievalProvider);
+    const newSporeIds = await selectRelevantSporeIdsForSkill(skill, knowledgeWatermark, retrievalProvider, projectId);
     if (newSporeIds.length === 0) continue;
 
     needsAssessment.push({
@@ -687,8 +714,12 @@ export async function buildSkillEvolveInstruction(
   let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];
   if (retrievalProvider && projectRoot) {
     try {
+      const skillIds = new Set(allSkills.map((skill) => skill.id));
       const allPairs = retrievalProvider.pairwiseSimilarity('skill_records', 0);
-      semanticPairs = selectOutlierPairs(allPairs, { kSigma: 2, minSamples: 10 });
+      semanticPairs = selectOutlierPairs(
+        allPairs.filter((pair) => skillIds.has(pair.idA) && skillIds.has(pair.idB)),
+        { kSigma: 2, minSamples: 10 },
+      );
     } catch {
       semanticPairs = [];
     }
@@ -1124,20 +1155,21 @@ export async function buildTaskInstruction(
   retrievalProvider?: SemanticSearchProvider,
   config?: MycoConfig,
   getTeamClient?: () => TeamSyncClient | null,
+  requestContext?: MycoRequestContext,
 ): Promise<BuiltTaskInstruction | undefined> {
   switch (taskName) {
     case SKILL_GENERATE_TASK:
-      return buildSkillGenerateInstruction();
+      return buildSkillGenerateInstruction(requestContext);
     case SKILL_SURVEY_TASK:
-      return agentId ? buildSkillSurveyInstruction(agentId) : undefined;
+      return agentId ? buildSkillSurveyInstruction(agentId, requestContext) : undefined;
     case SKILL_EVOLVE_TASK: {
-      const instruction = await buildSkillEvolveInstruction(taskParams, projectRoot, retrievalProvider);
+      const instruction = await buildSkillEvolveInstruction(taskParams, projectRoot, retrievalProvider, requestContext);
       return instruction ? { instruction } : undefined;
     }
     case CORTEX_INSTRUCTIONS_TASK: {
       if (!config || !projectRoot) return undefined;
       const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
-      const built = await buildScheduledCortexInstruction(config, vaultDir, getTeamClient);
+      const built = await buildScheduledCortexInstruction(config, vaultDir, getTeamClient, requestContext);
       return built
         ? {
             instruction: built.instruction,

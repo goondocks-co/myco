@@ -25,6 +25,10 @@ import { listSpores } from '@myco/db/queries/spores.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
+import {
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 import type { TeamSyncClient } from '../daemon/team-sync.js';
 import {
   TOOL_DEFINITIONS,
@@ -226,8 +230,13 @@ function truncatePreview(text: string | null, maxChars: number = CONTENT_PREVIEW
     : sanitized;
 }
 
-function formatRecentSessions(): string {
+function scopedOptions(projectId: string | null | undefined): { project_id?: string | null } {
+  return projectId !== undefined ? { project_id: projectId } : {};
+}
+
+function formatRecentSessions(projectId?: string | null): string {
   const sessions = listSessions({
+    ...scopedOptions(projectId),
     includeActive: false,
     limit: RECENT_SESSION_LIMIT,
   });
@@ -243,8 +252,10 @@ function formatRecentSessions(): string {
 function formatSporesOfType(
   observationType: 'wisdom' | 'decision' | 'discovery',
   limit: number,
+  projectId?: string | null,
 ): string {
   const spores = listSpores({
+    ...scopedOptions(projectId),
     observation_type: observationType,
     includeActive: false,
     status: 'active',
@@ -261,8 +272,9 @@ function formatSporesOfType(
   }).join('\n');
 }
 
-function formatRecentPlans(): string {
+function formatRecentPlans(projectId?: string | null): string {
   const plans = listPlans({
+    ...scopedOptions(projectId),
     status: 'active',
     limit: RECENT_PLAN_LIMIT,
   });
@@ -278,11 +290,11 @@ function formatRecentPlans(): string {
   }).join('\n');
 }
 
-function formatDigestExcerpt(config: MycoConfig): string {
+function formatDigestExcerpt(config: MycoConfig, projectId?: string | null): string {
   const preferredTier = config.cortex.digest.tier;
   const extract =
-    getDigestExtract(DEFAULT_AGENT_ID, preferredTier) ??
-    getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER);
+    getDigestExtract(DEFAULT_AGENT_ID, preferredTier, projectId) ??
+    getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER, projectId);
   if (!extract) return 'No current digest extract is available.';
 
   const excerpt = truncatePreview(extract.content, DIGEST_EXCERPT_MAX_CHARS) ?? '';
@@ -300,6 +312,7 @@ export async function buildCortexInstructionsInput(
   config: MycoConfig,
   vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
+  requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload> {
   // Probe the Canopy Map state once at build time so the prompt can branch
   // deterministically. We only emit the myco_cortex canopy_map directive when a
@@ -309,6 +322,7 @@ export async function buildCortexInstructionsInput(
   // non-empty row without described files, so a populated map proves
   // canopy-describe has run successfully.
   const projectId = resolveCanopyProjectId(vaultDir);
+  const rowProjectId = rowProjectIdFromRequestContext(requestContext);
   const machineId = getMachineId(vaultDir);
   const mapRow = readCanopyMap(projectId, machineId);
   const hasCanopyMap = !!(mapRow && mapRow.content && mapRow.content.length > 0);
@@ -317,12 +331,12 @@ export async function buildCortexInstructionsInput(
   const capabilitySummary = buildCapabilitySummary(capabilities);
   const currentToolSurface = buildCurrentToolSurfaceLines(capabilities);
   const retrievalGuidance = buildRetrievalGuidanceLines(capabilities);
-  const recentSessions = formatRecentSessions();
-  const recentWisdomSpores = formatSporesOfType('wisdom', RECENT_WISDOM_SPORE_LIMIT);
-  const recentDecisionSpores = formatSporesOfType('decision', RECENT_DECISION_SPORE_LIMIT);
-  const recentDiscoverySpores = formatSporesOfType('discovery', RECENT_DISCOVERY_SPORE_LIMIT);
-  const recentPlans = formatRecentPlans();
-  const digestExcerpt = formatDigestExcerpt(config);
+  const recentSessions = formatRecentSessions(rowProjectId);
+  const recentWisdomSpores = formatSporesOfType('wisdom', RECENT_WISDOM_SPORE_LIMIT, rowProjectId);
+  const recentDecisionSpores = formatSporesOfType('decision', RECENT_DECISION_SPORE_LIMIT, rowProjectId);
+  const recentDiscoverySpores = formatSporesOfType('discovery', RECENT_DISCOVERY_SPORE_LIMIT, rowProjectId);
+  const recentPlans = formatRecentPlans(rowProjectId);
+  const digestExcerpt = formatDigestExcerpt(config, rowProjectId);
   const input = {
     cortex: {
       enabled: config.cortex.enabled,
@@ -427,9 +441,10 @@ export async function buildScheduledCortexInstruction(
   config: MycoConfig,
   vaultDir: string,
   getTeamClient?: () => TeamSyncClient | null,
+  requestContext?: MycoRequestContext,
 ): Promise<CortexInstructionPayload | undefined> {
-  const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
-  const existing = getCortexInstructions(DEFAULT_AGENT_ID);
+  const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
+  const existing = getCortexInstructions(DEFAULT_AGENT_ID, rowProjectIdFromRequestContext(requestContext));
   if (existing?.input_hash === built.inputHash) {
     return undefined;
   }

@@ -18,6 +18,7 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -426,6 +427,7 @@ export async function runAgent(
       abortController: taskAbortController,
       projectRoot,
       vaultDir,
+      requestContext: options?.requestContext,
       options,
       checkpointState,
       persistCheckpoints: persistHarnessState,
@@ -500,6 +502,7 @@ export async function runAgent(
       agentId,
       runId,
       runContext: options?.runContext,
+      requestContext: options?.requestContext,
       instruction: options?.instruction,
       dryRun: options?.dryRun,
       vaultDir,
@@ -678,6 +681,7 @@ export async function finalizeOnTaskSuccess(args: {
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   instruction?: string;
   dryRun?: boolean;
   vaultDir?: string;
@@ -721,6 +725,7 @@ function finalizeCortexInstructions(args: {
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   instruction?: string;
 }): void {
   const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION);
@@ -733,6 +738,7 @@ function finalizeCortexInstructions(args: {
   }
 
   upsertCortexInstructions({
+    project_id: rowProjectIdFromRequestContext(args.requestContext),
     agent_id: args.agentId,
     content,
     input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),

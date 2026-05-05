@@ -474,6 +474,7 @@ export function reactivateSessionIfCompleted(id: string): boolean {
 export function updateSession(
   id: string,
   updates: SessionUpdate,
+  projectId?: string | null,
 ): SessionRow | null {
   const db = getDatabase();
 
@@ -505,17 +506,25 @@ export function updateSession(
     }
   }
 
-  if (setClauses.length === 0) return getSession(id);
+  if (setClauses.length === 0) return getSession(id, projectId);
 
   params.push(id);
+  const scopeClause = projectId === undefined
+    ? ''
+    : projectId === null
+      ? ' AND project_id IS NULL'
+      : ' AND project_id = ?';
+  if (projectId !== undefined && projectId !== null) {
+    params.push(projectId);
+  }
 
   db.prepare(
     `UPDATE sessions
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE id = ?${scopeClause}`,
   ).run(...params);
 
-  const updated = getSession(id);
+  const updated = getSession(id, projectId);
 
   if (updated) syncRow('sessions', updated);
 

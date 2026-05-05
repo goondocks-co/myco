@@ -26,6 +26,7 @@ import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -136,6 +137,8 @@ export async function registerScheduledTasks(
       if (!enabled) return;
 
       const { runAgent } = await import('@myco/agent/executor.js');
+      const projectRoot = resolveProjectRoot(vaultDir);
+      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
       const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
         ? null
         : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
@@ -146,6 +149,7 @@ export async function registerScheduledTasks(
           resumeRunId: resumableRun.id,
           resumeMode: 'scheduled',
           embeddingManager,
+          requestContext,
           logger,
         });
         logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
@@ -156,7 +160,6 @@ export async function registerScheduledTasks(
       }
 
       const taskConfig = config.agent.tasks?.[taskName];
-      const projectRoot = resolveProjectRoot(vaultDir);
       const built = await buildTaskInstruction(
         taskName,
         taskConfig?.params,
@@ -165,6 +168,7 @@ export async function registerScheduledTasks(
         embeddingManager,
         config,
         getTeamClient,
+        requestContext,
       );
 
       // Short-circuit: instruction-required tasks must not dispatch
@@ -185,6 +189,7 @@ export async function registerScheduledTasks(
         instruction: built?.instruction,
         runContext: built?.context,
         embeddingManager,
+        requestContext,
         logger,
       });
       logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
@@ -245,7 +250,10 @@ export async function registerScheduledTasks(
       'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)) > 0,
       'has-active-skills': () => countSkillRecords({ status: 'active' }) > 0,
       'has-approved-candidates': () => countCandidates({ status: 'approved' }) > 0,
-      'has-skill-survey-evidence': () => getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible,
+      'has-skill-survey-evidence': () => getSkillSurveyEligibility(
+        taskAgentMap.get(SKILL_SURVEY_TASK),
+        resolveLegacyRequestContext(vaultDir, { projectRoot: resolveProjectRoot(vaultDir) }),
+      ).eligible,
     },
     // Dispatch table mapping accelerator names declared in YAML to the
     // domain-owned count functions. Each domain (canopy, batches, …)

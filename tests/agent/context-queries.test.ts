@@ -35,6 +35,7 @@ import { getUnprocessedBatches } from '@myco/db/queries/batches.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
 // Import the module under test after mocks are registered
 import { executeContextQueries } from '@myco/agent/context-queries.js';
@@ -95,6 +96,16 @@ function makeQuery(overrides: Partial<ContextQuery> = {}): ContextQuery {
     required: false,
     ...overrides,
   };
+}
+
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-context-queries-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +189,21 @@ describe('executeContextQueries', () => {
         includeActive: false,
       });
     });
+
+    it('passes request-context project scope to listSpores', async () => {
+      vi.mocked(listSpores).mockReturnValue([]);
+
+      await executeContextQueries(TEST_AGENT_ID, [
+        makeQuery({ tool: 'vault_spores', limit: 20 }),
+      ], requestContext('project-a'));
+
+      expect(listSpores).toHaveBeenCalledWith({
+        agent_id: TEST_AGENT_ID,
+        project_id: 'project-a',
+        limit: 20,
+        includeActive: false,
+      });
+    });
   });
 
   describe('vault_sessions', () => {
@@ -200,6 +226,20 @@ describe('executeContextQueries', () => {
         started_at: 1000,
       }]);
       expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false });
+    });
+
+    it('passes request-context project scope to listSessions', async () => {
+      vi.mocked(listSessions).mockReturnValue([]);
+
+      await executeContextQueries(TEST_AGENT_ID, [
+        makeQuery({ tool: 'vault_sessions', limit: 5 }),
+      ], requestContext('project-a'));
+
+      expect(listSessions).toHaveBeenCalledWith({
+        project_id: 'project-a',
+        limit: 5,
+        includeActive: false,
+      });
     });
   });
 

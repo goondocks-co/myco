@@ -19,7 +19,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { searchCanopy } from '@myco/canopy/search.js';
-import { textResult, type VaultToolDeps } from './types.js';
+import { rowProjectIdFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
   projectBatchForSessionSummary,
@@ -84,6 +84,7 @@ function classifyEmbeddingProviderError(message: string): string | undefined {
 
 export function createReadTools(deps: VaultToolDeps) {
   const { agentId, embeddingManager, teamClient, machineId } = deps;
+  const projectId = rowProjectIdFromVaultToolDeps(deps);
 
   const vaultUnprocessed = tool(
     'vault_unprocessed',
@@ -140,7 +141,7 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Allow active sessions (default: true for exact session reads)'),
     },
     async (args) => {
-      const session = getSession(args.session_id);
+      const session = getSession(args.session_id, projectId);
       if (!session) {
         return textResult({ session_id: args.session_id, found: false, batches: [] });
       }
@@ -178,7 +179,7 @@ export function createReadTools(deps: VaultToolDeps) {
       const includeMetadata = args.include_metadata ?? DEFAULT_INCLUDE_METADATA;
       if (args.ids && args.ids.length > 0) {
         const spores = args.ids
-          .map((id) => getSpore(id))
+          .map((id) => getSpore(id, projectId))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
         return projectToolRows(
           spores,
@@ -191,6 +192,7 @@ export function createReadTools(deps: VaultToolDeps) {
         observation_type: args.observation_type,
         status: args.status,
         session_id: args.session_id,
+        project_id: projectId,
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
         includeActive: args.include_active === true,
       });
@@ -216,6 +218,7 @@ export function createReadTools(deps: VaultToolDeps) {
     async (args) => {
       const sessions = listSessions({
         id: args.id,
+        project_id: projectId,
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
         includeActive: args.include_active === true,
