@@ -39,6 +39,18 @@ export interface RegisterProjectInput {
   bindingId?: string;
 }
 
+export interface ResolvedRegisteredProject {
+  grove: GroveRecord;
+  project: RegisteredProject;
+}
+
+export interface FindRegisteredProjectInput {
+  projectId: string;
+  groveId?: string | null;
+  bindingId?: string | null;
+  projectRoot?: string | null;
+}
+
 interface GlobalConfigDoc {
   grove?: {
     default_grove_id?: string;
@@ -174,6 +186,65 @@ export function registerProjectInGrove(
   return row;
 }
 
+export function listRegisteredProjects(
+  groveId: string,
+  mycoHome = resolveMycoHome(),
+): RegisteredProject[] {
+  const grove = loadGroveRecord(groveId, mycoHome);
+  if (!grove) return [];
+  const projectsDoc = readToml(resolveGroveProjectsPath(grove.id, mycoHome));
+  const projects = isPlainTable(projectsDoc.projects) ? projectsDoc.projects as Record<string, unknown> : {};
+  return Object.values(projects)
+    .filter(isPlainTable)
+    .map((row) => normalizeRegisteredProject(row as Record<string, unknown>))
+    .filter((row): row is RegisteredProject => !!row);
+}
+
+export function getRegisteredProjectInGrove(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): RegisteredProject | null {
+  const projectsDoc = readToml(resolveGroveProjectsPath(groveId, mycoHome));
+  const projects = isPlainTable(projectsDoc.projects) ? projectsDoc.projects as Record<string, unknown> : {};
+  const row = isPlainTable(projects[projectId])
+    ? normalizeRegisteredProject(projects[projectId] as Record<string, unknown>)
+    : null;
+  return row;
+}
+
+export function findRegisteredProject(
+  input: FindRegisteredProjectInput,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
+  const groves = input.groveId
+    ? [loadGroveRecord(input.groveId, mycoHome)].filter((grove): grove is GroveRecord => !!grove)
+    : listGroves(mycoHome);
+
+  for (const grove of groves) {
+    const project = getRegisteredProjectInGrove(grove.id, input.projectId, mycoHome);
+    if (!project) continue;
+    if (input.bindingId && project.binding_id && project.binding_id !== input.bindingId) continue;
+    if (projectRoot && path.resolve(project.root) !== projectRoot) continue;
+    return { grove, project };
+  }
+
+  return null;
+}
+
+export function findRegisteredProjectByBinding(
+  bindingId: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  for (const grove of listGroves(mycoHome)) {
+    const project = listRegisteredProjects(grove.id, mycoHome)
+      .find((row) => row.binding_id === bindingId);
+    if (project) return { grove, project };
+  }
+  return null;
+}
+
 function resolveGroveByIdOrName(ref: string, mycoHome: string): GroveRecord {
   const matches = listGroves(mycoHome).filter((grove) =>
     grove.id === ref || grove.slug === slugifyGroveName(ref) || grove.name === ref,
@@ -213,6 +284,26 @@ function readToml(filePath: string): TomlTableWithoutBigInt {
 function writeToml(filePath: string, doc: TomlTableWithoutBigInt): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, stringify(doc), 'utf-8');
+}
+
+function normalizeRegisteredProject(row: Record<string, unknown>): RegisteredProject | null {
+  if (
+    typeof row.project_id !== 'string'
+    || typeof row.name !== 'string'
+    || typeof row.root !== 'string'
+    || typeof row.created_at !== 'string'
+    || typeof row.updated_at !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    project_id: row.project_id,
+    name: row.name,
+    root: row.root,
+    ...(typeof row.binding_id === 'string' ? { binding_id: row.binding_id } : {}),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 function isPlainTable(value: unknown): value is Record<string, unknown> {

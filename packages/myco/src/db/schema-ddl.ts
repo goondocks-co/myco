@@ -561,8 +561,8 @@ export const MIGRATION_IMPORT_JOURNAL_TABLE = `
     error                TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL,
-    UNIQUE (migration_id, source_table, source_id),
-    UNIQUE (migration_id, target_table, target_id)
+    UNIQUE (migration_id, source_db_path, source_table, source_id),
+    UNIQUE (migration_id, target_grove_id, target_project_id, target_table, target_id)
   )`;
 
 export const CANOPY_ENTRIES_TABLE = `
@@ -624,8 +624,8 @@ export const CANOPY_INDEX_DDLS: readonly string[] = [
 ];
 
 export const MIGRATION_IMPORT_JOURNAL_INDEX_DDLS: readonly string[] = [
-  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_source ON migration_import_journal (migration_id, source_table, source_id)',
-  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_target ON migration_import_journal (migration_id, target_table, target_id)',
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_source ON migration_import_journal (migration_id, source_db_path, source_table, source_id)',
+  'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_target ON migration_import_journal (migration_id, target_grove_id, target_project_id, target_table, target_id)',
   'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_project ON migration_import_journal (target_grove_id, target_project_id)',
   'CREATE INDEX IF NOT EXISTS idx_migration_import_journal_status ON migration_import_journal (migration_id, status)',
 ];

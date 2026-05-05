@@ -13,6 +13,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -132,22 +133,6 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     synced_at: (row.synced_at as number) ?? null,
   };
-}
-
-function appendProjectCondition(
-  conditions: string[],
-  params: unknown[],
-  projectId: string | null | undefined,
-  qualifier = '',
-): void {
-  if (projectId === undefined) return;
-  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
-  if (projectId === null) {
-    conditions.push(`${column} IS NULL`);
-  } else {
-    conditions.push(`${column} = ?`);
-    params.push(projectId);
-  }
 }
 
 // ---------------------------------------------------------------------------

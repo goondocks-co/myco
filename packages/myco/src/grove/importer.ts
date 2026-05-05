@@ -1181,12 +1181,7 @@ function importSession(ctx: ImportContext, row: SourceSessionRow): boolean {
 }
 
 function importPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow): boolean {
-  const existing = lookupImportMappingBySource(
-    ctx.migrationId,
-    'prompt_batches',
-    row.id,
-    ctx.targetDb,
-  );
+  const existing = lookupSourceMapping(ctx, 'prompt_batches', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'prompt_batches', targetId)) {
@@ -1260,12 +1255,7 @@ function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, target
 }
 
 function importActivity(ctx: ImportContext, row: SourceActivityRow): boolean {
-  const existing = lookupImportMappingBySource(
-    ctx.migrationId,
-    'activities',
-    row.id,
-    ctx.targetDb,
-  );
+  const existing = lookupSourceMapping(ctx, 'activities', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'activities', targetId)) {
@@ -1548,7 +1538,7 @@ function importEntity(ctx: ImportContext, row: SourceEntityRow): boolean {
 
 function importEntityMention(ctx: ImportContext, row: SourceEntityMentionRow): boolean {
   const sourceId = entityMentionSourceId(row);
-  const existing = lookupImportMappingBySource(ctx.migrationId, 'entity_mentions', sourceId, ctx.targetDb);
+  const existing = lookupSourceMapping(ctx, 'entity_mentions', sourceId);
   if (existing?.status === 'imported') return false;
 
   const entityId = mapRequiredTextId(ctx, 'entities', row.entity_id);
@@ -1995,7 +1985,7 @@ function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow):
 
 function linkSkillRecordCandidate(ctx: ImportContext, row: SourceSkillRecordRow): void {
   if (!row.candidate_id) return;
-  const record = lookupImportMappingBySource(ctx.migrationId, 'skill_records', row.id, ctx.targetDb);
+  const record = lookupSourceMapping(ctx, 'skill_records', row.id);
   if (!record || record.status === 'skipped' || record.status === 'error') return;
 
   const candidateId = mapOptionalTextIdIfMapped(ctx, 'skill_candidates', row.candidate_id);
@@ -2153,12 +2143,7 @@ function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): boolean {
 }
 
 function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): boolean {
-  const existing = lookupImportMappingBySource(
-    ctx.migrationId,
-    'digest_extracts',
-    row.id,
-    ctx.targetDb,
-  );
+  const existing = lookupSourceMapping(ctx, 'digest_extracts', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'digest_extracts', targetId)) {
@@ -2212,12 +2197,7 @@ function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, ta
 }
 
 function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow): boolean {
-  const existing = lookupImportMappingBySource(
-    ctx.migrationId,
-    'digest_extract_revisions',
-    row.id,
-    ctx.targetDb,
-  );
+  const existing = lookupSourceMapping(ctx, 'digest_extract_revisions', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'digest_extract_revisions', targetId)) {
@@ -2393,12 +2373,7 @@ function ensureTextMapping(
     sourceMachineId?: string | null;
   },
 ): ImportMappingRow {
-  const existing = lookupImportMappingBySource(
-    ctx.migrationId,
-    input.sourceTable,
-    input.sourceId,
-    ctx.targetDb,
-  );
+  const existing = lookupSourceMapping(ctx, input.sourceTable, input.sourceId);
   if (existing) return existing;
 
   return recordImportMapping({
@@ -2428,21 +2403,19 @@ function ensureIntegerMappings<Row>(
   },
 ): void {
   const usedTargetIds = new Set<string>();
+  const mappingBySourceId = new Map<number, ImportMappingRow | null>();
   for (const row of input.rows) {
-    const mapping = lookupImportMappingBySource(
-      ctx.migrationId,
-      input.sourceTable,
-      input.sourceId(row),
-      ctx.targetDb,
-    );
+    const sourceId = input.sourceId(row);
+    if (mappingBySourceId.has(sourceId)) continue;
+    const mapping = lookupSourceMapping(ctx, input.sourceTable, sourceId);
+    mappingBySourceId.set(sourceId, mapping);
     if (mapping) usedTargetIds.add(mapping.target_id);
   }
 
   let nextTargetId = nextIntegerTargetId(ctx.targetDb, input.targetTable);
   for (const row of input.rows) {
     const sourceId = input.sourceId(row);
-    const existing = lookupImportMappingBySource(ctx.migrationId, input.sourceTable, sourceId, ctx.targetDb);
-    if (existing) continue;
+    if (mappingBySourceId.get(sourceId)) continue;
 
     while (usedTargetIds.has(String(nextTargetId)) || targetRowExists(ctx.targetDb, input.targetTable, nextTargetId)) {
       nextTargetId += 1;
@@ -2502,12 +2475,23 @@ function nextIntegerTargetId(db: Database, table: TargetTable): number {
   return row?.next_id ?? 1;
 }
 
+function lookupSourceMapping(
+  ctx: ImportContext,
+  sourceTable: TargetTable,
+  sourceId: string | number,
+): ImportMappingRow | null {
+  return lookupImportMappingBySource(ctx.migrationId, sourceTable, sourceId, {
+    source_db_path: ctx.sourceDbPath,
+    target_project_id: ctx.targetProjectId,
+  }, ctx.targetDb);
+}
+
 function requireMapping(
   ctx: ImportContext,
   sourceTable: TargetTable,
   sourceId: string | number,
 ): ImportMappingRow {
-  const mapping = lookupImportMappingBySource(ctx.migrationId, sourceTable, sourceId, ctx.targetDb);
+  const mapping = lookupSourceMapping(ctx, sourceTable, sourceId);
   if (!mapping) {
     throw new Error(`Missing import mapping for ${sourceTable}/${sourceId}`);
   }
@@ -2573,11 +2557,18 @@ function sortDigestExtractRevisionsForImport(rows: readonly SourceDigestExtractR
 }
 
 function markImported(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number): void {
-  markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'imported', {}, ctx.targetDb);
+  markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'imported', {
+    source_db_path: ctx.sourceDbPath,
+    target_project_id: ctx.targetProjectId,
+  }, ctx.targetDb);
 }
 
 function markSkipped(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | number, reason: string): void {
-  markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'skipped', { notes: reason }, ctx.targetDb);
+  markImportMappingStatus(ctx.migrationId, sourceTable, sourceId, 'skipped', {
+    notes: reason,
+    source_db_path: ctx.sourceDbPath,
+    target_project_id: ctx.targetProjectId,
+  }, ctx.targetDb);
 }
 
 function agentOperationSkipReason(
@@ -2614,7 +2605,7 @@ function mapOptionalTextId(ctx: ImportContext, sourceTable: TargetTable, sourceI
 
 function mapOptionalTextIdIfMapped(ctx: ImportContext, sourceTable: TargetTable, sourceId: string | null): string | null {
   if (sourceId == null) return null;
-  const mapping = lookupImportMappingBySource(ctx.migrationId, sourceTable, sourceId, ctx.targetDb);
+  const mapping = lookupSourceMapping(ctx, sourceTable, sourceId);
   if (!mapping || mapping.status === 'skipped' || mapping.status === 'error') return null;
   return mapping.target_id;
 }
@@ -2639,18 +2630,18 @@ function mapOptionalPolymorphicId(ctx: ImportContext, sourceType: string, source
 function lookupPolymorphicMapping(ctx: ImportContext, sourceType: string, sourceId: string): ImportMappingRow | null {
   switch (sourceType) {
     case 'session':
-      return lookupImportMappingBySource(ctx.migrationId, 'sessions', sourceId, ctx.targetDb);
+      return lookupSourceMapping(ctx, 'sessions', sourceId);
     case 'batch':
     case 'prompt_batch':
-      return lookupImportMappingBySource(ctx.migrationId, 'prompt_batches', parseIntegerSourceId(sourceType, sourceId), ctx.targetDb);
+      return lookupSourceMapping(ctx, 'prompt_batches', parseIntegerSourceId(sourceType, sourceId));
     case 'spore':
-      return lookupImportMappingBySource(ctx.migrationId, 'spores', sourceId, ctx.targetDb);
+      return lookupSourceMapping(ctx, 'spores', sourceId);
     case 'entity':
-      return lookupImportMappingBySource(ctx.migrationId, 'entities', sourceId, ctx.targetDb);
+      return lookupSourceMapping(ctx, 'entities', sourceId);
     case 'plan':
-      return lookupImportMappingBySource(ctx.migrationId, 'plans', sourceId, ctx.targetDb);
+      return lookupSourceMapping(ctx, 'plans', sourceId);
     case 'artifact':
-      return lookupImportMappingBySource(ctx.migrationId, 'artifacts', sourceId, ctx.targetDb);
+      return lookupSourceMapping(ctx, 'artifacts', sourceId);
     default:
       return null;
   }

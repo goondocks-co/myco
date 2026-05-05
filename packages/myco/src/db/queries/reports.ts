@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -21,6 +22,7 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting a report. */
 export interface ReportInsert {
   run_id: string;
+  project_id?: string | null;
   agent_id: string;
   action: string;
   summary: string;
@@ -31,6 +33,7 @@ export interface ReportInsert {
 /** Row shape returned from agent_reports queries (all columns). */
 export interface ReportRow {
   id: number;
+  project_id: string | null;
   run_id: string;
   agent_id: string;
   action: string;
@@ -42,6 +45,11 @@ export interface ReportRow {
 /** Filter options for `listReportsByAgent`. */
 export interface ListReportsByAgentOptions {
   limit?: number;
+  project_id?: string | null;
+}
+
+export interface ListReportsOptions {
+  project_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +58,7 @@ export interface ListReportsByAgentOptions {
 
 const REPORT_COLUMNS = [
   'id',
+  'project_id',
   'run_id',
   'agent_id',
   'action',
@@ -68,6 +77,7 @@ const SELECT_COLUMNS = REPORT_COLUMNS.join(', ');
 function toReportRow(row: Record<string, unknown>): ReportRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     run_id: row.run_id as string,
     agent_id: row.agent_id as string,
     action: row.action as string,
@@ -91,11 +101,13 @@ export function insertReport(data: ReportInsert): ReportRow {
 
   const info = db.prepare(
     `INSERT INTO agent_reports (
-       run_id, agent_id, action, summary, details, created_at
+       project_id, run_id, agent_id, action, summary, details, created_at
      ) VALUES (
-       ?, ?, ?, ?, ?, ?
+       COALESCE(?, (SELECT project_id FROM agent_runs WHERE id = ?)), ?, ?, ?, ?, ?, ?
      )`,
   ).run(
+    data.project_id ?? null,
+    data.run_id,
     data.run_id,
     data.agent_id,
     data.action,
@@ -114,15 +126,18 @@ export function insertReport(data: ReportInsert): ReportRow {
 /**
  * List all reports for a specific run, ordered by created_at ASC.
  */
-export function listReports(runId: string): ReportRow[] {
+export function listReports(runId: string, options: ListReportsOptions = {}): ReportRow[] {
   const db = getDatabase();
+  const conditions = ['run_id = ?'];
+  const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, options.project_id);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_reports
-     WHERE run_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY created_at ASC`,
-  ).all(runId) as Record<string, unknown>[];
+  ).all(...params) as Record<string, unknown>[];
 
   return rows.map(toReportRow);
 }
@@ -137,14 +152,17 @@ export function listReportsByAgent(
   const db = getDatabase();
 
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
+  const conditions = ['agent_id = ?'];
+  const params: unknown[] = [agentId];
+  appendProjectCondition(conditions, params, options.project_id);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_reports
-     WHERE agent_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY created_at DESC
      LIMIT ?`,
-  ).all(agentId, limit) as Record<string, unknown>[];
+  ).all(...params, limit) as Record<string, unknown>[];
 
   return rows.map(toReportRow);
 }

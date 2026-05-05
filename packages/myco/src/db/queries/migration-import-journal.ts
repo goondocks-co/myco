@@ -44,6 +44,16 @@ export interface ImportMappingRow {
   updated_at: number;
 }
 
+export interface ImportMappingSourceLookupOptions {
+  source_db_path?: string | null;
+  target_project_id?: string | null;
+}
+
+export interface ImportMappingTargetLookupOptions {
+  target_grove_id?: string | null;
+  target_project_id?: string | null;
+}
+
 const SELECT_COLUMNS = [
   'id',
   'migration_id',
@@ -67,6 +77,23 @@ const SELECT_COLUMNS = [
 
 const VALID_STATUSES = new Set<ImportMappingStatus>(['mapped', 'imported', 'skipped', 'error']);
 
+function resolveLookupArgs<T extends object>(
+  optionsOrDb?: T | Database,
+  maybeDb?: Database,
+): { options: Partial<T>; database: Database } {
+  if (isDatabase(optionsOrDb)) {
+    return { options: {}, database: optionsOrDb };
+  }
+  return {
+    options: optionsOrDb ?? {},
+    database: maybeDb ?? getDatabase(),
+  };
+}
+
+function isDatabase(value: unknown): value is Database {
+  return !!value && typeof value === 'object' && typeof (value as { prepare?: unknown }).prepare === 'function';
+}
+
 export function recordImportMapping(input: ImportMappingInput, db: Database = getDatabase()): ImportMappingRow {
   const normalized = normalizeInput(input);
   const now = epochSeconds();
@@ -81,7 +108,7 @@ export function recordImportMapping(input: ImportMappingInput, db: Database = ge
        status, notes, error, created_at, updated_at
      )
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (migration_id, source_table, source_id) DO UPDATE SET
+     ON CONFLICT (migration_id, source_db_path, source_table, source_id) DO UPDATE SET
        source_project_root = excluded.source_project_root,
        source_db_path = excluded.source_db_path,
        target_grove_id = excluded.target_grove_id,
@@ -120,6 +147,10 @@ export function recordImportMapping(input: ImportMappingInput, db: Database = ge
     normalized.migration_id,
     normalized.source_table,
     normalized.source_id,
+    {
+      source_db_path: normalized.source_db_path,
+      target_project_id: normalized.target_project_id,
+    },
     db,
   );
   if (!row) throw new Error('Failed to record import mapping');
@@ -130,13 +161,38 @@ export function lookupImportMappingBySource(
   migrationId: string,
   sourceTable: string,
   sourceId: string | number,
-  db: Database = getDatabase(),
+  options: ImportMappingSourceLookupOptions,
+  db?: Database,
+): ImportMappingRow | null;
+export function lookupImportMappingBySource(
+  migrationId: string,
+  sourceTable: string,
+  sourceId: string | number,
+  db?: Database,
+): ImportMappingRow | null;
+export function lookupImportMappingBySource(
+  migrationId: string,
+  sourceTable: string,
+  sourceId: string | number,
+  optionsOrDb: ImportMappingSourceLookupOptions | Database = getDatabase(),
+  maybeDb?: Database,
 ): ImportMappingRow | null {
-  const row = db.prepare(
+  const { options, database } = resolveLookupArgs<ImportMappingSourceLookupOptions>(optionsOrDb, maybeDb);
+  const conditions = ['migration_id = ?', 'source_table = ?', 'source_id = ?'];
+  const params: unknown[] = [migrationId, sourceTable, String(sourceId)];
+  if (options.source_db_path) {
+    conditions.push('source_db_path = ?');
+    params.push(options.source_db_path);
+  }
+  if (options.target_project_id) {
+    conditions.push('target_project_id = ?');
+    params.push(options.target_project_id);
+  }
+  const row = database.prepare(
     `SELECT ${SELECT_COLUMNS}
        FROM migration_import_journal
-      WHERE migration_id = ? AND source_table = ? AND source_id = ?`,
-  ).get(migrationId, sourceTable, String(sourceId)) as Record<string, unknown> | undefined;
+      WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? mapRow(row) : null;
 }
 
@@ -144,13 +200,38 @@ export function lookupImportMappingByTarget(
   migrationId: string,
   targetTable: string,
   targetId: string,
-  db: Database = getDatabase(),
+  options: ImportMappingTargetLookupOptions,
+  db?: Database,
+): ImportMappingRow | null;
+export function lookupImportMappingByTarget(
+  migrationId: string,
+  targetTable: string,
+  targetId: string,
+  db?: Database,
+): ImportMappingRow | null;
+export function lookupImportMappingByTarget(
+  migrationId: string,
+  targetTable: string,
+  targetId: string,
+  optionsOrDb: ImportMappingTargetLookupOptions | Database = getDatabase(),
+  maybeDb?: Database,
 ): ImportMappingRow | null {
-  const row = db.prepare(
+  const { options, database } = resolveLookupArgs<ImportMappingTargetLookupOptions>(optionsOrDb, maybeDb);
+  const conditions = ['migration_id = ?', 'target_table = ?', 'target_id = ?'];
+  const params: unknown[] = [migrationId, targetTable, targetId];
+  if (options.target_grove_id) {
+    conditions.push('target_grove_id = ?');
+    params.push(options.target_grove_id);
+  }
+  if (options.target_project_id) {
+    conditions.push('target_project_id = ?');
+    params.push(options.target_project_id);
+  }
+  const row = database.prepare(
     `SELECT ${SELECT_COLUMNS}
        FROM migration_import_journal
-      WHERE migration_id = ? AND target_table = ? AND target_id = ?`,
-  ).get(migrationId, targetTable, targetId) as Record<string, unknown> | undefined;
+      WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? mapRow(row) : null;
 }
 
@@ -172,28 +253,39 @@ export function markImportMappingStatus(
   sourceTable: string,
   sourceId: string | number,
   status: ImportMappingStatus,
-  options: { notes?: string | null; error?: string | null } = {},
+  options: { notes?: string | null; error?: string | null; source_db_path?: string | null; target_project_id?: string | null } = {},
   db: Database = getDatabase(),
 ): ImportMappingRow {
   assertStatus(status);
+  const conditions = ['migration_id = ?', 'source_table = ?', 'source_id = ?'];
+  const params: unknown[] = [migrationId, sourceTable, String(sourceId)];
+  if (options.source_db_path) {
+    conditions.push('source_db_path = ?');
+    params.push(options.source_db_path);
+  }
+  if (options.target_project_id) {
+    conditions.push('target_project_id = ?');
+    params.push(options.target_project_id);
+  }
   db.prepare(
     `UPDATE migration_import_journal
         SET status = ?,
             notes = COALESCE(?, notes),
             error = ?,
             updated_at = ?
-      WHERE migration_id = ? AND source_table = ? AND source_id = ?`,
+      WHERE ${conditions.join(' AND ')}`,
   ).run(
     status,
     options.notes ?? null,
     options.error ?? null,
     epochSeconds(),
-    migrationId,
-    sourceTable,
-    String(sourceId),
+    ...params,
   );
 
-  const row = lookupImportMappingBySource(migrationId, sourceTable, sourceId, db);
+  const row = lookupImportMappingBySource(migrationId, sourceTable, sourceId, {
+    source_db_path: options.source_db_path,
+    target_project_id: options.target_project_id,
+  }, db);
   if (!row) throw new Error(`Import mapping not found: ${migrationId}/${sourceTable}/${sourceId}`);
   return row;
 }

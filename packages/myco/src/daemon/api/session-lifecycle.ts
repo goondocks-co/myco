@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import type { RouteResponse } from '../router.js';
+import type { RouteRequest, RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';
 import type { DaemonServer } from '../server.js';
@@ -23,6 +23,7 @@ import { upsertSession, closeSession, updateSession } from '@myco/db/queries/ses
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -86,7 +87,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
   const canopyDeltaHolder = (): { run: () => Promise<void> } | undefined => deps.canopyDelta;
 
   /** POST /sessions/register */
-  async function handleRegister(req: { body: unknown }): Promise<RouteResponse> {
+  async function handleRegister(req: RouteRequest): Promise<RouteResponse> {
     powerManager.recordActivity();
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
@@ -96,19 +97,23 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     // Upsert session in SQLite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+    const requestMachineId = req.requestContext?.machineId ?? machineId;
     upsertSession({
       id: session_id,
+      project_id: projectId,
       agent: agent ?? 'claude-code',
       user: null,
-      project_root: resolveProjectRoot(vaultDir),
+      project_root: projectRoot,
       branch: branch ?? null,
       started_at: startedEpoch,
       created_at: now,
       status: 'active',
-      machine_id: machineId,
+      machine_id: requestMachineId,
     });
     // Clear ended_at if session was previously completed (reload scenario)
-    updateSession(session_id, { ended_at: null, status: 'active' });
+    updateSession(session_id, { ended_at: null, status: 'active' }, projectId);
 
     // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
     reconciler.reconcileSession(session_id);

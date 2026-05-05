@@ -8,6 +8,7 @@
 import { getDatabase, changesSince } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -302,18 +303,10 @@ export function upsertSession(data: SessionInsert): SessionRow {
  */
 export function getSession(id: string, projectId?: string | null): SessionRow | null {
   const db = getDatabase();
-
-  const row = projectId === undefined
-    ? db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
-    ).get(id) as Record<string, unknown> | undefined
-    : projectId === null
-      ? db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ? AND project_id IS NULL`,
-      ).get(id) as Record<string, unknown> | undefined
-      : db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ? AND project_id = ?`,
-      ).get(id, projectId) as Record<string, unknown> | undefined;
+  const scope = projectScopeClause(projectId);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?${scope.sql}`,
+  ).get(id, ...scope.params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSessionRow(row);
@@ -331,14 +324,7 @@ function buildSessionsWhere(
     params.push(options.status);
   }
 
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.project_id);
 
   if (options.agent !== undefined) {
     conditions.push(`agent = ?`);
@@ -432,15 +418,10 @@ export function countSessions(
  */
 export function getActiveSessionIds(projectId?: string | null): Set<string> {
   const db = getDatabase();
-  const scopeClause = projectId === undefined
-    ? ''
-    : projectId === null
-      ? ' AND project_id IS NULL'
-      : ' AND project_id = ?';
-  const params = projectId === undefined || projectId === null ? [] : [projectId];
+  const scope = projectScopeClause(projectId);
   const rows = db.prepare(
-    `SELECT id FROM sessions WHERE status = 'active'${scopeClause}`,
-  ).all(...params) as Array<{ id: string }>;
+    `SELECT id FROM sessions WHERE status = 'active'${scope.sql}`,
+  ).all(...scope.params) as Array<{ id: string }>;
   return new Set(rows.map((r) => r.id));
 }
 
@@ -457,16 +438,17 @@ export function getActiveSessionIds(projectId?: string | null): Set<string> {
  *
  * @returns true if a row was updated (session was completed and is now active)
  */
-export function reactivateSessionIfCompleted(id: string): boolean {
+export function reactivateSessionIfCompleted(id: string, projectId?: string | null): boolean {
   const db = getDatabase();
+  const scope = projectScopeClause(projectId);
   const info = db.prepare(
-    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'`,
-  ).run(id);
+    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'${scope.sql}`,
+  ).run(id, ...scope.params);
   if (info.changes === 0) return false;
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?${scope.sql}`,
+  ).get(id, ...scope.params) as Record<string, unknown> | undefined;
   if (row) syncRow('sessions', toSessionRow(row));
 
   return true;
@@ -515,19 +497,13 @@ export function updateSession(
   if (setClauses.length === 0) return getSession(id, projectId);
 
   params.push(id);
-  const scopeClause = projectId === undefined
-    ? ''
-    : projectId === null
-      ? ' AND project_id IS NULL'
-      : ' AND project_id = ?';
-  if (projectId !== undefined && projectId !== null) {
-    params.push(projectId);
-  }
+  const scope = projectScopeClause(projectId);
+  params.push(...scope.params);
 
   db.prepare(
     `UPDATE sessions
      SET ${setClauses.join(', ')}
-     WHERE id = ?${scopeClause}`,
+     WHERE id = ?${scope.sql}`,
   ).run(...params);
 
   const updated = getSession(id, projectId);

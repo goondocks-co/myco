@@ -133,7 +133,7 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_AGENT, async () => {
     const { handleMycoAgent } = await import('./agent.js');
     return {
-      handle: (input, client) => handleMycoAgent(input as unknown as Parameters<typeof handleMycoAgent>[0], client),
+      handle: (input, client, context) => handleMycoAgent(input as unknown as Parameters<typeof handleMycoAgent>[0], client, context),
       summarize: (input, result) => {
         const r = result as { ok: unknown };
         return { op: input.op ?? 'runs', id: input.id, ok: r.ok };

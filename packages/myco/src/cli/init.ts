@@ -1,10 +1,10 @@
 import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
-import { ensureProjectManifest, loadProjectManifest } from '../config/project-manifest.js';
+import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
 import { ensureGroveDatabase } from '../grove/database.js';
-import { registerProjectInGrove, resolveGrove } from '../grove/registry.js';
+import { findRegisteredProjectByBinding, registerProjectInGrove, resolveGrove, type GroveRecord } from '../grove/registry.js';
 import {
   parseStringFlag,
   VAULT_GITIGNORE,
@@ -57,6 +57,10 @@ export async function run(args: string[]): Promise<void> {
   const hasEmbeddingFlags = !!(embeddingProvider || embeddingModel || embeddingUrl);
   const existingProjectManifest = loadProjectManifest(vaultDir);
   const grove = resolveGrove(groveRef ?? existingProjectManifest?.grove?.slug);
+  assertManifestGroveBindingCompatible(existingProjectManifest, grove, {
+    explicitGroveRef: groveRef,
+    projectRoot,
+  });
 
   // Flag-based embedding config for new vaults via non-interactive / scripted installs.
   // Existing vaults are configured through the dashboard, not CLI flags.
@@ -222,4 +226,40 @@ export async function run(args: string[]): Promise<void> {
   }
   console.log('');
   console.log('Start a coding session -- Myco will begin capturing automatically.');
+}
+
+function assertManifestGroveBindingCompatible(
+  manifest: ProjectManifest | null,
+  grove: GroveRecord,
+  options: { explicitGroveRef?: string; projectRoot: string },
+): void {
+  const manifestGrove = manifest?.grove;
+  const bindingId = manifestGrove?.binding_id;
+  if (!manifest || !bindingId) return;
+
+  const registered = findRegisteredProjectByBinding(bindingId);
+  if (registered) {
+    if (registered.grove.id !== grove.id) {
+      throw new Error(
+        `Existing project.toml Grove binding ${bindingId} belongs to Grove ${registered.grove.name} (${registered.grove.slug}); refusing to register it into Grove ${grove.name} (${grove.slug}).`,
+      );
+    }
+    if (registered.project.project_id !== manifest.project.id) {
+      throw new Error(
+        `Existing project.toml Grove binding ${bindingId} is registered to project ${registered.project.project_id}, not ${manifest.project.id}.`,
+      );
+    }
+    if (path.resolve(registered.project.root) !== path.resolve(options.projectRoot)) {
+      throw new Error(
+        `Existing project.toml Grove binding ${bindingId} is already registered at ${registered.project.root}; refusing to rebind it to ${options.projectRoot}.`,
+      );
+    }
+    return;
+  }
+
+  if (options.explicitGroveRef && manifestGrove?.slug && manifestGrove.slug !== grove.slug) {
+    throw new Error(
+      `Existing project.toml Grove binding ${bindingId} targets Grove ${manifestGrove.slug}; refusing explicit --grove ${options.explicitGroveRef}.`,
+    );
+  }
 }

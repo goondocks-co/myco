@@ -35,7 +35,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { MycoToolDefinition, VaultToolDeps } from './tools/types.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 
 // Re-exports for backward compatibility
 export { validateSkillContent, MAX_SKILL_LINES, REQUIRED_FRONTMATTER_FIELDS } from './tools/skill-validator.js';
@@ -312,6 +312,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     dryRun,
     onlyNames,
   } = options ?? {};
+  const projectId = rowProjectIdFromRequestContext(requestContext);
 
   /** Turn number counter — incremented per tool call (read and write) within a run. */
   let turnCounter = turnOffset;
@@ -348,6 +349,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
     try {
       const turn = insertTurn({
         run_id: runId,
+        project_id: projectId,
         agent_id: agentId,
         turn_number: turnCounter,
         tool_name: toolName,
@@ -493,6 +495,7 @@ export function createVaultTools(agentId: string, runId: string, options?: Vault
         try {
           insertWriteIntent({
             runId,
+            projectId,
             phaseId: null,
             toolName: toolDef.name,
             toolInput: serializedArgs,

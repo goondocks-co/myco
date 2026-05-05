@@ -10,6 +10,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
 import { epochSeconds } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
 
@@ -20,6 +21,7 @@ import { tryParseJson } from '@myco/utils/json.js';
 /** Fields required when inserting a write intent. */
 export interface WriteIntentInsert {
   runId: string;
+  projectId?: string | null;
   /** Phase of the task that emitted this write, if any. */
   phaseId?: string | null;
   /** Name of the tool the agent called (e.g. 'vault_create_spore'). */
@@ -44,6 +46,7 @@ export interface WriteIntentInsert {
  */
 export interface WriteIntentRow {
   id: number;
+  project_id: string | null;
   run_id: string;
   phase_id: string | null;
   tool_name: string;
@@ -59,6 +62,7 @@ export interface WriteIntentRow {
 
 const INTENT_COLUMNS = [
   'id',
+  'project_id',
   'run_id',
   'phase_id',
   'tool_name',
@@ -77,6 +81,7 @@ const SELECT_COLUMNS = INTENT_COLUMNS.join(', ');
 function toWriteIntentRow(row: Record<string, unknown>): WriteIntentRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     run_id: row.run_id as string,
     phase_id: (row.phase_id as string) ?? null,
     tool_name: row.tool_name as string,
@@ -85,6 +90,12 @@ function toWriteIntentRow(row: Record<string, unknown>): WriteIntentRow {
     stub_id: (row.stub_id as string) ?? null,
     recorded_at: row.recorded_at as number,
   };
+}
+
+export interface ListWriteIntentsOptions {
+  limit?: number;
+  offset?: number;
+  project_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,9 +110,11 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
   const recordedAt = data.recordedAt ?? epochSeconds();
   const info = db.prepare(
     `INSERT INTO agent_run_write_intents
-       (run_id, phase_id, tool_name, tool_input, synthetic_output, stub_id, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (project_id, run_id, phase_id, tool_name, tool_input, synthetic_output, stub_id, recorded_at)
+     VALUES (COALESCE(?, (SELECT project_id FROM agent_runs WHERE id = ?)), ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    data.projectId ?? null,
+    data.runId,
     data.runId,
     data.phaseId ?? null,
     data.toolName,
@@ -120,11 +133,12 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
  */
 export function listWriteIntents(
   runId: string,
-  options: { limit?: number; offset?: number } = {},
+  options: ListWriteIntentsOptions = {},
 ): WriteIntentRow[] {
   const db = getDatabase();
-  const clauses = [`WHERE run_id = ?`];
+  const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, options.project_id);
   let tail = 'ORDER BY id ASC';
   if (options.limit !== undefined) {
     tail += ' LIMIT ?';
@@ -137,7 +151,7 @@ export function listWriteIntents(
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_run_write_intents
-     ${clauses.join(' ')}
+     WHERE ${conditions.join(' AND ')}
      ${tail}`,
   ).all(...params) as Record<string, unknown>[];
   return rows.map(toWriteIntentRow);
@@ -150,6 +164,7 @@ export function listWriteIntents(
  */
 export interface WriteIntentToolRow {
   id: number;
+  project_id: string | null;
   run_id: string;
   phase_id: string | null;
   tool_name: string;
@@ -160,16 +175,20 @@ export interface WriteIntentToolRow {
  * no JSON payload parsing. Preferred over {@link listWriteIntents} when
  * the caller only needs tool names / phase grouping.
  */
-export function listWriteIntentTools(runId: string): WriteIntentToolRow[] {
+export function listWriteIntentTools(runId: string, projectId?: string | null): WriteIntentToolRow[] {
   const db = getDatabase();
+  const conditions = ['run_id = ?'];
+  const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, projectId);
   const rows = db.prepare(
-    `SELECT id, run_id, phase_id, tool_name
+    `SELECT id, project_id, run_id, phase_id, tool_name
      FROM agent_run_write_intents
-     WHERE run_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY id ASC`,
-  ).all(runId) as Array<Record<string, unknown>>;
+  ).all(...params) as Array<Record<string, unknown>>;
   return rows.map((row) => ({
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     run_id: row.run_id as string,
     phase_id: (row.phase_id as string) ?? null,
     tool_name: row.tool_name as string,
@@ -177,13 +196,16 @@ export function listWriteIntentTools(runId: string): WriteIntentToolRow[] {
 }
 
 /** Return the total number of write intents for a run. */
-export function countWriteIntents(runId: string): number {
+export function countWriteIntents(runId: string, projectId?: string | null): number {
   const db = getDatabase();
+  const conditions = ['run_id = ?'];
+  const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, projectId);
   const row = db.prepare(
     `SELECT COUNT(*) AS count
      FROM agent_run_write_intents
-     WHERE run_id = ?`,
-  ).get(runId) as { count: number };
+     WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as { count: number };
   return Number(row.count);
 }
 
@@ -192,14 +214,17 @@ export function countWriteIntents(runId: string): number {
  * plain object so callers can cheaply render summaries like "8 spores, 2
  * digest writes".
  */
-export function countWriteIntentsByTool(runId: string): Record<string, number> {
+export function countWriteIntentsByTool(runId: string, projectId?: string | null): Record<string, number> {
   const db = getDatabase();
+  const conditions = ['run_id = ?'];
+  const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, projectId);
   const rows = db.prepare(
     `SELECT tool_name, COUNT(*) AS count
      FROM agent_run_write_intents
-     WHERE run_id = ?
+     WHERE ${conditions.join(' AND ')}
      GROUP BY tool_name`,
-  ).all(runId) as Array<{ tool_name: string; count: number }>;
+  ).all(...params) as Array<{ tool_name: string; count: number }>;
 
   const out: Record<string, number> = {};
   for (const row of rows) {
@@ -207,4 +232,3 @@ export function countWriteIntentsByTool(runId: string): Record<string, number> {
   }
   return out;
 }
-

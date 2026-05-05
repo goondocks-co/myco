@@ -114,9 +114,28 @@ describe('myco tool CLI', () => {
   });
 
   it('forwards explicit environment request context to daemon-backed tools', async () => {
-    vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, '/workspace/project-a');
+    const home = path.join(tmpDir, 'home');
+    const projectRoot = path.join(tmpDir, 'project-a');
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const { saveProjectManifest } = await import('@myco/config/project-manifest.js');
+    const { createGrove, registerProjectInGrove } = await import('@myco/grove/registry.js');
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'project-a', name: 'Project A' },
+      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'project-a',
+      projectName: 'Project A',
+      projectRoot,
+      bindingId: 'gbind-a',
+    }, home);
+
+    vi.stubEnv('MYCO_HOME', home);
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, projectRoot);
     vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, 'project-a');
-    vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, 'grove-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, grove.id);
     vi.stubEnv(REQUEST_CONTEXT_ENV.machineId, 'machine-a');
     vi.stubEnv(REQUEST_CONTEXT_ENV.sessionId, 'sess-a');
     await startDaemonStub();
@@ -125,9 +144,9 @@ describe('myco tool CLI', () => {
 
     const output = outputJson<{ ok: boolean }>();
     expect(output.ok).toBe(true);
-    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(projectRoot);
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
-    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.groveId]).toBe(grove.id);
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
   });

@@ -247,8 +247,8 @@ function serializeReports(reports: ReportRow[]) {
  *
  * Returns null if the run does not exist.
  */
-export function buildPhaseAudit(runId: string): PhaseAudit | null {
-  const run = getRun(runId);
+export function buildPhaseAudit(runId: string, projectId?: string | null): PhaseAudit | null {
+  const run = getRun(runId, projectId);
   if (!run) return null;
 
   // `toRunRow` coerces dry_run to a real boolean (see db/queries/runs.ts)
@@ -287,15 +287,15 @@ export function buildPhaseAudit(runId: string): PhaseAudit | null {
   }
 
   // --- Load supporting tables ---
-  const reports = listReports(runId);
-  const turns = listTurnsByRun(runId);
+  const reports = listReports(runId, { project_id: projectId });
+  const turns = listTurnsByRun(runId, { project_id: projectId });
   const [toolCalls, toolErrors] = aggregateTurnCounts(turns);
   const serializedReports = serializeReports(reports);
 
   // Write intents (only loaded for dry runs)
   let intentSummary: WriteIntentSummary | null = null;
   if (dryRun) {
-    const intents = listWriteIntentTools(runId);
+    const intents = listWriteIntentTools(runId, projectId);
     intentSummary = aggregateWriteIntents(intents);
   }
 

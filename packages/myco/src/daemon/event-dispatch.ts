@@ -44,6 +44,7 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -155,6 +156,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
 
     let userPromptBatchId: number | undefined;
+    const requestProjectId = rowProjectIdFromRequestContext(req.requestContext);
+    const requestProjectRoot = req.requestContext?.projectRoot ?? projectRoot;
+    const requestMachineId = req.requestContext?.machineId ?? machineId;
 
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
@@ -165,7 +169,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       // this run); re-gating it risks applying phantom-detection rules to a
       // legitimate mid-flight session whose in-memory registry was lost on
       // daemon restart. The capture gate is for first-sight sessions only.
-      const existingRow = getSession(event.session_id);
+      const existingRow = getSession(event.session_id, requestProjectId);
       if (existingRow) {
         registry.register(event.session_id, { started_at: event.timestamp });
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Rehydrated registry from DB', {
@@ -212,11 +216,13 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
         upsertSession({
           id: event.session_id,
+          project_id: requestProjectId,
           agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
+          project_root: requestProjectRoot,
           status: 'active',
           started_at: startedEpoch,
           created_at: now,
-          machine_id: machineId,
+          machine_id: requestMachineId,
         });
 
         // Reconcile buffer against DB — recover any prompts lost during downtime.
@@ -254,7 +260,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // isn't in the in-memory registry (e.g., after daemon restart) —
         // without this, a manually-completed or stale-swept session stays
         // hidden from intelligence-task queries even after the user resumes.
-        if (reactivateSessionIfCompleted(event.session_id)) {
+        if (reactivateSessionIfCompleted(event.session_id, requestProjectId)) {
           logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
             session_id: event.session_id,
           });
@@ -333,11 +339,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         const captureSessionId = event.session_id;
         fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
           const latestBatch = getLatestBatch(captureSessionId);
-          capturePlan({
-            sourcePath: planFilePath,
-            projectRoot,
-            content: planContent,
-            sessionId: captureSessionId,
+            capturePlan({
+              sourcePath: planFilePath,
+              projectRoot: requestProjectRoot,
+              content: planContent,
+              sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,
             logger,
           });
@@ -358,7 +364,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
-          projectRoot,
+          requestProjectRoot,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
@@ -370,9 +376,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           handleCanopyToolUse({
             db: getDatabase(),
             logger,
-            machineId,
-            projectRoot,
-            projectId: resolveCanopyProjectId(vaultDir),
+            machineId: requestMachineId,
+            projectRoot: requestProjectRoot,
+            projectId: req.requestContext?.projectId ?? resolveCanopyProjectId(vaultDir),
             toolName,
             toolInput: event.tool_input,
             defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,

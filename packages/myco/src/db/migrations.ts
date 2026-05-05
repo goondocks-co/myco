@@ -88,6 +88,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 32, migrate: (db) => migrateV31ToV32(db) },
   { version: 33, migrate: (db) => migrateV32ToV33(db) },
   { version: 34, migrate: (db) => migrateV33ToV34(db) },
+  { version: 35, migrate: (db) => migrateV34ToV35(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2111,5 +2112,72 @@ function migrateV33ToV34(db: Database): void {
   } finally {
     setPragmaBoolean(db, 'legacy_alter_table', legacyAlterTable);
     setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+const V35_MIGRATION_IMPORT_JOURNAL_COLUMNS = [
+  'id',
+  'migration_id',
+  'source_project_root',
+  'source_db_path',
+  'target_grove_id',
+  'target_project_id',
+  'source_table',
+  'source_id',
+  'target_table',
+  'target_id',
+  'source_machine_id',
+  'target_machine_id',
+  'import_origin',
+  'status',
+  'notes',
+  'error',
+  'created_at',
+  'updated_at',
+] as const;
+
+/**
+ * Version 35 scopes migration_import_journal uniqueness by source DB and
+ * target Grove/project so one migration can safely import multiple legacy
+ * project vaults with overlapping source row ids.
+ */
+function migrateV34ToV35(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'migration_import_journal')) {
+      const oldTable = '__myco_v35_migration_import_journal';
+      db.prepare(`DROP TABLE IF EXISTS ${oldTable}`).run();
+      db.prepare(`ALTER TABLE migration_import_journal RENAME TO ${oldTable}`).run();
+      db.exec(MIGRATION_IMPORT_JOURNAL_TABLE);
+
+      const oldColumns = getTableColumnSet(db, oldTable);
+      const columns = V35_MIGRATION_IMPORT_JOURNAL_COLUMNS
+        .filter((column) => oldColumns.has(column))
+        .join(', ');
+      if (columns.length > 0) {
+        db.prepare(
+          `INSERT INTO migration_import_journal (${columns})
+           SELECT ${columns} FROM ${oldTable}`,
+        ).run();
+      }
+      db.prepare(`DROP TABLE ${oldTable}`).run();
+    } else {
+      db.exec(MIGRATION_IMPORT_JOURNAL_TABLE);
+    }
+
+    for (const ddl of MIGRATION_IMPORT_JOURNAL_INDEX_DDLS) {
+      db.exec(ddl);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(35, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }

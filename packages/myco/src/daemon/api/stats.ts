@@ -7,7 +7,7 @@ import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { listGroves, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 
 /** Compute config hash from the YAML file on disk. Cache this at startup and after saves. */
@@ -58,7 +58,12 @@ export interface StatsContext {
 
 export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
-    const stats = gatherStats(deps.vaultDir, { active_sessions: deps.registry.sessions });
+    const statsVaultDir = req.requestContext?.projectVaultDir ?? deps.vaultDir;
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const stats = gatherStats(statsVaultDir, {
+      active_sessions: deps.registry.sessions,
+      project_id: projectId,
+    });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
     stats.daemon.pid = process.pid;
     stats.daemon.port = deps.server.port;
@@ -67,8 +72,8 @@ export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
     return {
       body: {
         ...stats,
-        context: resolveStatsContext(deps.vaultDir, req.requestContext),
-        config_hash: deps.configHash.get(),
+        context: resolveStatsContext(statsVaultDir, req.requestContext),
+        config_hash: statsVaultDir === deps.vaultDir ? deps.configHash.get() : computeConfigHash(statsVaultDir),
       },
     };
   };

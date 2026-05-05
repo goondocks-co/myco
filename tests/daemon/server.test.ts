@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { saveProjectManifest } from '@myco/config/project-manifest';
+import { resolveProjectVaultDir } from '@myco/grove/paths';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,30 +59,54 @@ describe('DaemonServer', () => {
   });
 
   it('attaches request context to daemon routes', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-srv-context-'));
+    const previousHome = process.env.MYCO_HOME;
     const server = new DaemonServer({ vaultDir, logger });
-    server.registerRoute('GET', '/api/context-echo', async (req) => ({
-      body: { context: req.requestContext },
-    }));
-    await server.start();
+    try {
+      const home = path.join(tmp, 'home');
+      process.env.MYCO_HOME = home;
+      const projectRoot = path.join(tmp, 'project-a');
+      const projectVaultDir = resolveProjectVaultDir(projectRoot);
+      fs.mkdirSync(projectVaultDir, { recursive: true });
+      const grove = createGrove('Work', home);
+      saveProjectManifest(projectVaultDir, {
+        project: { id: 'project-a', name: 'Project A' },
+        grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+      });
+      registerProjectInGrove(grove.id, {
+        projectId: 'project-a',
+        projectName: 'Project A',
+        projectRoot,
+        bindingId: 'gbind-a',
+      }, home);
 
-    const context = resolveLegacyRequestContext(vaultDir, {
-      projectRoot: '/tmp/project-a',
-      projectId: 'project-a',
-      groveId: 'grove-a',
-      machineId: 'machine-a',
-      sessionId: 'sess-a',
-      source: 'explicit',
-    });
-    const res = await fetch(`http://127.0.0.1:${server.port}/api/context-echo`, {
-      headers: requestContextHeaders(context),
-    });
-    const body = await res.json() as { context: { projectId: string; groveId: string; source: string } };
+      server.registerRoute('GET', '/api/context-echo', async (req) => ({
+        body: { context: req.requestContext },
+      }));
+      await server.start();
 
-    expect(body.context.projectId).toBe('project-a');
-    expect(body.context.groveId).toBe('grove-a');
-    expect(body.context.source).toBe('headers');
+      const context = resolveLegacyRequestContext(projectVaultDir, {
+        projectRoot,
+        projectId: 'project-a',
+        groveId: grove.id,
+        machineId: 'machine-a',
+        sessionId: 'sess-a',
+        source: 'explicit',
+      });
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/context-echo`, {
+        headers: requestContextHeaders(context),
+      });
+      const body = await res.json() as { context: { projectId: string; groveId: string; source: string } };
 
-    await server.stop();
+      expect(body.context.projectId).toBe('project-a');
+      expect(body.context.groveId).toBe(grove.id);
+      expect(body.context.source).toBe('headers');
+    } finally {
+      await server.stop();
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('cleans up daemon.json on stop', async () => {

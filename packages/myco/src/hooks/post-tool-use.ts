@@ -38,8 +38,8 @@ export async function main() {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
       buffer.append({
         type: 'tool_use',
-        tool: input.toolName,
-        input: input.toolInput,
+        tool_name: input.toolName,
+        tool_input: input.toolInput,
         output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
         transcript_path: input.transcriptPath,
       });

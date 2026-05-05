@@ -150,6 +150,30 @@ describe('myco init', () => {
     expect(initDatabase).not.toHaveBeenCalled();
   });
 
+  it('rejects --grove when project.toml is already bound to another Grove', async () => {
+    const home = process.env.MYCO_HOME!;
+    const { createGrove, registerProjectInGrove } = await import('@myco/grove/registry.js');
+    const { saveProjectManifest } = await import('@myco/config/project-manifest.js');
+    const work = createGrove('Work', home);
+    createGrove('Other', home);
+    fs.mkdirSync(vault, { recursive: true });
+    saveProjectManifest(vault, {
+      project: { id: 'proj_bound', name: 'bound-project' },
+      grove: { binding_id: 'gbind_bound', slug: work.slug, mode: 'local' },
+    });
+    registerProjectInGrove(work.id, {
+      projectId: 'proj_bound',
+      projectName: 'bound-project',
+      projectRoot: testDir,
+      bindingId: 'gbind_bound',
+    }, home);
+
+    await expect(run(['--grove', 'other', '--non-interactive']))
+      .rejects.toThrow(/belongs to Grove Work/);
+
+    expect(initDatabase).not.toHaveBeenCalled();
+  });
+
   it('writes valid v3 config with explicit values', async () => {
     await run([
       '--embedding-provider', 'ollama',

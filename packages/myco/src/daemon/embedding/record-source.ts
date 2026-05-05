@@ -29,6 +29,7 @@ const ACTIVE_STATUS = 'active';
 /** Build metadata for a session row. */
 function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.project_root != null ? { project_root: row.project_root as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
@@ -37,6 +38,7 @@ function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
 /** Build metadata for a spore row. */
 function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.observation_type != null ? { observation_type: row.observation_type as string } : {}),
@@ -44,14 +46,18 @@ function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
   };
 }
 
-/** Build metadata for an artifact row — empty. */
-function emptyMetadata(): DomainMetadata {
-  return {};
+/** Build metadata for an artifact row. */
+function artifactMetadata(row: Record<string, unknown>): DomainMetadata {
+  return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+  };
 }
 
 /** Build metadata for a plan row. */
 function planMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.source_path != null ? { source_path: row.source_path as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
@@ -61,6 +67,7 @@ function planMetadata(row: Record<string, unknown>): DomainMetadata {
 /** Build metadata for a skill_records row. */
 function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.name != null ? { name: row.name as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
@@ -87,7 +94,7 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
     case 'plans':
       return planMetadata(row);
     case 'artifacts':
-      return emptyMetadata();
+      return artifactMetadata(row);
     case 'skill_records':
       return skillRecordMetadata(row);
     case 'canopy_entries':
@@ -325,6 +332,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     const db = getDatabase();
     const rows = db.prepare(
       `SELECT id, content AS text, status, session_id, observation_type
+              , project_id, created_at
        FROM spores
        WHERE embedded = 0 AND status = ?
        ORDER BY created_at ASC
@@ -346,7 +354,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   }> {
     const db = getDatabase();
     const rows = db.prepare(
-      `SELECT id, description AS text, status, name
+      `SELECT id, description AS text, status, name, project_id, created_at
        FROM skill_records
        WHERE embedded = 0 AND status = ?
        ORDER BY created_at ASC

@@ -3,6 +3,9 @@ import path from 'node:path';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
+import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 
 export const REQUEST_CONTEXT_HEADERS = {
@@ -43,6 +46,14 @@ export interface LegacyRequestContextOptions {
   source?: RequestContextSource;
 }
 
+interface ExplicitContextInput {
+  projectRoot?: string;
+  projectId?: string;
+  groveId?: string;
+  machineId?: string;
+  sessionId?: string | null;
+}
+
 export function resolveLegacyRequestContext(
   vaultDir: string,
   options: LegacyRequestContextOptions = {},
@@ -75,27 +86,21 @@ export function requestContextFromHttpHeaders(
   fallbackVaultDir: string,
 ): MycoRequestContext {
   const fallback = resolveLegacyRequestContext(fallbackVaultDir);
-  const hasContextHeader = Object.values(REQUEST_CONTEXT_HEADERS)
-    .some((header) => readHeader(headers, header) !== undefined);
-
-  if (!hasContextHeader) return fallback;
-
-  const projectRoot = readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot) ?? fallback.projectRoot;
-  const projectVaultDir = projectRoot === fallback.projectRoot
-    ? fallback.projectVaultDir
-    : path.join(projectRoot, '.myco');
-
-  return {
-    ...fallback,
-    projectRoot,
-    projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId) ?? fallback.projectId,
-    groveId: readHeader(headers, REQUEST_CONTEXT_HEADERS.groveId) ?? fallback.groveId,
-    machineId: readHeader(headers, REQUEST_CONTEXT_HEADERS.machineId) ?? fallback.machineId,
-    sessionId: readHeader(headers, REQUEST_CONTEXT_HEADERS.sessionId) ?? fallback.sessionId,
-    projectVaultDir,
-    databasePath: vaultDbPath(projectVaultDir),
-    source: 'headers',
+  const explicit: ExplicitContextInput = {
+    projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
+    projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
+    groveId: readHeader(headers, REQUEST_CONTEXT_HEADERS.groveId),
+    machineId: readHeader(headers, REQUEST_CONTEXT_HEADERS.machineId),
+    sessionId: readHeader(headers, REQUEST_CONTEXT_HEADERS.sessionId) ?? null,
   };
+  const hasContextHeader = Object.values(explicit).some((value) => value !== undefined && value !== null);
+
+  if (hasContextHeader) {
+    if (explicit.groveId) return resolveRegisteredRequestContext(explicit, fallback, 'headers');
+    return resolveLegacyHeaderRequestContext(explicit, fallback);
+  }
+
+  return resolveManifestRequestContext(fallback, 'headers') ?? fallback;
 }
 
 export function requestContextFromEnvironment(
@@ -121,24 +126,17 @@ export function requestContextFromEnvironment(
     REQUEST_CONTEXT_ENV.groveId,
   ].some((key) => readEnv(env, key) !== undefined);
 
-  if (!hasExplicitProjectContext) return fallback;
+  if (!hasExplicitProjectContext) {
+    return resolveManifestRequestContext(fallback, 'explicit') ?? fallback;
+  }
 
-  const projectRoot = readEnv(env, REQUEST_CONTEXT_ENV.projectRoot) ?? fallback.projectRoot;
-  const projectVaultDir = projectRoot === fallback.projectRoot
-    ? fallback.projectVaultDir
-    : path.join(projectRoot, '.myco');
-
-  return {
-    ...fallback,
-    projectRoot,
-    projectId: readEnv(env, REQUEST_CONTEXT_ENV.projectId) ?? fallback.projectId,
-    groveId: readEnv(env, REQUEST_CONTEXT_ENV.groveId) ?? fallback.groveId,
-    machineId: machineId ?? fallback.machineId,
-    sessionId: sessionId ?? fallback.sessionId,
-    projectVaultDir,
-    databasePath: vaultDbPath(projectVaultDir),
-    source: 'explicit',
-  };
+  return resolveRegisteredRequestContext({
+    projectRoot: readEnv(env, REQUEST_CONTEXT_ENV.projectRoot),
+    projectId: readEnv(env, REQUEST_CONTEXT_ENV.projectId),
+    groveId: readEnv(env, REQUEST_CONTEXT_ENV.groveId),
+    machineId,
+    sessionId,
+  }, fallback, 'explicit');
 }
 
 /**
@@ -164,6 +162,126 @@ function compactHeaders(values: Record<string, string | null | undefined>): Reco
     headers[key] = value;
   }
   return headers;
+}
+
+function resolveManifestRequestContext(
+  fallback: MycoRequestContext,
+  source: RequestContextSource,
+): MycoRequestContext | null {
+  const manifest = readManifest(fallback.projectVaultDir);
+  if (!manifest?.grove?.binding_id) return null;
+  const registered = findRegisteredProject({
+    projectId: manifest.project.id,
+    bindingId: manifest.grove.binding_id,
+    projectRoot: fallback.projectRoot,
+  });
+  if (!registered) return null;
+  return buildRegisteredRequestContext({
+    fallback,
+    source,
+    projectRoot: registered.project.root,
+    projectId: registered.project.project_id,
+    groveId: registered.grove.id,
+    machineId: fallback.machineId,
+    sessionId: fallback.sessionId,
+    manifest,
+  });
+}
+
+function resolveRegisteredRequestContext(
+  input: ExplicitContextInput,
+  fallback: MycoRequestContext,
+  source: RequestContextSource,
+): MycoRequestContext {
+  const projectRoot = input.projectRoot ?? fallback.projectRoot;
+  const projectId = input.projectId ?? readManifest(resolveProjectVaultDir(projectRoot))?.project.id;
+  const groveId = input.groveId;
+  const missing: string[] = [];
+  if (!projectRoot) missing.push('project root');
+  if (!projectId) missing.push('project id');
+  if (!groveId) missing.push('Grove id');
+  if (missing.length > 0) {
+    throw new Error(`Incomplete Myco request context: missing ${missing.join(', ')}`);
+  }
+
+  const normalizedRoot = path.resolve(projectRoot);
+  const mycoHome = resolveMycoHome();
+  const grove = loadGroveRecord(groveId!, mycoHome);
+  if (!grove) throw new Error(`Unknown Grove in request context: ${groveId}`);
+
+  const manifest = readManifest(resolveProjectVaultDir(normalizedRoot));
+  if (manifest && manifest.project.id !== projectId) {
+    throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifest.project.id}`);
+  }
+
+  const registered = findRegisteredProject({
+    projectId: projectId!,
+    groveId: grove.id,
+    bindingId: manifest?.grove?.binding_id ?? null,
+    projectRoot: normalizedRoot,
+  }, mycoHome);
+  if (!registered) {
+    throw new Error(`Project ${projectId} is not registered in Grove ${grove.id}`);
+  }
+
+  return buildRegisteredRequestContext({
+    fallback,
+    source,
+    projectRoot: normalizedRoot,
+    projectId: projectId!,
+    groveId: grove.id,
+    machineId: input.machineId ?? fallback.machineId,
+    sessionId: input.sessionId ?? fallback.sessionId,
+    manifest,
+  });
+}
+
+function resolveLegacyHeaderRequestContext(
+  input: ExplicitContextInput,
+  fallback: MycoRequestContext,
+): MycoRequestContext {
+  return {
+    ...fallback,
+    machineId: input.machineId ?? fallback.machineId,
+    sessionId: input.sessionId ?? fallback.sessionId,
+    source: 'headers',
+  };
+}
+
+function buildRegisteredRequestContext(input: {
+  fallback: MycoRequestContext;
+  source: RequestContextSource;
+  projectRoot: string;
+  projectId: string;
+  groveId: string;
+  machineId: string;
+  sessionId: string | null;
+  manifest: ProjectManifest | null;
+}): MycoRequestContext {
+  const projectRoot = path.resolve(input.projectRoot);
+  const projectVaultDir = resolveProjectVaultDir(projectRoot);
+  if (input.manifest && input.manifest.project.id !== input.projectId) {
+    throw new Error(`Registered project ${input.projectId} does not match project.toml id ${input.manifest.project.id}`);
+  }
+  return {
+    ...input.fallback,
+    projectRoot,
+    projectId: input.projectId,
+    groveId: input.groveId,
+    machineId: input.machineId,
+    sessionId: input.sessionId,
+    projectVaultDir,
+    databasePath: resolveGroveDbPath(input.groveId),
+    source: input.source,
+  };
+}
+
+function readManifest(projectVaultDir: string): ProjectManifest | null {
+  try {
+    return loadProjectManifest(projectVaultDir);
+  } catch {
+    return null;
+  }
 }
 
 function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {

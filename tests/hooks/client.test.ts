@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createHookDaemonClient, DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS, resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { saveProjectManifest } from '@myco/config/project-manifest';
+import { resolveProjectVaultDir } from '@myco/grove/paths';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,20 +87,45 @@ describe('DaemonClient', () => {
   });
 
   it('creates hook clients from environment context and hook session id', async () => {
-    process.env[REQUEST_CONTEXT_ENV.projectRoot] = '/workspace/project-a';
-    process.env[REQUEST_CONTEXT_ENV.projectId] = 'project-a';
-    process.env[REQUEST_CONTEXT_ENV.groveId] = 'grove-a';
-    process.env[REQUEST_CONTEXT_ENV.machineId] = 'machine-a';
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hook-context-'));
+    const previousHome = process.env.MYCO_HOME;
+    try {
+      const home = path.join(tmp, 'home');
+      process.env.MYCO_HOME = home;
+      const projectRoot = path.join(tmp, 'project-a');
+      const projectVaultDir = resolveProjectVaultDir(projectRoot);
+      fs.mkdirSync(projectVaultDir, { recursive: true });
+      const grove = createGrove('Work', home);
+      saveProjectManifest(projectVaultDir, {
+        project: { id: 'project-a', name: 'Project A' },
+        grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+      });
+      registerProjectInGrove(grove.id, {
+        projectId: 'project-a',
+        projectName: 'Project A',
+        projectRoot,
+        bindingId: 'gbind-a',
+      }, home);
 
-    const client = createHookDaemonClient(vaultDir, { sessionId: 'sess-hook' });
-    const result = await client.post('/events', { type: 'test' });
+      process.env[REQUEST_CONTEXT_ENV.projectRoot] = projectRoot;
+      process.env[REQUEST_CONTEXT_ENV.projectId] = 'project-a';
+      process.env[REQUEST_CONTEXT_ENV.groveId] = grove.id;
+      process.env[REQUEST_CONTEXT_ENV.machineId] = 'machine-a';
 
-    expect(result.ok).toBe(true);
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-hook');
+      const client = createHookDaemonClient(vaultDir, { sessionId: 'sess-hook' });
+      const result = await client.post('/events', { type: 'test' });
+
+      expect(result.ok).toBe(true);
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(projectRoot);
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(grove.id);
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-hook');
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('returns ok: false when daemon is not running', async () => {

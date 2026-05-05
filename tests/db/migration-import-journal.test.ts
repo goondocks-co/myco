@@ -35,7 +35,7 @@ describe('migration import journal', () => {
   });
 
   it('is installed by the current schema', () => {
-    expect(SCHEMA_VERSION).toBe(34);
+    expect(SCHEMA_VERSION).toBe(35);
     expect(tableExists('migration_import_journal')).toBe(true);
     expect(indexExists('idx_migration_import_journal_source')).toBe(true);
     expect(indexExists('idx_migration_import_journal_target')).toBe(true);
@@ -100,6 +100,43 @@ describe('migration import journal', () => {
     expect(listImportMappingsForMigration(migrationId)).toHaveLength(1);
   });
 
+  it('distinguishes overlapping source ids from different project vault imports', () => {
+    const migrationId = createMigrationId();
+    recordImportMapping({
+      migration_id: migrationId,
+      source_project_root: '/legacy/project-a',
+      source_db_path: '/legacy/project-a/.myco/myco.db',
+      target_grove_id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      target_project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      source_table: 'plans',
+      source_id: 'same-id',
+      target_table: 'plans',
+      target_id: 'plan_same_target_id',
+    });
+    recordImportMapping({
+      migration_id: migrationId,
+      source_project_root: '/legacy/project-b',
+      source_db_path: '/legacy/project-b/.myco/myco.db',
+      target_grove_id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      target_project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      source_table: 'plans',
+      source_id: 'same-id',
+      target_table: 'plans',
+      target_id: 'plan_same_target_id',
+    });
+
+    expect(listImportMappingsForMigration(migrationId)).toHaveLength(2);
+    expect(lookupImportMappingBySource(migrationId, 'plans', 'same-id', {
+      source_db_path: '/legacy/project-a/.myco/myco.db',
+    })?.target_project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(lookupImportMappingBySource(migrationId, 'plans', 'same-id', {
+      source_db_path: '/legacy/project-b/.myco/myco.db',
+    })?.target_project_id).toBe('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(lookupImportMappingByTarget(migrationId, 'plans', 'plan_same_target_id', {
+      target_project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    })?.source_project_root).toBe('/legacy/project-b');
+  });
+
   it('updates status and error fields for failed imports', () => {
     const migrationId = createMigrationId();
     recordImportMapping({
@@ -132,6 +169,6 @@ describe('migration import journal', () => {
 
     expect(tableExists('migration_import_journal')).toBe(true);
     const version = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(version.version).toBe(34);
+    expect(version.version).toBe(35);
   });
 });

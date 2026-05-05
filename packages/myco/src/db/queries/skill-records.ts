@@ -9,6 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
 
 
 /** Default status for new skill records. */
@@ -147,14 +148,7 @@ function buildWhere(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.project_id);
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -170,20 +164,6 @@ function buildWhere(
     where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     params,
   };
-}
-
-function appendProjectCondition(
-  conditions: string[],
-  params: unknown[],
-  projectId: string | null | undefined,
-): void {
-  if (projectId === undefined) return;
-  if (projectId === null) {
-    conditions.push(`project_id IS NULL`);
-  } else {
-    conditions.push(`project_id = ?`);
-    params.push(projectId);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,11 +388,7 @@ export function deleteSkillRecordCascade(
   const db = getDatabase();
   const record = getSkillRecord(idOrName, projectId) ?? getSkillRecordByName(idOrName, projectId);
   if (!record) return null;
-  const candidateScope = projectId === undefined
-    ? { sql: '', params: [] as unknown[] }
-    : projectId === null
-      ? { sql: ' AND project_id IS NULL', params: [] as unknown[] }
-      : { sql: ' AND project_id = ?', params: [projectId] as unknown[] };
+  const candidateScope = projectScopeClause(projectId);
 
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);

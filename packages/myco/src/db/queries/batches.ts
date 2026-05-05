@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,22 +159,6 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
     machine_id: (row.machine_id as string) ?? 'local',
     synced_at: (row.synced_at as number) ?? null,
   };
-}
-
-function appendProjectCondition(
-  conditions: string[],
-  params: unknown[],
-  projectId: string | null | undefined,
-  qualifier = '',
-): void {
-  if (projectId === undefined) return;
-  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
-  if (projectId === null) {
-    conditions.push(`${column} IS NULL`);
-  } else {
-    conditions.push(`${column} = ?`);
-    params.push(projectId);
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -135,11 +135,12 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  const db = initDatabase(vaultDbPath(vaultDir));
+  const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
   createSchema(db);
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
-  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId) : null;
+  const projectId = rowProjectIdFromRequestContext(options?.requestContext);
+  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId, projectId) : null;
   if (options?.resumeRunId && !resumedRun) {
     return {
       runId: options.resumeRunId,
@@ -154,7 +155,7 @@ export async function runAgent(
     const effectiveTask = requestedTask
       ?? getDefaultTask(agentId)?.id;
     if (effectiveTask) {
-      const runningId = getRunningRunForTask(agentId, effectiveTask);
+      const runningId = getRunningRunForTask(agentId, effectiveTask, projectId);
       if (runningId) {
         return {
           runId: runningId,
@@ -285,6 +286,7 @@ export async function runAgent(
   if (!resumedRun) {
     insertRun({
       id: runId,
+      project_id: projectId,
       agent_id: agentId,
       task: config.taskName,
       instruction: options?.instruction ?? null,
@@ -315,7 +317,7 @@ export async function runAgent(
       cost_source: resumedRun.cost_source,
       cost_data: resumedRun.cost_data,
       error: null,
-    });
+    }, projectId);
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
@@ -406,10 +408,10 @@ export async function runAgent(
         usage: currentUsage,
         costData: currentCost,
         phaseResults: currentPhaseResults,
-      }));
+      }), projectId);
     };
 
-    const projectRoot = resolveProjectRoot(vaultDir);
+    const projectRoot = options?.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
 
     // Assemble the PhaseLoopContext once. `checkpointState` is mutable by
     // reference — the loop updates it in place and we read back its final
@@ -523,7 +525,7 @@ export async function runAgent(
         phaseResults,
         sessionRef: runSessionRef,
       }),
-    });
+    }, projectId);
 
     return {
       runId,
@@ -605,7 +607,7 @@ export async function runAgent(
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
         ...accountingUpdate,
-      });
+      }, projectId);
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
       options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
@@ -750,6 +752,7 @@ function finalizeCortexInstructions(args: {
 function finalizeCanopyMap(args: {
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
 }): void {
   if (!args.vaultDir) {
@@ -773,8 +776,8 @@ function finalizeCanopyMap(args: {
     throw new Error('canopy-map completed without runContext.canopy_map_inputs_hash');
   }
 
-  const projectId = resolveCanopyProjectId(args.vaultDir);
-  const machineId = getMachineId(args.vaultDir);
+  const projectId = resolveCanopyMapProjectId(args.requestContext, args.vaultDir);
+  const machineId = args.requestContext?.machineId ?? getMachineId(args.vaultDir);
   writeCanopyMap({
     project_id: projectId,
     machine_id: machineId,
@@ -783,6 +786,13 @@ function finalizeCanopyMap(args: {
     token_estimate: estimateTokens(content),
     generated_by_run_id: args.runId,
   });
+}
+
+function resolveCanopyMapProjectId(
+  requestContext: RunOptions['requestContext'] | undefined,
+  vaultDir: string,
+): string {
+  return requestContext?.projectId ?? resolveCanopyProjectId(vaultDir);
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

@@ -6,6 +6,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
+import { projectScopeClause } from '@myco/db/queries/project-scope.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
 import { DIGEST_TIERS } from '@myco/constants.js';
@@ -18,6 +19,16 @@ import path from 'node:path';
 
 /** Process uptime is available directly from the daemon process via process.uptime(). */
 const DAEMON_JSON_FILENAME = 'daemon.json';
+
+const PROJECT_SCOPED_COUNT_TABLES = new Set([
+  'sessions',
+  'prompt_batches',
+  'spores',
+  'plans',
+  'artifacts',
+  'entities',
+  'graph_edges',
+]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,66 +77,80 @@ export interface V2Stats {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Count rows in a table (sync). */
-function countTable(db: ReturnType<typeof getDatabase>, table: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS cnt FROM ${table}`).get() as { cnt: number };
-  return Number(row.cnt);
+export interface GatherStatsOptions {
+  active_sessions?: string[];
+  project_id?: string | null;
+}
+
+/**
+ * Batch counts for the project-scoped tables in a single round-trip.
+ * Same scope predicate applies to every table, so SQLite parameters are
+ * appended once per UNION arm.
+ */
+function countProjectScopedTables(
+  db: ReturnType<typeof getDatabase>,
+  projectId: string | null | undefined,
+): Record<string, number> {
+  const tables = Array.from(PROJECT_SCOPED_COUNT_TABLES);
+  const scope = projectScopeClause(projectId);
+  // The leading `WHERE 1 = 1` lets `scope.sql` (which always starts with ` AND`)
+  // splice in cleanly whether or not a scope is active.
+  const sql = tables
+    .map((t) => `SELECT '${t}' AS t, COUNT(*) AS c FROM ${t} WHERE 1 = 1${scope.sql}`)
+    .join(' UNION ALL ');
+  const params: unknown[] = [];
+  for (let i = 0; i < tables.length; i++) params.push(...scope.params);
+  const rows = db.prepare(sql).all(...params) as Array<{ t: string; c: number }>;
+  const counts: Record<string, number> = {};
+  for (const r of rows) counts[r.t] = Number(r.c);
+  return counts;
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export function gatherStats(vaultDir: string, options?: { active_sessions?: string[] }): V2Stats {
+export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}): V2Stats {
   const db = getDatabase();
+  const projectId = options.project_id;
 
-  // Active sessions can come from two sources:
-  // 1. the live daemon registry (sessions seen by this process)
-  // 2. persisted DB rows still marked active (survives daemon restarts)
-  const active_session_ids = Array.from(new Set([
-    ...getActiveSessionIds(),
-    ...(options?.active_sessions ?? []),
-  ]));
+  // Active sessions come from two sources: the live daemon registry, and
+  // persisted DB rows still marked active (survives restarts). When scoped to
+  // a project, the live registry might include sessions from other projects,
+  // so intersect against the persisted (already-scoped) set.
+  const persistedActiveSessionIds = getActiveSessionIds(projectId);
+  const active_session_ids = projectId === undefined
+    ? Array.from(new Set([...persistedActiveSessionIds, ...(options.active_sessions ?? [])]))
+    : Array.from(persistedActiveSessionIds);
 
-  // Load config for embedding provider info (sync — already on disk)
   const config = loadMergedConfig(vaultDir);
 
-  // All queries are synchronous — no Promise.all needed
-  const session_count = countTable(db, 'sessions');
-  const batch_count = countTable(db, 'prompt_batches');
-  const spore_count = countTable(db, 'spores');
-  const plan_count = countTable(db, 'plans');
-  const artifact_count = countTable(db, 'artifacts');
-  const entity_count = countTable(db, 'entities');
-  const edge_count = countTable(db, 'graph_edges');
+  const counts = countProjectScopedTables(db, projectId);
 
-  // Shared embedding queue depth helper (consistent filter logic)
-  const embeddingStats = getEmbeddingQueueDepth();
+  const embeddingStats = getEmbeddingQueueDepth(projectId);
   const { queue_depth, embedded_count, total: total_embeddable } = embeddingStats;
 
-  // Unprocessed batches
+  const scope = projectScopeClause(projectId);
+
   const unprocessedRow = db.prepare(
-    'SELECT COUNT(*) AS cnt FROM prompt_batches WHERE processed = 0',
-  ).get() as { cnt: number };
+    `SELECT COUNT(*) AS cnt FROM prompt_batches WHERE processed = 0${scope.sql}`,
+  ).get(...scope.params) as { cnt: number };
   const unprocessed_batches = Number(unprocessedRow.cnt ?? 0);
 
-  // Agent: most recent run
   const lastRun = db.prepare(
-    'SELECT started_at, status FROM agent_runs ORDER BY started_at DESC LIMIT 1',
-  ).get() as { started_at: number; status: string } | undefined;
+    `SELECT started_at, status FROM agent_runs WHERE 1 = 1${scope.sql} ORDER BY started_at DESC LIMIT 1`,
+  ).get(...scope.params) as { started_at: number; status: string } | undefined;
   const last_run_at = lastRun ? lastRun.started_at : null;
   const last_run_status = lastRun ? lastRun.status : null;
 
-  // Total agent runs
   const agentTotalRow = db.prepare(
-    'SELECT COUNT(*) AS cnt FROM agent_runs',
-  ).get() as { cnt: number };
+    `SELECT COUNT(*) AS cnt FROM agent_runs WHERE 1 = 1${scope.sql}`,
+  ).get(...scope.params) as { cnt: number };
   const total_runs = Number(agentTotalRow.cnt ?? 0);
 
-  // Digest extracts: only report tiers that are currently configured
   const digestRows = db.prepare(
-    'SELECT tier, generated_at FROM digest_extracts ORDER BY tier ASC',
-  ).all() as Array<{ tier: number; generated_at: number }>;
+    `SELECT tier, generated_at FROM digest_extracts WHERE 1 = 1${scope.sql} ORDER BY tier ASC`,
+  ).all(...scope.params) as Array<{ tier: number; generated_at: number }>;
   const configuredTiers = new Set<number>(DIGEST_TIERS);
   const activeDigestRows = digestRows.filter((r) => configuredTiers.has(r.tier));
   const tiers_available = activeDigestRows.map((r) => r.tier);
@@ -133,7 +158,6 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
   const freshestRow = activeDigestRows.find((r) => r.tier === freshest_tier);
   const generated_at = freshestRow ? freshestRow.generated_at : null;
 
-  // Daemon info from daemon.json
   let daemonPid = 0;
   let daemonPort = 0;
   let daemonVersion = '';
@@ -164,13 +188,13 @@ export function gatherStats(vaultDir: string, options?: { active_sessions?: stri
     vault: {
       path: vaultDir,
       name: path.basename(resolveProjectRoot(vaultDir)),
-      session_count,
-      batch_count,
-      spore_count,
-      plan_count,
-      artifact_count,
-      entity_count,
-      edge_count,
+      session_count: counts.sessions ?? 0,
+      batch_count: counts.prompt_batches ?? 0,
+      spore_count: counts.spores ?? 0,
+      plan_count: counts.plans ?? 0,
+      artifact_count: counts.artifacts ?? 0,
+      entity_count: counts.entities ?? 0,
+      edge_count: counts.graph_edges ?? 0,
     },
     embedding: {
       provider: config.embedding.provider,
