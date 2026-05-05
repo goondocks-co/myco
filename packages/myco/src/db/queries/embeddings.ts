@@ -5,7 +5,7 @@
  * This module only manages the `embedded` flag on relational tables.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
 import { projectScopeClause } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
@@ -115,8 +115,20 @@ export function getEmbeddingQueueDepth(projectId?: string | null): {
   queue_depth: number;
   embedded_count: number;
   total: number;
+};
+export function getEmbeddingQueueDepth(projectId: string | null | undefined, db: Database): {
+  queue_depth: number;
+  embedded_count: number;
+  total: number;
+};
+export function getEmbeddingQueueDepth(
+  projectId?: string | null,
+  db: Database = getDatabase(),
+): {
+  queue_depth: number;
+  embedded_count: number;
+  total: number;
 } {
-  const db = getDatabase();
   const scope = projectScopeClause(projectId);
   // Six SELECTs per row, identical params per arm.
   const ARMS = 6;

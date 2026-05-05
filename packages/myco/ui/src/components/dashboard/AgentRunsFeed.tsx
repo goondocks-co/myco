@@ -4,6 +4,7 @@ import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent'
 import { formatEpochAgo, formatDuration } from '../../lib/format';
 import { cn } from '../../lib/cn';
 import { resolveTaskName } from '../agent/helpers';
+import { useProjectPath } from '../../hooks/use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -62,6 +63,7 @@ export function AgentRunsFeed() {
   const { data, isLoading } = useAgentRuns({ limit: FEED_LIMIT });
   const { data: tasksData } = useAgentTasks();
   const navigate = useNavigate();
+  const agentPath = useProjectPath('/agent');
 
   const tasks = tasksData?.tasks ?? [];
   const runs = data?.runs ?? [];
@@ -86,7 +88,7 @@ export function AgentRunsFeed() {
               key={run.id}
               run={run}
               taskName={resolveTaskName(run.task, tasks)}
-              onClick={() => navigate('/agent')}
+              onClick={() => navigate(agentPath)}
             />
           ))}
         </div>

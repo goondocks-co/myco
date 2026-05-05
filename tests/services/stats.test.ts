@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client.js';
+import { initDatabase, closeDatabase, getDatabase, openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { saveConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
@@ -145,5 +145,61 @@ describe('gatherStats', () => {
     expect(stats.daemon.version).toBe('0.0.0-test');
     expect(stats.daemon.uptime_seconds).toBeGreaterThan(0);
     expect(stats.daemon.active_sessions).toEqual(['sess-1', 'sess-2']);
+  });
+
+  it('reads Grove-scoped counts from an explicit database path instead of the singleton', () => {
+    const now = epochNow();
+    const targetVaultDir = path.join(tempDir, 'target', '.myco');
+    fs.mkdirSync(targetVaultDir, { recursive: true });
+    saveConfig(targetVaultDir, MycoConfigSchema.parse({
+      version: 3,
+      embedding: {
+        provider: 'ollama',
+        model: 'bge-m3',
+      },
+    }));
+
+    upsertSession({
+      id: 'legacy-session',
+      project_id: 'proj_target',
+      agent: 'codex',
+      started_at: now,
+      created_at: now,
+      status: 'active',
+      summary: 'This row is in the singleton DB and must not be counted.',
+    });
+
+    const targetDbPath = path.join(targetVaultDir, 'myco.db');
+    const targetDb = openDatabase(targetDbPath);
+    try {
+      createSchema(targetDb);
+      targetDb.prepare(
+        `INSERT INTO sessions (id, project_id, agent, started_at, created_at, status, summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run('target-session', 'proj_target', 'codex', now, now, 'active', 'Target session summary');
+      targetDb.prepare(
+        `INSERT INTO prompt_batches (project_id, session_id, user_prompt, processed, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run('proj_target', 'target-session', 'Target prompt', 0, now);
+      targetDb.prepare(
+        `INSERT INTO plans (id, project_id, logical_key, title, content, session_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run('target-plan', 'proj_target', 'target-plan', 'Target Plan', 'Target plan content', 'target-session', now);
+    } finally {
+      targetDb.close();
+    }
+
+    const stats = gatherStats(targetVaultDir, {
+      active_sessions: ['legacy-session'],
+      databasePath: targetDbPath,
+      project_id: 'proj_target',
+    });
+
+    expect(stats.vault.session_count).toBe(1);
+    expect(stats.vault.batch_count).toBe(1);
+    expect(stats.vault.plan_count).toBe(1);
+    expect(stats.daemon.active_sessions).toEqual(['target-session']);
+    expect(stats.embedding.queue_depth).toBe(2);
+    expect(stats.embedding.total_embeddable).toBe(2);
   });
 });

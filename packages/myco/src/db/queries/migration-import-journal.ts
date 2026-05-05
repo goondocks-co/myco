@@ -54,6 +54,11 @@ export interface ImportMappingTargetLookupOptions {
   target_project_id?: string | null;
 }
 
+export interface LatestImportMappingSourceLookupOptions extends ImportMappingSourceLookupOptions {
+  target_table?: string | null;
+  target_grove_id?: string | null;
+}
+
 const SELECT_COLUMNS = [
   'id',
   'migration_id',
@@ -246,6 +251,40 @@ export function listImportMappingsForMigration(
       ORDER BY created_at ASC, id ASC`,
   ).all(migrationId) as Array<Record<string, unknown>>;
   return rows.map(mapRow);
+}
+
+export function lookupLatestImportMappingBySource(
+  sourceTable: string,
+  sourceId: string | number,
+  options: LatestImportMappingSourceLookupOptions = {},
+  db: Database = getDatabase(),
+): ImportMappingRow | null {
+  const conditions = ['source_table = ?', 'source_id = ?'];
+  const params: unknown[] = [sourceTable, String(sourceId)];
+  if (options.source_db_path) {
+    conditions.push('source_db_path = ?');
+    params.push(options.source_db_path);
+  }
+  if (options.target_project_id) {
+    conditions.push('target_project_id = ?');
+    params.push(options.target_project_id);
+  }
+  if (options.target_grove_id) {
+    conditions.push('target_grove_id = ?');
+    params.push(options.target_grove_id);
+  }
+  if (options.target_table) {
+    conditions.push('target_table = ?');
+    params.push(options.target_table);
+  }
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS}
+       FROM migration_import_journal
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY updated_at DESC, created_at DESC, id DESC
+      LIMIT 1`,
+  ).get(...params) as Record<string, unknown> | undefined;
+  return row ? mapRow(row) : null;
 }
 
 export function markImportMappingStatus(

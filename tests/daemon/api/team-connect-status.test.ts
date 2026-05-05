@@ -112,9 +112,13 @@ describe('createTeamHandlers.handleStatus', () => {
       deployed_worker_version: string | null;
       worker_update_available: boolean;
       package_version: string;
+      has_api_key: boolean;
+      api_key: string | null;
     };
 
     expect(body.package_version).toBe(readPackageVersion('packages', 'myco', 'package.json'));
+    expect(body.has_api_key).toBe(true);
+    expect(body.api_key).toBeNull();
     expect(body.local_team_package_version).toBe(teamPackageJson.version);
     expect(body.cached_team_package_version).toBe('0.1.0');
     expect(body.deployed_worker_version).toBe('0.1.0');

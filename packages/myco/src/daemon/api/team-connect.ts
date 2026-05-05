@@ -270,7 +270,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         enabled: config.team.enabled,
         worker_url: config.team.worker_url ?? null,
         has_api_key: hasApiKey,
-        api_key: secrets[TEAM_API_KEY_SECRET] ?? null,
+        api_key: null,
         healthy,
         health_error: healthError,
         pending_sync_count: pendingCount,

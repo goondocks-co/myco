@@ -1,4 +1,4 @@
-import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   projectPath,
@@ -59,4 +59,11 @@ export function useProjectSelection(): ProjectSelection | null {
 export function useProjectPath(suffix = ''): string {
   const selection = useProjectSelection();
   return selection ? projectPath(selection, suffix) : suffix || '/';
+}
+
+export function useProjectPathBuilder(): (suffix?: string) => string {
+  const selection = useProjectSelection();
+  return useCallback((suffix = '') => (
+    selection ? projectPath(selection, suffix) : suffix || '/'
+  ), [selection]);
 }

@@ -2,6 +2,7 @@ import { type StatsResponse } from '../../hooks/use-daemon';
 import { formatUptime, formatEpochAgo } from '../../lib/format';
 import { StatCard } from '../ui/stat-card';
 import { useCanopyRollup } from '../../hooks/use-canopy';
+import { useProjectPathBuilder } from '../../hooks/use-project-selection';
 
 /* ---------- Helpers ---------- */
 
@@ -21,6 +22,7 @@ function formatTokens(n: number): string {
 /* ---------- Component ---------- */
 
 export function VaultStats({ stats }: { stats: StatsResponse }) {
+  const projectPath = useProjectPathBuilder();
   const embeddingPercent =
     stats.embedding.total_embeddable > 0
       ? Math.round(
@@ -56,42 +58,42 @@ export function VaultStats({ stats }: { stats: StatsResponse }) {
         value={String(stats.vault.session_count)}
         sublabel={`${stats.daemon.active_sessions.length} active`}
         accent="sage"
-        href="/sessions"
+        href={projectPath('/sessions')}
       />
       <StatCard
         label="Spores"
         value={String(stats.vault.spore_count)}
         sublabel={`${stats.vault.entity_count} entities`}
         accent="sage"
-        href="/mycelium?tab=spores"
+        href={projectPath('/mycelium?tab=spores')}
       />
       <StatCard
         label="Embedding"
         value={`${embeddingPercent}%`}
         sublabel={`${stats.embedding.embedded_count}/${stats.embedding.total_embeddable}`}
         accent={stats.embedding.queue_depth > 0 ? 'ochre' : 'sage'}
-        href="/operations"
+        href={projectPath('/operations')}
       />
       <StatCard
         label="Agent"
         value={`${stats.agent.total_runs}`}
         sublabel={`last: ${agentLabel}`}
         accent={stats.agent.last_run_status === 'error' ? 'terracotta' : 'outline'}
-        href="/agent"
+        href={projectPath('/agent')}
       />
       <StatCard
         label="Canopy"
         value={formatTokens(canopyTokensSaved)}
         sublabel={canopySublabel}
         accent="sage"
-        href="/cortex?tab=canopy"
+        href={projectPath('/cortex?tab=canopy')}
       />
       <StatCard
         label="Digest"
         value={digestLabel}
         sublabel={stats.digest.generated_at ? formatEpochAgo(stats.digest.generated_at) : undefined}
         accent="outline"
-        href="/mycelium?tab=digest"
+        href={projectPath('/mycelium?tab=digest')}
       />
       <StatCard
         label="Uptime"

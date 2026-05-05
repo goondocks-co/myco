@@ -17,7 +17,6 @@ import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findPackageRoot } from '../utils/find-package-root.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
-import { resolveLegacyRequestContext } from '../tools/request-context.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
@@ -76,7 +75,6 @@ import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
-import { resolveCanopyProjectId } from '../canopy/identity.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
@@ -126,7 +124,7 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -162,6 +160,7 @@ import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
+import { resolveDaemonDataPaths } from './data-paths.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -356,6 +355,10 @@ export async function main(): Promise<void> {
   // --- Machine identity ---
   const machineId = getMachineId(vaultDir);
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+  const dataPaths = resolveDaemonDataPaths(vaultDir, {
+    ...process.env,
+    MYCO_MACHINE_ID: machineId,
+  });
 
   // --- Resolve npm global prefix + detect dev build ---
   // globalPrefix is used both for installed-version detection (in the status
@@ -397,7 +400,7 @@ export async function main(): Promise<void> {
   }
 
   // --- SQLite initialization ---
-  const db = initDatabase(vaultDbPath(vaultDir));
+  const db = initDatabase(dataPaths.databasePath);
   createSchema(db, machineId);
   registerBuiltinDomains();
   const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed');
@@ -407,7 +410,11 @@ export async function main(): Promise<void> {
     });
   }
 
-  logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
+  logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', {
+    vault: vaultDir,
+    database_path: dataPaths.databasePath,
+    grove_id: dataPaths.requestContext.groveId,
+  });
 
   // --- Check for restart-reason signal file (left by version sync restart script) ---
   {
@@ -481,14 +488,14 @@ export async function main(): Promise<void> {
   }
 
   // --- Embedding lifecycle manager ---
-  const vectorsDbPath = path.join(vaultDir, 'vectors.db');
+  const vectorsDbPath = dataPaths.vectorsPath;
   const vectorStore = new SqliteVecVectorStore(vectorsDbPath);
   const llmProvider = createEmbeddingProvider(config.embedding);
   const embeddingProvider = new EmbeddingProviderAdapter(llmProvider, config.embedding);
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
-  const databaseManager = new DatabaseMaintenanceManager(vaultDbPath(vaultDir), vaultDir, logger);
+  const databaseManager = new DatabaseMaintenanceManager(dataPaths.databasePath, vaultDir, logger);
 
   // --- Register built-in agents and tasks ---
   let definitionsDir: string | undefined;
@@ -860,7 +867,7 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    resolveProjectId: () => resolveCanopyProjectId(vaultDir),
+    resolveProjectId: () => dataPaths.requestContext.projectId,
     resolveMachineId: () => getMachineId(vaultDir),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
@@ -883,8 +890,8 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = resolveProjectRoot(vaultDir);
-      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
+      const projectRoot = dataPaths.requestContext.projectRoot;
+      const requestContext = dataPaths.requestContext;
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
@@ -927,8 +934,8 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = resolveProjectRoot(vaultDir);
-      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
+      const projectRoot = dataPaths.requestContext.projectRoot;
+      const requestContext = dataPaths.requestContext;
       const built = await buildTaskInstruction(
         task,
         params,

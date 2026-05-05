@@ -62,6 +62,7 @@ export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const stats = gatherStats(statsVaultDir, {
       active_sessions: deps.registry.sessions,
+      databasePath: req.requestContext?.databasePath,
       project_id: projectId,
     });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)

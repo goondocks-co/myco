@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { ScrollText } from 'lucide-react';
 import { useActivity, type ActivityEvent } from '../../hooks/use-activity';
 import { cn } from '../../lib/cn';
+import { useProjectPathBuilder } from '../../hooks/use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -35,10 +36,10 @@ function formatLogTime(epochSeconds: number): string {
   return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function routeForEvent(event: ActivityEvent): string | null {
-  if (event.type === 'session') return `/sessions/${event.id}`;
-  if (event.type === 'agent_run') return '/agent';
-  if (event.type === 'spore') return `/mycelium?tab=spores&spore=${event.id}`;
+function routeForEvent(event: ActivityEvent, projectPath: (suffix?: string) => string): string | null {
+  if (event.type === 'session') return projectPath(`/sessions/${event.id}`);
+  if (event.type === 'agent_run') return projectPath('/agent');
+  if (event.type === 'spore') return projectPath(`/mycelium?tab=spores&spore=${event.id}`);
   return null;
 }
 
@@ -82,6 +83,7 @@ function LogEntry({ event, onClick }: { event: ActivityEvent; onClick?: () => vo
 export function ActivityLogFeed() {
   const { data, isLoading } = useActivity(LOG_FEED_LIMIT);
   const navigate = useNavigate();
+  const projectPath = useProjectPathBuilder();
 
   const events = data?.slice(0, LOG_FEED_DISPLAY) ?? [];
 
@@ -114,7 +116,7 @@ export function ActivityLogFeed() {
       ) : (
         <div className="space-y-3">
           {events.map((event) => {
-            const route = routeForEvent(event);
+            const route = routeForEvent(event, projectPath);
             return (
               <LogEntry
                 key={event.id}

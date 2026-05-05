@@ -127,6 +127,18 @@ function RedactedField({ label, value }: { label: string; value: string }) {
   );
 }
 
+function StoredSecretField({ label }: { label: string }) {
+  return (
+    <div className="space-y-1">
+      <span className="text-xs text-on-surface-variant">{label}</span>
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-on-surface font-mono">Configured</span>
+        <span className="text-xs text-on-surface-variant">stored locally, not displayed</span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Sub-components ---------- */
 
 function ConnectForm({ onConnected }: { onConnected: () => void }) {
@@ -336,8 +348,8 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
           {status.worker_url && (
             <CopyableField label="Worker URL" value={status.worker_url} />
           )}
-          {status.api_key && (
-            <RedactedField label="API Key" value={status.api_key} />
+          {status.has_api_key && (
+            <StoredSecretField label="API Key" />
           )}
         </div>
       </Surface>

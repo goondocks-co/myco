@@ -109,15 +109,18 @@ describe('createLiveStatsHandler', () => {
       configHash: { get: () => 'abc123' },
     });
 
+    const requestContext = resolveLegacyRequestContext('/tmp/live-vault', {
+      projectRoot: '/tmp/live-project',
+      projectId: 'project-a',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
+    requestContext.databasePath = '/tmp/grove-a/myco.db';
+
     const result = await handler(makeReq({
-      requestContext: resolveLegacyRequestContext('/tmp/live-vault', {
-        projectRoot: '/tmp/live-project',
-        projectId: 'project-a',
-        groveId: 'grove-a',
-        machineId: 'machine-a',
-        sessionId: 'sess-a',
-        source: 'explicit',
-      }),
+      requestContext,
     }));
     const body = result.body as {
       daemon: {
@@ -136,6 +139,7 @@ describe('createLiveStatsHandler', () => {
 
     expect(gatherStats).toHaveBeenCalledWith('/tmp/live-vault', {
       active_sessions: ['sess-1', 'sess-2'],
+      databasePath: '/tmp/grove-a/myco.db',
       project_id: 'project-a',
     });
     expect(body.daemon.pid).toBe(process.pid);
@@ -151,6 +155,7 @@ describe('createLiveStatsHandler', () => {
     expect(body.context.request.grove_id).toBe('grove-a');
     expect(body.config_hash).toBe('abc123');
   });
+
 });
 
 describe('resolveStatsContext', () => {

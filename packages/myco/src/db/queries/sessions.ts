@@ -5,7 +5,7 @@
  * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
-import { getDatabase, changesSince } from '@myco/db/client.js';
+import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
@@ -416,8 +416,12 @@ export function countSessions(
  * results in-memory against this set instead. Bounded by the number of
  * concurrent in-flight sessions — typically small.
  */
-export function getActiveSessionIds(projectId?: string | null): Set<string> {
-  const db = getDatabase();
+export function getActiveSessionIds(projectId?: string | null): Set<string>;
+export function getActiveSessionIds(projectId: string | null | undefined, db: Database): Set<string>;
+export function getActiveSessionIds(
+  projectId?: string | null,
+  db: Database = getDatabase(),
+): Set<string> {
   const scope = projectScopeClause(projectId);
   const rows = db.prepare(
     `SELECT id FROM sessions WHERE status = 'active'${scope.sql}`,

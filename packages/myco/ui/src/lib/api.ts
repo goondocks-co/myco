@@ -9,7 +9,6 @@ const CONTEXT_FREE_PATHS = [
   '/logs',
   '/logs/search',
   '/logs/stream',
-  '/hub/status',
 ];
 
 // Injected by Vite's `define` at build time — see vite.config.ts.

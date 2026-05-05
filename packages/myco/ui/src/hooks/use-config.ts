@@ -22,9 +22,6 @@ export interface MycoConfig {
     log_level: 'debug' | 'info' | 'warn' | 'error';
     log_retention_days: number;
   };
-  hub: {
-    url: string;
-  };
   maintenance: {
     auto_optimize: boolean;
     auto_optimize_interval_hours: number;

@@ -10,6 +10,7 @@ import {
   listPlansBySession,
   type PlanRow,
 } from '@myco/db/queries/plans.js';
+import { lookupLatestImportMappingBySource } from '@myco/db/queries/migration-import-journal.js';
 import {
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
@@ -75,7 +76,8 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   }
 
   if (input.id) {
-    const row = getPlan(input.id, projectId);
+    const row = getPlan(input.id, projectId)
+      ?? getPlanByLegacyImportId(input.id, projectId);
     if (!row) return { ok: true, plans: [] };
     return {
       ok: true,
@@ -91,4 +93,14 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   const statusFilter = input.status === 'all' ? undefined : input.status;
   const rows = listPlans({ project_id: projectId, status: statusFilter, limit: input.limit });
   return { ok: true, plans: rows.map(toPlanSummary) };
+}
+
+function getPlanByLegacyImportId(id: string, projectId: string | null | undefined): PlanRow | null {
+  if (!projectId) return null;
+  const mapping = lookupLatestImportMappingBySource('plans', id, {
+    target_table: 'plans',
+    target_project_id: projectId,
+  });
+  if (!mapping || mapping.status !== 'imported') return null;
+  return getPlan(mapping.target_id, projectId);
 }

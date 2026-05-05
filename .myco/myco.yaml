@@ -102,7 +102,7 @@ maintenance:
 update:
   channel: stable
 team:
-  enabled: true
+  enabled: false
   worker_url: https://myco-team-974bc350.goondocks.workers.dev
   interval_minutes: 15
 skills:

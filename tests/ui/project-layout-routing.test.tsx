@@ -21,10 +21,6 @@ mock.module('../../packages/myco/ui/src/hooks/use-restart', () => ({
   useRestart: () => ({ restart: vi.fn(), isRestarting: false }),
 }));
 
-mock.module('../../packages/myco/ui/src/hooks/use-hub-status', () => ({
-  useHubStatus: () => ({ data: { running: false, url: 'http://127.0.0.1:0' }, isFetching: false, isError: false }),
-}));
-
 mock.module('../../packages/myco/ui/src/hooks/use-notifications', () => ({
   useUnreadCount: () => ({ data: { count: 0 } }),
 }));

@@ -206,6 +206,7 @@ describe('myco init', () => {
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('attachments/');
+    expect(gitignore).toContain('migration/');
     expect(gitignore).toContain('runtime/');
     expect(gitignore).toContain('runtime.tmp/');
   });

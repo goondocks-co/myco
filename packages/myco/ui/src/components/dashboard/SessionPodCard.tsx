@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { type ActivityEvent } from '../../hooks/use-activity';
 import { formatEpochAgo } from '../../lib/format';
 import { cn } from '../../lib/cn';
+import { useProjectPathBuilder } from '../../hooks/use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -69,17 +70,18 @@ function titleForEvent(event: ActivityEvent): string {
 
 export function SessionPodCard({ event }: { event: ActivityEvent }) {
   const navigate = useNavigate();
+  const projectPath = useProjectPathBuilder();
   const variant = variantForType(event.type);
   const status = statusForVariant(variant);
   const timeAgo = formatEpochAgo(event.timestamp);
 
   const route =
     event.type === 'session'
-      ? `/sessions/${event.id}`
+      ? projectPath(`/sessions/${event.id}`)
       : event.type === 'agent_run'
-        ? '/agent'
+        ? projectPath('/agent')
         : event.type === 'spore'
-          ? `/mycelium?tab=spores&spore=${event.id}`
+          ? projectPath(`/mycelium?tab=spores&spore=${event.id}`)
           : null;
 
   return (
