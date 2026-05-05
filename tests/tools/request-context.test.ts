@@ -88,6 +88,26 @@ describe('tool request context', () => {
     });
   });
 
+  it('resolves HTTP Grove context from registry when headers omit project root', () => {
+    withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+      const resolved = requestContextFromHttpHeaders({
+        [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+        [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+        [REQUEST_CONTEXT_HEADERS.machineId]: 'machine-1',
+        [REQUEST_CONTEXT_HEADERS.sessionId]: 'sess-1',
+      }, vaultDir);
+
+      expect(resolved.projectRoot).toBe(projectRoot);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.machineId).toBe('machine-1');
+      expect(resolved.sessionId).toBe('sess-1');
+      expect(resolved.projectVaultDir).toBe(vaultDir);
+      expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
+      expect(resolved.source).toBe('headers');
+    });
+  });
+
   it('falls back to the daemon vault context when no context headers are present', () => {
     const vaultDir = path.join('/tmp', 'daemon-project', '.myco');
     const resolved = requestContextFromHttpHeaders({}, vaultDir);

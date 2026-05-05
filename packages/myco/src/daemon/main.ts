@@ -52,6 +52,7 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
+import { createListGroveProjectsHandler, createListGrovesHandler } from './api/groves.js';
 import { createHubStatusHandler, resolveHubUrl } from './api/hub.js';
 import {
   handleListSessions,
@@ -808,6 +809,8 @@ export async function main(): Promise<void> {
     server,
     configHash: configHashRef,
   }));
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler());
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler());
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);

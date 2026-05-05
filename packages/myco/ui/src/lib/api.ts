@@ -1,7 +1,16 @@
 import type { AppearanceValues as AppearanceConfig } from '@myco/config/appearance-values';
 import { withBasePath } from './base-path';
+import { requestContextHeadersFromSelection } from './selection';
 
 const API_BASE = '/api';
+const CONTEXT_FREE_PATHS = [
+  '/groves',
+  '/version',
+  '/logs',
+  '/logs/search',
+  '/logs/stream',
+  '/hub/status',
+];
 
 // Injected by Vite's `define` at build time — see vite.config.ts.
 declare const __MYCO_UI_VERSION__: string;
@@ -36,9 +45,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   // Only set Content-Type for methods with a body (POST, PUT)
   const method = init?.method?.toUpperCase();
   const needsContentType = method === 'POST' || method === 'PUT';
-  const headers = needsContentType
-    ? { 'Content-Type': 'application/json', ...init?.headers }
-    : init?.headers;
+  const headers = buildHeaders(path, init?.headers, needsContentType);
 
   const res = await fetch(withBasePath(`${API_BASE}${path}`), {
     ...init,
@@ -50,6 +57,28 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     throw new ApiError(res.status, body);
   }
   return res.json();
+}
+
+function buildHeaders(
+  path: string,
+  initHeaders: HeadersInit | undefined,
+  needsContentType: boolean,
+): Headers | undefined {
+  const headers = new Headers();
+  if (!isContextFreePath(path)) {
+    for (const [key, value] of Object.entries(requestContextHeadersFromSelection())) {
+      headers.set(key, value);
+    }
+  }
+  if (needsContentType) headers.set('Content-Type', 'application/json');
+  if (initHeaders) {
+    new Headers(initHeaders).forEach((value, key) => headers.set(key, value));
+  }
+  return Array.from(headers.keys()).length > 0 ? headers : undefined;
+}
+
+function isContextFreePath(path: string): boolean {
+  return CONTEXT_FREE_PATHS.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
 export async function postJson<T>(path: string, body?: unknown): Promise<T> {

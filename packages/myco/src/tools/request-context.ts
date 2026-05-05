@@ -193,41 +193,54 @@ function resolveRegisteredRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
 ): MycoRequestContext {
-  const projectRoot = input.projectRoot ?? fallback.projectRoot;
-  const projectId = input.projectId ?? readManifest(resolveProjectVaultDir(projectRoot))?.project.id;
+  const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
+  const manifestFromInputRoot = inputProjectRoot
+    ? readManifest(resolveProjectVaultDir(inputProjectRoot))
+    : null;
+  const projectId = input.projectId ?? manifestFromInputRoot?.project.id;
   const groveId = input.groveId;
   const missing: string[] = [];
-  if (!projectRoot) missing.push('project root');
   if (!projectId) missing.push('project id');
   if (!groveId) missing.push('Grove id');
   if (missing.length > 0) {
     throw new Error(`Incomplete Myco request context: missing ${missing.join(', ')}`);
   }
 
-  const normalizedRoot = path.resolve(projectRoot);
   const mycoHome = resolveMycoHome();
   const grove = loadGroveRecord(groveId!, mycoHome);
   if (!grove) throw new Error(`Unknown Grove in request context: ${groveId}`);
 
-  const manifest = readManifest(resolveProjectVaultDir(normalizedRoot));
-  if (manifest && manifest.project.id !== projectId) {
-    throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifest.project.id}`);
+  if (manifestFromInputRoot && manifestFromInputRoot.project.id !== projectId) {
+    throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifestFromInputRoot.project.id}`);
   }
 
   const registered = findRegisteredProject({
     projectId: projectId!,
     groveId: grove.id,
-    bindingId: manifest?.grove?.binding_id ?? null,
-    projectRoot: normalizedRoot,
+    bindingId: manifestFromInputRoot?.grove?.binding_id ?? null,
+    projectRoot: inputProjectRoot,
   }, mycoHome);
   if (!registered) {
     throw new Error(`Project ${projectId} is not registered in Grove ${grove.id}`);
   }
 
+  const registeredRoot = path.resolve(registered.project.root);
+  const manifest = readManifest(resolveProjectVaultDir(registeredRoot));
+  if (manifest && manifest.project.id !== projectId) {
+    throw new Error(`Registered project ${projectId} does not match project.toml id ${manifest.project.id}`);
+  }
+  if (
+    manifest?.grove?.binding_id
+    && registered.project.binding_id
+    && manifest.grove.binding_id !== registered.project.binding_id
+  ) {
+    throw new Error(`Registered project ${projectId} binding does not match project.toml binding`);
+  }
+
   return buildRegisteredRequestContext({
     fallback,
     source,
-    projectRoot: normalizedRoot,
+    projectRoot: registeredRoot,
     projectId: projectId!,
     groveId: grove.id,
     machineId: input.machineId ?? fallback.machineId,

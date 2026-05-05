@@ -29,29 +29,32 @@ import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { useHubStatus } from '../hooks/use-hub-status';
+import { useProjectPath, useProjectSelection } from '../hooks/use-project-selection';
 import { Button, buttonVariants } from '../components/ui/button';
 import { GlobalSearch } from '../components/search/GlobalSearch';
+import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { NotificationBanner } from '../components/notifications/NotificationBanner';
 import { NotificationPanel } from '../components/notifications/NotificationPanel';
 import { SystemNotifications } from '../components/notifications/SystemNotifications';
 import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
+import { applyProjectFavicon, monogramFor } from '../lib/selection';
 import { AppearanceSection } from './AppearanceSection';
 import { DEFAULT_HUB_URL } from '@myco/constants/hub';
 
 /* ---------- Constants ---------- */
 
 const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/sessions', label: 'Sessions', icon: MessageSquare },
-  { to: '/cortex', label: 'Cortex', icon: Brain },
-  { to: '/mycelium', label: 'Mycelium', icon: Network },
-  { to: '/skills', label: 'Skills', icon: Sparkles },
-  { to: '/agent', label: 'Agent', icon: Bot },
-  { to: '/settings', label: 'Settings', icon: Settings },
-  { to: '/operations', label: 'Operations', icon: Wrench },
-  { to: '/team', label: 'Team', icon: Users },
-  { to: '/logs', label: 'Logs', icon: ScrollText },
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project' },
+  { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project' },
+  { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project' },
+  { to: '/mycelium', label: 'Mycelium', icon: Network, scope: 'project' },
+  { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project' },
+  { to: '/agent', label: 'Agent', icon: Bot, scope: 'project' },
+  { to: '/settings', label: 'Settings', icon: Settings, scope: 'project' },
+  { to: '/operations', label: 'Operations', icon: Wrench, scope: 'project' },
+  { to: '/team', label: 'Team', icon: Users, scope: 'project' },
+  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'global' },
 ] as const;
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
@@ -200,8 +203,9 @@ function HubLinkButton({ collapsed = false }: { collapsed?: boolean }) {
 /** Self-contained Operations nav link — owns update polling, controls link target and badge. */
 function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
   const { data } = useUpdateStatus();
+  const operationsPath = useProjectPath('/operations');
   const hasUpdate = !!(data && !data.exempt && data.update_available);
-  const to = hasUpdate ? '/operations?tab=system' : '/operations';
+  const to = hasUpdate ? `${operationsPath}?tab=system` : operationsPath;
 
   return (
     <NavLink
@@ -269,6 +273,8 @@ function SidebarContent({
         )}
       </div>
 
+      <ProjectSwitcher collapsed={collapsed} />
+
       {/* Search + Notifications triggers */}
       <div className="px-2 pt-2 pb-1 space-y-0.5">
         <button
@@ -314,24 +320,7 @@ function SidebarContent({
           item.to === '/operations' ? (
             <OperationsNavLink key={item.to} collapsed={collapsed} />
           ) : (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              title={collapsed ? item.label : undefined}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center rounded-md text-sm font-medium transition-colors',
-                  collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-                  isActive
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-                )
-              }
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {!collapsed && item.label}
-            </NavLink>
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
           ),
         )}
       </nav>
@@ -365,12 +354,55 @@ function SidebarContent({
   );
 }
 
+function SidebarNavLink({
+  item,
+  collapsed,
+}: {
+  item: typeof NAV_ITEMS[number];
+  collapsed: boolean;
+}) {
+  const projectScopedTo = useProjectPath(item.to);
+  const to = item.scope === 'project' ? projectScopedTo : item.to;
+  return (
+    <NavLink
+      to={to}
+      end={item.to === '/'}
+      title={collapsed ? item.label : undefined}
+      className={({ isActive }) =>
+        cn(
+          'flex items-center rounded-md text-sm font-medium transition-colors',
+          collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+          isActive
+            ? 'bg-primary/10 text-primary'
+            : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+        )
+      }
+    >
+      <item.icon className="h-4 w-4 shrink-0" />
+      {!collapsed && item.label}
+    </NavLink>
+  );
+}
+
+function useDocumentIdentity(vaultName: string | undefined) {
+  const selection = useProjectSelection();
+  useEffect(() => {
+    const projectName = selection?.project.name ?? vaultName ?? null;
+    document.title = projectName
+      ? `${selection ? `${monogramFor(selection.project.name)} ` : ''}${projectName} - Myco`
+      : 'Myco';
+    applyProjectFavicon(selection);
+  }, [selection, vaultName]);
+}
+
 /* ---------- Layout ---------- */
 
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
   const { data: stats } = useDaemon();
-  const vaultName = stats?.context.project.name ?? stats?.vault.name;
+  const selection = useProjectSelection();
+  const vaultName = selection?.project.name ?? stats?.context.project.name ?? stats?.vault.name;
+  useDocumentIdentity(vaultName);
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const { data: unreadData } = useUnreadCount();
