@@ -9,9 +9,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
+import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { writeSecret, readSecrets } from '@myco/config/secrets.js';
+import {
+  loadTeamConnectionConfig,
+  readTeamConnectionSecrets,
+  resolveTeamConnectionStore,
+  updateTeamConnectionConfig,
+  writeTeamConnectionSecret,
+} from '@myco/grove/team-connection.js';
 import {
   countPending,
   backfillUnsynced,
@@ -27,8 +34,10 @@ import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
+import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +58,21 @@ interface TeamLocalConfig {
   package_version?: string;
 }
 
+interface TeamConnectionContext {
+  connection_scope: 'grove' | 'legacy-project';
+  grove: {
+    id: string;
+    name: string;
+    slug: string;
+    mode: string;
+  } | null;
+  project: {
+    id: string;
+    name: string;
+    root: string;
+  };
+}
+
 function readCachedTeamPackageVersion(vaultDir: string): string | null {
   const config = readJsonConfig<TeamLocalConfig>(resolveVaultConfigPath(vaultDir, TEAM_CONFIG_DIR, TEAM_CONFIG_FILE));
   return config?.package_version?.trim() || null;
@@ -62,8 +86,8 @@ export interface TeamHandlerDeps {
   vaultDir: string;
   machineId: string;
   logger: DaemonLogger;
-  getTeamClient: () => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null) => void;
+  getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
+  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   /**
    * npm global prefix — used to locate the installed `@goondocks/myco-team`
    * package for the Worker upgrade subprocess and for reporting the local
@@ -170,15 +194,17 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       };
     }
 
-    // Save config and secret
-    updateTeamConfig(vaultDir, {
+    // Save config and secret to the selected Grove when request context is
+    // Grove-era; legacy callers keep the historical project-local storage.
+    updateTeamConnectionConfig(vaultDir, req.requestContext, {
       enabled: true,
       worker_url: url,
     });
-    writeSecret(vaultDir, TEAM_API_KEY_SECRET, api_key);
+    writeTeamConnectionSecret(vaultDir, req.requestContext, TEAM_API_KEY_SECRET, api_key);
+    deps.setTeamClient(client, req.requestContext);
 
-    const config = loadMergedConfig(vaultDir);
-    return { body: { connected: true, team: config.team } };
+    const team = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    return { body: { connected: true, team } };
   }
 
   /**
@@ -186,8 +212,9 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    *
    * Disables team sync and clears the live client reference.
    */
-  async function handleDisconnect(_req: RouteRequest): Promise<RouteResponse> {
-    updateTeamConfig(vaultDir, { enabled: false });
+  async function handleDisconnect(req: RouteRequest): Promise<RouteResponse> {
+    updateTeamConnectionConfig(vaultDir, req.requestContext, { enabled: false });
+    deps.setTeamClient(null, req.requestContext);
 
     return { body: { connected: false } };
   }
@@ -197,21 +224,22 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    *
    * Returns connection status, health check result, pending sync count, and machine_id.
    */
-  async function handleStatus(_req: RouteRequest): Promise<RouteResponse> {
-    const config = loadMergedConfig(vaultDir);
-    const client = deps.getTeamClient();
-    const secrets = readSecrets(vaultDir);
+  async function handleStatus(req: RouteRequest): Promise<RouteResponse> {
+    const config = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    const client = deps.getTeamClient(req.requestContext);
+    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
+    const store = resolveTeamConnectionStore(vaultDir, req.requestContext);
     const hasApiKey = Boolean(secrets[TEAM_API_KEY_SECRET]);
     const localTeamPackageVersion = deps.globalPrefix
       ? getInstalledVersion(deps.globalPrefix, TEAM_PACKAGE_NAME)
       : null;
-    const cachedTeamPackageVersion = readCachedTeamPackageVersion(vaultDir);
+    const cachedTeamPackageVersion = readCachedTeamPackageVersion(store.configDir);
     let deployedWorkerVersion: string | null = null;
 
     let healthy = false;
     let healthError: string | undefined;
 
-    if (client && config.team.enabled) {
+    if (client && config.enabled) {
       try {
         const health = await client.health();
         healthy = true;
@@ -233,7 +261,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
     let teamConfig: Awaited<ReturnType<TeamSyncClient['getConfig']>> | null = null;
-    if (client && config.team.enabled) {
+    if (client && config.enabled) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
       } catch (err) {
@@ -267,8 +295,9 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     return {
       body: {
-        enabled: config.team.enabled,
-        worker_url: config.team.worker_url ?? null,
+        ...resolveTeamConnectionContext(req.requestContext, vaultDir),
+        enabled: config.enabled,
+        worker_url: config.worker_url ?? null,
         has_api_key: hasApiKey,
         api_key: null,
         healthy,
@@ -280,7 +309,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         cached_team_package_version: cachedTeamPackageVersion,
         deployed_worker_version: deployedWorkerVersion,
         worker_update_available:
-          config.team.enabled &&
+          config.enabled &&
           Boolean(localTeamPackageVersion) &&
           Boolean(deployedWorkerVersion) &&
           deployedWorkerVersion !== localTeamPackageVersion,
@@ -338,15 +367,15 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return { body: { enqueued: count } };
   }
 
-  function clientOrError(): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
-    const client = deps.getTeamClient();
+  function clientOrError(requestContext?: MycoRequestContext): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
+    const client = deps.getTeamClient(requestContext);
     if (!client) return { ok: false, response: { status: 503, body: { error: 'team_not_configured' } } };
     return { ok: true, client };
   }
 
   /** GET /api/team/queue-stats — proxies CF queue depth + DLQ depth from the worker. */
-  async function handleQueueStats(_req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+  async function handleQueueStats(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const stats = await guard.client.getQueueStats();
     return { body: stats };
@@ -354,7 +383,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** GET /api/team/dlq — list a page of DLQ messages from the worker. */
   async function handleDlqList(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const limit = Number(req.query.limit ?? '50') || 50;
     const result = await guard.client.listDlq(limit);
@@ -363,7 +392,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/dlq/retry — re-publish DLQ messages back to the main queue. */
   async function handleDlqRetry(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
@@ -374,7 +403,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/dlq/discard — permanently drop DLQ messages. */
   async function handleDlqDiscard(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
@@ -385,7 +414,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   /** POST /api/team/cf-api-token — stash a CF API token + account id on the worker. */
   async function handleSetCfApiToken(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { token?: string; account_id?: string };
     if (!body.token || !body.account_id) {
@@ -396,8 +425,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   }
 
   /** DELETE /api/team/cf-api-token — clear the worker's CF API token. */
-  async function handleClearCfApiToken(_req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+  async function handleClearCfApiToken(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const result = await guard.client.clearCfApiToken();
     return { body: result };
@@ -411,7 +440,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * typed `myco_team_not_installed` error when it isn't so the UI can
    * surface an install prompt instead of a generic 500.
    */
-  async function handleUpgradeWorker(_req: RouteRequest): Promise<RouteResponse> {
+  async function handleUpgradeWorker(req: RouteRequest): Promise<RouteResponse> {
     const teamEntry = resolveMycoTeamEntry(deps.globalPrefix);
     if (!teamEntry) {
       return {
@@ -511,23 +540,31 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // reinitialize the client from the fresh merged config rather than
     // the subprocess's result shape.
     const freshConfig = loadMergedConfig(vaultDir);
-    const secrets = readSecrets(vaultDir);
+    const workerUrl = result.worker_url ?? freshConfig.team.worker_url;
+    if (workerUrl) {
+      updateTeamConnectionConfig(vaultDir, req.requestContext, {
+        enabled: true,
+        worker_url: workerUrl,
+      });
+    }
+    const teamConfig = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
     const apiKey = secrets[TEAM_API_KEY_SECRET];
-    if (freshConfig.team.enabled && freshConfig.team.worker_url && apiKey && deps.getTeamClient()) {
+    if (teamConfig.enabled && teamConfig.worker_url && apiKey && deps.getTeamClient(req.requestContext)) {
       deps.setTeamClient(new TeamSyncClient({
-        workerUrl: freshConfig.team.worker_url,
+        workerUrl: teamConfig.worker_url,
         apiKey,
         machineId,
         syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-      }));
+      }), req.requestContext);
     }
 
     return { body: result };
   }
 
   /** POST /api/team/rotate-mcp-token — rotate the MCP bearer token. */
-  async function handleRotateMcpToken(_req: RouteRequest): Promise<RouteResponse> {
-    const client = deps.getTeamClient();
+  async function handleRotateMcpToken(req: RouteRequest): Promise<RouteResponse> {
+    const client = deps.getTeamClient(req.requestContext);
     if (!client) {
       return {
         status: 400,
@@ -551,5 +588,32 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   return {
     handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken,
     handleQueueStats, handleDlqList, handleDlqRetry, handleDlqDiscard, handleSetCfApiToken, handleClearCfApiToken,
+  };
+}
+
+function resolveTeamConnectionContext(
+  requestContext: MycoRequestContext | undefined,
+  fallbackVaultDir: string,
+): TeamConnectionContext {
+  const projectVaultDir = requestContext?.projectVaultDir ?? fallbackVaultDir;
+  const manifest = loadProjectManifest(projectVaultDir);
+  const projectRoot = requestContext?.projectRoot ?? resolveProjectRoot(projectVaultDir);
+  const grove = requestContext?.groveId ? loadGroveRecord(requestContext.groveId) : null;
+
+  return {
+    connection_scope: requestContext?.groveId ? 'grove' : 'legacy-project',
+    grove: requestContext?.groveId
+      ? {
+          id: requestContext.groveId,
+          name: grove?.name ?? requestContext.groveId,
+          slug: grove?.slug ?? manifest?.grove?.slug ?? requestContext.groveId,
+          mode: grove?.mode ?? manifest?.grove?.mode ?? 'local',
+        }
+      : null,
+    project: {
+      id: requestContext?.projectId ?? manifest?.project.id ?? projectRoot,
+      name: manifest?.project.name ?? path.basename(projectRoot),
+      root: projectRoot,
+    },
   };
 }

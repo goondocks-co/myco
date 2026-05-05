@@ -4,6 +4,18 @@ import { fetchJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
 
 export interface TeamStatusResponse {
+  connection_scope: 'grove' | 'legacy-project';
+  grove: {
+    id: string;
+    name: string;
+    slug: string;
+    mode: string;
+  } | null;
+  project: {
+    id: string;
+    name: string;
+    root: string;
+  };
   enabled: boolean;
   worker_url: string | null;
   has_api_key: boolean;

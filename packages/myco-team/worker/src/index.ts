@@ -785,6 +785,8 @@ function buildVectorMetadata(table: string, data: Record<string, unknown>): Part
     if (typeof value === 'number' && Number.isFinite(value)) metadata[key] = value as never;
   };
 
+  maybeString('project_id', data.project_id);
+
   switch (table) {
     case 'spores':
       maybeString('status', data.status);
@@ -1007,6 +1009,7 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     session_id: url.searchParams.get('session_id') ?? undefined,
     source_path: url.searchParams.get('source_path') ?? undefined,
     name: url.searchParams.get('name') ?? undefined,
+    project_id: url.searchParams.get('project_id') ?? undefined,
   });
 
   return jsonResponse({ results: results.map(toCloudSearchResult) });

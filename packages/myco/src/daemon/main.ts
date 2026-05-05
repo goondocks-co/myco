@@ -1082,7 +1082,14 @@ export async function main(): Promise<void> {
   });
 
   // --- Team sync ---
-  teamSync = initTeamSync({ liveConfig, machineId, logger, vaultDir, serverVersion: server.version });
+  teamSync = initTeamSync({
+    liveConfig,
+    machineId,
+    logger,
+    vaultDir,
+    serverVersion: server.version,
+    requestContext: dataPaths.requestContext,
+  });
   reactions.on(['team'], async () => {
     await teamSync.reconcileClient();
   });
@@ -1100,6 +1107,7 @@ export async function main(): Promise<void> {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await teamSync.reconcileClient(req.requestContext);
     }
     return result;
   });
@@ -1107,6 +1115,7 @@ export async function main(): Promise<void> {
     const result = await teamHandlers.handleDisconnect(req);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await teamSync.reconcileClient(req.requestContext);
     }
     return result;
   });

@@ -327,6 +327,7 @@ export function createReadTools(deps: VaultToolDeps) {
                 since: args.since,
                 until: args.until,
                 session_id: args.session_id,
+                project_id: typeof projectId === 'string' ? projectId : undefined,
               })
                 .then((res) => res.results.map((r) => ({ ...r, source: `${TEAM_SOURCE_PREFIX}${r.machine_id}` })))
                 .catch(() => [] as Array<Record<string, unknown>>)

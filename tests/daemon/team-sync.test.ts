@@ -241,6 +241,7 @@ describe('TeamSyncClient', () => {
         since: 10,
         until: 20,
         session_id: 'sess-1',
+        project_id: 'proj-1',
       });
 
       const calledUrl = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
@@ -249,6 +250,7 @@ describe('TeamSyncClient', () => {
       expect(calledUrl).toContain('since=10');
       expect(calledUrl).toContain('until=20');
       expect(calledUrl).toContain('session_id=sess-1');
+      expect(calledUrl).toContain('project_id=proj-1');
     });
 
     it('throws on non-ok response', async () => {

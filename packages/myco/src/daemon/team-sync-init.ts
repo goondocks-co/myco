@@ -10,7 +10,10 @@ import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
 import { TeamSyncClient } from './team-sync.js';
-import { readSecrets } from '@myco/config/secrets.js';
+import {
+  loadTeamConnectionConfig,
+  readTeamConnectionSecrets,
+} from '@myco/grove/team-connection.js';
 import {
   listPending,
   markSent,
@@ -26,6 +29,7 @@ import {
   epochSeconds,
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,12 +44,13 @@ export interface TeamSyncDeps {
   logger: DaemonLogger;
   vaultDir: string;
   serverVersion: string;
+  requestContext?: MycoRequestContext;
 }
 
 export interface TeamSyncResult {
-  getTeamClient: () => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null) => void;
-  reconcileClient: () => Promise<void>;
+  getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
+  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
+  reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   registerFlushJob: (powerManager: PowerManager) => void;
 }
 
@@ -54,47 +59,52 @@ export interface TeamSyncResult {
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
-  const { liveConfig, machineId, logger, vaultDir, serverVersion } = deps;
-  let teamClient: TeamSyncClient | null = null;
-  let clientSignature: string | null = null;
+  const { machineId, logger, vaultDir, serverVersion, requestContext: defaultRequestContext } = deps;
+  const teamClients = new Map<string, TeamSyncClient>();
+  const clientSignatures = new Map<string, string>();
 
-  async function reconcileClient(): Promise<void> {
-    const config = liveConfig.current;
-    const workerUrl = config.team.worker_url?.trim() || null;
-    const apiKey = readSecrets(vaultDir)[TEAM_API_KEY_SECRET]?.trim() || null;
-    const nextSignature = config.team.enabled && workerUrl && apiKey
+  async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
+    const key = teamConnectionKey(vaultDir, requestContext);
+    const teamConfig = loadTeamConnectionConfig(vaultDir, requestContext);
+    const workerUrl = teamConfig.worker_url?.trim() || null;
+    const apiKey = readTeamConnectionSecrets(vaultDir, requestContext)[TEAM_API_KEY_SECRET]?.trim() || null;
+    const nextSignature = teamConfig.enabled && workerUrl && apiKey
       ? `${workerUrl}\n${apiKey}`
       : null;
 
     if (!nextSignature) {
+      const teamClient = teamClients.get(key);
       if (teamClient) {
         logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client cleared', {
-          enabled: config.team.enabled,
+          enabled: teamConfig.enabled,
           has_worker_url: Boolean(workerUrl),
           has_api_key: Boolean(apiKey),
         });
       }
-      teamClient = null;
-      clientSignature = null;
+      teamClients.delete(key);
+      clientSignatures.delete(key);
       return;
     }
 
+    const teamClient = teamClients.get(key);
+    const clientSignature = clientSignatures.get(key) ?? null;
     if (teamClient && clientSignature === nextSignature) return;
 
     const activeWorkerUrl = workerUrl!;
     const activeApiKey = apiKey!;
-    teamClient = new TeamSyncClient({
+    const nextClient = new TeamSyncClient({
       workerUrl: activeWorkerUrl,
       apiKey: activeApiKey,
       machineId,
       syncProtocolVersion: SYNC_PROTOCOL_VERSION,
     });
-    clientSignature = nextSignature;
+    teamClients.set(key, nextClient);
+    clientSignatures.set(key, nextSignature);
 
     logger.info(LOG_KINDS.TEAM_SYNC_START, 'Team sync client initialized', { worker_url: activeWorkerUrl });
 
     try {
-      await teamClient.connect({
+      await nextClient.connect({
         machine_id: machineId,
         version: serverVersion,
       });
@@ -116,8 +126,17 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   }
 
   return {
-    getTeamClient: () => teamClient,
-    setTeamClient: (client) => { teamClient = client; },
+    getTeamClient: (requestContext = defaultRequestContext) => teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null,
+    setTeamClient: (client, requestContext = defaultRequestContext) => {
+      const key = teamConnectionKey(vaultDir, requestContext);
+      if (!client) {
+        teamClients.delete(key);
+        clientSignatures.delete(key);
+        return;
+      }
+      teamClients.set(key, client);
+      clientSignatures.delete(key);
+    },
     reconcileClient,
     registerFlushJob: (powerManager) => {
       // Registered unconditionally; team.enabled is checked at run time so
@@ -125,10 +144,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       powerManager.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
-        preventsDeepSleep: () => liveConfig.current.team.enabled && countPending() > 0,
+        preventsDeepSleep: () => loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0,
         fn: async () => {
-          if (!liveConfig.current.team.enabled) return;
-          const client = teamClient;
+          if (!loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled) return;
+          const client = teamClients.get(teamConnectionKey(vaultDir, defaultRequestContext)) ?? null;
           if (!client) return;
 
           const pending = listPending();
@@ -182,4 +201,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       });
     },
   };
+}
+
+function teamConnectionKey(vaultDir: string, requestContext?: MycoRequestContext): string {
+  return requestContext?.groveId ? `grove:${requestContext.groveId}` : `legacy-project:${vaultDir}`;
 }

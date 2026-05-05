@@ -11,6 +11,7 @@ export interface TeamVectorMetadata {
   table: string;
   id: string;
   machine_id: string;
+  project_id?: string;
   status?: string;
   observation_type?: string;
   created_at?: number;
@@ -31,6 +32,7 @@ export interface SemanticSearchArgs {
   session_id?: string;
   source_path?: string;
   name?: string;
+  project_id?: string;
 }
 
 /**
@@ -79,6 +81,7 @@ function matchesFilters(metadata: TeamVectorMetadata, args: Omit<SemanticSearchA
   if (args.session_id && metadata.session_id !== args.session_id) return false;
   if (args.source_path && metadata.source_path !== args.source_path) return false;
   if (args.name && metadata.name !== args.name) return false;
+  if (args.project_id && metadata.project_id !== args.project_id) return false;
 
   const createdAt = typeof metadata.created_at === 'number' ? metadata.created_at : undefined;
   if (args.since !== undefined && (createdAt === undefined || createdAt < args.since)) return false;

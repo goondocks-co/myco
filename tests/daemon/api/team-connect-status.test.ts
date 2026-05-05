@@ -124,4 +124,47 @@ describe('createTeamHandlers.handleStatus', () => {
     expect(body.deployed_worker_version).toBe('0.1.0');
     expect(body.worker_update_available).toBe(body.local_team_package_version !== body.deployed_worker_version);
   });
+
+  it('reports the selected Grove context for Grove-scoped callers', async () => {
+    const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
+    const handlers = createTeamHandlers({
+      vaultDir,
+      machineId: 'machine-test',
+      globalPrefix: null,
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+      getTeamClient: (requestContext) => {
+        expect(requestContext?.groveId).toBe('grove_test');
+        expect(requestContext?.projectId).toBe('proj_test');
+        return null;
+      },
+      setTeamClient: () => undefined,
+    });
+
+    const response = await handlers.handleStatus({
+      requestContext: {
+        projectRoot: path.join(tempDir, 'project'),
+        projectVaultDir: vaultDir,
+        projectId: 'proj_test',
+        groveId: 'grove_test',
+        machineId: 'machine-test',
+        sessionId: null,
+        databasePath: path.join(tempDir, 'home', 'groves', 'grove_test', 'myco.db'),
+        source: 'headers',
+      },
+    } as never);
+    const body = response.body as {
+      connection_scope: string;
+      grove: { id: string; name: string; slug: string } | null;
+      project: { id: string; name: string; root: string };
+    };
+
+    expect(body.connection_scope).toBe('grove');
+    expect(body.grove).toMatchObject({ id: 'grove_test' });
+    expect(body.project).toMatchObject({ id: 'proj_test', name: 'project' });
+  });
 });

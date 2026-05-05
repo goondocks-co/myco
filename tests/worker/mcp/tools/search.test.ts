@@ -165,6 +165,35 @@ describe('handleSearch', () => {
     }));
   });
 
+  it('filters by project_id for Grove-scoped search', async () => {
+    const fake = createFakeD1();
+    const vectorize = createFakeVectorize([
+      {
+        id: 'spores:keep:m1',
+        score: 0.95,
+        metadata: { table: 'spores', id: 'keep', machine_id: 'm1', project_id: 'proj-a' },
+      },
+      {
+        id: 'spores:drop:m1',
+        score: 0.98,
+        metadata: { table: 'spores', id: 'drop', machine_id: 'm1', project_id: 'proj-b' },
+      },
+    ]);
+    const ai = createFakeAI();
+
+    fake.addResult([{ id: 'keep', machine_id: 'm1', project_id: 'proj-a', content: 'scoped spore' }]);
+
+    const result = await handleSearch(
+      { query: 'test query', project_id: 'proj-a' },
+      { MYCO_TEAM_DB: fake.db, MYCO_TEAM_VECTORS: vectorize, AI: ai },
+    );
+
+    const parsed = parseToolResult(result);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].id).toBe('keep');
+    expect(parsed.results[0].metadata.project_id).toBe('proj-a');
+  });
+
   it('uses overfetch so filtered searches can still fill the requested limit', async () => {
     const fake = createFakeD1();
     const query = async (_vector: number[], options?: { topK?: number }) => ({

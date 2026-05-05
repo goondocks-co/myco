@@ -36,6 +36,7 @@ export interface TeamSearchOptions {
   session_id?: string;
   source_path?: string;
   name?: string;
+  project_id?: string;
   timeoutMs?: number;
 }
 
@@ -234,6 +235,7 @@ export class TeamSyncClient {
       if (options.session_id) params.set('session_id', options.session_id);
       if (options.source_path) params.set('source_path', options.source_path);
       if (options.name) params.set('name', options.name);
+      if (options.project_id) params.set('project_id', options.project_id);
 
       const res = await this.fetchFn(`${this.workerUrl}/search?${params}`, {
         method: 'GET',

@@ -130,4 +130,27 @@ describe('initD1Schema', () => {
     expect(migrationIndex).toBeGreaterThanOrEqual(0);
     expect(postMigrationIndex).toBeGreaterThan(migrationIndex);
   });
+
+  it('adds project_id columns and indexes for Grove-scoped sync rows', async () => {
+    const fake = createFakeD1();
+
+    await initD1Schema(fake.db as never);
+
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE sessions ADD COLUMN project_id TEXT',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_records ADD COLUMN project_id TEXT',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions (project_id)',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_skill_records_project_id ON skill_records (project_id)',
+      values: [],
+    });
+  });
 });

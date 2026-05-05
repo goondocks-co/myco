@@ -16,7 +16,7 @@ import {
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -53,7 +53,7 @@ export function normalizeSearchNamespace(value?: string): string | undefined {
 /** Dependencies injected by the daemon when registering the route. */
 export interface SearchDeps {
   embeddingManager: EmbeddingManager;
-  getTeamClient?: () => TeamSyncClient | null;
+  getTeamClient?: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
   machineId?: string;
 }
 
@@ -134,7 +134,7 @@ export function createSearchHandler(deps: SearchDeps) {
     // network-bound and team search depends only on the query string. On the
     // rare FTS fallback path the team response is discarded; the saved
     // round-trip on every successful semantic search is the better trade.
-    const teamClient = deps.getTeamClient?.();
+    const teamClient = deps.getTeamClient?.(req.requestContext);
     const teamSearchNamespace = normalizeSearchNamespace(namespace ?? type);
     const teamPromise = teamClient
       ? teamClient.search(query, {
@@ -145,6 +145,7 @@ export function createSearchHandler(deps: SearchDeps) {
           since: req.query.since ? Number(req.query.since) : undefined,
           until: req.query.until ? Number(req.query.until) : undefined,
           session_id: req.query.session_id || undefined,
+          project_id: typeof projectId === 'string' ? projectId : undefined,
         }).catch(() => null)
       : null;
 

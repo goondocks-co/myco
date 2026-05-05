@@ -141,7 +141,13 @@ function StoredSecretField({ label }: { label: string }) {
 
 /* ---------- Sub-components ---------- */
 
-function ConnectForm({ onConnected }: { onConnected: () => void }) {
+function ConnectForm({
+  onConnected,
+  scopeName,
+}: {
+  onConnected: () => void;
+  scopeName: string;
+}) {
   const [url, setUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -165,10 +171,10 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
     <Surface level="low" ghostBorder className="p-6">
       <div className="flex items-center gap-2 mb-4">
         <WifiOff className="h-4 w-4 text-on-surface-variant" />
-        <SectionHeader>Connect to team</SectionHeader>
+        <SectionHeader>Connect Grove</SectionHeader>
       </div>
       <p className="text-sm text-on-surface-variant mb-4">
-        Enter the URL and API key for your team's Cloudflare Worker to enable cross-machine knowledge sharing.
+        Enter the Worker URL and API key for {scopeName}.
       </p>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
@@ -314,11 +320,16 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
       )}
 
       {/* Status overview — sync queue counters live on the Outbox tab. */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Status"
           value={status.healthy ? 'Connected' : 'Unhealthy'}
           accent={status.healthy ? 'sage' : 'terracotta'}
+        />
+        <StatCard
+          label="Grove"
+          value={status.grove?.name ?? status.project.name}
+          accent="outline"
         />
         <StatCard
           label="Protocol"
@@ -335,13 +346,13 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
       {/* Share with teammates */}
       <Surface level="low" ghostBorder className="p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <SectionHeader>Team Credentials</SectionHeader>
+          <SectionHeader>Grove Credentials</SectionHeader>
           <Badge variant={status.healthy ? 'default' : 'destructive'}>
             {status.healthy ? 'healthy' : 'unhealthy'}
           </Badge>
         </div>
         <p className="text-xs text-on-surface-variant">
-          Share these with teammates so they can connect from the Team page.
+          Share these with teammates so they can connect this Grove from the Team page.
         </p>
 
         <div className="space-y-3">
@@ -375,7 +386,7 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
             </div>
           </div>
           <p className="text-xs text-on-surface-variant">
-            Configure cloud agents with this endpoint to access project team intelligence.
+            Configure cloud agents with this endpoint to access Grove team intelligence.
           </p>
           <div className="space-y-3">
             <CopyableField label="MCP URL" value={status.mcp_endpoint} />
@@ -856,13 +867,14 @@ export default function Team() {
   if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
 
   const isConnected = status?.enabled && status?.worker_url;
+  const scopeName = status?.grove?.name ?? status?.project.name ?? 'this Grove';
 
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6">
         <PageHeader
           title="Team"
-          subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : 'Share knowledge across machines with team sync'}
+          subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : `Connect ${scopeName} to team sync`}
           tabs={isConnected ? TEAM_TABS : undefined}
           activeTab={isConnected ? activeTab : undefined}
           onTabChange={isConnected ? handleTabChange : undefined}
@@ -882,8 +894,8 @@ export default function Team() {
               <Surface level="low" ghostBorder className="p-6 space-y-4">
                 <SectionHeader>Getting Started</SectionHeader>
                 <p className="text-sm text-on-surface-variant">
-                  Team sync lets multiple machines share captured knowledge through a Cloudflare Worker.
-                  One team member provisions the infrastructure, then shares the connection details.
+                  Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
+                  One team member provisions the worker, then shares the connection details.
                 </p>
 
                 <div className="space-y-3">
@@ -895,13 +907,13 @@ export default function Team() {
                   </div>
 
                   <div>
-                    <p className="text-sm font-medium text-on-surface mb-1">2. Provision the team</p>
+                    <p className="text-sm font-medium text-on-surface mb-1">2. Provision the Grove worker</p>
                     <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
                       myco-team install
                     </code>
                     <p className="text-xs text-on-surface-variant mt-1">
                       Creates a D1 database, Vectorize index, and deploys the sync worker.
-                      Outputs a Worker URL and API key to share with teammates.
+                      Outputs a Worker URL and API key for the Grove.
                     </p>
                   </div>
 
@@ -915,7 +927,10 @@ export default function Team() {
                 </div>
               </Surface>
 
-              <ConnectForm onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })} />
+              <ConnectForm
+                scopeName={scopeName}
+                onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
+              />
             </div>
           )}
         </div>
