@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { DaemonClient } from './client.js';
+import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
@@ -68,7 +68,7 @@ export async function main(): Promise<void> {
     const toolInput = asObject(input.toolInput);
     if (!toolInput) return;
 
-    const client = new DaemonClient(vaultDir);
+    const client = createHookDaemonClient(vaultDir, { sessionId: input.sessionId });
     const result = await client.post(
       '/canopy/inject',
       {

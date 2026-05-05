@@ -3,6 +3,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { getPluginVersion } from '../version.js';
+import {
+  REQUEST_CONTEXT_ENV,
+  requestContextFromEnvironment,
+  requestContextHeaders,
+  type MycoRequestContext,
+} from '../tools/request-context.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -49,6 +55,15 @@ interface ClientOptions {
   headers?: Record<string, string>;
 }
 
+interface DaemonClientOptions {
+  requestContext?: MycoRequestContext;
+  headers?: Record<string, string>;
+}
+
+interface HookRequestContextInput {
+  sessionId?: string | null;
+}
+
 /**
  * Attempt to parse a non-ok response body as JSON so callers can surface
  * the daemon's structured error envelope (e.g. `{error: {code, message}}`).
@@ -81,9 +96,14 @@ export function isIgnoredEventResponse(data: unknown): boolean {
 
 export class DaemonClient {
   private vaultDir: string;
+  private defaultHeaders: Record<string, string>;
 
-  constructor(vaultDir: string) {
+  constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
+    this.defaultHeaders = {
+      ...(options.requestContext ? requestContextHeaders(options.requestContext) : {}),
+      ...(options.headers ?? {}),
+    };
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
@@ -95,7 +115,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...options?.headers },
+        headers: { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(options?.timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -118,7 +138,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...options?.headers },
+        headers: { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -140,7 +160,7 @@ export class DaemonClient {
     }
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
-        headers: options?.headers,
+        headers: this.requestHeaders(options?.headers),
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
@@ -165,10 +185,11 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       };
       if (body !== undefined) {
-        init.headers = { 'Content-Type': 'application/json', ...options?.headers };
+        init.headers = { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) };
         init.body = JSON.stringify(body);
-      } else if (options?.headers) {
-        init.headers = options.headers;
+      } else {
+        const headers = this.requestHeaders(options?.headers);
+        if (headers) init.headers = headers;
       }
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);
@@ -278,6 +299,11 @@ export class DaemonClient {
     return this.readDaemonJson();
   }
 
+  private requestHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
+    if (Object.keys(this.defaultHeaders).length === 0) return headers;
+    return { ...this.defaultHeaders, ...(headers ?? {}) };
+  }
+
   async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
     this.killDaemon(this.readDaemonJson());
     await new Promise((r) => setTimeout(r, 200));
@@ -330,4 +356,20 @@ export class DaemonClient {
       return null;
     }
   }
+}
+
+export function requestContextForHook(
+  vaultDir: string,
+  input: HookRequestContextInput = {},
+): MycoRequestContext {
+  const env: Record<string, string | undefined> = { ...process.env };
+  if (input.sessionId) env[REQUEST_CONTEXT_ENV.sessionId] = input.sessionId;
+  return requestContextFromEnvironment(env, vaultDir);
+}
+
+export function createHookDaemonClient(
+  vaultDir: string,
+  input: HookRequestContextInput = {},
+): DaemonClient {
+  return new DaemonClient(vaultDir, { requestContext: requestContextForHook(vaultDir, input) });
 }

@@ -1,4 +1,4 @@
-import { DaemonClient } from './client.js';
+import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
@@ -18,7 +18,7 @@ export async function main() {
     const sessionId = input.sessionId;
     if (!sessionId) return;
 
-    const client = new DaemonClient(VAULT_DIR);
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
 
     // DaemonClient auto-spawns on missing daemon.json or fetch failure,
     // coalesced within DAEMON_SPAWN_COALESCE_MS so frequent PostToolUse

@@ -1,4 +1,4 @@
-import { DaemonClient } from './client.js';
+import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
@@ -32,7 +32,7 @@ export async function main() {
       return;
     }
 
-    const client = new DaemonClient(VAULT_DIR);
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
     const healthy = await client.ensureRunning();
     if (!healthy) {
       writeHookResponse(symbiont, 'session-start');

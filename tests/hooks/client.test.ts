@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
+import { createHookDaemonClient, DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
+import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS, resolveLegacyRequestContext } from '@myco/tools/request-context';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +27,7 @@ describe('DaemonClient', () => {
         req.on('data', (c: string) => { body += c; });
         req.on('end', () => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, received: JSON.parse(body || '{}') }));
+          res.end(JSON.stringify({ ok: true, headers: req.headers, received: JSON.parse(body || '{}') }));
         });
       }
     });
@@ -47,6 +48,11 @@ describe('DaemonClient', () => {
     await new Promise<void>((r) => mockServer.close(() => r()));
     fs.rmSync(vaultDir, { recursive: true, force: true });
     delete process.env.MYCO_NO_AUTO_SPAWN;
+    delete process.env[REQUEST_CONTEXT_ENV.projectRoot];
+    delete process.env[REQUEST_CONTEXT_ENV.projectId];
+    delete process.env[REQUEST_CONTEXT_ENV.groveId];
+    delete process.env[REQUEST_CONTEXT_ENV.machineId];
+    delete process.env[REQUEST_CONTEXT_ENV.sessionId];
   });
 
   it('posts to daemon and returns data', async () => {
@@ -54,6 +60,44 @@ describe('DaemonClient', () => {
     const result = await client.post('/events', { type: 'test' });
     expect(result.ok).toBe(true);
     expect(result.data.received.type).toBe('test');
+  });
+
+  it('forwards constructor request context headers to daemon requests', async () => {
+    const context = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/workspace/project-a',
+      projectId: 'project-a',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
+    const client = new DaemonClient(vaultDir, { requestContext: context });
+
+    const result = await client.post('/events', { type: 'test' });
+
+    expect(result.ok).toBe(true);
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
+  });
+
+  it('creates hook clients from environment context and hook session id', async () => {
+    process.env[REQUEST_CONTEXT_ENV.projectRoot] = '/workspace/project-a';
+    process.env[REQUEST_CONTEXT_ENV.projectId] = 'project-a';
+    process.env[REQUEST_CONTEXT_ENV.groveId] = 'grove-a';
+    process.env[REQUEST_CONTEXT_ENV.machineId] = 'machine-a';
+
+    const client = createHookDaemonClient(vaultDir, { sessionId: 'sess-hook' });
+    const result = await client.post('/events', { type: 'test' });
+
+    expect(result.ok).toBe(true);
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
+    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-hook');
   });
 
   it('returns ok: false when daemon is not running', async () => {
