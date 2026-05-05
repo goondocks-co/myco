@@ -373,6 +373,20 @@ describe('spore query helpers', () => {
       expect(result).toBeNull();
     });
 
+    it('respects project scope when updating status', () => {
+      insertSpore(makeSpore(agentId, { id: 'spore-a', project_id: 'project-a' }));
+      insertSpore(makeSpore(agentId, { id: 'spore-b', project_id: 'project-b' }));
+
+      const updatedAt = epochNow() + 10;
+      const mismatch = updateSporeStatus('spore-b', 'superseded', updatedAt, 'project-a');
+      const match = updateSporeStatus('spore-a', 'superseded', updatedAt, 'project-a');
+
+      expect(mismatch).toBeNull();
+      expect(match).not.toBeNull();
+      expect(getSpore('spore-a', 'project-a')?.status).toBe('superseded');
+      expect(getSpore('spore-b', 'project-b')?.status).toBe('active');
+    });
+
     it('is idempotent — same status update produces same result', () => {
       const data = makeSpore(agentId);
       insertSpore(data);

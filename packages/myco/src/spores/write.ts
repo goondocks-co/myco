@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { epochSeconds, USER_AGENT_ID, USER_AGENT_NAME } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
-import { insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
+import { getSpore, insertSpore, updateSporeStatus, type SporeRow } from '@myco/db/queries/spores.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import {
   rowProjectIdFromRequestContext,
@@ -84,11 +84,25 @@ export interface SupersedeSporeResult {
   status: 'superseded';
 }
 
-export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult {
+export interface SporeWriteFailure {
+  ok: false;
+  error: string;
+}
+
+export function supersedeSpore(input: SupersedeSporeInput): SupersedeSporeResult | SporeWriteFailure {
   const now = epochSeconds();
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
 
-  updateSporeStatus(input.old_spore_id, 'superseded', now);
+  if (!getSpore(input.old_spore_id, projectId)) {
+    return { ok: false, error: 'old_spore_id not found' };
+  }
+  if (!getSpore(input.new_spore_id, projectId)) {
+    return { ok: false, error: 'new_spore_id not found' };
+  }
+
+  const updated = updateSporeStatus(input.old_spore_id, 'superseded', now, projectId);
+  if (!updated) return { ok: false, error: 'old_spore_id not found' };
+
   registerMcpUserAgent(now);
 
   insertResolutionEvent({
@@ -125,10 +139,15 @@ export interface ConsolidateSporesResult {
   created_at: number;
 }
 
-export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSporesResult {
+export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSporesResult | SporeWriteFailure {
   const now = epochSeconds();
   const newSporeId = `${input.observation_type}-${randomBytes(SPORE_ID_RANDOM_BYTES).toString('hex')}`;
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
+
+  const missingSource = input.source_spore_ids.find((sourceId) => !getSpore(sourceId, projectId));
+  if (missingSource) {
+    return { ok: false, error: `source_spore_id not found: ${missingSource}` };
+  }
 
   registerMcpUserAgent(now);
 
@@ -146,7 +165,8 @@ export function consolidateSpores(input: ConsolidateSporesInput): ConsolidateSpo
 
     const superseded: string[] = [];
     for (const sourceId of input.source_spore_ids) {
-      updateSporeStatus(sourceId, 'superseded', now);
+      const updated = updateSporeStatus(sourceId, 'superseded', now, projectId);
+      if (!updated) throw new Error(`source_spore_id not found: ${sourceId}`);
       insertResolutionEvent({
         id: `res-${randomBytes(RESOLUTION_ID_RANDOM_BYTES).toString('hex')}`,
         project_id: projectId,

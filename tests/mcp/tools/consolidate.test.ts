@@ -12,6 +12,7 @@ import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
 function mockClient(): DaemonClient {
   return {
@@ -27,12 +28,22 @@ function seedAgent(id = 'user'): void {
   ).run(id, 'User', 1700000000);
 }
 
-function seedSpore(id: string, agentId = 'user'): void {
+function seedSpore(id: string, agentId = 'user', projectId: string | null = null): void {
   const db = getDatabase();
   db.prepare(`
-    INSERT INTO spores (id, agent_id, observation_type, status, content, created_at, machine_id)
-    VALUES (?, ?, 'gotcha', 'active', 'seed', ?, 'local')
-  `).run(id, agentId, 1700000000);
+    INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+    VALUES (?, ?, ?, 'gotcha', 'active', 'seed', ?, 'local')
+  `).run(id, projectId, agentId, 1700000000);
+}
+
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-spore-consolidate-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
 }
 
 interface ConsolidateResult {
@@ -98,6 +109,30 @@ describe('myco_spores op: consolidate (in-process)', () => {
     expect(events).toHaveLength(2);
     expect(events.every((e) => e.action === 'consolidate')).toBe(true);
     expect(events.map((e) => e.spore_id)).toEqual(['d-1', 'd-2']);
+  });
+
+  it('does not consolidate a source spore from another project context', async () => {
+    seedAgent();
+    seedSpore('g-1', 'user', 'project-a');
+    seedSpore('g-2', 'user', 'project-b');
+
+    const result = await handleMycoSpores({
+      op: 'consolidate',
+      source_spore_ids: ['g-1', 'g-2'],
+      consolidated_content: '# Merged gotchas',
+      observation_type: 'gotcha',
+      reason: 'mixed projects',
+    }, mockClient(), requestContext('project-a'));
+
+    expect(result).toEqual({ ok: false, error: 'source_spore_id not found: g-2' });
+
+    const db = getDatabase();
+    const statuses = db.prepare("SELECT id, status FROM spores WHERE id IN ('g-1', 'g-2') ORDER BY id").all() as Array<{ id: string; status: string }>;
+    const wisdomCount = db.prepare("SELECT COUNT(*) AS count FROM spores WHERE content = '# Merged gotchas'").get() as { count: number };
+    const eventCount = db.prepare('SELECT COUNT(*) AS count FROM resolution_events').get() as { count: number };
+    expect(statuses.map((row) => row.status)).toEqual(['active', 'active']);
+    expect(wisdomCount.count).toBe(0);
+    expect(eventCount.count).toBe(0);
   });
 
   it('rejects op:consolidate when source_spore_ids is empty', async () => {

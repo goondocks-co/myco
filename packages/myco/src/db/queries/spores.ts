@@ -358,20 +358,32 @@ export function updateSporeStatus(
   id: string,
   status: string,
   updatedAt: number,
+  projectId?: string | null,
 ): SporeRow | null {
   const db = getDatabase();
 
-  const info = db.prepare(
-    `UPDATE spores
-     SET status = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(status, updatedAt, id);
+  const info = projectId === undefined
+    ? db.prepare(
+      `UPDATE spores
+       SET status = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(status, updatedAt, id)
+    : projectId === null
+      ? db.prepare(
+        `UPDATE spores
+         SET status = ?, updated_at = ?
+         WHERE id = ? AND project_id IS NULL`,
+      ).run(status, updatedAt, id)
+      : db.prepare(
+        `UPDATE spores
+         SET status = ?, updated_at = ?
+         WHERE id = ? AND project_id = ?`,
+      ).run(status, updatedAt, id, projectId);
 
   if (info.changes === 0) return null;
 
-  const row = toSporeRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(id) as Record<string, unknown>,
-  );
+  const row = getSpore(id, projectId);
+  if (!row) return null;
 
   syncRow('spores', row);
 

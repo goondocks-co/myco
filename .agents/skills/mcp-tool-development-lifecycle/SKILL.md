@@ -167,7 +167,7 @@ Create the handler in `packages/myco/src/tools/my-new-tool.ts`:
 
 5. **Use DaemonClient for vault access** — all tools proxy through the daemon HTTP API via `client.get()`, `client.post()`, etc.
 
-6. **Handle errors with ToolFailure interface** — import from `packages/myco/src/tools/error.js` and wrap operational failures with structured context agents can understand:
+6. **Handle errors with ToolFailure interface** — import from `packages/myco/src/tools/error.ts` and wrap operational failures with structured context agents can understand:
    ```typescript
    import { ToolFailure } from './error.js';
 
@@ -254,7 +254,7 @@ Each tool carries inline SKILL.md documentation bundled at compile time across a
 
 Implement systematic checks to catch schema-handler-documentation drift across the shared tool-runtime:
 
-1. **Create test file** `packages/myco/src/tools/definitions.test.ts`:
+1. **Create test file template** (example: `packages/myco/src/tools/definitions.test.ts`):
    ```typescript
    import { describe, test, expect } from 'vitest';
    import { TOOL_DEFINITIONS, COLLECTIVE_TOOL_DEFINITIONS } from './definitions.js';
@@ -585,7 +585,7 @@ Handle project context changes with Grove migration architecture:
 
 **ToolFailure anti-pattern**: Never throw raw Error objects from handlers — always wrap with ToolFailure interface for consistent agent error handling. Missing structured error context causes agent confusion across all transports.
 
-**Code duplication across tool surface**: Avoid copy-pasting handler patterns between tools. Extract shared utilities to `packages/myco/src/tools/shared.js` and import consistently. Duplicated validation logic, error handling, and response formatting patterns create maintenance burden and drift risks across the unified tool surface. Use composition patterns instead:
+**Code duplication across tool surface**: Avoid copy-pasting handler patterns between tools. Extract shared utilities to `packages/myco/src/tools/shared.ts` and import consistently. Duplicated validation logic, error handling, and response formatting patterns create maintenance burden and drift risks across the unified tool surface. Use composition patterns instead:
 ```typescript
 // BAD: Duplicated validation across multiple tools
 function handleToolA(input) {
