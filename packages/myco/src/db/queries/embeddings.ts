@@ -63,16 +63,14 @@ export function assertValidTable(table: string): asserts table is EmbeddableTabl
 // ---------------------------------------------------------------------------
 
 /** Mark a row as embedded in the external vector store. */
-export function markEmbedded(table: string, id: string | number): void {
+export function markEmbedded(table: string, id: string | number, db: Database = getDatabase()): void {
   assertValidTable(table);
-  const db = getDatabase();
   db.prepare(`UPDATE ${table} SET embedded = 1 WHERE id = ?`).run(id);
 }
 
 /** Clear the embedded flag (e.g., when vector is removed or needs re-embedding). */
-export function clearEmbedded(table: string, id: string | number): void {
+export function clearEmbedded(table: string, id: string | number, db: Database = getDatabase()): void {
   assertValidTable(table);
-  const db = getDatabase();
   db.prepare(`UPDATE ${table} SET embedded = 0 WHERE id = ?`).run(id);
 }
 
@@ -80,9 +78,9 @@ export function clearEmbedded(table: string, id: string | number): void {
 export function getUnembedded(
   table: string,
   limit: number = DEFAULT_UNEMBEDDED_LIMIT,
+  db: Database = getDatabase(),
 ): Array<{ id: string | number; created_at: number; text: string }> {
   assertValidTable(table);
-  const db = getDatabase();
   const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
 
   if (table === 'canopy_entries') {

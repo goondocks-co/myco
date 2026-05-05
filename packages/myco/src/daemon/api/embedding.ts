@@ -1,4 +1,5 @@
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
+import type { Database } from '@myco/db/client.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import { EMBEDDING_BATCH_SIZE } from '../../constants.js';
 import type { EmbeddingManager } from '../embedding/index.js';
@@ -17,15 +18,22 @@ const FOREGROUND_EMBEDDING_BATCH_SIZE = 50;
 const FOREGROUND_RECONCILE_MAX_PASSES = 25;
 const FOREGROUND_REEMBED_MAX_PASSES = 25;
 
-function readQueueDepthSafely(): number {
+interface EmbeddingScopeOptions {
+  db?: Database;
+  project_id?: string | null;
+}
+
+function readQueueDepthSafely(options: EmbeddingScopeOptions = {}): number {
   try {
-    return getEmbeddingQueueDepth().queue_depth;
+    return options.db
+      ? getEmbeddingQueueDepth(options.project_id, options.db).queue_depth
+      : getEmbeddingQueueDepth(options.project_id).queue_depth;
   } catch {
     return 0;
   }
 }
 
-async function drainForegroundReconcile(manager: EmbeddingManager): Promise<{
+async function drainForegroundReconcile(manager: EmbeddingManager, options: EmbeddingScopeOptions = {}): Promise<{
   embedded: number;
   stale_reembedded: number;
   orphans_cleaned: number;
@@ -45,7 +53,7 @@ async function drainForegroundReconcile(manager: EmbeddingManager): Promise<{
     stale_reembedded += result.stale_reembedded;
     orphans_cleaned += result.orphans_cleaned;
 
-    const queueDepth = readQueueDepthSafely();
+    const queueDepth = readQueueDepthSafely(options);
     if (queueDepth === 0) {
       return {
         embedded,
@@ -75,7 +83,7 @@ async function drainForegroundReconcile(manager: EmbeddingManager): Promise<{
     orphans_cleaned,
     duration_ms: Date.now() - startedAt,
     passes,
-    remaining_queue_depth: readQueueDepthSafely(),
+    remaining_queue_depth: readQueueDepthSafely(options),
   };
 }
 
@@ -99,10 +107,15 @@ async function drainForegroundReembedStale(manager: EmbeddingManager): Promise<{
 // Handlers
 // ---------------------------------------------------------------------------
 
-export async function handleGetEmbeddingStatus(vaultDir: string): Promise<RouteResponse> {
+export async function handleGetEmbeddingStatus(
+  vaultDir: string,
+  options: EmbeddingScopeOptions = {},
+): Promise<RouteResponse> {
   const config = loadMergedConfig(vaultDir);
 
-  const { queue_depth, embedded_count } = getEmbeddingQueueDepth();
+  const { queue_depth, embedded_count } = options.db
+    ? getEmbeddingQueueDepth(options.project_id, options.db)
+    : getEmbeddingQueueDepth(options.project_id);
 
   return {
     body: {
@@ -123,7 +136,7 @@ export function handleEmbeddingDetails(manager: EmbeddingManager): RouteResponse
 
 export async function handleEmbeddingRebuild(
   manager: EmbeddingManager,
-  options: { async?: boolean } = {},
+  options: { async?: boolean } & EmbeddingScopeOptions = {},
 ): Promise<RouteResponse> {
   const result = manager.rebuildAll();
   // Fire-and-forget path: return once records are marked pending, without
@@ -139,7 +152,7 @@ export async function handleEmbeddingRebuild(
       },
     };
   }
-  const drained = await drainForegroundReconcile(manager);
+  const drained = await drainForegroundReconcile(manager, options);
   return {
     body: {
       ...result,

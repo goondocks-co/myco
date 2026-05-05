@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, updateTeamConfig } from '@myco/config/loader.js';
 import {
@@ -29,7 +30,7 @@ export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
 
 export interface ActivateProjectMigrationInput {
   projectRoot: string;
-  groveRef: string;
+  groveRef?: string;
   mycoHome?: string;
   dryRun?: boolean;
   projectName?: string;
@@ -132,6 +133,11 @@ class DryRunRollback extends Error {
   }
 }
 
+interface SourceSnapshot {
+  db: Database;
+  cleanup: () => void;
+}
+
 export function activationMarkerPath(projectVaultDir: string): string {
   return path.join(projectVaultDir, 'migration', GROVE_ACTIVATION_MARKER);
 }
@@ -139,8 +145,6 @@ export function activationMarkerPath(projectVaultDir: string): string {
 export function activateProjectMigration(
   input: ActivateProjectMigrationInput,
 ): ActivateProjectMigrationResult {
-  if (!input.groveRef?.trim()) throw new Error('Target Grove is required');
-
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   const sourceDbPath = path.join(projectVaultDir, 'myco.db');
@@ -188,7 +192,8 @@ export function activateProjectMigration(
   }
 
   const migrationId = input.migrationId ?? createMigrationId();
-  const sourceDb = openReadonly(sourceDbPath);
+  const targetMachineId = input.targetMachineId ?? getMachineId(projectVaultDir);
+  const sourceSnapshot = openMigratedSourceSnapshot(sourceDbPath, targetMachineId);
   const targetDb = openDatabase(targetDbInfo.dbPath);
   let importResult: ImportProjectCoreResult | null = null;
   let validation: ActivationValidationSummary | null = null;
@@ -200,13 +205,13 @@ export function activateProjectMigration(
       assertTargetProjectIsEmpty(targetDb, identity.projectId);
       importResult = importProjectCoreRows({
         migrationId,
-        sourceDb,
+        sourceDb: sourceSnapshot.db,
         targetDb,
         sourceProjectRoot: projectRoot,
         sourceDbPath,
         targetGroveId: grove.id,
         targetProjectId: identity.projectId,
-        targetMachineId: input.targetMachineId ?? getMachineId(projectVaultDir),
+        targetMachineId,
       });
       validation = validateImportedProject({
         db: targetDb,
@@ -246,7 +251,8 @@ export function activateProjectMigration(
   } catch (error) {
     if (!(error instanceof DryRunRollback)) throw error;
   } finally {
-    sourceDb.close();
+    sourceSnapshot.db.close();
+    sourceSnapshot.cleanup();
     targetDb.close();
   }
 
@@ -271,6 +277,33 @@ export function activateProjectMigration(
     team_sync_disabled: teamSyncDisabled,
     marker_path: markerPath,
   };
+}
+
+function openMigratedSourceSnapshot(sourceDbPath: string, machineId: string): SourceSnapshot {
+  const sourceDb = openReadonly(sourceDbPath);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-grove-source-'));
+  const snapshotPath = path.join(tempDir, 'source.db');
+  let snapshotDb: Database | null = null;
+
+  try {
+    fs.writeFileSync(snapshotPath, sourceDb.serialize());
+    sourceDb.close();
+    snapshotDb = openDatabase(snapshotPath);
+    createSchema(snapshotDb, machineId);
+    return {
+      db: snapshotDb,
+      cleanup: () => fs.rmSync(tempDir, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    try {
+      sourceDb.close();
+    } catch {
+      // ignore close errors while surfacing the original failure
+    }
+    snapshotDb?.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function prepareIdentity(input: {

@@ -14,11 +14,11 @@ Commands:
   list                                  List local Groves
   create <name>                         Create a local Grove
   use <name|id>                         Set the default Grove for future init/update
-  migrate-project --grove <name|id>     Import and activate an existing project vault
+  migrate-project [--grove <name|id>]   Import and activate an existing project vault
 
 Migration options:
   --project <path>                      Project root to migrate (default: cwd)
-  --grove <name|id>                     Target Grove (required)
+  --grove <name|id>                     Target Grove (default: machine default Grove)
   --dry-run                             Validate import without writing project binding files
   --json                                Print machine-readable result
 `;
@@ -63,7 +63,6 @@ export async function run(args: string[]): Promise<void> {
 
   if (cmd === 'migrate-project' || cmd === 'activate-project') {
     const groveRef = parseStringFlag(rest, '--grove');
-    if (!groveRef) throw new Error('--grove is required for project migration');
     const projectRoot = parseStringFlag(rest, '--project') ?? process.cwd();
     const dryRun = rest.includes('--dry-run');
     const json = rest.includes('--json');

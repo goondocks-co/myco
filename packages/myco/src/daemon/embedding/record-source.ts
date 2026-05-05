@@ -6,7 +6,7 @@
  * used for spore status filtering, metadata enrichment, and content retrieval.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
 import {
   markEmbedded as dbMarkEmbedded,
   clearEmbedded as dbClearEmbedded,
@@ -107,6 +107,12 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
 // ---------------------------------------------------------------------------
 
 export class SqliteRecordSource implements EmbeddableRecordSource {
+  constructor(private dbOverride?: Database) {}
+
+  private db(): Database {
+    return this.dbOverride ?? getDatabase();
+  }
+
   /**
    * Get rows that need embedding (embedded=0, content non-null).
    *
@@ -133,8 +139,8 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     }
 
     // For sessions/plans/artifacts: delegate to getUnembedded, then enrich with metadata
-    const rows = getUnembedded(namespace, limit);
-    const db = getDatabase();
+    const db = this.db();
+    const rows = getUnembedded(namespace, limit, db);
     return rows.map((row) => {
       const fullRow = db.prepare(`SELECT * FROM ${namespace} WHERE id = ?`).get(row.id) as Record<string, unknown>;
       return {
@@ -154,7 +160,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
    */
   getActiveRecordIds(namespace: string): string[] {
     assertValidNamespace(namespace);
-    const db = getDatabase();
+    const db = this.db();
 
     switch (namespace) {
       case 'sessions': {
@@ -213,7 +219,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
     if (ids.length === 0) return [];
 
-    const db = getDatabase();
+    const db = this.db();
     const textCol = EMBEDDABLE_TEXT_COLUMNS[namespace as EmbeddableTable];
 
     if (namespace === 'canopy_entries') {
@@ -253,12 +259,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     if (namespace === 'canopy_entries') {
       const parsed = parseCanopyRecordId(id);
       if (parsed === null) return;
-      getDatabase().prepare(
+      this.db().prepare(
         `UPDATE canopy_entries SET embedded = 1 WHERE project_id = ? AND path = ?`,
       ).run(parsed.projectId, parsed.path);
       return;
     }
-    dbMarkEmbedded(namespace, id);
+    dbMarkEmbedded(namespace, id, this.db());
   }
 
   /** Clear the embedded flag on a record. Delegates to existing helper. */
@@ -266,12 +272,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     if (namespace === 'canopy_entries') {
       const parsed = parseCanopyRecordId(id);
       if (parsed === null) return;
-      getDatabase().prepare(
+      this.db().prepare(
         `UPDATE canopy_entries SET embedded = 0 WHERE project_id = ? AND path = ?`,
       ).run(parsed.projectId, parsed.path);
       return;
     }
-    dbClearEmbedded(namespace, id);
+    dbClearEmbedded(namespace, id, this.db());
   }
 
   /**
@@ -282,7 +288,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   clearAllEmbedded(namespace?: string): void {
     // canopy_entries is intentionally handled by the generic loop below — it has no
     // composite-key concerns at this layer because the UPDATE applies to all rows.
-    const db = getDatabase();
+    const db = this.db();
 
     if (namespace !== undefined) {
       assertValidNamespace(namespace);
@@ -300,7 +306,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
    */
   getPendingCount(namespace: string): number {
     assertValidNamespace(namespace);
-    const db = getDatabase();
+    const db = this.db();
 
     if (namespace === 'canopy_entries') {
       const row = db.prepare(
@@ -329,7 +335,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
       `SELECT id, content AS text, status, session_id, observation_type
               , project_id, created_at
@@ -352,7 +358,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
       `SELECT id, description AS text, status, name, project_id, created_at
        FROM skill_records
@@ -374,7 +380,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
       `SELECT (project_id || ':' || path) AS id,
               project_id, path, language, llm_updated_at,

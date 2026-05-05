@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createSearchHandler } from '@myco/daemon/api/search.js';
+import { openDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
-function makeRequest(query: Record<string, string>): RouteRequest {
-  return { body: {}, query, params: {}, pathname: '/api/search' } as RouteRequest;
+function makeRequest(query: Record<string, string>, requestContext?: MycoRequestContext): RouteRequest {
+  return { body: {}, query, params: {}, pathname: '/api/search', requestContext } as RouteRequest;
 }
 
 function fakeEmbeddingManager(): EmbeddingManager {
@@ -12,6 +18,50 @@ function fakeEmbeddingManager(): EmbeddingManager {
     embedQuery: async () => Array(8).fill(0.5),
     searchVectors: () => [],
   } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+}
+
+function seedSearchDb(projectId: string): { tempDir: string; dbPath: string; requestContext: MycoRequestContext } {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-search-api-'));
+  const projectVaultDir = path.join(tempDir, '.myco');
+  fs.mkdirSync(projectVaultDir, { recursive: true });
+  const dbPath = path.join(projectVaultDir, 'myco.db');
+  const db = openDatabase(dbPath);
+  try {
+    createSchema(db, 'machine-test');
+    db.prepare(
+      `INSERT INTO agents (id, name, created_at) VALUES (?, ?, ?)`,
+    ).run('agent-test', 'Test Agent', 1);
+    db.prepare(
+      `INSERT INTO spores (
+         id, project_id, agent_id, observation_type, status, content, created_at, machine_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'spore-context',
+      projectId,
+      'agent-test',
+      'decision',
+      'active',
+      'Request context package result',
+      2,
+      'machine-test',
+    );
+  } finally {
+    db.close();
+  }
+  return {
+    tempDir,
+    dbPath,
+    requestContext: {
+      projectRoot: tempDir,
+      projectId,
+      groveId: 'grove-context',
+      machineId: 'machine-test',
+      sessionId: null,
+      projectVaultDir,
+      databasePath: dbPath,
+      source: 'headers',
+    },
+  };
 }
 
 describe('GET /api/search team results', () => {
@@ -46,5 +96,70 @@ describe('GET /api/search team results', () => {
         retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'spore-remote' } },
       }),
     ]);
+  });
+
+  it('runs FTS against the request context database', async () => {
+    const seeded = seedSearchDb('project-context');
+    try {
+      const handler = createSearchHandler({ embeddingManager: fakeEmbeddingManager() });
+
+      const res = await handler(makeRequest({
+        q: 'package',
+        type: 'spore',
+        mode: 'fts',
+      }, seeded.requestContext));
+
+      expect(res.body?.results).toEqual([
+        expect.objectContaining({
+          id: 'spore-context',
+          type: 'spore',
+          preview: 'Request context package result',
+        }),
+      ]);
+    } finally {
+      fs.rmSync(seeded.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('hydrates semantic results from the request context database', async () => {
+    const seeded = seedSearchDb('project-context');
+    try {
+      let resolvedContext: MycoRequestContext | undefined;
+      const handler = createSearchHandler({
+        embeddingManager: fakeEmbeddingManager(),
+        resolveEmbeddingManager: (requestContext) => {
+          resolvedContext = requestContext;
+          return {
+            embedQuery: async () => Array(8).fill(0.5),
+            searchVectors: () => [
+              {
+                id: 'spore-context',
+                namespace: 'spores',
+                similarity: 0.9,
+                metadata: { project_id: 'project-context' },
+              },
+            ],
+          };
+        },
+      });
+
+      const res = await handler(makeRequest({
+        q: 'package',
+        type: 'spore',
+        mode: 'semantic',
+      }, seeded.requestContext));
+
+      expect(resolvedContext?.groveId).toBe('grove-context');
+      expect(res.body?.results).toEqual([
+        expect.objectContaining({
+          id: 'spore-context',
+          type: 'spore',
+          preview: 'Request context package result',
+          source: 'local',
+        }),
+      ]);
+    } finally {
+      fs.rmSync(seeded.tempDir, { recursive: true, force: true });
+    }
   });
 });

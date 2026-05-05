@@ -124,7 +124,7 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, openDatabase, type Database } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -161,6 +161,8 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
 import { resolveDaemonDataPaths } from './data-paths.js';
+import { GROVE_VECTORS_FILENAME, resolveGroveVectorsPath } from '../grove/paths.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -496,6 +498,38 @@ export async function main(): Promise<void> {
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
   const databaseManager = new DatabaseMaintenanceManager(dataPaths.databasePath, vaultDir, logger);
+  const scopedEmbeddingManagers = new Map<string, {
+    manager: EmbeddingManager;
+    db: Database;
+    vectorStore: SqliteVecVectorStore;
+  }>();
+  const getEmbeddingRuntime = (requestContext?: MycoRequestContext): { manager: EmbeddingManager; db?: Database } => {
+    if (!requestContext) return { manager: embeddingManager };
+    const scopedVectorsPath = requestContext.groveId
+      ? resolveGroveVectorsPath(requestContext.groveId)
+      : path.join(requestContext.projectVaultDir, GROVE_VECTORS_FILENAME);
+    if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
+      return { manager: embeddingManager };
+    }
+    const key = `${requestContext.databasePath}\n${scopedVectorsPath}`;
+    const cached = scopedEmbeddingManagers.get(key);
+    if (cached) return { manager: cached.manager, db: cached.db };
+
+    const scopedDb = openDatabase(requestContext.databasePath);
+    const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
+    const scopedManager = new EmbeddingManager(
+      scopedVectorStore,
+      embeddingProvider,
+      new SqliteRecordSource(scopedDb),
+      logger,
+    );
+    scopedEmbeddingManagers.set(key, {
+      manager: scopedManager,
+      db: scopedDb,
+      vectorStore: scopedVectorStore,
+    });
+    return { manager: scopedManager, db: scopedDb };
+  };
 
   // --- Register built-in agents and tasks ---
   let definitionsDir: string | undefined;
@@ -1141,14 +1175,44 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: () => teamSync.getTeamClient(), machineId }));
+  server.registerRoute('GET', '/api/search', createSearchHandler({
+    embeddingManager,
+    resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
+    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
+    machineId,
+  }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
-  server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
-  server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/rebuild', async (req) => handleEmbeddingRebuild(embeddingManager, { async: req.query.async === 'true' }));
-  server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
+  server.registerRoute('GET', '/api/embedding/status', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? vaultDir, {
+      db: runtime.db,
+      project_id: rowProjectIdFromRequestContext(req.requestContext),
+    });
+  });
+  server.registerRoute('GET', '/api/embedding/details', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleEmbeddingDetails(runtime.manager);
+  });
+  server.registerRoute('POST', '/api/embedding/rebuild', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleEmbeddingRebuild(runtime.manager, {
+      async: req.query.async === 'true',
+      db: runtime.db,
+      project_id: rowProjectIdFromRequestContext(req.requestContext),
+    });
+  });
+  server.registerRoute('POST', '/api/embedding/reconcile', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleEmbeddingReconcile(runtime.manager);
+  });
+  server.registerRoute('POST', '/api/embedding/clean-orphans', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleEmbeddingCleanOrphans(runtime.manager);
+  });
+  server.registerRoute('POST', '/api/embedding/reembed-stale', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleEmbeddingReembedStale(runtime.manager);
+  });
   server.registerRoute('GET', '/api/database/details', async () => handleDatabaseDetails(databaseManager));
   server.registerRoute('POST', '/api/database/optimize', async () => handleDatabaseOptimize(databaseManager));
   server.registerRoute('POST', '/api/database/vacuum', async () => handleDatabaseVacuum(databaseManager));
@@ -1305,6 +1369,11 @@ export async function main(): Promise<void> {
     }
     registry.destroy();
     await server.stop();
+    for (const runtime of scopedEmbeddingManagers.values()) {
+      runtime.vectorStore.close();
+      runtime.db.close();
+    }
+    scopedEmbeddingManagers.clear();
     vectorStore.close();
     closeDatabase();
     logger.close();

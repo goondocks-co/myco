@@ -11,7 +11,7 @@ import {
   activateProjectMigration,
   activationMarkerPath,
 } from '@myco/grove/activation.js';
-import { createGrove } from '@myco/grove/registry.js';
+import { createGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { listRegisteredProjects } from '@myco/grove/registry.js';
 import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
@@ -135,6 +135,46 @@ describe('Grove project activation', () => {
       afterRerunDb.close();
     }
   });
+
+  it('defaults activation to the machine default Grove when no Grove is supplied', () => {
+    createGrove('Dogfood', mycoHome);
+    const defaultGrove = createGrove('Default Projects', mycoHome);
+    setDefaultGrove(defaultGrove.id, mycoHome);
+
+    const result = activateProjectMigration({
+      projectRoot,
+      mycoHome,
+      dryRun: true,
+    });
+
+    expect(result.grove.id).toBe(defaultGrove.id);
+    expect(result.dry_run).toBe(true);
+    expect(fs.existsSync(path.join(vaultDir, 'project.toml'))).toBe(false);
+    expect(listRegisteredProjects(defaultGrove.id, mycoHome)).toEqual([]);
+  });
+
+  it('normalizes older source schemas through a snapshot without mutating the source DB', () => {
+    const grove = createGrove('Default Projects', mycoHome);
+    downgradeSourceAgentRunsToRuntime(vaultDir);
+    const sourceDbPath = path.join(vaultDir, 'myco.db');
+
+    expect(tableColumns(sourceDbPath, 'agent_runs')).toContain('runtime');
+    expect(tableColumns(sourceDbPath, 'agent_runs')).not.toContain('harness');
+    expect(latestSchemaVersion(sourceDbPath)).toBe(28);
+
+    const result = activateProjectMigration({
+      projectRoot,
+      groveRef: grove.id,
+      mycoHome,
+      dryRun: true,
+    });
+
+    expect(result.import_result?.agent_runs).toBe(1);
+    expect(result.validation?.integrity_check).toBe('ok');
+    expect(tableColumns(sourceDbPath, 'agent_runs')).toContain('runtime');
+    expect(tableColumns(sourceDbPath, 'agent_runs')).not.toContain('harness');
+    expect(latestSchemaVersion(sourceDbPath)).toBe(28);
+  });
 });
 
 function seedLegacyVault(vaultDir: string, projectRoot: string): void {
@@ -175,6 +215,51 @@ function seedLegacyVault(vaultDir: string, projectRoot: string): void {
       1,
       'source-machine',
     );
+  } finally {
+    db.close();
+  }
+}
+
+function downgradeSourceAgentRunsToRuntime(vaultDir: string): void {
+  const db = openDatabase(path.join(vaultDir, 'myco.db'));
+  try {
+    db.prepare(
+      `INSERT INTO agent_runs (
+         id, agent_id, task, instruction, status, harness, provider, model
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'legacy-run',
+      'myco-agent',
+      'vault-evolve',
+      'older source schema',
+      'completed',
+      'openai',
+      'openai',
+      'gpt-test',
+    );
+    db.prepare('ALTER TABLE agent_runs RENAME COLUMN harness TO runtime').run();
+    db.prepare('DELETE FROM schema_version').run();
+    db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(28, 120);
+  } finally {
+    db.close();
+  }
+}
+
+function tableColumns(dbPath: string, table: string): string[] {
+  const db = openDatabase(dbPath);
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map((row) => row.name);
+  } finally {
+    db.close();
+  }
+}
+
+function latestSchemaVersion(dbPath: string): number {
+  const db = openDatabase(dbPath);
+  try {
+    const row = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
+    return row.version;
   } finally {
     db.close();
   }

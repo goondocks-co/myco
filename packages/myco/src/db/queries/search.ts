@@ -8,7 +8,7 @@
  * All queries use parameterized placeholders throughout.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
   SEARCH_PREVIEW_CHARS,
@@ -70,6 +70,8 @@ export interface SearchOptions {
   includeActive?: boolean;
   /** Restrict project-scoped tables to one project. undefined preserves legacy broad reads. */
   project_id?: string | null;
+  /** Optional database handle for request-scoped Grove reads. Defaults to the process singleton. */
+  db?: Database;
 }
 
 
@@ -134,7 +136,7 @@ export function fullTextSearch(
   query: string,
   options: SearchOptions = {},
 ): SearchResult[] {
-  const db = getDatabase();
+  const db = options.db ?? getDatabase();
   const limit = options.limit ?? SEARCH_RESULTS_DEFAULT_LIMIT;
   const typeFilter = options.type;
   const excludeActive = options.includeActive === false;
@@ -342,11 +344,11 @@ interface ArtifactRow {
  */
 export function hydrateSearchResults(
   vectorResults: VectorSearchResult[],
-  options: { project_id?: string | null } = {},
+  options: { project_id?: string | null; db?: Database } = {},
 ): SearchResult[] {
   if (vectorResults.length === 0) return [];
 
-  const db = getDatabase();
+  const db = options.db ?? getDatabase();
   const results: SearchResult[] = [];
 
   // Group result IDs by namespace
