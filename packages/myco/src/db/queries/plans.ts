@@ -282,12 +282,16 @@ export function getPlanByLogicalKey(logicalKey: string, projectId?: string | nul
  *
  * @returns the deleted plan row, or null if not found.
  */
-export function deletePlan(id: string): PlanRow | null {
+export function deletePlan(id: string, projectId?: string | null): PlanRow | null {
   const db = getDatabase();
-  const row = getPlan(id);
+  const row = getPlan(id, projectId);
   if (!row) return null;
 
-  const info = db.prepare(`DELETE FROM plans WHERE id = ?`).run(id);
+  const info = projectId === undefined
+    ? db.prepare(`DELETE FROM plans WHERE id = ?`).run(id)
+    : projectId === null
+      ? db.prepare(`DELETE FROM plans WHERE id = ? AND project_id IS NULL`).run(id)
+      : db.prepare(`DELETE FROM plans WHERE id = ? AND project_id = ?`).run(id, projectId);
   if (info.changes === 0) return null;
 
   if (isTeamSyncEnabled()) {

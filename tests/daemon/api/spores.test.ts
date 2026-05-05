@@ -14,8 +14,9 @@ import { createSchema } from '@myco/db/schema';
 import { insertSpore } from '@myco/db/queries/spores';
 import { registerAgent } from '@myco/db/queries/agents';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
-import { createGetSporeHandler } from '@myco/daemon/api/mycelium';
+import { createGetSporeHandler, handleListSpores } from '@myco/daemon/api/mycelium';
 import type { RouteRequest } from '@myco/daemon/router';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context';
 
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
@@ -24,6 +25,16 @@ function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
     body: undefined,
     ...overrides,
   } as RouteRequest;
+}
+
+function requestContext(vaultDir: string, projectId: string) {
+  return resolveLegacyRequestContext(vaultDir, {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
 }
 
 function makeTeamClient(impl: (type: string, id: string) => Promise<Record<string, unknown> | null>) {
@@ -72,6 +83,58 @@ describe('createGetSporeHandler — team fallback', () => {
     expect(body.id).toBe('spore-local');
     expect(body.source).toBe('local');
     expect(teamClient.getRecord).not.toHaveBeenCalled();
+  });
+
+  it('lists only spores in the requested project context', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    insertSpore({
+      id: 'spore-project-a',
+      project_id: 'project-a',
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'project a content',
+      created_at: now,
+      status: 'active',
+    });
+    insertSpore({
+      id: 'spore-project-b',
+      project_id: 'project-b',
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'project b content',
+      created_at: now,
+      status: 'active',
+    });
+
+    const res = await handleListSpores(makeRequest({
+      requestContext: requestContext(tmpDir, 'project-a'),
+    }));
+
+    const body = res.body as { spores: Array<{ id: string }>; total: number };
+    expect(body.spores.map((spore) => spore.id)).toEqual(['spore-project-a']);
+    expect(body.total).toBe(1);
+  });
+
+  it('does not return a local spore from a different project context', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    insertSpore({
+      id: 'spore-other-project',
+      project_id: 'project-b',
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'gotcha',
+      content: 'other project content',
+      created_at: now,
+      status: 'active',
+    });
+
+    const handler = createGetSporeHandler();
+    const res = await handler(makeRequest({
+      params: { id: 'spore-other-project' },
+      requestContext: requestContext(tmpDir, 'project-a'),
+    }));
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: 'not_found' });
   });
 
   it('local miss + team hit: returns team record tagged team:<machine_id>', async () => {
