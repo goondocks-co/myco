@@ -116,7 +116,7 @@ export function handleUserPrompt(
 
   const promptNumber = batch.prompt_number!;
 
-  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now); } catch { /* lineage best-effort */ }
+  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, batch.project_id); } catch { /* lineage best-effort */ }
 
   if (effectiveKind === BATCH_KIND.INITIAL) {
     updateSession(sessionId, { prompt_count: promptNumber });

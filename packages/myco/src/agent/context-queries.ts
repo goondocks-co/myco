@@ -146,7 +146,11 @@ async function executeQuery(
     case 'vault_unprocessed':
       // Agent pre-planning context should only see settled work — a task
       // planning against in-flight batches is working from partial signal.
-      return getUnprocessedBatches({ limit, includeActive: false }).map(projectBatchForAgent);
+      return getUnprocessedBatches({
+        limit,
+        includeActive: false,
+        ...(projectId !== undefined ? { project_id: projectId } : {}),
+      }).map(projectBatchForAgent);
 
     case 'vault_spores':
       return listSpores({

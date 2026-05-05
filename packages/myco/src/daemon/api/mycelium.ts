@@ -35,6 +35,12 @@ const GRAPH_SEED_SESSION_LIMIT = 4;
 /** Edge types to exclude from graph visualization (too granular). */
 const EXCLUDED_GRAPH_EDGE_TYPES = new Set(['HAS_BATCH', 'EXTRACTED_FROM']);
 
+function projectScopeClause(projectId: string | null | undefined): { sql: string; params: unknown[] } {
+  if (projectId === undefined) return { sql: '', params: [] };
+  if (projectId === null) return { sql: ' AND project_id IS NULL', params: [] };
+  return { sql: ' AND project_id = ?', params: [projectId] };
+}
+
 // ---------------------------------------------------------------------------
 // Spore handlers
 // ---------------------------------------------------------------------------
@@ -105,24 +111,26 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
   return { body: { entities } };
 }
 
-export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResponse> {
+export async function handleGetGraphSeeds(req: RouteRequest): Promise<RouteResponse> {
   const db = getDatabase();
+  const projectId = rowProjectIdFromRequestContext(req.requestContext);
+  const projectScope = projectScopeClause(projectId);
 
   const sporeRows = db.prepare(
     `SELECT id, observation_type, status, content, created_at
      FROM spores
-     WHERE agent_id = ? AND status = 'active'
+     WHERE agent_id = ? AND status = 'active'${projectScope.sql}
      ORDER BY created_at DESC
      LIMIT ?`,
-  ).all(DEFAULT_AGENT_ID, GRAPH_SEED_SPORE_LIMIT) as Array<Record<string, unknown>>;
+  ).all(DEFAULT_AGENT_ID, ...projectScope.params, GRAPH_SEED_SPORE_LIMIT) as Array<Record<string, unknown>>;
 
   const sessionRows = db.prepare(
     `SELECT id, title, summary, status, started_at as created_at
      FROM sessions
-     WHERE status != 'active'
+     WHERE status != 'active'${projectScope.sql}
      ORDER BY started_at DESC
      LIMIT ?`,
-  ).all(GRAPH_SEED_SESSION_LIMIT) as Array<Record<string, unknown>>;
+  ).all(...projectScope.params, GRAPH_SEED_SESSION_LIMIT) as Array<Record<string, unknown>>;
 
   const sporeSeeds = sporeRows.map((row) => ({
       id: row.id as string,
@@ -151,6 +159,7 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
        SELECT source_id AS node_id, COUNT(*) AS cnt
          FROM graph_edges
         WHERE agent_id = ?
+          ${projectScope.sql}
           AND type NOT IN ('HAS_BATCH', 'EXTRACTED_FROM')
           AND source_type IN ('spore', 'session')
         GROUP BY source_id
@@ -158,14 +167,15 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
        SELECT target_id, COUNT(*)
          FROM graph_edges
         WHERE agent_id = ?
+          ${projectScope.sql}
           AND type NOT IN ('HAS_BATCH', 'EXTRACTED_FROM')
           AND target_type IN ('spore', 'session')
         GROUP BY target_id
      )
      GROUP BY node_id
      ORDER BY SUM(cnt) DESC
-     LIMIT 1`,
-  ).get(DEFAULT_AGENT_ID, DEFAULT_AGENT_ID) as { node_id: string } | undefined;
+      LIMIT 1`,
+  ).get(DEFAULT_AGENT_ID, ...projectScope.params, DEFAULT_AGENT_ID, ...projectScope.params) as { node_id: string } | undefined;
 
   // Materialize the top-connected node as a seed so the UI's
   // `seeds.find(s => s.id === recommended_id)` lookup succeeds.
@@ -174,8 +184,8 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
     const topId = topConnectedRow.node_id;
     const sporeHit = db.prepare(
       `SELECT id, observation_type, status, content, created_at
-         FROM spores WHERE id = ?`,
-    ).get(topId) as Record<string, unknown> | undefined;
+         FROM spores WHERE id = ?${projectScope.sql}`,
+    ).get(topId, ...projectScope.params) as Record<string, unknown> | undefined;
     if (sporeHit) {
       topSeed = {
         id: sporeHit.id as string,
@@ -189,8 +199,8 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
     } else {
       const sessionHit = db.prepare(
         `SELECT id, title, summary, status, started_at as created_at
-           FROM sessions WHERE id = ?`,
-      ).get(topId) as Record<string, unknown> | undefined;
+           FROM sessions WHERE id = ?${projectScope.sql}`,
+      ).get(topId, ...projectScope.params) as Record<string, unknown> | undefined;
       if (sessionHit) {
         topSeed = {
           id: sessionHit.id as string,
@@ -230,18 +240,20 @@ export async function handleGetGraphSeeds(_req: RouteRequest): Promise<RouteResp
 export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> {
   const depth = Math.min(Number(req.query.depth) || DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH);
   const id = req.params.id;
+  const projectId = rowProjectIdFromRequestContext(req.requestContext);
+  const projectScope = projectScopeClause(projectId);
 
   // Resolve center node — spore or session (entity layer retired in schema v21).
   let centerType: 'spore' | 'session';
-  if (getSpore(id)) {
+  if (getSpore(id, projectId)) {
     centerType = 'spore';
-  } else if (getSession(id)) {
+  } else if (getSession(id, projectId)) {
     centerType = 'session';
   } else {
     return { status: 404, body: { error: 'not_found' } };
   }
 
-  const graph = getGraphForNode(id, centerType, { depth });
+  const graph = getGraphForNode(id, centerType, { depth, projectId });
 
   // Filter out batch-related edges (too granular for visualization)
   const filteredEdges = graph.edges.filter(
@@ -271,16 +283,16 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const sporeNodes = sporeIdArray.length > 0
     ? (graphDb.prepare(
         `SELECT id, observation_type, status, content, properties, created_at
-         FROM spores WHERE id IN (${sporeIdArray.map(() => '?').join(', ')})`,
-      ).all(...sporeIdArray) as Array<Record<string, unknown>>)
+         FROM spores WHERE id IN (${sporeIdArray.map(() => '?').join(', ')})${projectScope.sql}`,
+      ).all(...sporeIdArray, ...projectScope.params) as Array<Record<string, unknown>>)
     : [];
 
   const sessionIdArray = Array.from(sessionIds);
   const sessionNodes = sessionIdArray.length > 0
     ? (graphDb.prepare(
         `SELECT id, title, summary, status, started_at as created_at
-         FROM sessions WHERE id IN (${sessionIdArray.map(() => '?').join(', ')})`,
-      ).all(...sessionIdArray) as Array<Record<string, unknown>>)
+         FROM sessions WHERE id IN (${sessionIdArray.map(() => '?').join(', ')})${projectScope.sql}`,
+      ).all(...sessionIdArray, ...projectScope.params) as Array<Record<string, unknown>>)
     : [];
 
   const allNodes = [
@@ -331,20 +343,22 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
 /** Maximum nodes returned in full graph view to prevent overload. */
 const FULL_GRAPH_NODE_LIMIT = 500;
 
-export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteResponse> {
+export async function handleGetFullGraph(req: RouteRequest): Promise<RouteResponse> {
   const db = getDatabase();
+  const projectId = rowProjectIdFromRequestContext(req.requestContext);
+  const projectScope = projectScopeClause(projectId);
 
   // Fetch active spores (skip superseded)
   const sporeRows = db.prepare(
     `SELECT id, observation_type, status, content, properties, created_at
-     FROM spores WHERE agent_id = ? AND status = 'active' LIMIT ?`,
-  ).all(DEFAULT_AGENT_ID, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+     FROM spores WHERE agent_id = ? AND status = 'active'${projectScope.sql} LIMIT ?`,
+  ).all(DEFAULT_AGENT_ID, ...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
 
   // Fetch recent sessions
   const sessionRows = db.prepare(
     `SELECT id, title, summary, status, started_at as created_at
-     FROM sessions ORDER BY created_at DESC LIMIT ?`,
-  ).all(FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
+     FROM sessions WHERE 1=1${projectScope.sql} ORDER BY created_at DESC LIMIT ?`,
+  ).all(...projectScope.params, FULL_GRAPH_NODE_LIMIT) as Array<Record<string, unknown>>;
 
   // Collect all node IDs for edge filtering
   const allIds = new Set<string>();
@@ -361,10 +375,11 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
         `SELECT source_id, source_type, target_id, target_type, type, confidence
          FROM graph_edges
          WHERE agent_id = ?
+           ${projectScope.sql}
            AND type NOT IN (${excludedTypes})
            AND source_id IN (${idPlaceholders})
            AND target_id IN (${idPlaceholders})`,
-      ).all(DEFAULT_AGENT_ID, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>)
+      ).all(DEFAULT_AGENT_ID, ...projectScope.params, ...Array.from(EXCLUDED_GRAPH_EDGE_TYPES), ...allIdsList, ...allIdsList) as Array<Record<string, unknown>>)
     : [];
 
   // Build nodes
@@ -405,6 +420,7 @@ export async function handleGetFullGraph(_req: RouteRequest): Promise<RouteRespo
 
 export async function handleGetDigest(req: RouteRequest): Promise<RouteResponse> {
   const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
-  const extracts = listDigestExtracts(agentId);
+  const projectId = rowProjectIdFromRequestContext(req.requestContext);
+  const extracts = listDigestExtracts(agentId, projectId);
   return { body: { tiers: extracts } };
 }

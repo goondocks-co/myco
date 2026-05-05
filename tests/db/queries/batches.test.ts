@@ -14,6 +14,7 @@ import {
   closeBatch,
   getUnprocessedBatches,
   incrementActivityCount,
+  listBatchesBySession,
   markBatchProcessed,
 } from '@myco/db/queries/batches.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
@@ -96,6 +97,15 @@ describe('prompt batch query helpers', () => {
       expect(row.response_summary).toBe('Myco is a knowledge capture system.');
       expect(row.classification).toBe('question');
     });
+
+    it('inherits project_id from the parent session when omitted', () => {
+      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+      upsertSession(scopedSession);
+
+      const row = insertBatch(makeBatch(scopedSession.id));
+
+      expect(row.project_id).toBe('project-a');
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -159,6 +169,15 @@ describe('prompt batch query helpers', () => {
     it('returns null for non-existent batch', () => {
       const result = markBatchProcessed(999999);
       expect(result).toBeNull();
+    });
+
+    it('does not mark a batch outside the requested project scope', () => {
+      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+      upsertSession(scopedSession);
+      const batch = insertBatch(makeBatch(scopedSession.id));
+
+      expect(markBatchProcessed(batch.id, 'project-b')).toBeNull();
+      expect(markBatchProcessed(batch.id, 'project-a')!.processed).toBe(1);
     });
   });
 
@@ -224,6 +243,20 @@ describe('prompt batch query helpers', () => {
       expect(rows).toEqual([]);
     });
 
+    it('filters unprocessed batches by project_id when requested', () => {
+      const sessionA = makeSession({ id: 'sess-project-a', project_id: 'project-a', status: 'completed' });
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'project-b', status: 'completed' });
+      upsertSession(sessionA);
+      upsertSession(sessionB);
+      insertBatch(makeBatch(sessionA.id, { user_prompt: 'project a work' }));
+      insertBatch(makeBatch(sessionB.id, { user_prompt: 'project b work' }));
+
+      const rows = getUnprocessedBatches({ project_id: 'project-a', includeActive: false });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].user_prompt).toBe('project a work');
+    });
+
     describe('active-session gating (includeActive flag)', () => {
       it('by default (omitted) includes batches from active sessions', () => {
         insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
@@ -253,6 +286,17 @@ describe('prompt batch query helpers', () => {
         const rows = getUnprocessedBatches({ includeActive: true });
         expect(rows).toHaveLength(1);
       });
+    });
+  });
+
+  describe('listBatchesBySession', () => {
+    it('filters session batches by project_id when requested', () => {
+      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+      upsertSession(scopedSession);
+      insertBatch(makeBatch(scopedSession.id, { prompt_number: 1 }));
+
+      expect(listBatchesBySession(scopedSession.id, { project_id: 'project-b' })).toEqual([]);
+      expect(listBatchesBySession(scopedSession.id, { project_id: 'project-a' })).toHaveLength(1);
     });
   });
 

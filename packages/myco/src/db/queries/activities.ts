@@ -26,6 +26,7 @@ const DEFAULT_PROCESSED = 0;
 
 /** Fields required (or optional) when inserting an activity. */
 export interface ActivityInsert {
+  project_id?: string | null;
   session_id: string;
   tool_name: string;
   timestamp: number;
@@ -45,6 +46,7 @@ export interface ActivityInsert {
 /** Row shape returned from activity queries. */
 export interface ActivityRow {
   id: number;
+  project_id: string | null;
   session_id: string;
   prompt_batch_id: number | null;
   tool_name: string;
@@ -75,6 +77,7 @@ export interface ListActivitiesOptions {
 
 const ACTIVITY_COLUMNS = [
   'id',
+  'project_id',
   'session_id',
   'prompt_batch_id',
   'tool_name',
@@ -102,6 +105,7 @@ const SELECT_COLUMNS = ACTIVITY_COLUMNS.join(', ');
 function toActivityRow(row: Record<string, unknown>): ActivityRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     session_id: row.session_id as string,
     prompt_batch_id: (row.prompt_batch_id as number) ?? null,
     tool_name: row.tool_name as string,
@@ -135,17 +139,19 @@ export function insertActivity(data: ActivityInsert): ActivityRow {
 
   const info = db.prepare(
     `INSERT INTO activities (
-       session_id, prompt_batch_id, tool_name, tool_input,
+       project_id, session_id, prompt_batch_id, tool_name, tool_input,
        tool_output_summary, file_path, files_affected, duration_ms,
        success, error_message, timestamp, processed,
        content_hash, created_at
      ) VALUES (
-       ?, ?, ?, ?,
+       COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?
      )`,
   ).run(
+    data.project_id ?? null,
+    data.session_id,
     data.session_id,
     data.prompt_batch_id ?? null,
     data.tool_name,
@@ -211,11 +217,12 @@ export function insertActivityWithBatch(
 
   const info = db.prepare(
     `INSERT INTO activities (
-       session_id, prompt_batch_id, tool_name, tool_input,
+       project_id, session_id, prompt_batch_id, tool_name, tool_input,
        tool_output_summary, file_path, files_affected, duration_ms,
        success, error_message, timestamp, processed,
        content_hash, created_at
      ) VALUES (
+       (SELECT project_id FROM sessions WHERE id = ?),
        ?,
        (SELECT id FROM prompt_batches WHERE session_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1),
        ?, ?,
@@ -224,6 +231,7 @@ export function insertActivityWithBatch(
        ?, ?
      )`,
   ).run(
+    data.session_id,
     data.session_id,
     data.session_id,
     data.tool_name,

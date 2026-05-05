@@ -55,7 +55,7 @@ import {
   cleanupStagedSkill,
   type StagedManifest,
 } from './skill-staging.js';
-import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -63,6 +63,7 @@ import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
 
 export function createSkillTools(deps: VaultToolDeps) {
   const { agentId, machineId, projectRoot, vaultDir, embeddingManager, dryRun } = deps;
+  const projectId = rowProjectIdFromVaultToolDeps(deps);
 
   /**
    * Find the best-matching existing candidate (if any) whose topic
@@ -130,7 +131,7 @@ export function createSkillTools(deps: VaultToolDeps) {
   function requireApprovedCandidate(
     candidateId: string,
   ): Record<string, unknown> | null {
-    const candidate = getCandidate(candidateId);
+    const candidate = getCandidate(candidateId, projectId);
     if (!candidate) {
       return {
         error:
@@ -182,7 +183,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     rejectSameName?: boolean;
   }): Record<string, unknown> | null {
     // (1) Same-name check
-    const existingSameName = getSkillRecordByName(args.name);
+    const existingSameName = getSkillRecordByName(args.name, projectId);
     if (existingSameName) {
       if (args.rejectSameName) {
         return {
@@ -202,9 +203,9 @@ export function createSkillTools(deps: VaultToolDeps) {
 
     // (2) Candidate-already-fulfilled check
     if (args.candidate_id) {
-      const candidate = getCandidate(args.candidate_id);
+      const candidate = getCandidate(args.candidate_id, projectId);
       if (candidate?.skill_id) {
-        const linkedSkill = getSkillRecord(candidate.skill_id);
+        const linkedSkill = getSkillRecord(candidate.skill_id, projectId);
         if (linkedSkill && linkedSkill.name !== args.name) {
           return {
             error:
@@ -224,7 +225,7 @@ export function createSkillTools(deps: VaultToolDeps) {
     }
 
     // (3) Description similarity check
-    const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 200 });
+    const activeSkills = listSkillRecords({ project_id: projectId, agent_id: agentId, status: 'active', limit: 200 });
     let bestMatch: { skill: typeof activeSkills[number]; score: number } | null = null;
     for (const skill of activeSkills) {
       const score = descriptionSimilarity(args.description, skill.description);
@@ -348,6 +349,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       txDb.transaction(() => {
         insertSkillRecord({
           id: recordId,
+          project_id: projectId,
           agent_id: agentId,
           machine_id: machineId,
           name: params.name,
@@ -362,6 +364,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         insertLineage({
           id: crypto.randomUUID(),
+          project_id: projectId,
           skill_id: recordId,
           generation,
           action: 'created',
@@ -427,6 +430,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       switch (args.action) {
         case 'list': {
           const candidates = listCandidates({
+            project_id: projectId,
             agent_id: agentId,
             status: args.status,
             limit: args.limit ?? DEFAULT_LIST_LIMIT,
@@ -436,7 +440,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'get': {
           if (!args.id) return textResult({ error: 'id is required for get action' });
-          const candidate = getCandidate(args.id);
+          const candidate = getCandidate(args.id, projectId);
           if (!candidate) return textResult({ error: `Candidate not found: ${args.id}` });
           return textResult(candidate);
         }
@@ -456,7 +460,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           // Guard 1: reject if an active skill already covers this topic.
           // Checks whether all significant words from a skill name appear in the topic.
           // Superseded skills are exempt from this check.
-          const activeSkills = listSkillRecords({ agent_id: agentId, status: 'active', limit: 100 });
+          const activeSkills = listSkillRecords({ project_id: projectId, agent_id: agentId, status: 'active', limit: 100 });
           const topicLower = args.topic.toLowerCase();
           const overlapping = activeSkills.filter((s) => {
             if (supersedesSet.has(s.name)) return false; // exempt superseded skills
@@ -476,7 +480,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           // check dismissed/generated candidates before re-identifying,
           // but self-grading is unreliable so the check is enforced here.
           // Dismissed candidates produce a soft warning rather than a hard rejection.
-          const allExisting = listCandidates({ agent_id: agentId, limit: 500 });
+          const allExisting = listCandidates({ project_id: projectId, agent_id: agentId, limit: 500 });
           const match = findOverlappingCandidate(args.topic, allExisting);
           let dismissedMatch: typeof match | undefined;
           if (match) {
@@ -498,6 +502,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           const now = epochSeconds();
           const candidate = insertCandidate({
             id: crypto.randomUUID(),
+            project_id: projectId,
             agent_id: agentId,
             machine_id: machineId,
             topic: args.topic,
@@ -540,14 +545,14 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
             ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
             updated_at: now,
-          });
+          }, projectId);
           if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
           return textResult(updated);
         }
 
         case 'delete': {
           if (!args.id) return textResult({ error: 'id is required for delete action' });
-          const deleted = deleteCandidate(args.id);
+          const deleted = deleteCandidate(args.id, projectId);
           if (!deleted) return textResult({ error: `Candidate not found: ${args.id}` });
           return textResult({ deleted: true, id: args.id });
         }
@@ -576,6 +581,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       switch (args.action) {
         case 'list': {
           const records = listSkillRecords({
+            project_id: projectId,
             agent_id: agentId,
             status: args.status,
             limit: args.limit ?? DEFAULT_LIST_LIMIT,
@@ -585,7 +591,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'get': {
           if (!args.id) return textResult({ error: 'id is required for get action' });
-          const record = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          const record = getSkillRecord(args.id, projectId) ?? getSkillRecordByName(args.id, projectId);
           if (!record) return textResult({ error: `Skill record not found: ${args.id}` });
           // Include file content so evolve/merge operations can read skill bodies
           const result: Record<string, unknown> = { ...record };
@@ -615,7 +621,7 @@ export function createSkillTools(deps: VaultToolDeps) {
           }
 
           // Resolve by id or name
-          const existing = getSkillRecord(args.id) ?? getSkillRecordByName(args.id);
+          const existing = getSkillRecord(args.id, projectId) ?? getSkillRecordByName(args.id, projectId);
           if (!existing) return textResult({ error: `Skill record not found: ${args.id}` });
 
           // Shallow-merge incoming properties into existing so multiple callers
@@ -654,14 +660,14 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.description !== undefined ? { description: args.description } : {}),
             ...(mergedProperties !== undefined ? { properties: mergedProperties } : {}),
             updated_at: now,
-          });
+          }, projectId);
           if (!updated) return textResult({ error: `Failed to update skill record: ${existing.id}` });
           return textResult(updated);
         }
 
         case 'delete': {
           if (!args.id) return textResult({ error: 'id is required for delete action' });
-          const result = deleteSkillRecordCascade(args.id);
+          const result = deleteSkillRecordCascade(args.id, projectId);
           if (!result) return textResult({ error: `Skill record not found: ${args.id}` });
           try { embeddingManager?.onRemoved('skill_records', result.id); } catch { /* best-effort */ }
           // Disk + symlink cleanup (best-effort)
@@ -727,7 +733,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       if (dedupError) {
         return textResult(dedupError);
       }
-      const existing = getSkillRecordByName(args.name);
+      const existing = getSkillRecordByName(args.name, projectId);
 
       const root = projectRoot ?? process.cwd();
       const skillPath = resolve(root, '.agents', 'skills', args.name, 'SKILL.md');
@@ -764,14 +770,14 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.candidate_id) return;
           const exact = updateCandidate(args.candidate_id, {
             status: CANDIDATE_STATUS.GENERATED, skill_id: recordId, updated_at: now,
-          });
+          }, projectId);
           if (exact) return;
-          const approvedCandidates = listCandidates({ status: CANDIDATE_STATUS.APPROVED, limit: 10 });
+          const approvedCandidates = listCandidates({ project_id: projectId, status: CANDIDATE_STATUS.APPROVED, limit: 10 });
           const prefixMatch = approvedCandidates.find((c) => c.id.startsWith(args.candidate_id!));
           if (prefixMatch) {
             updateCandidate(prefixMatch.id, {
               status: CANDIDATE_STATUS.GENERATED, skill_id: recordId, updated_at: now,
-            });
+            }, projectId);
           }
         };
 
@@ -797,6 +803,7 @@ export function createSkillTools(deps: VaultToolDeps) {
         embeddingManager?.onContentWritten('skill_records', result.id, args.description, {
           status: 'active',
           name: args.name,
+          ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
         }).catch(() => {});
         return textResult(result);
       }
@@ -835,10 +842,11 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
             path: relativePath,
             updated_at: now,
-          });
+          }, projectId);
 
           insertLineage({
             id: crypto.randomUUID(),
+            project_id: projectId,
             skill_id: existing.id,
             generation,
             action: 'updated',
@@ -872,6 +880,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       embeddingManager?.onContentWritten('skill_records', recordId, args.description, {
         status: 'active',
         name: args.name,
+        ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       }).catch(() => {});
 
       return textResult({
@@ -1050,7 +1059,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             status: CANDIDATE_STATUS.GENERATED,
             skill_id: recordId,
             updated_at: now,
-          });
+          }, projectId);
         },
         label: 'vault_finalize_skill',
       });
@@ -1068,6 +1077,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       embeddingManager?.onContentWritten('skill_records', result.id, manifest.description, {
         status: 'active',
         name: manifest.name,
+        ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       }).catch(() => {});
 
       return textResult(result);

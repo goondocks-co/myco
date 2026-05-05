@@ -13,6 +13,7 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import {
   insertActivity,
+  insertActivityWithBatch,
   listActivities,
   countActivities,
 } from '@myco/db/queries/activities.js';
@@ -118,6 +119,21 @@ describe('activity query helpers', () => {
       const row = insertActivity(data);
 
       expect(row.prompt_batch_id).toBe(batch.id);
+    });
+
+    it('stores an explicit project_id', () => {
+      const row = insertActivity(makeActivity(sessionId, { project_id: 'project-a' }));
+
+      expect(row.project_id).toBe('project-a');
+    });
+
+    it('derives project_id from the session for stateless inserts', () => {
+      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+      upsertSession(scopedSession);
+
+      const row = insertActivityWithBatch(makeActivity(scopedSession.id));
+
+      expect(row.project_id).toBe('project-a');
     });
   });
 

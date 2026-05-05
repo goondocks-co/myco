@@ -15,6 +15,7 @@ export interface CanopySearchOptions {
   query: string;
   limit: number;
   threshold: number;
+  project_id?: string | null;
   language?: string;
 }
 
@@ -43,12 +44,15 @@ export async function searchCanopy(
   const queryVector = await embeddingManager.embedQuery(options.query);
   if (!queryVector) return null;
 
-  const filters = options.language !== undefined ? { language: options.language } : undefined;
+  const filters = {
+    ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(options.project_id !== undefined && options.project_id !== null ? { project_id: options.project_id } : {}),
+  };
   const raw = embeddingManager.searchVectors(queryVector, {
     namespace: CANOPY_ENTRIES_NAMESPACE,
     limit: options.limit,
     threshold: options.threshold,
-    filters,
+    filters: Object.keys(filters).length > 0 ? filters : undefined,
   });
 
   const ids = raw.map((r) => r.id);

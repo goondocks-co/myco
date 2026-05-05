@@ -151,6 +151,20 @@ describe('executeContextQueries', () => {
 
       expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false });
     });
+
+    it('passes request-context project scope to getUnprocessedBatches', async () => {
+      vi.mocked(getUnprocessedBatches).mockReturnValue([]);
+
+      await executeContextQueries(TEST_AGENT_ID, [
+        makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
+      ], requestContext('project-a'));
+
+      expect(getUnprocessedBatches).toHaveBeenCalledWith({
+        limit: 5,
+        includeActive: false,
+        project_id: 'project-a',
+      });
+    });
   });
 
   describe('vault_spores', () => {

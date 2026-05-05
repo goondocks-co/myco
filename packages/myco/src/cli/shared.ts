@@ -6,6 +6,7 @@ import { LmStudioBackend } from '../intelligence/lm-studio.js';
 
 import { DaemonClient } from '../hooks/client.js';
 import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
+import { requestContextFromEnvironment } from '../tools/request-context.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 import {
@@ -30,7 +31,9 @@ export function initVaultDb(vaultDir: string): () => void {
 
 /** Connect to the daemon, ensuring it's running. Exits on failure. */
 export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
-  const client = new DaemonClient(vaultDir);
+  const client = new DaemonClient(vaultDir, {
+    requestContext: requestContextFromEnvironment(process.env, vaultDir),
+  });
   const healthy = await client.ensureRunning();
   if (!healthy) {
     console.error('Failed to connect to daemon');

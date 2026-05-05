@@ -23,6 +23,7 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
 // ---------------------------------------------------------------------------
@@ -51,8 +52,8 @@ function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
  * skill-generate workflow where only human-approved candidates reach
  * these tools.
  */
-function approveCandidate(id: string): void {
-  updateCandidate(id, { status: CANDIDATE_STATUS.APPROVED, updated_at: epochNow() });
+function approveCandidate(id: string, projectId?: string | null): void {
+  updateCandidate(id, { status: CANDIDATE_STATUS.APPROVED, updated_at: epochNow() }, projectId);
 }
 
 /** Insert an agent directly into the agents table. */
@@ -85,6 +86,23 @@ function findTool(tools: ReturnType<typeof createVaultTools>, name: string) {
 /** Parse the JSON text from a tool result. */
 function parseResult(result: { content: Array<{ type: string; text: string }> }): unknown {
   return JSON.parse(result.content[0].text);
+}
+
+function makeRequestContext(
+  projectRoot: string,
+  vaultDir: string,
+  projectId: string,
+): MycoRequestContext {
+  return {
+    projectRoot,
+    projectId,
+    groveId: `grove-${projectId}`,
+    machineId: 'machine-test',
+    sessionId: null,
+    projectVaultDir: vaultDir,
+    databasePath: path.join(vaultDir, 'vault.db'),
+    source: 'explicit',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +144,14 @@ describe('vault skill tools', () => {
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  function createProjectTools(projectId: string): ReturnType<typeof createVaultTools> {
+    return createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+      projectRoot: tmpDir,
+      vaultDir,
+      requestContext: makeRequestContext(tmpDir, vaultDir, projectId),
+    });
+  }
 
   // -------------------------------------------------------------------------
   // vault_skill_candidates
@@ -212,6 +238,60 @@ describe('vault skill tools', () => {
       const listResult = await t.handler({ action: 'list' }, undefined);
       const data = parseResult(listResult) as unknown[];
       expect(data).toHaveLength(2);
+    });
+
+    it('scopes candidate lifecycle actions to the request project', async () => {
+      const projectATool = findTool(createProjectTools('project-a'), 'vault_skill_candidates');
+      const projectBTool = findTool(createProjectTools('project-b'), 'vault_skill_candidates');
+
+      const createdA = parseResult(
+        await projectATool.handler(
+          { action: 'create', topic: 'Shared project topic', rationale: 'Project A rationale' },
+          undefined,
+        ),
+      ) as { id: string; project_id: string; error?: string };
+      const createdB = parseResult(
+        await projectBTool.handler(
+          { action: 'create', topic: 'Shared project topic', rationale: 'Project B rationale' },
+          undefined,
+        ),
+      ) as { id: string; project_id: string; error?: string };
+
+      expect(createdA.error).toBeUndefined();
+      expect(createdB.error).toBeUndefined();
+      expect(createdA.project_id).toBe('project-a');
+      expect(createdB.project_id).toBe('project-b');
+
+      const listA = parseResult(
+        await projectATool.handler({ action: 'list' }, undefined),
+      ) as Array<{ id: string; project_id: string }>;
+      expect(listA).toHaveLength(1);
+      expect(listA[0].id).toBe(createdA.id);
+      expect(listA[0].project_id).toBe('project-a');
+
+      const crossGet = parseResult(
+        await projectATool.handler({ action: 'get', id: createdB.id }, undefined),
+      ) as { error?: string };
+      expect(crossGet.error).toContain('Candidate not found');
+
+      const crossUpdate = parseResult(
+        await projectATool.handler(
+          { action: 'update', id: createdB.id, status: 'dismissed' },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(crossUpdate.error).toContain('Candidate not found');
+
+      const crossDelete = parseResult(
+        await projectATool.handler({ action: 'delete', id: createdB.id }, undefined),
+      ) as { error?: string };
+      expect(crossDelete.error).toContain('Candidate not found');
+
+      const stillInB = parseResult(
+        await projectBTool.handler({ action: 'get', id: createdB.id }, undefined),
+      ) as { id: string; project_id: string };
+      expect(stillInB.id).toBe(createdB.id);
+      expect(stillInB.project_id).toBe('project-b');
     });
 
     // Cross-status dedup — skill-survey must not re-identify topics
@@ -432,6 +512,66 @@ describe('vault skill tools', () => {
       expect(record.name).toBe('testing-patterns');
       expect(record.display_name).toBe('Testing Patterns');
     });
+
+    it('scopes record lifecycle actions to the request project', async () => {
+      const now = epochNow();
+      insertSkillRecord({
+        id: 'skill-project-a',
+        project_id: 'project-a',
+        agent_id: TEST_AGENT_ID,
+        name: 'project-a-skill',
+        display_name: 'Project A Skill',
+        description: 'Project A scoped skill',
+        path: '.agents/skills/project-a-skill/SKILL.md',
+        created_at: now,
+        updated_at: now,
+      });
+      insertSkillRecord({
+        id: 'skill-project-b',
+        project_id: 'project-b',
+        agent_id: TEST_AGENT_ID,
+        name: 'project-b-skill',
+        display_name: 'Project B Skill',
+        description: 'Project B scoped skill',
+        path: '.agents/skills/project-b-skill/SKILL.md',
+        created_at: now,
+        updated_at: now,
+      });
+
+      const projectATool = findTool(createProjectTools('project-a'), 'vault_skill_records');
+      const projectBTool = findTool(createProjectTools('project-b'), 'vault_skill_records');
+
+      const listA = parseResult(
+        await projectATool.handler({ action: 'list' }, undefined),
+      ) as Array<{ id: string; project_id: string }>;
+      expect(listA).toHaveLength(1);
+      expect(listA[0].id).toBe('skill-project-a');
+      expect(listA[0].project_id).toBe('project-a');
+
+      const crossGet = parseResult(
+        await projectATool.handler({ action: 'get', id: 'skill-project-b' }, undefined),
+      ) as { error?: string };
+      expect(crossGet.error).toContain('Skill record not found');
+
+      const crossUpdate = parseResult(
+        await projectATool.handler(
+          { action: 'update', id: 'skill-project-b', status: 'stale' },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(crossUpdate.error).toContain('Skill record not found');
+
+      const crossDelete = parseResult(
+        await projectATool.handler({ action: 'delete', id: 'skill-project-b' }, undefined),
+      ) as { error?: string };
+      expect(crossDelete.error).toContain('Skill record not found');
+
+      const stillInB = parseResult(
+        await projectBTool.handler({ action: 'get', id: 'skill-project-b' }, undefined),
+      ) as { id: string; project_id: string };
+      expect(stillInB.id).toBe('skill-project-b');
+      expect(stillInB.project_id).toBe('project-b');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -565,6 +705,68 @@ describe('vault skill tools', () => {
       const updatedCandidate = parseResult(getResult) as { status: string; skill_id: string };
       expect(updatedCandidate.status).toBe('generated');
       expect(updatedCandidate.skill_id).toBeDefined();
+    });
+
+    it('creates skill records and candidate transitions in the request project', async () => {
+      const projectATools = createProjectTools('project-a');
+      const projectBTools = createProjectTools('project-b');
+      const candidateToolA = findTool(projectATools, 'vault_skill_candidates');
+      const created = parseResult(
+        await candidateToolA.handler(
+          { action: 'create', topic: 'Scoped skill write', rationale: 'Project A only' },
+          undefined,
+        ),
+      ) as { id: string; project_id: string };
+      approveCandidate(created.id, 'project-a');
+
+      const writeToolA = findTool(projectATools, 'vault_write_skill');
+      const written = parseResult(
+        await writeToolA.handler(
+          {
+            name: 'scoped-skill-write',
+            display_name: 'Scoped Skill Write',
+            description: 'Materialized in one request project',
+            content: validSkillContent('scoped-skill-write', '# Scoped Skill Write'),
+            candidate_id: created.id,
+          },
+          undefined,
+        ),
+      ) as { id: string; name: string; error?: string };
+      expect(written.error).toBeUndefined();
+      expect(written.name).toBe('scoped-skill-write');
+
+      const recordA = parseResult(
+        await findTool(projectATools, 'vault_skill_records').handler(
+          { action: 'get', id: 'scoped-skill-write' },
+          undefined,
+        ),
+      ) as { id: string; project_id: string; candidate_id: string };
+      expect(recordA.id).toBe(written.id);
+      expect(recordA.project_id).toBe('project-a');
+      expect(recordA.candidate_id).toBe(created.id);
+
+      const candidateA = parseResult(
+        await candidateToolA.handler({ action: 'get', id: created.id }, undefined),
+      ) as { status: string; skill_id: string; project_id: string };
+      expect(candidateA.status).toBe('generated');
+      expect(candidateA.skill_id).toBe(written.id);
+      expect(candidateA.project_id).toBe('project-a');
+
+      const recordB = parseResult(
+        await findTool(projectBTools, 'vault_skill_records').handler(
+          { action: 'get', id: 'scoped-skill-write' },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(recordB.error).toContain('Skill record not found');
+
+      const candidateB = parseResult(
+        await findTool(projectBTools, 'vault_skill_candidates').handler(
+          { action: 'get', id: created.id },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(candidateB.error).toContain('Candidate not found');
     });
 
     it('rejects update that changes user-invocable value', async () => {

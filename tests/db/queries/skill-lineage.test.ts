@@ -80,6 +80,7 @@ describe('skill lineage query helpers', () => {
       const row = insertLineage(data);
 
       expect(row.id).toBe(data.id);
+      expect(row.project_id).toBeNull();
       expect(row.skill_id).toBe(skill.id);
       expect(row.generation).toBe(1);
       expect(row.action).toBe('created');
@@ -169,6 +170,17 @@ describe('skill lineage query helpers', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('lin-a1');
       expect(rows[0].skill_id).toBe(skillA.id);
+    });
+
+    it('filters lineage by project_id when requested', () => {
+      const skillA = insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'project-a' }));
+      const skillB = insertSkillRecord(makeSkillRecord({ id: 'skill-project-b', project_id: 'project-b' }));
+
+      insertLineage(makeLineage(skillA.id, { id: 'lin-project-a', project_id: 'project-a' }));
+      insertLineage(makeLineage(skillB.id, { id: 'lin-project-b', project_id: 'project-b' }));
+
+      expect(listLineageForSkill(skillA.id, 50, 'project-b')).toEqual([]);
+      expect(listLineageForSkill(skillA.id, 50, 'project-a').map((row) => row.id)).toEqual(['lin-project-a']);
     });
   });
 });

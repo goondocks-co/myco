@@ -26,7 +26,7 @@ import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
 import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -96,6 +96,9 @@ export async function registerScheduledTasks(
   for (const task of allTasks) {
     taskAgentMap.set(task.name, task.agent);
   }
+  const projectRoot = resolveProjectRoot(vaultDir);
+  const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
+  const projectId = rowProjectIdFromRequestContext(requestContext);
 
   // Seed lastRun from DB: find the most recent completed/failed run per task
   const initialLastRuns: Record<string, number> = {};
@@ -137,8 +140,6 @@ export async function registerScheduledTasks(
       if (!enabled) return;
 
       const { runAgent } = await import('@myco/agent/executor.js');
-      const projectRoot = resolveProjectRoot(vaultDir);
-      const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
       const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
         ? null
         : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
@@ -246,13 +247,13 @@ export async function registerScheduledTasks(
       // Boolean preconditions delegate to the same domain-owned count
       // helpers as the accelerator dispatch, so there's a single
       // source of truth for "is there work pending?" per work unit.
-      'has-unprocessed-batches': () => countUnprocessedSettledBatches() > 0,
+      'has-unprocessed-batches': () => countUnprocessedSettledBatches(undefined, projectId) > 0,
       'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)) > 0,
-      'has-active-skills': () => countSkillRecords({ status: 'active' }) > 0,
-      'has-approved-candidates': () => countCandidates({ status: 'approved' }) > 0,
+      'has-active-skills': () => countSkillRecords({ status: 'active', project_id: projectId }) > 0,
+      'has-approved-candidates': () => countCandidates({ status: 'approved', project_id: projectId }) > 0,
       'has-skill-survey-evidence': () => getSkillSurveyEligibility(
         taskAgentMap.get(SKILL_SURVEY_TASK),
-        resolveLegacyRequestContext(vaultDir, { projectRoot: resolveProjectRoot(vaultDir) }),
+        requestContext,
       ).eligible,
     },
     // Dispatch table mapping accelerator names declared in YAML to the
@@ -264,7 +265,7 @@ export async function registerScheduledTasks(
     accelerators: {
       'canopy-pending-describe': (limit) =>
         countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir), limit),
-      'unprocessed-settled-batches': (limit) => countUnprocessedSettledBatches(limit),
+      'unprocessed-settled-batches': (limit) => countUnprocessedSettledBatches(limit, projectId),
     },
     onTaskError: (taskName, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {

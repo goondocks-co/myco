@@ -91,7 +91,7 @@ export const handleGetSession = createGetSessionHandler();
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {
   const projectId = rowProjectIdFromRequestContext(req.requestContext);
   if (!getSession(req.params.id, projectId)) return { status: 404, body: { error: 'not_found' } };
-  const batches = listBatchesBySession(req.params.id);
+  const batches = listBatchesBySession(req.params.id, { project_id: projectId });
   return { body: batches };
 }
 

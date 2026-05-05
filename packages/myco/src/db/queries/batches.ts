@@ -62,11 +62,13 @@ export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 export interface ListBatchesBySessionOptions {
   limit?: number;
   offset?: number;
+  project_id?: string | null;
 }
 
 /** Fields required (or optional) when inserting a prompt batch. */
 export interface BatchInsert {
   session_id: string;
+  project_id?: string | null;
   created_at: number;
   prompt_number?: number | null;
   user_prompt?: string | null;
@@ -85,6 +87,7 @@ export interface BatchInsert {
 export interface BatchRow {
   id: number;
   session_id: string;
+  project_id: string | null;
   parent_prompt_batch_id: number | null;
   kind: string;
   prompt_number: number | null;
@@ -109,6 +112,7 @@ export interface BatchRow {
 const BATCH_COLUMNS = [
   'id',
   'session_id',
+  'project_id',
   'parent_prompt_batch_id',
   'kind',
   'prompt_number',
@@ -137,6 +141,7 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
   return {
     id: row.id as number,
     session_id: row.session_id as string,
+    project_id: (row.project_id as string) ?? null,
     parent_prompt_batch_id: row.parent_prompt_batch_id as number | null,
     kind: (row.kind as string) ?? 'initial',
     prompt_number: (row.prompt_number as number) ?? null,
@@ -155,6 +160,22 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
   };
 }
 
+function appendProjectCondition(
+  conditions: string[],
+  params: unknown[],
+  projectId: string | null | undefined,
+  qualifier = '',
+): void {
+  if (projectId === undefined) return;
+  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
+  if (projectId === null) {
+    conditions.push(`${column} IS NULL`);
+  } else {
+    conditions.push(`${column} = ?`);
+    params.push(projectId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -170,15 +191,17 @@ export function insertBatch(data: BatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, prompt_number, user_prompt, response_summary,
+       session_id, project_id, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
   ).run(
+    data.session_id,
+    data.project_id ?? null,
     data.session_id,
     data.prompt_number ?? null,
     data.user_prompt ?? null,
@@ -280,7 +303,7 @@ export function populateBatchResponses(
  * preserve behavior for tests and any non-agent caller.
  */
 export function getUnprocessedBatches(
-  options: { after_id?: number; limit?: number; includeActive?: boolean } = {},
+  options: { after_id?: number; limit?: number; includeActive?: boolean; project_id?: string | null } = {},
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -297,6 +320,8 @@ export function getUnprocessedBatches(
       `EXISTS (SELECT 1 FROM sessions s WHERE s.id = prompt_batches.session_id AND s.status != 'active')`,
     );
   }
+
+  appendProjectCondition(conditions, params, options.project_id);
 
   const limit = options.limit ?? DEFAULT_UNPROCESSED_LIMIT;
   params.push(limit);
@@ -321,30 +346,42 @@ export function getUnprocessedBatches(
  * the batches/sessions domain so the scheduler doesn't have to reason
  * about prompt_batches schema.
  */
-export function countUnprocessedSettledBatches(limit?: number): number {
+export function countUnprocessedSettledBatches(
+  limit?: number,
+  projectId?: string | null,
+): number {
+  const projectConditions: string[] = [];
+  const projectParams: unknown[] = [];
+  appendProjectCondition(projectConditions, projectParams, projectId, 'pb');
+  const projectWhere = projectConditions.length > 0
+    ? ` AND ${projectConditions.join(' AND ')}`
+    : '';
+
   if (limit !== undefined) {
     const boundedLimit = Math.max(1, Math.floor(limit));
     const row = getDatabase().prepare(
       `SELECT COUNT(*) AS n FROM (
         SELECT 1 FROM prompt_batches pb
         WHERE pb.processed = 0
+          ${projectWhere}
           AND EXISTS (
             SELECT 1 FROM sessions s
             WHERE s.id = pb.session_id AND s.status != 'active'
           )
         LIMIT ?
       )`,
-    ).get(boundedLimit) as { n: number } | undefined;
+    ).get(...projectParams, boundedLimit) as { n: number } | undefined;
     return row?.n ?? 0;
   }
   const row = getDatabase().prepare(
     `SELECT COUNT(*) AS n FROM prompt_batches pb
      WHERE pb.processed = 0
+       ${projectWhere}
        AND EXISTS (
          SELECT 1 FROM sessions s
          WHERE s.id = pb.session_id AND s.status != 'active'
        )`,
-  ).get() as { n: number } | undefined;
+  ).get(...projectParams) as { n: number } | undefined;
   return row?.n ?? 0;
 }
 
@@ -378,19 +415,24 @@ export function incrementActivityCount(
  */
 export function markBatchProcessed(
   id: number,
+  projectId?: string | null,
 ): BatchRow | null {
   const db = getDatabase();
+
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, projectId);
 
   const info = db.prepare(
     `UPDATE prompt_batches
      SET processed = ?
-     WHERE id = ?`,
-  ).run(PROCESSED_FLAG, id);
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(PROCESSED_FLAG, ...params);
 
   if (info.changes === 0) return null;
 
   return toBatchRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown>,
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE ${conditions.join(' AND ')}`).get(...params) as Record<string, unknown>,
   );
 }
 
@@ -443,6 +485,7 @@ export function findBatchByPromptPrefix(
 /** Fields required when inserting a batch statelessly (prompt_number derived from DB). */
 export interface StatelessBatchInsert {
   session_id: string;
+  project_id?: string | null;
   created_at: number;
   user_prompt?: string | null;
   started_at?: number | null;
@@ -466,18 +509,20 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, parent_prompt_batch_id, kind,
+       session_id, project_id, parent_prompt_batch_id, kind,
        prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?,
        (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
        ?, NULL,
        NULL, ?, NULL, ?,
        ?, ?, NULL, ?, ?
      )`,
   ).run(
+    data.session_id,
+    data.project_id ?? null,
     data.session_id,
     data.parent_prompt_batch_id ?? null,
     data.kind ?? 'initial',
@@ -583,15 +628,18 @@ export function listBatchesBySession(
 
   const limit = options.limit ?? BATCHES_DEFAULT_LIMIT;
   const offset = options.offset ?? 0;
+  const conditions = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, options.project_id);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM prompt_batches
-     WHERE session_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY prompt_number ASC
      LIMIT ?
      OFFSET ?`,
-  ).all(sessionId, limit, offset) as Record<string, unknown>[];
+  ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toBatchRow);
 }

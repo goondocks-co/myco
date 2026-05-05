@@ -430,11 +430,17 @@ export function countSessions(
  * results in-memory against this set instead. Bounded by the number of
  * concurrent in-flight sessions — typically small.
  */
-export function getActiveSessionIds(): Set<string> {
+export function getActiveSessionIds(projectId?: string | null): Set<string> {
   const db = getDatabase();
+  const scopeClause = projectId === undefined
+    ? ''
+    : projectId === null
+      ? ' AND project_id IS NULL'
+      : ' AND project_id = ?';
+  const params = projectId === undefined || projectId === null ? [] : [projectId];
   const rows = db.prepare(
-    `SELECT id FROM sessions WHERE status = 'active'`,
-  ).all() as Array<{ id: string }>;
+    `SELECT id FROM sessions WHERE status = 'active'${scopeClause}`,
+  ).all(...params) as Array<{ id: string }>;
   return new Set(rows.map((r) => r.id));
 }
 

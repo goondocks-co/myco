@@ -16,6 +16,7 @@ import {
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -77,10 +78,12 @@ export function createSearchHandler(deps: SearchDeps) {
     const type = req.query.type;
     const limit = Number(req.query.limit) || SEARCH_RESULTS_DEFAULT_LIMIT;
     const namespace = req.query.namespace;
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const metadataFilters = {
       ...(req.query.status ? { status: req.query.status } : {}),
       ...(req.query.session_id ? { session_id: req.query.session_id } : {}),
       ...(req.query.observation_type ? { observation_type: req.query.observation_type } : {}),
+      ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       ...(req.query.since ? { created_at_gte: Number(req.query.since) } : {}),
       ...(req.query.until ? { created_at_lte: Number(req.query.until) } : {}),
     };
@@ -99,6 +102,7 @@ export function createSearchHandler(deps: SearchDeps) {
         query,
         limit,
         threshold: SEARCH_SIMILARITY_THRESHOLD,
+        project_id: projectId,
         language: req.query.language || undefined,
       });
       if (canopyResults === null) {
@@ -110,7 +114,7 @@ export function createSearchHandler(deps: SearchDeps) {
     // --- FTS-only mode ---
     if (mode === 'fts') {
       try {
-        const results = fullTextSearch(sanitized, { type, limit });
+        const results = fullTextSearch(sanitized, { type, limit, project_id: projectId });
         return { body: { mode: 'fts', results: normalizeSearchResults(results) } };
       } catch (err) {
         return {
@@ -150,7 +154,7 @@ export function createSearchHandler(deps: SearchDeps) {
     if (queryVector === null) {
       if (mode === 'auto') {
         try {
-          const results = fullTextSearch(sanitized, { type, limit });
+          const results = fullTextSearch(sanitized, { type, limit, project_id: projectId });
           return { body: { mode: 'fts', results: normalizeSearchResults(results), fallback: true } };
         } catch (err) {
           return {
@@ -181,7 +185,7 @@ export function createSearchHandler(deps: SearchDeps) {
       : vectorResults;
 
     // Hydrate local vector results into full SearchResults
-    const localResults = hydrateSearchResults(filteredVectorResults).map((r) => ({
+    const localResults = hydrateSearchResults(filteredVectorResults, { project_id: projectId }).map((r) => ({
       ...r,
       source: 'local',
     }));

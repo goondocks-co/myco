@@ -164,6 +164,22 @@ describe('fullTextSearch', () => {
     expect(results.length).toBeLessThanOrEqual(2);
   });
 
+  it('filters FTS results by project_id across batches and activities', () => {
+    const sessionA = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+    const sessionB = makeSession({ id: 'sess-project-b', project_id: 'project-b' });
+    upsertSession(sessionA);
+    upsertSession(sessionB);
+    insertBatch(makeBatch(sessionA.id, { user_prompt: 'shared needle from batch a' }));
+    insertBatch(makeBatch(sessionB.id, { user_prompt: 'shared needle from batch b' }));
+    insertActivity(makeActivity(sessionA.id, { tool_name: 'Read', tool_input: 'shared needle from activity a' }));
+    insertActivity(makeActivity(sessionB.id, { tool_name: 'Read', tool_input: 'shared needle from activity b' }));
+
+    const results = fullTextSearch('needle', { project_id: 'project-a' });
+
+    expect(results).toHaveLength(2);
+    expect(results.every((result) => result.preview.includes('activity a') || result.preview.includes('batch a'))).toBe(true);
+  });
+
   it('returns empty array when tables have no FTS data', () => {
     // Insert session but no batches or activities
     const results = fullTextSearch('anything');
@@ -291,5 +307,50 @@ describe('hydrateSearchResults', () => {
     const hydrated = hydrateSearchResults(vectorResults);
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0].path).toBe('src/foo.ts');
+  });
+
+  it('filters hydrated vector hits by project_id', () => {
+    const sessionA = makeSession({ id: 'sess-vector-a', project_id: 'project-a', title: 'A session' });
+    const sessionB = makeSession({ id: 'sess-vector-b', project_id: 'project-b', title: 'B session' });
+    upsertSession(sessionA);
+    upsertSession(sessionB);
+    insertCanopyEntry({
+      project_id: 'project-a',
+      path: 'src/a.ts',
+      llm_description: 'Project A file.',
+    });
+    insertCanopyEntry({
+      project_id: 'project-b',
+      path: 'src/b.ts',
+      llm_description: 'Project B file.',
+    });
+
+    const hydrated = hydrateSearchResults([
+      { id: sessionA.id, namespace: 'sessions', similarity: 0.9, metadata: {} },
+      { id: sessionB.id, namespace: 'sessions', similarity: 0.8, metadata: {} },
+      { id: 'project-a:src/a.ts', namespace: 'canopy_entries', similarity: 0.7, metadata: {} },
+      { id: 'project-b:src/b.ts', namespace: 'canopy_entries', similarity: 0.6, metadata: {} },
+    ], { project_id: 'project-a' });
+
+    expect(hydrated.map((result) => result.id)).toEqual([sessionA.id, 'project-a:src/a.ts']);
+  });
+
+  it('keeps canopy vector hits broad for legacy null project scope', () => {
+    insertCanopyEntry({
+      project_id: 'legacy-canopy-project',
+      path: 'src/legacy.ts',
+      llm_description: 'Legacy-context canopy file.',
+    });
+
+    const hydrated = hydrateSearchResults([
+      {
+        id: 'legacy-canopy-project:src/legacy.ts',
+        namespace: 'canopy_entries',
+        similarity: 0.9,
+        metadata: {},
+      },
+    ], { project_id: null });
+
+    expect(hydrated.map((result) => result.id)).toEqual(['legacy-canopy-project:src/legacy.ts']);
   });
 });

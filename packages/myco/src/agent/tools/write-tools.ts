@@ -68,6 +68,7 @@ export function createWriteTools(deps: VaultToolDeps) {
         status: 'active',
         observation_type: args.observation_type,
         session_id: args.session_id,
+        ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
         created_at: now,
       }).catch(() => {});
 
@@ -155,7 +156,9 @@ export function createWriteTools(deps: VaultToolDeps) {
       }
 
       if (args.summary) {
-        embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {}).catch(() => {});
+        embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {
+          ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
+        }).catch(() => {});
       }
 
       return textResult(session);
@@ -295,7 +298,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
     },
     async (args) => {
-      const batch = markBatchProcessed(args.batch_id);
+      const batch = markBatchProcessed(args.batch_id, projectId);
 
       if (!batch) {
         return textResult({ error: `Prompt batch not found: ${args.batch_id}` });

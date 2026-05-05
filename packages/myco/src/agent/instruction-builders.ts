@@ -179,7 +179,7 @@ export function buildSkillGenerateInstruction(
   requestContext?: MycoRequestContext,
 ): BuiltTaskInstruction | undefined {
   const projectId = rowProjectIdFromRequestContext(requestContext);
-  const candidates = listCandidates({ status: 'approved', limit: 1 });
+  const candidates = listCandidates({ ...scopedOptions(projectId), status: 'approved', limit: 1 });
   if (candidates.length === 0) return undefined;
   const c = candidates[0];
 
@@ -461,6 +461,7 @@ async function selectRelevantSporeIdsForSkill(
     threshold: SKILL_EVOLVE_SEMANTIC_THRESHOLD,
     filters: {
       status: 'active',
+      ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       created_at_gte: sinceEpoch,
     },
   });
@@ -708,7 +709,7 @@ export async function buildSkillEvolveInstruction(
     updateSkillRecord(skill.id, {
       updated_at: nowEpoch,
       properties: JSON.stringify(props),
-    });
+    }, projectId);
   }
 
   let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];

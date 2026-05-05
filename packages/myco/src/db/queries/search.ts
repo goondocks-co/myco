@@ -67,6 +67,34 @@ export interface SearchOptions {
    * reads opt in to this; UI/CLI callers leave it unset.
    */
   includeActive?: boolean;
+  /** Restrict project-scoped tables to one project. undefined preserves legacy broad reads. */
+  project_id?: string | null;
+}
+
+function appendProjectCondition(
+  conditions: string[],
+  params: unknown[],
+  projectId: string | null | undefined,
+  qualifier = '',
+): void {
+  if (projectId === undefined) return;
+  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
+  if (projectId === null) {
+    conditions.push(`${column} IS NULL`);
+  } else {
+    conditions.push(`${column} = ?`);
+    params.push(projectId);
+  }
+}
+
+function projectScopeClause(
+  projectId: string | null | undefined,
+  qualifier = '',
+): { sql: string; params: unknown[] } {
+  if (projectId === undefined) return { sql: '', params: [] };
+  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
+  if (projectId === null) return { sql: ` AND ${column} IS NULL`, params: [] };
+  return { sql: ` AND ${column} = ?`, params: [projectId] };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,19 +167,22 @@ export function fullTextSearch(
 
   // -- prompt_batches branch ------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'prompt_batch') {
-    const activeGate = excludeActive
-      ? ` AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = pb.session_id AND s.status != 'active')`
-      : '';
+    const conditions = ['prompt_batches_fts MATCH ?'];
+    const params: unknown[] = [query];
+    if (excludeActive) {
+      conditions.push(`EXISTS (SELECT 1 FROM sessions s WHERE s.id = pb.session_id AND s.status != 'active')`);
+    }
+    appendProjectCondition(conditions, params, options.project_id, 'pb');
     const batchRows = db.prepare(
       `SELECT pb.id, pb.prompt_number, pb.session_id,
               substr(COALESCE(pb.user_prompt, '') || ' ' || COALESCE(pb.response_summary, ''), 1, ?) AS preview,
               fts.rank
        FROM prompt_batches_fts fts
        JOIN prompt_batches pb ON pb.id = fts.rowid
-       WHERE prompt_batches_fts MATCH ?${activeGate}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY fts.rank
        LIMIT ?`
-    ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
+    ).all(SEARCH_PREVIEW_CHARS, ...params, limit) as Array<{
       id: number;
       prompt_number: number | null;
       session_id: string | null;
@@ -175,18 +206,21 @@ export function fullTextSearch(
 
   // -- activities branch ----------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'activity') {
-    const activeGate = excludeActive
-      ? ` AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id AND s.status != 'active')`
-      : '';
+    const conditions = ['activities_fts MATCH ?'];
+    const params: unknown[] = [query];
+    if (excludeActive) {
+      conditions.push(`EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id AND s.status != 'active')`);
+    }
+    appendProjectCondition(conditions, params, options.project_id, 'a');
     const activityRows = db.prepare(
       `SELECT a.id, a.tool_name, a.tool_input, a.file_path, a.session_id,
               fts.rank
        FROM activities_fts fts
        JOIN activities a ON a.id = fts.rowid
-       WHERE activities_fts MATCH ?${activeGate}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY fts.rank
        LIMIT ?`
-    ).all(query, limit) as Array<{
+    ).all(...params, limit) as Array<{
       id: number;
       tool_name: string;
       tool_input: string | null;
@@ -213,19 +247,22 @@ export function fullTextSearch(
     // Spores may have a NULL session_id (agent-authored, no source session),
     // which are always kept; only spores attached to still-active sessions
     // are excluded when the gate is on.
-    const activeGate = excludeActive
-      ? ` AND (s.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.id = s.session_id AND ss.status != 'active'))`
-      : '';
+    const conditions = ['spores_fts MATCH ?'];
+    const params: unknown[] = [query];
+    if (excludeActive) {
+      conditions.push(`(s.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.id = s.session_id AND ss.status != 'active'))`);
+    }
+    appendProjectCondition(conditions, params, options.project_id, 's');
     const sporeRows = db.prepare(
       `SELECT s.id, s.observation_type, s.session_id,
               substr(COALESCE(s.content, ''), 1, ?) AS preview,
               fts.rank
        FROM spores_fts fts
        JOIN spores s ON s.rowid = fts.rowid
-       WHERE spores_fts MATCH ?${activeGate}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY fts.rank
        LIMIT ?`
-    ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
+    ).all(SEARCH_PREVIEW_CHARS, ...params, limit) as Array<{
       id: string;
       observation_type: string;
       session_id: string | null;
@@ -247,17 +284,22 @@ export function fullTextSearch(
 
   // -- sessions branch ------------------------------------------------------
   if (typeFilter === undefined || typeFilter === 'session') {
-    const activeGate = excludeActive ? ` AND s.status != 'active'` : '';
+    const conditions = ['sessions_fts MATCH ?'];
+    const params: unknown[] = [query];
+    if (excludeActive) {
+      conditions.push(`s.status != 'active'`);
+    }
+    appendProjectCondition(conditions, params, options.project_id, 's');
     const sessionRows = db.prepare(
       `SELECT s.id, s.title,
               substr(COALESCE(s.summary, s.title, ''), 1, ?) AS preview,
               fts.rank
        FROM sessions_fts fts
        JOIN sessions s ON s.rowid = fts.rowid
-       WHERE sessions_fts MATCH ?${activeGate}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY fts.rank
        LIMIT ?`
-    ).all(SEARCH_PREVIEW_CHARS, query, limit) as Array<{
+    ).all(SEARCH_PREVIEW_CHARS, ...params, limit) as Array<{
       id: string;
       title: string | null;
       preview: string;
@@ -324,6 +366,7 @@ interface ArtifactRow {
  */
 export function hydrateSearchResults(
   vectorResults: VectorSearchResult[],
+  options: { project_id?: string | null } = {},
 ): SearchResult[] {
   if (vectorResults.length === 0) return [];
 
@@ -338,28 +381,22 @@ export function hydrateSearchResults(
     byNamespace.set(vr.namespace, group);
   }
 
-  // Use json_each so the statement text is stable and SQLite can cache the plan.
-  const sessionStmt = db.prepare(
-    `SELECT id, title, summary FROM sessions WHERE id IN (SELECT value FROM json_each(?))`,
-  );
-  const sporeStmt = db.prepare(
-    `SELECT id, observation_type, content, session_id FROM spores WHERE id IN (SELECT value FROM json_each(?))`,
-  );
-  const planStmt = db.prepare(
-    `SELECT id, title, content, session_id FROM plans WHERE id IN (SELECT value FROM json_each(?))`,
-  );
-  const artifactStmt = db.prepare(
-    `SELECT id, title, content FROM artifacts WHERE id IN (SELECT value FROM json_each(?))`,
-  );
-  const skillStmt = db.prepare(
-    `SELECT id, name, display_name, description FROM skill_records WHERE id IN (SELECT value FROM json_each(?))`,
-  );
+  // Use json_each so statement text remains compact even for large result sets.
+  const sessionScope = projectScopeClause(options.project_id);
+  const sporeScope = projectScopeClause(options.project_id);
+  const planScope = projectScopeClause(options.project_id);
+  const artifactScope = projectScopeClause(options.project_id);
+  const skillScope = projectScopeClause(options.project_id);
 
   // --- sessions ---
   const sessionResults = byNamespace.get('sessions');
   if (sessionResults && sessionResults.length > 0) {
     const ids = sessionResults.map((r) => r.id);
-    const rows = sessionStmt.all(JSON.stringify(ids)) as SessionRow[];
+    const rows = db.prepare(
+      `SELECT id, title, summary
+         FROM sessions
+        WHERE id IN (SELECT value FROM json_each(?))${sessionScope.sql}`,
+    ).all(JSON.stringify(ids), ...sessionScope.params) as SessionRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of sessionResults) {
@@ -379,7 +416,11 @@ export function hydrateSearchResults(
   const sporeResults = byNamespace.get('spores');
   if (sporeResults && sporeResults.length > 0) {
     const ids = sporeResults.map((r) => r.id);
-    const rows = sporeStmt.all(JSON.stringify(ids)) as SporeRow[];
+    const rows = db.prepare(
+      `SELECT id, observation_type, content, session_id
+         FROM spores
+        WHERE id IN (SELECT value FROM json_each(?))${sporeScope.sql}`,
+    ).all(JSON.stringify(ids), ...sporeScope.params) as SporeRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of sporeResults) {
@@ -400,7 +441,11 @@ export function hydrateSearchResults(
   const planResults = byNamespace.get('plans');
   if (planResults && planResults.length > 0) {
     const ids = planResults.map((r) => r.id);
-    const rows = planStmt.all(JSON.stringify(ids)) as PlanRow[];
+    const rows = db.prepare(
+      `SELECT id, title, content, session_id
+         FROM plans
+        WHERE id IN (SELECT value FROM json_each(?))${planScope.sql}`,
+    ).all(JSON.stringify(ids), ...planScope.params) as PlanRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of planResults) {
@@ -421,7 +466,11 @@ export function hydrateSearchResults(
   const artifactResults = byNamespace.get('artifacts');
   if (artifactResults && artifactResults.length > 0) {
     const ids = artifactResults.map((r) => r.id);
-    const rows = artifactStmt.all(JSON.stringify(ids)) as ArtifactRow[];
+    const rows = db.prepare(
+      `SELECT id, title, content
+         FROM artifacts
+        WHERE id IN (SELECT value FROM json_each(?))${artifactScope.sql}`,
+    ).all(JSON.stringify(ids), ...artifactScope.params) as ArtifactRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of artifactResults) {
@@ -451,9 +500,12 @@ export function hydrateSearchResults(
       const p = parseCanopyRecordId(vr.id);
       if (p) parsed.push({ id: vr.id, projectId: p.projectId, path: p.path, vr });
     }
-    if (parsed.length > 0) {
-      const placeholders = parsed.map(() => '(?, ?)').join(', ');
-      const args = parsed.flatMap((p) => [p.projectId, p.path]);
+    const scopedParsed = parsed.filter((p) =>
+      options.project_id === undefined || options.project_id === null || p.projectId === options.project_id,
+    );
+    if (scopedParsed.length > 0) {
+      const placeholders = scopedParsed.map(() => '(?, ?)').join(', ');
+      const args = scopedParsed.flatMap((p) => [p.projectId, p.path]);
       const rows = db.prepare(
         `SELECT project_id, path, language, llm_description
            FROM canopy_entries
@@ -466,7 +518,7 @@ export function hydrateSearchResults(
       }>;
 
       const rowMap = new Map(rows.map((r) => [`${r.project_id}:${r.path}`, r]));
-      for (const p of parsed) {
+      for (const p of scopedParsed) {
         const row = rowMap.get(p.id);
         if (!row) continue;
         results.push({
@@ -488,7 +540,11 @@ export function hydrateSearchResults(
   const skillResults = byNamespace.get('skill_records');
   if (skillResults && skillResults.length > 0) {
     const ids = skillResults.map((r) => r.id);
-    const rows = skillStmt.all(JSON.stringify(ids)) as Array<{ id: string; name: string; display_name: string; description: string }>;
+    const rows = db.prepare(
+      `SELECT id, name, display_name, description
+         FROM skill_records
+        WHERE id IN (SELECT value FROM json_each(?))${skillScope.sql}`,
+    ).all(JSON.stringify(ids), ...skillScope.params) as Array<{ id: string; name: string; display_name: string; description: string }>;
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
     for (const vr of skillResults) {

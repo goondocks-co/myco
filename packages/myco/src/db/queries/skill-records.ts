@@ -172,6 +172,20 @@ function buildWhere(
   };
 }
 
+function appendProjectCondition(
+  conditions: string[],
+  params: unknown[],
+  projectId: string | null | undefined,
+): void {
+  if (projectId === undefined) return;
+  if (projectId === null) {
+    conditions.push(`project_id IS NULL`);
+  } else {
+    conditions.push(`project_id = ?`);
+    params.push(projectId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -226,12 +240,15 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecord(id: string): SkillRecordRow | null {
+export function getSkillRecord(id: string, projectId?: string | null): SkillRecordRow | null {
   const db = getDatabase();
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, projectId);
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSkillRecordRow(row);
@@ -242,15 +259,14 @@ export function getSkillRecord(id: string): SkillRecordRow | null {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecordByName(name: string, projectId: string | null = null): SkillRecordRow | null {
+export function getSkillRecordByName(name: string, projectId: string | null | undefined = null): SkillRecordRow | null {
   const db = getDatabase();
 
-  const where = projectId === null
-    ? 'project_id IS NULL AND name = ?'
-    : 'project_id = ? AND name = ?';
-  const params = projectId === null ? [name] : [projectId, name];
+  const conditions = ['name = ?'];
+  const params: unknown[] = [name];
+  appendProjectCondition(conditions, params, projectId);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${where}`,
+    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
   ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
@@ -288,6 +304,7 @@ export function listSkillRecords(
 export function updateSkillRecord(
   id: string,
   updates: SkillRecordUpdate,
+  projectId?: string | null,
 ): SkillRecordRow | null {
   const db = getDatabase();
 
@@ -314,17 +331,19 @@ export function updateSkillRecord(
     }
   }
 
-  if (setClauses.length === 0) return getSkillRecord(id);
+  if (setClauses.length === 0) return getSkillRecord(id, projectId);
 
   params.push(id);
+  const conditions = ['id = ?'];
+  appendProjectCondition(conditions, params, projectId);
 
   db.prepare(
     `UPDATE skill_records
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
 
-  const updated = getSkillRecord(id);
+  const updated = getSkillRecord(id, projectId);
 
   if (updated) syncRow('skill_records', updated);
 
@@ -382,10 +401,18 @@ export function countSkillRecords(
  *
  * @returns the deleted record's name (for disk cleanup) or null if not found.
  */
-export function deleteSkillRecordCascade(idOrName: string): { id: string; name: string } | null {
+export function deleteSkillRecordCascade(
+  idOrName: string,
+  projectId?: string | null,
+): { id: string; name: string } | null {
   const db = getDatabase();
-  const record = getSkillRecord(idOrName) ?? getSkillRecordByName(idOrName);
+  const record = getSkillRecord(idOrName, projectId) ?? getSkillRecordByName(idOrName, projectId);
   if (!record) return null;
+  const candidateScope = projectId === undefined
+    ? { sql: '', params: [] as unknown[] }
+    : projectId === null
+      ? { sql: ' AND project_id IS NULL', params: [] as unknown[] }
+      : { sql: ' AND project_id = ?', params: [projectId] as unknown[] };
 
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
@@ -393,12 +420,12 @@ export function deleteSkillRecordCascade(idOrName: string): { id: string; name: 
     // Dismiss linked candidates so they don't regenerate
     if (record.candidate_id) {
       db.prepare(
-        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?`,
-      ).run(Math.floor(Date.now() / 1000), record.candidate_id);
+        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?${candidateScope.sql}`,
+      ).run(Math.floor(Date.now() / 1000), record.candidate_id, ...candidateScope.params);
     }
     db.prepare(
-      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?`,
-    ).run(Math.floor(Date.now() / 1000), record.id);
+      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?${candidateScope.sql}`,
+    ).run(Math.floor(Date.now() / 1000), record.id, ...candidateScope.params);
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
   })();
 

@@ -10,6 +10,7 @@
 import { CONTENT_SNIPPET_CHARS } from '@myco/constants.js';
 import { fullTextSearch } from '@myco/db/queries/search.js';
 import { connectToDaemon, initVaultDb } from './shared.js';
+import { requestContextFromEnvironment, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -44,7 +45,9 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
 
   const cleanup = initVaultDb(vaultDir);
   try {
-    const results = fullTextSearch(query, { limit: CLI_SEARCH_LIMIT });
+    const requestContext = requestContextFromEnvironment(process.env, vaultDir);
+    const projectId = rowProjectIdFromRequestContext(requestContext);
+    const results = fullTextSearch(query, { limit: CLI_SEARCH_LIMIT, project_id: projectId });
 
     console.log(`=== Text Search: "${query}" ===`);
     if (results.length === 0) {

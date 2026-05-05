@@ -13,6 +13,7 @@ import {
   listSkillRecords,
   updateSkillRecord,
   countSkillRecords,
+  deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
 
@@ -129,6 +130,13 @@ describe('skill record query helpers', () => {
     it('returns null for non-existent id', () => {
       const row = getSkillRecord('does-not-exist');
       expect(row).toBeNull();
+    });
+
+    it('returns null when the id exists outside the requested project scope', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'project-a' }));
+
+      expect(getSkillRecord('skill-project-a', 'project-b')).toBeNull();
+      expect(getSkillRecord('skill-project-a', 'project-a')!.id).toBe('skill-project-a');
     });
   });
 
@@ -324,6 +332,22 @@ describe('skill record query helpers', () => {
       expect(result).toBeNull();
     });
 
+    it('does not update records outside the requested project scope', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'project-a' }));
+
+      const miss = updateSkillRecord('skill-project-a', {
+        status: 'deprecated',
+        updated_at: epochNow(),
+      }, 'project-b');
+      const hit = updateSkillRecord('skill-project-a', {
+        status: 'deprecated',
+        updated_at: epochNow(),
+      }, 'project-a');
+
+      expect(miss).toBeNull();
+      expect(hit!.status).toBe('deprecated');
+    });
+
     it('preserves unmodified fields', () => {
       const data = makeSkillRecord({ display_name: 'Original name', generation: 2 });
       insertSkillRecord(data);
@@ -421,6 +445,16 @@ describe('skill record query helpers', () => {
 
       expect(countSkillRecords({ agent_id: 'agent-test' })).toBe(2);
       expect(countSkillRecords({ agent_id: 'agent-count' })).toBe(1);
+    });
+  });
+
+  describe('deleteSkillRecordCascade', () => {
+    it('does not delete records outside the requested project scope', () => {
+      insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'project-a' }));
+
+      expect(deleteSkillRecordCascade('skill-project-a', 'project-b')).toBeNull();
+      expect(getSkillRecord('skill-project-a', 'project-a')).not.toBeNull();
+      expect(deleteSkillRecordCascade('skill-project-a', 'project-a')!.id).toBe('skill-project-a');
     });
   });
 });

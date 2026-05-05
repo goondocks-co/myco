@@ -46,6 +46,7 @@ export type GraphEdgeType = LineageEdgeType;
 /** Fields required (or optional) when inserting a graph edge. */
 export interface GraphEdgeInsert {
   agent_id: string;
+  project_id?: string | null;
   source_id: string;
   source_type: GraphNodeType;
   target_id: string;
@@ -62,6 +63,7 @@ export interface GraphEdgeInsert {
 export interface GraphEdgeRow {
   id: string;
   agent_id: string;
+  project_id: string | null;
   source_id: string;
   source_type: string;
   target_id: string;
@@ -81,6 +83,7 @@ export interface ListGraphEdgesOptions {
   targetId?: string;
   type?: string;
   agentId?: string;
+  projectId?: string | null;
   limit?: number;
 }
 
@@ -91,6 +94,7 @@ export interface ListGraphEdgesOptions {
 const GRAPH_EDGE_COLUMNS = [
   'id',
   'agent_id',
+  'project_id',
   'source_id',
   'source_type',
   'target_id',
@@ -115,6 +119,7 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
   return {
     id: row.id as string,
     agent_id: row.agent_id as string,
+    project_id: (row.project_id as string) ?? null,
     source_id: row.source_id as string,
     source_type: row.source_type as string,
     target_id: row.target_id as string,
@@ -127,6 +132,22 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     synced_at: (row.synced_at as number) ?? null,
   };
+}
+
+function appendProjectCondition(
+  conditions: string[],
+  params: unknown[],
+  projectId: string | null | undefined,
+  qualifier = '',
+): void {
+  if (projectId === undefined) return;
+  const column = qualifier ? `${qualifier}.project_id` : 'project_id';
+  if (projectId === null) {
+    conditions.push(`${column} IS NULL`);
+  } else {
+    conditions.push(`${column} = ?`);
+    params.push(projectId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -144,12 +165,13 @@ export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
 
   db.prepare(
     `INSERT INTO graph_edges (
-       id, agent_id, source_id, source_type, target_id, target_type,
+       id, agent_id, project_id, source_id, source_type, target_id, target_type,
        type, session_id, confidence, properties, created_at, machine_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     data.agent_id,
+    data.project_id ?? null,
     data.source_id,
     data.source_type,
     data.target_id,
@@ -202,6 +224,8 @@ export function listGraphEdges(
     params.push(options.agentId);
   }
 
+  appendProjectCondition(conditions, params, options.projectId);
+
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? QUERY_DEFAULT_LIST_LIMIT;
 
@@ -230,7 +254,7 @@ export function listGraphEdges(
 export function getGraphForNode(
   nodeId: string,
   nodeType: GraphNodeType,
-  options?: { depth?: number },
+  options?: { depth?: number; projectId?: string | null },
 ): { edges: GraphEdgeRow[] } {
   const db = getDatabase();
   const depth = Math.min(Math.max(options?.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
@@ -246,11 +270,17 @@ export function getGraphForNode(
     const frontierArray = Array.from(frontier);
     const placeholders = frontierArray.map(() => `?`).join(', ');
 
+    const conditions = [
+      `(source_id IN (${placeholders}) OR target_id IN (${placeholders}))`,
+    ];
+    const params: unknown[] = [...frontierArray, ...frontierArray];
+    appendProjectCondition(conditions, params, options?.projectId);
+
     const rows = db.prepare(
       `SELECT ${SELECT_COLUMNS}
        FROM graph_edges
-       WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
-    ).all(...frontierArray, ...frontierArray) as Record<string, unknown>[];
+       WHERE ${conditions.join(' AND ')}`,
+    ).all(...params) as Record<string, unknown>[];
 
     const nextFrontier = new Set<string>();
 

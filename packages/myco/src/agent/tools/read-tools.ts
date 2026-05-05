@@ -100,6 +100,7 @@ export function createReadTools(deps: VaultToolDeps) {
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
         includeActive: args.include_active === true,
+        project_id: projectId,
       });
       return projectToolRows(
         batches,
@@ -123,6 +124,7 @@ export function createReadTools(deps: VaultToolDeps) {
       const batches = listBatchesBySession(args.session_id, {
         limit: args.limit,
         offset: args.offset,
+        project_id: projectId,
       });
       return projectToolRows(
         batches,
@@ -148,7 +150,7 @@ export function createReadTools(deps: VaultToolDeps) {
       if (args.include_active === false && session.status === 'active') {
         return textResult({ session_id: args.session_id, found: false, message: 'Session is still active' });
       }
-      const batches = listBatchesBySession(args.session_id);
+      const batches = listBatchesBySession(args.session_id, { project_id: projectId });
       return textResult({
         session_id: session.id,
         status: session.status,
@@ -248,6 +250,7 @@ export function createReadTools(deps: VaultToolDeps) {
           type: args.type,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
           includeActive: args.include_active === true,
+          project_id: projectId,
         });
         return textResult({ results, sanitized_query: sanitizedQuery !== args.query ? sanitizedQuery : undefined });
       } catch (err) {
@@ -294,11 +297,12 @@ export function createReadTools(deps: VaultToolDeps) {
         }
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
         const excludeActive = args.include_active !== true;
-        const activeIds = excludeActive ? getActiveSessionIds() : new Set<string>();
+        const activeIds = excludeActive ? getActiveSessionIds(projectId) : new Set<string>();
         const metadataFilters = {
           ...(args.status !== undefined ? { status: args.status } : {}),
           ...(args.session_id !== undefined ? { session_id: args.session_id } : {}),
           ...(args.observation_type !== undefined ? { observation_type: args.observation_type } : {}),
+          ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
           ...(args.since !== undefined ? { created_at_gte: args.since } : {}),
           ...(args.until !== undefined ? { created_at_lte: args.until } : {}),
         };
@@ -340,7 +344,7 @@ export function createReadTools(deps: VaultToolDeps) {
           ? localResults.filter((r) => matchesSemanticSearchFilters(r.metadata, metadataFilters))
           : localResults;
 
-        const hydratedLocalResults = hydrateSearchResults(filteredLocalResults).map((r) => ({
+        const hydratedLocalResults = hydrateSearchResults(filteredLocalResults, { project_id: projectId }).map((r) => ({
           ...r,
           source: 'local' as const,
         }));
@@ -404,6 +408,7 @@ export function createReadTools(deps: VaultToolDeps) {
           query: args.query,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
           threshold: SEARCH_SIMILARITY_THRESHOLD,
+          project_id: projectId,
           language: args.language,
         });
         if (results === null) {
@@ -450,6 +455,7 @@ export function createReadTools(deps: VaultToolDeps) {
         targetId: args.target_id,
         type: args.type,
         agentId: agentId,
+        projectId,
         limit: args.limit ?? DEFAULT_EDGES_LIMIT,
       });
       return projectToolRows(

@@ -4,6 +4,7 @@ export interface SemanticSearchFilters {
   status?: string;
   session_id?: string;
   observation_type?: string;
+  project_id?: string;
   project_root?: string;
   name?: string;
   source_path?: string;
@@ -26,6 +27,7 @@ export function matchesSemanticSearchFilters(
   if (filters.status !== undefined && metadata?.status !== filters.status) return false;
   if (filters.session_id !== undefined && metadata?.session_id !== filters.session_id) return false;
   if (filters.observation_type !== undefined && metadata?.observation_type !== filters.observation_type) return false;
+  if (filters.project_id !== undefined && metadata?.project_id !== filters.project_id) return false;
   if (filters.project_root !== undefined && metadata?.project_root !== filters.project_root) return false;
   if (filters.name !== undefined && metadata?.name !== filters.name) return false;
   if (filters.source_path !== undefined && metadata?.source_path !== filters.source_path) return false;
