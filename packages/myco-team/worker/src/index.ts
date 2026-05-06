@@ -693,119 +693,42 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
   }
 }
 
-/**
- * bge-m3 has a 60,000-token context window per request, but
- * tokenization density varies wildly with content (0.84–4 chars per
- * token observed in tail logs). Estimating ahead of time always
- * leaves us over- or under-batching; instead, start with a generous
- * initial chunk and let the tokenizer tell us when we've overflowed.
- * `runOneEmbedChunk` halves and retries on the model's 3030 error,
- * which keeps throughput high on small-text batches without ever
- * sending more than the model can accept.
- */
-const EMBED_BATCH_INITIAL_COUNT = 50;
 
 /**
- * Split jobs into evenly-sized initial chunks. `runOneEmbedChunk`
- * halves further as needed when the model rejects an over-budget
- * chunk, so this only needs to keep individual ai.run requests at a
- * reasonable scale — not guarantee they fit.
- */
-function chunkEmbedJobs(jobs: EmbedJob[]): EmbedJob[][] {
-  const chunks: EmbedJob[][] = [];
-  for (let i = 0; i < jobs.length; i += EMBED_BATCH_INITIAL_COUNT) {
-    chunks.push(jobs.slice(i, i + EMBED_BATCH_INITIAL_COUNT));
-  }
-  return chunks;
-}
-
-/**
- * Embed every job by folding them into the largest bge-m3 batches that
- * fit the model's 60K-token context window, then upserting all
- * resulting vectors in one `Vectorize.upsert` per chunk. Best-effort
- * — failures log but don't propagate, since source rows are still in
- * D1 and recoverable.
+ * Embed each job sequentially via the existing single-text
+ * `embedAndUpsert` path. We tried batching multiple texts per ai.run
+ * to amortize the per-call overhead, but bge-m3's 60K-token total
+ * context window combined with the wide tokenization-density variance
+ * across this dataset (0.84–4 chars/token observed) made batch sizing
+ * unreliable: every estimated budget either dropped vectors or killed
+ * throughput, and the model surfaces at least two distinct overflow
+ * error codes (3030, 5021) requiring increasingly broad detection.
  *
- * Workers AI serializes parallel `ai.run` calls per isolate, so this
- * batched form is dramatically faster than the previous N-parallel
- * approach for a full CF queue batch (~10× speedup typical).
+ * Per-row sequential is slow (~1s/row, so ~30 min for a full reindex
+ * of ~2K rows), but always correct: each call has one text well under
+ * the context window, so token overflow is structurally impossible.
+ * Per-row failures log and continue rather than dropping the whole
+ * group. Source rows stay in D1 and are recoverable via another
+ * /vectors/reindex call if anything fails.
  */
 async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
-  for (const chunk of chunkEmbedJobs(jobs)) {
-    await runOneEmbedChunk(env, chunk);
-  }
-}
-
-async function runOneEmbedChunk(env: Env, jobs: EmbedJob[]): Promise<void> {
-  if (jobs.length === 0) return;
-
-  const texts = jobs.map((j) =>
-    j.text.length > MAX_EMBEDDING_TEXT_CHARS
-      ? `${j.text.slice(0, MAX_EMBEDDING_TEXT_CHARS)}\n\n[truncated for embedding]`
-      : j.text,
-  );
-
-  let aiResult: { data: number[][] };
-  try {
-    aiResult = await env.AI.run('@cf/baai/bge-m3', { text: texts }) as { data: number[][] };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // Workers AI returns at least two distinct token-overflow shapes:
-    //   3030: "Max context reached N tokens but model supports only 60000"
-    //   5021: "The estimated number of input and maximum output tokens
-    //          (N) exceeded this model context window limit (60000)."
-    // Either means split-and-retry is the right move. The tokenizer is
-    // authoritative; estimating budget ahead of time is unreliable
-    // across the variety of content density we embed. Single-text
-    // overflows can't split further and fall through to the error log.
-    const isTokenOverflow = /\b(?:3030|5021)\b|context window|Max context/i.test(message);
-    if (jobs.length > 1 && isTokenOverflow) {
-      const mid = Math.floor(jobs.length / 2);
-      await runOneEmbedChunk(env, jobs.slice(0, mid));
-      await runOneEmbedChunk(env, jobs.slice(mid));
-      return;
-    }
-    console.error('team-sync.embed-batch-failed', {
-      count: jobs.length,
-      error: message,
-    });
-    return;
-  }
-
-  if (!Array.isArray(aiResult.data) || aiResult.data.length !== jobs.length) {
-    console.error('team-sync.embed-batch-shape-mismatch', {
-      expected: jobs.length,
-      got: Array.isArray(aiResult.data) ? aiResult.data.length : null,
-    });
-    return;
-  }
-
-  const vids = await Promise.all(jobs.map((j) => vectorId(j.table, j.id, j.machine_id)));
-  const legacyToDelete: string[] = [];
-  for (let i = 0; i < jobs.length; i++) {
-    const legacy = legacyVectorId(jobs[i].table, jobs[i].id, jobs[i].machine_id);
-    if (legacy !== vids[i]) legacyToDelete.push(legacy);
-  }
-  if (legacyToDelete.length > 0) {
+  let succeeded = 0;
+  let failed = 0;
+  for (const job of jobs) {
     try {
-      await env.MYCO_TEAM_VECTORS.deleteByIds(legacyToDelete);
-    } catch {
-      // Legacy vectors may not exist — safe to ignore.
+      await embedAndUpsert(env, job.table, job.id, job.machine_id, job.text, job.metadata);
+      succeeded++;
+    } catch (err) {
+      failed++;
+      console.error('team-sync.embed-failed', {
+        table: job.table,
+        id: job.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-
-  const entries = jobs.map((job, i) => ({
-    id: vids[i],
-    values: aiResult.data[i],
-    metadata: { table: job.table, id: job.id, machine_id: job.machine_id, ...job.metadata },
-  }));
-  try {
-    await env.MYCO_TEAM_VECTORS.upsert(entries);
-  } catch (err) {
-    console.error('team-sync.upsert-batch-failed', {
-      count: entries.length,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  if (failed > 0) {
+    console.error(`team-sync.embed-summary ${failed}/${jobs.length} embeddings failed (${succeeded} succeeded)`);
   }
 }
 
