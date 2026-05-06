@@ -10,24 +10,34 @@ import {
 
 function makeFakeVault(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-archive-'));
-  // Files that should survive the archive — these are user/state files
-  // the post-Grove daemon still needs at the top of `.myco/`.
+  // Survivors per the Grove filesystem-layout plan: project identity,
+  // user config, project-authored task overrides, hook fallback buffer,
+  // migration marker, runtime pin, secrets, machine id.
   fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n');
   fs.writeFileSync(path.join(dir, 'myco.yaml'), 'version: 3\n');
+  fs.writeFileSync(path.join(dir, 'local.yaml'), 'machine: test\n');
   fs.writeFileSync(path.join(dir, 'runtime.command'), 'myco-run\n');
   fs.writeFileSync(path.join(dir, 'secrets.env'), 'OPENAI_API_KEY=test\n');
   fs.writeFileSync(path.join(dir, 'machine_id'), 'test-machine\n');
+  fs.mkdirSync(path.join(dir, 'tasks'));
+  fs.writeFileSync(path.join(dir, 'tasks', 'custom.yaml'), 'name: custom\n');
+  fs.mkdirSync(path.join(dir, 'buffer'));
+  fs.writeFileSync(path.join(dir, 'buffer', 'session.jsonl'), '{}\n');
+  fs.mkdirSync(path.join(dir, 'migration'));
+  fs.writeFileSync(path.join(dir, 'migration', 'grove-activation.json'), '{"status":"activated"}\n');
 
-  // Files that should be archived — legacy DBs and per-vault state.
+  // Archived: legacy DBs and per-vault daemon state.
   fs.writeFileSync(path.join(dir, 'myco.db'), 'fake db');
   fs.writeFileSync(path.join(dir, 'myco.db-shm'), '');
   fs.writeFileSync(path.join(dir, 'vectors.db'), 'fake vec');
-  fs.mkdirSync(path.join(dir, 'buffer'));
-  fs.writeFileSync(path.join(dir, 'buffer', 'event.jsonl'), '{}\n');
   fs.mkdirSync(path.join(dir, 'attachments'));
   fs.writeFileSync(path.join(dir, 'attachments', 'foo.png'), 'png');
   fs.mkdirSync(path.join(dir, 'logs'));
   fs.writeFileSync(path.join(dir, 'logs', 'daemon.log'), 'log\n');
+  fs.mkdirSync(path.join(dir, 'staging'));
+  fs.writeFileSync(path.join(dir, 'staging', 'skill.md'), 'staged\n');
+  fs.mkdirSync(path.join(dir, 'team'));
+  fs.writeFileSync(path.join(dir, 'team', 'config.json'), '{}\n');
 
   return dir;
 }
@@ -42,20 +52,28 @@ describe('archiveLegacyVaultData', () => {
       expect(path.basename(archiveDir!).startsWith('.archive-')).toBe(true);
       expect(fs.existsSync(path.join(archiveDir!, 'myco.db'))).toBe(true);
       expect(fs.existsSync(path.join(archiveDir!, 'vectors.db'))).toBe(true);
-      expect(fs.existsSync(path.join(archiveDir!, 'buffer', 'event.jsonl'))).toBe(true);
       expect(fs.existsSync(path.join(archiveDir!, 'attachments', 'foo.png'))).toBe(true);
+      expect(fs.existsSync(path.join(archiveDir!, 'logs', 'daemon.log'))).toBe(true);
+      expect(fs.existsSync(path.join(archiveDir!, 'staging', 'skill.md'))).toBe(true);
+      expect(fs.existsSync(path.join(archiveDir!, 'team', 'config.json'))).toBe(true);
 
       // Survivors stay at the top of the vault.
       expect(fs.existsSync(path.join(vault, 'project.toml'))).toBe(true);
       expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
+      expect(fs.existsSync(path.join(vault, 'local.yaml'))).toBe(true);
       expect(fs.existsSync(path.join(vault, 'runtime.command'))).toBe(true);
       expect(fs.existsSync(path.join(vault, 'secrets.env'))).toBe(true);
       expect(fs.existsSync(path.join(vault, 'machine_id'))).toBe(true);
+      expect(fs.existsSync(path.join(vault, 'tasks', 'custom.yaml'))).toBe(true);
+      expect(fs.existsSync(path.join(vault, 'buffer', 'session.jsonl'))).toBe(true);
+      expect(fs.existsSync(path.join(vault, 'migration', 'grove-activation.json'))).toBe(true);
 
       // Archived items are gone from the top.
       expect(fs.existsSync(path.join(vault, 'myco.db'))).toBe(false);
-      expect(fs.existsSync(path.join(vault, 'buffer'))).toBe(false);
       expect(fs.existsSync(path.join(vault, 'attachments'))).toBe(false);
+      expect(fs.existsSync(path.join(vault, 'logs'))).toBe(false);
+      expect(fs.existsSync(path.join(vault, 'staging'))).toBe(false);
+      expect(fs.existsSync(path.join(vault, 'team'))).toBe(false);
     } finally {
       fs.rmSync(vault, { recursive: true, force: true });
     }

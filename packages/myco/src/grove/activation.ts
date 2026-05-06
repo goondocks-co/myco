@@ -87,9 +87,22 @@ interface ActivationMarker {
  * Files and directories under `.myco/` that hold legacy data superseded
  * by the Grove DB. After successful activation these are moved into
  * `.myco/.archive-<timestamp>/` so the directory stops looking like an
- * active vault while remaining recoverable. Files that survive the
- * archive (project.toml, migration marker, runtime.command, user config,
- * secrets) are intentionally absent from this list.
+ * active vault while remaining recoverable.
+ *
+ * Files intentionally **kept** at the top of `.myco/` (per the Grove
+ * filesystem-layout plan, plan_a68ded2846514640e58a026953bb1258):
+ *
+ * * `project.toml` — committed project identity
+ * * `myco.yaml`, `local.yaml` — committed and per-machine config
+ * * `tasks/` — committed project-authored task overrides
+ * * `buffer/` — fallback hook buffer used when the daemon is offline
+ * * `migration/` — activation marker / per-project migration state
+ * * `runtime.command` — optional dev launcher pin
+ * * `secrets.env`, `machine_id`, `last-update-version`, `.gitignore`
+ *
+ * Anything not in this list above and not in `LEGACY_ARCHIVE_ENTRIES`
+ * is left in place — opt-in archival, not opt-out, so a future
+ * project-authored file isn't silently moved.
  */
 const LEGACY_ARCHIVE_ENTRIES: readonly string[] = [
   'myco.db',
@@ -98,9 +111,7 @@ const LEGACY_ARCHIVE_ENTRIES: readonly string[] = [
   'vectors.db',
   'vectors.db-shm',
   'vectors.db-wal',
-  'buffer',
   'staging',
-  'tasks',
   'logs',
   'team',
   'attachments',
