@@ -475,16 +475,20 @@ function tableDelta(local: number, remote: number | undefined): string {
 
 function VectorsTile({
   remote,
-  localEmbedded,
 }: {
   remote: TeamSyncSummaryResponse['remote'];
-  localEmbedded: number | null;
+  /** Local-embedded count is intentionally unused: it counts rows in
+   * the local SQLite vectors.db (Canopy + everything else) and isn't
+   * apples-to-apples with the team Vectorize index, which only holds
+   * the embeddable + remote-synced subset. Comparing them produced a
+   * misleading "missing 1100+ vectors" reading that wasn't real. The
+   * authoritative target is `remote.embeddable_count` — exactly the
+   * rows the consumer would embed if reindexed. */
+  localEmbedded?: number | null;
 }) {
   if (!remote) {
     return <StatCard label="Vectors" value="—" accent="outline" />;
   }
-  // Vectorize describe failed → surface that as the failure mode rather
-  // than a misleading delta. Re-embed via the existing reindex path.
   if (!remote.vector_index_healthy) {
     return (
       <StatCard
@@ -496,37 +500,47 @@ function VectorsTile({
     );
   }
   const remoteCount = remote.vector_count ?? 0;
+  const target = remote.embeddable_count;
   const valueLabel = formatNumber(remoteCount);
-  if (localEmbedded === null) {
+
+  if (target === null || target === undefined) {
     return <StatCard label="Vectors" value={valueLabel} accent="sage" />;
   }
-  const delta = remoteCount - localEmbedded;
-  if (delta === 0) {
+
+  // Allowed slack: residual vectors from older ID schemes can leave
+  // remoteCount slightly above target without being a problem. Treat
+  // anything within 10% above target as healthy.
+  const upperBound = target + Math.ceil(target * 0.1);
+  if (remoteCount >= target && remoteCount <= upperBound) {
     return (
       <StatCard
         label="Vectors"
         value={valueLabel}
-        sublabel={`synced with ${formatNumber(localEmbedded)} local`}
+        sublabel={`indexed (target ${formatNumber(target)})`}
         accent="sage"
       />
     );
   }
-  // Broken-state guard: when local has embeddings but the remote index
-  // is empty (or near-empty), classify as broken rather than drift.
-  // This is the "Vectorize never received the data, run a reindex"
-  // signal — distinct from "queue catching up after a fresh write".
-  // Threshold: remote < 5% of local treats the index as effectively
-  // empty (covers eventual-consistency lag near the threshold without
-  // hiding real outages).
-  const isBroken = localEmbedded > 0 && remoteCount < Math.max(1, localEmbedded * 0.05);
-  const sublabel = isBroken
-    ? `index empty — run \`myco-team-dev reindex-vectors\``
-    : `${delta > 0 ? '+' : ''}${delta.toLocaleString()} vs ${formatNumber(localEmbedded)} local`;
+  if (remoteCount > upperBound) {
+    return (
+      <StatCard
+        label="Vectors"
+        value={valueLabel}
+        sublabel={`+${formatNumber(remoteCount - target)} stale vs target ${formatNumber(target)}`}
+        accent="ochre"
+      />
+    );
+  }
+  // remoteCount < target — genuine gap.
+  const missing = target - remoteCount;
+  const isBroken = target > 0 && remoteCount < Math.max(1, target * 0.05);
   return (
     <StatCard
       label="Vectors"
       value={valueLabel}
-      sublabel={sublabel}
+      sublabel={isBroken
+        ? `index empty — run reindex (target ${formatNumber(target)})`
+        : `${formatNumber(missing)} missing of ${formatNumber(target)}`}
       accent={isBroken ? 'terracotta' : 'ochre'}
     />
   );

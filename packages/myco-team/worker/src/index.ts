@@ -1128,10 +1128,8 @@ async function listReindexEnqueueRecords(
   table: keyof typeof EMBEDDABLE_TABLES,
 ): Promise<SyncRecord[]> {
   const textField = EMBEDDABLE_TABLES[table];
-  const { results } = await env.MYCO_TEAM_DB.prepare(
-    `SELECT id, machine_id, ${textField} AS text FROM ${table}
-     WHERE ${textField} IS NOT NULL AND length(${textField}) > 0`,
-  ).all<{ id: string; machine_id: string; text: string }>();
+  const sql = embeddableSelectSql(table, 'id, machine_id');
+  const { results } = await env.MYCO_TEAM_DB.prepare(sql).all<{ id: string; machine_id: string }>();
   return (results ?? []).map((row) => ({
     table: table as SyncedTable,
     operation: 'embed' as const,
@@ -1139,6 +1137,36 @@ async function listReindexEnqueueRecords(
     machine_id: row.machine_id,
     data: {},
   }));
+}
+
+/**
+ * SQL fragment matching exactly the rows the consumer will actually
+ * embed: non-empty text, plus `status='active'` on spores (consumer
+ * routes non-active spores to deleteVector, not embed). Keeping the
+ * producer's filter aligned with the consumer's routing means
+ * `vector_enqueued` reports what'll actually become a vector — no
+ * more "1967 enqueued, 818 expected" confusion.
+ */
+function embeddableSelectSql(
+  table: keyof typeof EMBEDDABLE_TABLES,
+  columns: string,
+): string {
+  const textField = EMBEDDABLE_TABLES[table];
+  const statusFilter = table === 'spores' ? ` AND status = 'active'` : '';
+  return `SELECT ${columns} FROM ${table}
+          WHERE ${textField} IS NOT NULL
+            AND length(${textField}) > 0${statusFilter}`;
+}
+
+/** Count rows in remote D1 that the consumer would embed if reindexed. */
+async function countEmbeddableRows(env: Env): Promise<number> {
+  let total = 0;
+  for (const table of Object.keys(EMBEDDABLE_TABLES) as Array<keyof typeof EMBEDDABLE_TABLES>) {
+    const sql = embeddableSelectSql(table, 'COUNT(*) AS cnt');
+    const row = await env.MYCO_TEAM_DB.prepare(sql).first<{ cnt: number }>();
+    total += Number(row?.cnt ?? 0);
+  }
+  return total;
 }
 
 async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {
@@ -1233,6 +1261,21 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     vectorIndexError = (err as Error).message ?? 'describe failed';
   }
 
+  // Embeddable target: how many vectors the index *should* hold given
+  // current D1 contents (active-spore + non-empty text filter,
+  // matching the consumer's routing). Surfaced so the Vectors tile
+  // can render "X of Y indexed" instead of comparing to misleading
+  // counts like total enqueue-eligible (which double-counts retired
+  // spores routed to deleteVector).
+  let embeddableCount: number | null = null;
+  try {
+    embeddableCount = await countEmbeddableRows(env);
+  } catch (err) {
+    console.error('team-sync.embeddable-count-failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const schemaVersion = Number(env.MYCO_SCHEMA_VERSION ?? '');
   const syncProtocolVersion = Number(env.SYNC_PROTOCOL_VERSION ?? '');
 
@@ -1243,6 +1286,7 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     vector_count: vectorCount,
     vector_index_healthy: vectorIndexHealthy,
     vector_index_error: vectorIndexError,
+    embeddable_count: embeddableCount,
     schema_version: Number.isFinite(schemaVersion) ? schemaVersion : null,
     package_version: env.MYCO_TEAM_PACKAGE_VERSION ?? DEFAULT_TEAM_PACKAGE_VERSION,
     sync_protocol_version: Number.isFinite(syncProtocolVersion) ? syncProtocolVersion : 0,

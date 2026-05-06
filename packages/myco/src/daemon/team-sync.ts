@@ -129,6 +129,8 @@ export interface TeamRemoteSyncSummaryResponse {
   vector_count: number | null;
   vector_index_healthy: boolean;
   vector_index_error: string | null;
+  /** Rows in remote D1 the consumer would embed (active-spore + non-empty text filter). */
+  embeddable_count: number | null;
   schema_version: number | null;
   package_version: string;
   sync_protocol_version: number;
