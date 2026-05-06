@@ -60,12 +60,15 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    // Only paint when the config fetch has resolved. The pre-bootstrap
+    // script in `main.tsx` already applied the cached values
+    // synchronously; running `applyAppearance(DEFAULT_APPEARANCE)` here
+    // while the fetch is in flight would clobber that cache with the
+    // sage/dark fallback for the duration of the fetch — exactly the
+    // flash we're trying to eliminate.
+    if (!cfg?.appearance) return;
     applyAppearance(effective);
-    // Persist for the synchronous pre-bootstrap apply on the next page
-    // load. We only persist once the config fetch has resolved (i.e.
-    // `cfg` is defined) — caching the DEFAULT_APPEARANCE fallback would
-    // overwrite a real value during a brief loading state.
-    if (cfg?.appearance) persistAppearance(effective);
+    persistAppearance(effective);
   }, [effective, cfg?.appearance]);
 
   // System-mode follow: re-apply when the OS scheme flips.
