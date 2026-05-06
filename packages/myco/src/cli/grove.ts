@@ -1,11 +1,12 @@
+import path from 'node:path';
 import {
   createGrove,
   getDefaultGroveId,
   listGroves,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
-import { resolveMycoHome } from '@myco/grove/paths.js';
-import { activateProjectMigration } from '@myco/grove/activation.js';
+import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { activateProjectMigration, completeLegacyArchive } from '@myco/grove/activation.js';
 import { parseStringFlag } from './shared.js';
 
 const USAGE = `Usage: myco grove <command>
@@ -15,6 +16,7 @@ Commands:
   create <name>                         Create a local Grove
   use <name|id>                         Set the default Grove for future init/update
   migrate-project [--grove <name|id>]   Import and activate an existing project vault
+  archive-legacy [--project <path>]     Move post-activation legacy data into .myco/.archive-<ts>/
 
 Migration options:
   --project <path>                      Project root to migrate (default: cwd)
@@ -92,6 +94,24 @@ export async function run(args: string[]): Promise<void> {
       console.log('No project binding files were written.');
     } else {
       console.log(`Marker:   ${result.marker_path}`);
+    }
+    return;
+  }
+
+  if (cmd === 'archive-legacy') {
+    const projectRoot = path.resolve(parseStringFlag(rest, '--project') ?? process.cwd());
+    const vaultDir = resolveProjectVaultDir(projectRoot);
+    const result = completeLegacyArchive(vaultDir);
+    if (rest.includes('--json')) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (!result.archived_dir && result.already_complete) {
+      console.log('Legacy archive already complete; nothing to move.');
+    } else if (!result.archived_dir) {
+      console.log('No Grove activation marker found — run `myco grove migrate-project` first.');
+    } else {
+      console.log(`Archived legacy vault data to ${result.archived_dir}`);
     }
     return;
   }
