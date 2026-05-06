@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useScopedConfig } from '../hooks/use-scoped-config';
+import { applyAppearance, persistAppearance } from '../lib/appearance-apply';
 import type { AppearanceValues } from '@myco/config/appearance-values';
 
 export type Theme = AppearanceValues['theme'];
@@ -36,51 +37,6 @@ interface AppearanceContextValue {
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
 
-const DENSITY_VALUES: Record<Density, number> = {
-  compact: 0.85,
-  normal: 1,
-  comfy: 1.15,
-};
-
-interface FontStack {
-  heading: string;
-  ui: string;
-  data: string;
-}
-
-const FONT_STACKS: Record<FontKey, FontStack> = {
-  default: {
-    heading: "'Newsreader', Georgia, serif",
-    ui: "'Inter', system-ui, sans-serif",
-    data: "'JetBrains Mono', 'Fira Code', monospace",
-  },
-  'geist-mono': {
-    heading: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-    ui: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-    data: "'Geist Mono', 'SF Mono', 'Fira Code', monospace",
-  },
-  system: {
-    heading: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-    ui: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-    data: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace",
-  },
-  'sf-mono': {
-    heading: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-    ui: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-    data: "'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace",
-  },
-  'fira-code': {
-    heading: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-    ui: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-    data: "'Fira Code', 'Fira Mono', ui-monospace, monospace",
-  },
-  'jetbrains-mono': {
-    heading: "'JetBrains Mono', ui-monospace, monospace",
-    ui: "'JetBrains Mono', ui-monospace, monospace",
-    data: "'JetBrains Mono', ui-monospace, monospace",
-  },
-};
-
 const DEFAULT_APPEARANCE: Appearance = {
   theme: 'sage',
   mode: 'dark',
@@ -89,33 +45,6 @@ const DEFAULT_APPEARANCE: Appearance = {
 };
 
 const LIGHT_MEDIA_QUERY = '(prefers-color-scheme: light)';
-
-function applyAppearance(a: Appearance): void {
-  const root = document.documentElement;
-
-  root.setAttribute('data-theme', a.theme);
-
-  const effectiveMode =
-    a.mode === 'system'
-      ? (window.matchMedia(LIGHT_MEDIA_QUERY).matches ? 'light' : 'dark')
-      : a.mode;
-  root.classList.toggle('light', effectiveMode === 'light');
-
-  const stack = FONT_STACKS[a.font];
-  root.style.setProperty('--font-heading', stack.heading);
-  root.style.setProperty('--font-ui', stack.ui);
-  root.style.setProperty('--font-data', stack.data);
-
-  const density = DENSITY_VALUES[a.density];
-  root.style.setProperty('--density', String(density));
-  root.style.fontSize = `calc(14px * ${density})`;
-
-  const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
-  if (link) {
-    const nextHref = `/favicon-${a.theme}.svg`;
-    if (!link.href.endsWith(nextHref)) link.href = nextHref;
-  }
-}
 
 export function AppearanceProvider({ children }: { children: ReactNode }) {
   const { effective: cfg, local: localCfg, setField, resetField, promoteField } = useScopedConfig();
@@ -132,7 +61,12 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyAppearance(effective);
-  }, [effective]);
+    // Persist for the synchronous pre-bootstrap apply on the next page
+    // load. We only persist once the config fetch has resolved (i.e.
+    // `cfg` is defined) — caching the DEFAULT_APPEARANCE fallback would
+    // overwrite a real value during a brief loading state.
+    if (cfg?.appearance) persistAppearance(effective);
+  }, [effective, cfg?.appearance]);
 
   // System-mode follow: re-apply when the OS scheme flips.
   useEffect(() => {

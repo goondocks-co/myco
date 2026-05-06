@@ -8,6 +8,12 @@ import App from './App';
 import { STALE_TIME } from './lib/constants';
 import './index.css';
 import { getBasePath } from './lib/base-path';
+import { applyCachedAppearance } from './lib/appearance-apply';
+
+// Paint the user's last-applied theme synchronously before React mounts
+// so a hard reload doesn't flash the default sage/dark before the
+// `/config/merged` fetch returns the real values. No-op on first visit.
+applyCachedAppearance();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: STALE_TIME } },
