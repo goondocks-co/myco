@@ -61,6 +61,10 @@ export interface StatsResponse {
     generated_at: number | null;
     tiers_available: number[];
   };
+  canopy: {
+    entries_count: number;
+    described_count: number;
+  };
   unprocessed_batches: number;
 }
 

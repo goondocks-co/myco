@@ -68,6 +68,10 @@ export interface V2Stats {
     generated_at: number | null;
     tiers_available: number[];
   };
+  canopy: {
+    entries_count: number;
+    described_count: number;
+  };
   unprocessed_batches: number;
 }
 
@@ -127,6 +131,14 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}):
     const config = loadMergedConfig(vaultDir);
 
     const counts = countProjectScopedTables(db, projectId);
+    const canopyScope = projectScopeClause(projectId);
+    const canopyCounts = db.prepare(
+      `SELECT
+         COUNT(*) AS total,
+         COUNT(llm_description) AS described
+         FROM canopy_entries
+        WHERE 1 = 1${canopyScope.sql}`,
+    ).get(...canopyScope.params) as { total: number; described: number } | undefined;
 
     const embeddingStats = getEmbeddingQueueDepth(projectId, db);
     const { queue_depth, embedded_count, total: total_embeddable } = embeddingStats;
@@ -213,6 +225,10 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}):
         freshest_tier,
         generated_at,
         tiers_available,
+      },
+      canopy: {
+        entries_count: canopyCounts?.total ?? 0,
+        described_count: canopyCounts?.described ?? 0,
       },
       unprocessed_batches,
     };
