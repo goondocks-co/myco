@@ -50,6 +50,7 @@ export interface TeamStatusResponse {
   sync_protocol_version: number;
   mcp_token: string | null;
   mcp_endpoint: string | null;
+  mcp_healthy: boolean;
 }
 
 export function useTeamStatus() {

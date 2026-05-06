@@ -271,7 +271,12 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
       {status.mcp_token && status.mcp_endpoint && (
         <Surface level="low" ghostBorder className="p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <SectionHeader>Cloud MCP Endpoint</SectionHeader>
+            <div className="flex items-center gap-3">
+              <SectionHeader>Cloud MCP Endpoint</SectionHeader>
+              <Badge variant={status.mcp_healthy ? 'default' : 'destructive'}>
+                {status.mcp_healthy ? 'healthy' : 'unhealthy'}
+              </Badge>
+            </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowMcpSnippet(!showMcpSnippet)}

@@ -590,12 +590,19 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let healthy = false;
     let healthError: string | undefined;
+    let workerHasMcpToken = false;
 
     if (client && config.enabled) {
       try {
         const health = await client.health();
         healthy = true;
         deployedWorkerVersion = health.package_version?.trim() || null;
+        // The worker's `/health` returns `mcp_token_hash` only when the
+        // Cloud MCP token is provisioned in the worker's KV. Treat
+        // worker-up + token-provisioned as the MCP health signal — same
+        // process hosts both, so this avoids a separate authenticated
+        // probe round-trip.
+        workerHasMcpToken = Boolean(health.mcp_token_hash);
       } catch (err) {
         healthError = (err as Error).message;
       }
@@ -686,6 +693,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
+        mcp_healthy: healthy && workerHasMcpToken,
       },
     };
   }
