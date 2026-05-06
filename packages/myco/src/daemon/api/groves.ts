@@ -37,22 +37,37 @@ export interface GrovesResponse {
   groves: GroveSummary[];
 }
 
-export function createListGrovesHandler(): RouteHandler {
-  return async () => ({ body: listGroveSummaries() });
+export interface ServedGroveScope {
+  /**
+   * Grove ids this daemon should advertise. `null` means "every Grove
+   * the global registry knows about" (the production-daemon model that
+   * serves the user's full Grove set). A populated array means single-
+   * Grove mode (e.g. the dogfood dev binary), and the API surfaces
+   * only those Groves to UI consumers like the project switcher.
+   */
+  groveIds: readonly string[] | null;
 }
 
-export function createListGroveProjectsHandler(): RouteHandler {
+export function createListGrovesHandler(scope: ServedGroveScope): RouteHandler {
+  return async () => ({ body: listGroveSummaries(scope) });
+}
+
+export function createListGroveProjectsHandler(scope: ServedGroveScope): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    const grove = listGroveSummaries().groves.find((row) => row.id === groveId || row.slug === groveId);
+    const grove = listGroveSummaries(scope).groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
     return { body: { projects: grove.projects } };
   };
 }
 
-export function listGroveSummaries(): GrovesResponse {
+export function listGroveSummaries(scope: ServedGroveScope = { groveIds: null }): GrovesResponse {
   const defaultGroveId = getDefaultGroveId();
-  const groves = listGroves().map((grove) => {
+  const allGroves = listGroves();
+  const filtered = scope.groveIds
+    ? allGroves.filter((grove) => scope.groveIds!.includes(grove.id))
+    : allGroves;
+  const groves = filtered.map((grove) => {
     const projects = listRegisteredProjects(grove.id)
       .map((project) => serializeProject(project));
     return {

@@ -865,8 +865,17 @@ export async function main(): Promise<void> {
     server,
     configHash: configHashRef,
   }));
-  server.registerRoute('GET', '/api/groves', createListGrovesHandler());
-  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler());
+  // Single-Grove mode: this daemon was launched against a specific
+  // project context (dev daemon, dogfood). Advertise only the bound
+  // Grove so the project switcher and `/groves` list don't surface
+  // Groves served by a different daemon. When the daemon is launched
+  // without a Grove pin (future production LaunchAgent path), the
+  // `groveId` is null and the API returns the full registry.
+  const groveScope = {
+    groveIds: dataPaths.requestContext.groveId ? [dataPaths.requestContext.groveId] : null,
+  };
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);

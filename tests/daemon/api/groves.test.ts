@@ -39,7 +39,7 @@ describe('Grove discovery API', () => {
       bindingId: 'gbind_a',
     });
 
-    const response = await createListGrovesHandler()({
+    const response = await createListGrovesHandler({ groveIds: null })({
       body: undefined,
       query: {},
       params: {},
@@ -55,6 +55,33 @@ describe('Grove discovery API', () => {
     expect(body.groves[0].projects[0].manifest_state).toBe('present');
   });
 
+  it('filters to served Groves when scope.groveIds is non-null (dev daemon mode)', async () => {
+    const dogfood = createGrove('Myco Dogfood');
+    const otherGrove = createGrove('Default Projects');
+    registerProjectInGrove(dogfood.id, {
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectName: 'myco',
+      projectRoot: path.join(testDir, 'myco'),
+    });
+    registerProjectInGrove(otherGrove.id, {
+      projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      projectName: 'ten-second-tom',
+      projectRoot: path.join(testDir, 'ten-second-tom'),
+    });
+
+    const response = await createListGrovesHandler({ groveIds: [dogfood.id] })({
+      body: undefined,
+      query: {},
+      params: {},
+      pathname: '/api/groves',
+    });
+    const body = response.body as { groves: Array<{ id: string; name: string }> };
+
+    expect(body.groves).toHaveLength(1);
+    expect(body.groves[0].id).toBe(dogfood.id);
+    expect(body.groves[0].name).toBe('Myco Dogfood');
+  });
+
   it('lists projects for one Grove by id', async () => {
     const grove = createGrove('Work');
     registerProjectInGrove(grove.id, {
@@ -63,7 +90,7 @@ describe('Grove discovery API', () => {
       projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     });
 
-    const response = await createListGroveProjectsHandler()({
+    const response = await createListGroveProjectsHandler({ groveIds: null })({
       body: undefined,
       query: {},
       params: { id: grove.id },
