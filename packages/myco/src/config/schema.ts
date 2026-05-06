@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { AcceleratorConfigSchema, ReasoningLevelSchema, HarnessIdSchema } from '@myco/agent/schemas.js';
-import { DEFAULT_HUB_URL } from '../constants/hub.js';
 
 function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
   return z.unknown().superRefine((value, ctx) => {
@@ -43,11 +42,6 @@ const DaemonSchema = z.object({
    * inputs are. Defaults to 1 hour.
    */
   stale_session_threshold_ms: z.number().int().min(60_000).default(60 * 60 * 1000),
-});
-
-const HubSchema = z.object({
-  /** Local Myco Hub URL used by daemon registration and dashboard navigation. */
-  url: z.string().url().default(DEFAULT_HUB_URL),
 });
 
 const CaptureSchema = z.object({
@@ -328,7 +322,6 @@ export const MycoConfigSchema = z.preprocess(
     config_version: z.number().int().nonnegative().default(0),
     embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
     daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
-    hub: HubSchema.default(() => HubSchema.parse({})),
     capture: CaptureSchema.default(() => CaptureSchema.parse({})),
     agent: AgentSchema.default(() => AgentSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
@@ -350,7 +343,6 @@ export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;
 // ContextSchema removed in config_version 8 (unified into CortexSchema).
 export type BackupConfig = z.infer<typeof BackupSchema>;
-export type HubConfig = z.infer<typeof HubSchema>;
 export type TeamConfig = z.infer<typeof TeamSchema>;
 export type SkillsConfig = z.infer<typeof SkillsSchema>;
 export type NotificationsConfig = z.infer<typeof NotificationsSchema>;

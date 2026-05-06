@@ -24,6 +24,7 @@
 // @opencode-ai/plugin or any other package — that would break this guarantee.
 
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -143,11 +144,11 @@ export function collectAssistantSummaryFromMessages(messages: SessionMessage[]):
 // ---------------------------------------------------------------------------
 
 /**
- * Port cache for `.myco/daemon.json`. Read once on first access; refreshed on
+ * Port cache for the Myco daemon state file. Read once on first access; refreshed on
  * the next call that follows a failed HTTP request (handles daemon restarts
  * mid-session). `undefined` = never loaded, `null` = loaded but absent.
  */
-let cachedDaemonPort: number | null | undefined = undefined;
+let cachedDaemonPort: { statePath: string; port: number | null } | undefined = undefined;
 
 /**
  * Active opencode sessions tracked by this plugin instance. Populated on
@@ -167,10 +168,33 @@ const resumeInjectedSessions = new Set<string>();
 /** Parent batch of the current turn, or null between turns. Non-null => a turn is in progress. */
 let currentParentBatchId: number | null = null;
 
-/** Read the Myco daemon port from .myco/daemon.json in the project directory. */
-function readDaemonPortFromDisk(directory: string): number | null {
+function resolveMycoHome(): string {
+  const configured = process.env.MYCO_HOME?.trim();
+  if (!configured) return join(homedir(), ".myco");
+  if (configured === "~") return homedir();
+  if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
+  return configured;
+}
+
+function projectUsesGrove(directory: string): boolean {
   try {
-    const raw = readFileSync(join(directory, ".myco", "daemon.json"), "utf-8");
+    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    return /\[grove\]/.test(raw) && /binding_id\s*=/.test(raw);
+  } catch {
+    return false;
+  }
+}
+
+function resolveDaemonStatePath(directory: string): string {
+  return projectUsesGrove(directory)
+    ? join(resolveMycoHome(), "service", "daemon.json")
+    : join(directory, ".myco", "daemon.json");
+}
+
+/** Read the Myco daemon port from project-local or global daemon state. */
+function readDaemonPortFromDisk(statePath: string): number | null {
+  try {
+    const raw = readFileSync(statePath, "utf-8");
     const info = JSON.parse(raw) as { port?: number };
     return typeof info.port === "number" ? info.port : null;
   } catch {
@@ -180,14 +204,18 @@ function readDaemonPortFromDisk(directory: string): number | null {
 
 /** Get the cached daemon port, loading from disk on first access. */
 function getDaemonPort(directory: string): number | null {
-  if (cachedDaemonPort === undefined) cachedDaemonPort = readDaemonPortFromDisk(directory);
-  return cachedDaemonPort;
+  const statePath = resolveDaemonStatePath(directory);
+  if (!cachedDaemonPort || cachedDaemonPort.statePath !== statePath) {
+    cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
+  }
+  return cachedDaemonPort.port;
 }
 
 /** Force-refresh the daemon port from disk — used after a fetch failure in case the daemon restarted. */
 function refreshDaemonPort(directory: string): number | null {
-  cachedDaemonPort = readDaemonPortFromDisk(directory);
-  return cachedDaemonPort;
+  const statePath = resolveDaemonStatePath(directory);
+  cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
+  return cachedDaemonPort.port;
 }
 
 /** Fetch with a short timeout. Returns the Response on success, null on failure. */

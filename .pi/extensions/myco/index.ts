@@ -23,6 +23,7 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,11 +52,34 @@ const RESUME_CONTEXT_MAX_CHARS = 4000;
 // Daemon HTTP transport
 // ---------------------------------------------------------------------------
 
-let cachedDaemonPort: number | null | undefined = undefined;
+let cachedDaemonPort: { statePath: string; port: number | null } | undefined = undefined;
 
-function readDaemonPortFromDisk(directory: string): number | null {
+function resolveMycoHome(): string {
+  const configured = process.env.MYCO_HOME?.trim();
+  if (!configured) return join(homedir(), ".myco");
+  if (configured === "~") return homedir();
+  if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
+  return configured;
+}
+
+function projectUsesGrove(directory: string): boolean {
   try {
-    const raw = readFileSync(join(directory, ".myco", "daemon.json"), "utf-8");
+    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    return /\[grove\]/.test(raw) && /binding_id\s*=/.test(raw);
+  } catch {
+    return false;
+  }
+}
+
+function resolveDaemonStatePath(directory: string): string {
+  return projectUsesGrove(directory)
+    ? join(resolveMycoHome(), "service", "daemon.json")
+    : join(directory, ".myco", "daemon.json");
+}
+
+function readDaemonPortFromDisk(statePath: string): number | null {
+  try {
+    const raw = readFileSync(statePath, "utf-8");
     const info = JSON.parse(raw) as { port?: number };
     return typeof info.port === "number" ? info.port : null;
   } catch {
@@ -64,13 +88,17 @@ function readDaemonPortFromDisk(directory: string): number | null {
 }
 
 function getDaemonPort(directory: string): number | null {
-  if (cachedDaemonPort === undefined) cachedDaemonPort = readDaemonPortFromDisk(directory);
-  return cachedDaemonPort;
+  const statePath = resolveDaemonStatePath(directory);
+  if (!cachedDaemonPort || cachedDaemonPort.statePath !== statePath) {
+    cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
+  }
+  return cachedDaemonPort.port;
 }
 
 function refreshDaemonPort(directory: string): number | null {
-  cachedDaemonPort = readDaemonPortFromDisk(directory);
-  return cachedDaemonPort;
+  const statePath = resolveDaemonStatePath(directory);
+  cachedDaemonPort = { statePath, port: readDaemonPortFromDisk(statePath) };
+  return cachedDaemonPort.port;
 }
 
 async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response | null> {

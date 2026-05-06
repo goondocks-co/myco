@@ -9,6 +9,13 @@ import {
   requestContextHeaders,
   type MycoRequestContext,
 } from '../tools/request-context.js';
+import {
+  daemonStateMtimeMs,
+  readDaemonState,
+  removeDaemonState,
+  resolveDaemonServiceState,
+  type DaemonServiceState,
+} from '../daemon/service-state.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -97,9 +104,15 @@ export function isIgnoredEventResponse(data: unknown): boolean {
 export class DaemonClient {
   private vaultDir: string;
   private defaultHeaders: Record<string, string>;
+  private daemonService: DaemonServiceState;
+  private legacyProjectDaemonCleaned = false;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
+    this.daemonService = resolveDaemonServiceState(vaultDir, {
+      requestContext: options.requestContext,
+      env: process.env,
+    });
     this.defaultHeaders = {
       ...(options.requestContext ? requestContextHeaders(options.requestContext) : {}),
       ...(options.headers ?? {}),
@@ -227,9 +240,8 @@ export class DaemonClient {
    */
   private async isStale(info: DaemonInfo): Promise<boolean> {
     try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const stat = fs.statSync(jsonPath);
-      if (Date.now() - stat.mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
+      const mtimeMs = daemonStateMtimeMs(this.daemonService.statePath);
+      if (mtimeMs !== null && Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
         return false;
       }
 
@@ -257,9 +269,7 @@ export class DaemonClient {
       if (!info) return;
       process.kill(info.pid, 'SIGTERM');
     } catch { /* already dead */ }
-    try {
-      fs.unlinkSync(path.join(this.vaultDir, 'daemon.json'));
-    } catch { /* already gone */ }
+    removeDaemonState(this.daemonService.statePath);
   }
 
   /**
@@ -270,6 +280,7 @@ export class DaemonClient {
    * version-driven restarts.
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
+    this.cleanLegacyProjectDaemon();
     const checkStale = opts?.checkStale ?? true;
     const info = this.readDaemonJson();
 
@@ -305,6 +316,7 @@ export class DaemonClient {
   }
 
   async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
+    this.cleanLegacyProjectDaemon();
     this.killDaemon(this.readDaemonJson());
     await new Promise((r) => setTimeout(r, 200));
     return this.ensureRunning(opts);
@@ -314,7 +326,7 @@ export class DaemonClient {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.
     if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
-    // Coalesce concurrent spawns: if daemon.json was written within the
+    // Coalesce concurrent spawns: if daemon state was written within the
     // coalesce window AND its pid is still alive, another spawn is already in
     // flight — defer to it instead of forking another process. Safe to call
     // from every failed request path (post/get/put/delete all invoke it), so
@@ -333,9 +345,8 @@ export class DaemonClient {
 
   private spawnIsInFlight(): boolean {
     try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const stat = fs.statSync(jsonPath);
-      if (Date.now() - stat.mtimeMs >= DAEMON_SPAWN_COALESCE_MS) return false;
+      const mtimeMs = daemonStateMtimeMs(this.daemonService.statePath);
+      if (mtimeMs === null || Date.now() - mtimeMs >= DAEMON_SPAWN_COALESCE_MS) return false;
       const info = this.readDaemonJson();
       if (!info?.pid) return false;
       try { process.kill(info.pid, 0); return true; }
@@ -346,15 +357,38 @@ export class DaemonClient {
   }
 
   private readDaemonJson(): DaemonInfo | null {
-    try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const content = fs.readFileSync(jsonPath, 'utf-8');
-      const info = JSON.parse(content);
-      if (typeof info.port !== 'number') return null;
-      return info as DaemonInfo;
-    } catch {
-      return null;
+    this.cleanLegacyProjectDaemon();
+    return readDaemonState(this.daemonService.statePath);
+  }
+
+  private cleanLegacyProjectDaemon(): void {
+    if (this.daemonService.scope !== 'global') return;
+    if (this.legacyProjectDaemonCleaned) return;
+    this.legacyProjectDaemonCleaned = true;
+
+    const legacyPath = path.join(this.vaultDir, 'daemon.json');
+    if (path.resolve(legacyPath) === path.resolve(this.daemonService.statePath)) return;
+
+    const legacyInfo = readDaemonState(legacyPath);
+    if (!legacyInfo) {
+      removeDaemonState(legacyPath);
+      return;
     }
+
+    const globalInfo = readDaemonState(this.daemonService.statePath);
+    if (globalInfo?.pid === legacyInfo.pid) {
+      removeDaemonState(legacyPath, legacyInfo.pid);
+      return;
+    }
+
+    if (legacyInfo.pid !== process.pid) {
+      try {
+        process.kill(legacyInfo.pid, 'SIGTERM');
+      } catch {
+        // Already dead or inaccessible.
+      }
+    }
+    removeDaemonState(legacyPath, legacyInfo.pid);
   }
 }
 

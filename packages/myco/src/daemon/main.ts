@@ -8,10 +8,10 @@
  */
 
 import { DaemonServer } from './server.js';
+import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
 import { DaemonLogger } from './logger.js';
 import { loadMergedConfig } from '../config/loader.js';
-import { derivePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
@@ -52,7 +52,6 @@ import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
 import { createListGroveProjectsHandler, createListGrovesHandler } from './api/groves.js';
-import { createHubStatusHandler, resolveHubUrl } from './api/hub.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -159,10 +158,16 @@ import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
-import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
 import { resolveDaemonDataPaths } from './data-paths.js';
 import { GROVE_VECTORS_FILENAME, resolveGroveVectorsPath } from '../grove/paths.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
+import {
+  daemonStateMtimeMs,
+  readDaemonState,
+  removeDaemonState,
+  resolveDaemonServiceState,
+  type DaemonServiceState,
+} from './service-state.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -217,18 +222,19 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
  *   daemon, unlink daemon.json, return 'ok' to proceed.
  */
 export async function reconcileExistingDaemon(
-  vaultDir: string,
+  daemonService: DaemonServiceState,
   logger: DaemonLogger,
 ): Promise<'ok' | 'step-aside'> {
-  const daemonJsonPath = path.join(vaultDir, 'daemon.json');
+  const daemonJsonPath = daemonService.statePath;
   let info: { pid?: number; port?: number; command?: string | null };
   let mtimeMs: number;
   try {
-    if (!fs.existsSync(daemonJsonPath)) return 'ok';
-    mtimeMs = fs.statSync(daemonJsonPath).mtimeMs;
-    info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number; port?: number };
+    const current = readDaemonState(daemonJsonPath);
+    if (!current) return 'ok';
+    mtimeMs = daemonStateMtimeMs(daemonJsonPath) ?? 0;
+    info = current;
   } catch {
-    // Unreadable daemon.json — treat as absent.
+    // Unreadable daemon state — treat as absent.
     return 'ok';
   }
 
@@ -240,7 +246,7 @@ export async function reconcileExistingDaemon(
     process.kill(info.pid, 0);
   } catch {
     // Dead — clean up and take over.
-    try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+    removeDaemonState(daemonJsonPath);
     return 'ok';
   }
 
@@ -254,7 +260,7 @@ export async function reconcileExistingDaemon(
   // must NOT step aside — we need to proceed through eviction, kill the
   // orphan, and bind the canonical port ourselves.
   const recent = Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS;
-  const canonicalPort = derivePort(vaultDir);
+  const canonicalPort = daemonService.canonicalPort;
   if (recent && typeof info.port === 'number' && info.port === canonicalPort) {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
@@ -287,7 +293,7 @@ export async function reconcileExistingDaemon(
     process.kill(info.pid, 'SIGTERM');
     logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
   } catch { /* already dead */ }
-  try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+  removeDaemonState(daemonJsonPath);
   return 'ok';
 }
 
@@ -336,24 +342,6 @@ export async function main(): Promise<void> {
     process.env.MYCO_AGENT_DEBUG = '1';
   }
 
-  // Reconcile with any existing daemon for this vault. If a recent sibling is
-  // already healthy on the same version, step aside — prevents the cascade
-  // where concurrent spawns (hooks, MCPs, user-prompt-submit) SIGTERM each
-  // other in sequence.
-  const reconcileResult = await reconcileExistingDaemon(vaultDir, logger);
-  if (reconcileResult === 'step-aside') {
-    process.exit(0);
-  }
-
-  logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
-    vault: vaultDir,
-    embedding_provider: config.embedding.provider,
-  });
-  logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
-  if (symbiontPlanTags.length > 0) {
-    logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
-  }
-
   // --- Machine identity ---
   const machineId = getMachineId(vaultDir);
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
@@ -361,6 +349,29 @@ export async function main(): Promise<void> {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
   });
+  const daemonService = resolveDaemonServiceState(vaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  });
+
+  // Reconcile with any existing daemon for the resolved service. Grove-bound
+  // projects use the per-user global daemon state; legacy projects keep the
+  // historical project-local state file.
+  const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
+  if (reconcileResult === 'step-aside') {
+    process.exit(0);
+  }
+
+  logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
+    vault: vaultDir,
+    daemon_scope: daemonService.scope,
+    daemon_state: daemonService.statePath,
+    embedding_provider: config.embedding.provider,
+  });
+  logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
+  if (symbiontPlanTags.length > 0) {
+    logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
+  }
 
   // --- Resolve npm global prefix + detect dev build ---
   // globalPrefix is used both for installed-version detection (in the status
@@ -625,6 +636,7 @@ export async function main(): Promise<void> {
   const server = new DaemonServer({
     vaultDir,
     logger,
+    daemonStatePath: daemonService.statePath,
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
@@ -733,7 +745,6 @@ export async function main(): Promise<void> {
   });
 
   server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
-  server.registerRoute('GET', '/api/hub/status', createHubStatusHandler({ liveConfig }));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
@@ -1133,10 +1144,13 @@ export async function main(): Promise<void> {
     vaultDir,
     machineId,
     logger,
-    getTeamClient: () => teamSync.getTeamClient(),
+    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     setTeamClient: teamSync.setTeamClient,
     globalPrefix,
   });
+  async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
+    await teamSync.reconcileClient(req.requestContext);
+  }
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
@@ -1153,16 +1167,72 @@ export async function main(): Promise<void> {
     }
     return result;
   });
-  server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
-  server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
+  server.registerRoute('GET', '/api/team/status', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleStatus(req);
+  });
+  server.registerRoute('POST', '/api/team/backfill', async (req) => {
+    const startedAt = Date.now();
+    await reconcileTeamRoute(req);
+    const result = await teamHandlers.handleBackfill(req);
+    if (result.status && result.status >= 400) return result;
+    const flush = await teamSync.flushPending(req.requestContext);
+    const durationMs = Date.now() - startedAt;
+    const resultBody = result.body as Record<string, unknown>;
+    logger.info(LOG_KINDS.TEAM_SYNC_HANDOFF, 'Team sync handoff complete', {
+      mode: typeof resultBody.mode === 'string' ? resultBody.mode : null,
+      enqueued: typeof resultBody.enqueued === 'number' ? resultBody.enqueued : null,
+      flushed: flush.handedOff,
+      rejected: flush.rejected,
+      batches: flush.batches,
+      duration_ms: durationMs,
+      error: flush.error ?? null,
+    });
+    return {
+      ...result,
+      body: {
+        ...resultBody,
+        flushed: flush.handedOff,
+        rejected: flush.rejected,
+        batches: flush.batches,
+        duration_ms: durationMs,
+        flush_error: flush.error ?? null,
+      },
+    };
+  });
   server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
-  server.registerRoute('POST', '/api/team/rotate-mcp-token', teamHandlers.handleRotateMcpToken);
-  server.registerRoute('GET', '/api/team/queue-stats', teamHandlers.handleQueueStats);
-  server.registerRoute('GET', '/api/team/dlq', teamHandlers.handleDlqList);
-  server.registerRoute('POST', '/api/team/dlq/retry', teamHandlers.handleDlqRetry);
-  server.registerRoute('POST', '/api/team/dlq/discard', teamHandlers.handleDlqDiscard);
-  server.registerRoute('POST', '/api/team/cf-api-token', teamHandlers.handleSetCfApiToken);
-  server.registerRoute('DELETE', '/api/team/cf-api-token', teamHandlers.handleClearCfApiToken);
+  server.registerRoute('POST', '/api/team/rotate-mcp-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleRotateMcpToken(req);
+  });
+  server.registerRoute('GET', '/api/team/queue-stats', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleQueueStats(req);
+  });
+  server.registerRoute('GET', '/api/team/sync-summary', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleSyncSummary(req);
+  });
+  server.registerRoute('GET', '/api/team/dlq', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqList(req);
+  });
+  server.registerRoute('POST', '/api/team/dlq/retry', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqRetry(req);
+  });
+  server.registerRoute('POST', '/api/team/dlq/discard', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqDiscard(req);
+  });
+  server.registerRoute('POST', '/api/team/cf-api-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleSetCfApiToken(req);
+  });
+  server.registerRoute('DELETE', '/api/team/cf-api-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleClearCfApiToken(req);
+  });
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),
@@ -1230,15 +1300,18 @@ export async function main(): Promise<void> {
 
   // --- Start server ---
   //
-  // The port is authoritative: either the explicit `daemon.port` override in
-  // myco.yaml or the deterministic hash of the vault path via `derivePort`.
+  // The port is authoritative: Grove-bound projects use the per-user global
+  // service port; legacy projects keep the explicit `daemon.port` override in
+  // myco.yaml or the deterministic hash of the vault path.
   // No silent fallback — if the port is unavailable after eviction, either a
   // concurrent sibling won the race (step aside) or something unrelated is
   // squatting (fail loudly). Ghost daemons on surprise ports come from
   // silent fallback, so we don't do that.
 
   await server.evictExistingDaemon();
-  const canonicalPort = config.daemon.port ?? derivePort(vaultDir);
+  const canonicalPort = dataPaths.usingGrove
+    ? daemonService.canonicalPort
+    : config.daemon.port ?? daemonService.canonicalPort;
 
   try {
     await server.start(canonicalPort);
@@ -1264,23 +1337,6 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
-
-  const hubMetadata = buildHubProjectMetadata({
-    projectRoot,
-    vaultDir,
-    machineId,
-    port: server.port,
-    version: server.version,
-  });
-  server.registerRoute('GET', '/api/hub/project', async () => ({ body: hubMetadata }));
-  const hubUrl = resolveHubUrl(liveConfig.current);
-  registerWithHub(hubMetadata, hubUrl)
-    .then((registered) => {
-      if (registered) {
-        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port, hubUrl });
-      }
-    })
-    .catch(() => {});
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a

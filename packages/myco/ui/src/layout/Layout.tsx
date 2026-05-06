@@ -179,7 +179,6 @@ function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
 
 function SidebarContent({
   collapsed,
-  vaultName,
   onSearchOpen,
   onNotificationsOpen,
   unreadCount,
@@ -187,7 +186,6 @@ function SidebarContent({
   showCollapseToggle,
 }: {
   collapsed: boolean;
-  vaultName: string | undefined;
   onSearchOpen: () => void;
   onNotificationsOpen: () => void;
   unreadCount: number;
@@ -211,11 +209,6 @@ function SidebarContent({
               </span>
               <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
             </div>
-            {vaultName && (
-              <span className="font-mono text-xs text-outline uppercase tracking-widest mt-0.5">
-                {vaultName}
-              </span>
-            )}
           </div>
         )}
       </div>
@@ -471,7 +464,6 @@ export default function Layout() {
         >
           <SidebarContent
             collapsed={false}
-            vaultName={vaultName}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}
@@ -490,7 +482,6 @@ export default function Layout() {
         >
           <SidebarContent
             collapsed={collapsed}
-            vaultName={vaultName}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}

@@ -177,7 +177,8 @@ export function resolvePlanTitle(input: ResolvePlanTitleInput): string | null {
 }
 
 export interface PersistPlanInput {
-  sessionId: string;
+  id?: string;
+  sessionId?: string | null;
   projectId?: string | null;
   content: string;
   logicalKey: string;
@@ -217,6 +218,9 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)
     : input.promptBatchId;
+  const tags = input.tags === undefined
+    ? (existingPlan?.tags ?? null)
+    : normalizePlanTags(input.tags);
   const resolvedTitle = resolvePlanTitle({
     content: input.content,
     title: input.title,
@@ -248,14 +252,14 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   }
 
   return upsertPlan({
-    id: buildScopedPlanId(input.logicalKey, projectId),
+    id: input.id ?? buildScopedPlanId(input.logicalKey, projectId),
     project_id: projectId,
     logical_key: input.logicalKey,
     title: resolvedTitle,
     content: input.content,
     source_path: input.sourcePath ?? null,
-    tags: normalizePlanTags(input.tags),
-    session_id: input.sessionId,
+    tags,
+    session_id: input.sessionId ?? existingPlan?.session_id ?? null,
     prompt_batch_id: promptBatchId,
     content_hash: contentHash,
     status,

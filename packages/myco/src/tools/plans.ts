@@ -82,10 +82,11 @@ export async function handleMycoPlans(
     : contextOrVaultDir;
 
   if (op === 'save') {
-    if (!input.session_id) return { ok: false, error: 'session_id is required for op: save' };
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
+    if (!input.id && !input.session_id) return { ok: false, error: 'session_id is required for op: save' };
 
     const result = saveMcpPlan({
+      id: input.id,
       session_id: input.session_id,
       content: input.content,
       source_path: input.source_path,

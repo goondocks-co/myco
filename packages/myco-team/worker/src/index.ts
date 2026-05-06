@@ -76,6 +76,8 @@ const SYNCED_TABLES = [
 ] as const;
 
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
+const QUEUE_SEND_BATCH_SIZE = 100;
+const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
 
 type SyncedTable = (typeof SYNCED_TABLES)[number];
 
@@ -86,6 +88,33 @@ interface SyncRecord {
   machine_id: string;
   content_hash?: string | null;
   data: Record<string, unknown>;
+}
+
+function estimateQueueMessageBytes(record: SyncRecord): number {
+  return new TextEncoder().encode(JSON.stringify({ body: record })).byteLength;
+}
+
+async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[]): Promise<void> {
+  let chunk: SyncRecord[] = [];
+  let chunkBytes = 0;
+
+  const flush = async () => {
+    if (chunk.length === 0) return;
+    await queue.sendBatch(chunk.map((record) => ({ body: record })));
+    chunk = [];
+    chunkBytes = 0;
+  };
+
+  for (const record of records) {
+    const size = estimateQueueMessageBytes(record);
+    if (chunk.length > 0 && (chunk.length >= QUEUE_SEND_BATCH_SIZE || chunkBytes + size > QUEUE_SEND_BATCH_MAX_BYTES)) {
+      await flush();
+    }
+    chunk.push(record);
+    chunkBytes += size;
+  }
+
+  await flush();
 }
 
 interface ConnectPayload {
@@ -477,9 +506,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   }
 
   if (acceptedRecords.length > 0) {
-    // sendBatch caps at 100 messages or 256KB per call — the daemon batches
-    // its flush in 100-message chunks, so a single sendBatch covers a tick.
-    await env.SYNC_QUEUE.sendBatch(acceptedRecords.map((record) => ({ body: record })));
+    await sendQueueRecords(env.SYNC_QUEUE, acceptedRecords);
   }
 
   await touchNodeLastSeen(env, body.machine_id);
@@ -726,7 +753,7 @@ function buildEmbedTask(env: Env, record: SyncRecord): (() => Promise<void>) | n
 /**
  * Dead-letter consumer. Logs each failed message so operators can see the
  * tail-end record id and table without leaving the Worker logs view; the
- * daemon UI's Outbox tab (PR2) provides the structured replay/discard path.
+ * daemon UI's Sync tab provides the structured replay/discard path.
  */
 async function handleDlqBatch(batch: MessageBatch<SyncRecord>, _env: Env): Promise<void> {
   for (const message of batch.messages) {
@@ -1036,6 +1063,32 @@ async function handleGetConfig(env: Env): Promise<Response> {
   });
 }
 
+async function handleSyncSummary(env: Env): Promise<Response> {
+  const selectList = SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table}) AS ${table}`).join(', ');
+  const row = await env.MYCO_TEAM_DB.prepare(`SELECT ${selectList}`).first<Record<string, unknown>>() ?? {};
+  const tables: Record<string, number> = {};
+  let totalRecords = 0;
+
+  for (const table of SYNCED_TABLES) {
+    const value = Number(row[table] ?? 0);
+    const count = Number.isFinite(value) ? value : 0;
+    tables[table] = count;
+    totalRecords += count;
+  }
+
+  const schemaVersion = Number(env.MYCO_SCHEMA_VERSION ?? '');
+  const syncProtocolVersion = Number(env.SYNC_PROTOCOL_VERSION ?? '');
+
+  return jsonResponse({
+    generated_at: epochSeconds(),
+    total_records: totalRecords,
+    tables,
+    schema_version: Number.isFinite(schemaVersion) ? schemaVersion : null,
+    package_version: env.MYCO_TEAM_PACKAGE_VERSION ?? DEFAULT_TEAM_PACKAGE_VERSION,
+    sync_protocol_version: Number.isFinite(syncProtocolVersion) ? syncProtocolVersion : 0,
+  });
+}
+
 async function handlePutConfig(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as Record<string, string>;
 
@@ -1117,8 +1170,8 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
 /**
  * Operator surface for queue diagnostics + DLQ management. All endpoints
  * require the project's CF API token (queues:read,write) stashed in KV.
- * Daemon flows the token through `POST /tokens/cf-api`; the UI prompts
- * for it when missing.
+ * Daemon flows the token through `POST /tokens/cf-api`; the UI surfaces
+ * the queue/DLQ state as unavailable when missing.
  */
 async function handleQueueStats(env: Env): Promise<Response> {
   const creds = await readCfApiCredentials(env.MYCO_SECRETS);
@@ -1328,6 +1381,9 @@ export default {
       }
       if (method === 'GET' && path === '/queue-stats') {
         return await handleQueueStats(env);
+      }
+      if (method === 'GET' && path === '/sync-summary') {
+        return await handleSyncSummary(env);
       }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);

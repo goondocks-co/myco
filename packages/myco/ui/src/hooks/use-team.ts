@@ -18,12 +18,15 @@ export interface TeamStatusResponse {
   };
   enabled: boolean;
   worker_url: string | null;
+  has_team_key: boolean;
+  team_key: string | null;
   has_api_key: boolean;
   api_key: string | null;
   healthy: boolean;
   health_error?: string;
   pending_sync_count: number;
   local_team_package_version: string | null;
+  local_team_package_source: 'installed' | 'dev-linked' | 'path' | null;
   cached_team_package_version: string | null;
   deployed_worker_version: string | null;
   worker_update_available: boolean;
@@ -47,14 +50,6 @@ export interface TeamStatusResponse {
   sync_protocol_version: number;
   mcp_token: string | null;
   mcp_endpoint: string | null;
-  local_only_disclosures: LocalOnlyDisclosure[];
-}
-
-/** Server-canonical "what stays local" disclosure surfaced on the Team page. */
-export interface LocalOnlyDisclosure {
-  table: string;
-  columns: string[];
-  rationale: string;
 }
 
 export function useTeamStatus() {
@@ -67,11 +62,11 @@ export function useTeamStatus() {
 }
 
 // ---------------------------------------------------------------------------
-// Outbox / DLQ surfaces (queue-aware operator UI)
+// Sync / DLQ surfaces (queue-aware operator UI)
 // ---------------------------------------------------------------------------
 
 export interface QueueStats {
-  /** null until CF Queues GraphQL Analytics is wired; UI renders "—". */
+  /** null when Cloudflare's queue API verifies the queue but does not expose a live backlog depth. */
   depth: number | null;
   oldest_msg_age_s: number | null;
 }
@@ -94,7 +89,42 @@ export interface DlqListResponse {
   next_cursor: string | null;
 }
 
-/** Worker discriminator for the "no CF API token configured" response. */
+export interface TeamRemoteSyncSummary {
+  generated_at: number;
+  total_records: number;
+  tables: Record<string, number>;
+  schema_version: number | null;
+  package_version: string;
+  sync_protocol_version: number;
+}
+
+export interface TeamHandoffSummary {
+  completed_at: string;
+  started_at: string | null;
+  duration_ms: number | null;
+  enqueued: number | null;
+  accepted: number;
+  rejected: number;
+  batches: number;
+  error: string | null;
+  mode: string | null;
+  source: 'handoff_log' | 'flush_logs';
+}
+
+export interface TeamSyncSummaryResponse {
+  generated_at: number;
+  local: {
+    total_records: number;
+    pending_sync_count: number;
+    tables: Record<string, number>;
+    schema_version: number;
+  };
+  remote: TeamRemoteSyncSummary | null;
+  remote_error: string | null;
+  last_handoff: TeamHandoffSummary | null;
+}
+
+/** Worker discriminator when remote operator credentials are not configured. */
 export type CfApiTokenMissing = { error: 'cf_api_token_not_configured' };
 
 export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
@@ -106,13 +136,21 @@ export function isTokenMissing(value: unknown): value is CfApiTokenMissing {
 }
 
 export function useTeamQueueStats(enabled: boolean) {
-  // Polled slowly because the live values (depth, oldest_msg_age_s) are
-  // stubbed until the GraphQL Analytics wiring lands; the data effectively
-  // doesn't change. keepPreviousData prevents the UI from flashing the
-  // empty state on refetch.
+  // keepPreviousData prevents the UI from flashing the empty state on refetch.
   return usePowerQuery<QueueStatsResponse | CfApiTokenMissing>({
     queryKey: ['team-queue-stats'],
     queryFn: ({ signal }) => fetchJson<QueueStatsResponse | CfApiTokenMissing>('/team/queue-stats', { signal }),
+    refetchInterval: POLL_INTERVALS.UPDATE,
+    pollCategory: 'standard',
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useTeamSyncSummary(enabled: boolean) {
+  return usePowerQuery<TeamSyncSummaryResponse>({
+    queryKey: ['team-sync-summary'],
+    queryFn: ({ signal }) => fetchJson<TeamSyncSummaryResponse>('/team/sync-summary', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     enabled,

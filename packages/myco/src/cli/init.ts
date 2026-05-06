@@ -193,10 +193,8 @@ export async function run(args: string[]): Promise<void> {
 
   let daemonUrl = '';
   if (daemonHealthy) {
-    try {
-      const daemonJson = JSON.parse(fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8'));
-      daemonUrl = `http://localhost:${daemonJson.port}/settings`;
-    } catch { /* daemon.json not readable -- skip URL */ }
+    const daemonInfo = client.getInfo();
+    if (daemonInfo) daemonUrl = `http://localhost:${daemonInfo.port}/settings`;
   }
 
   console.log('');

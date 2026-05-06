@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
@@ -19,8 +20,6 @@ import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 const CONFIG_FILENAME = 'myco.yaml';
 
 /** Filename of the daemon state file. */
-const DAEMON_STATE_FILENAME = 'daemon.json';
-
 /** Filename of the SQLite database. */
 const DB_FILENAME = 'myco.db';
 
@@ -263,21 +262,24 @@ function isHooksRegistered(
 
 /** Check the daemon state file and process liveness. */
 async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
-  const daemonFile = path.join(vaultDir, DAEMON_STATE_FILENAME);
+  const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
   if (!fs.existsSync(daemonFile)) {
-    return { name: 'Daemon', status: 'warn', detail: 'Not running (no daemon.json)', fixable: false };
+    return { name: 'Daemon', status: 'warn', detail: 'Not running (no daemon state)', fixable: false };
   }
   try {
-    const state = JSON.parse(fs.readFileSync(daemonFile, 'utf-8')) as { pid?: number; port?: number };
+    const state = readDaemonState(daemonFile);
+    if (!state) {
+      return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but no PID', fixable: true };
+    }
     if (!state.pid) {
-      return { name: 'Daemon', status: 'warn', detail: 'daemon.json exists but no PID', fixable: true };
+      return { name: 'Daemon', status: 'warn', detail: 'daemon state exists but no PID', fixable: true };
     }
     if (isProcessAlive(state.pid)) {
       return { name: 'Daemon', status: 'ok', detail: `PID ${state.pid}, port ${state.port ?? 'unknown'}`, fixable: false };
     }
     return { name: 'Daemon', status: 'warn', detail: `Stale daemon.json (PID ${state.pid} not running)`, fixable: true };
   } catch (err) {
-    return { name: 'Daemon', status: 'fail', detail: `daemon.json parse error: ${(err as Error).message}`, fixable: true };
+    return { name: 'Daemon', status: 'fail', detail: `daemon state parse error: ${(err as Error).message}`, fixable: true };
   }
 }
 
@@ -318,16 +320,16 @@ export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<stri
 
     // Fix stale daemon.json
     if (check.name === 'Daemon' && check.detail.includes('Stale')) {
-      const daemonFile = path.join(vaultDir, DAEMON_STATE_FILENAME);
+      const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
       fs.unlinkSync(daemonFile);
-      actions.push('Removed stale daemon.json');
+      actions.push('Removed stale daemon state');
     }
 
     // Fix malformed daemon.json
     if (check.name === 'Daemon' && check.detail.includes('parse error')) {
-      const daemonFile = path.join(vaultDir, DAEMON_STATE_FILENAME);
+      const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
       fs.unlinkSync(daemonFile);
-      actions.push('Removed malformed daemon.json');
+      actions.push('Removed malformed daemon state');
     }
 
     // Advise on database issues

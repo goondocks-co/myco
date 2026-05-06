@@ -130,7 +130,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_PLANS,
-    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" persists a plan for a session; pass exactly one of source_path or plan_key. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
+    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with exactly one of source_path or plan_key, or updates an existing plan when id is passed. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -145,7 +145,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: 'object' as const,
       properties: {
         op: { type: 'string', enum: ['list', 'get', 'save', 'delete'], description: 'Operation (default: "list")' },
-        id: { type: 'string', description: 'Plan id. Required for op: "get" and op: "delete".' },
+        id: { type: 'string', description: 'Plan id. Required for op: "get" and op: "delete"; for op: "save", update this existing plan and preserve its logical key.' },
         session: { type: 'string', description: 'Filter list to plans belonging to this session; mutually exclusive with id.' },
         session_id: { type: 'string', description: 'Session id the plan belongs to for op: "save"' },
         content: { type: 'string', description: 'Markdown plan content to persist for op: "save"' },

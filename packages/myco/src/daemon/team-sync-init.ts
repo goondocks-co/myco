@@ -51,7 +51,15 @@ export interface TeamSyncResult {
   getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
   setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
+  flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
   registerFlushJob: (powerManager: PowerManager) => void;
+}
+
+export interface TeamFlushResult {
+  handedOff: number;
+  rejected: number;
+  batches: number;
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +70,64 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   const { machineId, logger, vaultDir, serverVersion, requestContext: defaultRequestContext } = deps;
   const teamClients = new Map<string, TeamSyncClient>();
   const clientSignatures = new Map<string, string>();
+
+  async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
+    const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
+    if (!loadTeamConnectionConfig(vaultDir, requestContext).enabled) return result;
+    const client = teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null;
+    if (!client) return result;
+
+    while (true) {
+      const pending = listPending();
+      if (pending.length === 0) break;
+
+      try {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
+        const enqueueResult = await client.enqueueBatch(pending);
+        const now = epochSeconds();
+
+        const rejectedIds = new Set(enqueueResult.rejected.map((e) => e.id));
+        const rejectedOutboxIds: number[] = [];
+        const handedOff: typeof pending = [];
+        for (const row of pending) {
+          if (rejectedIds.has(String(row.row_id))) {
+            rejectedOutboxIds.push(row.id);
+          } else {
+            handedOff.push(row);
+          }
+        }
+
+        if (rejectedOutboxIds.length > 0) {
+          logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
+            rejected: enqueueResult.rejected.slice(0, 5),
+          });
+          discardRows(rejectedOutboxIds);
+        }
+
+        if (handedOff.length > 0) {
+          const handedOffIds = handedOff.map((r) => r.id);
+          markSent(handedOffIds, now);
+          markSourceRowsSynced(handedOff, now);
+        }
+
+        pruneOld();
+        result.batches += 1;
+        result.handedOff += handedOff.length;
+        result.rejected += rejectedOutboxIds.length;
+        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
+          accepted: enqueueResult.accepted,
+          rejected: enqueueResult.rejected.length,
+          total: pending.length,
+        });
+      } catch (err) {
+        result.error = (err as Error).message;
+        logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: result.error });
+        break;
+      }
+    }
+
+    return result;
+  }
 
   async function reconcileClient(requestContext = defaultRequestContext): Promise<void> {
     const key = teamConnectionKey(vaultDir, requestContext);
@@ -88,7 +154,10 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
 
     const teamClient = teamClients.get(key);
     const clientSignature = clientSignatures.get(key) ?? null;
-    if (teamClient && clientSignature === nextSignature) return;
+    if (teamClient && clientSignature === nextSignature) {
+      await flushPending(requestContext);
+      return;
+    }
 
     const activeWorkerUrl = workerUrl!;
     const activeApiKey = apiKey!;
@@ -120,6 +189,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       if (backfilled > 0) {
         logger.info(LOG_KINDS.TEAM_SYNC_START, `Backfilled ${backfilled} unsynced records into outbox`);
       }
+      await flushPending(requestContext);
     } catch (err) {
       logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Backfill failed', { error: (err as Error).message });
     }
@@ -138,6 +208,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
       clientSignatures.delete(key);
     },
     reconcileClient,
+    flushPending,
     registerFlushJob: (powerManager) => {
       // Registered unconditionally; team.enabled is checked at run time so
       // Settings toggles take effect without a daemon restart.
@@ -145,59 +216,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
         preventsDeepSleep: () => loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0,
-        fn: async () => {
-          if (!loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled) return;
-          const client = teamClients.get(teamConnectionKey(vaultDir, defaultRequestContext)) ?? null;
-          if (!client) return;
-
-          const pending = listPending();
-          if (pending.length === 0) return;
-
-          try {
-            logger.info(LOG_KINDS.TEAM_SYNC_START, 'Flushing outbox', { count: pending.length });
-            const result = await client.enqueueBatch(pending);
-            const now = epochSeconds();
-
-            // Partition pending rows by the worker's per-record outcome in
-            // a single pass. Rejections are validation failures (unknown
-            // table, etc.) and will never succeed, so they're discarded
-            // outright — re-buffering would grow the outbox forever.
-            const rejectedIds = new Set(result.rejected.map((e) => e.id));
-            const rejectedOutboxIds: number[] = [];
-            const handedOff: typeof pending = [];
-            for (const row of pending) {
-              if (rejectedIds.has(String(row.row_id))) {
-                rejectedOutboxIds.push(row.id);
-              } else {
-                handedOff.push(row);
-              }
-            }
-
-            if (rejectedOutboxIds.length > 0) {
-              logger.warn(LOG_KINDS.TEAM_SYNC_REJECTED, `Discarding ${rejectedOutboxIds.length} rejected records`, {
-                rejected: result.rejected.slice(0, 5),
-              });
-              discardRows(rejectedOutboxIds);
-            }
-
-            if (handedOff.length > 0) {
-              const handedOffIds = handedOff.map((r) => r.id);
-              markSent(handedOffIds, now);
-              markSourceRowsSynced(handedOff, now);
-            }
-
-            pruneOld();
-            logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Outbox flush complete', {
-              accepted: result.accepted,
-              rejected: result.rejected.length,
-              total: pending.length,
-            });
-          } catch (err) {
-            // Network/server failure: leave pending for the next tick. No
-            // per-row counter — if the worker is down, every tick retries.
-            logger.error(LOG_KINDS.TEAM_SYNC_ERROR, 'Outbox flush failed', { error: (err as Error).message });
-          }
-        },
+        fn: async () => { await flushPending(defaultRequestContext); },
       });
     },
   };

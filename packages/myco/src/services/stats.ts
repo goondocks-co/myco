@@ -10,15 +10,13 @@ import { projectScopeClause } from '@myco/db/queries/project-scope.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
 import { DIGEST_TIERS } from '@myco/constants.js';
+import { readDaemonState, resolveDaemonServiceState } from '@myco/daemon/service-state.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Process uptime is available directly from the daemon process via process.uptime(). */
-const DAEMON_JSON_FILENAME = 'daemon.json';
 
 const PROJECT_SCOPED_COUNT_TABLES = new Set([
   'sessions',
@@ -165,19 +163,19 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}):
     let daemonPort = 0;
     let daemonVersion = '';
     let daemonUptimeSeconds = 0;
-    const daemonPath = path.join(vaultDir, DAEMON_JSON_FILENAME);
+    const daemonPath = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
     if (fs.existsSync(daemonPath)) {
       try {
-        const info = JSON.parse(fs.readFileSync(daemonPath, 'utf-8')) as Record<string, unknown>;
-        daemonPid = (info.pid as number) ?? 0;
-        daemonPort = (info.port as number) ?? 0;
-        daemonVersion = (info.version as string) ?? '';
+        const info = readDaemonState(daemonPath);
+        daemonPid = info?.pid ?? 0;
+        daemonPort = info?.port ?? 0;
+        daemonVersion = info?.version ?? '';
         // uptime: if daemon is alive, compute from started timestamp
-        if (typeof info.started === 'string' && isProcessAlive(daemonPid)) {
-          const startedMs = new Date(info.started as string).getTime();
+        if (typeof info?.started === 'string' && isProcessAlive(daemonPid)) {
+          const startedMs = new Date(info.started).getTime();
           daemonUptimeSeconds = Math.floor((Date.now() - startedMs) / 1000);
         }
-      } catch { /* ignore corrupt daemon.json */ }
+      } catch { /* ignore corrupt daemon state */ }
     }
 
     return {

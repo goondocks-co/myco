@@ -7,7 +7,7 @@ export interface AuthEnv {
 }
 
 /**
- * Validate the Authorization header against the configured API key.
+ * Validate the Authorization header against the configured team key.
  * Returns null on success, or a 401 Response on failure.
  */
 export function validateAuth(request: Request, env: AuthEnv): Response | null {
@@ -21,7 +21,7 @@ export function validateAuth(request: Request, env: AuthEnv): Response | null {
 
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token || token !== env.MYCO_TEAM_API_KEY) {
-    return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+    return new Response(JSON.stringify({ error: 'Invalid Team key' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     });

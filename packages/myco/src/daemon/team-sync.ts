@@ -113,13 +113,22 @@ export interface EnqueueBatchResponse {
 }
 
 export interface QueueStats {
-  depth: number;
+  depth: number | null;
   oldest_msg_age_s: number | null;
 }
 
 export interface QueueStatsResponse {
   main: QueueStats;
   dlq: QueueStats;
+}
+
+export interface TeamRemoteSyncSummaryResponse {
+  generated_at: number;
+  total_records: number;
+  tables: Record<string, number>;
+  schema_version: number | null;
+  package_version: string;
+  sync_protocol_version: number;
 }
 
 export interface DlqMessage {
@@ -319,13 +328,17 @@ export class TeamSyncClient {
   /**
    * Fetch queue + DLQ depth/age stats. Returns the
    * `cf_api_token_not_configured` discriminator when the worker has no CF
-   * API token yet — the UI uses that to surface the token-config form.
+   * API token yet — the UI uses that to surface an unavailable state.
    * Pass-through 412 keeps the body accessible instead of throwing.
    */
   async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
     return await this.request('GET', '/queue-stats', undefined, {
       passthroughStatuses: [412],
     }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  async getSyncSummary(): Promise<TeamRemoteSyncSummaryResponse> {
+    return await this.request('GET', '/sync-summary') as TeamRemoteSyncSummaryResponse;
   }
 
   /** List a page of DLQ messages. */

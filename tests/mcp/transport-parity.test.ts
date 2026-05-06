@@ -11,6 +11,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { REQUEST_CONTEXT_ENV, requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveDaemonServiceState, writeDaemonState } from '@myco/daemon/service-state.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const servers: http.Server[] = [];
@@ -79,7 +80,8 @@ async function startDaemonStub(vaultDir: string, mcpHandler: (req: http.Incoming
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address() as { port: number };
-  fs.writeFileSync(path.join(vaultDir, 'daemon.json'), JSON.stringify({ pid: process.pid, port: address.port }), 'utf-8');
+  const daemonService = resolveDaemonServiceState(vaultDir, { env: process.env });
+  writeDaemonState(daemonService.statePath, { pid: process.pid, port: address.port });
   return new URL(`http://127.0.0.1:${address.port}/mcp`);
 }
 

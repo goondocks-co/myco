@@ -14,6 +14,7 @@ import { vi } from '../../helpers/vi-shim.js';
 import { handleMycoPlans } from '@myco/tools/plans.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
+import { getPlan, upsertPlan } from '@myco/db/queries/plans.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
@@ -95,6 +96,49 @@ describe('myco_plans op: save (in-process)', () => {
     }, mockClient(), vaultDir);
 
     expect(result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('updates an existing plan by id without requiring source_path or plan_key', async () => {
+    seedSession('sess-1');
+    const existing = upsertPlan({
+      id: 'existing-plan',
+      logical_key: 'session:old-session:key:addendum',
+      title: 'Old Addendum',
+      content: '# Old Addendum',
+      tags: 'grove',
+      status: 'active',
+      session_id: null,
+      created_at: 1700000000,
+      machine_id: 'local',
+    });
+
+    const result = await handleMycoPlans({
+      op: 'save',
+      id: existing.id,
+      session_id: 'sess-1',
+      content: '# Updated Addendum\n\nCurrent details.',
+      status: 'active',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+
+    expect(result.ok).toBe(true);
+    expect(result.id).toBe(existing.id);
+    expect(result.logical_key).toBe(existing.logical_key);
+    expect(result.tags).toEqual(['grove']);
+
+    const row = getPlan(existing.id);
+    expect(row?.content).toBe('# Updated Addendum\n\nCurrent details.');
+    expect(row?.session_id).toBe('sess-1');
+    expect(row?.logical_key).toBe(existing.logical_key);
+  });
+
+  it('returns Plan not found when updating an unknown id', async () => {
+    const result = await handleMycoPlans({
+      op: 'save',
+      id: 'missing-plan',
+      content: '# Missing',
+    }, mockClient(), vaultDir);
+
+    expect(result).toEqual({ ok: false, error: 'Plan not found' });
   });
 
   it('stores file-backed plans under the resolved Grove project scope', async () => {

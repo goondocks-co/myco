@@ -58,6 +58,27 @@ describe('DaemonServer', () => {
     await server.stop();
   });
 
+  it('returns JSON 404 for unknown API routes instead of the SPA shell', async () => {
+    const uiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ui-'));
+    fs.writeFileSync(path.join(uiDir, 'index.html'), '<html><body>Dashboard</body></html>');
+    const server = new DaemonServer({ vaultDir, logger, uiDir });
+    try {
+      await server.start();
+
+      const apiRes = await fetch(`http://127.0.0.1:${server.port}/api/missing`);
+      expect(apiRes.status).toBe(404);
+      expect(apiRes.headers.get('content-type')).toContain('application/json');
+      expect(await apiRes.json()).toEqual({ error: 'not found' });
+
+      const dashboardRes = await fetch(`http://127.0.0.1:${server.port}/some/dashboard/path`);
+      expect(dashboardRes.status).toBe(200);
+      expect(await dashboardRes.text()).toContain('Dashboard');
+    } finally {
+      await server.stop();
+      fs.rmSync(uiDir, { recursive: true, force: true });
+    }
+  });
+
   it('attaches request context to daemon routes', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-srv-context-'));
     const previousHome = process.env.MYCO_HOME;

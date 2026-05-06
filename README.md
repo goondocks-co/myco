@@ -44,6 +44,8 @@ Two separate packages are the operator surfaces for team and collective administ
 - `@goondocks/myco-team` — provision and manage team sync (required for team features)
 - `@goondocks/myco-collective` — deploy and manage a Myco Collective
 
+The Grove-era global daemon is the local dashboard and routing surface.
+
 Each project also has a **Stable**/**Beta** toggle on its Operations page for early access to upcoming releases. Channel selection is per-project, so trying a Beta in one project does not affect your other projects. See [Stable and Beta channels](docs/lifecycle.md#stable-and-beta-channels).
 
 ## What is Myco?
@@ -132,14 +134,14 @@ See the [Symbiont docs](docs/symbionts.md) for detailed setup information per ag
 
 ### Team sync
 
-Share knowledge across machines and team members. One team member installs the `@goondocks/myco-team` package and provisions the infrastructure:
+Share knowledge across machines and team members. Team sync is enabled per Grove. One team member installs the `@goondocks/myco-team` package and provisions the infrastructure from any project in that Grove:
 
 ```bash
 npm install -g @goondocks/myco-team
-myco-team install    # Provisions Cloudflare D1 + Vectorize + KV + Worker
+myco-team install    # Provisions Cloudflare D1 + Vectorize + KV + Worker for the current Grove
 ```
 
-Share the output URL and API key with teammates — they connect from the Team page in the dashboard without needing the `myco-team` package themselves. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
+Share the output URL and Team key with teammates — they connect from the Team page in the dashboard without needing the `myco-team` package themselves. Once connected, knowledge syncs automatically: new spores, session summaries, plans, and graph edges push to the team store in the background. Search queries fan out to both local and cloud databases, merging results by relevance score.
 
 Local databases remain the source of truth. The cloud store is a queryable mirror — no data is pulled back down. Each record carries a machine identity for attribution.
 

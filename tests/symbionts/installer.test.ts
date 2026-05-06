@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { derivePort } from '@myco/daemon/port.js';
+import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -198,6 +201,7 @@ const MCP_TEMPLATE = {
 
 let projectRoot: string;
 let packageRoot: string;
+const originalMycoHome = process.env.MYCO_HOME;
 
 function writeJson(filePath: string, data: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -316,6 +320,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
+  else process.env.MYCO_HOME = originalMycoHome;
   fs.rmSync(projectRoot, { recursive: true, force: true });
   fs.rmSync(packageRoot, { recursive: true, force: true });
 });
@@ -1073,6 +1079,37 @@ describe('installMcp (TOML)', () => {
     const mycoConfig = fs.readFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'utf-8');
     expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
     expect(mycoConfig).toContain(`port: ${expectedPort}`);
+  });
+
+  it('uses the global daemon port for Grove-bound project MCP URLs', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = home;
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
+
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'project-a', name: 'Project A' },
+      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'project-a',
+      projectName: 'Project A',
+      projectRoot,
+      bindingId: 'gbind-a',
+    }, home);
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const expectedPort = resolveGlobalDaemonPort(home);
+    const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    const mycoConfig = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
+    expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
+    expect(mycoConfig).not.toContain('port:');
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('preserves existing TOML content', () => {

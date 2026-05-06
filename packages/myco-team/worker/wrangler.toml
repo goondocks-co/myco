@@ -52,12 +52,5 @@ max_batch_timeout = 5
 max_retries = 10
 dead_letter_queue = "<YOUR_SYNC_DLQ_NAME>"
 
-# Dead-letter consumer — logs failed messages for operator visibility.
-# No automatic recovery; the daemon UI's Outbox tab surfaces replay/discard.
-[[queues.consumers]]
-queue = "<YOUR_SYNC_DLQ_NAME>"
-max_batch_size = 10
-max_batch_timeout = 30
-
 [triggers]
 crons = ["*/5 * * * *"]

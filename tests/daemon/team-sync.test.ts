@@ -191,6 +191,34 @@ describe('TeamSyncClient', () => {
     });
   });
 
+  describe('getSyncSummary', () => {
+    it('GETs /sync-summary with remote store counts', async () => {
+      const mockFetch = createMockFetch({
+        '/sync-summary': {
+          status: 200,
+          body: {
+            generated_at: 1778060000,
+            total_records: 3,
+            tables: { spores: 2, sessions: 1 },
+            schema_version: 35,
+            package_version: '0.1.7',
+            sync_protocol_version: 1,
+          },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      const result = await client.getSyncSummary();
+
+      expect(result.total_records).toBe(3);
+      expect(result.tables.spores).toBe(2);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://myco-team.example.workers.dev/sync-summary',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+  });
+
   describe('search', () => {
     it('GETs /search with query params', async () => {
       const mockFetch = createMockFetch({

@@ -61,7 +61,7 @@ describe('teamRotateTokens', () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       fetchCalls += 1;
       if (fetchCalls < 3) {
-        return new Response('{"error":"Invalid API key"}', {
+        return new Response('{"error":"Invalid Team key"}', {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -81,7 +81,7 @@ describe('teamRotateTokens', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('persists the new API key before retrying MCP rotation', async () => {
+  it('persists the new Team key before retrying MCP rotation', async () => {
     execHandlers.push(() => '');
 
     const { teamRotateTokens } = await import('../../packages/myco-team/src/cli.js');

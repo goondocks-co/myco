@@ -13,6 +13,7 @@ export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GLOBAL_CONFIG_FILENAME = 'config.yaml';
 export const PROJECT_MANIFEST_FILENAME = 'project.toml';
+export const DAEMON_STATE_FILENAME = 'daemon.json';
 
 export interface MycoHomeOptions {
   env?: NodeJS.ProcessEnv;
@@ -32,6 +33,10 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
 
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, SERVICE_DIRNAME);
+}
+
+export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {
+  return path.join(resolveServiceDir(mycoHome), DAEMON_STATE_FILENAME);
 }
 
 export function resolveGrovesDir(mycoHome = resolveMycoHome()): string {

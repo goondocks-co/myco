@@ -9,12 +9,14 @@ import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { requestContextFromHttpHeaders } from '../tools/request-context.js';
+import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
 
 const DEFAULT_STATUS = 200;
 
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  daemonStatePath?: string;
   uiDir?: string;
   uiDevProxyTarget?: string;
   onRequest?: () => void;
@@ -32,6 +34,7 @@ export class DaemonServer {
   uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
+  private daemonStatePath: string;
   private logger: DaemonLogger;
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
@@ -39,6 +42,7 @@ export class DaemonServer {
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
+    this.daemonStatePath = config.daemonStatePath ?? path.join(config.vaultDir, 'daemon.json');
     this.logger = config.logger;
     this.uiDir = config.uiDir ?? null;
     this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
@@ -185,6 +189,12 @@ export class DaemonServer {
       return;
     }
 
+    if (pathname.startsWith('/api/') || pathname === '/health') {
+      res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
+      res.end(JSON.stringify({ error: 'not found' }));
+      return;
+    }
+
     // No API route matched — proxy to Vite dev server when configured.
     if (this.uiDevProxyTarget && req.method === 'GET') {
       const proxied = await this.proxyUiDevRequest(req, res);
@@ -316,12 +326,12 @@ export class DaemonServer {
   }
 
   updateDaemonJsonSessions(sessions: string[]): void {
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
     try {
-      const info = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      const info = readDaemonState(this.daemonStatePath);
+      if (!info) return;
       info.sessions = sessions;
-      fs.writeFileSync(jsonPath, JSON.stringify(info, null, 2));
-    } catch { /* daemon.json may not exist during shutdown */ }
+      writeDaemonState(this.daemonStatePath, info);
+    } catch { /* daemon state may not exist during shutdown */ }
   }
 
   /**
@@ -344,20 +354,13 @@ export class DaemonServer {
       command: process.execPath,
       started: new Date().toISOString(),
       sessions: [] as string[],
+      version: this.version,
     };
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    fs.writeFileSync(jsonPath, JSON.stringify(info, null, 2));
+    writeDaemonState(this.daemonStatePath, info);
   }
 
   private removeDaemonJson(): void {
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    try {
-      const content = fs.readFileSync(jsonPath, 'utf-8');
-      const info = JSON.parse(content);
-      // Only delete if we still own the file — a successor daemon may have taken over.
-      if (info.pid !== process.pid) return;
-      fs.unlinkSync(jsonPath);
-    } catch { /* already gone or unreadable */ }
+    removeDaemonState(this.daemonStatePath, process.pid);
   }
 }
 

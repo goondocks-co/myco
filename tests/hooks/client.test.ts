@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createHookDaemonClient, DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS, resolveLegacyRequestContext } from '@myco/tools/request-context';
 import { saveProjectManifest } from '@myco/config/project-manifest';
-import { resolveProjectVaultDir } from '@myco/grove/paths';
+import { resolveProjectVaultDir, resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -66,24 +66,37 @@ describe('DaemonClient', () => {
   });
 
   it('forwards constructor request context headers to daemon requests', async () => {
-    const context = resolveLegacyRequestContext(vaultDir, {
-      projectRoot: '/workspace/project-a',
-      projectId: 'project-a',
-      groveId: 'grove-a',
-      machineId: 'machine-a',
-      sessionId: 'sess-a',
-      source: 'explicit',
-    });
-    const client = new DaemonClient(vaultDir, { requestContext: context });
+    const previousHome = process.env.MYCO_HOME;
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-home-'));
+    try {
+      process.env.MYCO_HOME = tmpHome;
+      const globalStatePath = resolveServiceDaemonStatePath(tmpHome);
+      fs.mkdirSync(path.dirname(globalStatePath), { recursive: true });
+      fs.writeFileSync(globalStatePath, JSON.stringify({ pid: process.pid, port: mockPort }));
 
-    const result = await client.post('/events', { type: 'test' });
+      const context = resolveLegacyRequestContext(vaultDir, {
+        projectRoot: '/workspace/project-a',
+        projectId: 'project-a',
+        groveId: 'grove-a',
+        machineId: 'machine-a',
+        sessionId: 'sess-a',
+        source: 'explicit',
+      });
+      const client = new DaemonClient(vaultDir, { requestContext: context });
 
-    expect(result.ok).toBe(true);
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
-    expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
+      const result = await client.post('/events', { type: 'test' });
+
+      expect(result.ok).toBe(true);
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
+    } finally {
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 
   it('creates hook clients from environment context and hook session id', async () => {
@@ -106,6 +119,9 @@ describe('DaemonClient', () => {
         projectRoot,
         bindingId: 'gbind-a',
       }, home);
+      const globalStatePath = resolveServiceDaemonStatePath(home);
+      fs.mkdirSync(path.dirname(globalStatePath), { recursive: true });
+      fs.writeFileSync(globalStatePath, JSON.stringify({ pid: process.pid, port: mockPort }));
 
       process.env[REQUEST_CONTEXT_ENV.projectRoot] = projectRoot;
       process.env[REQUEST_CONTEXT_ENV.projectId] = 'project-a';
@@ -141,6 +157,72 @@ describe('DaemonClient', () => {
     const client = new DaemonClient(vaultDir);
     const result = await client.post('/events', { type: 'test' });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('DaemonClient Grove service state', () => {
+  const originalHome = process.env.MYCO_HOME;
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = originalHome;
+    delete process.env.MYCO_NO_AUTO_SPAWN;
+  });
+
+  it('uses global daemon state and ignores stale project-local daemon.json for Grove-bound projects', async () => {
+    process.env.MYCO_NO_AUTO_SPAWN = '1';
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-global-client-'));
+    const home = path.join(tmp, 'home');
+    process.env.MYCO_HOME = home;
+    const projectRoot = path.join(tmp, 'project-a');
+    const projectVaultDir = resolveProjectVaultDir(projectRoot);
+    fs.mkdirSync(projectVaultDir, { recursive: true });
+
+    const grove = createGrove('Work', home);
+    saveProjectManifest(projectVaultDir, {
+      project: { id: 'project-a', name: 'Project A' },
+      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'project-a',
+      projectName: 'Project A',
+      projectRoot,
+      bindingId: 'gbind-a',
+    }, home);
+
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: string) => { body += c; });
+      req.on('end', () => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, port: (server.address() as { port: number }).port, received: JSON.parse(body || '{}') }));
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+
+    try {
+      const globalPort = (server.address() as { port: number }).port;
+      const globalStatePath = resolveServiceDaemonStatePath(home);
+      fs.mkdirSync(path.dirname(globalStatePath), { recursive: true });
+      fs.writeFileSync(globalStatePath, JSON.stringify({ pid: process.pid, port: globalPort }));
+
+      const localStatePath = path.join(projectVaultDir, 'daemon.json');
+      fs.writeFileSync(localStatePath, JSON.stringify({ pid: 0x7fffffff, port: 45678 }));
+
+      const client = new DaemonClient(projectVaultDir);
+      const result = await client.post('/events', { type: 'test' });
+
+      expect(result.ok).toBe(true);
+      expect(result.data.port).toBe(globalPort);
+      expect(result.data.received.type).toBe('test');
+      expect(fs.existsSync(localStatePath)).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

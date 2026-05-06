@@ -5,6 +5,7 @@ import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -147,11 +148,5 @@ async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
 }
 
 function readDaemonPort(vaultDir: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8');
-    const port = (JSON.parse(raw) as { port?: unknown }).port;
-    return typeof port === 'number' ? port : null;
-  } catch {
-    return null;
-  }
+  return readDaemonState(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)?.port ?? null;
 }

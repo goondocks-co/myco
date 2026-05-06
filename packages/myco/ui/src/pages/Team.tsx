@@ -1,14 +1,15 @@
 import { useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
 import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useTeamStatus,
   useTeamQueueStats,
+  useTeamSyncSummary,
   useTeamDlq,
   isTokenMissing,
   type TeamStatusResponse,
   type DlqMessage,
+  type TeamSyncSummaryResponse,
 } from '../hooks/use-team';
 import { postJson, ApiError } from '../lib/api';
 import { PageHeader } from '../components/ui/page-header';
@@ -24,25 +25,24 @@ import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Tabs ---------- */
 
-type ActiveTab = 'status' | 'outbox' | 'synced';
+type ActiveTab = 'status' | 'sync';
 
 const TEAM_TABS: Tab[] = [
   { id: 'status', label: 'Status' },
-  { id: 'outbox', label: 'Outbox' },
-  { id: 'synced', label: 'Synced data' },
+  { id: 'sync', label: 'Sync' },
 ];
 
 const TAB_SUBTITLES: Record<ActiveTab, string> = {
-  status: 'Connection, MCP endpoint, and team credentials',
-  outbox: 'Local hand-off, Cloudflare queue depth, and dead-letter replay',
-  synced: 'Per-table sync coverage and what stays local',
+  status: 'Connection and team credentials',
+  sync: 'Backlog, queue health, and failed syncs',
 };
 
-const VALID_TABS = new Set<ActiveTab>(['status', 'outbox', 'synced']);
+const VALID_TABS = new Set<ActiveTab>(['status', 'sync']);
 const PARAM_TAB = 'tab';
 
 function readTabFromUrl(): ActiveTab {
   const raw = new URLSearchParams(window.location.search).get(PARAM_TAB);
+  if (raw === 'outbox' || raw === 'synced') return 'sync';
   return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'status';
 }
 
@@ -127,18 +127,6 @@ function RedactedField({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StoredSecretField({ label }: { label: string }) {
-  return (
-    <div className="space-y-1">
-      <span className="text-xs text-on-surface-variant">{label}</span>
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-on-surface font-mono">Configured</span>
-        <span className="text-xs text-on-surface-variant">stored locally, not displayed</span>
-      </div>
-    </div>
-  );
-}
-
 /* ---------- Sub-components ---------- */
 
 function ConnectForm({
@@ -149,7 +137,7 @@ function ConnectForm({
   scopeName: string;
 }) {
   const [url, setUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
+  const [teamKey, setTeamKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -158,7 +146,7 @@ function ConnectForm({
     setError(null);
     setLoading(true);
     try {
-      await postJson('/team/connect', { url, api_key: apiKey });
+      await postJson('/team/connect', { url, api_key: teamKey });
       onConnected();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection failed');
@@ -174,7 +162,8 @@ function ConnectForm({
         <SectionHeader>Connect Grove</SectionHeader>
       </div>
       <p className="text-sm text-on-surface-variant mb-4">
-        Enter the Worker URL and API key for {scopeName}.
+        Provision {scopeName} with <code className="font-mono">myco-team install</code> first
+        (<code className="font-mono">myco-team-dev install</code> in dev), then enter the Worker URL and Team key.
       </p>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
@@ -188,19 +177,19 @@ function ConnectForm({
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-on-surface-variant mb-1">API Key</label>
+          <label className="block text-xs font-medium text-on-surface-variant mb-1">Team key</label>
           <Input
             type="password"
-            placeholder="your-api-key"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="paste team key"
+            value={teamKey}
+            onChange={(e) => setTeamKey(e.target.value)}
             required
           />
         </div>
         {error && (
           <p className="text-sm text-tertiary">{error}</p>
         )}
-        <Button type="submit" size="sm" disabled={loading || !url || !apiKey}>
+        <Button type="submit" size="sm" disabled={loading || !url || !teamKey}>
           {loading ? (
             <>
               <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
@@ -218,10 +207,6 @@ function ConnectForm({
 function StatusTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
   const [disconnecting, setDisconnecting] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [upgrading, setUpgrading] = useState(false);
-  const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
   const [showMcpSnippet, setShowMcpSnippet] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
   const [rotating, setRotating] = useState(false);
@@ -236,90 +221,8 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
     }
   };
 
-  const handleSyncAll = useCallback(async () => {
-    setSyncing(true);
-    setSyncMessage(null);
-    try {
-      const res = await postJson<{ enqueued: number }>('/team/backfill');
-      setSyncMessage(
-        res.enqueued > 0
-          ? `Enqueued ${res.enqueued} records for sync. They'll push on the next flush cycle.`
-          : 'All records are already synced or enqueued.',
-      );
-      queryClient.invalidateQueries({ queryKey: ['team-status'] });
-    } catch {
-      setSyncMessage('Backfill failed.');
-    } finally {
-      setSyncing(false);
-    }
-  }, [queryClient]);
-
-  const handleUpgradeWorker = useCallback(async () => {
-    setUpgrading(true);
-    setUpgradeMessage(null);
-    try {
-      const res = await postJson<{ success: boolean; worker_url?: string; version?: string; error?: string }>('/team/upgrade-worker');
-      if (res.success) {
-        setUpgradeMessage(`Worker updated to v${res.version}`);
-        queryClient.invalidateQueries({ queryKey: ['team-status'] });
-      } else {
-        setUpgradeMessage(res.error ?? 'Upgrade failed');
-      }
-    } catch (err) {
-      // Surface the "@goondocks/myco-team not installed" case with a direct
-      // install instruction instead of the generic error toast. The daemon
-      // returns a typed error code when it can't locate the package under
-      // the npm global prefix.
-      if (err instanceof ApiError && typeof err.body === 'object' && err.body !== null && 'error' in err.body
-          && (err.body as { error: unknown }).error === 'myco_team_not_installed') {
-        const message = 'message' in err.body ? String((err.body as { message: unknown }).message) : null;
-        setUpgradeMessage(message ?? 'Install @goondocks/myco-team to enable Worker upgrades: npm install -g @goondocks/myco-team');
-      } else {
-        setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
-      }
-    } finally {
-      setUpgrading(false);
-    }
-  }, [queryClient]);
-
   return (
     <div className="space-y-4">
-      {/* Worker update banner */}
-      {status.worker_update_available && (
-        <Surface level="low" ghostBorder className="p-4 border-l-2 border-l-ochre">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <ArrowUpCircle className="h-5 w-5 text-ochre shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-on-surface">Worker update available</p>
-                <p className="text-xs text-on-surface-variant">
-                  Deployed: v{status.deployed_worker_version ?? '?'} — Local team package: v{status.local_team_package_version ?? '?'}
-                </p>
-              </div>
-            </div>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={handleUpgradeWorker}
-              disabled={upgrading}
-            >
-              {upgrading ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                  Deploying...
-                </>
-              ) : (
-                'Update Worker'
-              )}
-            </Button>
-          </div>
-          {upgradeMessage && (
-            <p className="text-xs text-on-surface-variant mt-2">{upgradeMessage}</p>
-          )}
-        </Surface>
-      )}
-
-      {/* Status overview — sync queue counters live on the Outbox tab. */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           label="Status"
@@ -343,7 +246,6 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
         />
       </div>
 
-      {/* Share with teammates */}
       <Surface level="low" ghostBorder className="p-5 space-y-4">
         <div className="flex items-center justify-between">
           <SectionHeader>Grove Credentials</SectionHeader>
@@ -352,20 +254,19 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
           </Badge>
         </div>
         <p className="text-xs text-on-surface-variant">
-          Share these with teammates so they can connect this Grove from the Team page.
+          Use these to connect another machine to this team Grove.
         </p>
 
         <div className="space-y-3">
           {status.worker_url && (
             <CopyableField label="Worker URL" value={status.worker_url} />
           )}
-          {status.has_api_key && (
-            <StoredSecretField label="API Key" />
+          {status.team_key && (
+            <RedactedField label="Team key" value={status.team_key} />
           )}
         </div>
       </Surface>
 
-      {/* Cloud MCP Endpoint */}
       {status.mcp_token && status.mcp_endpoint && (
         <Surface level="low" ghostBorder className="p-5 space-y-4">
           <div className="flex items-center justify-between">
@@ -419,7 +320,6 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
         </Surface>
       )}
 
-      {/* Connection details */}
       <Surface level="low" ghostBorder className="p-5 space-y-4">
         <SectionHeader>This Node</SectionHeader>
         <div className="grid gap-3">
@@ -434,7 +334,6 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
         )}
       </Surface>
 
-      {/* Collective status */}
       <Surface level="low" ghostBorder className="p-5 space-y-4">
         <div className="flex items-center justify-between">
           <SectionHeader>Collective</SectionHeader>
@@ -485,72 +384,6 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
           </p>
         )}
       </Surface>
-
-      {/* Sync actions */}
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Sync</SectionHeader>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleSyncAll}
-            disabled={syncing}
-          >
-            {syncing ? (
-              <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                Syncing...
-              </>
-            ) : (
-              'Sync All'
-            )}
-          </Button>
-        </div>
-        <p className="text-xs text-on-surface-variant">
-          Push all unsynced local knowledge to the team store. Records sync automatically on new writes,
-          but historical data needs a one-time backfill.
-        </p>
-        {syncMessage && (
-          <p className="text-sm text-primary">{syncMessage}</p>
-        )}
-      </Surface>
-
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Remote Vector Index</SectionHeader>
-          <Badge variant={status.vector_reindex_status === 'error' ? 'destructive' : status.vector_reindex_status === 'running' ? 'outline' : 'default'}>
-            {status.vector_reindex_status ?? 'unknown'}
-          </Badge>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1">
-            <span className="text-xs text-on-surface-variant">Last table</span>
-            <p className="text-sm text-on-surface">{status.vector_reindex_last_table ?? 'None'}</p>
-          </div>
-          <div className="space-y-1">
-            <span className="text-xs text-on-surface-variant">Last run</span>
-            <p className="text-sm text-on-surface">
-              {status.vector_reindex_last_run_at ? new Date(status.vector_reindex_last_run_at * 1000).toLocaleString() : 'Never'}
-            </p>
-          </div>
-          <div className="space-y-1">
-            <span className="text-xs text-on-surface-variant">Processed</span>
-            <p className="text-sm text-on-surface">{status.vector_reindex_last_processed ?? 0}</p>
-          </div>
-          <div className="space-y-1">
-            <span className="text-xs text-on-surface-variant">Updated / deleted</span>
-            <p className="text-sm text-on-surface">{status.vector_reindex_last_reindexed ?? 0} / {status.vector_reindex_last_deleted ?? 0}</p>
-          </div>
-        </div>
-        {status.vector_reindex_last_error && (
-          <div className="space-y-1 border-t border-outline-variant/10 pt-3">
-            <span className="text-xs text-on-surface-variant">Last error</span>
-            <p className="text-xs text-tertiary break-words">{status.vector_reindex_last_error}</p>
-          </div>
-        )}
-      </Surface>
-
-      {/* Disconnect */}
       <div className="flex justify-end">
         <Button
           variant="outline"
@@ -587,7 +420,7 @@ function StatusTab({ status }: { status: TeamStatusResponse }) {
   );
 }
 
-/* ---------- OutboxTab ---------- */
+/* ---------- SyncTab ---------- */
 
 const SECONDS_PER_MIN = 60;
 const SECONDS_PER_HOUR = 3600;
@@ -599,49 +432,75 @@ function formatAge(seconds: number | null): string {
   return `${Math.floor(seconds / SECONDS_PER_HOUR)}h`;
 }
 
-function CfApiTokenForm({ onConfigured }: { onConfigured: () => void }) {
-  const [token, setToken] = useState('');
-  const [accountId, setAccountId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function formatNumber(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—';
+}
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setSubmitting(true);
-    try {
-      await postJson('/team/cf-api-token', { token: token.trim(), account_id: accountId.trim() });
-      setToken('');
-      setAccountId('');
-      onConfigured();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to configure token');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+  if (ms < 1000) return '<1s';
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) return 'Never';
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return 'Never';
+  return time.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+}
+
+function formatDateLabel(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return undefined;
+  return time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatTableName(table: string): string {
+  return table.replace(/_/g, ' ');
+}
+
+function tableDelta(local: number, remote: number | undefined): string {
+  if (remote === undefined) return '—';
+  const delta = remote - local;
+  if (delta === 0) return '0';
+  return delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString();
+}
+
+function SyncStoreTable({ summary }: { summary: TeamSyncSummaryResponse }) {
+  const remoteTables = summary.remote?.tables ?? {};
+  const tableNames = Array.from(new Set([
+    ...Object.keys(summary.local.tables),
+    ...Object.keys(remoteTables),
+  ])).sort();
 
   return (
-    <Surface level="low" ghostBorder className="p-5 space-y-3 border-l-2 border-l-ochre">
-      <SectionHeader>Configure Cloudflare API token</SectionHeader>
-      <p className="text-xs text-on-surface-variant">
-        Queue depth + DLQ inspection require a Cloudflare API token with <code className="font-mono">queues:read</code> and <code className="font-mono">queues:write</code> scope. The token is stored in the worker's KV namespace and never sent back to the daemon.
-      </p>
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="space-y-1">
-          <label className="text-xs text-on-surface-variant">Account ID</label>
-          <Input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="abcdef0123456789..." />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-on-surface-variant">API token</label>
-          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste token" />
-        </div>
-        {error && <p className="text-sm text-tertiary">{error}</p>}
-        <Button type="submit" size="sm" disabled={submitting || !token.trim() || !accountId.trim()}>
-          {submitting ? 'Saving…' : 'Save token'}
-        </Button>
-      </form>
-    </Surface>
+    <div className="overflow-hidden rounded-md border border-outline-variant/10">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-container/40 text-xs uppercase text-outline">
+          <tr>
+            <th className="px-3 py-2 text-left font-mono">Table</th>
+            <th className="px-3 py-2 text-right font-mono">Local</th>
+            <th className="px-3 py-2 text-right font-mono">Remote</th>
+            <th className="px-3 py-2 text-right font-mono">Delta</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tableNames.map((table) => {
+            const local = summary.local.tables[table] ?? 0;
+            const remote = remoteTables[table];
+            return (
+              <tr key={table} className="border-t border-outline-variant/10">
+                <td className="px-3 py-2 text-on-surface">{formatTableName(table)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(local)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-on-surface">{formatNumber(remote)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-on-surface-variant">{tableDelta(local, remote)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -665,24 +524,48 @@ function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (a
   );
 }
 
-function OutboxTab({ status }: { status: TeamStatusResponse }) {
+function SyncTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
   const enabled = status.enabled && status.healthy;
   const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
-  const { data: dlq, isLoading: dlqLoading } = useTeamDlq(enabled);
+  const { data: syncSummary, isLoading: summaryLoading } = useTeamSyncSummary(enabled);
+  const dlqEnabled = enabled && Boolean(queueStats) && !isTokenMissing(queueStats);
+  const { data: dlq, isLoading: dlqLoading } = useTeamDlq(dlqEnabled);
   const [busy, setBusy] = useState(false);
   const [draining, setDraining] = useState(false);
   const [drainMessage, setDrainMessage] = useState<string | null>(null);
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeMessage, setUpgradeMessage] = useState<string | null>(null);
 
-  const tokenMissing = isTokenMissing(queueStats) || isTokenMissing(dlq);
+  const queueUnavailable = !enabled || isTokenMissing(queueStats) || (!queueLoading && !queueStats);
+  const failedSyncsLoading = queueLoading || (dlqEnabled && dlqLoading);
+  const failedSyncsUnavailable = !enabled || isTokenMissing(queueStats) || isTokenMissing(dlq) || (!failedSyncsLoading && dlqEnabled && !dlq);
+  const unavailableMessage = enabled ? 'Not available from this node.' : 'Team connection is unhealthy.';
 
   const handleDrain = useCallback(async () => {
     setDraining(true);
     setDrainMessage(null);
     try {
-      const res = await postJson<{ enqueued: number }>('/team/backfill');
-      setDrainMessage(res.enqueued > 0 ? `Backfilled ${res.enqueued} unsynced records.` : 'Nothing to backfill.');
+      const res = await postJson<{
+        enqueued: number;
+        flushed?: number;
+        rejected?: number;
+        batches?: number;
+        duration_ms?: number;
+        flush_error?: string | null;
+        mode?: string;
+      }>('/team/backfill', { mode: 'all' });
+      if (res.flush_error) {
+        setDrainMessage(`Backfilled ${res.enqueued} records, but sync failed: ${res.flush_error}`);
+      } else if (res.enqueued > 0 || (res.flushed ?? 0) > 0) {
+        setDrainMessage(`Backfilled ${formatNumber(res.enqueued)} records and handed off ${formatNumber(res.flushed)} in ${res.batches ?? 0} batches.`);
+      } else {
+        setDrainMessage('No eligible Grove records found.');
+      }
       queryClient.invalidateQueries({ queryKey: ['team-status'] });
+      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
     } catch {
       setDrainMessage('Backfill failed.');
     } finally {
@@ -696,6 +579,7 @@ function OutboxTab({ status }: { status: TeamStatusResponse }) {
       await postJson(`/team/dlq/${action}`, { lease_ids: [leaseId] });
       queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
       queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
     } finally {
       setBusy(false);
     }
@@ -708,145 +592,283 @@ function OutboxTab({ status }: { status: TeamStatusResponse }) {
       await postJson('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.msg_id) });
       queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
       queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
     } finally {
       setBusy(false);
     }
   }, [dlq, queryClient]);
 
+  const handleUpgradeWorker = useCallback(async () => {
+    setUpgrading(true);
+    setUpgradeMessage(null);
+    try {
+      const res = await postJson<{ success: boolean; worker_url?: string; version?: string; error?: string }>('/team/upgrade-worker');
+      if (res.success) {
+        setUpgradeMessage(`Worker updated to v${res.version}`);
+        queryClient.invalidateQueries({ queryKey: ['team-status'] });
+      } else {
+        setUpgradeMessage(res.error ?? 'Upgrade failed');
+      }
+    } catch (err) {
+      if (err instanceof ApiError && typeof err.body === 'object' && err.body !== null && 'error' in err.body
+          && (err.body as { error: unknown }).error === 'myco_team_not_installed') {
+        const message = 'message' in err.body ? String((err.body as { message: unknown }).message) : null;
+        setUpgradeMessage(message ?? 'Install @goondocks/myco-team to enable Worker upgrades, or use myco-team-dev after make dev-link in a dev checkout.');
+      } else {
+        setUpgradeMessage(err instanceof Error ? err.message : 'Upgrade failed');
+      }
+    } finally {
+      setUpgrading(false);
+    }
+  }, [queryClient]);
+
   const main = !isTokenMissing(queueStats) ? queueStats?.main : undefined;
   const dlqStats = !isTokenMissing(queueStats) ? queueStats?.dlq : undefined;
   const dlqMessages = !isTokenMissing(dlq) ? dlq?.messages ?? [] : [];
+  const lastHandoff = syncSummary?.last_handoff ?? null;
+  const remoteTotal = syncSummary?.remote?.total_records ?? null;
+  const localTotal = syncSummary?.local.total_records ?? null;
+  const workerVersionKnown = Boolean(status.deployed_worker_version && status.local_team_package_version);
+  const localTeamPackageSourceLabel =
+    status.local_team_package_source === 'dev-linked'
+      ? 'Dev linked'
+      : status.local_team_package_source === 'installed'
+        ? 'Installed'
+        : status.local_team_package_source === 'path'
+          ? 'On PATH'
+          : 'Available';
+  const hasVectorIndexStatus = Boolean(
+    status.vector_reindex_status
+    || status.vector_reindex_last_table
+    || status.vector_reindex_last_run_at
+    || status.vector_reindex_last_error,
+  );
 
   return (
     <div className="space-y-4">
-      {/* Local hand-off */}
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <SectionHeader>Worker</SectionHeader>
+          <Badge variant={status.worker_update_available ? 'outline' : 'default'}>
+            {status.worker_update_available ? 'update available' : workerVersionKnown ? 'current' : 'deployed'}
+          </Badge>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <StatCard
+            label="Deployed"
+            value={status.deployed_worker_version ? `v${status.deployed_worker_version}` : 'Unknown'}
+            accent={status.worker_update_available ? 'ochre' : 'outline'}
+          />
+          <StatCard
+            label={localTeamPackageSourceLabel}
+            value={status.local_team_package_version ? `v${status.local_team_package_version}` : 'Not found'}
+            accent="outline"
+          />
+          <StatCard
+            label="Protocol"
+            value={`v${status.sync_protocol_version}`}
+            accent="outline"
+          />
+        </div>
+        {status.worker_update_available && (
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <ArrowUpCircle className="h-5 w-5 text-ochre shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-on-surface">Worker update available</p>
+                <p className="text-xs text-on-surface-variant">
+                  Deployed: v{status.deployed_worker_version ?? '?'} · Available: v{status.local_team_package_version ?? '?'}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleUpgradeWorker}
+              disabled={upgrading}
+            >
+              {upgrading ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                  Deploying...
+                </>
+              ) : (
+                'Update worker'
+              )}
+            </Button>
+          </div>
+        )}
+        {upgradeMessage && (
+          <p className="text-xs text-on-surface-variant">{upgradeMessage}</p>
+        )}
+      </Surface>
+
       <Surface level="low" ghostBorder className="p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <SectionHeader>Local hand-off</SectionHeader>
+          <SectionHeader>Backfill</SectionHeader>
           <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
-            {draining ? 'Backfilling…' : 'Backfill now'}
+            {draining ? 'Backfilling...' : 'Backfill existing records'}
           </Button>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatCard
-            label="Pending sync"
-            value={String(status.pending_sync_count)}
-            accent={status.pending_sync_count > 0 ? 'sage' : 'outline'}
+            label="Left to sync"
+            value={formatNumber(syncSummary?.local.pending_sync_count ?? status.pending_sync_count)}
+            accent={(syncSummary?.local.pending_sync_count ?? status.pending_sync_count) > 0 ? 'sage' : 'outline'}
             href="/logs?component=team-sync"
           />
         </div>
-        <p className="text-xs text-on-surface-variant">
-          Records waiting to hand off to the team worker. Once accepted, Cloudflare Queues owns delivery, retries, and dead-lettering.
-        </p>
         {drainMessage && <p className="text-sm text-primary">{drainMessage}</p>}
       </Surface>
 
-      {/* Cloudflare-side: queue stats + DLQ */}
-      {tokenMissing ? (
-        <CfApiTokenForm onConfigured={() => {
-          queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
-          queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
-        }} />
-      ) : (
-        <>
-          <Surface level="low" ghostBorder className="p-5 space-y-3">
-            <SectionHeader>Cloudflare queue</SectionHeader>
-            {queueLoading ? (
-              <p className="text-xs text-on-surface-variant">Loading…</p>
-            ) : (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatCard label="Main depth" value={main?.depth == null ? '—' : String(main.depth)} accent="outline" />
-                <StatCard label="Main oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
-                <StatCard
-                  label="DLQ depth"
-                  value={dlqStats?.depth == null ? String(dlqMessages.length) : String(dlqStats.depth)}
-                  accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
-                />
-                <StatCard label="DLQ oldest" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
-              </div>
-            )}
-            <p className="text-xs text-on-surface-variant">
-              Live depth + age require a CF API token with the queues GraphQL Analytics scope. The DLQ list below uses the documented HTTP pull-consumer API and is reliable today.
-            </p>
-          </Surface>
-
-          <Surface level="low" ghostBorder className="p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <SectionHeader>Dead letter</SectionHeader>
-              {dlqMessages.length > 0 && (
-                <Button size="sm" variant="outline" disabled={busy} onClick={handleReplayAll}>
-                  Replay all ({dlqMessages.length})
-                </Button>
-              )}
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <SectionHeader>Sync status</SectionHeader>
+        {summaryLoading && !syncSummary ? (
+          <p className="text-xs text-on-surface-variant">Loading...</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatCard
+                label="Last handoff"
+                value={formatTime(lastHandoff?.completed_at)}
+                sublabel={formatDateLabel(lastHandoff?.completed_at)}
+                accent={lastHandoff?.error ? 'terracotta' : 'outline'}
+              />
+              <StatCard
+                label="Accepted"
+                value={formatNumber(lastHandoff?.accepted)}
+                accent="outline"
+              />
+              <StatCard
+                label="Batches"
+                value={formatNumber(lastHandoff?.batches)}
+                accent="outline"
+              />
+              <StatCard
+                label="Duration"
+                value={formatDuration(lastHandoff?.duration_ms)}
+                accent="outline"
+              />
             </div>
-            {dlqLoading ? (
-              <p className="text-xs text-on-surface-variant">Loading…</p>
-            ) : dlqMessages.length === 0 ? (
-              <p className="text-sm text-on-surface-variant">No messages in the dead-letter queue.</p>
-            ) : (
-              <div className="divide-y divide-outline-variant/10">
-                {dlqMessages.map((message) => (
-                  <DlqRow key={message.msg_id} message={message} onAction={handleDlqAction} busy={busy} />
-                ))}
-              </div>
+            {lastHandoff?.error && (
+              <p className="text-sm text-tertiary break-words">{lastHandoff.error}</p>
             )}
-          </Surface>
-        </>
+          </>
+        )}
+      </Surface>
+
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <SectionHeader>Remote store</SectionHeader>
+          {syncSummary?.remote && (
+            <Badge variant="default">v{syncSummary.remote.package_version}</Badge>
+          )}
+        </div>
+        {summaryLoading && !syncSummary ? (
+          <p className="text-xs text-on-surface-variant">Loading...</p>
+        ) : syncSummary?.remote_error ? (
+          <p className="text-sm text-tertiary break-words">{syncSummary.remote_error}</p>
+        ) : syncSummary ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <StatCard label="Local records" value={formatNumber(localTotal)} accent="outline" />
+              <StatCard label="Remote records" value={formatNumber(remoteTotal)} accent="outline" />
+              <StatCard
+                label="Delta"
+                value={remoteTotal === null || localTotal === null ? '—' : tableDelta(localTotal, remoteTotal)}
+                accent={remoteTotal !== null && localTotal !== null && remoteTotal !== localTotal ? 'ochre' : 'outline'}
+              />
+            </div>
+            <SyncStoreTable summary={syncSummary} />
+          </div>
+        ) : (
+          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+        )}
+      </Surface>
+
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <SectionHeader>Queue health</SectionHeader>
+        {queueLoading ? (
+          <p className="text-xs text-on-surface-variant">Loading...</p>
+        ) : queueUnavailable ? (
+          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard label="Waiting" value={main?.depth == null ? '—' : String(main.depth)} accent="outline" />
+            <StatCard label="Oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
+            <StatCard
+              label="Failed"
+              value={dlqStats?.depth == null ? String(dlqMessages.length) : String(dlqStats.depth)}
+              accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+            />
+            <StatCard label="Oldest failed" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
+          </div>
+        )}
+      </Surface>
+
+      <Surface level="low" ghostBorder className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <SectionHeader>Failed syncs</SectionHeader>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || failedSyncsUnavailable || dlqMessages.length === 0}
+            onClick={handleReplayAll}
+          >
+            {dlqMessages.length > 0 ? `Retry all (${dlqMessages.length})` : 'Retry all'}
+          </Button>
+        </div>
+        {failedSyncsLoading ? (
+          <p className="text-xs text-on-surface-variant">Loading...</p>
+        ) : failedSyncsUnavailable ? (
+          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+        ) : dlqMessages.length === 0 ? (
+          <p className="text-sm text-on-surface-variant">No failed syncs.</p>
+        ) : (
+          <div className="divide-y divide-outline-variant/10">
+            {dlqMessages.map((message) => (
+              <DlqRow key={message.msg_id} message={message} onAction={handleDlqAction} busy={busy} />
+            ))}
+          </div>
+        )}
+      </Surface>
+
+      {hasVectorIndexStatus && (
+        <Surface level="low" ghostBorder className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <SectionHeader>Remote Vector Index</SectionHeader>
+            <Badge variant={status.vector_reindex_status === 'error' ? 'destructive' : status.vector_reindex_status === 'running' ? 'outline' : 'default'}>
+              {status.vector_reindex_status ?? 'ready'}
+            </Badge>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <span className="text-xs text-on-surface-variant">Last table</span>
+              <p className="text-sm text-on-surface">{status.vector_reindex_last_table ?? 'None'}</p>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-on-surface-variant">Last run</span>
+              <p className="text-sm text-on-surface">
+                {status.vector_reindex_last_run_at ? new Date(status.vector_reindex_last_run_at * 1000).toLocaleString() : 'Never'}
+              </p>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-on-surface-variant">Processed</span>
+              <p className="text-sm text-on-surface">{status.vector_reindex_last_processed ?? 0}</p>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-on-surface-variant">Updated / deleted</span>
+              <p className="text-sm text-on-surface">{status.vector_reindex_last_reindexed ?? 0} / {status.vector_reindex_last_deleted ?? 0}</p>
+            </div>
+          </div>
+          {status.vector_reindex_last_error && (
+            <div className="space-y-1 border-t border-outline-variant/10 pt-3">
+              <span className="text-xs text-on-surface-variant">Last error</span>
+              <p className="text-xs text-tertiary break-words">{status.vector_reindex_last_error}</p>
+            </div>
+          )}
+        </Surface>
       )}
-    </div>
-  );
-}
-
-/* ---------- SyncedTab ---------- */
-
-function SyncedTab({ status }: { status: TeamStatusResponse }) {
-  const disclosures = status.local_only_disclosures ?? [];
-  return (
-    <div className="space-y-4">
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <SectionHeader>Per-table sync</SectionHeader>
-        <p className="text-xs text-on-surface-variant">
-          A per-table progress view (synced / total per table) will land here once the daemon exposes the summary endpoint. Today the Status tab's pending-sync counter is the single number to watch — local rows enqueue immediately on write, so a healthy steady-state shows a small pending count and a moving sync-protocol version.
-        </p>
-        <div className="text-xs text-on-surface-variant grid gap-1 sm:grid-cols-2">
-          <div>Sync protocol: <span className="text-on-surface font-mono">v{status.sync_protocol_version}</span></div>
-          <div>Schema: <span className="text-on-surface font-mono">v{status.schema_version}</span></div>
-          <div>Worker: <span className="text-on-surface font-mono">{status.deployed_worker_version ?? '—'}</span></div>
-          <div>Machine ID: <span className="text-on-surface font-mono break-all">{status.machine_id}</span></div>
-        </div>
-      </Surface>
-
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <SectionHeader>What stays local</SectionHeader>
-        <p className="text-xs text-on-surface-variant">
-          These tables and columns are intentionally excluded from team sync. Read this if you're surprised that something doesn't appear on a teammate's machine.
-        </p>
-        <div className="space-y-3">
-          {disclosures.map((d) => (
-            <div key={d.table} className="space-y-1">
-              <div className="flex items-center gap-2">
-                <code className="text-sm text-on-surface font-mono">{d.table}</code>
-                <span className="text-xs text-on-surface-variant">({d.columns.length === 1 ? d.columns[0] : `${d.columns.length} columns`})</span>
-              </div>
-              <p className="text-xs text-on-surface-variant">{d.rationale}</p>
-              {d.columns.length > 1 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {d.columns.map((c) => (
-                    <Badge key={c} variant="outline" className="font-mono text-xs">{c}</Badge>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </Surface>
-
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <SectionHeader>Recent activity</SectionHeader>
-        <p className="text-xs text-on-surface-variant">
-          A live feed of recent sync events lives in <Link to="/logs?component=team-sync" className="underline hover:text-on-surface">team-sync logs</Link> for now. Per-record activity attribution will land here in a follow-up.
-        </p>
-      </Surface>
     </div>
   );
 }
@@ -886,8 +908,7 @@ export default function Team() {
           {isConnected && status ? (
             <>
               {activeTab === 'status' && <StatusTab status={status} />}
-              {activeTab === 'outbox' && <OutboxTab status={status} />}
-              {activeTab === 'synced' && <SyncedTab status={status} />}
+              {activeTab === 'sync' && <SyncTab status={status} />}
             </>
           ) : (
             <div className="space-y-4">
@@ -913,14 +934,14 @@ export default function Team() {
                     </code>
                     <p className="text-xs text-on-surface-variant mt-1">
                       Creates a D1 database, Vectorize index, and deploys the sync worker.
-                      Outputs a Worker URL and API key for the Grove.
+                      Outputs a Worker URL and Team key for the Grove.
                     </p>
                   </div>
 
                   <div>
                     <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
                     <p className="text-xs text-on-surface-variant">
-                      Paste the Worker URL and API key below, or if you ran <code className="font-mono">myco-team install</code>,
+                      Paste the Worker URL and Team key below, or if you ran <code className="font-mono">myco-team install</code>,
                       you're already connected.
                     </p>
                   </div>

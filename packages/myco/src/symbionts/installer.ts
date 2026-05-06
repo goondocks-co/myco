@@ -7,6 +7,7 @@ import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpe
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
 import { loadConfig, loadMergedConfig, updateConfig } from '../config/loader.js';
 import { derivePort } from '../daemon/port.js';
+import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
 /** Current comment header for Myco-managed .gitignore block. */
@@ -1041,6 +1042,9 @@ export class SymbiontInstaller {
 
   private resolveDaemonPort(): number {
     const vaultDir = path.join(this.projectRoot, '.myco');
+    const daemonService = resolveDaemonServiceState(vaultDir, { env: process.env });
+    if (daemonService.scope === 'global') return daemonService.canonicalPort;
+
     try {
       const config = loadConfig(vaultDir);
       if (config.daemon.port !== null) return config.daemon.port;
