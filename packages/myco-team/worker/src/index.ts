@@ -694,40 +694,28 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 }
 
 /**
- * bge-m3 has a 60,000-token context window per request. Tail-observed
- * tokenization density on this dataset hit 0.84 chars/token in the
- * worst case (a 32-text chunk averaging 1,875 chars/text produced
- * 71,680 tokens). Cap both combined characters AND count per chunk —
- * char cap handles long texts, count cap handles dense short ones.
- *
- * The combined cap targets ~30K tokens worst case (60K-char budget at
- * 0.5 chars/token absolute floor would still fit), which leaves
- * substantial headroom under the 60K hard limit.
+ * bge-m3 has a 60,000-token context window per request, but
+ * tokenization density varies wildly with content (0.84–4 chars per
+ * token observed in tail logs). Estimating ahead of time always
+ * leaves us over- or under-batching; instead, start with a generous
+ * initial chunk and let the tokenizer tell us when we've overflowed.
+ * `runOneEmbedChunk` halves and retries on the model's 3030 error,
+ * which keeps throughput high on small-text batches without ever
+ * sending more than the model can accept.
  */
-const EMBED_BATCH_CHAR_BUDGET = 25_000;
-const EMBED_BATCH_MAX_COUNT = 10;
+const EMBED_BATCH_INITIAL_COUNT = 50;
 
 /**
- * Group jobs into chunks whose combined (truncated) text size fits
- * the bge-m3 context window. Each chunk becomes one `ai.run` call.
+ * Split jobs into evenly-sized initial chunks. `runOneEmbedChunk`
+ * halves further as needed when the model rejects an over-budget
+ * chunk, so this only needs to keep individual ai.run requests at a
+ * reasonable scale — not guarantee they fit.
  */
 function chunkEmbedJobs(jobs: EmbedJob[]): EmbedJob[][] {
   const chunks: EmbedJob[][] = [];
-  let current: EmbedJob[] = [];
-  let chars = 0;
-  for (const job of jobs) {
-    const len = Math.min(job.text.length, MAX_EMBEDDING_TEXT_CHARS);
-    const wouldExceedChars = chars + len > EMBED_BATCH_CHAR_BUDGET;
-    const wouldExceedCount = current.length >= EMBED_BATCH_MAX_COUNT;
-    if (current.length > 0 && (wouldExceedChars || wouldExceedCount)) {
-      chunks.push(current);
-      current = [];
-      chars = 0;
-    }
-    current.push(job);
-    chars += len;
+  for (let i = 0; i < jobs.length; i += EMBED_BATCH_INITIAL_COUNT) {
+    chunks.push(jobs.slice(i, i + EMBED_BATCH_INITIAL_COUNT));
   }
-  if (current.length > 0) chunks.push(current);
   return chunks;
 }
 
@@ -749,6 +737,8 @@ async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
 }
 
 async function runOneEmbedChunk(env: Env, jobs: EmbedJob[]): Promise<void> {
+  if (jobs.length === 0) return;
+
   const texts = jobs.map((j) =>
     j.text.length > MAX_EMBEDDING_TEXT_CHARS
       ? `${j.text.slice(0, MAX_EMBEDDING_TEXT_CHARS)}\n\n[truncated for embedding]`
@@ -759,9 +749,21 @@ async function runOneEmbedChunk(env: Env, jobs: EmbedJob[]): Promise<void> {
   try {
     aiResult = await env.AI.run('@cf/baai/bge-m3', { text: texts }) as { data: number[][] };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // 3030 = "Max context reached N tokens but model supports only 60000".
+    // Split and retry — the tokenizer is authoritative; estimating budget
+    // ahead of time is unreliable across the variety of content density
+    // we embed (titles, code, prose, JSON). Single-text overflows can't
+    // split further and fall through to the error log.
+    if (jobs.length > 1 && message.includes('Max context reached')) {
+      const mid = Math.floor(jobs.length / 2);
+      await runOneEmbedChunk(env, jobs.slice(0, mid));
+      await runOneEmbedChunk(env, jobs.slice(mid));
+      return;
+    }
     console.error('team-sync.embed-batch-failed', {
       count: jobs.length,
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
     });
     return;
   }
