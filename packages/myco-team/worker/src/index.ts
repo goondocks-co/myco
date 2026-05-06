@@ -650,8 +650,26 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 
   // Vectorize is a best-effort companion index — embedding failures don't
   // fail the batch (recoverable via /vectors/reindex). Run in parallel.
+  // Log every rejection so silent embed-side outages (Workers AI errors,
+  // missing AI binding, Vectorize upsert failures) surface in
+  // `wrangler tail` instead of vanishing into Promise.allSettled. Without
+  // this, a fully broken embed pipeline reports "accepted" sync handoffs
+  // while the Vectorize index stays empty.
   if (embeddingTasks.length > 0) {
-    await Promise.allSettled(embeddingTasks.map((task) => task()));
+    const results = await Promise.allSettled(embeddingTasks.map((task) => task()));
+    let failed = 0;
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        failed++;
+        console.error('team-sync.embed-failed', {
+          error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+          stack: r.reason instanceof Error ? r.reason.stack : undefined,
+        });
+      }
+    }
+    if (failed > 0) {
+      console.error(`team-sync.embed-summary ${failed}/${results.length} embeddings failed`);
+    }
   }
 }
 
