@@ -15,7 +15,7 @@ import { initVaultDb } from './shared.js';
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const idOrLatest = args[0];
 
-  const cleanup = initVaultDb(vaultDir);
+  const cleanup = await initVaultDb(vaultDir);
   try {
     const sessions = listSessions({ limit: 100 });
     if (sessions.length === 0) {

@@ -10,7 +10,7 @@ import { gatherStats } from '../services/stats.js';
 import { initVaultDb } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const cleanup = initVaultDb(vaultDir);
+  const cleanup = await initVaultDb(vaultDir);
   let stats: V2Stats;
   try {
     stats = gatherStats(vaultDir);

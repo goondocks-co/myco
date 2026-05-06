@@ -43,7 +43,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   const query = args.join(' ');
   if (!query) { console.error('Usage: myco search <query>'); process.exit(1); }
 
-  const cleanup = initVaultDb(vaultDir);
+  const cleanup = await initVaultDb(vaultDir);
   try {
     const requestContext = requestContextFromEnvironment(process.env, vaultDir);
     const projectId = rowProjectIdFromRequestContext(requestContext);

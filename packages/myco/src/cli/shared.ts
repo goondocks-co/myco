@@ -22,10 +22,18 @@ export { parseStringFlag, parseIntFlag } from '../logs/format.js';
  * Used by CLI commands that only need reads (stats, search, session).
  * Does NOT require the daemon to be running — WAL mode allows concurrent reads.
  *
+ * Resolves the active DB via the daemon data-paths helper, which means
+ * Grove-bound projects open the Grove DB and pre-Grove vaults still
+ * open the legacy `.myco/myco.db`. After Grove activation + archive,
+ * the legacy file moves into `.archive-<ts>/`, so reading it directly
+ * here would fail.
+ *
  * @returns a cleanup function that closes the database.
  */
-export function initVaultDb(vaultDir: string): () => void {
-  initDatabase(vaultDbPath(vaultDir));
+export async function initVaultDb(vaultDir: string): Promise<() => void> {
+  const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
+  const { databasePath } = resolveDaemonDataPaths(vaultDir);
+  initDatabase(databasePath);
   return closeDatabase;
 }
 

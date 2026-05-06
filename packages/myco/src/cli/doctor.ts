@@ -60,17 +60,22 @@ async function checkVault(vaultDir: string): Promise<{ check: DoctorCheck; confi
 
 /** Check that the SQLite database exists and can be queried. */
 async function checkDatabase(vaultDir: string): Promise<DoctorCheck> {
-  const dbPath = path.join(vaultDir, DB_FILENAME);
-  if (!fs.existsSync(dbPath)) {
-    return { name: 'Database', status: 'fail', detail: `${DB_FILENAME} not found — run \`myco init\``, fixable: false };
+  const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
+  const { databasePath, usingGrove } = resolveDaemonDataPaths(vaultDir);
+  if (!fs.existsSync(databasePath)) {
+    const hint = usingGrove
+      ? `Grove DB not found at ${databasePath}`
+      : `${DB_FILENAME} not found — run \`myco init\``;
+    return { name: 'Database', status: 'fail', detail: hint, fixable: false };
   }
   try {
-    const { initDatabase, closeDatabase, vaultDbPath } = await import('../db/client.js');
-    const db = initDatabase(vaultDbPath(vaultDir));
+    const { initDatabase, closeDatabase } = await import('../db/client.js');
+    const db = initDatabase(databasePath);
     const row = db.prepare('SELECT count(*) AS cnt FROM sessions').get() as { cnt: number } | undefined;
     const count = row?.cnt ?? 0;
     closeDatabase();
-    return { name: 'Database', status: 'ok', detail: `${DB_FILENAME} (${count.toLocaleString()} sessions)`, fixable: false };
+    const label = usingGrove ? 'Grove DB' : DB_FILENAME;
+    return { name: 'Database', status: 'ok', detail: `${label} (${count.toLocaleString()} sessions)`, fixable: false };
   } catch (err) {
     // Ensure DB is closed even on error
     try { const { closeDatabase } = await import('../db/client.js'); closeDatabase(); } catch { /* ignore */ }
