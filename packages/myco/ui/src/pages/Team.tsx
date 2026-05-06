@@ -501,15 +501,33 @@ function VectorsTile({
     return <StatCard label="Vectors" value={valueLabel} accent="sage" />;
   }
   const delta = remoteCount - localEmbedded;
-  const sublabel = delta === 0
-    ? `synced with ${formatNumber(localEmbedded)} local`
+  if (delta === 0) {
+    return (
+      <StatCard
+        label="Vectors"
+        value={valueLabel}
+        sublabel={`synced with ${formatNumber(localEmbedded)} local`}
+        accent="sage"
+      />
+    );
+  }
+  // Broken-state guard: when local has embeddings but the remote index
+  // is empty (or near-empty), classify as broken rather than drift.
+  // This is the "Vectorize never received the data, run a reindex"
+  // signal — distinct from "queue catching up after a fresh write".
+  // Threshold: remote < 5% of local treats the index as effectively
+  // empty (covers eventual-consistency lag near the threshold without
+  // hiding real outages).
+  const isBroken = localEmbedded > 0 && remoteCount < Math.max(1, localEmbedded * 0.05);
+  const sublabel = isBroken
+    ? `index empty — run \`myco-team-dev reindex-vectors\``
     : `${delta > 0 ? '+' : ''}${delta.toLocaleString()} vs ${formatNumber(localEmbedded)} local`;
   return (
     <StatCard
       label="Vectors"
       value={valueLabel}
       sublabel={sublabel}
-      accent={delta === 0 ? 'sage' : 'ochre'}
+      accent={isBroken ? 'terracotta' : 'ochre'}
     />
   );
 }
