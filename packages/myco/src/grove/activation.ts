@@ -80,7 +80,31 @@ interface ActivationMarker {
   validation: ActivationValidationSummary;
   team_sync_disabled: boolean;
   runtime_command_preserved: boolean;
+  legacy_archived?: { archived_at: string; archive_dir: string };
 }
+
+/**
+ * Files and directories under `.myco/` that hold legacy data superseded
+ * by the Grove DB. After successful activation these are moved into
+ * `.myco/.archive-<timestamp>/` so the directory stops looking like an
+ * active vault while remaining recoverable. Files that survive the
+ * archive (project.toml, migration marker, runtime.command, user config,
+ * secrets) are intentionally absent from this list.
+ */
+const LEGACY_ARCHIVE_ENTRIES: readonly string[] = [
+  'myco.db',
+  'myco.db-shm',
+  'myco.db-wal',
+  'vectors.db',
+  'vectors.db-shm',
+  'vectors.db-wal',
+  'buffer',
+  'staging',
+  'tasks',
+  'logs',
+  'team',
+  'attachments',
+];
 
 interface PreparedIdentity {
   projectId: string;
@@ -148,13 +172,19 @@ export function activateProjectMigration(
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   const sourceDbPath = path.join(projectVaultDir, 'myco.db');
-  if (!fs.existsSync(sourceDbPath)) {
-    throw new Error(`Legacy project database not found: ${sourceDbPath}`);
-  }
 
   const mycoHome = input.mycoHome ?? resolveMycoHome();
   const grove = resolveGrove(input.groveRef, mycoHome);
   const markerPath = activationMarkerPath(projectVaultDir);
+  // Once activation has run, the legacy DB is moved into `.archive-…/`
+  // by the post-import sweep — so the source-DB existence check only
+  // applies to a true first-run activation. Reading the marker first
+  // keeps re-runs idempotent after the archive step lands.
+  const existingMarkerEarly = readActivationMarker(markerPath);
+  if (!existingMarkerEarly && !fs.existsSync(sourceDbPath)) {
+    throw new Error(`Legacy project database not found: ${sourceDbPath}`);
+  }
+
   const existingManifest = loadProjectManifest(projectVaultDir);
   const identity = prepareIdentity({
     existingManifest,
@@ -164,7 +194,7 @@ export function activateProjectMigration(
     mycoHome,
   });
   const targetDbInfo = ensureGroveDatabase(grove.id, mycoHome);
-  const existingMarker = readActivationMarker(markerPath);
+  const existingMarker = existingMarkerEarly;
   if (existingMarker) {
     assertExistingMarkerMatches(existingMarker, {
       projectRoot,
@@ -248,6 +278,30 @@ export function activateProjectMigration(
         runtime_command_preserved: fs.existsSync(path.join(projectVaultDir, 'runtime.command')),
       });
     })();
+
+    // Archive legacy vault data on success. Done outside the DB
+    // transaction because it touches the filesystem; the marker has
+    // already been written, so any failure here is recoverable via
+    // `completeLegacyArchive`. Skipped on dry runs.
+    if (!input.dryRun) {
+      try {
+        const archiveDir = archiveLegacyVaultData(projectVaultDir);
+        if (archiveDir) {
+          const marker = readActivationMarker(markerPath);
+          if (marker) {
+            writeActivationMarker(markerPath, {
+              ...marker,
+              legacy_archived: {
+                archived_at: new Date().toISOString(),
+                archive_dir: archiveDir,
+              },
+            });
+          }
+        }
+      } catch {
+        // Archive is best-effort; the marker will reflect the absence.
+      }
+    }
   } catch (error) {
     if (!(error instanceof DryRunRollback)) throw error;
   } finally {
@@ -450,6 +504,61 @@ function disableLegacyTeamSync(projectVaultDir: string): boolean {
   if (!config.team.enabled) return false;
   updateTeamConfig(projectVaultDir, { enabled: false });
   return true;
+}
+
+/**
+ * Move post-activation legacy files into `.myco/.archive-<timestamp>/`.
+ * Returns the archive directory path so the marker can record it.
+ * Idempotent: if no `LEGACY_ARCHIVE_ENTRIES` are present, returns null.
+ */
+export function archiveLegacyVaultData(projectVaultDir: string): string | null {
+  const present = LEGACY_ARCHIVE_ENTRIES.filter((name) =>
+    fs.existsSync(path.join(projectVaultDir, name)),
+  );
+  if (present.length === 0) return null;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archiveDir = path.join(projectVaultDir, `.archive-${stamp}`);
+  fs.mkdirSync(archiveDir, { recursive: true });
+
+  for (const name of present) {
+    fs.renameSync(path.join(projectVaultDir, name), path.join(archiveDir, name));
+  }
+  return archiveDir;
+}
+
+/**
+ * Stand-alone archive completion for installs whose Grove activation ran
+ * before the archive step existed. Reads the existing activation marker,
+ * confirms it is `activated`, archives any leftover legacy data, and
+ * stamps `legacy_archived` on the marker. Idempotent — repeated calls
+ * after archive completion are no-ops.
+ */
+export function completeLegacyArchive(projectVaultDir: string): {
+  archived_dir: string | null;
+  already_complete: boolean;
+} {
+  const markerPath = path.join(projectVaultDir, 'migration', GROVE_ACTIVATION_MARKER);
+  const marker = readActivationMarker(markerPath);
+  if (!marker) return { archived_dir: null, already_complete: false };
+
+  if (marker.legacy_archived) {
+    // Even with the flag set, sweep again in case a previous archive
+    // left items behind (re-running is safe — the rename is bounded to
+    // LEGACY_ARCHIVE_ENTRIES that still exist at the top of the vault).
+    const dir = archiveLegacyVaultData(projectVaultDir);
+    return { archived_dir: dir, already_complete: dir === null };
+  }
+
+  const dir = archiveLegacyVaultData(projectVaultDir);
+  writeActivationMarker(markerPath, {
+    ...marker,
+    legacy_archived: {
+      archived_at: new Date().toISOString(),
+      archive_dir: dir ?? '',
+    },
+  });
+  return { archived_dir: dir, already_complete: false };
 }
 
 function readActivationMarker(filePath: string): ActivationMarker | null {

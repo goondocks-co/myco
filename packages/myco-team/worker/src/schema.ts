@@ -433,4 +433,52 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       .bind('evaluation_feature_pruned', '1')
       .run();
   }
+
+  // One-shot prune for orphan `project_id` rows: NULL, empty, or any
+  // non-`proj_<32 hex>` value. These came from pre-Grove daemon writers
+  // that quietly enqueued bad ids before the brand was added locally
+  // (and the corresponding worker-side gate in handleEnqueue). Mirrors
+  // the local v36 sweep and converges D1 with the cleaned-up vault.
+  // Marker-guarded so the prune runs once per D1.
+  const projectIdPruneMarker = await db
+    .prepare(`SELECT value FROM team_config WHERE key = ?`)
+    .bind('project_id_orphans_pruned_v36')
+    .first<{ value: string }>();
+
+  if (!projectIdPruneMarker) {
+    const tablesToPrune: readonly string[] = [
+      'sessions',
+      'prompt_batches',
+      'spores',
+      'entities',
+      'graph_edges',
+      'plans',
+      'artifacts',
+      'entity_mentions',
+      'resolution_events',
+      'digest_extracts',
+      'skill_candidates',
+      'skill_records',
+      'skill_usage',
+    ];
+    for (const table of tablesToPrune) {
+      try {
+        await db
+          .prepare(
+            `DELETE FROM ${table}
+              WHERE project_id IS NULL
+                 OR project_id = ''
+                 OR project_id NOT LIKE 'proj_%'`,
+          )
+          .run();
+      } catch {
+        // Table absent on this D1 (e.g. an older deploy that hasn't
+        // received every column yet) — skip and move on.
+      }
+    }
+    await db
+      .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
+      .bind('project_id_orphans_pruned_v36', '1')
+      .run();
+  }
 }

@@ -89,6 +89,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 33, migrate: (db) => migrateV32ToV33(db) },
   { version: 34, migrate: (db) => migrateV33ToV34(db) },
   { version: 35, migrate: (db) => migrateV34ToV35(db) },
+  { version: 36, migrate: (db) => migrateV35ToV36(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2179,5 +2180,68 @@ function migrateV34ToV35(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+const V36_PROJECT_ID_TABLES: readonly string[] = [
+  ...GROVE_PROJECT_SCOPED_TABLES,
+  'canopy_entries',
+  'canopy_maps',
+];
+
+function migrateV35ToV36(db: Database): void {
+  // Suspend FK enforcement for the duration of the sweep. Several FK
+  // children (agent_turns → agent_runs, attachments → sessions, …) can
+  // hold orphan project_id rows that reference parents we're also
+  // about to delete; without this, the order of DELETEs would have to
+  // mirror the FK graph exactly. Restored in `finally` below.
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  setPragmaBoolean(db, 'foreign_keys', 0);
+
+  db.prepare('BEGIN').run();
+  try {
+    for (const table of V36_PROJECT_ID_TABLES) {
+      if (!tableExists(db, table)) continue;
+      // Only sweep tables where Grove-era rows already coexist with
+      // orphans — that's the dual-namespace state we're cleaning up.
+      // A pre-Grove snapshot (all NULLs, zero `proj_<hex>` rows) is
+      // a no-op so the activation importer can still copy rows out.
+      // A fresh post-Grove vault (all `proj_<hex>`) is also a no-op.
+      const hasGroveRow = (db.prepare(
+        `SELECT 1 FROM ${table} WHERE project_id LIKE 'proj_%' LIMIT 1`,
+      ).get() ?? null) !== null;
+      if (!hasGroveRow) continue;
+      db.prepare(
+        `DELETE FROM ${table}
+          WHERE project_id IS NULL
+             OR project_id = ''
+             OR project_id NOT LIKE 'proj_%'`,
+      ).run();
+    }
+
+    if (tableExists(db, 'team_outbox')) {
+      db.prepare(
+        `DELETE FROM team_outbox
+          WHERE sent_at IS NULL
+            AND (
+              json_extract(payload, '$.project_id') IS NULL
+              OR json_extract(payload, '$.project_id') = ''
+              OR json_extract(payload, '$.project_id') NOT LIKE 'proj_%'
+            )`,
+      ).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(36, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
   }
 }
