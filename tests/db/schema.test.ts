@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(35);
+      expect(SCHEMA_VERSION).toBe(36);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1402,14 +1402,15 @@ describe('Database schema', () => {
 
       it('full v13 -> current chain reaches SCHEMA_VERSION and is replay-safe', () => {
         buildV13Db(db);
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]) runMigration(db, v);
+        const versions = Array.from({ length: SCHEMA_VERSION - 13 }, (_, i) => 14 + i);
+        for (const v of versions) runMigration(db, v);
 
         const row = db.prepare(
           `SELECT MAX(version) AS v FROM schema_version`,
         ).get() as { v: number };
         expect(row.v).toBe(SCHEMA_VERSION);
 
-        for (const v of [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]) {
+        for (const v of versions) {
           expect(() => runMigration(db, v), `v${v} replay`).not.toThrow();
         }
       });
@@ -1472,8 +1473,8 @@ describe('Database schema', () => {
            VALUES (?, ?, ?, ?, ?)`,
         );
         insertPlan.run('legacy-a', null, 'path:plans/roadmap.md', 'Legacy A', 1000);
-        insertPlan.run('project-a', 'proj_a', 'path:plans/roadmap.md', 'Project A', 1001);
-        insertPlan.run('project-b', 'proj_b', 'path:plans/roadmap.md', 'Project B', 1002);
+        insertPlan.run('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'proj_a', 'path:plans/roadmap.md', 'Project A', 1001);
+        insertPlan.run('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'proj_b', 'path:plans/roadmap.md', 'Project B', 1002);
 
         expect(() =>
           insertPlan.run('legacy-b', null, 'path:plans/roadmap.md', 'Legacy B', 1003),

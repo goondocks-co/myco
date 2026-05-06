@@ -29,6 +29,7 @@ import path from 'node:path';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { listSkillRecords, getSkillRecordByName } from '@myco/db/queries/skill-records.js';
@@ -66,6 +67,7 @@ describe('skill staging → finalize pipeline', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stage-finalize-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'stage-finalize-test' });
   });
 
   afterAll(() => {

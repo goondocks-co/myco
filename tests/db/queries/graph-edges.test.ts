@@ -123,10 +123,10 @@ describe('graph edge query helpers', () => {
     });
 
     it('filters by projectId', () => {
-      insertGraphEdge(makeEdge({ project_id: 'project-a', source_id: 'spore-a' }));
-      insertGraphEdge(makeEdge({ project_id: 'project-b', source_id: 'spore-b' }));
+      insertGraphEdge(makeEdge({ project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', source_id: 'spore-a' }));
+      insertGraphEdge(makeEdge({ project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', source_id: 'spore-b' }));
 
-      const edges = listGraphEdges({ projectId: 'project-a' });
+      const edges = listGraphEdges({ projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
 
       expect(edges).toHaveLength(1);
       expect(edges[0].source_id).toBe('spore-a');
@@ -191,21 +191,21 @@ describe('graph edge query helpers', () => {
 
     it('traverses only edges inside the requested project scope', () => {
       insertGraphEdge(makeEdge({
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         source_id: 'spore-1',
         source_type: 'spore',
         target_id: 'session-a',
         target_type: 'session',
       }));
       insertGraphEdge(makeEdge({
-        project_id: 'project-b',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         source_id: 'spore-1',
         source_type: 'spore',
         target_id: 'session-b',
         target_type: 'session',
       }));
 
-      const result = getGraphForNode('spore-1', 'spore', { depth: 1, projectId: 'project-a' });
+      const result = getGraphForNode('spore-1', 'spore', { depth: 1, projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
 
       expect(result.edges).toHaveLength(1);
       expect(result.edges[0].target_id).toBe('session-a');

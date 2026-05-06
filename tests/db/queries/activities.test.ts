@@ -122,18 +122,18 @@ describe('activity query helpers', () => {
     });
 
     it('stores an explicit project_id', () => {
-      const row = insertActivity(makeActivity(sessionId, { project_id: 'project-a' }));
+      const row = insertActivity(makeActivity(sessionId, { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
 
-      expect(row.project_id).toBe('project-a');
+      expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     });
 
     it('derives project_id from the session for stateless inserts', () => {
-      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
+      const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
       upsertSession(scopedSession);
 
       const row = insertActivityWithBatch(makeActivity(scopedSession.id));
 
-      expect(row.project_id).toBe('project-a');
+      expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     });
   });
 

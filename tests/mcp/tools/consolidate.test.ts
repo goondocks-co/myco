@@ -113,8 +113,8 @@ describe('myco_spores op: consolidate (in-process)', () => {
 
   it('does not consolidate a source spore from another project context', async () => {
     seedAgent();
-    seedSpore('g-1', 'user', 'project-a');
-    seedSpore('g-2', 'user', 'project-b');
+    seedSpore('g-1', 'user', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    seedSpore('g-2', 'user', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
 
     const result = await handleMycoSpores({
       op: 'consolidate',
@@ -122,7 +122,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       consolidated_content: '# Merged gotchas',
       observation_type: 'gotcha',
       reason: 'mixed projects',
-    }, mockClient(), requestContext('project-a'));
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
     expect(result).toEqual({ ok: false, error: 'source_spore_id not found: g-2' });
 

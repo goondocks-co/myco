@@ -165,8 +165,8 @@ describe('fullTextSearch', () => {
   });
 
   it('filters FTS results by project_id across batches and activities', () => {
-    const sessionA = makeSession({ id: 'sess-project-a', project_id: 'project-a' });
-    const sessionB = makeSession({ id: 'sess-project-b', project_id: 'project-b' });
+    const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
     upsertSession(sessionA);
     upsertSession(sessionB);
     insertBatch(makeBatch(sessionA.id, { user_prompt: 'shared needle from batch a' }));
@@ -174,7 +174,7 @@ describe('fullTextSearch', () => {
     insertActivity(makeActivity(sessionA.id, { tool_name: 'Read', tool_input: 'shared needle from activity a' }));
     insertActivity(makeActivity(sessionB.id, { tool_name: 'Read', tool_input: 'shared needle from activity b' }));
 
-    const results = fullTextSearch('needle', { project_id: 'project-a' });
+    const results = fullTextSearch('needle', { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
 
     expect(results).toHaveLength(2);
     expect(results.every((result) => result.preview.includes('activity a') || result.preview.includes('batch a'))).toBe(true);
@@ -222,7 +222,7 @@ describe('hydrateSearchResults', () => {
 
   it('hydrates canopy_entries vector hits using the synthesized id', () => {
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'packages/myco/src/canopy/scanner/index.ts',
       llm_description: 'Walks the project tree to harvest canopy entries.',
       language: 'typescript',
@@ -230,7 +230,7 @@ describe('hydrateSearchResults', () => {
 
     const vectorResults: VectorSearchResult[] = [
       {
-        id: 'proj-1:packages/myco/src/canopy/scanner/index.ts',
+        id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:packages/myco/src/canopy/scanner/index.ts',
         namespace: 'canopy_entries',
         similarity: 0.91,
         metadata: {},
@@ -242,12 +242,12 @@ describe('hydrateSearchResults', () => {
     expect(hydrated).toHaveLength(1);
     const hit = hydrated[0];
     expect(hit.type).toBe('canopy');
-    expect(hit.id).toBe('proj-1:packages/myco/src/canopy/scanner/index.ts');
+    expect(hit.id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:packages/myco/src/canopy/scanner/index.ts');
     expect(hit.title).toBe('packages/myco/src/canopy/scanner/index.ts');
     expect(hit.preview).toBe('Walks the project tree to harvest canopy entries.');
     expect(hit.score).toBeCloseTo(0.91, 5);
     expect(hit.path).toBe('packages/myco/src/canopy/scanner/index.ts');
-    expect(hit.project_id).toBe('proj-1');
+    expect(hit.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(hit.language).toBe('typescript');
     expect(hit.llm_description).toBe('Walks the project tree to harvest canopy entries.');
   });
@@ -257,7 +257,7 @@ describe('hydrateSearchResults', () => {
     upsertSession(session);
 
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'src/foo.ts',
       llm_description: 'Foo module description.',
       language: 'typescript',
@@ -271,7 +271,7 @@ describe('hydrateSearchResults', () => {
         metadata: {},
       },
       {
-        id: 'proj-1:src/foo.ts',
+        id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/foo.ts',
         namespace: 'canopy_entries',
         similarity: 0.72,
         metadata: {},
@@ -291,7 +291,7 @@ describe('hydrateSearchResults', () => {
 
   it('drops malformed canopy ids without throwing', () => {
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'src/foo.ts',
       llm_description: 'Real row.',
       language: 'typescript',
@@ -301,7 +301,7 @@ describe('hydrateSearchResults', () => {
       // Missing colon — malformed
       { id: 'no-colon-here', namespace: 'canopy_entries', similarity: 0.9, metadata: {} },
       // Real id
-      { id: 'proj-1:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
+      { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
     ];
 
     const hydrated = hydrateSearchResults(vectorResults);
@@ -310,17 +310,17 @@ describe('hydrateSearchResults', () => {
   });
 
   it('filters hydrated vector hits by project_id', () => {
-    const sessionA = makeSession({ id: 'sess-vector-a', project_id: 'project-a', title: 'A session' });
-    const sessionB = makeSession({ id: 'sess-vector-b', project_id: 'project-b', title: 'B session' });
+    const sessionA = makeSession({ id: 'sess-vector-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', title: 'A session' });
+    const sessionB = makeSession({ id: 'sess-vector-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', title: 'B session' });
     upsertSession(sessionA);
     upsertSession(sessionB);
     insertCanopyEntry({
-      project_id: 'project-a',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'src/a.ts',
       llm_description: 'Project A file.',
     });
     insertCanopyEntry({
-      project_id: 'project-b',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       path: 'src/b.ts',
       llm_description: 'Project B file.',
     });
@@ -328,11 +328,11 @@ describe('hydrateSearchResults', () => {
     const hydrated = hydrateSearchResults([
       { id: sessionA.id, namespace: 'sessions', similarity: 0.9, metadata: {} },
       { id: sessionB.id, namespace: 'sessions', similarity: 0.8, metadata: {} },
-      { id: 'project-a:src/a.ts', namespace: 'canopy_entries', similarity: 0.7, metadata: {} },
-      { id: 'project-b:src/b.ts', namespace: 'canopy_entries', similarity: 0.6, metadata: {} },
-    ], { project_id: 'project-a' });
+      { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts', namespace: 'canopy_entries', similarity: 0.7, metadata: {} },
+      { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:src/b.ts', namespace: 'canopy_entries', similarity: 0.6, metadata: {} },
+    ], { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
 
-    expect(hydrated.map((result) => result.id)).toEqual([sessionA.id, 'project-a:src/a.ts']);
+    expect(hydrated.map((result) => result.id)).toEqual([sessionA.id, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts']);
   });
 
   it('keeps canopy vector hits broad for legacy null project scope', () => {

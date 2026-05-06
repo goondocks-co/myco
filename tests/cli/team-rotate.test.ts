@@ -33,6 +33,20 @@ describe('teamRotateTokens', () => {
     originalExistsSync = fs.existsSync.bind(fs);
 
     fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, 'project.toml'),
+      [
+        '[project]',
+        'id = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+        'name = "test"',
+        '',
+        '[grove]',
+        'binding_id = "gbind_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+        'slug = "rotate-test"',
+        'mode = "local"',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
       'version: 3',
       'config_version: 0',

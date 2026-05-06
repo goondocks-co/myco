@@ -157,12 +157,12 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
-      ], requestContext('project-a'));
+      ], requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
       expect(getUnprocessedBatches).toHaveBeenCalledWith({
         limit: 5,
         includeActive: false,
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });
     });
   });
@@ -209,11 +209,11 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_spores', limit: 20 }),
-      ], requestContext('project-a'));
+      ], requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         limit: 20,
         includeActive: false,
       });
@@ -247,10 +247,10 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_sessions', limit: 5 }),
-      ], requestContext('project-a'));
+      ], requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
       expect(listSessions).toHaveBeenCalledWith({
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         limit: 5,
         includeActive: false,
       });

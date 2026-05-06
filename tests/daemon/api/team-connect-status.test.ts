@@ -206,7 +206,7 @@ describe('createTeamHandlers.handleStatus', () => {
       },
       getTeamClient: (requestContext) => {
         expect(requestContext?.groveId).toBe('grove_test');
-        expect(requestContext?.projectId).toBe('proj_test');
+        expect(requestContext?.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
         return null;
       },
       setTeamClient: () => undefined,
@@ -216,7 +216,7 @@ describe('createTeamHandlers.handleStatus', () => {
       requestContext: {
         projectRoot: path.join(tempDir, 'project'),
         projectVaultDir: vaultDir,
-        projectId: 'proj_test',
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         groveId: 'grove_test',
         machineId: 'machine-test',
         sessionId: null,
@@ -232,7 +232,7 @@ describe('createTeamHandlers.handleStatus', () => {
 
     expect(body.connection_scope).toBe('grove');
     expect(body.grove).toMatchObject({ id: 'grove_test' });
-    expect(body.project).toMatchObject({ id: 'proj_test', name: 'project' });
+    expect(body.project).toMatchObject({ id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' });
   });
 
   it('reports local and remote sync summary counts', async () => {

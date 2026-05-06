@@ -141,11 +141,11 @@ describe('teamInit', () => {
   it('incorporates the Grove slug into newly provisioned Cloudflare resources', async () => {
     const grove = createGrove('Myco Dogfood', homeDir);
     saveProjectManifest(vaultDir, {
-      project: { id: 'proj_test', name: 'myco' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'myco' },
       grove: { binding_id: 'gbind_test', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'myco',
       projectRoot,
       bindingId: 'gbind_test',
@@ -202,6 +202,13 @@ describe('teamInit', () => {
     console.error = ((...args: unknown[]) => {
       errors.push(args.map(String).join(' '));
     }) as typeof console.error;
+
+    // Provision a project manifest without Grove binding so the request
+    // context resolver succeeds, leaving the legacy
+    // `requireGroveInstallScope` check to reject the install.
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'fresh' },
+    });
 
     const { teamInit } = await import('../../packages/myco-team/src/cli.js');
     await expect(teamInit(vaultDir)).rejects.toThrow('process.exit(1)');

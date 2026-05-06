@@ -33,6 +33,11 @@ describe('teamDestroy', () => {
 
     const configPath = path.join(vaultDir, 'team', 'config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, 'project.toml'),
+      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "destroy-test"\n',
+      'utf-8',
+    );
     fs.writeFileSync(configPath, JSON.stringify({
       worker_name: 'myco-team-test',
       worker_url: 'https://myco-team-test.example.workers.dev',

@@ -12,6 +12,11 @@ describe('post-tool-use hook buffer fallback', () => {
 
     try {
       fs.mkdirSync(vaultDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(vaultDir, 'project.toml'),
+        '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "post-tool-buffer"\n',
+        'utf-8',
+      );
       fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
       fs.writeFileSync(transcriptPath, '{}\n', 'utf-8');
 

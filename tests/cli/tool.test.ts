@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/tool.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
@@ -22,6 +23,7 @@ describe('myco tool CLI', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tool-cli-'));
+    ensureProjectManifest(tmpDir, { projectName: 'tool-cli-test' });
     written = [];
     servers = [];
     digestHeaders = [];
@@ -115,18 +117,18 @@ describe('myco tool CLI', () => {
 
   it('forwards explicit environment request context to daemon-backed tools', async () => {
     const home = path.join(tmpDir, 'home');
-    const projectRoot = path.join(tmpDir, 'project-a');
+    const projectRoot = path.join(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const vaultDir = path.join(projectRoot, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     const { saveProjectManifest } = await import('@myco/config/project-manifest.js');
     const { createGrove, registerProjectInGrove } = await import('@myco/grove/registry.js');
     const grove = createGrove('Work', home);
     saveProjectManifest(vaultDir, {
-      project: { id: 'project-a', name: 'Project A' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'Project A',
       projectRoot,
       bindingId: 'gbind-a',
@@ -134,7 +136,7 @@ describe('myco tool CLI', () => {
 
     vi.stubEnv('MYCO_HOME', home);
     vi.stubEnv(REQUEST_CONTEXT_ENV.projectRoot, projectRoot);
-    vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, 'project-a');
+    vi.stubEnv(REQUEST_CONTEXT_ENV.projectId, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     vi.stubEnv(REQUEST_CONTEXT_ENV.groveId, grove.id);
     vi.stubEnv(REQUEST_CONTEXT_ENV.machineId, 'machine-a');
     vi.stubEnv(REQUEST_CONTEXT_ENV.sessionId, 'sess-a');
@@ -145,7 +147,7 @@ describe('myco tool CLI', () => {
     const output = outputJson<{ ok: boolean }>();
     expect(output.ok).toBe(true);
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(projectRoot);
-    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+    expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.projectId]).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.groveId]).toBe(grove.id);
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
     expect(digestHeaders.at(-1)?.[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');

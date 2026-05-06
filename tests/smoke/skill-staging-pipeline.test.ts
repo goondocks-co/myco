@@ -17,6 +17,7 @@ mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => 
 
 import { initDatabase, closeDatabase, getDatabase, SQLITE_DB_FILE } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { getSkillRecordByName, listSkillRecords } from '@myco/db/queries/skill-records.js';
@@ -73,6 +74,7 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     tmpDir = fs.realpathSync(raw);
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'skill-staging-smoke' });
     dbPath = path.join(vaultDir, SQLITE_DB_FILE);
 
     // Fresh v10 install via the app's normal initDatabase + createSchema

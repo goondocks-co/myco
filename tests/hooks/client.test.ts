@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createHookDaemonClient, DaemonClient, isIgnoredEventResponse } from '@myco/hooks/client';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS, resolveLegacyRequestContext } from '@myco/tools/request-context';
-import { saveProjectManifest } from '@myco/config/project-manifest';
+import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveProjectVaultDir, resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import http from 'node:http';
@@ -20,6 +20,7 @@ describe('DaemonClient', () => {
     // request-level result; the spawn path has its own unit coverage.
     process.env.MYCO_NO_AUTO_SPAWN = '1';
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-'));
+    ensureProjectManifest(vaultDir, { projectName: 'client-test' });
 
     mockServer = http.createServer((req, res) => {
       if (req.url === '/health') {
@@ -76,7 +77,7 @@ describe('DaemonClient', () => {
 
       const context = resolveLegacyRequestContext(vaultDir, {
         projectRoot: '/workspace/project-a',
-        projectId: 'project-a',
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         groveId: 'grove-a',
         machineId: 'machine-a',
         sessionId: 'sess-a',
@@ -88,7 +89,7 @@ describe('DaemonClient', () => {
 
       expect(result.ok).toBe(true);
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe('/workspace/project-a');
-      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe('grove-a');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-a');
@@ -105,16 +106,16 @@ describe('DaemonClient', () => {
     try {
       const home = path.join(tmp, 'home');
       process.env.MYCO_HOME = home;
-      const projectRoot = path.join(tmp, 'project-a');
+      const projectRoot = path.join(tmp, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       const projectVaultDir = resolveProjectVaultDir(projectRoot);
       fs.mkdirSync(projectVaultDir, { recursive: true });
       const grove = createGrove('Work', home);
       saveProjectManifest(projectVaultDir, {
-        project: { id: 'project-a', name: 'Project A' },
+        project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
         grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
       });
       registerProjectInGrove(grove.id, {
-        projectId: 'project-a',
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         projectName: 'Project A',
         projectRoot,
         bindingId: 'gbind-a',
@@ -124,7 +125,7 @@ describe('DaemonClient', () => {
       fs.writeFileSync(globalStatePath, JSON.stringify({ pid: process.pid, port: mockPort }));
 
       process.env[REQUEST_CONTEXT_ENV.projectRoot] = projectRoot;
-      process.env[REQUEST_CONTEXT_ENV.projectId] = 'project-a';
+      process.env[REQUEST_CONTEXT_ENV.projectId] = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
       process.env[REQUEST_CONTEXT_ENV.groveId] = grove.id;
       process.env[REQUEST_CONTEXT_ENV.machineId] = 'machine-a';
 
@@ -133,7 +134,7 @@ describe('DaemonClient', () => {
 
       expect(result.ok).toBe(true);
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(projectRoot);
-      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('project-a');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.projectId]).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(grove.id);
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-hook');
@@ -174,17 +175,17 @@ describe('DaemonClient Grove service state', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-global-client-'));
     const home = path.join(tmp, 'home');
     process.env.MYCO_HOME = home;
-    const projectRoot = path.join(tmp, 'project-a');
+    const projectRoot = path.join(tmp, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const projectVaultDir = resolveProjectVaultDir(projectRoot);
     fs.mkdirSync(projectVaultDir, { recursive: true });
 
     const grove = createGrove('Work', home);
     saveProjectManifest(projectVaultDir, {
-      project: { id: 'project-a', name: 'Project A' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'Project A',
       projectRoot,
       bindingId: 'gbind-a',

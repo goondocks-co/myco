@@ -93,11 +93,11 @@ describe('myco_spores op: save (in-process)', () => {
       op: 'save',
       content: 'Scope this spore to project A',
       type: 'decision',
-    }, mockClient(), requestContext('project-a')) as SporeSaveResult;
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')) as SporeSaveResult;
 
     const db = getDatabase();
     const row = db.prepare('SELECT project_id FROM spores WHERE id = ?').get(result.id) as { project_id: string };
-    expect(row.project_id).toBe('project-a');
+    expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   });
 
   it('rejects op:save without content', async () => {

@@ -48,8 +48,10 @@ interface PlanSaveSuccess {
 describe('myco_plans op: save (in-process)', () => {
   const vaultDir = path.join(os.tmpdir(), 'myco-save-plan-test');
 
-  beforeAll(() => {
+  beforeAll(async () => {
     fs.mkdirSync(vaultDir, { recursive: true });
+    const { ensureProjectManifest } = await import('@myco/config/project-manifest.js');
+    ensureProjectManifest(vaultDir, { projectName: 'save-plan-test' });
     setupTestDb();
   });
   afterAll(() => {
@@ -142,18 +144,18 @@ describe('myco_plans op: save (in-process)', () => {
   });
 
   it('stores file-backed plans under the resolved Grove project scope', async () => {
-    seedSession('sess-a', 'project-a');
-    seedSession('sess-b', 'project-b');
+    seedSession('sess-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    seedSession('sess-b', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     const contextA = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-a',
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: 'grove-a',
       machineId: 'machine-a',
       source: 'explicit',
     });
     const contextB = resolveLegacyRequestContext(vaultDir, {
       projectRoot: '/workspace/project-b',
-      projectId: 'project-b',
+      projectId: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       groveId: 'grove-a',
       machineId: 'machine-b',
       source: 'explicit',
@@ -183,8 +185,8 @@ describe('myco_plans op: save (in-process)', () => {
         ORDER BY project_id`,
     ).all() as Array<{ id: string; project_id: string; title: string }>;
     expect(rows).toEqual([
-      { id: first.id, project_id: 'project-a', title: 'Shared Plan A' },
-      { id: second.id, project_id: 'project-b', title: 'Shared Plan B' },
+      { id: first.id, project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', title: 'Shared Plan A' },
+      { id: second.id, project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', title: 'Shared Plan B' },
     ]);
   });
 

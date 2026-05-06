@@ -28,7 +28,7 @@ describe('Grove team connection storage', () => {
     const grove = createGrove('Shared Grove', mycoHome);
     context = {
       projectRoot: path.join(tmpDir, 'project'),
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: grove.id,
       machineId: 'machine_test',
       sessionId: null,

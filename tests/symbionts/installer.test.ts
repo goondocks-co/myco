@@ -1091,11 +1091,11 @@ describe('installMcp (TOML)', () => {
 
     const grove = createGrove('Work', home);
     saveProjectManifest(vaultDir, {
-      project: { id: 'project-a', name: 'Project A' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'Project A',
       projectRoot,
       bindingId: 'gbind-a',

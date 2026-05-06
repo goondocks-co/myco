@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { registerScheduledTasks } from '@myco/daemon/task-scheduling.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type { AgentTask } from '@myco/agent/types.js';
 
 mock.module('@myco/agent/registry.js', () => ({
@@ -32,9 +36,16 @@ describe('registerScheduledTasks', () => {
     error: vi.fn(),
     debug: vi.fn(),
   };
+  let vaultDir: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-sched-'));
+    ensureProjectManifest(vaultDir, { projectName: 'task-sched-test' });
+  });
+
+  afterEach(() => {
+    fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
   it('replaces scheduled jobs when task schedule overrides change', async () => {
@@ -56,7 +67,7 @@ describe('registerScheduledTasks', () => {
 
     await registerScheduledTasks(powerManager as never, {
       definitionsDir: '/tmp/defs',
-      vaultDir: '/tmp/vault',
+      vaultDir,
       embeddingManager: {} as never,
       logger: logger as never,
       liveConfig: liveConfig as never,
@@ -82,7 +93,7 @@ describe('registerScheduledTasks', () => {
 
     await registerScheduledTasks(powerManager as never, {
       definitionsDir: '/tmp/defs',
-      vaultDir: '/tmp/vault',
+      vaultDir,
       embeddingManager: {} as never,
       logger: logger as never,
       liveConfig: liveConfig as never,

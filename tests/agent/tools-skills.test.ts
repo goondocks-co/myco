@@ -16,6 +16,7 @@ import { z } from 'zod/v4';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
@@ -131,6 +132,7 @@ describe('vault skill tools', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-skills-test-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'tools-skills-test' });
 
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
@@ -241,8 +243,8 @@ describe('vault skill tools', () => {
     });
 
     it('scopes candidate lifecycle actions to the request project', async () => {
-      const projectATool = findTool(createProjectTools('project-a'), 'vault_skill_candidates');
-      const projectBTool = findTool(createProjectTools('project-b'), 'vault_skill_candidates');
+      const projectATool = findTool(createProjectTools('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), 'vault_skill_candidates');
+      const projectBTool = findTool(createProjectTools('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'), 'vault_skill_candidates');
 
       const createdA = parseResult(
         await projectATool.handler(
@@ -259,15 +261,15 @@ describe('vault skill tools', () => {
 
       expect(createdA.error).toBeUndefined();
       expect(createdB.error).toBeUndefined();
-      expect(createdA.project_id).toBe('project-a');
-      expect(createdB.project_id).toBe('project-b');
+      expect(createdA.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+      expect(createdB.project_id).toBe('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
 
       const listA = parseResult(
         await projectATool.handler({ action: 'list' }, undefined),
       ) as Array<{ id: string; project_id: string }>;
       expect(listA).toHaveLength(1);
       expect(listA[0].id).toBe(createdA.id);
-      expect(listA[0].project_id).toBe('project-a');
+      expect(listA[0].project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
       const crossGet = parseResult(
         await projectATool.handler({ action: 'get', id: createdB.id }, undefined),
@@ -291,7 +293,7 @@ describe('vault skill tools', () => {
         await projectBTool.handler({ action: 'get', id: createdB.id }, undefined),
       ) as { id: string; project_id: string };
       expect(stillInB.id).toBe(createdB.id);
-      expect(stillInB.project_id).toBe('project-b');
+      expect(stillInB.project_id).toBe('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     });
 
     // Cross-status dedup — skill-survey must not re-identify topics
@@ -517,7 +519,7 @@ describe('vault skill tools', () => {
       const now = epochNow();
       insertSkillRecord({
         id: 'skill-project-a',
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         agent_id: TEST_AGENT_ID,
         name: 'project-a-skill',
         display_name: 'Project A Skill',
@@ -528,7 +530,7 @@ describe('vault skill tools', () => {
       });
       insertSkillRecord({
         id: 'skill-project-b',
-        project_id: 'project-b',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         agent_id: TEST_AGENT_ID,
         name: 'project-b-skill',
         display_name: 'Project B Skill',
@@ -538,15 +540,15 @@ describe('vault skill tools', () => {
         updated_at: now,
       });
 
-      const projectATool = findTool(createProjectTools('project-a'), 'vault_skill_records');
-      const projectBTool = findTool(createProjectTools('project-b'), 'vault_skill_records');
+      const projectATool = findTool(createProjectTools('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), 'vault_skill_records');
+      const projectBTool = findTool(createProjectTools('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'), 'vault_skill_records');
 
       const listA = parseResult(
         await projectATool.handler({ action: 'list' }, undefined),
       ) as Array<{ id: string; project_id: string }>;
       expect(listA).toHaveLength(1);
       expect(listA[0].id).toBe('skill-project-a');
-      expect(listA[0].project_id).toBe('project-a');
+      expect(listA[0].project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
       const crossGet = parseResult(
         await projectATool.handler({ action: 'get', id: 'skill-project-b' }, undefined),
@@ -570,7 +572,7 @@ describe('vault skill tools', () => {
         await projectBTool.handler({ action: 'get', id: 'skill-project-b' }, undefined),
       ) as { id: string; project_id: string };
       expect(stillInB.id).toBe('skill-project-b');
-      expect(stillInB.project_id).toBe('project-b');
+      expect(stillInB.project_id).toBe('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     });
   });
 
@@ -708,8 +710,8 @@ describe('vault skill tools', () => {
     });
 
     it('creates skill records and candidate transitions in the request project', async () => {
-      const projectATools = createProjectTools('project-a');
-      const projectBTools = createProjectTools('project-b');
+      const projectATools = createProjectTools('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+      const projectBTools = createProjectTools('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
       const candidateToolA = findTool(projectATools, 'vault_skill_candidates');
       const created = parseResult(
         await candidateToolA.handler(
@@ -717,7 +719,7 @@ describe('vault skill tools', () => {
           undefined,
         ),
       ) as { id: string; project_id: string };
-      approveCandidate(created.id, 'project-a');
+      approveCandidate(created.id, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
       const writeToolA = findTool(projectATools, 'vault_write_skill');
       const written = parseResult(
@@ -742,7 +744,7 @@ describe('vault skill tools', () => {
         ),
       ) as { id: string; project_id: string; candidate_id: string };
       expect(recordA.id).toBe(written.id);
-      expect(recordA.project_id).toBe('project-a');
+      expect(recordA.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       expect(recordA.candidate_id).toBe(created.id);
 
       const candidateA = parseResult(
@@ -750,7 +752,7 @@ describe('vault skill tools', () => {
       ) as { status: string; skill_id: string; project_id: string };
       expect(candidateA.status).toBe('generated');
       expect(candidateA.skill_id).toBe(written.id);
-      expect(candidateA.project_id).toBe('project-a');
+      expect(candidateA.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
       const recordB = parseResult(
         await findTool(projectBTools, 'vault_skill_records').handler(

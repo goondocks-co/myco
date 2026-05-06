@@ -9,12 +9,16 @@
  * (the DB-touching tests in this package use bun:test, not vitest).
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { loadAgentTasks, resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { executeMapPhase } from '@myco/agent/map-phase.js';
 import { createVaultTools } from '@myco/agent/tools.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
 
 // ---------------------------------------------------------------------------
@@ -73,8 +77,21 @@ function makeStubRuntime(description: string) {
 // ---------------------------------------------------------------------------
 
 describe('canopy-describe end-to-end (map phase)', () => {
-  const projectRoot = '/tmp/myco-itest';
-  const vaultDir = `${projectRoot}/.myco`;
+  let projectRoot: string;
+  let vaultDir: string;
+  let projectId: string;
+
+  beforeAll(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-itest-'));
+    vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const manifest = ensureProjectManifest(vaultDir, { projectName: 'canopy-itest' });
+    projectId = manifest.project.id;
+  });
+
+  afterAll(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
 
   beforeEach(() => {
     closeDatabase();
@@ -91,15 +108,15 @@ describe('canopy-describe end-to-end (map phase)', () => {
     for (const p of ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts']) {
       db.prepare(
         'INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)',
-      ).run(projectRoot, p, 100);
+      ).run(projectId, p, 100);
     }
     // 2 already-described
     db.prepare(
       'INSERT INTO canopy_entries (project_id, path, llm_description, llm_updated_at, mechanical_updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(projectRoot, 'x.ts', 'existing desc', 200, 100);
+    ).run(projectId, 'x.ts', 'existing desc', 200, 100);
     db.prepare(
       'INSERT INTO canopy_entries (project_id, path, llm_description, llm_updated_at, mechanical_updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(projectRoot, 'y.ts', 'existing desc', 200, 100);
+    ).run(projectId, 'y.ts', 'existing desc', 200, 100);
 
     const phase = loadCanopyDescribePhase();
     const allTools = createVaultTools('myco-agent', 'run-1', { projectRoot, vaultDir, dryRun: false });
@@ -142,7 +159,7 @@ describe('canopy-describe end-to-end (map phase)', () => {
     // Already-described row - would not match the pending predicate in batch mode
     db.prepare(
       'INSERT INTO canopy_entries (project_id, path, llm_description, llm_updated_at, mechanical_updated_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(projectRoot, 'src/foo.ts', 'old description', 200, 100);
+    ).run(projectId, 'src/foo.ts', 'old description', 200, 100);
 
     const phase = loadCanopyDescribePhase();
     const allTools = createVaultTools('myco-agent', 'run-2', { projectRoot, vaultDir, dryRun: false });

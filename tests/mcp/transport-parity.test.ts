@@ -107,11 +107,11 @@ describe('MCP transport parity', () => {
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
     const grove = createGrove('Work', home);
     saveProjectManifest(vaultDir, {
-      project: { id: 'project-a', name: 'Project A' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'Project A',
       projectRoot,
       bindingId: 'gbind-a',
@@ -125,7 +125,7 @@ describe('MCP transport parity', () => {
     const httpUrl = await startDaemonStub(vaultDir, mcpHandler);
     const requestContext = resolveLegacyRequestContext(vaultDir, {
       projectRoot,
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: grove.id,
       machineId: 'machine-a',
       sessionId: 'sess-a',
@@ -140,7 +140,7 @@ describe('MCP transport parity', () => {
       cwd: projectRoot,
       env: childEnv({
         [REQUEST_CONTEXT_ENV.projectRoot]: projectRoot,
-        [REQUEST_CONTEXT_ENV.projectId]: 'project-a',
+        [REQUEST_CONTEXT_ENV.projectId]: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         [REQUEST_CONTEXT_ENV.groveId]: grove.id,
         [REQUEST_CONTEXT_ENV.machineId]: 'machine-a',
         [REQUEST_CONTEXT_ENV.sessionId]: 'sess-a',
@@ -175,14 +175,14 @@ describe('MCP transport parity', () => {
       expect(digestHeaders).toEqual([
         expect.objectContaining({
           'x-myco-project-root': projectRoot,
-          'x-myco-project-id': 'project-a',
+          'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           'x-myco-grove-id': grove.id,
           'x-myco-machine-id': 'machine-a',
           'x-myco-session-id': 'sess-a',
         }),
         expect.objectContaining({
           'x-myco-project-root': projectRoot,
-          'x-myco-project-id': 'project-a',
+          'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           'x-myco-grove-id': grove.id,
           'x-myco-machine-id': 'machine-a',
           'x-myco-session-id': 'sess-a',

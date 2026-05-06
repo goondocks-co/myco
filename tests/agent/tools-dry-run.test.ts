@@ -30,6 +30,7 @@ import path from 'node:path';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
@@ -113,6 +114,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dry-run-test-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'tools-dry-run-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
     tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
@@ -402,6 +404,7 @@ describe('vault tools wrapper JSON.stringify dedupe', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stringify-dedupe-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'stringify-dedupe-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
     dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {

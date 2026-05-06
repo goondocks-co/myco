@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { createCanopyTools } from '@myco/agent/tools/canopy-tools.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type { VaultToolDeps } from '@myco/agent/tools/types.js';
 
 function seedSchema(db: Database) {
@@ -30,9 +34,23 @@ async function invoke(t: any, args: Record<string, unknown>): Promise<unknown> {
 }
 
 describe('canopy_describe_next', () => {
-  const projectRoot = '/tmp/myco-test-project-canopy-tools';
-  const deps = { agentId: 'a', runId: 'r', projectRoot, vaultDir: `${projectRoot}/.myco` } as VaultToolDeps;
+  let projectRoot: string;
+  let deps: VaultToolDeps;
+  let projectId: string;
   let db: Database;
+
+  beforeAll(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-tools-test-'));
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const manifest = ensureProjectManifest(vaultDir, { projectName: 'canopy-tools-test' });
+    projectId = manifest.project.id;
+    deps = { agentId: 'a', runId: 'r', projectRoot, vaultDir } as VaultToolDeps;
+  });
+
+  afterAll(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
 
   beforeEach(() => {
     closeDatabase();
@@ -41,8 +59,8 @@ describe('canopy_describe_next', () => {
   });
 
   it('returns up to limit pending rows when canopy_entry_path is unset', async () => {
-    db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectRoot, 'a.ts', 100);
-    db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectRoot, 'b.ts', 100);
+    db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectId, 'a.ts', 100);
+    db.prepare('INSERT INTO canopy_entries (project_id, path, mechanical_updated_at) VALUES (?, ?, ?)').run(projectId, 'b.ts', 100);
 
     const tools = createCanopyTools(deps);
     const next = tools.find((t) => t.name === 'canopy_describe_next')!;
@@ -53,7 +71,7 @@ describe('canopy_describe_next', () => {
   it('returns the one row matching canopy_entry_path, bypassing pending predicate', async () => {
     db.prepare(
       'INSERT INTO canopy_entries (project_id, path, llm_description, llm_updated_at, mechanical_updated_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(projectRoot, 'src/foo.ts', 'old description', 200, 100);
+    ).run(projectId, 'src/foo.ts', 'old description', 200, 100);
 
     const tools = createCanopyTools(deps);
     const next = tools.find((t) => t.name === 'canopy_describe_next')!;

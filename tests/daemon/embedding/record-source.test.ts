@@ -97,7 +97,7 @@ describe('SqliteRecordSource', () => {
     it('returns sessions with summary and embedded=0, includes project metadata', () => {
       upsertSession(makeSession({
         id: 'sess-emb-1',
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         summary: 'Built the embedding system',
         project_root: '/home/user/project',
       }));
@@ -107,7 +107,7 @@ describe('SqliteRecordSource', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('sess-emb-1');
       expect(rows[0].text).toBe('Built the embedding system');
-      expect(rows[0].metadata.project_id).toBe('project-a');
+      expect(rows[0].metadata.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       expect(rows[0].metadata.project_root).toBe('/home/user/project');
     });
 
@@ -117,7 +117,7 @@ describe('SqliteRecordSource', () => {
         id: 'spore-active',
         content: 'Active spore content',
         status: 'active',
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         session_id: null,
         observation_type: 'decision',
         created_at: now,
@@ -129,7 +129,7 @@ describe('SqliteRecordSource', () => {
       expect(rows[0].id).toBe('spore-active');
       expect(rows[0].text).toBe('Active spore content');
       expect(rows[0].metadata).toEqual({
-        project_id: 'project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         status: 'active',
         observation_type: 'decision',
         created_at: now,

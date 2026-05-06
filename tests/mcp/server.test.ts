@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMycoTools } from '@myco/tools/index';
 import { DaemonClient } from '@myco/hooks/client';
+import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -18,6 +19,7 @@ describe('MCP tool surface (createMycoTools)', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-'));
+    ensureProjectManifest(tmpDir, { projectName: 'mcp-server-test' });
     client = new DaemonClient(tmpDir);
   });
 

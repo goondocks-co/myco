@@ -115,15 +115,15 @@ describe('myco_spores op: supersede (in-process)', () => {
 
   it('does not supersede a spore from another project context', async () => {
     seedAgent();
-    seedSpore('old-spore', 'user', 'project-b');
-    seedSpore('new-spore', 'user', 'project-a');
+    seedSpore('old-spore', 'user', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    seedSpore('new-spore', 'user', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
     const result = await handleMycoSpores({
       op: 'supersede',
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'wrong project',
-    }, mockClient(), requestContext('project-a'));
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
     expect(result).toEqual({ ok: false, error: 'old_spore_id not found' });
 
@@ -136,15 +136,15 @@ describe('myco_spores op: supersede (in-process)', () => {
 
   it('rejects a replacement spore from another project context', async () => {
     seedAgent();
-    seedSpore('old-spore', 'user', 'project-a');
-    seedSpore('new-spore', 'user', 'project-b');
+    seedSpore('old-spore', 'user', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    seedSpore('new-spore', 'user', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
 
     const result = await handleMycoSpores({
       op: 'supersede',
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'wrong project',
-    }, mockClient(), requestContext('project-a'));
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
     expect(result).toEqual({ ok: false, error: 'new_spore_id not found' });
 

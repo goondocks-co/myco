@@ -12,7 +12,7 @@ function makeFakeVault(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-archive-'));
   // Files that should survive the archive — these are user/state files
   // the post-Grove daemon still needs at the top of `.myco/`.
-  fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_test"\n');
+  fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n');
   fs.writeFileSync(path.join(dir, 'myco.yaml'), 'version: 3\n');
   fs.writeFileSync(path.join(dir, 'runtime.command'), 'myco-run\n');
   fs.writeFileSync(path.join(dir, 'secrets.env'), 'OPENAI_API_KEY=test\n');
@@ -64,7 +64,7 @@ describe('archiveLegacyVaultData', () => {
   it('returns null when there is nothing to archive', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-archive-empty-'));
     try {
-      fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_test"\n');
+      fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n');
       const result = archiveLegacyVaultData(dir);
       expect(result).toBeNull();
     } finally {
@@ -81,7 +81,7 @@ describe('completeLegacyArchive', () => {
       status: 'activated',
       migration_id: 'mig_test',
       project_root: '/tmp/proj',
-      project_id: 'proj_test',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       project_name: 'p',
       grove_id: 'grove_test',
       grove_slug: 'p',
@@ -124,7 +124,7 @@ describe('completeLegacyArchive', () => {
   it('returns already_complete when archive flag is set and nothing remains', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-archive-done-'));
     try {
-      fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_test"\n');
+      fs.writeFileSync(path.join(dir, 'project.toml'), '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n');
       writeMarker(dir, true);
 
       const result = completeLegacyArchive(dir);

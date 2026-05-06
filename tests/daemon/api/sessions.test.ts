@@ -62,11 +62,11 @@ describe('session API request context scoping', () => {
 
   it('lists only sessions in the requested project context', async () => {
     const now = epochNow();
-    upsertSession({ id: 'sess-a', project_id: 'project-a', agent: 'test-agent', started_at: now, created_at: now });
-    upsertSession({ id: 'sess-b', project_id: 'project-b', agent: 'test-agent', started_at: now, created_at: now });
+    upsertSession({ id: 'sess-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', agent: 'test-agent', started_at: now, created_at: now });
+    upsertSession({ id: 'sess-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', agent: 'test-agent', started_at: now, created_at: now });
 
     const res = await handleListSessions(makeRequest({
-      requestContext: requestContext(tmpDir, 'project-a'),
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     }));
 
     const body = res.body as { sessions: Array<{ id: string }>; total: number };
@@ -76,12 +76,12 @@ describe('session API request context scoping', () => {
 
   it('does not return a session from a different project context', async () => {
     const now = epochNow();
-    upsertSession({ id: 'sess-other', project_id: 'project-b', agent: 'test-agent', started_at: now, created_at: now });
+    upsertSession({ id: 'sess-other', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', agent: 'test-agent', started_at: now, created_at: now });
     const handler = createGetSessionHandler();
 
     const res = await handler(makeRequest({
       params: { id: 'sess-other' },
-      requestContext: requestContext(tmpDir, 'project-a'),
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     }));
 
     expect(res.status).toBe(404);
@@ -241,14 +241,14 @@ describe('handleDeletePlan', () => {
     const now = epochNow();
     upsertSession({
       id: 'sess-plan-other',
-      project_id: 'project-b',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       agent: 'test-agent',
       started_at: now,
       created_at: now,
     });
     upsertPlan({
       id: 'plan-other-project',
-      project_id: 'project-b',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       logical_key: 'session:sess-plan-other:key:primary',
       session_id: 'sess-plan-other',
       title: 'Do not delete',
@@ -259,11 +259,11 @@ describe('handleDeletePlan', () => {
     const { handleDeletePlan } = makeHandlers();
     const res = await handleDeletePlan(makeRequest({
       params: { id: 'plan-other-project' },
-      requestContext: requestContext(tmpDir, 'project-a'),
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     }));
 
     expect(res.status).toBe(404);
-    expect(getPlan('plan-other-project', 'project-b')).not.toBeNull();
+    expect(getPlan('plan-other-project', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).not.toBeNull();
     expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
   });
 });

@@ -52,7 +52,13 @@ async function listen(handler: http.RequestListener): Promise<URL> {
 
 describe('streamable HTTP MCP', () => {
   it('lists tools and calls a read-only tool over HTTP', async () => {
-    const handler = createStreamableMcpHttpHandler('/tmp/myco-http-mcp', mockClient());
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-http-mcp-'));
+    const vaultDir = path.join(tmp, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project HTTP MCP' },
+    });
+    const handler = createStreamableMcpHttpHandler(vaultDir, mockClient());
     const url = await listen((req, res) => {
       void handler(req, res);
     });
@@ -77,16 +83,16 @@ describe('streamable HTTP MCP', () => {
     tmpDirs.push(tmp);
     const home = path.join(tmp, 'home');
     process.env.MYCO_HOME = home;
-    const projectRoot = path.join(tmp, 'project-a');
+    const projectRoot = path.join(tmp, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const vaultDir = path.join(projectRoot, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     const grove = createGrove('Work', home);
     saveProjectManifest(vaultDir, {
-      project: { id: 'project-a', name: 'Project A' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'Project A',
       projectRoot,
       bindingId: 'gbind-a',
@@ -98,7 +104,7 @@ describe('streamable HTTP MCP', () => {
     });
     const requestContext = resolveLegacyRequestContext(vaultDir, {
       projectRoot,
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: grove.id,
       machineId: 'machine-a',
       sessionId: 'sess-a',
@@ -121,7 +127,7 @@ describe('streamable HTTP MCP', () => {
     const digestCall = capturedGets.find((call) => call.endpoint === '/api/digest');
     expect(digestCall?.options?.headers).toMatchObject({
       'x-myco-project-root': projectRoot,
-      'x-myco-project-id': 'project-a',
+      'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       'x-myco-grove-id': grove.id,
       'x-myco-machine-id': 'machine-a',
       'x-myco-session-id': 'sess-a',

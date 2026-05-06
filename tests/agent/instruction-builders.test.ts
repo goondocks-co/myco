@@ -15,6 +15,8 @@ import { vi } from '../helpers/vi-shim.js';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
@@ -604,20 +606,20 @@ describe('buildSkillSurveyInstruction', () => {
 
   it('evaluates eligibility inside the request-context project scope', () => {
     const now = epochSeconds();
-    createSession('settled-project-a-1', 'completed', now - 300, 'project-a');
-    createSession('settled-project-a-2', 'completed', now - 200, 'project-a');
-    createSession('settled-project-b-1', 'completed', now - 100, 'project-b');
+    createSession('settled-project-a-1', 'completed', now - 300, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    createSession('settled-project-a-2', 'completed', now - 200, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    createSession('settled-project-b-1', 'completed', now - 100, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     for (const [id, projectId] of [
-      ['spore-project-a-1', 'project-a'],
-      ['spore-project-a-2', 'project-a'],
-      ['spore-project-a-3', 'project-a'],
-      ['spore-project-b-1', 'project-b'],
+      ['spore-project-a-1', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-a-2', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-a-3', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-b-1', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
     ] as const) {
       insertSpore({
         id,
         project_id: projectId,
         agent_id: TEST_AGENT_ID,
-        session_id: projectId === 'project-a' ? 'settled-project-a-1' : 'settled-project-b-1',
+        session_id: projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ? 'settled-project-a-1' : 'settled-project-b-1',
         observation_type: 'decision',
         content: `${projectId} scoped observation`,
         importance: 5,
@@ -625,11 +627,11 @@ describe('buildSkillSurveyInstruction', () => {
       });
     }
 
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('project-a'))).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'))).toEqual({
       eligible: true,
       reason: null,
     });
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('project-b'))).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'))).toEqual({
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
@@ -716,13 +718,16 @@ describe('buildTaskInstruction', () => {
     createAgent(DEFAULT_AGENT_ID);
     const config = MycoConfigSchema.parse({ version: 3 });
     // buildCortexInstructionsInput now requires a vaultDir for the
-    // canopy-map gate. Use a tmp dir with a pre-seeded machine_id so the
-    // build is deterministic without writing to a real vault.
+    // canopy-map gate AND a Grove project_id from the manifest. Use a
+    // tmp dir with a pre-seeded manifest + machine_id so the build is
+    // deterministic without writing to a real vault.
     const tmpRoot = mkdtempSync(join(tmpdir(), 'myco-task-instr-'));
     const vaultDir = join(tmpRoot, '.myco');
     mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'task-instr-test' });
     writeFileSync(join(vaultDir, 'machine_id'), 'test-machine', 'utf-8');
-    const built = await buildCortexInstructionsInput(config, vaultDir);
+    const requestContext = resolveRequestContextForVault(vaultDir);
+    const built = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext);
 
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
@@ -731,7 +736,16 @@ describe('buildTaskInstruction', () => {
       generated_at: epochSeconds(),
     });
 
-    const result = await buildTaskInstruction(CORTEX_INSTRUCTIONS_TASK, undefined, undefined, tmpRoot, undefined, config);
+    const result = await buildTaskInstruction(
+      CORTEX_INSTRUCTIONS_TASK,
+      undefined,
+      undefined,
+      tmpRoot,
+      undefined,
+      config,
+      undefined,
+      requestContext,
+    );
     expect(result).toBeUndefined();
     rmSync(tmpRoot, { recursive: true, force: true });
   });

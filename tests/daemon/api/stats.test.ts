@@ -111,7 +111,7 @@ describe('createLiveStatsHandler', () => {
 
     const requestContext = resolveLegacyRequestContext('/tmp/live-vault', {
       projectRoot: '/tmp/live-project',
-      projectId: 'project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: 'grove-a',
       machineId: 'machine-a',
       sessionId: 'sess-a',
@@ -140,18 +140,18 @@ describe('createLiveStatsHandler', () => {
     expect(gatherStats).toHaveBeenCalledWith('/tmp/live-vault', {
       active_sessions: ['sess-1', 'sess-2'],
       databasePath: '/tmp/grove-a/myco.db',
-      project_id: 'project-a',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     });
     expect(body.daemon.pid).toBe(process.pid);
     expect(body.daemon.port).toBe(18765);
     expect(body.daemon.version).toBe('1.2.3');
     expect(body.daemon.uptime_seconds).toBe(42);
-    expect(body.context.project.id).toBe('project-a');
+    expect(body.context.project.id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(body.context.project.root).toBe('/tmp/live-project');
     expect(body.context.grove.id).toBe('grove-a');
     expect(body.context.grove.connection_state).toBe('pending');
     expect(body.context.request.source).toBe('explicit');
-    expect(body.context.request.project_id).toBe('project-a');
+    expect(body.context.request.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(body.context.request.grove_id).toBe('grove-a');
     expect(body.config_hash).toBe('abc123');
   });
@@ -183,20 +183,20 @@ describe('resolveStatsContext', () => {
     fs.mkdirSync(vaultDir, { recursive: true });
     const grove = createGrove('Work', process.env.MYCO_HOME!);
     saveProjectManifest(vaultDir, {
-      project: { id: 'proj_status', name: 'status-project' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'status-project' },
       grove: { binding_id: 'gbind_status', slug: grove.slug, mode: 'local' },
     });
 
     const context = resolveStatsContext(vaultDir, resolveLegacyRequestContext(vaultDir, {
       projectRoot: path.dirname(vaultDir),
-      projectId: 'proj_status',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       groveId: grove.id,
       machineId: 'machine-a',
       source: 'explicit',
     }));
 
     expect(context.project).toEqual({
-      id: 'proj_status',
+      id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       name: 'status-project',
       root: path.dirname(vaultDir),
       manifest_state: 'present',
@@ -208,7 +208,7 @@ describe('resolveStatsContext', () => {
       binding_id: 'gbind_status',
       connection_state: 'local-only',
     });
-    expect(context.request.project_id).toBe('proj_status');
+    expect(context.request.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(context.request.grove_id).toBe(grove.id);
   });
 });

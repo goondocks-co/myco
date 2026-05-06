@@ -39,6 +39,13 @@ describe('resolveDaemonDataPaths', () => {
   });
 
   it('uses legacy project-local data paths when no Grove binding exists', () => {
+    // A project manifest is required (Grove brand) but the manifest
+    // need not carry a grove binding — the daemon falls back to the
+    // legacy vault DB path in that case.
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' },
+    });
+
     const paths = resolveDaemonDataPaths(vaultDir, {
       MYCO_HOME: mycoHome,
       MYCO_MACHINE_ID: 'machine-test',
@@ -53,11 +60,11 @@ describe('resolveDaemonDataPaths', () => {
   it('uses Grove data paths for a registered bound project', () => {
     const grove = createGrove('Dogfood', mycoHome);
     saveProjectManifest(vaultDir, {
-      project: { id: 'proj_test', name: 'project' },
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' },
       grove: { binding_id: 'gbind_test', slug: grove.slug, mode: 'local' },
     });
     registerProjectInGrove(grove.id, {
-      projectId: 'proj_test',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       projectName: 'project',
       projectRoot,
       bindingId: 'gbind_test',
@@ -71,7 +78,7 @@ describe('resolveDaemonDataPaths', () => {
     expect(paths.usingGrove).toBe(true);
     expect(paths.databasePath).toBe(resolveGroveDbPath(grove.id, mycoHome));
     expect(paths.vectorsPath).toBe(resolveGroveVectorsPath(grove.id, mycoHome));
-    expect(paths.requestContext.projectId).toBe('proj_test');
+    expect(paths.requestContext.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(paths.requestContext.groveId).toBe(grove.id);
     expect(paths.requestContext.projectVaultDir).toBe(vaultDir);
   });

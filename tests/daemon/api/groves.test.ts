@@ -25,7 +25,7 @@ describe('Grove discovery API', () => {
 
   it('lists Groves with registered projects and URL slugs', async () => {
     const grove = createGrove('Client Work');
-    const projectRoot = path.join(testDir, 'project-a');
+    const projectRoot = path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const vaultDir = resolveProjectVaultDir(projectRoot);
     fs.mkdirSync(vaultDir, { recursive: true });
     saveProjectManifest(vaultDir, {
@@ -60,7 +60,7 @@ describe('Grove discovery API', () => {
     registerProjectInGrove(grove.id, {
       projectId: 'proj_a',
       projectName: 'Project A',
-      projectRoot: path.join(testDir, 'project-a'),
+      projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     });
 
     const response = await createListGroveProjectsHandler()({

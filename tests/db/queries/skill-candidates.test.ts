@@ -184,10 +184,10 @@ describe('skill candidate query helpers', () => {
     });
 
     it('filters by project_id when requested', () => {
-      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'project-a' }));
-      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'project-b' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
 
-      const rows = listCandidates({ project_id: 'project-a' });
+      const rows = listCandidates({ project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
 
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('cand-project-a');
@@ -254,10 +254,10 @@ describe('skill candidate query helpers', () => {
     });
 
     it('does not update candidates outside the requested project scope', () => {
-      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'project-a' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
 
-      const miss = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, 'project-b');
-      const hit = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, 'project-a');
+      const miss = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+      const hit = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
       expect(miss).toBeNull();
       expect(hit!.status).toBe('approved');
@@ -376,20 +376,20 @@ describe('skill candidate query helpers', () => {
     });
 
     it('counts candidates matching a project_id filter', () => {
-      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'project-a' }));
-      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'project-b' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
 
-      expect(countCandidates({ project_id: 'project-a' })).toBe(1);
+      expect(countCandidates({ project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })).toBe(1);
     });
   });
 
   describe('deleteCandidate', () => {
     it('does not delete candidates outside the requested project scope', () => {
-      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'project-a' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
 
-      expect(deleteCandidate('cand-project-a', 'project-b')).toBe(false);
-      expect(getCandidate('cand-project-a', 'project-a')).not.toBeNull();
-      expect(deleteCandidate('cand-project-a', 'project-a')).toBe(true);
+      expect(deleteCandidate('cand-project-a', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBe(false);
+      expect(getCandidate('cand-project-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).not.toBeNull();
+      expect(deleteCandidate('cand-project-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(true);
     });
   });
 });

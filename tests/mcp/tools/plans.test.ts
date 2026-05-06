@@ -24,6 +24,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { getDatabase } from '@myco/db/client.js';
 import { initTeamContext } from '@myco/daemon/team-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
@@ -34,6 +35,8 @@ function mockClient(getData: unknown = null, ok = true): DaemonClient {
 }
 
 const VAULT_DIR_FOR_TESTS = path.join(os.tmpdir(), 'myco-plans-test-stub');
+fs.mkdirSync(VAULT_DIR_FOR_TESTS, { recursive: true });
+ensureProjectManifest(VAULT_DIR_FOR_TESTS, { projectName: 'plans-test-stub' });
 
 function seedSession(id: string): void {
   const db = getDatabase();
@@ -199,6 +202,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
 
   beforeAll(async () => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-delete-'));
+    ensureProjectManifest(vaultDir, { projectName: 'plans-delete-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     setupTestDb();

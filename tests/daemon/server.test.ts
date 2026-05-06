@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context';
-import { saveProjectManifest } from '@myco/config/project-manifest';
+import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveProjectVaultDir } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import { spawn } from 'node:child_process';
@@ -16,6 +16,7 @@ describe('DaemonServer', () => {
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-srv-'));
+    ensureProjectManifest(vaultDir, { projectName: 'srv-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
   });
@@ -86,16 +87,16 @@ describe('DaemonServer', () => {
     try {
       const home = path.join(tmp, 'home');
       process.env.MYCO_HOME = home;
-      const projectRoot = path.join(tmp, 'project-a');
+      const projectRoot = path.join(tmp, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       const projectVaultDir = resolveProjectVaultDir(projectRoot);
       fs.mkdirSync(projectVaultDir, { recursive: true });
       const grove = createGrove('Work', home);
       saveProjectManifest(projectVaultDir, {
-        project: { id: 'project-a', name: 'Project A' },
+        project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
         grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
       });
       registerProjectInGrove(grove.id, {
-        projectId: 'project-a',
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         projectName: 'Project A',
         projectRoot,
         bindingId: 'gbind-a',
@@ -108,7 +109,7 @@ describe('DaemonServer', () => {
 
       const context = resolveLegacyRequestContext(projectVaultDir, {
         projectRoot,
-        projectId: 'project-a',
+        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         groveId: grove.id,
         machineId: 'machine-a',
         sessionId: 'sess-a',
@@ -119,7 +120,7 @@ describe('DaemonServer', () => {
       });
       const body = await res.json() as { context: { projectId: string; groveId: string; source: string } };
 
-      expect(body.context.projectId).toBe('project-a');
+      expect(body.context.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       expect(body.context.groveId).toBe(grove.id);
       expect(body.context.source).toBe('headers');
     } finally {

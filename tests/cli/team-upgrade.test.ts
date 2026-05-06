@@ -112,6 +112,11 @@ describe('upgradeWorker', () => {
 
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.mkdirSync(deployDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, 'project.toml'),
+      '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nname = "upgrade-test"\n',
+      'utf-8',
+    );
 
     // Existing deployment with legacy (pre-KV) wrangler.toml
     fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), LEGACY_TOML, 'utf-8');

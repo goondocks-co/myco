@@ -89,7 +89,7 @@ describe('createGetSporeHandler — team fallback', () => {
     const now = Math.floor(Date.now() / 1000);
     insertSpore({
       id: 'spore-project-a',
-      project_id: 'project-a',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       agent_id: DEFAULT_AGENT_ID,
       observation_type: 'decision',
       content: 'project a content',
@@ -98,7 +98,7 @@ describe('createGetSporeHandler — team fallback', () => {
     });
     insertSpore({
       id: 'spore-project-b',
-      project_id: 'project-b',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       agent_id: DEFAULT_AGENT_ID,
       observation_type: 'decision',
       content: 'project b content',
@@ -107,7 +107,7 @@ describe('createGetSporeHandler — team fallback', () => {
     });
 
     const res = await handleListSpores(makeRequest({
-      requestContext: requestContext(tmpDir, 'project-a'),
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     }));
 
     const body = res.body as { spores: Array<{ id: string }>; total: number };
@@ -119,7 +119,7 @@ describe('createGetSporeHandler — team fallback', () => {
     const now = Math.floor(Date.now() / 1000);
     insertSpore({
       id: 'spore-other-project',
-      project_id: 'project-b',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       agent_id: DEFAULT_AGENT_ID,
       observation_type: 'gotcha',
       content: 'other project content',
@@ -130,7 +130,7 @@ describe('createGetSporeHandler — team fallback', () => {
     const handler = createGetSporeHandler();
     const res = await handler(makeRequest({
       params: { id: 'spore-other-project' },
-      requestContext: requestContext(tmpDir, 'project-a'),
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     }));
 
     expect(res.status).toBe(404);

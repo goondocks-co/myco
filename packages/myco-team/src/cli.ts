@@ -20,7 +20,7 @@ import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
-import { slugifyGroveName } from '@myco/grove/ids.js';
+import { assertGroveProjectId, slugifyGroveName } from '@myco/grove/ids.js';
 import {
   loadTeamConnectionConfig,
   readTeamConnectionSecrets,
@@ -264,7 +264,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
     const registeredRoot = path.resolve(registered.project.root);
     return {
       projectRoot: registeredRoot,
-      projectId,
+      projectId: assertGroveProjectId(projectId),
       groveId: registered.grove.id,
       machineId,
       sessionId,
@@ -285,7 +285,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
       const registeredRoot = path.resolve(registered.project.root);
       return {
         projectRoot: registeredRoot,
-        projectId: registered.project.project_id,
+        projectId: assertGroveProjectId(registered.project.project_id),
         groveId: registered.grove.id,
         machineId,
         sessionId,
@@ -296,9 +296,18 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
     }
   }
 
+  // Fall back to a non-Grove context with a branded project id from
+  // env or manifest. `requireGroveInstallScope` (called downstream)
+  // rejects this for ops that need an actual Grove binding; ops that
+  // only need a local project id (e.g. token rotation against a local
+  // worker config) can still proceed.
+  const fallbackProjectId = envProjectId ?? manifest?.project.id;
+  if (!fallbackProjectId) {
+    throw new Error('No Grove project id available. Run `myco init` to activate a Grove for this project.');
+  }
   return {
     projectRoot: fallbackProjectRoot,
-    projectId: envProjectId ?? path.basename(fallbackProjectRoot),
+    projectId: assertGroveProjectId(fallbackProjectId),
     groveId: null,
     machineId,
     sessionId,

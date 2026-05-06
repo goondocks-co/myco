@@ -173,14 +173,14 @@ describe('skill lineage query helpers', () => {
     });
 
     it('filters lineage by project_id when requested', () => {
-      const skillA = insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'project-a' }));
-      const skillB = insertSkillRecord(makeSkillRecord({ id: 'skill-project-b', project_id: 'project-b' }));
+      const skillA = insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      const skillB = insertSkillRecord(makeSkillRecord({ id: 'skill-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
 
-      insertLineage(makeLineage(skillA.id, { id: 'lin-project-a', project_id: 'project-a' }));
-      insertLineage(makeLineage(skillB.id, { id: 'lin-project-b', project_id: 'project-b' }));
+      insertLineage(makeLineage(skillA.id, { id: 'lin-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertLineage(makeLineage(skillB.id, { id: 'lin-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
 
-      expect(listLineageForSkill(skillA.id, 50, 'project-b')).toEqual([]);
-      expect(listLineageForSkill(skillA.id, 50, 'project-a').map((row) => row.id)).toEqual(['lin-project-a']);
+      expect(listLineageForSkill(skillA.id, 50, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toEqual([]);
+      expect(listLineageForSkill(skillA.id, 50, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa').map((row) => row.id)).toEqual(['lin-project-a']);
     });
   });
 });
