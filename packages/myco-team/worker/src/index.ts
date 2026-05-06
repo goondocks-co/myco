@@ -750,12 +750,16 @@ async function runOneEmbedChunk(env: Env, jobs: EmbedJob[]): Promise<void> {
     aiResult = await env.AI.run('@cf/baai/bge-m3', { text: texts }) as { data: number[][] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // 3030 = "Max context reached N tokens but model supports only 60000".
-    // Split and retry — the tokenizer is authoritative; estimating budget
-    // ahead of time is unreliable across the variety of content density
-    // we embed (titles, code, prose, JSON). Single-text overflows can't
-    // split further and fall through to the error log.
-    if (jobs.length > 1 && message.includes('Max context reached')) {
+    // Workers AI returns at least two distinct token-overflow shapes:
+    //   3030: "Max context reached N tokens but model supports only 60000"
+    //   5021: "The estimated number of input and maximum output tokens
+    //          (N) exceeded this model context window limit (60000)."
+    // Either means split-and-retry is the right move. The tokenizer is
+    // authoritative; estimating budget ahead of time is unreliable
+    // across the variety of content density we embed. Single-text
+    // overflows can't split further and fall through to the error log.
+    const isTokenOverflow = /\b(?:3030|5021)\b|context window|Max context/i.test(message);
+    if (jobs.length > 1 && isTokenOverflow) {
       const mid = Math.floor(jobs.length / 2);
       await runOneEmbedChunk(env, jobs.slice(0, mid));
       await runOneEmbedChunk(env, jobs.slice(mid));
