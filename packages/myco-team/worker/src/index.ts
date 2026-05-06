@@ -1122,16 +1122,17 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     totalRecords += count;
   }
 
-  // Vectorize index probe — `describe()` returns dimensions + a
-  // vectorsCount. Surface count + a healthy flag so the UI can render
-  // a vectors tile with a delta against the local embedded count and
-  // an at-a-glance "are vectors actually flowing" indicator.
+  // Vectorize index probe — `describe()` returns `vectorsCount` (per
+  // `VectorizeIndexDetails`) plus dimensions and a mutation cursor.
+  // Surface count + a healthy flag so the UI can render a vectors tile
+  // with a delta against the local embedded count and an at-a-glance
+  // "are vectors actually flowing" indicator.
   let vectorCount: number | null = null;
   let vectorIndexHealthy = false;
   let vectorIndexError: string | null = null;
   try {
     const desc = await env.MYCO_TEAM_VECTORS.describe();
-    const c = Number((desc as { vectorsCount?: number }).vectorsCount ?? 0);
+    const c = Number(desc.vectorsCount ?? 0);
     vectorCount = Number.isFinite(c) ? c : null;
     vectorIndexHealthy = true;
   } catch (err) {

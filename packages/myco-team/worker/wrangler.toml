@@ -54,3 +54,10 @@ dead_letter_queue = "<YOUR_SYNC_DLQ_NAME>"
 
 [triggers]
 crons = ["*/5 * * * *"]
+
+# Observability block — left as a placeholder so `myco-team-dev upgrade
+# --observability` can opt the deploy into Cloudflare's persistent log
+# stream. Defaults to disabled because logs cost extra. The deploy
+# patcher rewrites this comment to a real `[observability]` block when
+# the flag is set, and back to a comment otherwise.
+# <MYCO_OBSERVABILITY_BLOCK>

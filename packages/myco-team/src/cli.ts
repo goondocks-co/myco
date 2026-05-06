@@ -127,6 +127,42 @@ const TOML_SYNC_QUEUE_PLACEHOLDER_REGEX = /<YOUR_SYNC_QUEUE_NAME>/g;
 /** Regex to match wrangler.toml sync DLQ placeholder. */
 const TOML_SYNC_DLQ_PLACEHOLDER_REGEX = /<YOUR_SYNC_DLQ_NAME>/g;
 
+/** Regex matching the observability placeholder line in the template. */
+const TOML_OBSERVABILITY_PLACEHOLDER_REGEX = /^# <MYCO_OBSERVABILITY_BLOCK>$/m;
+
+/** Regex matching a previously-rendered observability block (for re-runs). */
+const TOML_OBSERVABILITY_BLOCK_REGEX = /\n?\[observability\][\s\S]*?(?=\n\[|\n*$)/g;
+
+const OBSERVABILITY_TOML_BLOCK = `[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+`;
+
+/**
+ * Render the wrangler.toml observability section. Defaults to a
+ * commented placeholder so deploys don't quietly enable Cloudflare's
+ * persistent log stream (it costs extra). Pass `enabled: true` from
+ * `--observability` on `upgrade` to opt in for a single deploy.
+ */
+function renderObservabilitySection(enabled: boolean): string {
+  return enabled
+    ? OBSERVABILITY_TOML_BLOCK
+    : '# Observability disabled. Pass `--observability` to `myco-team-dev upgrade` to enable.';
+}
+
+/**
+ * Reset the toml's observability block — strips any existing
+ * `[observability]` block (from a prior `--observability` deploy) and
+ * restores the placeholder line. Lets the patch transform run idempotently
+ * regardless of which state the previous deploy left behind.
+ */
+function resetObservabilityBlock(toml: string): string {
+  if (TOML_OBSERVABILITY_PLACEHOLDER_REGEX.test(toml)) return toml;
+  const stripped = toml.replace(TOML_OBSERVABILITY_BLOCK_REGEX, '');
+  return `${stripped.trimEnd()}\n# <MYCO_OBSERVABILITY_BLOCK>\n`;
+}
+
 /** Regex to extract the bound sync queue name from an existing wrangler.toml producer block. */
 const TOML_SYNC_QUEUE_NAME_REGEX = /\[\[queues\.producers\]\][\s\S]*?queue\s*=\s*"([^"]+)"/;
 
@@ -868,7 +904,7 @@ export interface UpgradeResult {
  * Upgrade the team sync worker: re-copy source, patch config, redeploy.
  * Returns a result instead of calling process.exit — safe for both CLI and daemon.
  */
-export function upgradeWorker(vaultDir: string): UpgradeResult {
+export function upgradeWorker(vaultDir: string, options: { observability?: boolean } = {}): UpgradeResult {
   const scope = resolveTeamCliScope(vaultDir);
   const config = loadTeamConnectionConfig(vaultDir, scope.requestContext);
   if (!config.worker_url) {
@@ -942,6 +978,10 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
           (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(workerName)),
           (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
           (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
+          (toml) => resetObservabilityBlock(toml).replace(
+            TOML_OBSERVABILITY_PLACEHOLDER_REGEX,
+            renderObservabilitySection(options.observability ?? false),
+          ),
         ],
       }],
       installDepsTimeoutMs: WRANGLER_COMMAND_TIMEOUT_MS * 3,
@@ -1001,9 +1041,12 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
-export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: boolean } = {}): Promise<void> {
+export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: boolean; observability?: boolean } = {}): Promise<void> {
   console.log('Upgrading team sync worker...\n');
-  const result = upgradeWorker(vaultDir);
+  if (options.observability) {
+    console.log('Observability: enabled (Cloudflare logs persist for this deploy)');
+  }
+  const result = upgradeWorker(vaultDir, { observability: options.observability });
   if (!result.success) {
     console.error(result.error);
     process.exit(1);

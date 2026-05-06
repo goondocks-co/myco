@@ -326,6 +326,47 @@ Resource location: remote
     expect(npmInstallIndex).toBeLessThan(wranglerDeployIndex);
   });
 
+  it('upgrade omits an [observability] block by default (Cloudflare logs cost extra)', async () => {
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
+
+    const { upgradeWorker } = await importTeamCli();
+    upgradeWorker(vaultDir);
+
+    const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+    expect(patchedToml).not.toContain('[observability]');
+    expect(patchedToml).toContain('Pass `--observability`');
+  });
+
+  it('upgrade with observability:true writes an [observability] block to wrangler.toml', async () => {
+    execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
+    pushUpgradeTailHandlers();
+
+    const { upgradeWorker } = await importTeamCli();
+    upgradeWorker(vaultDir, { observability: true });
+
+    const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+    expect(patchedToml).toContain('[observability]');
+    expect(patchedToml).toContain('enabled = true');
+  });
+
+  it('upgrade strips a stale [observability] block when observability:false', async () => {
+    // Simulate a deploy dir from a prior --observability run: it already has
+    // an [observability] block. Upgrade without the flag should leave the
+    // toml block-free, not produce two blocks.
+    const tomlWithObs = LEGACY_TOML
+      + '\n[[kv_namespaces]]\nbinding = "MYCO_SECRETS"\nid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+      + '\n[observability]\n[observability.logs]\nenabled = true\ninvocation_logs = true\n';
+    fs.writeFileSync(path.join(deployDir, 'wrangler.toml'), tomlWithObs, 'utf-8');
+    pushUpgradeTailHandlers();
+
+    const { upgradeWorker } = await importTeamCli();
+    upgradeWorker(vaultDir);
+
+    const patchedToml = fs.readFileSync(path.join(deployDir, 'wrangler.toml'), 'utf-8');
+    expect(patchedToml).not.toContain('[observability]');
+  });
+
   it('teamUpgrade does not trigger remote vector reindex by default', async () => {
     execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
     pushUpgradeTailHandlers();

@@ -10,11 +10,15 @@ function showHelp(): void {
 
 Commands:
   install [project_dir]
-  upgrade [project_dir] [--reindex-vectors] [--json]
+  upgrade [project_dir] [--reindex-vectors] [--observability] [--json]
   status [project_dir]
   rotate-tokens [api|mcp|all] [project_dir]
   reindex-vectors [project_dir]
   destroy [project_dir]
+
+--observability enables Cloudflare's persistent worker logs for the
+deploy. Off by default because logs cost extra; turn it on for
+dogfooding instances where tail access matters more than spend.
 
 --json on upgrade emits a single machine-readable result object on stdout
 (schema: { success, worker_url?, version?, error? }) and suppresses the
@@ -24,25 +28,32 @@ internals.
 `);
 }
 
+const UPGRADE_FLAGS = new Set(['--reindex-vectors', '--observability', '--json']);
+
 function parseUpgradeArgs(commandArgs: string[]): {
   vaultDir: string;
   reindexVectors: boolean;
+  observability: boolean;
   json: boolean;
 } {
   const reindexVectors = commandArgs.includes('--reindex-vectors');
+  const observability = commandArgs.includes('--observability');
   const json = commandArgs.includes('--json');
-  const projectArg = commandArgs.find(
-    (arg) => arg !== '--reindex-vectors' && arg !== '--json',
-  );
+  const projectArg = commandArgs.find((arg) => !UPGRADE_FLAGS.has(arg));
   return {
     vaultDir: resolveVaultDir(projectArg ?? process.cwd()),
     reindexVectors,
+    observability,
     json,
   };
 }
 
-async function runUpgradeJson(vaultDir: string, reindexVectors: boolean): Promise<void> {
-  const result = upgradeWorker(vaultDir);
+async function runUpgradeJson(
+  vaultDir: string,
+  reindexVectors: boolean,
+  observability: boolean,
+): Promise<void> {
+  const result = upgradeWorker(vaultDir, { observability });
   if (!result.success) {
     process.stdout.write(JSON.stringify(result) + '\n');
     process.exit(1);
@@ -64,10 +75,13 @@ const COMMAND_HANDLERS: Record<string, CommandHandler> = {
   upgrade: async (commandArgs) => {
     const parsed = parseUpgradeArgs(commandArgs);
     if (parsed.json) {
-      await runUpgradeJson(parsed.vaultDir, parsed.reindexVectors);
+      await runUpgradeJson(parsed.vaultDir, parsed.reindexVectors, parsed.observability);
       return;
     }
-    await teamUpgrade(parsed.vaultDir, { reindexVectors: parsed.reindexVectors });
+    await teamUpgrade(parsed.vaultDir, {
+      reindexVectors: parsed.reindexVectors,
+      observability: parsed.observability,
+    });
   },
   status: async (commandArgs) => teamStatus(resolveVaultDir(commandArgs[0] ?? process.cwd())),
   'rotate-tokens': async (commandArgs) => teamRotateTokens(
