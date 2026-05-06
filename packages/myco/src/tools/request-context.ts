@@ -92,7 +92,7 @@ export function requestContextFromHttpHeaders(
   headers: IncomingHttpHeaders,
   fallbackVaultDir: string,
 ): MycoRequestContext {
-  const fallback = resolveRequestContextForVault(fallbackVaultDir);
+  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
     projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
@@ -107,7 +107,7 @@ export function requestContextFromHttpHeaders(
     return resolveLegacyHeaderRequestContext(explicit, fallback);
   }
 
-  return resolveManifestRequestContext(fallback, 'headers') ?? fallback;
+  return resolveManifestRequestContext(fallback, 'headers', manifest) ?? fallback;
 }
 
 export function requestContextFromEnvironment(
@@ -116,7 +116,7 @@ export function requestContextFromEnvironment(
 ): MycoRequestContext {
   const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
   const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
-  const fallback = resolveRequestContextForVault(fallbackVaultDir, { machineId, sessionId });
+  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { machineId, sessionId });
   const hasExplicitProjectContext = [
     REQUEST_CONTEXT_ENV.projectRoot,
     REQUEST_CONTEXT_ENV.projectId,
@@ -124,7 +124,7 @@ export function requestContextFromEnvironment(
   ].some((key) => readEnv(env, key) !== undefined);
 
   if (!hasExplicitProjectContext) {
-    return resolveManifestRequestContext(fallback, 'explicit') ?? fallback;
+    return resolveManifestRequestContext(fallback, 'explicit', manifest) ?? fallback;
   }
 
   return resolveRegisteredRequestContext({
@@ -148,6 +148,20 @@ export function resolveRequestContextForVault(
   vaultDir: string,
   overrides: { machineId?: string; sessionId?: string | null } = {},
 ): MycoRequestContext {
+  return buildVaultFallback(vaultDir, overrides).context;
+}
+
+/**
+ * Internal: resolve the vault-derived context AND return the manifest
+ * we already had to read. Two transport entry points
+ * (`requestContextFromEnvironment`, `requestContextFromHttpHeaders`)
+ * pass the manifest through to `resolveManifestRequestContext` so it
+ * doesn't read the same `project.toml` from disk twice.
+ */
+function buildVaultFallback(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null } = {},
+): { context: MycoRequestContext; manifest: ProjectManifest | null } {
   const projectRoot = resolveProjectRoot(vaultDir);
   const manifest = readManifest(vaultDir);
   if (!manifest?.project?.id) {
@@ -156,14 +170,17 @@ export function resolveRequestContextForVault(
     );
   }
   return {
-    projectRoot,
-    projectId: assertGroveProjectId(manifest.project.id),
-    groveId: null,
-    machineId: overrides.machineId ?? getMachineId(vaultDir),
-    sessionId: overrides.sessionId ?? null,
-    projectVaultDir: vaultDir,
-    databasePath: vaultDbPath(vaultDir),
-    source: 'legacy-vault',
+    context: {
+      projectRoot,
+      projectId: assertGroveProjectId(manifest.project.id),
+      groveId: null,
+      machineId: overrides.machineId ?? getMachineId(vaultDir),
+      sessionId: overrides.sessionId ?? null,
+      projectVaultDir: vaultDir,
+      databasePath: vaultDbPath(vaultDir),
+      source: 'legacy-vault',
+    },
+    manifest,
   };
 }
 
@@ -195,8 +212,9 @@ function compactHeaders(values: Record<string, string | null | undefined>): Reco
 function resolveManifestRequestContext(
   fallback: MycoRequestContext,
   source: RequestContextSource,
+  cachedManifest?: ProjectManifest | null,
 ): MycoRequestContext | null {
-  const manifest = readManifest(fallback.projectVaultDir);
+  const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
   if (!manifest?.grove?.binding_id) return null;
   const registered = findRegisteredProject({
     projectId: manifest.project.id,
@@ -307,7 +325,7 @@ function buildRegisteredRequestContext(input: {
   return {
     ...input.fallback,
     projectRoot,
-    projectId: assertGroveProjectId(input.projectId),
+    projectId: input.projectId,
     groveId: input.groveId,
     machineId: input.machineId,
     sessionId: input.sessionId,
