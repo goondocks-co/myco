@@ -194,25 +194,6 @@ function SidebarContent({
 }) {
   return (
     <>
-      {/* Brand + vault name */}
-      <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
-        {collapsed ? (
-          <div className="relative flex items-center">
-            <span className="font-serif text-base text-primary">m</span>
-            <span className="ml-1 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-          </div>
-        ) : (
-          <div>
-            <div className="flex items-center">
-              <span className="font-serif text-base text-primary tracking-wider">
-                myco
-              </span>
-              <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-            </div>
-          </div>
-        )}
-      </div>
-
       <ProjectSwitcher collapsed={collapsed} />
 
       {/* Search + Notifications triggers */}

@@ -1,6 +1,5 @@
 import { useDaemon } from '../hooks/use-daemon';
 import { PageLoading } from '../components/ui/page-loading';
-import { StatusHero } from '../components/dashboard/StatusHero';
 import { VaultStats } from '../components/dashboard/VaultStats';
 import { SessionPodGrid } from '../components/dashboard/SessionPodGrid';
 import { AgentRunsFeed } from '../components/dashboard/AgentRunsFeed';
@@ -47,9 +46,6 @@ export default function Dashboard() {
 
           {/* Content */}
           <div className="relative z-10 p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
-            {/* Hero banner */}
-            <StatusHero stats={stats} />
-
             {/* Stat row */}
             <VaultStats stats={stats} />
 
