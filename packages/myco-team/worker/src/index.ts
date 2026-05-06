@@ -1104,6 +1104,22 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     totalRecords += count;
   }
 
+  // Vectorize index probe — `describe()` returns dimensions + a
+  // vectorsCount. Surface count + a healthy flag so the UI can render
+  // a vectors tile with a delta against the local embedded count and
+  // an at-a-glance "are vectors actually flowing" indicator.
+  let vectorCount: number | null = null;
+  let vectorIndexHealthy = false;
+  let vectorIndexError: string | null = null;
+  try {
+    const desc = await env.MYCO_TEAM_VECTORS.describe();
+    const c = Number((desc as { vectorsCount?: number }).vectorsCount ?? 0);
+    vectorCount = Number.isFinite(c) ? c : null;
+    vectorIndexHealthy = true;
+  } catch (err) {
+    vectorIndexError = (err as Error).message ?? 'describe failed';
+  }
+
   const schemaVersion = Number(env.MYCO_SCHEMA_VERSION ?? '');
   const syncProtocolVersion = Number(env.SYNC_PROTOCOL_VERSION ?? '');
 
@@ -1111,6 +1127,9 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     generated_at: epochSeconds(),
     total_records: totalRecords,
     tables,
+    vector_count: vectorCount,
+    vector_index_healthy: vectorIndexHealthy,
+    vector_index_error: vectorIndexError,
     schema_version: Number.isFinite(schemaVersion) ? schemaVersion : null,
     package_version: env.MYCO_TEAM_PACKAGE_VERSION ?? DEFAULT_TEAM_PACKAGE_VERSION,
     sync_protocol_version: Number.isFinite(syncProtocolVersion) ? syncProtocolVersion : 0,

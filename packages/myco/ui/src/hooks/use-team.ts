@@ -93,6 +93,9 @@ export interface TeamRemoteSyncSummary {
   generated_at: number;
   total_records: number;
   tables: Record<string, number>;
+  vector_count: number | null;
+  vector_index_healthy: boolean;
+  vector_index_error: string | null;
   schema_version: number | null;
   package_version: string;
   sync_protocol_version: number;

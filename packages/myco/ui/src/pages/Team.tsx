@@ -11,6 +11,7 @@ import {
   type DlqMessage,
   type TeamSyncSummaryResponse,
 } from '../hooks/use-team';
+import { useDaemon } from '../hooks/use-daemon';
 import { postJson, ApiError } from '../lib/api';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
@@ -467,6 +468,47 @@ function tableDelta(local: number, remote: number | undefined): string {
   return delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString();
 }
 
+function VectorsTile({
+  remote,
+  localEmbedded,
+}: {
+  remote: TeamSyncSummaryResponse['remote'];
+  localEmbedded: number | null;
+}) {
+  if (!remote) {
+    return <StatCard label="Vectors" value="—" accent="outline" />;
+  }
+  // Vectorize describe failed → surface that as the failure mode rather
+  // than a misleading delta. Re-embed via the existing reindex path.
+  if (!remote.vector_index_healthy) {
+    return (
+      <StatCard
+        label="Vectors"
+        value="error"
+        sublabel={remote.vector_index_error ?? 'index unavailable'}
+        accent="terracotta"
+      />
+    );
+  }
+  const remoteCount = remote.vector_count ?? 0;
+  const valueLabel = formatNumber(remoteCount);
+  if (localEmbedded === null) {
+    return <StatCard label="Vectors" value={valueLabel} accent="sage" />;
+  }
+  const delta = remoteCount - localEmbedded;
+  const sublabel = delta === 0
+    ? `synced with ${formatNumber(localEmbedded)} local`
+    : `${delta > 0 ? '+' : ''}${delta.toLocaleString()} vs ${formatNumber(localEmbedded)} local`;
+  return (
+    <StatCard
+      label="Vectors"
+      value={valueLabel}
+      sublabel={sublabel}
+      accent={delta === 0 ? 'sage' : 'ochre'}
+    />
+  );
+}
+
 function SyncStoreTable({ summary }: { summary: TeamSyncSummaryResponse }) {
   const remoteTables = summary.remote?.tables ?? {};
   const tableNames = Array.from(new Set([
@@ -529,6 +571,7 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
   const enabled = status.enabled && status.healthy;
   const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
   const { data: syncSummary, isLoading: summaryLoading } = useTeamSyncSummary(enabled);
+  const { data: daemonStats } = useDaemon();
   const dlqEnabled = enabled && Boolean(queueStats) && !isTokenMissing(queueStats);
   const { data: dlq, isLoading: dlqLoading } = useTeamDlq(dlqEnabled);
   const [busy, setBusy] = useState(false);
@@ -770,7 +813,7 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
           <p className="text-sm text-tertiary break-words">{syncSummary.remote_error}</p>
         ) : syncSummary ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <StatCard label="Local records" value={formatNumber(localTotal)} accent="outline" />
               <StatCard label="Remote records" value={formatNumber(remoteTotal)} accent="outline" />
               <StatCard
@@ -778,6 +821,7 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
                 value={remoteTotal === null || localTotal === null ? '—' : tableDelta(localTotal, remoteTotal)}
                 accent={remoteTotal !== null && localTotal !== null && remoteTotal !== localTotal ? 'ochre' : 'outline'}
               />
+              <VectorsTile remote={syncSummary.remote} localEmbedded={daemonStats?.embedding.embedded_count ?? null} />
             </div>
             <SyncStoreTable summary={syncSummary} />
           </div>
