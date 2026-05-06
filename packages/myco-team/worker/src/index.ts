@@ -694,15 +694,18 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 }
 
 /**
- * bge-m3 has a 60,000-token context window for the whole request —
- * the sum of all texts in a batched `ai.run` must fit. Tokenization
- * density varies wildly with content: tail-observed worst case ran
- * 1.37 chars/token on dense code/JSON content (a 24-text chunk hit
- * 65,688 tokens at ~2.74 chars/token; an 84-text chunk hit 131,292
- * tokens at ~1.37 chars/token). Budget assumes 1.2 chars/token and
- * targets ~50K tokens to leave a safety margin.
+ * bge-m3 has a 60,000-token context window per request. Tail-observed
+ * tokenization density on this dataset hit 0.84 chars/token in the
+ * worst case (a 32-text chunk averaging 1,875 chars/text produced
+ * 71,680 tokens). Cap both combined characters AND count per chunk —
+ * char cap handles long texts, count cap handles dense short ones.
+ *
+ * The combined cap targets ~30K tokens worst case (60K-char budget at
+ * 0.5 chars/token absolute floor would still fit), which leaves
+ * substantial headroom under the 60K hard limit.
  */
-const EMBED_BATCH_CHAR_BUDGET = 50_000 * 1.2;
+const EMBED_BATCH_CHAR_BUDGET = 25_000;
+const EMBED_BATCH_MAX_COUNT = 10;
 
 /**
  * Group jobs into chunks whose combined (truncated) text size fits
@@ -714,7 +717,9 @@ function chunkEmbedJobs(jobs: EmbedJob[]): EmbedJob[][] {
   let chars = 0;
   for (const job of jobs) {
     const len = Math.min(job.text.length, MAX_EMBEDDING_TEXT_CHARS);
-    if (current.length > 0 && chars + len > EMBED_BATCH_CHAR_BUDGET) {
+    const wouldExceedChars = chars + len > EMBED_BATCH_CHAR_BUDGET;
+    const wouldExceedCount = current.length >= EMBED_BATCH_MAX_COUNT;
+    if (current.length > 0 && (wouldExceedChars || wouldExceedCount)) {
       chunks.push(current);
       current = [];
       chars = 0;
