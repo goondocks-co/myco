@@ -49,7 +49,7 @@ describe('migration v36 — project_id orphan cleanup', () => {
     expect(rows[0].path).toBe('src/keep.ts');
   });
 
-  it('removes orphans from log_entries (the largest source)', () => {
+  it('backfills NULL/orphan log_entries to the single Grove project id (audit-trail preservation)', () => {
     const db = freshDbAtV35();
     const goodId = createProjectId();
     const insertLog = (projectId: string | null) => {
@@ -65,9 +65,36 @@ describe('migration v36 — project_id orphan cleanup', () => {
 
     runV36(db);
 
+    // Audit-trail rows aren't deleted — they're updated to the only
+    // Grove id present in the table, preserving runtime telemetry that
+    // the daemon emitted before the writer-context fix.
     const survivors = db.prepare('SELECT project_id FROM log_entries').all() as Array<{ project_id: string }>;
-    expect(survivors).toHaveLength(1);
-    expect(survivors[0].project_id).toBe(goodId);
+    expect(survivors).toHaveLength(4);
+    for (const row of survivors) {
+      expect(row.project_id).toBe(goodId);
+    }
+  });
+
+  it('deletes orphan log_entries when multiple Grove ids exist (cannot infer)', () => {
+    const db = freshDbAtV35();
+    const goodA = createProjectId();
+    const goodB = createProjectId();
+    const insertLog = (projectId: string | null) => {
+      db.prepare(
+        `INSERT INTO log_entries (timestamp, level, kind, component, message, project_id)
+         VALUES ('2026-05-06T00:00:00Z', 'info', 'k', 'c', 'm', ?)`,
+      ).run(projectId);
+    };
+    insertLog(goodA);
+    insertLog(goodB);
+    insertLog(null);
+    insertLog('/some/path');
+
+    runV36(db);
+
+    const survivors = db.prepare('SELECT project_id FROM log_entries ORDER BY project_id').all() as Array<{ project_id: string }>;
+    expect(survivors).toHaveLength(2);
+    expect(survivors.map((r) => r.project_id).sort()).toEqual([goodA, goodB].sort());
   });
 
   it('removes pending team_outbox rows whose payload carries a bad project_id', () => {

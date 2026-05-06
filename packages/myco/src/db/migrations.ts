@@ -2183,11 +2183,25 @@ function migrateV34ToV35(db: Database): void {
   }
 }
 
-const V36_PROJECT_ID_TABLES: readonly string[] = [
-  ...GROVE_PROJECT_SCOPED_TABLES,
-  'canopy_entries',
-  'canopy_maps',
-];
+/**
+ * Tables where orphan rows are TRUE orphans — a path-string
+ * `project_id` in `canopy_entries` points at a project that doesn't
+ * exist anymore (the canonical bug this migration cleans up). DELETE
+ * is correct for these.
+ */
+const V36_DELETE_ONLY_TABLES: readonly string[] = ['canopy_entries', 'canopy_maps'];
+
+/**
+ * Tables where orphan rows are AUDIT TRAIL — agent_runs/turns/reports,
+ * log_entries, etc. are runtime telemetry the daemon emitted under the
+ * pre-fix writer-context bug. The rows belong to the same project the
+ * rest of the table belongs to; they were just missing the id stamp.
+ *
+ * For these tables: when exactly one Grove-era `project_id` is present
+ * in the table, backfill orphans to that id (preserving the audit data),
+ * then DELETE any remaining orphans (multiple Grove ids → can't infer).
+ */
+const V36_BACKFILL_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
 
 function migrateV35ToV36(db: Database): void {
   // Suspend FK enforcement for the duration of the sweep. Several FK
@@ -2200,13 +2214,42 @@ function migrateV35ToV36(db: Database): void {
 
   db.prepare('BEGIN').run();
   try {
-    for (const table of V36_PROJECT_ID_TABLES) {
+    // Backfill-then-delete for audit-trail tables: NULL/non-grove rows
+    // belong to the single Grove project (when one exists in the table)
+    // and represent runtime audit data the daemon emitted before the
+    // writer-context fix. Preserve them.
+    for (const table of V36_BACKFILL_TABLES) {
       if (!tableExists(db, table)) continue;
-      // Only sweep tables where Grove-era rows already coexist with
-      // orphans — that's the dual-namespace state we're cleaning up.
-      // A pre-Grove snapshot (all NULLs, zero `proj_<hex>` rows) is
-      // a no-op so the activation importer can still copy rows out.
-      // A fresh post-Grove vault (all `proj_<hex>`) is also a no-op.
+      const groveIds = db.prepare(
+        `SELECT DISTINCT project_id FROM ${table}
+          WHERE project_id LIKE 'proj_%'`,
+      ).all() as Array<{ project_id: string }>;
+      if (groveIds.length === 1) {
+        db.prepare(
+          `UPDATE ${table}
+              SET project_id = ?
+            WHERE project_id IS NULL
+               OR project_id = ''
+               OR project_id NOT LIKE 'proj_%'`,
+        ).run(groveIds[0].project_id);
+      } else if (groveIds.length > 1) {
+        // Multi-project Grove DB: can't infer the right id for orphans,
+        // so drop them. Safe because callers always supply the id post-fix.
+        db.prepare(
+          `DELETE FROM ${table}
+            WHERE project_id IS NULL
+               OR project_id = ''
+               OR project_id NOT LIKE 'proj_%'`,
+        ).run();
+      }
+      // groveIds.length === 0 → pre-Grove snapshot, leave alone.
+    }
+
+    // Delete-only for tables where orphans truly are stale (e.g.
+    // `canopy_entries` rows under a path-string project_id reference
+    // files that no longer exist).
+    for (const table of V36_DELETE_ONLY_TABLES) {
+      if (!tableExists(db, table)) continue;
       const hasGroveRow = (db.prepare(
         `SELECT 1 FROM ${table} WHERE project_id LIKE 'proj_%' LIMIT 1`,
       ).get() ?? null) !== null;
