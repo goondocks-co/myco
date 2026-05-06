@@ -684,18 +684,25 @@ async function coalescedUpsertBatch(
 ): Promise<void> {
   // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
   // tuples we're about to write. Records without content_hash skip the
-  // filter and write unconditionally.
+  // filter and write unconditionally. D1 caps a prepared statement at
+  // 100 bound parameters, so chunk into 50-message slices (2 binds
+  // each) — a full CF queue batch of 100 messages would otherwise
+  // blow the limit and silently disable dedup for the whole group.
   const filterCandidates = messages.filter((m) => Boolean(m.body.content_hash));
   const existingHashes = new Map<string, string | null>();
   if (filterCandidates.length > 0) {
-    const tuples = filterCandidates.map(() => '(?, ?)').join(', ');
-    const binds = filterCandidates.flatMap((m) => [m.body.id, m.body.machine_id]);
+    const D1_BIND_LIMIT_PAIRS = 50;
     try {
-      const result = await env.MYCO_TEAM_DB.prepare(
-        `SELECT id, machine_id, content_hash FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
-      ).bind(...binds).all<{ id: string; machine_id: string; content_hash: string | null }>();
-      for (const row of result.results ?? []) {
-        existingHashes.set(`${row.id}\t${row.machine_id}`, row.content_hash);
+      for (let offset = 0; offset < filterCandidates.length; offset += D1_BIND_LIMIT_PAIRS) {
+        const slice = filterCandidates.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
+        const tuples = slice.map(() => '(?, ?)').join(', ');
+        const binds = slice.flatMap((m) => [m.body.id, m.body.machine_id]);
+        const result = await env.MYCO_TEAM_DB.prepare(
+          `SELECT id, machine_id, content_hash FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+        ).bind(...binds).all<{ id: string; machine_id: string; content_hash: string | null }>();
+        for (const row of result.results ?? []) {
+          existingHashes.set(`${row.id}\t${row.machine_id}`, row.content_hash);
+        }
       }
     } catch (err) {
       // SELECT failure is unusual — fall through; the survivors path will
@@ -801,16 +808,25 @@ async function coalescedEmbedBatch(
     return;
   }
 
-  const tuples = messages.map(() => '(?, ?)').join(', ');
-  const binds = messages.flatMap((m) => [m.body.id, m.body.machine_id]);
+  // D1 caps a prepared statement at 100 bound parameters. Two binds
+  // per message (id + machine_id) means we can only address 50
+  // messages per SELECT — chunk so a max-size CF queue batch (100
+  // messages) doesn't blow the limit and route the whole group
+  // through retries to DLQ.
+  const D1_BIND_LIMIT_PAIRS = 50;
   const rowsByKey = new Map<string, Record<string, unknown>>();
   try {
-    const result = await env.MYCO_TEAM_DB.prepare(
-      `SELECT * FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
-    ).bind(...binds).all<Record<string, unknown>>();
-    for (const row of result.results ?? []) {
-      if (typeof row.id === 'string' && typeof row.machine_id === 'string') {
-        rowsByKey.set(`${row.id}\t${row.machine_id}`, row);
+    for (let offset = 0; offset < messages.length; offset += D1_BIND_LIMIT_PAIRS) {
+      const slice = messages.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
+      const tuples = slice.map(() => '(?, ?)').join(', ');
+      const binds = slice.flatMap((m) => [m.body.id, m.body.machine_id]);
+      const result = await env.MYCO_TEAM_DB.prepare(
+        `SELECT * FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+      ).bind(...binds).all<Record<string, unknown>>();
+      for (const row of result.results ?? []) {
+        if (typeof row.id === 'string' && typeof row.machine_id === 'string') {
+          rowsByKey.set(`${row.id}\t${row.machine_id}`, row);
+        }
       }
     }
   } catch (err) {
