@@ -694,16 +694,54 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 }
 
 /**
- * Embed every job in one `ai.run` call against bge-m3 (which accepts
- * a text array), then upsert all resulting vectors in one
- * `Vectorize.upsert` call. Best-effort — failures log but don't
- * propagate, since the source rows are still in D1 and recoverable.
+ * bge-m3 has a 60,000-token context window for the whole request —
+ * the sum of all texts in a batched `ai.run` must fit. Use ~3 chars
+ * per token as a conservative rule (English/code averages closer to
+ * 4 but safety margin matters more than throughput here) and cap the
+ * combined-character budget per ai.run accordingly.
+ */
+const EMBED_BATCH_CHAR_BUDGET = 60_000 * 3;
+
+/**
+ * Group jobs into chunks whose combined (truncated) text size fits
+ * the bge-m3 context window. Each chunk becomes one `ai.run` call.
+ */
+function chunkEmbedJobs(jobs: EmbedJob[]): EmbedJob[][] {
+  const chunks: EmbedJob[][] = [];
+  let current: EmbedJob[] = [];
+  let chars = 0;
+  for (const job of jobs) {
+    const len = Math.min(job.text.length, MAX_EMBEDDING_TEXT_CHARS);
+    if (current.length > 0 && chars + len > EMBED_BATCH_CHAR_BUDGET) {
+      chunks.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(job);
+    chars += len;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * Embed every job by folding them into the largest bge-m3 batches that
+ * fit the model's 60K-token context window, then upserting all
+ * resulting vectors in one `Vectorize.upsert` per chunk. Best-effort
+ * — failures log but don't propagate, since source rows are still in
+ * D1 and recoverable.
  *
  * Workers AI serializes parallel `ai.run` calls per isolate, so this
- * batched form is ~100× faster than the previous N-parallel approach
- * for a full CF queue batch (100 messages → ~1-2s vs ~100s).
+ * batched form is dramatically faster than the previous N-parallel
+ * approach for a full CF queue batch (~10× speedup typical).
  */
 async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
+  for (const chunk of chunkEmbedJobs(jobs)) {
+    await runOneEmbedChunk(env, chunk);
+  }
+}
+
+async function runOneEmbedChunk(env: Env, jobs: EmbedJob[]): Promise<void> {
   const texts = jobs.map((j) =>
     j.text.length > MAX_EMBEDDING_TEXT_CHARS
       ? `${j.text.slice(0, MAX_EMBEDDING_TEXT_CHARS)}\n\n[truncated for embedding]`
