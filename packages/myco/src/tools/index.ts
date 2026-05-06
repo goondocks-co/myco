@@ -4,7 +4,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
 import {
-  resolveLegacyRequestContext,
+  resolveRequestContextForVault,
   type MycoRequestContext,
 } from './request-context.js';
 import {
@@ -147,7 +147,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   let logDirReady = false;
   const logDir = path.join(vaultDir, 'logs');
   let collectiveProbe: Promise<boolean> | null = null;
-  const requestContext = options.requestContext ?? resolveLegacyRequestContext(vaultDir);
+  const requestContext = options.requestContext ?? resolveRequestContextForVault(vaultDir);
 
   async function ensureDb(): Promise<boolean> {
     if (dbReady) return true;

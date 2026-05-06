@@ -9,6 +9,7 @@
 import crypto from 'node:crypto';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getType } from './registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { NotificationMode, NotificationLevel, CreateNotificationPayload } from './types.js';
@@ -62,6 +63,7 @@ export function notify(
       mode,
       link: payload.link ?? null,
       metadata: payload.metadata ? JSON.stringify(payload.metadata) : null,
+      project_id: resolveRequestContextForVault(vaultDir).projectId,
     });
 
     return id;

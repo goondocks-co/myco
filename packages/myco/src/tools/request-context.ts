@@ -2,8 +2,8 @@ import type { IncomingHttpHeaders } from 'node:http';
 import path from 'node:path';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
+import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
@@ -28,7 +28,7 @@ export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
 
 export interface MycoRequestContext {
   projectRoot: string;
-  projectId: string;
+  projectId: GroveProjectId;
   groveId: string | null;
   machineId: string;
   sessionId: string | null;
@@ -39,7 +39,7 @@ export interface MycoRequestContext {
 
 export interface LegacyRequestContextOptions {
   projectRoot?: string;
-  projectId?: string;
+  projectId?: GroveProjectId;
   groveId?: string | null;
   machineId?: string;
   sessionId?: string | null;
@@ -54,14 +54,21 @@ interface ExplicitContextInput {
   sessionId?: string | null;
 }
 
+/**
+ * Build a `MycoRequestContext` for callers that don't yet have one but do
+ * know a `GroveProjectId`. The function exists to keep the daemon-startup
+ * and tool entry paths typed: `projectId` is required and branded — there
+ * is no path-derived fallback. Pre-Grove callers cannot use this; they
+ * must complete Grove activation first (see `myco init`).
+ */
 export function resolveLegacyRequestContext(
   vaultDir: string,
-  options: LegacyRequestContextOptions = {},
+  options: LegacyRequestContextOptions & { projectId: GroveProjectId },
 ): MycoRequestContext {
   const projectRoot = options.projectRoot ?? resolveProjectRoot(vaultDir);
   return {
     projectRoot,
-    projectId: options.projectId ?? resolveCanopyProjectId(vaultDir),
+    projectId: assertGroveProjectId(options.projectId),
     groveId: options.groveId ?? null,
     machineId: options.machineId ?? process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir),
     sessionId: options.sessionId ?? process.env.MYCO_SESSION_ID ?? null,
@@ -85,7 +92,7 @@ export function requestContextFromHttpHeaders(
   headers: IncomingHttpHeaders,
   fallbackVaultDir: string,
 ): MycoRequestContext {
-  const fallback = resolveLegacyRequestContext(fallbackVaultDir);
+  const fallback = resolveRequestContextForVault(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
     projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
@@ -109,17 +116,7 @@ export function requestContextFromEnvironment(
 ): MycoRequestContext {
   const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
   const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
-  const fallbackProjectRoot = resolveProjectRoot(fallbackVaultDir);
-  const fallback: MycoRequestContext = {
-    projectRoot: fallbackProjectRoot,
-    projectId: resolveCanopyProjectId(fallbackVaultDir),
-    groveId: null,
-    machineId: machineId ?? getMachineId(fallbackVaultDir),
-    sessionId: sessionId ?? null,
-    projectVaultDir: fallbackVaultDir,
-    databasePath: vaultDbPath(fallbackVaultDir),
-    source: 'legacy-vault',
-  };
+  const fallback = resolveRequestContextForVault(fallbackVaultDir, { machineId, sessionId });
   const hasExplicitProjectContext = [
     REQUEST_CONTEXT_ENV.projectRoot,
     REQUEST_CONTEXT_ENV.projectId,
@@ -140,6 +137,37 @@ export function requestContextFromEnvironment(
 }
 
 /**
+ * Resolve a `MycoRequestContext` from a vault directory alone, when the
+ * caller hasn't been handed one by the request transport. The `projectId`
+ * is read from the project manifest (`project.toml`) and validated as a
+ * `GroveProjectId`. Pre-Grove vaults — where the manifest is missing or
+ * lacks a `proj_<32hex>` id — throw with an explicit message instead of
+ * silently producing a path-derived id.
+ */
+export function resolveRequestContextForVault(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null } = {},
+): MycoRequestContext {
+  const projectRoot = resolveProjectRoot(vaultDir);
+  const manifest = readManifest(vaultDir);
+  if (!manifest?.project?.id) {
+    throw new Error(
+      `No Grove project id available for vault ${vaultDir}. Run \`myco init\` to activate a Grove for this project.`,
+    );
+  }
+  return {
+    projectRoot,
+    projectId: assertGroveProjectId(manifest.project.id),
+    groveId: null,
+    machineId: overrides.machineId ?? getMachineId(vaultDir),
+    sessionId: overrides.sessionId ?? null,
+    projectVaultDir: vaultDir,
+    databasePath: vaultDbPath(vaultDir),
+    source: 'legacy-vault',
+  };
+}
+
+/**
  * Translate a transport-level request context into the project_id predicate
  * expected by first-generation Grove-aware row helpers.
  *
@@ -150,7 +178,7 @@ export function requestContextFromEnvironment(
  */
 export function rowProjectIdFromRequestContext(
   context?: MycoRequestContext,
-): string | null | undefined {
+): GroveProjectId | null | undefined {
   if (!context) return undefined;
   return context.groveId ? context.projectId : null;
 }
@@ -180,7 +208,7 @@ function resolveManifestRequestContext(
     fallback,
     source,
     projectRoot: registered.project.root,
-    projectId: registered.project.project_id,
+    projectId: assertGroveProjectId(registered.project.project_id),
     groveId: registered.grove.id,
     machineId: fallback.machineId,
     sessionId: fallback.sessionId,
@@ -241,7 +269,7 @@ function resolveRegisteredRequestContext(
     fallback,
     source,
     projectRoot: registeredRoot,
-    projectId: projectId!,
+    projectId: assertGroveProjectId(projectId),
     groveId: grove.id,
     machineId: input.machineId ?? fallback.machineId,
     sessionId: input.sessionId ?? fallback.sessionId,
@@ -265,7 +293,7 @@ function buildRegisteredRequestContext(input: {
   fallback: MycoRequestContext;
   source: RequestContextSource;
   projectRoot: string;
-  projectId: string;
+  projectId: GroveProjectId;
   groveId: string;
   machineId: string;
   sessionId: string | null;
@@ -279,7 +307,7 @@ function buildRegisteredRequestContext(input: {
   return {
     ...input.fallback,
     projectRoot,
-    projectId: input.projectId,
+    projectId: assertGroveProjectId(input.projectId),
     groveId: input.groveId,
     machineId: input.machineId,
     sessionId: input.sessionId,

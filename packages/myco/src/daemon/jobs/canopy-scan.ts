@@ -6,6 +6,7 @@ import { scanProject } from '@myco/canopy/scanner/scan-project.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { CanopyDeltaScanRunner } from './canopy-delta-scan.js';
 import { CanopyBackgroundScan } from './canopy-background-scan.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
 /**
  * Threshold above which a delta-scan's `added` count counts as a "mass
@@ -23,7 +24,7 @@ export interface CanopyJobContext {
   machineId: string;
   projectRoot: string;
   /** Stable identifier for the canopy project_id column. */
-  projectId: string;
+  projectId: GroveProjectId;
   liveConfig: { current: MycoConfig };
   /**
    * Optional callback invoked after a scan that added more than

@@ -72,6 +72,29 @@ export function assertGroveEraId(value: string, kind?: GroveIdKind): string {
   throw new Error(`Invalid Grove-era id: expected ${expected}`);
 }
 
+/**
+ * Branded `project_id` value. Every writer that touches a `project_id`
+ * column must take this type, never a bare `string`. The brand is the
+ * structural gate that keeps legacy path strings, NULLs, and other
+ * Grove-id prefixes out of the data plane — the only way to obtain a
+ * `GroveProjectId` is to pass through `assertGroveProjectId`.
+ */
+export type GroveProjectId = string & { readonly __brand: 'GroveProjectId' };
+
+/**
+ * Validate `value` as a Grove-era project id (`proj_<32 hex chars>`) and
+ * return it as a branded `GroveProjectId`. Throws otherwise. This is the
+ * single mint site for the brand.
+ */
+export function assertGroveProjectId(value: unknown): GroveProjectId {
+  if (typeof value !== 'string' || !isGroveEraId(value, 'project')) {
+    throw new Error(
+      `Invalid Grove project id: expected proj_<32 hex chars>, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value as GroveProjectId;
+}
+
 export function slugifyGroveName(name: string): string {
   const slug = name
     .trim()

@@ -476,7 +476,9 @@ export async function main(): Promise<void> {
   // --- Team context ---
   initTeamContext(config.team.enabled, machineId);
 
-  // Wire logger to SQLite persistence
+  // Wire logger to SQLite persistence. Every log row is scoped to the
+  // daemon's resolved Grove project id — there is no NULL fallback.
+  const daemonProjectId = dataPaths.requestContext.projectId;
   logger.setPersistFn((entry) => {
     const { timestamp, level, kind, component, message, ...rest } = entry;
     insertLogEntry({
@@ -487,6 +489,7 @@ export async function main(): Promise<void> {
       message,
       data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
       session_id: (rest.session_id as string) ?? null,
+      project_id: daemonProjectId,
     });
   });
 
@@ -494,7 +497,7 @@ export async function main(): Promise<void> {
   const lastLogTimestamp = getMaxTimestamp();
   if (lastLogTimestamp) {
     const logDir = path.join(vaultDir, 'logs');
-    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp);
+    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonProjectId);
     if (replayedCount > 0) {
       logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
     }
@@ -678,6 +681,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     vaultDir,
+    projectId: dataPaths.requestContext.projectId,
     planTags: symbiontPlanTags,
     planWatchConfig,
   });
@@ -1377,6 +1381,7 @@ export async function main(): Promise<void> {
     machineId,
     vaultDir,
     projectRoot,
+    projectId: dataPaths.requestContext.projectId,
     databaseManager,
     onCanopyMassAdd: () => scheduledTaskKicker.kick('canopy-describe'),
   });

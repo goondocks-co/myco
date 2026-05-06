@@ -5,6 +5,7 @@ import path from 'node:path';
 import { initDatabase, closeDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { getNotification } from '@myco/db/queries/notifications';
+import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { registerBuiltinDomains } from '@myco/notifications/domains';
 import { notify } from '@myco/notifications/notify';
 import { clearAll } from '@myco/notifications/registry';
@@ -14,6 +15,7 @@ describe('notify', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notify-'));
+    ensureProjectManifest(tmpDir, { projectName: 'notify-test' });
     const db = initDatabase(path.join(tmpDir, 'index.db'));
     createSchema(db);
     clearAll();

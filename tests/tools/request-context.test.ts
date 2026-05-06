@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { assertGroveProjectId, createProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   REQUEST_CONTEXT_ENV,
@@ -20,7 +21,7 @@ function withRegisteredProject<T>(fn: (args: {
   projectRoot: string;
   vaultDir: string;
   groveId: string;
-  projectId: string;
+  projectId: GroveProjectId;
 }) => T): T {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-request-context-'));
   const previousHome = process.env.MYCO_HOME;
@@ -31,7 +32,7 @@ function withRegisteredProject<T>(fn: (args: {
     const vaultDir = resolveProjectVaultDir(projectRoot);
     fs.mkdirSync(vaultDir, { recursive: true });
     const grove = createGrove('Work', home);
-    const projectId = 'project-a';
+    const projectId = assertGroveProjectId(createProjectId());
     saveProjectManifest(vaultDir, {
       project: { id: projectId, name: 'Project A' },
       grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
@@ -51,12 +52,13 @@ function withRegisteredProject<T>(fn: (args: {
 }
 
 describe('tool request context', () => {
-  it('resolves the legacy project-local context from a vault directory', () => {
+  it('builds a request context from explicit projectId, validating the brand', () => {
     const vaultDir = path.join('/tmp', 'project', '.myco');
-    const context = resolveLegacyRequestContext(vaultDir, { machineId: 'machine-1' });
+    const projectId = assertGroveProjectId(createProjectId());
+    const context = resolveLegacyRequestContext(vaultDir, { projectId, machineId: 'machine-1' });
 
     expect(context.projectRoot).toBe(path.join('/tmp', 'project'));
-    expect(context.projectId).toBe(path.join('/tmp', 'project'));
+    expect(context.projectId).toBe(projectId);
     expect(context.projectVaultDir).toBe(vaultDir);
     expect(context.databasePath).toBe(path.join(vaultDir, 'myco.db'));
     expect(context.machineId).toBe('machine-1');
@@ -108,31 +110,45 @@ describe('tool request context', () => {
     });
   });
 
-  it('falls back to the daemon vault context when no context headers are present', () => {
-    const vaultDir = path.join('/tmp', 'daemon-project', '.myco');
-    const resolved = requestContextFromHttpHeaders({}, vaultDir);
+  it('falls back to the daemon vault manifest when no context headers are present', () => {
+    withRegisteredProject(({ projectRoot, vaultDir, projectId }) => {
+      const resolved = requestContextFromHttpHeaders({}, vaultDir);
 
-    expect(resolved.projectRoot).toBe(path.join('/tmp', 'daemon-project'));
-    expect(resolved.source).toBe('legacy-vault');
+      expect(resolved.projectRoot).toBe(projectRoot);
+      expect(resolved.projectId).toBe(projectId);
+    });
   });
 
-  it('does not treat legacy headers without a Grove id as registered Grove context', () => {
-    const fallbackVaultDir = path.join('/tmp', 'daemon-project', '.myco');
-    const legacy = resolveLegacyRequestContext(path.join('/tmp', 'claimed-project', '.myco'), {
-      projectId: 'claimed-project',
-      machineId: 'machine-a',
-      sessionId: 'sess-a',
+  it('throws when neither headers nor a Grove manifest provide a project id', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-no-grove-'));
+    try {
+      const vaultDir = path.join(tmp, '.myco');
+      fs.mkdirSync(vaultDir, { recursive: true });
+      expect(() => requestContextFromHttpHeaders({}, vaultDir)).toThrow(/No Grove project id available/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a header-supplied non-Grove context with a branded project id', () => {
+    withRegisteredProject(({ vaultDir, projectId }) => {
+      const fallbackVaultDir = vaultDir;
+      const claimedProjectId = assertGroveProjectId(createProjectId());
+      const legacy = resolveLegacyRequestContext(path.join('/tmp', 'claimed-project', '.myco'), {
+        projectId: claimedProjectId,
+        machineId: 'machine-a',
+        sessionId: 'sess-a',
+      });
+
+      const resolved = requestContextFromHttpHeaders(requestContextHeaders(legacy), fallbackVaultDir);
+
+      // No Grove id in headers, so we keep the daemon-side fallback project context.
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.groveId).toBeNull();
+      expect(resolved.machineId).toBe('machine-a');
+      expect(resolved.sessionId).toBe('sess-a');
+      expect(resolved.source).toBe('headers');
     });
-
-    const resolved = requestContextFromHttpHeaders(requestContextHeaders(legacy), fallbackVaultDir);
-
-    expect(resolved.projectRoot).toBe(path.join('/tmp', 'daemon-project'));
-    expect(resolved.projectId).toBe(path.join('/tmp', 'daemon-project'));
-    expect(resolved.groveId).toBeNull();
-    expect(resolved.databasePath).toBe(path.join(fallbackVaultDir, 'myco.db'));
-    expect(resolved.machineId).toBe('machine-a');
-    expect(resolved.sessionId).toBe('sess-a');
-    expect(resolved.source).toBe('headers');
   });
 
   it('resolves explicit CLI environment request context', () => {
@@ -178,7 +194,9 @@ describe('tool request context', () => {
   });
 
   it('does not emit empty optional headers', () => {
+    const projectId = assertGroveProjectId(createProjectId());
     const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+      projectId,
       machineId: 'machine-1',
       groveId: null,
       sessionId: null,
@@ -191,18 +209,26 @@ describe('tool request context', () => {
     expect(headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBeUndefined();
   });
 
-  it('maps request contexts to row project scope with legacy compatibility', () => {
-    const legacy = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
-      projectId: 'project-a',
+  it('maps request contexts to row project scope: NULL for non-Grove, projectId for Grove', () => {
+    const projectId = assertGroveProjectId(createProjectId());
+    const nonGrove = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+      projectId,
       groveId: null,
     });
     const grove = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
-      projectId: 'project-a',
+      projectId,
       groveId: 'grove-a',
     });
 
     expect(rowProjectIdFromRequestContext()).toBeUndefined();
-    expect(rowProjectIdFromRequestContext(legacy)).toBeNull();
-    expect(rowProjectIdFromRequestContext(grove)).toBe('project-a');
+    expect(rowProjectIdFromRequestContext(nonGrove)).toBeNull();
+    expect(rowProjectIdFromRequestContext(grove)).toBe(projectId);
+  });
+
+  it('rejects a path-string project id at the brand boundary', () => {
+    expect(() => resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      // @ts-expect-error — exercising the runtime brand check on bad input
+      projectId: '/tmp/p',
+    })).toThrow(/Grove project id/);
   });
 });

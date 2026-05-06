@@ -9,8 +9,12 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import { cleanTestDb, seedCanopyEntry, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
+
+const PROJECT_A = assertGroveProjectId(createProjectId());
+const PROJECT_B = assertGroveProjectId(createProjectId());
 
 function mockClient(): DaemonClient {
   return {
@@ -30,7 +34,7 @@ describe('Myco tools request-context dispatch', () => {
     const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
     try {
       writeCanopyMap({
-        project_id: 'project-a',
+        project_id: PROJECT_A,
         machine_id: 'machine-a',
         content: '## Project A',
         inputs_hash: 'hash-a',
@@ -38,7 +42,7 @@ describe('Myco tools request-context dispatch', () => {
         generated_by_run_id: null,
       });
       writeCanopyMap({
-        project_id: 'project-b',
+        project_id: PROJECT_B,
         machine_id: 'machine-a',
         content: '## Project B',
         inputs_hash: 'hash-b',
@@ -48,7 +52,7 @@ describe('Myco tools request-context dispatch', () => {
 
       const requestContext = resolveLegacyRequestContext(vaultDir, {
         projectRoot: '/workspace/project-a',
-        projectId: 'project-a',
+        projectId: PROJECT_A,
         groveId: 'grove-a',
         machineId: 'machine-a',
         source: 'explicit',
@@ -58,7 +62,7 @@ describe('Myco tools request-context dispatch', () => {
       const result = await tools.callTool('myco_cortex', { op: 'canopy_map' }) as { content: string };
       const overrideAttempt = await tools.callTool('myco_cortex', {
         op: 'canopy_map',
-        project_id: 'project-b',
+        project_id: PROJECT_B,
       }) as { content: string };
 
       expect(result.content).toBe('## Project A');
@@ -71,12 +75,12 @@ describe('Myco tools request-context dispatch', () => {
   it('uses the resolved request context for Canopy entry lookups', async () => {
     const db = getDatabase();
     seedCanopyEntry(db, {
-      project_id: 'project-a',
+      project_id: PROJECT_A,
       path: 'src/shared.ts',
       llm_description: 'Project A entry',
     });
     seedCanopyEntry(db, {
-      project_id: 'project-b',
+      project_id: PROJECT_B,
       path: 'src/shared.ts',
       llm_description: 'Project B entry',
     });
@@ -85,7 +89,7 @@ describe('Myco tools request-context dispatch', () => {
     try {
       const requestContext = resolveLegacyRequestContext(vaultDir, {
         projectRoot: '/workspace/project-a',
-        projectId: 'project-a',
+        projectId: PROJECT_A,
         groveId: 'grove-a',
         machineId: 'machine-a',
         source: 'explicit',
@@ -94,7 +98,7 @@ describe('Myco tools request-context dispatch', () => {
 
       const pathLookup = await tools.callTool('myco_cortex', {
         op: 'canopy_entry',
-        project_id: 'project-b',
+        project_id: PROJECT_B,
         path: 'src/shared.ts',
       }) as { project_id: string; llm_description: string };
       const crossProjectId = await tools.callTool('myco_cortex', {
@@ -102,7 +106,7 @@ describe('Myco tools request-context dispatch', () => {
         id: 'project-b:src/shared.ts',
       }) as { ok: false; error: string };
 
-      expect(pathLookup.project_id).toBe('project-a');
+      expect(pathLookup.project_id).toBe(PROJECT_A);
       expect(pathLookup.llm_description).toBe('Project A entry');
       expect(crossProjectId).toEqual({
         ok: false,
@@ -116,8 +120,8 @@ describe('Myco tools request-context dispatch', () => {
   it('uses Grove request context for in-process plan/session helpers', async () => {
     const now = Math.floor(Date.now() / 1000);
     upsertSession({ id: 'sess-legacy', agent: 'codex', started_at: now, created_at: now });
-    upsertSession({ id: 'sess-a', project_id: 'project-a', agent: 'codex', started_at: now + 1, created_at: now + 1 });
-    upsertSession({ id: 'sess-b', project_id: 'project-b', agent: 'codex', started_at: now + 2, created_at: now + 2 });
+    upsertSession({ id: 'sess-a', project_id: PROJECT_A, agent: 'codex', started_at: now + 1, created_at: now + 1 });
+    upsertSession({ id: 'sess-b', project_id: PROJECT_B, agent: 'codex', started_at: now + 2, created_at: now + 2 });
     upsertPlan({
       id: 'plan-legacy',
       logical_key: 'path:docs/plan.md',
@@ -126,14 +130,14 @@ describe('Myco tools request-context dispatch', () => {
     });
     upsertPlan({
       id: 'plan-a',
-      project_id: 'project-a',
+      project_id: PROJECT_A,
       logical_key: 'path:docs/plan.md',
       title: 'Project A',
       created_at: now + 1,
     });
     upsertPlan({
       id: 'plan-b',
-      project_id: 'project-b',
+      project_id: PROJECT_B,
       logical_key: 'path:docs/plan.md',
       title: 'Project B',
       created_at: now + 2,
@@ -143,7 +147,7 @@ describe('Myco tools request-context dispatch', () => {
     try {
       const requestContext = resolveLegacyRequestContext(vaultDir, {
         projectRoot: '/workspace/project-a',
-        projectId: 'project-a',
+        projectId: PROJECT_A,
         groveId: 'grove-a',
         machineId: 'machine-a',
         source: 'explicit',
@@ -165,7 +169,7 @@ describe('Myco tools request-context dispatch', () => {
     try {
       const requestContext = resolveLegacyRequestContext(vaultDir, {
         projectRoot: '/workspace/project-a',
-        projectId: 'project-a',
+        projectId: PROJECT_A,
         groveId: 'grove-a',
         machineId: 'machine-a',
         source: 'explicit',
@@ -181,7 +185,7 @@ describe('Myco tools request-context dispatch', () => {
       const row = getDatabase().prepare(
         'SELECT project_id FROM spores WHERE id = ?',
       ).get(result.id) as { project_id: string | null };
-      expect(row.project_id).toBe('project-a');
+      expect(row.project_id).toBe(PROJECT_A);
     } finally {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     }

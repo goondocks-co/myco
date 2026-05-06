@@ -16,7 +16,6 @@ import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
@@ -776,8 +775,11 @@ function finalizeCanopyMap(args: {
     throw new Error('canopy-map completed without runContext.canopy_map_inputs_hash');
   }
 
-  const projectId = resolveCanopyMapProjectId(args.requestContext, args.vaultDir);
-  const machineId = args.requestContext?.machineId ?? getMachineId(args.vaultDir);
+  if (!args.requestContext) {
+    throw new Error('canopy-map writer requires a Grove request context — none supplied');
+  }
+  const projectId = args.requestContext.projectId;
+  const machineId = args.requestContext.machineId;
   writeCanopyMap({
     project_id: projectId,
     machine_id: machineId,
@@ -786,13 +788,6 @@ function finalizeCanopyMap(args: {
     token_estimate: estimateTokens(content),
     generated_by_run_id: args.runId,
   });
-}
-
-function resolveCanopyMapProjectId(
-  requestContext: RunOptions['requestContext'] | undefined,
-  vaultDir: string,
-): string {
-  return requestContext?.projectId ?? resolveCanopyProjectId(vaultDir);
 }
 
 function fallbackInstructionHash(instruction: string | undefined): string {

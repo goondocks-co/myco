@@ -4,7 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { vi } from '../helpers/vi-shim.js';
 import { createMycoTools } from '@myco/tools/index.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+
+const FIXTURE_VAULT = '/tmp/myco-vault';
+const FIXTURE_PROJECT_ID = assertGroveProjectId(createProjectId());
+const FIXTURE_CONTEXT = resolveLegacyRequestContext(FIXTURE_VAULT, {
+  projectId: FIXTURE_PROJECT_ID,
+  machineId: 'test-machine',
+});
 
 function mockClient(options?: { collective?: boolean; digest?: unknown }): DaemonClient {
   return {
@@ -25,7 +34,7 @@ function mockClient(options?: { collective?: boolean; digest?: unknown }): Daemo
 
 describe('Myco tools dispatcher', () => {
   it('lists the core tool surface without collective tools by default', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
     const names = (await tools.listTools()).map((tool) => tool.name);
 
     expect(names).toContain('myco_cortex');
@@ -34,7 +43,7 @@ describe('Myco tools dispatcher', () => {
   });
 
   it('includes collective tools when the daemon reports a collective connection', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient({ collective: true }));
+    const tools = createMycoTools('/tmp/myco-vault', mockClient({ collective: true }), { requestContext: FIXTURE_CONTEXT });
     const names = (await tools.listTools()).map((tool) => tool.name);
 
     expect(names).toContain('collective_search');
@@ -46,7 +55,7 @@ describe('Myco tools dispatcher', () => {
       digest: {
         tiers: [{ tier: 5000, content: 'digest', generated_at: 1 }],
       },
-    }));
+    }), { requestContext: FIXTURE_CONTEXT });
 
     const result = await tools.callTool('myco_cortex', { op: 'digest', tier: 5000 });
 
@@ -59,43 +68,43 @@ describe('Myco tools dispatcher', () => {
   });
 
   it('rejects unknown tools', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('missing_tool', {})).rejects.toThrow('Unknown tool: missing_tool');
   });
 
   it('rejects unavailable collective tools', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('collective_search', { query: 'q' })).rejects.toThrow('Tool unavailable: collective_search');
   });
 
   it('rejects non-object input', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('myco_cortex', 'bad')).rejects.toThrow('Tool arguments must be a JSON object');
   });
 
   it('validates required schema fields before dispatch', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('myco_search', {})).rejects.toThrow("Missing required argument 'query'");
   });
 
   it('validates schema property types before dispatch', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('myco_search', { query: 7 })).rejects.toThrow("Invalid argument 'query'");
   });
 
   it('validates schema enum values before dispatch', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('myco_cortex', { op: 'digest', tier: 1234 })).rejects.toThrow("Invalid argument 'tier'");
   });
 
   it('validates array item types before dispatch', async () => {
-    const tools = createMycoTools('/tmp/myco-vault', mockClient());
+    const tools = createMycoTools('/tmp/myco-vault', mockClient(), { requestContext: FIXTURE_CONTEXT });
 
     await expect(tools.callTool('myco_spores', {
       op: 'save',
@@ -123,7 +132,13 @@ describe('Myco tools dispatcher', () => {
     }
 
     function freshVault(): string {
-      return fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-log-'));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-log-'));
+      fs.writeFileSync(
+        path.join(dir, 'project.toml'),
+        `[project]\nid = "${FIXTURE_PROJECT_ID}"\nname = "tools-log-test"\n`,
+        'utf-8',
+      );
+      return dir;
     }
 
     it('myco_cortex digest log carries tier + duration_ms', async () => {

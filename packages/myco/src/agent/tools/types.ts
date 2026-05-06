@@ -6,7 +6,7 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
-  resolveLegacyRequestContext,
+  resolveRequestContextForVault,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
@@ -94,11 +94,8 @@ export interface VaultToolDeps {
 
 export function rowProjectIdFromVaultToolDeps(deps: VaultToolDeps): string | null | undefined {
   const context = deps.requestContext
-    ?? (deps.vaultDir
-      ? resolveLegacyRequestContext(deps.vaultDir, {
-        projectRoot: deps.projectRoot,
-        machineId: deps.machineId,
-      })
-      : undefined);
+    ?? (deps.vaultDir ? resolveRequestContextForVault(deps.vaultDir, {
+      machineId: deps.machineId,
+    }) : undefined);
   return rowProjectIdFromRequestContext(context);
 }

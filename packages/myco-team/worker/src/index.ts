@@ -76,6 +76,18 @@ const SYNCED_TABLES = [
 ] as const;
 
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
+
+const GROVE_PROJECT_ID_PATTERN = /^proj_[0-9a-f]{32}$/;
+
+/**
+ * Validate that a value is a Grove-era project id (`proj_<32 hex chars>`).
+ * Mirrors the daemon-side `assertGroveProjectId` gate so contamination
+ * (NULL, empty, path-string, wrong prefix) can't reach D1 — one of the
+ * defenses-in-depth introduced after the path-string regression.
+ */
+function isGroveProjectId(value: unknown): value is string {
+  return typeof value === 'string' && GROVE_PROJECT_ID_PATTERN.test(value);
+}
 const QUEUE_SEND_BATCH_SIZE = 100;
 const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
 
@@ -495,11 +507,27 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // Validate table names up-front so the daemon can't poison the queue with
   // payloads the consumer would always reject. Unknown tables are reported in
   // the response so the daemon surfaces them during its flush.
+  //
+  // Also reject records whose `data.project_id` is not a Grove-era id
+  // (`proj_<32 hex chars>`). Defense-in-depth against pre-Grove writers
+  // that quietly enqueued NULL or path-string project ids — those
+  // landed in D1 unchallenged before the brand was added locally.
+  // Mirroring the local gate here means a future runtime regression on
+  // either side can't recontaminate D1.
   const acceptedRecords: SyncRecord[] = [];
   const rejected: Array<{ id: string; table: string; error: string }> = [];
   for (const record of body.records) {
     if (!SYNCED_TABLES_SET.has(record.table)) {
       rejected.push({ id: record.id, table: record.table, error: `Unknown table: ${record.table}` });
+      continue;
+    }
+    const projectId = (record.data as Record<string, unknown> | undefined)?.project_id;
+    if (!isGroveProjectId(projectId)) {
+      rejected.push({
+        id: record.id,
+        table: record.table,
+        error: `Invalid project_id: expected proj_<32 hex chars>, got ${JSON.stringify(projectId)}`,
+      });
       continue;
     }
     acceptedRecords.push(record);

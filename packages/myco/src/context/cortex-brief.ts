@@ -23,7 +23,6 @@ import { listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listSpores } from '@myco/db/queries/spores.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import {
   rowProjectIdFromRequestContext,
@@ -321,7 +320,10 @@ export async function buildCortexInstructionsInput(
   // also covers describe state implicitly: the map task can't produce a
   // non-empty row without described files, so a populated map proves
   // canopy-describe has run successfully.
-  const projectId = resolveCanopyProjectId(vaultDir);
+  if (!requestContext) {
+    throw new Error('buildCortexInstructionsInput requires a Grove request context — none supplied');
+  }
+  const projectId = requestContext.projectId;
   const rowProjectId = rowProjectIdFromRequestContext(requestContext);
   const machineId = getMachineId(vaultDir);
   const mapRow = readCanopyMap(projectId, machineId);

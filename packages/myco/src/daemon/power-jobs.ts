@@ -15,7 +15,7 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import { createBackup } from './backup.js';
 import { resolveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
@@ -49,6 +49,13 @@ export interface PowerJobDeps {
   vaultDir: string;
   /** Repo root used for canopy scans and any project-rooted job. */
   projectRoot: string;
+  /**
+   * Grove-era project id, supplied by the daemon's request context. Power-
+   * managed writers must use this branded id — never derive `project_id`
+   * from `vaultDir` here, since that legacy path is the source of orphan
+   * canopy rows that no scan ever reconciles.
+   */
+  projectId: GroveProjectId;
   databaseManager: DatabaseMaintenanceManager;
   /**
    * Optional callback fired when a canopy scan adds many rows in one
@@ -69,7 +76,7 @@ export interface PowerJobsResult {
 // ---------------------------------------------------------------------------
 
 export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
-  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, databaseManager, onCanopyMassAdd } = deps;
+  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, projectId, databaseManager, onCanopyMassAdd } = deps;
 
   let reconcileRunning = false;
   powerManager.register({
@@ -192,7 +199,6 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     },
   });
 
-  const projectId = resolveCanopyProjectId(vaultDir);
   const canopy = registerCanopyJobs(powerManager, {
     db,
     logger,

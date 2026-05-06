@@ -34,7 +34,7 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
@@ -308,6 +308,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
               promptNumber,
               images: eventImages,
               logger,
+              projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
             });
           }
 
@@ -378,7 +379,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             logger,
             machineId: requestMachineId,
             projectRoot: requestProjectRoot,
-            projectId: req.requestContext?.projectId ?? resolveCanopyProjectId(vaultDir),
+            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
             toolName,
             toolInput: event.tool_input,
             defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,

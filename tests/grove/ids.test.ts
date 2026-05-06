@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  assertGroveProjectId,
   createGroveBindingId,
   createGroveEraId,
   createGroveId,
@@ -47,5 +48,36 @@ describe('Grove-era ID helpers', () => {
     const ids = new Set(Array.from({ length: 200 }, () => createGroveEraId('session')));
 
     expect(ids.size).toBe(200);
+  });
+});
+
+describe('assertGroveProjectId', () => {
+  it('returns the value unchanged for a valid proj_<32hex> id', () => {
+    const id = createProjectId();
+
+    expect(assertGroveProjectId(id)).toBe(id);
+  });
+
+  it('rejects path-string project ids (the legacy bug)', () => {
+    expect(() => assertGroveProjectId('/Users/chris/Repos/myco')).toThrow();
+    expect(() => assertGroveProjectId('/tmp/example')).toThrow();
+  });
+
+  it('rejects null, undefined, empty string', () => {
+    expect(() => assertGroveProjectId(null)).toThrow();
+    expect(() => assertGroveProjectId(undefined)).toThrow();
+    expect(() => assertGroveProjectId('')).toThrow();
+  });
+
+  it('rejects Grove ids with the wrong prefix', () => {
+    expect(() => assertGroveProjectId(createGroveId())).toThrow();
+    expect(() => assertGroveProjectId(createGroveEraId('session'))).toThrow();
+    expect(() => assertGroveProjectId(createGroveBindingId())).toThrow();
+  });
+
+  it('rejects malformed proj_ values (wrong length, non-hex)', () => {
+    expect(() => assertGroveProjectId('proj_short')).toThrow();
+    expect(() => assertGroveProjectId('proj_ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ')).toThrow();
+    expect(() => assertGroveProjectId('proj_')).toThrow();
   });
 });

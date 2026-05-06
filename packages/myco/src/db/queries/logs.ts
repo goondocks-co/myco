@@ -7,6 +7,7 @@
 
 import { getDatabase, changesSince } from '@myco/db/client.js';
 import { LEVEL_ORDER, type LogLevel } from '@myco/daemon/logger.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,12 @@ export interface LogEntryInsert {
   message: string;
   data: string | null;
   session_id: string | null;
+  /**
+   * Branded Grove project id this log line belongs to. Required so the
+   * row joins correctly under Grove's per-project scope; passing a bare
+   * `string` here is a type error by design.
+   */
+  project_id: GroveProjectId;
 }
 
 /** Row shape returned from log_entries queries (all columns). */
@@ -44,6 +51,7 @@ export interface LogEntryRow {
   message: string;
   data: string | null;
   session_id: string | null;
+  project_id: string | null;
 }
 
 /** Filter options for `searchLogs`. */
@@ -88,6 +96,7 @@ function toLogEntryRow(row: Record<string, unknown>): LogEntryRow {
     message: row.message as string,
     data: (row.data as string) ?? null,
     session_id: (row.session_id as string) ?? null,
+    project_id: (row.project_id as string) ?? null,
   };
 }
 
@@ -117,8 +126,8 @@ export function insertLogEntry(entry: LogEntryInsert): number {
   const db = getDatabase();
 
   const info = db.prepare(
-    `INSERT INTO log_entries (timestamp, level, kind, component, message, data, session_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO log_entries (timestamp, level, kind, component, message, data, session_id, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     entry.timestamp,
     entry.level,
@@ -127,6 +136,7 @@ export function insertLogEntry(entry: LogEntryInsert): number {
     entry.message,
     entry.data,
     entry.session_id,
+    entry.project_id,
   );
 
   return info.lastInsertRowid as number;
@@ -210,7 +220,7 @@ export function searchLogs(params: LogSearchParams): LogSearchResult {
   ).get(...queryParams) as { count: number };
 
   const rows = db.prepare(
-    `SELECT le.id, le.timestamp, le.level, le.kind, le.component, le.message, le.data, le.session_id
+    `SELECT le.id, le.timestamp, le.level, le.kind, le.component, le.message, le.data, le.session_id, le.project_id
      FROM log_entries le
      ${where}
      ORDER BY le.timestamp DESC, le.id DESC
@@ -237,7 +247,7 @@ export function getLogsSince(sinceId: number, limit?: number): LogStreamResult {
   const effectiveLimit = limit ?? DEFAULT_STREAM_LIMIT;
 
   const rows = db.prepare(
-    `SELECT id, timestamp, level, kind, component, message, data, session_id
+    `SELECT id, timestamp, level, kind, component, message, data, session_id, project_id
      FROM log_entries
      WHERE id > ?
      ORDER BY id ASC
@@ -263,7 +273,7 @@ export function getLogTail(limit?: number): LogStreamResult {
 
   // Select newest first, then reverse — this uses the id index efficiently.
   const rows = db.prepare(
-    `SELECT id, timestamp, level, kind, component, message, data, session_id
+    `SELECT id, timestamp, level, kind, component, message, data, session_id, project_id
      FROM log_entries
      ORDER BY id DESC
      LIMIT ?`,
@@ -284,7 +294,7 @@ export function getLogEntry(id: number): LogEntryRow | null {
   const db = getDatabase();
 
   const row = db.prepare(
-    `SELECT id, timestamp, level, kind, component, message, data, session_id
+    `SELECT id, timestamp, level, kind, component, message, data, session_id, project_id
      FROM log_entries
      WHERE id = ?`,
   ).get(id) as Record<string, unknown> | undefined;

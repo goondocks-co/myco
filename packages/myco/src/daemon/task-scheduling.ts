@@ -7,7 +7,6 @@
  * PowerManager.
  */
 
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
@@ -25,8 +24,7 @@ import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
-import { resolveLegacyRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { resolveRequestContextForVault, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -96,8 +94,8 @@ export async function registerScheduledTasks(
   for (const task of allTasks) {
     taskAgentMap.set(task.name, task.agent);
   }
-  const projectRoot = resolveProjectRoot(vaultDir);
-  const requestContext = resolveLegacyRequestContext(vaultDir, { projectRoot });
+  const requestContext = resolveRequestContextForVault(vaultDir);
+  const projectRoot = requestContext.projectRoot;
   const projectId = rowProjectIdFromRequestContext(requestContext);
 
   // Seed lastRun from DB: find the most recent completed/failed run per task
@@ -248,7 +246,7 @@ export async function registerScheduledTasks(
       // helpers as the accelerator dispatch, so there's a single
       // source of truth for "is there work pending?" per work unit.
       'has-unprocessed-batches': () => countUnprocessedSettledBatches(undefined, projectId) > 0,
-      'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)) > 0,
+      'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, requestContext.projectId) > 0,
       'has-active-skills': () => countSkillRecords({ status: 'active', project_id: projectId }) > 0,
       'has-approved-candidates': () => countCandidates({ status: 'approved', project_id: projectId }) > 0,
       'has-skill-survey-evidence': () => getSkillSurveyEligibility(
@@ -264,7 +262,7 @@ export async function registerScheduledTasks(
     // add the name to AcceleratorNameSchema, and add one line here.
     accelerators: {
       'canopy-pending-describe': (limit) =>
-        countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir), limit),
+        countPendingCanopyDescribe(null, requestContext.projectId, limit),
       'unprocessed-settled-batches': (limit) => countUnprocessedSettledBatches(limit, projectId),
     },
     onTaskError: (taskName, err) => {

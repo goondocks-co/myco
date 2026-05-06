@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TranscriptMiner, extractTurnsFromBuffer } from '@myco/capture/transcript-miner.js';
 import type { TranscriptTurn } from '@myco/symbionts/adapter.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
 import { captureBatchImages } from './capture-images.js';
@@ -59,6 +60,8 @@ export interface StopProcessorDeps {
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
   vaultDir: string;
+  /** Daemon-resolved Grove project id used for every per-session insert. */
+  projectId: GroveProjectId;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
   planWatchConfig: PlanWatchConfig;
@@ -161,7 +164,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   getActiveProcessing: () => Promise<void> | null;
   triggerTitleSummary: (sessionId: string) => Promise<void>;
 } {
-  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir, planWatchConfig } = deps;
+  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir, projectId, planWatchConfig } = deps;
 
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
@@ -374,7 +377,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .join('\n');
         }
         if (transcriptText) {
-          detectSkillUsage(sessionId, transcriptText);
+          detectSkillUsage(sessionId, transcriptText, projectId);
         }
       } catch {
         // Best-effort — don't block reconciliation
@@ -519,6 +522,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         promptNumber: resolvedPromptNumber,
         images: turn.images,
         logger,
+        projectId,
       });
     }
 

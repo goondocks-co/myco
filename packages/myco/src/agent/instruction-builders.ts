@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { sha256Hex } from '@myco/canopy/hash.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import {
   computeInputsHash,
   MAP_TASK_PROMPT_VERSION,
@@ -963,7 +963,7 @@ export async function gatherCanopyMapContext(
   config?: MycoConfig,
 ): Promise<CanopyMapGatherContext | CanopyMapGatherSkip> {
   const vaultDir = `${projectRoot.replace(/\/$/, '')}/.myco`;
-  const projectId = resolveCanopyProjectId(vaultDir);
+  const projectId = resolveRequestContextForVault(vaultDir).projectId;
 
   // Gate 1: canopy injection master switch. The schedule fires whenever the
   // task is enabled, so the gate must absorb the disabled-canopy case here.

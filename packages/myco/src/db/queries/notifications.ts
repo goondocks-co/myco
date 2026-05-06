@@ -6,6 +6,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds } from '@myco/constants.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { NotificationStatus, NotificationMode, NotificationLevel } from '@myco/notifications/types.js';
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,8 @@ export interface NotificationInsert {
   mode: NotificationMode;
   link: string | null;
   metadata: string | null;
+  /** Branded Grove project id this notification belongs to. */
+  project_id: GroveProjectId;
 }
 
 /** Row shape returned from notifications queries. */
@@ -58,9 +61,9 @@ export interface NotificationRow {
 export function insertNotification(n: NotificationInsert): void {
   const db = getDatabase();
   db.prepare(
-    `INSERT INTO notifications (id, domain, type, level, title, message, mode, status, link, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?)`,
-  ).run(n.id, n.domain, n.type, n.level, n.title, n.message, n.mode, n.link, n.metadata, epochSeconds());
+    `INSERT INTO notifications (id, domain, type, level, title, message, mode, status, link, metadata, project_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?)`,
+  ).run(n.id, n.domain, n.type, n.level, n.title, n.message, n.mode, n.link, n.metadata, n.project_id, epochSeconds());
 }
 
 /** List notifications, newest first. Optionally filter by status and/or domain. */

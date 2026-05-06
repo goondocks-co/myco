@@ -9,7 +9,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
-import { requestContextHeaders, resolveLegacyRequestContext, type MycoRequestContext } from './request-context.js';
+import { requestContextHeaders, resolveRequestContextForVault, type MycoRequestContext } from './request-context.js';
 import { extractErrorMessage, type ToolFailure } from './error.js';
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ export async function handleMycoPlans(
 ): Promise<PlansResult> {
   const op = input.op ?? 'list';
   const context = typeof contextOrVaultDir === 'string'
-    ? resolveLegacyRequestContext(contextOrVaultDir)
+    ? resolveRequestContextForVault(contextOrVaultDir)
     : contextOrVaultDir;
 
   if (op === 'save') {
