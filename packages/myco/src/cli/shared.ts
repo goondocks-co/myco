@@ -109,6 +109,10 @@ ${PROJECT_RUNTIME_TMP_DIRNAME}/
 
 # Per-user appearance and settings overrides
 local.yaml
+
+# Grove migration archive — timestamped snapshot of pre-Grove vault data
+# moved aside post-activation. Never committed; recoverable on disk.
+.archive-*/
 `;
 
 /** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
