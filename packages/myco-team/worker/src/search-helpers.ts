@@ -5,7 +5,7 @@
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 const SEARCH_OVERFETCH_MULTIPLIER = 4;
-const MAX_EMBEDDING_TEXT_CHARS = 8000;
+export const MAX_EMBEDDING_TEXT_CHARS = 8000;
 
 export interface TeamVectorMetadata {
   table: string;

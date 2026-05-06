@@ -17,6 +17,7 @@ Quality engineering procedures for establishing and maintaining robust build val
 - Understanding of the multi-package architecture (packages/, ui workspaces)
 - Knowledge of npm workspace commands and lockfile management
 - Access to CI/CD configuration files
+- For Grove deployment: understanding of multi-tenant architecture and project isolation
 
 ## Procedure 1: Multi-stage Quality Gates
 
@@ -55,6 +56,38 @@ grep -A 10 "^build:" Makefile
    - Always use `make build` in CI/CD, never `npm run build`
    - Verify exit codes are properly propagated
    - Add explicit validation steps after bundler operations
+
+### Grove Project-Scoped Build Validation
+
+For Grove multi-tenant builds, add project-scoped validation that respects tenant isolation:
+
+```bash
+# Project-scoped build validation
+GROVE_PROJECT_ID=<project-id> make build-tenant
+# Validates: tenant-specific config, scoped resources, isolated testing
+```
+
+**Project-scoped validation checklist**:
+- Tenant configuration loads correctly from `.myco/project.toml`
+- Build artifacts use project-scoped paths (no cross-tenant contamination)
+- Test suites run with proper project context isolation
+- Database schema validation respects multi-tenant constraints
+
+### Grove Activation Quality Gates
+
+When activating Grove features, validate multi-tenant readiness:
+
+```bash
+# Grove activation validation
+./scripts/validate-grove-readiness.sh
+```
+
+**Grove activation checklist**:
+- Project-specific configuration isolated from system defaults
+- Database migrations tested with tenant isolation
+- API endpoints secured with proper project-scoped authentication
+- Build artifacts separated by project context
+- Test suite validates cross-project isolation boundaries
 
 ### Quality Gate Debugging
 
@@ -175,6 +208,23 @@ npm test
 
 Harden release workflows against common failure modes including multi-package publish pitfalls and OIDC auth issues.
 
+### Grove Public Release Readiness
+
+For Grove multi-tenant releases, add public readiness verification:
+
+```bash
+# Grove public release readiness checks
+./scripts/grove-release-check.sh
+```
+
+**Public readiness checklist**:
+- Multi-tenant database migrations tested on staging D1
+- Project isolation verified (no cross-tenant data leaks)
+- Public API endpoints secured with proper tenant validation
+- Documentation updated for Grove deployment patterns
+- Monitoring/alerting configured for multi-tenant metrics
+- Grove multi-tenant enforcement patterns validated across all package builds
+
 ### Package Version Management
 
 1. **Detect hardcoded version references**:
@@ -267,6 +317,34 @@ npm run build
 ## Procedure 5: CI/CD Pipeline Robustness
 
 Strengthen CI/CD pipelines against npm publish failures, OIDC issues, and npm self-corruption.
+
+### Grove CI/CD Multi-Tenant Enforcement
+
+Add multi-tenant validation to CI/CD pipelines:
+
+```yaml
+# GitHub Actions Grove validation
+- name: Validate Multi-Tenant Build
+  run: |
+    # Test tenant isolation
+    npm run test:tenant-isolation
+    
+    # Validate project-scoped configs
+    npm run validate:grove-configs
+    
+    # Test database migration safety
+    npm run test:migration-safety
+    
+    # Validate Grove enforcement patterns
+    npm run test:grove-enforcement
+```
+
+**Grove CI/CD enforcement patterns**:
+- Project-scoped build artifact validation
+- Multi-tenant database schema safety checks
+- Cross-project isolation boundary testing
+- Grove-specific configuration validation
+- Tenant security and access control verification
 
 ### Pipeline Error Patterns
 
@@ -371,3 +449,11 @@ grep -r "@goondocks/myco" packages/*/package.json
 - **Audit fix mutations**: `npm audit fix` can introduce unexpected dependency changes - track with git status
 - **Build order dependencies**: Shared packages must build before consumers - verify workspace build sequence
 - **Dependabot PR accumulation**: Batch multiple Dependabot PRs to reduce testing overhead and merge conflicts
+
+### Grove Multi-Tenant Hazards
+- **Tenant isolation failures**: Build artifacts must not leak data between projects - validate scoping
+- **Configuration contamination**: Project-specific configs can pollute shared components - use explicit tenant context
+- **Database migration conflicts**: Multi-tenant schema changes require careful ordering and rollback procedures
+- **Public release readiness**: Grove deployments need additional validation for tenant security and isolation
+- **Grove enforcement bypassing**: Multi-tenant enforcement patterns can be circumvented without proper validation gates
+- **Cross-project contamination**: Grove activation can introduce cross-project dependencies without proper isolation checks

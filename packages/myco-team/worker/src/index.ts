@@ -12,7 +12,7 @@ import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
 import { toCloudSearchResult } from './mcp/result-shape';
-import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
+import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
 import {
   clearCfApiCredentials,
@@ -153,6 +153,21 @@ interface SearchResult {
   machine_id: string;
   score: number;
   data: Record<string, unknown>;
+}
+
+/**
+ * One row to embed-and-upsert. Collected per queue batch so we can fire
+ * a single batched `ai.run` call (bge-m3 accepts an array of texts) and
+ * a single `Vectorize.upsert` instead of N parallel calls — Workers AI
+ * serializes per-isolate, so 100 parallel `ai.run` calls take ~100s
+ * instead of the ~1-2s a single batched call takes.
+ */
+interface EmbedJob {
+  table: string;
+  id: string;
+  machine_id: string;
+  text: string;
+  metadata: Partial<TeamVectorMetadata>;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +581,7 @@ async function touchNodeLastSeen(env: Env, machineId: string): Promise<void> {
 async function writeRecordToD1(
   env: Env,
   record: SyncRecord,
-): Promise<{ skipped: boolean; embedTask?: () => Promise<void> }> {
+): Promise<{ skipped: boolean; embedTask?: () => Promise<void>; embedJob?: EmbedJob }> {
   if (record.operation === 'delete') {
     await handleDelete(env, record);
     return { skipped: false };
@@ -598,8 +613,13 @@ async function writeRecordToD1(
   }
   return {
     skipped: false,
-    embedTask: () =>
-      embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data)),
+    embedJob: {
+      table,
+      id,
+      machine_id,
+      text: textContent,
+      metadata: buildVectorMetadata(table, record.data),
+    },
   };
 }
 
@@ -626,7 +646,8 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     schemaInitialized = true;
   }
 
-  const embeddingTasks: Array<() => Promise<void>> = [];
+  const deleteVectorTasks: Array<() => Promise<void>> = [];
+  const embedJobs: EmbedJob[] = [];
   const groups = new Map<string, Array<Message<SyncRecord>>>();
   for (const message of batch.messages) {
     const key = `${message.body.table}\t${message.body.operation}`;
@@ -640,34 +661,100 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     if (operation === 'delete') {
       await coalescedDeleteBatch(env, table, messages);
     } else if (operation === 'embed') {
-      await coalescedEmbedBatch(env, table, messages, embeddingTasks);
+      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs);
     } else {
-      await coalescedUpsertBatch(env, table, messages, embeddingTasks);
+      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs);
     }
   }
 
-  // Vectorize is a best-effort companion index — embedding failures don't
-  // fail the batch (recoverable via /vectors/reindex). Run in parallel.
-  // Log every rejection so silent embed-side outages (Workers AI errors,
-  // missing AI binding, Vectorize upsert failures) surface in
-  // `wrangler tail` instead of vanishing into Promise.allSettled. Without
-  // this, a fully broken embed pipeline reports "accepted" sync handoffs
-  // while the Vectorize index stays empty.
-  if (embeddingTasks.length > 0) {
-    const results = await Promise.allSettled(embeddingTasks.map((task) => task()));
+  // Vectorize is a best-effort companion index — failures don't fail
+  // the batch (rows are recoverable via /vectors/reindex). Vector
+  // deletes (retired spores) run as parallel deleteByIds; embed jobs
+  // are folded into a single batched `ai.run` + `Vectorize.upsert`
+  // call so we don't pay per-isolate AI serialization 100 times per
+  // batch. All errors get logged so silent embed-side outages
+  // (Workers AI errors, missing AI binding, Vectorize upsert
+  // failures) surface in `wrangler tail` instead of vanishing.
+  if (deleteVectorTasks.length > 0) {
+    const results = await Promise.allSettled(deleteVectorTasks.map((task) => task()));
     let failed = 0;
     for (const r of results) {
       if (r.status === 'rejected') {
         failed++;
-        console.error('team-sync.embed-failed', {
+        console.error('team-sync.vector-delete-failed', {
           error: r.reason instanceof Error ? r.reason.message : String(r.reason),
-          stack: r.reason instanceof Error ? r.reason.stack : undefined,
         });
       }
     }
-    if (failed > 0) {
-      console.error(`team-sync.embed-summary ${failed}/${results.length} embeddings failed`);
+    if (failed > 0) console.error(`team-sync.vector-delete-summary ${failed}/${results.length} failed`);
+  }
+  if (embedJobs.length > 0) {
+    await runBatchEmbed(env, embedJobs);
+  }
+}
+
+/**
+ * Embed every job in one `ai.run` call against bge-m3 (which accepts
+ * a text array), then upsert all resulting vectors in one
+ * `Vectorize.upsert` call. Best-effort — failures log but don't
+ * propagate, since the source rows are still in D1 and recoverable.
+ *
+ * Workers AI serializes parallel `ai.run` calls per isolate, so this
+ * batched form is ~100× faster than the previous N-parallel approach
+ * for a full CF queue batch (100 messages → ~1-2s vs ~100s).
+ */
+async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
+  const texts = jobs.map((j) =>
+    j.text.length > MAX_EMBEDDING_TEXT_CHARS
+      ? `${j.text.slice(0, MAX_EMBEDDING_TEXT_CHARS)}\n\n[truncated for embedding]`
+      : j.text,
+  );
+
+  let aiResult: { data: number[][] };
+  try {
+    aiResult = await env.AI.run('@cf/baai/bge-m3', { text: texts }) as { data: number[][] };
+  } catch (err) {
+    console.error('team-sync.embed-batch-failed', {
+      count: jobs.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  if (!Array.isArray(aiResult.data) || aiResult.data.length !== jobs.length) {
+    console.error('team-sync.embed-batch-shape-mismatch', {
+      expected: jobs.length,
+      got: Array.isArray(aiResult.data) ? aiResult.data.length : null,
+    });
+    return;
+  }
+
+  const vids = await Promise.all(jobs.map((j) => vectorId(j.table, j.id, j.machine_id)));
+  const legacyToDelete: string[] = [];
+  for (let i = 0; i < jobs.length; i++) {
+    const legacy = legacyVectorId(jobs[i].table, jobs[i].id, jobs[i].machine_id);
+    if (legacy !== vids[i]) legacyToDelete.push(legacy);
+  }
+  if (legacyToDelete.length > 0) {
+    try {
+      await env.MYCO_TEAM_VECTORS.deleteByIds(legacyToDelete);
+    } catch {
+      // Legacy vectors may not exist — safe to ignore.
     }
+  }
+
+  const entries = jobs.map((job, i) => ({
+    id: vids[i],
+    values: aiResult.data[i],
+    metadata: { table: job.table, id: job.id, machine_id: job.machine_id, ...job.metadata },
+  }));
+  try {
+    await env.MYCO_TEAM_VECTORS.upsert(entries);
+  } catch (err) {
+    console.error('team-sync.upsert-batch-failed', {
+      count: entries.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -680,7 +767,8 @@ async function coalescedUpsertBatch(
   env: Env,
   table: string,
   messages: Array<Message<SyncRecord>>,
-  embeddingTasks: Array<() => Promise<void>>,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
 ): Promise<void> {
   // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
   // tuples we're about to write. Records without content_hash skip the
@@ -733,8 +821,7 @@ async function coalescedUpsertBatch(
   try {
     await env.MYCO_TEAM_DB.batch(statements);
     for (const message of survivors) {
-      const embedTask = buildEmbedTask(env, message.body);
-      if (embedTask) embeddingTasks.push(embedTask);
+      routeRecordForEmbedding(env, message.body, deleteVectorTasks, embedJobs);
       message.ack();
     }
   } catch (err) {
@@ -742,7 +829,8 @@ async function coalescedUpsertBatch(
     for (const message of survivors) {
       try {
         const result = await writeRecordToD1(env, message.body);
-        if (result.embedTask) embeddingTasks.push(result.embedTask);
+        if (result.embedTask) deleteVectorTasks.push(result.embedTask);
+        if (result.embedJob) embedJobs.push(result.embedJob);
         message.ack();
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
@@ -801,7 +889,8 @@ async function coalescedEmbedBatch(
   env: Env,
   table: string,
   messages: Array<Message<SyncRecord>>,
-  embeddingTasks: Array<() => Promise<void>>,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
 ): Promise<void> {
   if (!(table in EMBEDDABLE_TABLES)) {
     for (const message of messages) message.ack();
@@ -843,29 +932,45 @@ async function coalescedEmbedBatch(
       message.ack();
       continue;
     }
-    const embedTask = buildEmbedTask(env, {
+    routeRecordForEmbedding(env, {
       table: table as SyncedTable,
       operation: 'embed',
       id: message.body.id,
       machine_id: message.body.machine_id,
       data: row,
-    });
-    if (embedTask) embeddingTasks.push(embedTask);
+    }, deleteVectorTasks, embedJobs);
     message.ack();
   }
 }
 
-/** Build an embedding task for a record if its table is embeddable. */
-function buildEmbedTask(env: Env, record: SyncRecord): (() => Promise<void>) | null {
+/**
+ * Route a record into either the vector-delete task list (retired
+ * spores need their vector removed) or the embed job list (active
+ * embeddable rows). No-op for non-embeddable tables or rows whose
+ * embedding text is empty.
+ */
+function routeRecordForEmbedding(
+  env: Env,
+  record: SyncRecord,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
+): void {
   const embeddableField = EMBEDDABLE_TABLES[record.table];
-  if (!embeddableField) return null;
+  if (!embeddableField) return;
   const textContent = record.data[embeddableField] as string | undefined;
-  if (!textContent) return null;
+  if (!textContent) return;
   const { table, id, machine_id } = record;
   if (table === 'spores' && record.data.status !== 'active') {
-    return () => deleteVector(env, table, id, machine_id);
+    deleteVectorTasks.push(() => deleteVector(env, table, id, machine_id));
+    return;
   }
-  return () => embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data));
+  embedJobs.push({
+    table,
+    id,
+    machine_id,
+    text: textContent,
+    metadata: buildVectorMetadata(table, record.data),
+  });
 }
 
 /**
