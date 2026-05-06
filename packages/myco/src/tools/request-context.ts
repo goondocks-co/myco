@@ -148,7 +148,14 @@ export function resolveRequestContextForVault(
   vaultDir: string,
   overrides: { machineId?: string; sessionId?: string | null } = {},
 ): MycoRequestContext {
-  return buildVaultFallback(vaultDir, overrides).context;
+  const { context: fallback, manifest } = buildVaultFallback(vaultDir, overrides);
+  // If the manifest binds the project to a Grove, return the
+  // registered context (with the real `groveId`) instead of the
+  // null-grove fallback. Otherwise downstream helpers like
+  // `rowProjectIdFromRequestContext` collapse `groveId: null` to
+  // `null` row scope and the daemon writes orphan rows under what
+  // the brand says is a real `proj_<32hex>` id.
+  return resolveManifestRequestContext(fallback, 'legacy-vault', manifest) ?? fallback;
 }
 
 /**
