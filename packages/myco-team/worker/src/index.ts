@@ -695,12 +695,14 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
 
 /**
  * bge-m3 has a 60,000-token context window for the whole request —
- * the sum of all texts in a batched `ai.run` must fit. Use ~3 chars
- * per token as a conservative rule (English/code averages closer to
- * 4 but safety margin matters more than throughput here) and cap the
- * combined-character budget per ai.run accordingly.
+ * the sum of all texts in a batched `ai.run` must fit. Tokenization
+ * density varies wildly with content: tail-observed worst case ran
+ * 1.37 chars/token on dense code/JSON content (a 24-text chunk hit
+ * 65,688 tokens at ~2.74 chars/token; an 84-text chunk hit 131,292
+ * tokens at ~1.37 chars/token). Budget assumes 1.2 chars/token and
+ * targets ~50K tokens to leave a safety margin.
  */
-const EMBED_BATCH_CHAR_BUDGET = 60_000 * 3;
+const EMBED_BATCH_CHAR_BUDGET = 50_000 * 1.2;
 
 /**
  * Group jobs into chunks whose combined (truncated) text size fits
