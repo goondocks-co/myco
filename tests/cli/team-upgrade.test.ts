@@ -383,15 +383,17 @@ Resource location: remote
     execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
     pushUpgradeTailHandlers();
 
+    vi.mocked(fetch).mockImplementation(async () => new Response(
+      JSON.stringify({ enqueued: 0, by_table: { spores: 0, sessions: 0, plans: 0, artifacts: 0, skill_records: 0 } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir, { reindexVectors: true });
 
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       'https://myco-team-abc12345.test.workers.dev/vectors/reindex',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ table: 'spores', limit: 20, cursor: null }),
-      }),
+      expect.objectContaining({ method: 'POST', body: '{}' }),
     );
   });
 
@@ -402,7 +404,7 @@ Resource location: remote
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(new Response('{"error":"Not found"}', { status: 404, headers: { 'Content-Type': 'application/json' } }))
-      .mockImplementation(async () => new Response(JSON.stringify({ processed: 0, reindexed: 0, deleted: 0, next_cursor: null }), {
+      .mockImplementation(async () => new Response(JSON.stringify({ enqueued: 0, by_table: {} }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }));
@@ -410,17 +412,20 @@ Resource location: remote
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir, { reindexVectors: true });
 
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // 1 retry for not-ready + 1 successful POST = 2 calls. The old
+    // protocol made 5 paginated calls per table; the new one is one
+    // fire-and-forget enqueue.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('retries remote vector reindex when a batch request times out', async () => {
+  it('retries remote vector reindex when the request times out', async () => {
     execHandlers.push(() => '{ "kv_namespaces": [ { "binding": "x", "id": "0123456789abcdef0123456789abcdef" } ] }\n');
     pushUpgradeTailHandlers();
 
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
-      .mockImplementation(async () => new Response(JSON.stringify({ processed: 0, reindexed: 0, deleted: 0, next_cursor: null }), {
+      .mockImplementation(async () => new Response(JSON.stringify({ enqueued: 0, by_table: {} }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }));
@@ -428,6 +433,6 @@ Resource location: remote
     const { teamUpgrade } = await importTeamCli();
     await teamUpgrade(vaultDir, { reindexVectors: true });
 
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

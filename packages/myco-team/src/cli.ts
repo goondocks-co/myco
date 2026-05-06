@@ -83,9 +83,10 @@ const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
 const TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS = 10;
 const TEAM_VECTOR_REINDEX_RETRY_DELAY_MS = 1500;
-const TEAM_VECTOR_REINDEX_BATCH_SIZE = 20;
+// Reindex now returns immediately after enqueueing, but the producer
+// still scans every embeddable table in D1. Keep a generous timeout
+// for the listing phase on large datasets.
 const TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS = WRANGLER_COMMAND_TIMEOUT_MS * 6;
-const TEAM_VECTOR_REINDEX_TABLES = ['spores', 'sessions', 'plans', 'artifacts', 'skill_records'] as const;
 const REQUEST_CONTEXT_ENV = {
   projectRoot: 'MYCO_PROJECT_ROOT',
   projectId: 'MYCO_PROJECT_ID',
@@ -451,7 +452,14 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
   throw lastError ?? new Error('MCP token rotation failed');
 }
 
-export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<void> {
+/**
+ * Trigger a remote reindex by asking the worker to enqueue per-row
+ * `embed` jobs onto its sync queue. Returns immediately with the
+ * count — actual embedding happens asynchronously as the queue
+ * consumer drains. Watch progress on the Sync page (vector_count
+ * climbing) rather than blocking on this call.
+ */
+export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<{ enqueued: number; by_table: Record<string, number> }> {
   const scope = resolveTeamCliScope(vaultDir);
   const config = workerUrlOverride ? null : requireLocalConfig(scope);
   const secrets = readTeamConnectionSecrets(vaultDir, scope.requestContext);
@@ -464,72 +472,38 @@ export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?:
     throw new Error('No team worker URL configured');
   }
 
-  for (const table of TEAM_VECTOR_REINDEX_TABLES) {
-    let cursor: string | null = null;
-    let processed = 0;
-    let reindexed = 0;
-    let deleted = 0;
-
-    while (true) {
-      let response: Response | null = null;
-      let retryableError: Error | null = null;
-
-      for (let attempt = 1; attempt <= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS; attempt += 1) {
-        try {
-          response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({ table, limit: TEAM_VECTOR_REINDEX_BATCH_SIZE, cursor }),
-            signal: AbortSignal.timeout(TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS),
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const isTimeout = message.includes('timeout');
-          if (!isTimeout || attempt >= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS) {
-            throw error;
-          }
-          retryableError = new Error(`Worker vector reindex timed out for ${table} (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
-          await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
-          continue;
-        }
-
-        if (response.ok) {
-          retryableError = null;
-          break;
-        }
-
-        const body = await response.text();
-        const isRetryable = response.status === 404 && body.includes('Not found') && attempt < TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS;
-        if (!isRetryable) {
-          throw new Error(`Worker vector reindex failed for ${table}: ${response.status} ${body}`);
-        }
-
-        retryableError = new Error(`Worker vector reindex route not ready for ${table} yet (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
-        await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
-      }
-
-      if (!response?.ok) {
-        throw retryableError ?? new Error(`Worker vector reindex failed for ${table}`);
-      }
-
-      const body = await response.json() as {
-        processed: number;
-        reindexed: number;
-        deleted: number;
-        next_cursor: string | null;
-      };
-      processed += body.processed;
-      reindexed += body.reindexed;
-      deleted += body.deleted;
-      cursor = body.next_cursor;
-      if (!cursor) break;
+  let response: Response | null = null;
+  let retryableError: Error | null = null;
+  for (let attempt = 1; attempt <= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: '{}',
+        signal: AbortSignal.timeout(TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = message.includes('timeout');
+      if (!isTimeout || attempt >= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS) throw error;
+      retryableError = new Error(`Worker vector reindex timed out (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+      await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
+      continue;
     }
 
-    console.log(`  ✓ Reindexed ${table}: ${reindexed} upserted, ${deleted} deleted (${processed} processed)`);
+    if (response.ok) { retryableError = null; break; }
+    const body = await response.text();
+    const isRetryable = response.status === 404 && body.includes('Not found') && attempt < TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS;
+    if (!isRetryable) throw new Error(`Worker vector reindex failed: ${response.status} ${body}`);
+    retryableError = new Error(`Worker vector reindex route not ready yet (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+    await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
   }
+
+  if (!response?.ok) {
+    throw retryableError ?? new Error('Worker vector reindex failed');
+  }
+
+  return await response.json() as { enqueued: number; by_table: Record<string, number> };
 }
 
 /** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
@@ -1054,16 +1028,23 @@ export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: 
   console.log(`Worker deployed: ${result.worker_url}`);
   console.log(`Version: ${result.version}`);
   if (options.reindexVectors) {
-    console.log('Refreshing remote Vectorize metadata...');
-    await reindexWorkerVectors(vaultDir, result.worker_url);
+    console.log('Enqueueing remote vector reindex...');
+    const { enqueued, by_table } = await reindexWorkerVectors(vaultDir, result.worker_url);
+    console.log(`  Queued ${enqueued} vectors (${formatTableCounts(by_table)})`);
+    console.log('  Watch progress on the Sync page; the queue consumer drains in the background.');
   }
   console.log('\nUpgrade complete.');
 }
 
 export async function teamReindexVectors(vaultDir: string): Promise<void> {
-  console.log('Reindexing remote team vectors...\n');
-  await reindexWorkerVectors(vaultDir);
-  console.log('\nRemote vector reindex complete.');
+  const { enqueued, by_table } = await reindexWorkerVectors(vaultDir);
+  console.log(`Queued ${enqueued} vectors for reindex (${formatTableCounts(by_table)}).`);
+  console.log('Watch progress on the Sync page; the queue consumer drains in the background.');
+}
+
+function formatTableCounts(counts: Record<string, number>): string {
+  const parts = Object.entries(counts).map(([table, count]) => `${table}: ${count}`);
+  return parts.length > 0 ? parts.join(', ') : 'no rows';
 }
 
 export async function teamStatus(vaultDir: string): Promise<void> {

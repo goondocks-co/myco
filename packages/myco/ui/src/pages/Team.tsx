@@ -620,11 +620,20 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
         duration_ms?: number;
         flush_error?: string | null;
         mode?: string;
+        vector_enqueued?: number | null;
+        vector_error?: string | null;
       }>('/team/backfill', { mode: 'all' });
+      const vectorSuffix = res.vector_error
+        ? `; vector reindex failed: ${res.vector_error}`
+        : res.vector_enqueued
+          ? ` and queued ${formatNumber(res.vector_enqueued)} vectors for reindex`
+          : '';
       if (res.flush_error) {
         setDrainMessage(`Backfilled ${res.enqueued} records, but sync failed: ${res.flush_error}`);
       } else if (res.enqueued > 0 || (res.flushed ?? 0) > 0) {
-        setDrainMessage(`Backfilled ${formatNumber(res.enqueued)} records and handed off ${formatNumber(res.flushed)} in ${res.batches ?? 0} batches.`);
+        setDrainMessage(`Backfilled ${formatNumber(res.enqueued)} records and handed off ${formatNumber(res.flushed)} in ${res.batches ?? 0} batches${vectorSuffix}.`);
+      } else if (res.vector_enqueued) {
+        setDrainMessage(`No eligible Grove records found${vectorSuffix}.`);
       } else {
         setDrainMessage('No eligible Grove records found.');
       }

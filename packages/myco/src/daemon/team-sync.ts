@@ -344,6 +344,19 @@ export class TeamSyncClient {
     return await this.request('GET', '/sync-summary') as TeamRemoteSyncSummaryResponse;
   }
 
+  /**
+   * Ask the worker to enqueue per-row `embed` jobs for every embeddable
+   * row in D1. The worker returns immediately with the queued count;
+   * the queue consumer drains in the background and the Vectorize
+   * count climbs as rows are embedded.
+   */
+  async enqueueVectorReindex(): Promise<{ enqueued: number; by_table: Record<string, number> }> {
+    return await this.request('POST', '/vectors/reindex', {}) as {
+      enqueued: number;
+      by_table: Record<string, number>;
+    };
+  }
+
   /** List a page of DLQ messages. */
   async listDlq(limit = 50): Promise<DlqListResponse | { error: 'cf_api_token_not_configured' }> {
     return await this.request('GET', `/dlq?limit=${limit}`, undefined, {

@@ -698,12 +698,35 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     };
   }
 
-  /** POST /api/team/backfill — enqueue all unsynced rows to the outbox. */
+  /**
+   * POST /api/team/backfill — single-button reconcile.
+   *   1. Enqueue local unsynced rows onto the outbox so the daemon
+   *      flushes them up the queue (existing behavior).
+   *   2. Tell the worker to enqueue `embed` jobs for every embeddable
+   *      row already in D1, so vectors get rebuilt for rows that
+   *      were synced before embedding worked. Failure here doesn't
+   *      fail the request — local backfill already succeeded and the
+   *      remote enqueue can be retried.
+   */
   async function handleBackfill(req: RouteRequest): Promise<RouteResponse> {
     const body = (req.body ?? {}) as { mode?: unknown };
     const mode = body.mode === 'all' ? 'all' : 'unsynced';
     const count = mode === 'all' ? backfillAll(machineId) : backfillUnsynced(machineId);
-    return { body: { enqueued: count, mode } };
+
+    let vectorEnqueued: number | null = null;
+    let vectorError: string | null = null;
+    const client = deps.getTeamClient(req.requestContext);
+    if (client) {
+      try {
+        const result = await client.enqueueVectorReindex();
+        vectorEnqueued = result.enqueued;
+      } catch (err) {
+        vectorError = err instanceof Error ? err.message : String(err);
+        logger.warn('team-sync.backfill.reindex-failed', 'Remote vector reindex enqueue failed', { error: vectorError });
+      }
+    }
+
+    return { body: { enqueued: count, mode, vector_enqueued: vectorEnqueued, vector_error: vectorError } };
   }
 
   function clientOrError(requestContext?: MycoRequestContext): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {

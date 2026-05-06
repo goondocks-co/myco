@@ -95,10 +95,15 @@ type SyncedTable = (typeof SYNCED_TABLES)[number];
 
 interface SyncRecord {
   table: SyncedTable;
-  operation: 'upsert' | 'delete';
+  operation: 'upsert' | 'delete' | 'embed';
   id: string;
   machine_id: string;
   content_hash?: string | null;
+  /**
+   * Row payload. Required for `upsert`. For `delete` and `embed`, only
+   * `id`/`machine_id` matter — `embed` re-reads the row from D1 so
+   * messages stay tiny and never carry duplicate row state.
+   */
   data: Record<string, unknown>;
 }
 
@@ -150,12 +155,6 @@ interface SearchResult {
   data: Record<string, unknown>;
 }
 
-interface VectorReindexCursor {
-  created_at: number;
-  id: string;
-  machine_id: string;
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -184,9 +183,6 @@ const COLLECTIVE_STALE_AFTER_SECONDS = COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS * 3
 const DEFAULT_TEAM_PACKAGE_VERSION = '0.1.0';
 const TEAM_COLLECTIVE_CAPABILITIES = ['search', 'digest', 'collective_proxy'] as const;
 const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
-const VECTOR_REINDEX_DEFAULT_BATCH = 100;
-const VECTOR_REINDEX_MAX_BATCH = 250;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -643,6 +639,8 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     const [table, operation] = key.split('\t');
     if (operation === 'delete') {
       await coalescedDeleteBatch(env, table, messages);
+    } else if (operation === 'embed') {
+      await coalescedEmbedBatch(env, table, messages, embeddingTasks);
     } else {
       await coalescedUpsertBatch(env, table, messages, embeddingTasks);
     }
@@ -783,6 +781,64 @@ async function coalescedDeleteBatch(
   }
 }
 
+/**
+ * Coalesced reindex path. Reads each row from D1 (messages carry only
+ * id/machine_id to keep queue payloads small), builds an embed task,
+ * and acks. Embedding errors surface through the same allSettled probe
+ * that wraps `coalescedUpsertBatch`'s tasks at the end of the batch.
+ *
+ * Designed for retroactive backfill: re-running against a fully-indexed
+ * set is cheap because `embedAndUpsert` overwrites the same vector id.
+ */
+async function coalescedEmbedBatch(
+  env: Env,
+  table: string,
+  messages: Array<Message<SyncRecord>>,
+  embeddingTasks: Array<() => Promise<void>>,
+): Promise<void> {
+  if (!(table in EMBEDDABLE_TABLES)) {
+    for (const message of messages) message.ack();
+    return;
+  }
+
+  const tuples = messages.map(() => '(?, ?)').join(', ');
+  const binds = messages.flatMap((m) => [m.body.id, m.body.machine_id]);
+  const rowsByKey = new Map<string, Record<string, unknown>>();
+  try {
+    const result = await env.MYCO_TEAM_DB.prepare(
+      `SELECT * FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+    ).bind(...binds).all<Record<string, unknown>>();
+    for (const row of result.results ?? []) {
+      if (typeof row.id === 'string' && typeof row.machine_id === 'string') {
+        rowsByKey.set(`${row.id}\t${row.machine_id}`, row);
+      }
+    }
+  } catch (err) {
+    console.error(`team-sync.queue.embed_select_failed table=${table}: ${err instanceof Error ? err.message : err}`);
+    for (const message of messages) message.retry();
+    return;
+  }
+
+  for (const message of messages) {
+    const row = rowsByKey.get(`${message.body.id}\t${message.body.machine_id}`);
+    if (!row) {
+      // Row was deleted between enqueue and consume — drop the embed
+      // request to avoid an upsert against missing source data.
+      message.ack();
+      continue;
+    }
+    const embedTask = buildEmbedTask(env, {
+      table: table as SyncedTable,
+      operation: 'embed',
+      id: message.body.id,
+      machine_id: message.body.machine_id,
+      data: row,
+    });
+    if (embedTask) embeddingTasks.push(embedTask);
+    message.ack();
+  }
+}
+
 /** Build an embedding task for a record if its table is embeddable. */
 function buildEmbedTask(env: Env, record: SyncRecord): (() => Promise<void>) | null {
   const embeddableField = EMBEDDABLE_TABLES[record.table];
@@ -904,149 +960,90 @@ function parseNumberParam(value: string | null): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function encodeReindexCursor(cursor: VectorReindexCursor | null): string | null {
-  return cursor ? JSON.stringify(cursor) : null;
-}
 
-function decodeReindexCursor(value: unknown): VectorReindexCursor | null {
-  if (!value || typeof value !== 'string') return null;
-  try {
-    const parsed = JSON.parse(value) as Partial<VectorReindexCursor>;
-    if (
-      typeof parsed.created_at === 'number' &&
-      typeof parsed.id === 'string' &&
-      typeof parsed.machine_id === 'string'
-    ) {
-      return {
-        created_at: parsed.created_at,
-        id: parsed.id,
-        machine_id: parsed.machine_id,
-      };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function listReindexRows(
-  env: Env,
-  table: keyof typeof EMBEDDABLE_TABLES,
-  limit: number,
-  cursor: VectorReindexCursor | null,
-): Promise<Array<{ id: string; machine_id: string; text: string; data: Record<string, unknown> }>> {
-  const textField = EMBEDDABLE_TABLES[table];
-  const params: unknown[] = [];
-  let whereClause = '';
-  if (cursor) {
-    whereClause = `
-      WHERE (
-        created_at > ?
-        OR (created_at = ? AND id > ?)
-        OR (created_at = ? AND id = ? AND machine_id > ?)
-      )`;
-    params.push(cursor.created_at, cursor.created_at, cursor.id, cursor.created_at, cursor.id, cursor.machine_id);
-  }
-
-  const sql = `
-    SELECT *
-    FROM ${table}
-    ${whereClause}
-    ORDER BY created_at ASC, id ASC, machine_id ASC
-    LIMIT ?
-  `;
-  params.push(limit);
-  const { results } = await env.MYCO_TEAM_DB.prepare(sql).bind(...params).all<Record<string, unknown>>();
-
-  return (results ?? [])
-    .map((row) => {
-      const text = row[textField];
-      if (typeof row.id !== 'string' || typeof row.machine_id !== 'string' || typeof text !== 'string' || text.length === 0) {
-        return null;
-      }
-      return {
-        id: row.id,
-        machine_id: row.machine_id,
-        text,
-        data: row,
-      };
-    })
-    .filter((row): row is { id: string; machine_id: string; text: string; data: Record<string, unknown> } => row !== null);
-}
-
+/**
+ * Reindex by enqueueing per-row `embed` jobs onto the existing sync
+ * queue. Returns immediately with the count rather than embedding
+ * inline — callers watch progress via the Vectorize index count
+ * surfaced through `/sync-summary`.
+ *
+ * Body: `{ table?: <one of EMBEDDABLE_TABLES> }`. When `table` is
+ * omitted, queues every embeddable table.
+ */
 async function handleVectorReindex(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as {
+  const body = await request.json().catch(() => ({})) as {
     table?: keyof typeof EMBEDDABLE_TABLES;
-    limit?: number;
-    cursor?: string | null;
   };
-  const table = body.table;
-  if (!table || !(table in EMBEDDABLE_TABLES)) {
-    return errorResponse('table must be one of spores, sessions, plans, artifacts, skill_records', 400);
+  const tables: Array<keyof typeof EMBEDDABLE_TABLES> = body.table
+    ? [body.table]
+    : (Object.keys(EMBEDDABLE_TABLES) as Array<keyof typeof EMBEDDABLE_TABLES>);
+
+  for (const table of tables) {
+    if (!(table in EMBEDDABLE_TABLES)) {
+      return errorResponse(`Unknown table: ${table}`, 400);
+    }
   }
 
-  const limit = Math.min(Math.max(body.limit ?? VECTOR_REINDEX_DEFAULT_BATCH, 1), VECTOR_REINDEX_MAX_BATCH);
-  const cursor = decodeReindexCursor(body.cursor ?? null);
-  const rows = await listReindexRows(env, table, limit, cursor);
   const startedAt = epochSeconds();
-
   await writeTeamConfig(env, {
-    vector_reindex_status: 'running',
-    vector_reindex_last_table: table,
+    vector_reindex_status: 'enqueueing',
     vector_reindex_last_run_at: String(startedAt),
     vector_reindex_last_error: '',
   });
 
+  const byTable: Record<string, number> = {};
+  let totalEnqueued = 0;
   try {
-    let reindexed = 0;
-    let deleted = 0;
-    for (const row of rows) {
-      if (table === 'spores' && row.data.status !== 'active') {
-        await deleteVector(env, table, row.id, row.machine_id);
-        deleted += 1;
-        continue;
+    for (const table of tables) {
+      const records = await listReindexEnqueueRecords(env, table);
+      if (records.length > 0) {
+        await sendQueueRecords(env.SYNC_QUEUE, records);
       }
-      await embedAndUpsert(env, table, row.id, row.machine_id, row.text, buildVectorMetadata(table, row.data));
-      reindexed += 1;
+      byTable[table] = records.length;
+      totalEnqueued += records.length;
     }
-
-    const next = rows.length === limit
-      ? rows[rows.length - 1]
-      : null;
-
-    await writeTeamConfig(env, {
-      vector_reindex_status: next ? 'running' : 'ok',
-      vector_reindex_last_table: table,
-      vector_reindex_last_run_at: String(epochSeconds()),
-      vector_reindex_last_processed: String(rows.length),
-      vector_reindex_last_reindexed: String(reindexed),
-      vector_reindex_last_deleted: String(deleted),
-      vector_reindex_last_error: '',
-    });
-
-    return jsonResponse({
-      table,
-      processed: rows.length,
-      reindexed,
-      deleted,
-      next_cursor: next
-        ? encodeReindexCursor({
-            created_at: Number(next.data.created_at ?? 0),
-            id: next.id,
-            machine_id: next.machine_id,
-          })
-        : null,
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await writeTeamConfig(env, {
       vector_reindex_status: 'error',
-      vector_reindex_last_table: table,
       vector_reindex_last_run_at: String(epochSeconds()),
       vector_reindex_last_error: message,
     });
     throw error;
   }
+
+  await writeTeamConfig(env, {
+    vector_reindex_status: 'queued',
+    vector_reindex_last_run_at: String(epochSeconds()),
+    vector_reindex_last_processed: String(totalEnqueued),
+    vector_reindex_last_error: '',
+  });
+
+  return jsonResponse({ enqueued: totalEnqueued, by_table: byTable });
+}
+
+/**
+ * List minimal `embed` SyncRecords for a table — id/machine_id only,
+ * no row payload (consumer reads the row from D1 at consume time).
+ * Skips rows whose embeddable text is empty since `embedAndUpsert`
+ * has nothing to embed for them.
+ */
+async function listReindexEnqueueRecords(
+  env: Env,
+  table: keyof typeof EMBEDDABLE_TABLES,
+): Promise<SyncRecord[]> {
+  const textField = EMBEDDABLE_TABLES[table];
+  const { results } = await env.MYCO_TEAM_DB.prepare(
+    `SELECT id, machine_id, ${textField} AS text FROM ${table}
+     WHERE ${textField} IS NOT NULL AND length(${textField}) > 0`,
+  ).all<{ id: string; machine_id: string; text: string }>();
+  return (results ?? []).map((row) => ({
+    table: table as SyncedTable,
+    operation: 'embed' as const,
+    id: row.id,
+    machine_id: row.machine_id,
+    data: {},
+  }));
 }
 
 async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {

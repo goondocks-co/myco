@@ -58,16 +58,17 @@ async function runUpgradeJson(
     process.stdout.write(JSON.stringify(result) + '\n');
     process.exit(1);
   }
+  let reindexResult: { enqueued: number; by_table: Record<string, number> } | undefined;
   if (reindexVectors && result.worker_url) {
     try {
-      await reindexWorkerVectors(vaultDir, result.worker_url);
+      reindexResult = await reindexWorkerVectors(vaultDir, result.worker_url);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stdout.write(JSON.stringify({ ...result, success: false, error: message }) + '\n');
       process.exit(1);
     }
   }
-  process.stdout.write(JSON.stringify(result) + '\n');
+  process.stdout.write(JSON.stringify({ ...result, vector_reindex: reindexResult }) + '\n');
 }
 
 const COMMAND_HANDLERS: Record<string, CommandHandler> = {
