@@ -1122,17 +1122,19 @@ async function handleSyncSummary(env: Env): Promise<Response> {
     totalRecords += count;
   }
 
-  // Vectorize index probe — `describe()` returns `vectorsCount` (per
-  // `VectorizeIndexDetails`) plus dimensions and a mutation cursor.
-  // Surface count + a healthy flag so the UI can render a vectors tile
-  // with a delta against the local embedded count and an at-a-glance
-  // "are vectors actually flowing" indicator.
+  // Vectorize index probe — `describe()` JSON has the count field as
+  // `vectorCount` at runtime (matches `wrangler vectorize info`), but
+  // the @cloudflare/workers-types declaration calls it `vectorsCount`.
+  // Read both. Whichever the runtime actually populates wins; the
+  // other resolves to undefined and the `??` chain skips it.
   let vectorCount: number | null = null;
   let vectorIndexHealthy = false;
   let vectorIndexError: string | null = null;
   try {
-    const desc = await env.MYCO_TEAM_VECTORS.describe();
-    const c = Number(desc.vectorsCount ?? 0);
+    const desc = (await env.MYCO_TEAM_VECTORS.describe()) as unknown as
+      { vectorsCount?: number; vectorCount?: number };
+    const raw = desc.vectorCount ?? desc.vectorsCount;
+    const c = Number(raw ?? 0);
     vectorCount = Number.isFinite(c) ? c : null;
     vectorIndexHealthy = true;
   } catch (err) {
