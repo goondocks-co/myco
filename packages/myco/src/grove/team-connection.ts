@@ -5,7 +5,7 @@ import { TeamSchema, type TeamConfig } from '@myco/config/schema.js';
 import { loadMergedConfig, updateTeamConfig } from '@myco/config/loader.js';
 import { readSecrets, writeSecret } from '@myco/config/secrets.js';
 import { resolveGroveConfigPath, resolveGroveDir } from '@myco/grove/paths.js';
-import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface TeamConnectionStore {
   configDir: string;
@@ -24,8 +24,8 @@ export function resolveTeamConnectionStore(
   fallbackVaultDir: string,
   requestContext?: MycoRequestContext,
 ): TeamConnectionStore {
-  if (isGroveScoped(requestContext)) {
-    const groveId = requestContext!.groveId!;
+  if (requestContext?.groveId) {
+    const groveId = requestContext.groveId;
     const configDir = resolveGroveDir(groveId);
     return {
       configDir,
