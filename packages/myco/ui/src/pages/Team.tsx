@@ -612,6 +612,7 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
   const dlqEnabled = enabled && Boolean(queueStats) && !isTokenMissing(queueStats);
   const { data: dlq, isLoading: dlqLoading } = useTeamDlq(dlqEnabled);
   const [busy, setBusy] = useState(false);
+  const [dlqMessage, setDlqMessage] = useState<string | null>(null);
   const [draining, setDraining] = useState(false);
   const [drainMessage, setDrainMessage] = useState<string | null>(null);
   const [upgrading, setUpgrading] = useState(false);
@@ -664,11 +665,22 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
 
   const handleDlqAction = useCallback(async (action: 'retry' | 'discard', leaseId: string) => {
     setBusy(true);
+    setDlqMessage(null);
     try {
-      await postJson(`/team/dlq/${action}`, { lease_ids: [leaseId] });
-      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
-      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
+      const res = await postJson<{ retried?: number; discarded?: number }>(`/team/dlq/${action}`, { lease_ids: [leaseId] });
+      const count = (action === 'retry' ? res.retried : res.discarded) ?? 0;
+      setDlqMessage(count > 0
+        ? `${action === 'retry' ? 'Retried' : 'Discarded'} 1 message.`
+        : `${action === 'retry' ? 'Retry' : 'Discard'} returned 0 — lease may have expired. Refresh and try again.`);
+      // Await refetch so the row disappears (or reappears with a fresh
+      // lease_id) before we clear busy state.
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['team-dlq'] }),
+        queryClient.refetchQueries({ queryKey: ['team-queue-stats'] }),
+        queryClient.refetchQueries({ queryKey: ['team-sync-summary'] }),
+      ]);
+    } catch (err) {
+      setDlqMessage(`${action} failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
@@ -677,15 +689,31 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
   const handleReplayAll = useCallback(async () => {
     if (!dlq || isTokenMissing(dlq) || dlq.messages.length === 0) return;
     setBusy(true);
+    setDlqMessage(null);
     try {
-      await postJson('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.msg_id) });
-      queryClient.invalidateQueries({ queryKey: ['team-dlq'] });
-      queryClient.invalidateQueries({ queryKey: ['team-queue-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['team-sync-summary'] });
+      const res = await postJson<{ retried?: number }>('/team/dlq/retry', { lease_ids: dlq.messages.map((m) => m.msg_id) });
+      setDlqMessage(`Retried ${res.retried ?? 0} of ${dlq.messages.length} messages.`);
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: ['team-dlq'] }),
+        queryClient.refetchQueries({ queryKey: ['team-queue-stats'] }),
+        queryClient.refetchQueries({ queryKey: ['team-sync-summary'] }),
+      ]);
+    } catch (err) {
+      setDlqMessage(`Retry failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
   }, [dlq, queryClient]);
+
+  const handleRefreshDlq = useCallback(async () => {
+    setBusy(true);
+    setDlqMessage(null);
+    try {
+      await queryClient.refetchQueries({ queryKey: ['team-dlq'] });
+    } finally {
+      setBusy(false);
+    }
+  }, [queryClient]);
 
   const handleUpgradeWorker = useCallback(async () => {
     setUpgrading(true);
@@ -897,17 +925,30 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
       </Surface>
 
       <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <SectionHeader>Failed syncs</SectionHeader>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || failedSyncsUnavailable || dlqMessages.length === 0}
-            onClick={handleReplayAll}
-          >
-            {dlqMessages.length > 0 ? `Retry all (${dlqMessages.length})` : 'Retry all'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || failedSyncsUnavailable}
+              onClick={handleRefreshDlq}
+            >
+              Refresh
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || failedSyncsUnavailable || dlqMessages.length === 0}
+              onClick={handleReplayAll}
+            >
+              {dlqMessages.length > 0 ? `Retry all (${dlqMessages.length})` : 'Retry all'}
+            </Button>
+          </div>
         </div>
+        {dlqMessage && (
+          <p className="text-xs font-mono text-on-surface-variant">{dlqMessage}</p>
+        )}
         {failedSyncsLoading ? (
           <p className="text-xs text-on-surface-variant">Loading...</p>
         ) : failedSyncsUnavailable ? (

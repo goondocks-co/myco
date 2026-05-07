@@ -619,6 +619,24 @@ Grove migration introduces `migration_import_journal` tables for tracking data i
 }
 ```
 
+### Grove Migration Contract Requirements
+
+**CRITICAL**: Grove activation must not import directly from legacy DBs with older schema versions. The migration contract requires a three-step normalization process:
+
+```bash
+# Step 1: Serialize the legacy DB (preserves exact state)
+sqlite3 legacy_vault.db ".backup legacy_serialized.db"
+
+# Step 2: Run current schema migrations on a copy
+cp legacy_serialized.db normalized_import.db
+myco-cli migrate --vault normalized_import.db  # Brings to current schema
+
+# Step 3: Import from normalized copy (matching schema)
+grove-importer import --source normalized_import.db --target grove_db.db
+```
+
+**Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema. Direct import from mismatched schema causes activation failures in production.
+
 ### Import Rekey Patterns
 
 Grove migration requires rekey patterns when importing data from legacy project vaults to avoid ID collisions:
@@ -731,3 +749,4 @@ packages/grove/
 - **Grove project_id is mandatory in v31+** — all new project-scoped tables must include a project_id column and all project-scoped queries must scope by project_id.
 - **Import rekey patterns required for Grove migration** — when importing data from legacy project vaults, use rekey patterns to avoid ID collisions and maintain referential integrity.
 - **Grove schema initialization sequence** — follow v31-v32 initialization pattern when setting up Grove databases to ensure proper multi-project support.
+- **Grove migration contract enforcement** — never import directly from legacy DBs with older schemas. Always serialize legacy DB, run current migrations on normalized copy, then import from schema-aligned source to avoid activation failures.
