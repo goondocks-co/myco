@@ -137,7 +137,7 @@ const UpdateSchema = z.object({
   channel: z.enum(['stable', 'beta']).default('stable'),
 });
 
-const TeamSchema = z.object({
+export const TeamSchema = z.object({
   /** Whether team sync is enabled. */
   enabled: z.boolean().default(false),
   /** Cloudflare Worker URL for team sync. */

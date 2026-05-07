@@ -117,7 +117,8 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase, openDatabase, type Database } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, type Database } from '../db/client.js';
+import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -152,8 +153,7 @@ import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
-import { resolveDaemonDataPaths } from './data-paths.js';
-import { GROVE_VECTORS_FILENAME, resolveGroveVectorsPath } from '../grove/paths.js';
+import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
 import {
@@ -539,37 +539,26 @@ export async function main(): Promise<void> {
   const databaseHandlers = createDatabaseMaintenanceHandlers({
     createManager: databaseManagerForRequest,
   });
-  const scopedEmbeddingManagers = new Map<string, {
-    manager: EmbeddingManager;
-    db: Database;
-    vectorStore: SqliteVecVectorStore;
-  }>();
+  const runtimeCache = new GroveRuntimeCache();
   const getEmbeddingRuntime = (requestContext?: MycoRequestContext): { manager: EmbeddingManager; db?: Database } => {
     if (!requestContext) return { manager: embeddingManager };
-    const scopedVectorsPath = requestContext.groveId
-      ? resolveGroveVectorsPath(requestContext.groveId)
-      : path.join(requestContext.projectVaultDir, GROVE_VECTORS_FILENAME);
+    const scopedVectorsPath = resolveVectorsPathForRequestContext(requestContext);
     if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
       return { manager: embeddingManager };
     }
-    const key = `${requestContext.databasePath}\n${scopedVectorsPath}`;
-    const cached = scopedEmbeddingManagers.get(key);
-    if (cached) return { manager: cached.manager, db: cached.db };
-
-    const scopedDb = openDatabase(requestContext.databasePath);
-    const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
-    const scopedManager = new EmbeddingManager(
-      scopedVectorStore,
-      embeddingProvider,
-      new SqliteRecordSource(scopedDb),
-      logger,
-    );
-    scopedEmbeddingManagers.set(key, {
-      manager: scopedManager,
-      db: scopedDb,
-      vectorStore: scopedVectorStore,
+    const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, (db) => {
+      const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
+      return {
+        vectorStore: scopedVectorStore,
+        embeddingManager: new EmbeddingManager(
+          scopedVectorStore,
+          embeddingProvider,
+          new SqliteRecordSource(db),
+          logger,
+        ),
+      };
     });
-    return { manager: scopedManager, db: scopedDb };
+    return { manager: entry.embeddingManager!, db: entry.db };
   };
 
   // --- Register built-in agents and tasks ---
@@ -669,6 +658,7 @@ export async function main(): Promise<void> {
     daemonStatePath: daemonService.statePath,
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
+    runtimeCache,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
@@ -1142,7 +1132,11 @@ export async function main(): Promise<void> {
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
   // agents (codex) connect to it directly. Tool execution happens in-process
   // via the shared tool runtime — no internal HTTP RPC layer.
-  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir));
+  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir, {
+    resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
+      ? db
+      : runtimeCache.getDatabase(databasePath),
+  }));
 
   // --- Backup routes ---
   const backupHandlers = createBackupHandlers({ db, machineId, vaultDir, liveConfig });
@@ -1461,11 +1455,7 @@ export async function main(): Promise<void> {
     }
     registry.destroy();
     await server.stop();
-    for (const runtime of scopedEmbeddingManagers.values()) {
-      runtime.vectorStore.close();
-      runtime.db.close();
-    }
-    scopedEmbeddingManagers.clear();
+    runtimeCache.closeAll();
     vectorStore.close();
     closeDatabase();
     logger.close();

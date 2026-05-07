@@ -52,7 +52,7 @@ describe('Grove team connection storage', () => {
     writeTeamConnectionSecret(vaultDir, context, TEAM_API_KEY_SECRET, 'secret');
 
     const store = resolveTeamConnectionStore(vaultDir, context);
-    expect(store.scope).toBe('grove');
+    expect(store.groveId).toBe(context.groveId);
     expect(store.configPath).toContain(path.join(mycoHome, 'groves', context.groveId!));
     expect(team.enabled).toBe(true);
     expect(loadTeamConnectionConfig(vaultDir, context).worker_url).toBe('https://team.example.workers.dev');

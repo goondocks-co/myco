@@ -6,14 +6,16 @@ import {
   saveProjectManifest,
   type ProjectManifest,
 } from '@myco/config/project-manifest.js';
-import { openDatabase, openReadonly, type Database } from '@myco/db/client.js';
+import { openDatabase, openReadonly, SQLITE_DB_FILE, vaultDbPath, type Database } from '@myco/db/client.js';
 import { listImportMappingsForMigration } from '@myco/db/queries/migration-import-journal.js';
 import { createSchema } from '@myco/db/schema.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { importProjectCoreRows, type ImportProjectCoreResult } from '@myco/grove/importer.js';
 import { createGroveBindingId, createMigrationId, createProjectId } from '@myco/grove/ids.js';
 import {
+  GROVE_VECTORS_FILENAME,
   resolveProjectVaultDir,
   resolveMycoHome,
 } from '@myco/grove/paths.js';
@@ -80,6 +82,7 @@ interface ActivationMarker {
   team_sync_disabled: boolean;
   runtime_command_preserved: boolean;
   legacy_archived?: { archived_at: string; archive_dir: string };
+  legacy_archive_error?: { failed_at: string; message: string };
 }
 
 /**
@@ -103,12 +106,12 @@ interface ActivationMarker {
  * project-authored file isn't silently moved.
  */
 const LEGACY_ARCHIVE_ENTRIES: readonly string[] = [
-  'myco.db',
-  'myco.db-shm',
-  'myco.db-wal',
-  'vectors.db',
-  'vectors.db-shm',
-  'vectors.db-wal',
+  SQLITE_DB_FILE,
+  `${SQLITE_DB_FILE}-shm`,
+  `${SQLITE_DB_FILE}-wal`,
+  GROVE_VECTORS_FILENAME,
+  `${GROVE_VECTORS_FILENAME}-shm`,
+  `${GROVE_VECTORS_FILENAME}-wal`,
   'staging',
   'logs',
   'team',
@@ -180,7 +183,7 @@ export function activateProjectMigration(
 ): ActivateProjectMigrationResult {
   const projectRoot = path.resolve(input.projectRoot);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
-  const sourceDbPath = path.join(projectVaultDir, 'myco.db');
+  const sourceDbPath = vaultDbPath(projectVaultDir);
 
   const mycoHome = input.mycoHome ?? resolveMycoHome();
   const grove = resolveGrove(input.groveRef, mycoHome);
@@ -292,23 +295,7 @@ export function activateProjectMigration(
     // already been written, so any failure here is recoverable via
     // `completeLegacyArchive`. Skipped on dry runs.
     if (!input.dryRun) {
-      try {
-        const archiveDir = archiveLegacyVaultData(projectVaultDir);
-        if (archiveDir) {
-          const marker = readActivationMarker(markerPath);
-          if (marker) {
-            writeActivationMarker(markerPath, {
-              ...marker,
-              legacy_archived: {
-                archived_at: new Date().toISOString(),
-                archive_dir: archiveDir,
-              },
-            });
-          }
-        }
-      } catch {
-        // Archive is best-effort; the marker will reflect the absence.
-      }
+      stampLegacyArchiveOnMarker(projectVaultDir, markerPath);
     }
   } catch (error) {
     if (!(error instanceof DryRunRollback)) throw error;
@@ -542,23 +529,48 @@ export function completeLegacyArchive(projectVaultDir: string): {
   const marker = readActivationMarker(markerPath);
   if (!marker) return { archived_dir: null, already_complete: false };
 
-  if (marker.legacy_archived) {
-    // Even with the flag set, sweep again in case a previous archive
-    // left items behind (re-running is safe — the rename is bounded to
-    // LEGACY_ARCHIVE_ENTRIES that still exist at the top of the vault).
-    const dir = archiveLegacyVaultData(projectVaultDir);
-    return { archived_dir: dir, already_complete: dir === null };
+  // Even when `legacy_archived` is already set, sweep again in case a
+  // previous archive left items behind — the rename is bounded to
+  // LEGACY_ARCHIVE_ENTRIES still present at the top of the vault.
+  const result = stampLegacyArchiveOnMarker(projectVaultDir, markerPath);
+  return {
+    archived_dir: result.archived_dir,
+    already_complete: Boolean(marker.legacy_archived) && result.archived_dir === null,
+  };
+}
+
+function stampLegacyArchiveOnMarker(
+  projectVaultDir: string,
+  markerPath: string,
+): { archived_dir: string | null } {
+  let archivedDir: string | null = null;
+  let archiveError: unknown = null;
+  try {
+    archivedDir = archiveLegacyVaultData(projectVaultDir);
+  } catch (err) {
+    archiveError = err;
   }
 
-  const dir = archiveLegacyVaultData(projectVaultDir);
-  writeActivationMarker(markerPath, {
-    ...marker,
-    legacy_archived: {
-      archived_at: new Date().toISOString(),
-      archive_dir: dir ?? '',
-    },
-  });
-  return { archived_dir: dir, already_complete: false };
+  const marker = readActivationMarker(markerPath);
+  if (!marker) return { archived_dir: archivedDir };
+
+  const next: ActivationMarker = { ...marker };
+  if (archiveError) {
+    next.legacy_archive_error = {
+      failed_at: new Date().toISOString(),
+      message: errorMessage(archiveError),
+    };
+  } else {
+    delete next.legacy_archive_error;
+    if (archivedDir) {
+      next.legacy_archived = {
+        archived_at: new Date().toISOString(),
+        archive_dir: archivedDir,
+      };
+    }
+  }
+  writeActivationMarker(markerPath, next);
+  return { archived_dir: archivedDir };
 }
 
 function readActivationMarker(filePath: string): ActivationMarker | null {

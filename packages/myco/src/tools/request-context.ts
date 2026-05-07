@@ -37,6 +37,11 @@ export interface MycoRequestContext {
   source: RequestContextSource;
 }
 
+/** True iff the request is bound to a Grove (vs a legacy project-local vault). */
+export function isGroveScoped(context: MycoRequestContext | undefined | null): boolean {
+  return Boolean(context?.groveId);
+}
+
 export interface LegacyRequestContextOptions {
   projectRoot?: string;
   projectId?: GroveProjectId;

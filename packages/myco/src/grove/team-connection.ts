@@ -1,19 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { MycoConfigSchema, type TeamConfig } from '@myco/config/schema.js';
+import { TeamSchema, type TeamConfig } from '@myco/config/schema.js';
 import { loadMergedConfig, updateTeamConfig } from '@myco/config/loader.js';
 import { readSecrets, writeSecret } from '@myco/config/secrets.js';
 import { resolveGroveConfigPath, resolveGroveDir } from '@myco/grove/paths.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
-
-export type TeamConnectionScope = 'grove' | 'legacy-project';
+import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface TeamConnectionStore {
-  scope: TeamConnectionScope;
   configDir: string;
   configPath: string;
   secretsDir: string;
+  /** Non-null when the store is backed by a Grove; null for legacy project-local vaults. */
   groveId: string | null;
 }
 
@@ -26,19 +24,18 @@ export function resolveTeamConnectionStore(
   fallbackVaultDir: string,
   requestContext?: MycoRequestContext,
 ): TeamConnectionStore {
-  if (requestContext?.groveId) {
-    const configDir = resolveGroveDir(requestContext.groveId);
+  if (isGroveScoped(requestContext)) {
+    const groveId = requestContext!.groveId!;
+    const configDir = resolveGroveDir(groveId);
     return {
-      scope: 'grove',
       configDir,
-      configPath: resolveGroveConfigPath(requestContext.groveId),
+      configPath: resolveGroveConfigPath(groveId),
       secretsDir: configDir,
-      groveId: requestContext.groveId,
+      groveId,
     };
   }
 
   return {
-    scope: 'legacy-project',
     configDir: fallbackVaultDir,
     configPath: path.join(fallbackVaultDir, 'myco.yaml'),
     secretsDir: fallbackVaultDir,
@@ -51,7 +48,7 @@ export function loadTeamConnectionConfig(
   requestContext?: MycoRequestContext,
 ): TeamConfig {
   const store = resolveTeamConnectionStore(fallbackVaultDir, requestContext);
-  if (store.scope === 'legacy-project') return loadMergedConfig(fallbackVaultDir).team;
+  if (!store.groveId) return loadMergedConfig(fallbackVaultDir).team;
   const doc = readGroveConfig(store.configPath);
   return parseTeamConfig(doc.team ?? {});
 }
@@ -62,7 +59,7 @@ export function updateTeamConnectionConfig(
   patch: Partial<TeamConfig>,
 ): TeamConfig {
   const store = resolveTeamConnectionStore(fallbackVaultDir, requestContext);
-  if (store.scope === 'legacy-project') {
+  if (!store.groveId) {
     return updateTeamConfig(fallbackVaultDir, patch).team;
   }
 
@@ -101,5 +98,5 @@ function readGroveConfig(filePath: string): GroveConfigDoc {
 }
 
 function parseTeamConfig(team: Partial<TeamConfig>): TeamConfig {
-  return MycoConfigSchema.parse({ version: 3, team }).team;
+  return TeamSchema.parse(team);
 }

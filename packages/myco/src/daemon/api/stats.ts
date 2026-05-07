@@ -60,9 +60,11 @@ export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
     const statsVaultDir = req.requestContext?.projectVaultDir ?? deps.vaultDir;
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    // The daemon's request middleware pins the per-Grove DB handle via
+    // withDatabase(requestDb, ...) before invoking the route handler, so
+    // gatherStats picks it up via getDatabase() — no need to re-open.
     const stats = gatherStats(statsVaultDir, {
       active_sessions: deps.registry.sessions,
-      databasePath: req.requestContext?.databasePath,
       project_id: projectId,
     });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)

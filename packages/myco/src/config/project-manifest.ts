@@ -4,6 +4,8 @@ import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { z } from 'zod';
 import { createGroveBindingId, createProjectId } from '@myco/grove/ids.js';
 import { resolveProjectManifestPath } from '@myco/grove/paths.js';
+import { isPlainTable } from '@myco/utils/is-plain-table.js';
+import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 
 const SECRET_KEY_RE = /(secret|token|password|credential|api[_-]?key)/i;
 
@@ -31,10 +33,23 @@ export interface EnsureProjectManifestOptions {
   groveBindingId?: string;
 }
 
+const manifestCache = createMtimeCache((manifestPath: string): ProjectManifest | null => {
+  let content: string;
+  try {
+    content = fs.readFileSync(manifestPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  return parseProjectManifest(content);
+});
+
 export function loadProjectManifest(projectVaultDir: string): ProjectManifest | null {
-  const manifestPath = resolveProjectManifestPath(projectVaultDir);
-  if (!fs.existsSync(manifestPath)) return null;
-  return parseProjectManifest(fs.readFileSync(manifestPath, 'utf-8'));
+  return manifestCache.get(resolveProjectManifestPath(projectVaultDir));
+}
+
+export function clearProjectManifestCache(): void {
+  manifestCache.clear();
 }
 
 export function parseProjectManifest(content: string): ProjectManifest {
@@ -63,6 +78,7 @@ export function saveProjectManifest(projectVaultDir: string, manifest: ProjectMa
 
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(manifestPath, stringify(doc), 'utf-8');
+  manifestCache.invalidate(manifestPath);
 }
 
 export function ensureProjectManifest(
@@ -155,6 +171,3 @@ function assertNoSecretLikeKeys(value: unknown, pathParts: string[] = []): void 
   }
 }
 
-function isPlainTable(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}

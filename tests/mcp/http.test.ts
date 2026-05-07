@@ -58,7 +58,7 @@ describe('streamable HTTP MCP', () => {
     saveProjectManifest(vaultDir, {
       project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project HTTP MCP' },
     });
-    const handler = createStreamableMcpHttpHandler(vaultDir, mockClient());
+    const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient() });
     const url = await listen((req, res) => {
       void handler(req, res);
     });
@@ -98,7 +98,7 @@ describe('streamable HTTP MCP', () => {
       bindingId: 'gbind-a',
     }, home);
     const capturedGets: CapturedGet[] = [];
-    const handler = createStreamableMcpHttpHandler(vaultDir, mockClient(capturedGets));
+    const handler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient(capturedGets) });
     const url = await listen((req, res) => {
       void handler(req, res);
     });

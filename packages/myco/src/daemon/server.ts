@@ -10,7 +10,8 @@ import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { requestContextFromHttpHeaders, type MycoRequestContext } from '../tools/request-context.js';
 import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
-import { openDatabase, vaultDbPath, withDatabase, type Database } from '../db/client.js';
+import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
+import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
 const DEFAULT_STATUS = 200;
 
@@ -21,6 +22,12 @@ export interface DaemonServerConfig {
   uiDir?: string;
   uiDevProxyTarget?: string;
   onRequest?: () => void;
+  /**
+   * Shared bounded LRU for per-Grove DB handles + embedding runtime.
+   * If omitted, the server creates a private cache; pass an externally
+   * owned one when other subsystems need to share entries.
+   */
+  runtimeCache?: GroveRuntimeCache;
 }
 
 export type RawRouteHandler = (
@@ -40,7 +47,8 @@ export class DaemonServer {
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
   private onRequest: (() => void) | null;
-  private requestDatabases = new Map<string, Database>();
+  private runtimeCache: GroveRuntimeCache;
+  private ownsRuntimeCache: boolean;
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
@@ -49,6 +57,8 @@ export class DaemonServer {
     this.uiDir = config.uiDir ?? null;
     this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
+    this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
+    this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.version = getPluginVersion();
     this.registerDefaultRoutes();
   }
@@ -285,26 +295,11 @@ export class DaemonServer {
     ) {
       return null;
     }
-    return this.databaseForRequestPath(context.databasePath);
-  }
-
-  private databaseForRequestPath(databasePath: string): Database {
-    const existing = this.requestDatabases.get(databasePath);
-    if (existing) return existing;
-    const db = openDatabase(databasePath);
-    this.requestDatabases.set(databasePath, db);
-    return db;
+    return this.runtimeCache.getDatabase(context.databasePath);
   }
 
   private closeRequestDatabases(): void {
-    for (const db of this.requestDatabases.values()) {
-      try {
-        db.close();
-      } catch {
-        // Best-effort shutdown cleanup.
-      }
-    }
-    this.requestDatabases.clear();
+    if (this.ownsRuntimeCache) this.runtimeCache.closeAll();
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {

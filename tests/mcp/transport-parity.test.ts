@@ -121,7 +121,7 @@ describe('MCP transport parity', () => {
     // forwarder; the HTTP client connects to the same `/mcp` URL the bridge
     // forwards to. Parity is structural: there is only one runtime.
     const capturedGets: CapturedGet[] = [];
-    const mcpHandler = createStreamableMcpHttpHandler(vaultDir, mockClient(capturedGets));
+    const mcpHandler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient(capturedGets) });
     const httpUrl = await startDaemonStub(vaultDir, mcpHandler);
     const requestContext = resolveLegacyRequestContext(vaultDir, {
       projectRoot,

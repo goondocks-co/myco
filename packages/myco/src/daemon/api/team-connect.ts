@@ -39,7 +39,7 @@ import { SCHEMA_VERSION } from '@myco/db/schema.js';
 import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
-import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1069,15 +1069,16 @@ function resolveTeamConnectionContext(
   const projectVaultDir = requestContext?.projectVaultDir ?? fallbackVaultDir;
   const manifest = loadProjectManifest(projectVaultDir);
   const projectRoot = requestContext?.projectRoot ?? resolveProjectRoot(projectVaultDir);
-  const grove = requestContext?.groveId ? loadGroveRecord(requestContext.groveId) : null;
+  const groveScoped = isGroveScoped(requestContext);
+  const grove = groveScoped ? loadGroveRecord(requestContext!.groveId!) : null;
 
   return {
-    connection_scope: requestContext?.groveId ? 'grove' : 'legacy-project',
-    grove: requestContext?.groveId
+    connection_scope: groveScoped ? 'grove' : 'legacy-project',
+    grove: groveScoped
       ? {
-          id: requestContext.groveId,
-          name: grove?.name ?? requestContext.groveId,
-          slug: grove?.slug ?? manifest?.grove?.slug ?? requestContext.groveId,
+          id: requestContext!.groveId!,
+          name: grove?.name ?? requestContext!.groveId!,
+          slug: grove?.slug ?? manifest?.grove?.slug ?? requestContext!.groveId!,
           mode: grove?.mode ?? manifest?.grove?.mode ?? 'local',
         }
       : null,

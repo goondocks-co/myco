@@ -139,7 +139,6 @@ describe('createLiveStatsHandler', () => {
 
     expect(gatherStats).toHaveBeenCalledWith('/tmp/live-vault', {
       active_sessions: ['sess-1', 'sess-2'],
-      databasePath: '/tmp/grove-a/myco.db',
       project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     });
     expect(body.daemon.pid).toBe(process.pid);

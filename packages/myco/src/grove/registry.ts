@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
+import { isPlainTable } from '@myco/utils/is-plain-table.js';
+import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId } from './ids.js';
 import {
   resolveGlobalConfigPath,
@@ -58,20 +60,22 @@ interface GlobalConfigDoc {
   [key: string]: unknown;
 }
 
-export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
-  const grovesDir = resolveGrovesDir(mycoHome);
+const groveDirEntriesCache = createMtimeCache((grovesDir: string): string[] => {
   if (!fs.existsSync(grovesDir)) return [];
   return fs.readdirSync(grovesDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
-    .map((entry) => loadGroveRecord(entry.name, mycoHome))
-    .filter((record): record is GroveRecord => !!record)
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
+    .map((entry) => entry.name);
+});
 
-export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): GroveRecord | null {
-  const metadataPath = resolveGroveMetadataPath(groveId, mycoHome);
-  if (!fs.existsSync(metadataPath)) return null;
-  const doc = parse(fs.readFileSync(metadataPath, 'utf-8')) as TomlTableWithoutBigInt;
+const groveRecordCache = createMtimeCache((metadataPath: string): GroveRecord | null => {
+  let content: string;
+  try {
+    content = fs.readFileSync(metadataPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  const doc = parse(content) as TomlTableWithoutBigInt;
   const grove = isPlainTable(doc.grove) ? doc.grove as Record<string, unknown> : null;
   if (!grove) return null;
   if (typeof grove.id !== 'string' || typeof grove.name !== 'string' || typeof grove.slug !== 'string') return null;
@@ -82,6 +86,48 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
     mode: 'local',
     created_at: typeof grove.created_at === 'string' ? grove.created_at : new Date(0).toISOString(),
   };
+});
+
+const tomlDocCache = createMtimeCache((filePath: string): TomlTableWithoutBigInt => {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+  const parsed = parse(content);
+  return isPlainTable(parsed) ? parsed as TomlTableWithoutBigInt : {};
+});
+
+const globalConfigCache = createMtimeCache((filePath: string): GlobalConfigDoc => {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+  const parsed = YAML.parse(content) as unknown;
+  return isPlainTable(parsed) ? parsed as GlobalConfigDoc : {};
+});
+
+export function clearGroveRegistryCaches(): void {
+  groveDirEntriesCache.clear();
+  groveRecordCache.clear();
+  tomlDocCache.clear();
+  globalConfigCache.clear();
+}
+
+export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
+  return groveDirEntriesCache.get(resolveGrovesDir(mycoHome))
+    .map((name) => loadGroveRecord(name, mycoHome))
+    .filter((record): record is GroveRecord => !!record)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): GroveRecord | null {
+  return groveRecordCache.get(resolveGroveMetadataPath(groveId, mycoHome));
 }
 
 export function createGrove(name: string, mycoHome = resolveMycoHome()): GroveRecord {
@@ -259,31 +305,31 @@ function writeGroveRecord(record: GroveRecord, mycoHome: string): void {
   const doc: TomlTableWithoutBigInt = {
     grove: record as unknown as TomlTableWithoutBigInt,
   };
-  fs.writeFileSync(resolveGroveMetadataPath(record.id, mycoHome), stringify(doc), 'utf-8');
+  const metadataPath = resolveGroveMetadataPath(record.id, mycoHome);
+  fs.writeFileSync(metadataPath, stringify(doc), 'utf-8');
+  groveRecordCache.invalidate(metadataPath);
+  groveDirEntriesCache.invalidate(resolveGrovesDir(mycoHome));
 }
 
 function readGlobalConfig(mycoHome: string): GlobalConfigDoc {
-  const filePath = resolveGlobalConfigPath(mycoHome);
-  if (!fs.existsSync(filePath)) return {};
-  const parsed = YAML.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
-  if (!isPlainTable(parsed)) return {};
-  return parsed as GlobalConfigDoc;
+  return globalConfigCache.get(resolveGlobalConfigPath(mycoHome));
 }
 
 function writeGlobalConfig(mycoHome: string, doc: GlobalConfigDoc): void {
   fs.mkdirSync(mycoHome, { recursive: true });
-  fs.writeFileSync(resolveGlobalConfigPath(mycoHome), YAML.stringify(doc), 'utf-8');
+  const filePath = resolveGlobalConfigPath(mycoHome);
+  fs.writeFileSync(filePath, YAML.stringify(doc), 'utf-8');
+  globalConfigCache.invalidate(filePath);
 }
 
 function readToml(filePath: string): TomlTableWithoutBigInt {
-  if (!fs.existsSync(filePath)) return {};
-  const parsed = parse(fs.readFileSync(filePath, 'utf-8'));
-  return isPlainTable(parsed) ? parsed as TomlTableWithoutBigInt : {};
+  return tomlDocCache.get(filePath);
 }
 
 function writeToml(filePath: string, doc: TomlTableWithoutBigInt): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, stringify(doc), 'utf-8');
+  tomlDocCache.invalidate(filePath);
 }
 
 function normalizeRegisteredProject(row: Record<string, unknown>): RegisteredProject | null {
@@ -306,6 +352,3 @@ function normalizeRegisteredProject(row: Record<string, unknown>): RegisteredPro
   };
 }
 
-function isPlainTable(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}

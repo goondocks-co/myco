@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
 import {
@@ -34,6 +35,14 @@ export interface MycoTools {
 export interface MycoToolsOptions {
   collectiveEnabled?: () => Promise<boolean>;
   requestContext?: MycoRequestContext;
+  /**
+   * Optional resolver for the per-request DB handle. When provided, tool
+   * calls reuse the resolved (and cached) connection inside withDatabase
+   * instead of opening a fresh one per call. CLI/standalone callers can
+   * omit it — runWithRequestDatabase will fall back to opening + closing
+   * a private handle, preserving existing behavior outside the daemon.
+   */
+  resolveDatabase?: (databasePath: string) => Database;
 }
 
 const COLLECTIVE_TOOL_NAMES = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((tool) => tool.name));
@@ -151,7 +160,16 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 
   async function runWithRequestDatabase<T>(fn: () => Promise<T>): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');
-    let db: ReturnType<typeof openDatabase>;
+    if (options.resolveDatabase) {
+      let db: Database;
+      try {
+        db = options.resolveDatabase(requestContext.databasePath);
+      } catch {
+        throw new ToolError('tool_call_failed', 'Vault database is not available');
+      }
+      return withDatabase(db, fn);
+    }
+    let db: Database;
     try {
       db = openDatabase(requestContext.databasePath);
     } catch {

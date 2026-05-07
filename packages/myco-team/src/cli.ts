@@ -272,7 +272,7 @@ function resolveTeamCliScope(vaultDir: string): TeamCliScope {
     stateDir: store.configDir,
     resourceSeed: store.groveId ?? vaultDir,
     resourceSlug: grove ? slugifyGroveName(grove.name) : null,
-    label: store.scope === 'grove'
+    label: store.groveId
       ? `Grove ${grove?.name ?? requestContext.groveId}`
       : `project vault ${vaultDir}`,
   };
