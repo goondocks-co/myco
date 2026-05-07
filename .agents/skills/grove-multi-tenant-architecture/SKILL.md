@@ -147,6 +147,32 @@ myco grove list
 
 # Switch Grove binding
 myco grove use "grove-staging"
+
+# Grove-only installation (no local vault)
+myco init --grove-only --grove "grove-production"
+```
+
+### Mode A UI Switcher Integration
+
+Support UI mode switching for Grove-connected projects:
+```typescript
+import { resolveServiceDaemonStatePath } from '../grove/paths.js';
+
+// Mode A: Grove-connected project with daemon state management
+function configureUIMode(projectPath: string, groveBinding: string) {
+  const daemonStatePath = resolveServiceDaemonStatePath();
+  
+  // Configure UI to use Mode A (Grove-connected) interface
+  const uiConfig = {
+    mode: 'grove-connected',
+    groveBinding,
+    daemonStatePath,
+    enableRemoteSync: true,
+    showGroveIndicator: true
+  };
+  
+  return uiConfig;
+}
 ```
 
 ## Procedure C: Multi-Tenant Database Schema Design
@@ -414,11 +440,13 @@ export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
+export const DAEMON_STATE_FILENAME = 'daemon.json';
 
-// Resolve Grove directories
+// Resolve Grove directories and service paths
 const groveHome = resolveMycoHome();
 const grovesDir = resolveGrovesDir(groveHome);
 const groveDir = resolveGroveDir(groveId, groveHome);
+const daemonStatePath = resolveServiceDaemonStatePath();
 ```
 
 ### Grove Registry Structure
@@ -473,6 +501,9 @@ myco grove use "development"
 
 # Project initialization with Grove binding
 myco init --project "my-project" --grove "production"
+
+# Grove-only installation (no local daemon)
+myco init --grove-only --grove "production"
 ```
 
 ### Grove Discovery Logic
@@ -514,3 +545,7 @@ async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
 **Grove Registry Corruption**: Malformed Grove registry files cause CLI commands to fail silently. Always validate registry structure on load and provide helpful error messages.
 
 **CLI-to-Daemon MCP Bridge**: The `myco mcp` command is the bridge point between stdio MCP clients and the global daemon. Any context extraction failures here break agent tool access.
+
+**Grove-Only Mode State Management**: When running in Grove-only mode (no local daemon), ensure all state paths resolve correctly using `resolveServiceDaemonStatePath()` to prevent file not found errors during UI initialization.
+
+**Mode A UI Context Isolation**: The Mode A UI switcher must properly isolate Grove-connected project contexts. Failure to thread context through UI state management causes cross-project data leakage in multi-Grove environments.

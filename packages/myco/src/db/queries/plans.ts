@@ -301,6 +301,7 @@ export function deletePlan(id: string, projectId?: string | null): PlanRow | nul
       operation: 'delete',
       payload: JSON.stringify({
         id: row.id,
+        project_id: row.project_id,
         logical_key: row.logical_key,
         title: row.title,
       }),

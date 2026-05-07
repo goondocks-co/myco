@@ -104,6 +104,8 @@ export function requestContextFromHttpHeaders(
 
   if (hasContextHeader) {
     if (explicit.groveId) return resolveRegisteredRequestContext(explicit, fallback, 'headers');
+    const manifestContext = resolveManifestHeaderRequestContext(explicit, fallback, 'headers');
+    if (manifestContext) return manifestContext;
     return resolveLegacyHeaderRequestContext(explicit, fallback);
   }
 
@@ -237,6 +239,45 @@ function resolveManifestRequestContext(
     groveId: registered.grove.id,
     machineId: fallback.machineId,
     sessionId: fallback.sessionId,
+    manifest,
+  });
+}
+
+function resolveManifestHeaderRequestContext(
+  input: ExplicitContextInput,
+  fallback: MycoRequestContext,
+  source: RequestContextSource,
+): MycoRequestContext | null {
+  const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
+  if (!inputProjectRoot && !input.projectId) return null;
+
+  const projectRoot = inputProjectRoot ?? fallback.projectRoot;
+  const manifest = readManifest(resolveProjectVaultDir(projectRoot));
+  if (!manifest?.grove?.binding_id) return null;
+
+  const projectId = input.projectId ?? manifest.project.id;
+  if (!projectId) return null;
+  if (manifest.project.id !== projectId) {
+    throw new Error(`Request context project id ${projectId} does not match project.toml id ${manifest.project.id}`);
+  }
+
+  const registered = findRegisteredProject({
+    projectId,
+    bindingId: manifest.grove.binding_id,
+    projectRoot,
+  });
+  if (!registered) {
+    throw new Error(`Project ${projectId} is not registered from request context`);
+  }
+
+  return buildRegisteredRequestContext({
+    fallback,
+    source,
+    projectRoot: registered.project.root,
+    projectId: assertGroveProjectId(projectId),
+    groveId: registered.grove.id,
+    machineId: input.machineId ?? fallback.machineId,
+    sessionId: input.sessionId ?? fallback.sessionId,
     manifest,
   });
 }

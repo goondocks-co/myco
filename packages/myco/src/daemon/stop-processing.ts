@@ -47,6 +47,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -164,7 +165,17 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   getActiveProcessing: () => Promise<void> | null;
   triggerTitleSummary: (sessionId: string) => Promise<void>;
 } {
-  const { registry, sessionBuffers, transcriptMiner, embeddingManager, logger, liveConfig, vaultDir, projectId, planWatchConfig } = deps;
+  const {
+    registry,
+    sessionBuffers,
+    transcriptMiner,
+    embeddingManager,
+    logger,
+    liveConfig,
+    vaultDir,
+    projectId: defaultProjectId,
+    planWatchConfig,
+  } = deps;
 
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
@@ -222,6 +233,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionId: string,
     user: string | undefined,
     sessionMeta: RegisteredSession | undefined,
+    requestProjectId: GroveProjectId,
+    requestRowProjectId: string | null,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
   ): Promise<void> {
@@ -377,7 +390,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
             .join('\n');
         }
         if (transcriptText) {
-          detectSkillUsage(sessionId, transcriptText, projectId);
+          detectSkillUsage(sessionId, transcriptText, requestProjectId);
         }
       } catch {
         // Best-effort — don't block reconciliation
@@ -407,6 +420,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
               tag,
               content,
               sessionId,
+              projectId: requestRowProjectId,
               promptBatchId: latestBatch?.id ?? null,
               logger,
             });
@@ -463,6 +477,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
           capturePlan({
             sourcePath: planFile,
             projectRoot: planWatchConfig.projectRoot,
+            projectId: requestRowProjectId,
             content,
             sessionId,
             promptBatchId,
@@ -522,7 +537,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         promptNumber: resolvedPromptNumber,
         images: turn.images,
         logger,
-        projectId,
+        projectId: requestProjectId,
       });
     }
 
@@ -548,6 +563,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       transcript_path: hookTranscriptPath,
       last_assistant_message: lastAssistantMessage,
     } = StopBody.parse(req.body);
+    const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
+    const requestScope = rowProjectIdFromRequestContext(req.requestContext);
+    const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId)?.agent ?? 'claude-code';
@@ -618,7 +636,15 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // `nullish()` for robustness against ephemeral sub-invocation Stop events).
     const normalizedTranscriptPath = hookTranscriptPath ?? undefined;
     const normalizedAssistantMessage = lastAssistantMessage ?? undefined;
-    const run = () => processStopEvent(sessionId, user, sessionMeta, normalizedTranscriptPath, normalizedAssistantMessage).catch((err) => {
+    const run = () => processStopEvent(
+      sessionId,
+      user,
+      sessionMeta,
+      requestProjectId,
+      requestRowProjectId,
+      normalizedTranscriptPath,
+      normalizedAssistantMessage,
+    ).catch((err) => {
       logger.error(LOG_KINDS.PROCESSOR_SESSION, 'Stop processing failed', { session_id: sessionId, error: (err as Error).message });
     });
 

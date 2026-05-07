@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/tool.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { openDatabase, withDatabase } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
@@ -177,16 +179,24 @@ describe('myco tool CLI', () => {
 
   it('flushes large JSON tool output before returning', async () => {
     await startDaemonStub();
-    upsertPlan({
-      id: 'large-plan',
-      logical_key: 'session:s:key:large-plan',
-      title: 'Large plan',
-      content: 'x'.repeat(70_000),
-      tags: null,
-      status: 'active',
-      created_at: 1700000000,
-      machine_id: 'local',
-    });
+    const db = openDatabase(path.join(tmpDir, 'myco.db'));
+    try {
+      createSchema(db);
+      withDatabase(db, () => {
+        upsertPlan({
+          id: 'large-plan',
+          logical_key: 'session:s:key:large-plan',
+          title: 'Large plan',
+          content: 'x'.repeat(70_000),
+          tags: null,
+          status: 'active',
+          created_at: 1700000000,
+          machine_id: 'local',
+        });
+      });
+    } finally {
+      db.close();
+    }
 
     await run(['call', 'myco_plans', '--json', '--input', '{"op":"get","id":"large-plan"}'], tmpDir);
 

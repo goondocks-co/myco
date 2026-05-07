@@ -224,7 +224,7 @@ export async function handleDeleteSkillRecord(req: RouteRequest): Promise<RouteR
         table_name: 'skill_records',
         row_id: result.id,
         operation: 'delete',
-        payload: JSON.stringify({ id: result.id, name: result.name }),
+        payload: JSON.stringify({ id: result.id, project_id: result.project_id, name: result.name }),
         machine_id: getTeamMachineId(),
         created_at: epochSeconds(),
       });

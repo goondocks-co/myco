@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,6 +69,7 @@ export interface ActivityRow {
 export interface ListActivitiesOptions {
   session_id?: string;
   prompt_batch_id?: number;
+  project_id?: ProjectScope;
   limit?: number;
 }
 
@@ -289,6 +291,8 @@ export function listActivities(
     params.push(options.prompt_batch_id);
   }
 
+  appendProjectCondition(conditions, params, options.project_id);
+
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
 
@@ -310,15 +314,21 @@ export function listActivities(
  */
 export function listActivitiesByBatch(
   batchId: number,
+  options: { project_id?: ProjectScope } = {},
 ): ActivityRow[] {
   const db = getDatabase();
+  const conditions = ['a.prompt_batch_id = ?'];
+  const params: unknown[] = [batchId];
+  appendProjectCondition(conditions, params, options.project_id, 'b');
+  const selectColumns = ACTIVITY_COLUMNS.map((column) => `a.${column} AS ${column}`).join(', ');
 
   const rows = db.prepare(
-    `SELECT ${SELECT_COLUMNS}
-     FROM activities
-     WHERE prompt_batch_id = ?
-     ORDER BY timestamp ASC`,
-  ).all(batchId) as Record<string, unknown>[];
+    `SELECT ${selectColumns}
+     FROM activities a
+     JOIN prompt_batches b ON b.id = a.prompt_batch_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY a.timestamp ASC`,
+  ).all(...params) as Record<string, unknown>[];
 
   return rows.map(toActivityRow);
 }

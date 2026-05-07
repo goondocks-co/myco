@@ -82,7 +82,7 @@ describe('Grove project activation', () => {
     });
 
     expect(result.dry_run).toBe(false);
-    expect(result.team_sync_disabled).toBe(true);
+    expect(result.team_sync_disabled).toBe(false);
     expect(result.import_result?.sessions).toBe(1);
     expect(result.import_result?.plans).toBe(1);
     expect(result.validation?.embedded_rows_pending.sessions).toBe(0);
@@ -103,7 +103,7 @@ describe('Grove project activation', () => {
     expect(marker.status).toBe('activated');
     expect(marker.project_id).toBe(result.project_id);
     expect(marker.grove_id).toBe(grove.id);
-    expect(loadConfig(vaultDir).team.enabled).toBe(false);
+    expect(loadConfig(vaultDir).team.enabled).toBe(true);
 
     const requestContext = requestContextFromEnvironment({}, vaultDir);
     expect(requestContext.groveId).toBe(grove.id);

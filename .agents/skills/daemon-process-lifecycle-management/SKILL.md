@@ -25,6 +25,7 @@ Myco daemon processes require careful lifecycle management to ensure reliable op
 - Access to global daemon state in `~/.myco/daemon.json`
 - Basic knowledge of process discovery and PID validation concepts
 - Understanding of grove-scoped resource management
+- **Hub package no longer required** — global daemon replaces Hub functionality
 
 ## Procedure A: Daemon Startup and Robustness
 
@@ -44,6 +45,8 @@ await spawnDaemon();
 4. **Execute migration tasks** from registry on successful startup
 5. **Update ~/.myco/daemon.json** with new PID, port, and binary path
 6. **Initialize grove coordination** - scan for existing groves and projects
+
+**Hub removal impact**: The global daemon now handles all coordination directly — no separate Hub package installation or management required.
 
 ### Migration Tasks Registry
 
@@ -127,6 +130,82 @@ if (currentVersion !== runningVersion) {
 
 **Critical invariant**: Global daemon coordinates runtime across groves but respects grove-specific runtime preferences when present.
 
+### Global Daemon Configuration Performance Optimization
+
+**Critical performance issue**: Avoid TOML re-parsing on every HTTP request in grove coordination:
+
+```typescript
+// WRONG: Parse TOML on every request (grove coordination race)
+app.use((req, res, next) => {
+  const config = parseMycoToml(projectRoot); // Heavy operation on every request
+  req.groveConfig = config;
+  next();
+});
+
+// RIGHT: Cache parsed TOML with invalidation (grove performance pattern)
+const configCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+
+app.use((req, res, next) => {
+  const projectRoot = getProjectRoot(req);
+  const cacheKey = `${projectRoot}:myco.yaml`;
+  const cached = configCache.get(cacheKey);
+
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+    req.groveConfig = cached.config;
+    return next();
+  }
+
+  // Parse and cache with timestamp
+  const config = parseMycoToml(projectRoot);
+  configCache.set(cacheKey, { config, timestamp: Date.now() });
+  req.groveConfig = config;
+  next();
+});
+```
+
+**Performance gotcha**: Re-parsing TOML on every HTTP request causes grove coordination races and degrades daemon responsiveness. Cache parsed configs with TTL invalidation.
+
+### Request-Context Grove Handling
+
+Handle grove request context efficiently in global daemon:
+
+```typescript
+// Grove request context extraction with error handling
+function extractGroveContext(req: Request): GroveContext {
+  const groveId = req.headers['x-grove-id'];
+  const projectId = req.headers['x-project-id'];
+
+  if (!groveId) {
+    // Default to primary grove for backward compatibility
+    return { groveId: 'user_primary', projectId: null };
+  }
+
+  // Validate grove exists and is accessible
+  const grove = getAuthorizedGrove(groveId, req.auth);
+  if (!grove) {
+    throw new GroveAccessError(`Grove ${groveId} not accessible`);
+  }
+
+  return { groveId, projectId, grove };
+}
+
+// Use grove context efficiently
+app.use('/api', (req, res, next) => {
+  try {
+    req.groveContext = extractGroveContext(req);
+    next();
+  } catch (error) {
+    if (error instanceof GroveAccessError) {
+      return res.status(403).json({ error: error.message });
+    }
+    throw error;
+  }
+});
+```
+
+**Grove context gotcha**: Always validate grove access permissions and provide fallback to primary grove for requests without grove headers.
+
 ## Procedure B: Unified Eviction and Restart
 
 ### Centralized Global Daemon Eviction
@@ -173,8 +252,31 @@ fi
 - System update application with grove coordination
 - Cross-grove health-check fallback recovery
 - Global version-sync operations
+- **Hub removal cleanup** (migrate Hub state to global daemon)
 
 All use the same grove-aware eviction → spawn cycle for consistency.
+
+### Hub Package Cleanup During Restart
+
+**Hub removal procedure** during daemon restart:
+
+```bash
+# Check for legacy Hub installation during restart
+if [ -d "$HOME/.myco/hub" ]; then
+  echo "Migrating Hub state to global daemon..."
+  
+  # Migrate Hub configuration to global daemon
+  if [ -f "$HOME/.myco/hub/config.json" ]; then
+    myco daemon migrate-hub-config --source "$HOME/.myco/hub/config.json"
+  fi
+  
+  # Clean up Hub artifacts after migration
+  rm -rf "$HOME/.myco/hub"
+  echo "Hub cleanup complete - global daemon now handles all coordination"
+fi
+```
+
+**Hub replacement impact**: Global daemon now provides all Hub functionality directly — no separate Hub process or package management required.
 
 ## Procedure C: Process Identity and State Management
 
@@ -190,9 +292,14 @@ The `~/.myco/daemon.json` file serves as the authoritative record for global dae
   "startedAt": "2026-04-27T10:30:00.000Z",
   "version": "0.15.0",
   "groves": ["user_primary", "work_grove"],
-  "groveCoordination": true
+  "groveCoordination": true,
+  "hubMigrated": true
 }
 ```
+
+**New fields after Hub removal**:
+- `hubMigrated`: Boolean indicating Hub state was successfully migrated to global daemon
+- `groveCoordination`: Indicates grove-aware coordination is active
 
 ### Global PID Validation Patterns
 
@@ -230,6 +337,23 @@ const daemonBinary = globalDaemonState.binaryPath;
 if (globalBinary !== daemonBinary && globalDaemonHealthy) {
   // Global runtime change detected - coordinate grove handoff
   await coordinateGlobalRuntimeTransition();
+}
+```
+
+### Hub Migration Status Tracking
+
+Track Hub-to-global-daemon migration status:
+
+```typescript
+// Check if Hub migration completed
+const daemonState = JSON.parse(fs.readFileSync('~/.myco/daemon.json', 'utf-8'));
+if (!daemonState.hubMigrated) {
+  // Trigger Hub state migration
+  await migrateHubToGlobalDaemon();
+  
+  // Update daemon state
+  daemonState.hubMigrated = true;
+  fs.writeFileSync('~/.myco/daemon.json', JSON.stringify(daemonState, null, 2));
 }
 ```
 
@@ -280,8 +404,9 @@ When multiple global daemons detected:
 
 1. **Identify conflicting global processes** via port scanning and ~/.myco/daemon.json comparison
 2. **Determine primary global daemon** (newest, healthiest, or grove-preferred)
-3. **Gracefully evict secondary global daemons** with grove coordination
-4. **Update ~/.myco/daemon.json** to reflect resolved global state
+3. **Check for Hub processes** and migrate state to global daemon if needed
+4. **Gracefully evict secondary global daemons** with grove coordination
+5. **Update ~/.myco/daemon.json** to reflect resolved global state
 
 ### Global Port Allocation
 
@@ -320,6 +445,31 @@ process.on('SIGTERM', async () => {
 });
 ```
 
+### Legacy Hub Process Detection and Migration
+
+Detect and migrate legacy Hub processes:
+
+```typescript
+// Check for running Hub processes during global daemon startup
+const hubPids = findPidsListeningOn([3700, 3701]); // Legacy Hub ports
+if (hubPids.length > 0) {
+  console.log('Legacy Hub processes detected - migrating to global daemon');
+  
+  for (const hubPid of hubPids) {
+    // Migrate Hub state before termination
+    await migrateHubState(hubPid);
+    
+    // Gracefully terminate Hub process
+    process.kill(hubPid, 'SIGTERM');
+    setTimeout(() => {
+      if (processExists(hubPid)) {
+        process.kill(hubPid, 'SIGKILL');
+      }
+    }, 5000);
+  }
+}
+```
+
 ## Procedure E: Health Checking and Recovery
 
 ### Global Daemon Health Validation
@@ -342,9 +492,10 @@ fi
 1. **Attempt global health ping** with reasonable timeout
 2. **Check global process existence** if health ping fails
 3. **Validate global port binding** if process exists
-4. **Coordinate grove notification** before eviction
-5. **Evict and restart global daemon** if unresponsive
-6. **Re-establish grove connections** after restart
+4. **Check for Hub process interference** and migrate if needed
+5. **Coordinate grove notification** before eviction
+6. **Evict and restart global daemon** if unresponsive
+7. **Re-establish grove connections** after restart
 
 ### Global Health Monitoring
 
@@ -353,6 +504,7 @@ fi
 - Grove-specific health validation before critical operations
 - Automatic recovery with grove re-coordination
 - Grove-aware exponential backoff for restart attempts
+- **Hub-free health validation** (no Hub process dependency)
 
 ### Grove Responsiveness Monitoring
 
@@ -365,8 +517,16 @@ const responseTime = Date.now() - startTime;
 
 if (responseTime > GLOBAL_SLOW_RESPONSE_THRESHOLD) {
   // Global daemon degraded - may need restart with grove coordination
+  
+  // Check if TOML parsing is causing slowdown
+  if (responseTime > TOML_PARSING_THRESHOLD) {
+    console.warn('Possible TOML re-parsing performance issue detected');
+    await optimizeConfigCaching();
+  }
 }
 ```
+
+**Performance monitoring**: Track request response times to detect TOML re-parsing performance issues.
 
 ## Procedure F: Update Application Workflow
 
@@ -374,12 +534,15 @@ if (responseTime > GLOBAL_SLOW_RESPONSE_THRESHOLD) {
 
 **Grove-coordinated update sequence:**
 1. **Download and validate** new global daemon binary
-2. **Coordinate with all groves** - notify of pending global restart
-3. **Graceful eviction** of global daemon with grove coordination
-4. **Apply update** and install new binary
-5. **Spawn updated global daemon** with preserved grove configuration
-6. **Execute migration tasks** for new version across groves
-7. **Re-establish grove connections** and validate successful startup
+2. **Check for Hub dependency removal** in new version
+3. **Coordinate with all groves** - notify of pending global restart
+4. **Graceful eviction** of global daemon with grove coordination
+5. **Migrate Hub state** if upgrading from Hub-dependent version
+6. **Apply update** and install new binary
+7. **Spawn updated global daemon** with preserved grove configuration
+8. **Execute migration tasks** for new version across groves
+9. **Re-establish grove connections** and validate successful startup
+10. **Clean up Hub artifacts** after successful migration
 
 ### Grove State Preservation
 
@@ -388,13 +551,34 @@ if (responseTime > GLOBAL_SLOW_RESPONSE_THRESHOLD) {
 - Per-grove configuration and preferences
 - Cross-grove shared resources and locks
 - Global daemon coordination metadata
+- **Hub migration status** and migrated configuration
 
 ```bash
 # Pre-update global state capture
-myco daemon snapshot --output ~/.myco/pre-update-snapshot.json --include-groves
+myco daemon snapshot --output ~/.myco/pre-update-snapshot.json --include-groves --include-hub-migration
 
 # Post-update state restoration with grove coordination
-myco daemon restore --input ~/.myco/pre-update-snapshot.json --coordinate-groves
+myco daemon restore --input ~/.myco/pre-update-snapshot.json --coordinate-groves --verify-hub-migration
+```
+
+### Hub Removal Migration During Updates
+
+Handle Hub package removal during version updates:
+
+```bash
+# Update workflow with Hub cleanup
+if myco daemon check-hub-dependency --version-target "$NEW_VERSION"; then
+  echo "New version removes Hub dependency - preparing migration"
+  
+  # Capture Hub state before update
+  myco daemon export-hub-state --output ~/.myco/hub-migration.json
+  
+  # Update with Hub migration
+  myco daemon update --migrate-hub --hub-state ~/.myco/hub-migration.json
+  
+  # Verify Hub removal
+  myco daemon verify-hub-removal
+fi
 ```
 
 ### Grove-Wide Migration Execution
@@ -405,6 +589,11 @@ Global updates may require grove-wide migrations:
 // Grove-aware migration tasks in global daemon startup
 const pendingMigrations = await getGlobalPendingMigrations();
 for (const migration of pendingMigrations) {
+  // Check if migration includes Hub cleanup
+  if (migration.type === 'hub_removal') {
+    await executeHubRemovalMigration();
+  }
+  
   for (const grove of managedGroves) {
     await executeGroveMigration(migration, grove);
     await markGroveMigrationComplete(migration, grove);
@@ -450,11 +639,31 @@ process.on('SIGTERM', async () => {
   for (const grove of managedGroves) {
     await grove.cleanup();
   }
+  
+  // Clean up Hub migration artifacts if present
+  if (await hasHubArtifacts()) {
+    await cleanupHubArtifacts();
+  }
+  
   await database.close();
   await server.close();
   process.exit(0);
 });
 ```
+
+### TOML Configuration Performance
+
+**TOML re-parsing gotcha:** Avoid parsing TOML files on every HTTP request in grove coordination:
+
+```typescript
+// Wrong - causes grove coordination races
+const config = parseMycoToml(projectRoot); // Every request
+
+// Right - cache with TTL invalidation
+const cachedConfig = await getConfigWithCache(projectRoot, 30000);
+```
+
+**Performance impact**: TOML re-parsing on every request degrades daemon responsiveness and causes grove coordination timing issues.
 
 ### Grove-Global Runtime Coordination
 
@@ -473,8 +682,26 @@ for grove_runtime in ~/.myco/groves/*/runtime.command; do
 done
 ```
 
+### Hub Migration State Tracking
+
+**Hub removal gotcha:** Always verify Hub migration completion before removing Hub artifacts:
+
+```bash
+# Wrong - remove Hub without verification
+rm -rf ~/.myco/hub
+
+# Right - verify migration first
+if [ "$(jq -r '.hubMigrated' ~/.myco/daemon.json)" = "true" ]; then
+  rm -rf ~/.myco/hub
+else
+  echo "Hub migration not complete - preserving Hub artifacts"
+fi
+```
+
 **Grove coordination scope:** Global daemon port scanning must account for grove-specific coordination requirements and avoid interfering with grove-local processes.
 
 **Global Version-Sync Hazard:** Prevent infinite restart loops by ensuring grove runtime preferences are compatible with global daemon version-sync operations. Grove-global mismatches cause coordination failures and version-sync instability.
 
 **Grove State Synchronization:** The global daemon state (`.myco/daemon.json`) must stay synchronized with grove-specific configuration. Drift between global and grove state can cause coordination failures and health check inconsistencies.
+
+**Hub Dependency Removal:** Global daemon now handles all Hub functionality directly. Legacy Hub processes must be detected, migrated, and cleaned up during daemon lifecycle management to prevent port conflicts and state inconsistencies.

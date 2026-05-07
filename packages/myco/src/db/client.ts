@@ -7,6 +7,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { resolveDevNativeDeps } from '../runtime/native-deps.js';
 
@@ -17,6 +18,7 @@ export const SQLITE_DB_FILE = 'myco.db';
 
 /** Singleton Database instance. */
 let instance: Database | null = null;
+const scopedDatabase = new AsyncLocalStorage<Database>();
 
 function ensureNativeDepsResolved(): void {
   resolveDevNativeDeps();
@@ -53,11 +55,22 @@ export function openDatabase(dbPath?: string): Database {
 }
 
 /**
+ * Run work against an explicit Database connection. Query helpers that call
+ * `getDatabase()` inside the callback see this scoped connection instead of
+ * the process-wide singleton.
+ */
+export function withDatabase<T>(db: Database, fn: () => T): T {
+  return scopedDatabase.run(db, fn);
+}
+
+/**
  * Return the current Database instance.
  *
  * @throws if `initDatabase()` has not been called.
  */
 export function getDatabase(): Database {
+  const scoped = scopedDatabase.getStore();
+  if (scoped) return scoped;
   if (!instance) throw new Error(NOT_INITIALIZED_MSG);
   return instance;
 }

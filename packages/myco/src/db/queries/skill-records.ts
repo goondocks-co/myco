@@ -384,7 +384,7 @@ export function countSkillRecords(
 export function deleteSkillRecordCascade(
   idOrName: string,
   projectId?: string | null,
-): { id: string; name: string } | null {
+): { id: string; project_id: string | null; name: string } | null {
   const db = getDatabase();
   const record = getSkillRecord(idOrName, projectId) ?? getSkillRecordByName(idOrName, projectId);
   if (!record) return null;
@@ -405,5 +405,5 @@ export function deleteSkillRecordCascade(
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
   })();
 
-  return { id: record.id, name: record.name };
+  return { id: record.id, project_id: record.project_id, name: record.name };
 }

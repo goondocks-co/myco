@@ -12,6 +12,7 @@ import { insertNotification } from '@myco/db/queries/notifications.js';
 import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getType } from './registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { NotificationMode, NotificationLevel, CreateNotificationPayload } from './types.js';
 
 /**
@@ -28,6 +29,7 @@ export function notify(
   vaultDir: string | undefined,
   payload: CreateNotificationPayload,
   config?: MycoConfig,
+  options: { projectId?: GroveProjectId } = {},
 ): string | null {
   if (!vaultDir) return null;
 
@@ -63,7 +65,7 @@ export function notify(
       mode,
       link: payload.link ?? null,
       metadata: payload.metadata ? JSON.stringify(payload.metadata) : null,
-      project_id: resolveRequestContextForVault(vaultDir).projectId,
+      project_id: options.projectId ?? resolveRequestContextForVault(vaultDir).projectId,
     });
 
     return id;

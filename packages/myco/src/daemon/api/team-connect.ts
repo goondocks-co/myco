@@ -680,7 +680,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         enabled: config.enabled,
         worker_url: config.worker_url ?? null,
         has_team_key: hasTeamKey,
-        team_key: teamKey,
+        team_key: null,
         has_api_key: hasTeamKey,
         api_key: null,
         healthy,

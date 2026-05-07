@@ -8,8 +8,9 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { requestContextFromHttpHeaders } from '../tools/request-context.js';
+import { requestContextFromHttpHeaders, type MycoRequestContext } from '../tools/request-context.js';
 import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
+import { openDatabase, vaultDbPath, withDatabase, type Database } from '../db/client.js';
 
 const DEFAULT_STATUS = 200;
 
@@ -39,6 +40,7 @@ export class DaemonServer {
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
   private onRequest: (() => void) | null;
+  private requestDatabases = new Map<string, Database>();
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
@@ -82,10 +84,12 @@ export class DaemonServer {
       this.removeDaemonJson();
       if (this.server) {
         this.server.close(() => {
+          this.closeRequestDatabases();
           this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
           resolve();
         });
       } else {
+        this.closeRequestDatabases();
         resolve();
       }
     });
@@ -156,7 +160,7 @@ export class DaemonServer {
         const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
         const body = needsBody ? await readBody(req) : undefined;
         const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir);
-        const result = await match.handler({
+        const invokeHandler = () => match.handler({
           body,
           query: match.query,
           params: match.params,
@@ -164,6 +168,10 @@ export class DaemonServer {
           headers: req.headers,
           requestContext,
         });
+        const requestDb = this.databaseForRequestContext(requestContext);
+        const result = requestDb
+          ? await withDatabase(requestDb, invokeHandler)
+          : await invokeHandler();
         const status = result.status ?? DEFAULT_STATUS;
         if (Buffer.isBuffer(result.body)) {
           res.writeHead(status, { ...versionHeader, ...result.headers });
@@ -268,6 +276,35 @@ export class DaemonServer {
       res.end(JSON.stringify({ error: 'ui_dev_proxy_failed' }));
       return true;
     }
+  }
+
+  private databaseForRequestContext(context: MycoRequestContext): Database | null {
+    if (
+      !context.groveId
+      && path.resolve(context.databasePath) === path.resolve(vaultDbPath(this.vaultDir))
+    ) {
+      return null;
+    }
+    return this.databaseForRequestPath(context.databasePath);
+  }
+
+  private databaseForRequestPath(databasePath: string): Database {
+    const existing = this.requestDatabases.get(databasePath);
+    if (existing) return existing;
+    const db = openDatabase(databasePath);
+    this.requestDatabases.set(databasePath, db);
+    return db;
+  }
+
+  private closeRequestDatabases(): void {
+    for (const db of this.requestDatabases.values()) {
+      try {
+        db.close();
+      } catch {
+        // Best-effort shutdown cleanup.
+      }
+    }
+    this.requestDatabases.clear();
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {

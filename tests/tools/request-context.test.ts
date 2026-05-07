@@ -21,6 +21,7 @@ function withRegisteredProject<T>(fn: (args: {
   projectRoot: string;
   vaultDir: string;
   groveId: string;
+  groveSlug: string;
   projectId: GroveProjectId;
 }) => T): T {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-request-context-'));
@@ -43,7 +44,7 @@ function withRegisteredProject<T>(fn: (args: {
       projectRoot,
       bindingId: 'gbind-a',
     }, home);
-    return fn({ home, projectRoot, vaultDir, groveId: grove.id, projectId });
+    return fn({ home, projectRoot, vaultDir, groveId: grove.id, groveSlug: grove.slug, projectId });
   } finally {
     if (previousHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousHome;
@@ -104,6 +105,39 @@ describe('tool request context', () => {
       expect(resolved.groveId).toBe(groveId);
       expect(resolved.machineId).toBe('machine-1');
       expect(resolved.sessionId).toBe('sess-1');
+      expect(resolved.projectVaultDir).toBe(vaultDir);
+      expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
+      expect(resolved.source).toBe('headers');
+    });
+  });
+
+  it('resolves HTTP Grove context from project.toml headers when headers omit Grove id', () => {
+    withRegisteredProject(({ home, projectRoot, vaultDir, groveId, groveSlug, projectId }) => {
+      const fallbackRoot = path.join(path.dirname(projectRoot), 'fallback-project');
+      const fallbackVaultDir = resolveProjectVaultDir(fallbackRoot);
+      const fallbackProjectId = assertGroveProjectId(createProjectId());
+      fs.mkdirSync(fallbackVaultDir, { recursive: true });
+      saveProjectManifest(fallbackVaultDir, {
+        project: { id: fallbackProjectId, name: 'Fallback Project' },
+        grove: { binding_id: 'gbind-b', slug: groveSlug, mode: 'local' },
+      });
+      registerProjectInGrove(groveId, {
+        projectId: fallbackProjectId,
+        projectName: 'Fallback Project',
+        projectRoot: fallbackRoot,
+        bindingId: 'gbind-b',
+      }, home);
+
+      const resolved = requestContextFromHttpHeaders({
+        [REQUEST_CONTEXT_HEADERS.projectRoot]: projectRoot,
+        [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+        [REQUEST_CONTEXT_HEADERS.sessionId]: 'sess-http',
+      }, fallbackVaultDir);
+
+      expect(resolved.projectRoot).toBe(projectRoot);
+      expect(resolved.projectId).toBe(projectId);
+      expect(resolved.groveId).toBe(groveId);
+      expect(resolved.sessionId).toBe('sess-http');
       expect(resolved.projectVaultDir).toBe(vaultDir);
       expect(resolved.databasePath).toBe(resolveGroveDbPath(groveId));
       expect(resolved.source).toBe('headers');

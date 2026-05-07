@@ -18,6 +18,7 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
+import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -46,6 +47,7 @@ const UpdateStatusBody = z.object({
 export async function handleListNotifications(
   _vaultDir: string,
   query: Record<string, string>,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const status = query.status as 'unread' | 'read' | 'dismissed' | undefined;
   const domain = query.domain;
@@ -53,8 +55,9 @@ export async function handleListNotifications(
   const limit = query.limit ? Number(query.limit) : undefined;
   const offset = query.offset ? Number(query.offset) : undefined;
 
-  const items = listNotifications({ status, domain, mode, limit, offset });
-  const unreadCount = countNotifications('unread');
+  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const items = listNotifications({ status, domain, mode, project_id: projectId, limit, offset });
+  const unreadCount = countNotifications('unread', projectId);
 
   return {
     body: {
@@ -68,6 +71,7 @@ export async function handleListNotifications(
 export async function handleCreateNotification(
   vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const parsed = CreateNotificationBody.safeParse(body);
   if (!parsed.success) {
@@ -91,17 +95,18 @@ export async function handleCreateNotification(
     domain, type, title, message, link, metadata,
     level: parsed.data.level,
     mode: parsed.data.mode,
-  }, config);
+  }, config, requestContext ? { projectId: requestContext.projectId } : undefined);
 
   if (!id) {
     return { body: { ok: true, suppressed: true, reason: 'unknown' } };
   }
+  const projectId = rowProjectIdFromRequestContext(requestContext);
 
   return {
     body: {
       ok: true,
       id,
-      notification: parseNotificationRow(getNotification(id)!),
+      notification: parseNotificationRow(getNotification(id, projectId)!),
     },
   };
 }
@@ -111,13 +116,14 @@ export async function handleUpdateNotification(
   _vaultDir: string,
   id: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const parsed = UpdateStatusBody.safeParse(body);
   if (!parsed.success) {
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const updated = updateNotificationStatus(id, parsed.data.status);
+  const updated = updateNotificationStatus(id, parsed.data.status, rowProjectIdFromRequestContext(requestContext));
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
@@ -129,9 +135,10 @@ export async function handleUpdateNotification(
 export async function handleDismissAll(
   _vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain);
+  const count = dismissAllNotifications(domain, rowProjectIdFromRequestContext(requestContext));
   return { body: { ok: true, dismissed: count } };
 }
 
@@ -139,9 +146,10 @@ export async function handleDismissAll(
 export async function handleMarkAllRead(
   _vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain);
+  const count = markAllRead(domain, rowProjectIdFromRequestContext(requestContext));
   return { body: { ok: true, marked: count } };
 }
 
@@ -151,8 +159,8 @@ export async function handleGetRegistry(): Promise<RouteResponse> {
 }
 
 /** GET /api/notifications/unread-count — lightweight unread count endpoint. */
-export async function handleUnreadCount(): Promise<RouteResponse> {
-  return { body: { count: countNotifications('unread') } };
+export async function handleUnreadCount(requestContext?: MycoRequestContext): Promise<RouteResponse> {
+  return { body: { count: countNotifications('unread', rowProjectIdFromRequestContext(requestContext)) } };
 }
 
 // ---------------------------------------------------------------------------

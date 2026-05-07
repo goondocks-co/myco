@@ -15,13 +15,31 @@ This skill covers comprehensive procedures for deploying, maintaining, and opera
 
 - Cloudflare account with Workers Paid plan (required for D1 and Vectorize)
 - Wrangler CLI installed and authenticated (`wrangler auth login`)
-- Grove-based installation with global daemon (`~/.myco/groves/` architecture)
+- Grove-based installation with global daemon (`~/.myco/groves/` architecture) — **Grove installation is now required for team sync deployment**
 - For team sync: D1 database and Vectorize index provisioned
 - For collective: Multi-grove setup with proper scoping
 
 ## Procedure A: Team Sync D1/Vectorize Deployment
 
-Deploy and maintain the team sync infrastructure with Grove-aware schema migration handling. The team sync worker lives in `packages/myco-team/` as a standalone package.
+Deploy and maintain the team sync infrastructure with Grove-aware schema migration handling. The team sync worker lives in `packages/myco-team/` as a standalone package. **Grove installation is now mandatory** — team sync deployment cannot proceed without Grove architecture.
+
+### Grove-Only Installation Requirement
+
+**Critical requirement**: Team sync deployment requires Grove architecture:
+
+```bash
+# Verify Grove installation before team sync deployment
+if [ ! -d "$HOME/.myco/groves" ]; then
+  echo "Error: Team sync requires Grove installation"
+  echo "Install Grove first: myco init --grove"
+  exit 1
+fi
+
+# Check global daemon running with Grove coordination
+myco daemon status --grove-coordination
+```
+
+Team sync is **only supported in Grove environments**. Legacy standalone installations cannot deploy team sync infrastructure.
 
 ### Initial Deployment
 
@@ -104,6 +122,26 @@ npx wrangler vectorize query myco-embeddings \
 
 Embeddings now include grove metadata for cross-grove filtering and project isolation. Global daemon coordinates embedding sync across groves while maintaining proper access boundaries.
 
+### Grove Team Sync Visibility Metrics
+
+Monitor team sync deployment with Grove-scoped visibility:
+
+```bash
+# Check team sync health with Grove metrics
+curl "https://your-team-worker.workers.dev/health" \
+  -H "X-Grove-ID: user_primary"
+
+# Response includes Grove visibility metrics
+{
+  "status": "healthy",
+  "grove_id": "user_primary",
+  "sync_status": "active",
+  "last_sync_at": "2024-04-23T10:30:00Z",
+  "pending_operations": 0,
+  "grove_projects": ["proj_123", "proj_456"]
+}
+```
+
 ### Grove-Coordinated Backup and Restore
 
 ```bash
@@ -144,18 +182,26 @@ The cloud MCP server exposes grove-scoped read-only Myco tools over authenticate
 
 `myco_search` results include grove context and stable IDs with `retrieve` hints. Follow those hints with the owning entity tool for grove-appropriate access.
 
-### Grove-Scoped Auth Token Lifecycle
+### Grove-Scoped Credential Naming (Team Key vs MCP Access Token)
 
-Auth tokens are grove-scoped and distributed via Workers KV with grove metadata:
+**Updated credential terminology** for Grove team sync:
+- **Team Key**: Organization-level credential for team sync coordination (stored in organization settings)
+- **MCP Access Token**: Grove-scoped token for cloud MCP server access (distributed via Workers KV)
 
 ```bash
-# Check grove-scoped token in KV
+# Check Team Key in organization settings (not grove-scoped)
+curl https://your-team-worker.workers.dev/org/credentials \
+  -H "Authorization: Bearer $TEAM_KEY"
+
+# Check grove-scoped MCP Access Token in KV
 npx wrangler kv:key get "mcp_token:user_primary" --binding=MCP_AUTH
 
 # Verify token hash in health endpoint with grove context
 curl https://your-team-worker.workers.dev/health
 # Look for mcp_token_hash field with grove_id scoping
 ```
+
+**Critical distinction**: Team Keys enable organization-wide coordination while MCP Access Tokens provide grove-scoped API access.
 
 ### Grove Token Rotation Detection
 
@@ -166,6 +212,7 @@ Global daemon manages token rotation across groves via `/health` grove-aware pat
   "status": "healthy",
   "mcp_token_hash": "grove_abc123...",
   "grove_scope": "user_primary",
+  "team_key_status": "active",
   "timestamp": "2024-04-23T10:30:00Z"
 }
 ```
@@ -195,9 +242,9 @@ curl "https://your-team-worker.workers.dev/mcp/call" \
     "params": {"query": "test", "limit": 1}
   }'
 
-# Authenticated tier with grove-scoped token
+# Authenticated tier with grove-scoped MCP Access Token
 curl "https://your-team-worker.workers.dev/mcp/call" \
-  -H "Authorization: Bearer $GROVE_MCP_TOKEN" \
+  -H "Authorization: Bearer $GROVE_MCP_ACCESS_TOKEN" \
   -H "X-Grove-ID: user_primary" \
   -d '{
     "method": "myco_sessions",
@@ -227,6 +274,31 @@ Collective workers implement grove-aware four-tier scoping:
 - **Grove**: Grove-specific configuration
 - **Project**: Project-specific configuration (within grove)
 - **Team**: Organization-wide defaults (cross-grove when applicable)
+
+### Multi-Project UI Switcher Integration
+
+Grove collective workers now support multi-project UI switching:
+
+```javascript
+// Grove-aware project switcher in collective worker
+const groveProjects = await GROVE_SETTINGS.list({
+  prefix: `grove:${grove_id}:projects:`
+});
+
+// Project switcher UI integration
+const projectSwitcher = {
+  currentProject: await getCurrentGroveProject(grove_id),
+  availableProjects: groveProjects.keys.map(key => ({
+    id: key.metadata.project_id,
+    name: key.metadata.project_name,
+    grove_id: grove_id,
+    url: `/projects/${key.metadata.project_id}`
+  })),
+  switchUrl: `/api/grove/${grove_id}/switch-project`
+};
+```
+
+**UI integration pattern**: The collective worker provides project switching context that integrates with Grove UI for seamless multi-project navigation.
 
 ### Grove Config Isolation Patterns
 
@@ -356,12 +428,15 @@ The `/connect` endpoint embeds grove-scoped tokens directly in JSON responses:
 ```json
 {
   "mcp_server_url": "https://your-team-worker.workers.dev",
-  "auth_token": "grove_encrypted_token_here",
+  "mcp_access_token": "grove_encrypted_token_here",
+  "team_key_status": "active",
   "grove_id": "user_primary",
   "expires_at": "2024-04-30T10:30:00Z",
   "global_daemon_scope": true
 }
 ```
+
+**Updated field naming**: `mcp_access_token` (was `auth_token`) for clarity with Team Key distinction.
 
 ### Grove Rotation Detection Patterns
 
@@ -371,11 +446,16 @@ Global daemon polls `/health` and compares `mcp_token_hash` across grove context
 const healthResp = await fetch('/health', {
   headers: { 'X-Grove-ID': grove_id }
 });
-const {mcp_token_hash, grove_scope} = await healthResp.json();
+const {mcp_token_hash, grove_scope, team_key_status} = await healthResp.json();
 
 if (mcp_token_hash !== local_grove_hash || grove_scope !== local_grove_id) {
-  // Grove token rotated or scope changed, re-call /connect
-  await refreshGroveToken(grove_id);
+  // Grove MCP Access Token rotated or scope changed, re-call /connect
+  await refreshGroveMcpAccessToken(grove_id);
+}
+
+if (team_key_status !== 'active') {
+  // Team Key needs attention at org level
+  await notifyTeamKeyIssue();
 }
 ```
 
@@ -385,7 +465,7 @@ The hash includes grove context for rotation detection without exposing grove to
 
 ```javascript
 const groveTokenHash = crypto.subtle.digest('SHA-256',
-  new TextEncoder().encode(`${grove_id}:${global_daemon_id}:${raw_token}`)
+  new TextEncoder().encode(`${grove_id}:${global_daemon_id}:${mcp_access_token}`)
 );
 ```
 
@@ -394,7 +474,7 @@ const groveTokenHash = crypto.subtle.digest('SHA-256',
 When grove token rotation is detected, global daemon should:
 
 1. Call `/connect` with current `grove_id` and `machine_id`
-2. Extract new grove-scoped token and expiration from response
+2. Extract new grove-scoped MCP Access Token and expiration from response
 3. Update grove-local storage with new token and hash
 4. Retry failed MCP calls with new grove-scoped token
 5. Resume normal operation for affected grove

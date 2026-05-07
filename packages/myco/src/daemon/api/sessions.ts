@@ -1,5 +1,5 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
+import { listBatchesBySession, countBatchesBySession, getBatchById } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
@@ -98,7 +98,9 @@ export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteR
 export async function handleGetBatchActivities(req: RouteRequest): Promise<RouteResponse> {
   const batchId = Number(req.params.id);
   if (isNaN(batchId)) return { status: 400, body: { error: 'invalid_batch_id' } };
-  const activities = listActivitiesByBatch(batchId);
+  const projectId = rowProjectIdFromRequestContext(req.requestContext);
+  if (!getBatchById(batchId, projectId)) return { status: 404, body: { error: 'not_found' } };
+  const activities = listActivitiesByBatch(batchId, { project_id: projectId });
   return { body: activities };
 }
 

@@ -153,7 +153,7 @@ describe('createTeamHandlers.handleStatus', () => {
 
     expect(body.package_version).toBe(readPackageVersion('packages', 'myco', 'package.json'));
     expect(body.has_team_key).toBe(true);
-    expect(body.team_key).toBe('test-api-key');
+    expect(body.team_key).toBeNull();
     expect(body.has_api_key).toBe(true);
     expect(body.api_key).toBeNull();
     expect(body.local_team_package_version).toBe(teamPackageJson.version);

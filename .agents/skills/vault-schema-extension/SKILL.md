@@ -18,6 +18,7 @@ Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) an
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
 - Understand Grove architecture implications for multi-project data coordination
 - For Grove migrations: understand project-scoped row management and migration_import_journal patterns
+- **For legacy database migration**: Be aware of historical column renames (e.g., `agent_runs.runtime` was renamed to `agent_runs.harness` in v29) that require schema normalization before Grove import
 
 ## Procedure A: Adding a New Table
 
@@ -146,6 +147,35 @@ Rules:
 - **Backfill in the same migration**, before the migration completes. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole migration retries.
 - **One conceptual change per migration** — keep each migration atomic and describable in a single sentence.
 - Update the query functions' INSERT and SELECT statements and the TypeScript row interface to include the new column.
+
+### Column renames (legacy considerations)
+
+For historical context, some columns have been renamed over time (e.g., `agent_runs.runtime` → `agent_runs.harness` in v29). When working with legacy databases:
+
+```typescript
+{
+  version: 29,
+  name: 'rename_agent_runs_runtime_to_harness',
+  description: 'Rename agent_runs.runtime column to harness for consistency',
+  up: (db: Database) => {
+    // SQLite requires full table rebuild for column rename
+    db.exec(`
+      CREATE TABLE agent_runs_new (
+        id TEXT PRIMARY KEY,
+        harness TEXT NOT NULL,  -- renamed from 'runtime'
+        task_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      INSERT INTO agent_runs_new (id, harness, task_name, created_at)
+        SELECT id, runtime, task_name, created_at FROM agent_runs;
+      DROP TABLE agent_runs;
+      ALTER TABLE agent_runs_new RENAME TO agent_runs;
+    `);
+  }
+}
+```
+
+**Important**: Always update query functions and TypeScript interfaces when column names change to maintain consistency across the codebase.
 
 ### What never to do
 
@@ -621,7 +651,7 @@ Grove migration introduces `migration_import_journal` tables for tracking data i
 
 ### Grove Migration Contract Requirements
 
-**CRITICAL**: Grove activation must not import directly from legacy DBs with older schema versions. The migration contract requires a three-step normalization process:
+**CRITICAL**: Grove activation must not import directly from legacy DBs with older schema versions. The migration contract requires a three-step normalization process to handle historical column renames and schema evolution:
 
 ```bash
 # Step 1: Serialize the legacy DB (preserves exact state)
@@ -635,7 +665,17 @@ myco-cli migrate --vault normalized_import.db  # Brings to current schema
 grove-importer import --source normalized_import.db --target grove_db.db
 ```
 
-**Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema. Direct import from mismatched schema causes activation failures in production.
+**Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema with the updated `agent_runs.harness` column. Direct import from mismatched schema causes activation failures in production because the importer queries fail when they reference the renamed column.
+
+### Historical Schema Changes to Consider
+
+When working with legacy database migrations, be aware of these historical column renames:
+
+| Table | Old Column | New Column | Migration Version |
+|---|---|---|---|
+| `agent_runs` | `runtime` | `harness` | v29 |
+
+Always check that import scripts and query functions use the current column names (`agent_runs.harness`) rather than legacy names (`agent_runs.runtime`).
 
 ### Import Rekey Patterns
 
@@ -750,3 +790,4 @@ packages/grove/
 - **Import rekey patterns required for Grove migration** — when importing data from legacy project vaults, use rekey patterns to avoid ID collisions and maintain referential integrity.
 - **Grove schema initialization sequence** — follow v31-v32 initialization pattern when setting up Grove databases to ensure proper multi-project support.
 - **Grove migration contract enforcement** — never import directly from legacy DBs with older schemas. Always serialize legacy DB, run current migrations on normalized copy, then import from schema-aligned source to avoid activation failures.
+- **Historical column renames** — be aware of column renames like `agent_runs.runtime` → `agent_runs.harness` (v29) when working with legacy database imports or when updating query functions. Always use current column names in new code.

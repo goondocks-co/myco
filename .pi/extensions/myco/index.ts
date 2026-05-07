@@ -24,7 +24,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Type } from "@sinclair/typebox";
@@ -48,6 +48,12 @@ const MYCO_FETCH_TIMEOUT_MS = 3000;
 /** Max size of resume context injection to keep resumed sessions lean. */
 const RESUME_CONTEXT_MAX_CHARS = 4000;
 
+const REQUEST_CONTEXT_HEADERS = {
+  projectRoot: "x-myco-project-root",
+  projectId: "x-myco-project-id",
+  sessionId: "x-myco-session-id",
+} as const;
+
 // ---------------------------------------------------------------------------
 // Daemon HTTP transport
 // ---------------------------------------------------------------------------
@@ -69,6 +75,45 @@ function projectUsesGrove(directory: string): boolean {
   } catch {
     return false;
   }
+}
+
+function readTomlString(raw: string, section: string, key: string): string | null {
+  let currentSection: string | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const header = /^\[([^\]]+)\]$/.exec(trimmed);
+    if (header) {
+      currentSection = header[1];
+      continue;
+    }
+    if (currentSection !== section) continue;
+    const match = /^([A-Za-z0-9_-]+)\s*=\s*["']([^"']*)["']/.exec(trimmed);
+    if (match?.[1] === key) return match[2];
+  }
+  return null;
+}
+
+function buildRequestContextHeaders(directory: string): Record<string, string> {
+  try {
+    const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
+    const projectId = readTomlString(raw, "project", "id");
+    if (!projectId) return {};
+    return {
+      [REQUEST_CONTEXT_HEADERS.projectRoot]: resolve(directory),
+      [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+      ...(process.env.MYCO_SESSION_ID ? { [REQUEST_CONTEXT_HEADERS.sessionId]: process.env.MYCO_SESSION_ID } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function withRequestContextHeaders(directory: string, init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  for (const [key, value] of Object.entries(buildRequestContextHeaders(directory))) {
+    if (!headers.has(key)) headers.set(key, value);
+  }
+  return { ...init, headers };
 }
 
 function resolveDaemonStatePath(directory: string): string {
@@ -121,14 +166,15 @@ async function fetchFromDaemon(
 ): Promise<Response | null> {
   const port = getDaemonPort(directory);
   if (!port) return null;
+  const requestInit = withRequestContextHeaders(directory, init);
 
-  const first = await fetchWithTimeout(`http://localhost:${port}${urlPath}`, init);
+  const first = await fetchWithTimeout(`http://localhost:${port}${urlPath}`, requestInit);
   if (first) return first;
 
   // Retry once with a refreshed port — the daemon may have restarted.
   const freshPort = refreshDaemonPort(directory);
   if (!freshPort || freshPort === port) return null;
-  return fetchWithTimeout(`http://localhost:${freshPort}${urlPath}`, init);
+  return fetchWithTimeout(`http://localhost:${freshPort}${urlPath}`, requestInit);
 }
 
 async function postJson(

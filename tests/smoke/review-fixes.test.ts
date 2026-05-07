@@ -251,7 +251,7 @@ describe('Delete operations', () => {
     });
 
     const result = deleteSkillRecordCascade('skill-del');
-    expect(result).toEqual({ id: 'skill-del', name: 'test-skill' });
+    expect(result).toEqual({ id: 'skill-del', project_id: null, name: 'test-skill' });
 
     expect(getSkillRecord('skill-del')).toBeNull();
     expect(listLineageForSkill('skill-del')).toHaveLength(0);

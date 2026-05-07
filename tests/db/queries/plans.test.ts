@@ -5,7 +5,7 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import {
   upsertPlan,
@@ -19,6 +19,8 @@ import type { PlanInsert } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import { buildPlanId } from '@myco/plans/identity.js';
+import { getDatabase } from '@myco/db/client.js';
+import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -51,6 +53,7 @@ describe('plan query helpers', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
+  afterEach(() => { resetTeamContext(); });
 
   // ---------------------------------------------------------------------------
   // upsertPlan + getPlan
@@ -193,6 +196,23 @@ describe('plan query helpers', () => {
 
     it('returns null when the plan does not exist', () => {
       expect(deletePlan('missing-plan')).toBeNull();
+    });
+
+    it('includes project_id in team-sync delete tombstones', () => {
+      const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const data = makePlan({ id: 'plan-delete-scoped', project_id: projectId, title: 'Delete scoped' });
+      upsertPlan(data);
+      initTeamContext(true, 'machine-a');
+
+      deletePlan(data.id, projectId);
+
+      const row = getDatabase().prepare(
+        "SELECT payload FROM team_outbox WHERE table_name = 'plans' AND row_id = ? AND operation = 'delete'",
+      ).get(data.id) as { payload: string };
+      expect(JSON.parse(row.payload)).toMatchObject({
+        id: data.id,
+        project_id: projectId,
+      });
     });
   });
 

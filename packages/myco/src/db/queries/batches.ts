@@ -424,9 +424,14 @@ export function markBatchProcessed(
 /**
  * Fetch a single batch by id. Returns null if not found.
  */
-export function getBatchById(id: number): BatchRow | null {
+export function getBatchById(id: number, projectId?: string | null): BatchRow | null {
   const db = getDatabase();
-  const row = db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, projectId);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;
 }
 

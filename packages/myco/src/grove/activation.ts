@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, updateTeamConfig } from '@myco/config/loader.js';
 import {
   loadProjectManifest,
   saveProjectManifest,
@@ -89,8 +88,7 @@ interface ActivationMarker {
  * `.myco/.archive-<timestamp>/` so the directory stops looking like an
  * active vault while remaining recoverable.
  *
- * Files intentionally **kept** at the top of `.myco/` (per the Grove
- * filesystem-layout plan, plan_a68ded2846514640e58a026953bb1258):
+ * Files intentionally **kept** at the top of `.myco/` after activation:
  *
  * * `project.toml` — committed project identity
  * * `myco.yaml`, `local.yaml` — committed and per-machine config
@@ -270,7 +268,6 @@ export function activateProjectMigration(
         projectRoot,
         bindingId: identity.bindingId,
       }, mycoHome);
-      teamSyncDisabled = disableLegacyTeamSync(projectVaultDir);
       writeActivationMarker(markerPath, {
         status: 'activated',
         migration_id: migrationId,
@@ -507,14 +504,6 @@ function readIntegrityCheck(db: Database): string {
   const row = db.prepare('PRAGMA integrity_check').get() as Record<string, unknown> | undefined;
   const value = row ? Object.values(row)[0] : null;
   return typeof value === 'string' ? value : String(value ?? '');
-}
-
-function disableLegacyTeamSync(projectVaultDir: string): boolean {
-  if (!fs.existsSync(path.join(projectVaultDir, 'myco.yaml'))) return false;
-  const config = loadConfig(projectVaultDir);
-  if (!config.team.enabled) return false;
-  updateTeamConfig(projectVaultDir, { enabled: false });
-  return true;
 }
 
 /**

@@ -1303,13 +1303,13 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/database/integrity-check', async () => handleDatabaseIntegrityCheck(databaseManager));
 
   // --- Notification API routes ---
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query));
-  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body));
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query, req.requestContext));
+  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body, req.requestContext));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body, req.requestContext));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async () => handleUnreadCount());
+  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext));
 
   // --- Start server ---
   //

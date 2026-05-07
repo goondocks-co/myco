@@ -278,6 +278,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
                 tag,
                 content,
                 sessionId: event.session_id,
+                projectId: requestProjectId,
                 promptBatchId: batchId,
                 logger,
               });
@@ -343,6 +344,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             capturePlan({
               sourcePath: planFilePath,
               projectRoot: requestProjectRoot,
+              projectId: requestProjectId,
               content: planContent,
               sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,

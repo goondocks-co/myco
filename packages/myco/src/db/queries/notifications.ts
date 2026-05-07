@@ -6,6 +6,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds } from '@myco/constants.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { NotificationStatus, NotificationMode, NotificationLevel } from '@myco/notifications/types.js';
 
@@ -41,6 +42,7 @@ export interface NotificationInsert {
 /** Row shape returned from notifications queries. */
 export interface NotificationRow {
   id: string;
+  project_id: string | null;
   domain: string;
   type: string;
   level: string;
@@ -71,6 +73,7 @@ export function listNotifications(opts: {
   status?: NotificationStatus;
   domain?: string;
   mode?: NotificationMode;
+  project_id?: ProjectScope;
   limit?: number;
   offset?: number;
 } = {}): NotificationRow[] {
@@ -90,6 +93,7 @@ export function listNotifications(opts: {
     conditions.push('mode = ?');
     params.push(opts.mode);
   }
+  appendProjectCondition(conditions, params, opts.project_id);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -101,55 +105,84 @@ export function listNotifications(opts: {
 }
 
 /** Count notifications by status. */
-export function countNotifications(status?: NotificationStatus): number {
+export function countNotifications(status?: NotificationStatus, projectId?: ProjectScope): number {
   const db = getDatabase();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
   if (status) {
-    const row = db.prepare('SELECT COUNT(*) as count FROM notifications WHERE status = ?').get(status) as { count: number };
-    return row.count;
+    conditions.push('status = ?');
+    params.push(status);
   }
-  const row = db.prepare('SELECT COUNT(*) as count FROM notifications').get() as { count: number };
+  appendProjectCondition(conditions, params, projectId);
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const row = db.prepare(`SELECT COUNT(*) as count FROM notifications ${where}`).get(...params) as { count: number };
   return row.count;
 }
 
 /** Get a single notification by ID. */
-export function getNotification(id: string): NotificationRow | undefined {
+export function getNotification(id: string, projectId?: ProjectScope): NotificationRow | undefined {
   const db = getDatabase();
-  return db.prepare('SELECT * FROM notifications WHERE id = ?').get(id) as NotificationRow | undefined;
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, projectId);
+  const row = db.prepare(`SELECT * FROM notifications WHERE ${conditions.join(' AND ')}`).get(...params) as NotificationRow | null | undefined;
+  return row ?? undefined;
 }
 
 /** Update notification status (read, dismissed). */
-export function updateNotificationStatus(id: string, status: NotificationStatus): boolean {
+export function updateNotificationStatus(id: string, status: NotificationStatus, projectId?: ProjectScope): boolean {
   const db = getDatabase();
-  const result = db.prepare('UPDATE notifications SET status = ? WHERE id = ?').run(status, id);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, projectId);
+  const result = db.prepare(
+    `UPDATE notifications SET status = ? WHERE ${conditions.join(' AND ')}`,
+  ).run(status, ...params);
   return result.changes > 0;
 }
 
 /** Dismiss all notifications (or all within a domain). */
-export function dismissAllNotifications(domain?: string): number {
+export function dismissAllNotifications(domain?: string, projectId?: ProjectScope): number {
   const db = getDatabase();
+  const conditions = ["status != 'dismissed'"];
+  const params: unknown[] = [];
   if (domain) {
-    const result = db.prepare("UPDATE notifications SET status = 'dismissed' WHERE domain = ? AND status != 'dismissed'").run(domain);
-    return result.changes;
+    conditions.push('domain = ?');
+    params.push(domain);
   }
-  const result = db.prepare("UPDATE notifications SET status = 'dismissed' WHERE status != 'dismissed'").run();
+  appendProjectCondition(conditions, params, projectId);
+  const result = db.prepare(
+    `UPDATE notifications SET status = 'dismissed' WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   return result.changes;
 }
 
 /** Mark all unread notifications as read (or within a domain). */
-export function markAllRead(domain?: string): number {
+export function markAllRead(domain?: string, projectId?: ProjectScope): number {
   const db = getDatabase();
+  const conditions = ["status = 'unread'"];
+  const params: unknown[] = [];
   if (domain) {
-    const result = db.prepare("UPDATE notifications SET status = 'read' WHERE domain = ? AND status = 'unread'").run(domain);
-    return result.changes;
+    conditions.push('domain = ?');
+    params.push(domain);
   }
-  const result = db.prepare("UPDATE notifications SET status = 'read' WHERE status = 'unread'").run();
+  appendProjectCondition(conditions, params, projectId);
+  const result = db.prepare(
+    `UPDATE notifications SET status = 'read' WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   return result.changes;
 }
 
 /** Prune dismissed notifications older than the given threshold. */
-export function pruneOldNotifications(maxAgeSeconds: number = NOTIFICATION_PRUNE_AGE_SECONDS): number {
+export function pruneOldNotifications(
+  maxAgeSeconds: number = NOTIFICATION_PRUNE_AGE_SECONDS,
+  projectId?: ProjectScope,
+): number {
   const db = getDatabase();
   const cutoff = epochSeconds() - maxAgeSeconds;
-  const result = db.prepare("DELETE FROM notifications WHERE status = 'dismissed' AND created_at < ?").run(cutoff);
+  const conditions = ["status = 'dismissed'", 'created_at < ?'];
+  const params: unknown[] = [cutoff];
+  appendProjectCondition(conditions, params, projectId);
+  const result = db.prepare(`DELETE FROM notifications WHERE ${conditions.join(' AND ')}`).run(...params);
   return result.changes;
 }

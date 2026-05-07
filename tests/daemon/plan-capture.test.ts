@@ -458,6 +458,38 @@ describe('capturePlan', () => {
     expect(result.prompt_batch_id).toBe(batch.id);
   });
 
+  it('stores Grove project scope for captured file plans and transcript tags', () => {
+    const sessionId = 'test-capture-plan-project';
+    const now = epochNow();
+    const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    upsertSession({
+      id: sessionId,
+      project_id: projectId,
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+    });
+
+    const filePlan = capturePlan({
+      sourcePath: '/home/user/myproject/docs/plans/scoped.md',
+      content: '# Scoped Plan\n\nContent.',
+      sessionId,
+      projectId,
+    });
+    const taggedPlan = captureTaggedPlan({
+      tag: 'proposed_plan',
+      content: 'Tag content.',
+      sessionId,
+      projectId,
+    });
+
+    expect(filePlan.project_id).toBe(projectId);
+    expect(taggedPlan.project_id).toBe(projectId);
+    expect(getPlan(filePlan.id, projectId)?.project_id).toBe(projectId);
+    expect(getPlan(taggedPlan.id, projectId)?.project_id).toBe(projectId);
+  });
+
   it('falls back to filename as title when no heading present', () => {
     const sessionId = 'test-capture-plan-009';
     const now = epochNow();

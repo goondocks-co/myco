@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { handleMycoSkills } from '@myco/tools/skills.js';
 import { DaemonClient } from '@myco/hooks/client.js';
+import { REQUEST_CONTEXT_HEADERS, type MycoRequestContext } from '@myco/tools/request-context.js';
 
 function mockClient(data: unknown = null, ok = true): DaemonClient {
   return {
@@ -37,6 +38,33 @@ describe('myco_skills', () => {
 
     expect(result).toEqual(skill);
     expect(client.get).toHaveBeenCalledWith('/api/skill-records/demo');
+  });
+
+  it('forwards Grove request context headers to daemon reads', async () => {
+    const records = [{ id: 's1', name: 'demo', status: 'active' }];
+    const client = mockClient({ records });
+    const context: MycoRequestContext = {
+      projectRoot: '/workspace/project-a',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      projectVaultDir: '/workspace/project-a/.myco',
+      databasePath: '/tmp/grove-a/myco.db',
+      source: 'headers',
+    };
+
+    await handleMycoSkills({}, client, context);
+
+    expect(client.get).toHaveBeenCalledWith(
+      '/api/skill-records',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          [REQUEST_CONTEXT_HEADERS.projectId]: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          [REQUEST_CONTEXT_HEADERS.groveId]: 'grove-a',
+        }),
+      }),
+    );
   });
 
   it('url-encodes the id', async () => {

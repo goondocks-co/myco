@@ -274,6 +274,8 @@ export interface CapturePlanInput {
   sourcePath: string;
   /** Project root used to canonicalize relative-vs-absolute file capture. */
   projectRoot?: string;
+  /** Grove project scope for the captured row. */
+  projectId?: string | null;
   /** Full markdown content of the plan file. */
   content: string;
   /** Session ID that triggered the write event. */
@@ -299,6 +301,7 @@ export function capturePlan(input: CapturePlanInput): PlanRow {
   const normalizedSourcePath = normalizePlanSourcePath(input.sourcePath, input.projectRoot);
   return persistPlan({
     sessionId: input.sessionId,
+    projectId: input.projectId,
     content: input.content,
     logicalKey: buildPathPlanLogicalKey(normalizedSourcePath),
     sourcePath: normalizedSourcePath,
@@ -311,6 +314,7 @@ export interface CaptureTaggedPlanInput {
   tag: string;
   content: string;
   sessionId: string;
+  projectId?: string | null;
   promptBatchId?: number | null;
   logger?: Logger;
 }
@@ -318,6 +322,7 @@ export interface CaptureTaggedPlanInput {
 export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
   return persistPlan({
     sessionId: input.sessionId,
+    projectId: input.projectId,
     content: input.content,
     logicalKey: buildSessionTagPlanLogicalKey(input.sessionId, input.tag),
     sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${input.tag}`,

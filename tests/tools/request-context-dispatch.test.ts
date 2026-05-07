@@ -1,16 +1,17 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
-import { getDatabase } from '@myco/db/client.js';
+import { openDatabase, withDatabase, type Database } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { createMycoTools } from '@myco/tools/index.js';
-import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { resolveLegacyRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
-import { cleanTestDb, seedCanopyEntry, setupTestDb, teardownTestDb } from '../helpers/db.js';
+import { seedCanopyEntry } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const PROJECT_A = assertGroveProjectId(createProjectId());
@@ -25,39 +26,61 @@ function mockClient(): DaemonClient {
   } as unknown as DaemonClient;
 }
 
+function createFixture(projectId = PROJECT_A): {
+  db: Database;
+  vaultDir: string;
+  requestContext: MycoRequestContext;
+  cleanup: () => void;
+  withDb: <T>(fn: () => T) => T;
+} {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
+  const vaultDir = path.join(root, '.myco');
+  fs.mkdirSync(vaultDir, { recursive: true });
+  const db = openDatabase(path.join(vaultDir, 'myco.db'));
+  createSchema(db);
+  const requestContext = resolveLegacyRequestContext(vaultDir, {
+    projectRoot: root,
+    projectId,
+    groveId: 'grove-a',
+    machineId: 'machine-a',
+    source: 'explicit',
+  });
+
+  return {
+    db,
+    vaultDir,
+    requestContext,
+    withDb: (fn) => withDatabase(db, fn),
+    cleanup: () => {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
 describe('Myco tools request-context dispatch', () => {
-  beforeAll(() => { setupTestDb(); });
-  afterAll(() => { teardownTestDb(); });
-  beforeEach(() => { cleanTestDb(); });
-
   it('uses the resolved request context for project-scoped Canopy reads', async () => {
-    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
+    const fixture = createFixture();
     try {
-      writeCanopyMap({
-        project_id: PROJECT_A,
-        machine_id: 'machine-a',
-        content: '## Project A',
-        inputs_hash: 'hash-a',
-        token_estimate: 10,
-        generated_by_run_id: null,
+      fixture.withDb(() => {
+        writeCanopyMap({
+          project_id: PROJECT_A,
+          machine_id: 'machine-a',
+          content: '## Project A',
+          inputs_hash: 'hash-a',
+          token_estimate: 10,
+          generated_by_run_id: null,
+        });
+        writeCanopyMap({
+          project_id: PROJECT_B,
+          machine_id: 'machine-a',
+          content: '## Project B',
+          inputs_hash: 'hash-b',
+          token_estimate: 10,
+          generated_by_run_id: null,
+        });
       });
-      writeCanopyMap({
-        project_id: PROJECT_B,
-        machine_id: 'machine-a',
-        content: '## Project B',
-        inputs_hash: 'hash-b',
-        token_estimate: 10,
-        generated_by_run_id: null,
-      });
-
-      const requestContext = resolveLegacyRequestContext(vaultDir, {
-        projectRoot: '/workspace/project-a',
-        projectId: PROJECT_A,
-        groveId: 'grove-a',
-        machineId: 'machine-a',
-        source: 'explicit',
-      });
-      const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
+      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
       const result = await tools.callTool('myco_cortex', { op: 'canopy_map' }) as { content: string };
       const overrideAttempt = await tools.callTool('myco_cortex', {
@@ -68,33 +91,26 @@ describe('Myco tools request-context dispatch', () => {
       expect(result.content).toBe('## Project A');
       expect(overrideAttempt.content).toBe('## Project A');
     } finally {
-      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fixture.cleanup();
     }
   });
 
   it('uses the resolved request context for Canopy entry lookups', async () => {
-    const db = getDatabase();
-    seedCanopyEntry(db, {
-      project_id: PROJECT_A,
-      path: 'src/shared.ts',
-      llm_description: 'Project A entry',
-    });
-    seedCanopyEntry(db, {
-      project_id: PROJECT_B,
-      path: 'src/shared.ts',
-      llm_description: 'Project B entry',
-    });
-
-    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
+    const fixture = createFixture();
     try {
-      const requestContext = resolveLegacyRequestContext(vaultDir, {
-        projectRoot: '/workspace/project-a',
-        projectId: PROJECT_A,
-        groveId: 'grove-a',
-        machineId: 'machine-a',
-        source: 'explicit',
+      fixture.withDb(() => {
+        seedCanopyEntry(fixture.db, {
+          project_id: PROJECT_A,
+          path: 'src/shared.ts',
+          llm_description: 'Project A entry',
+        });
+        seedCanopyEntry(fixture.db, {
+          project_id: PROJECT_B,
+          path: 'src/shared.ts',
+          llm_description: 'Project B entry',
+        });
       });
-      const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
+      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
       const pathLookup = await tools.callTool('myco_cortex', {
         op: 'canopy_entry',
@@ -113,46 +129,40 @@ describe('Myco tools request-context dispatch', () => {
         error: 'Canopy entry is outside the current project context',
       });
     } finally {
-      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fixture.cleanup();
     }
   });
 
   it('uses Grove request context for in-process plan/session helpers', async () => {
     const now = Math.floor(Date.now() / 1000);
-    upsertSession({ id: 'sess-legacy', agent: 'codex', started_at: now, created_at: now });
-    upsertSession({ id: 'sess-a', project_id: PROJECT_A, agent: 'codex', started_at: now + 1, created_at: now + 1 });
-    upsertSession({ id: 'sess-b', project_id: PROJECT_B, agent: 'codex', started_at: now + 2, created_at: now + 2 });
-    upsertPlan({
-      id: 'plan-legacy',
-      logical_key: 'path:docs/plan.md',
-      title: 'Legacy',
-      created_at: now,
-    });
-    upsertPlan({
-      id: 'plan-a',
-      project_id: PROJECT_A,
-      logical_key: 'path:docs/plan.md',
-      title: 'Project A',
-      created_at: now + 1,
-    });
-    upsertPlan({
-      id: 'plan-b',
-      project_id: PROJECT_B,
-      logical_key: 'path:docs/plan.md',
-      title: 'Project B',
-      created_at: now + 2,
-    });
-
-    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
+    const fixture = createFixture();
     try {
-      const requestContext = resolveLegacyRequestContext(vaultDir, {
-        projectRoot: '/workspace/project-a',
-        projectId: PROJECT_A,
-        groveId: 'grove-a',
-        machineId: 'machine-a',
-        source: 'explicit',
+      fixture.withDb(() => {
+        upsertSession({ id: 'sess-legacy', agent: 'codex', started_at: now, created_at: now });
+        upsertSession({ id: 'sess-a', project_id: PROJECT_A, agent: 'codex', started_at: now + 1, created_at: now + 1 });
+        upsertSession({ id: 'sess-b', project_id: PROJECT_B, agent: 'codex', started_at: now + 2, created_at: now + 2 });
+        upsertPlan({
+          id: 'plan-legacy',
+          logical_key: 'path:docs/plan.md',
+          title: 'Legacy',
+          created_at: now,
+        });
+        upsertPlan({
+          id: 'plan-a',
+          project_id: PROJECT_A,
+          logical_key: 'path:docs/plan.md',
+          title: 'Project A',
+          created_at: now + 1,
+        });
+        upsertPlan({
+          id: 'plan-b',
+          project_id: PROJECT_B,
+          logical_key: 'path:docs/plan.md',
+          title: 'Project B',
+          created_at: now + 2,
+        });
       });
-      const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
+      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
       const sessions = await tools.callTool('myco_sessions', {}) as Array<{ id: string }>;
       const plans = await tools.callTool('myco_plans', {}) as Array<{ id: string }>;
@@ -160,21 +170,52 @@ describe('Myco tools request-context dispatch', () => {
       expect(sessions.map((row) => row.id)).toEqual(['sess-a']);
       expect(plans.map((row) => row.id)).toEqual(['plan-a']);
     } finally {
-      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fixture.cleanup();
+    }
+  });
+
+  it('uses each request context database path instead of the first opened DB', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fixtureA = createFixture(PROJECT_A);
+    const fixtureB = createFixture(PROJECT_B);
+    try {
+      fixtureA.withDb(() => {
+        upsertPlan({
+          id: 'plan-a',
+          project_id: PROJECT_A,
+          logical_key: 'path:docs/a.md',
+          title: 'Project A',
+          created_at: now,
+        });
+      });
+      fixtureB.withDb(() => {
+        upsertPlan({
+          id: 'plan-b',
+          project_id: PROJECT_B,
+          logical_key: 'path:docs/b.md',
+          title: 'Project B',
+          created_at: now,
+        });
+      });
+
+      const toolsA = createMycoTools(fixtureA.vaultDir, mockClient(), { requestContext: fixtureA.requestContext });
+      const toolsB = createMycoTools(fixtureB.vaultDir, mockClient(), { requestContext: fixtureB.requestContext });
+
+      const plansA = await toolsA.callTool('myco_plans', {}) as Array<{ id: string }>;
+      const plansB = await toolsB.callTool('myco_plans', {}) as Array<{ id: string }>;
+
+      expect(plansA.map((row) => row.id)).toEqual(['plan-a']);
+      expect(plansB.map((row) => row.id)).toEqual(['plan-b']);
+    } finally {
+      fixtureA.cleanup();
+      fixtureB.cleanup();
     }
   });
 
   it('uses Grove request context for in-process spore writes', async () => {
-    const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-context-dispatch-'));
+    const fixture = createFixture();
     try {
-      const requestContext = resolveLegacyRequestContext(vaultDir, {
-        projectRoot: '/workspace/project-a',
-        projectId: PROJECT_A,
-        groveId: 'grove-a',
-        machineId: 'machine-a',
-        source: 'explicit',
-      });
-      const tools = createMycoTools(vaultDir, mockClient(), { requestContext });
+      const tools = createMycoTools(fixture.vaultDir, mockClient(), { requestContext: fixture.requestContext });
 
       const result = await tools.callTool('myco_spores', {
         op: 'save',
@@ -182,12 +223,12 @@ describe('Myco tools request-context dispatch', () => {
         content: 'Project-scoped spore',
       }) as { id: string };
 
-      const row = getDatabase().prepare(
+      const row = fixture.db.prepare(
         'SELECT project_id FROM spores WHERE id = ?',
       ).get(result.id) as { project_id: string | null };
       expect(row.project_id).toBe(PROJECT_A);
     } finally {
-      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fixture.cleanup();
     }
   });
 });

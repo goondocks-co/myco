@@ -143,8 +143,11 @@ describe('opencode plugin runtime hooks', () => {
     const plugin = await MycoPlugin({ client, directory, worktree: directory });
     await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'ses-opencode-grove' } } });
 
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://localhost:32124/events/stop');
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-myco-project-root')).toBe(path.resolve(directory));
+    expect(headers.get('x-myco-project-id')).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(directory, { recursive: true, force: true });
   });

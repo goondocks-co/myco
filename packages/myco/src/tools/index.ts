@@ -84,7 +84,7 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SKILLS, async () => {
     const { handleMycoSkills } = await import('./skills.js');
     return {
-      handle: (input, client) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client),
+      handle: (input, client, context) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client, context),
       summarize: (input) => ({ op: input.op ?? 'list', id: input.id, status: input.status }),
     };
   }],
@@ -143,21 +143,23 @@ const HANDLERS = new Map<string, ToolLoader>([
 ]);
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
-  let dbReady = false;
   let logDirReady = false;
   const logDir = path.join(vaultDir, 'logs');
   let collectiveProbe: Promise<boolean> | null = null;
   const requestContext = options.requestContext ?? resolveRequestContextForVault(vaultDir);
 
-  async function ensureDb(): Promise<boolean> {
-    if (dbReady) return true;
+  async function runWithRequestDatabase<T>(fn: () => Promise<T>): Promise<T> {
+    const { openDatabase, withDatabase } = await import('@myco/db/client.js');
+    let db: ReturnType<typeof openDatabase>;
     try {
-      const { initDatabase } = await import('@myco/db/client.js');
-      initDatabase(requestContext.databasePath);
-      dbReady = true;
-      return true;
+      db = openDatabase(requestContext.databasePath);
     } catch {
-      return false;
+      throw new ToolError('tool_call_failed', 'Vault database is not available');
+    }
+    try {
+      return await withDatabase(db, fn);
+    } finally {
+      db.close();
     }
   }
 
@@ -291,30 +293,25 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     }
   }
 
-  /**
-   * Both Canopy ops need vault DB init before reading. When the DB isn't
-   * available we return the empty-map sentinel so callers see a typed
-   * "no data yet" payload rather than a hard error.
-   */
-  async function ensureCanopyDb(): Promise<{ ready: true } | { ready: false; emptyResult: unknown }> {
-    if (await ensureDb()) return { ready: true };
-    const { emptyCanopyMap } = await import('./canopy-map.js');
-    return { ready: false, emptyResult: emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.') };
-  }
-
   async function dispatchCanopyEntry(
     input: ToolInput,
     start: number,
     handleCortexCanopyEntry: typeof import('./cortex.js')['handleCortexCanopyEntry'],
   ): Promise<unknown> {
-    const guard = await ensureCanopyDb();
-    if (!guard.ready) return guard.emptyResult;
-    const result = await handleCortexCanopyEntry(
-      input as unknown as Parameters<typeof handleCortexCanopyEntry>[0],
-      requestContext,
-    );
-    logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: requestContext.projectId, path: input.path, duration_ms: Date.now() - start });
-    return result;
+    try {
+      return await runWithRequestDatabase(async () => {
+        const result = await handleCortexCanopyEntry(
+          input as unknown as Parameters<typeof handleCortexCanopyEntry>[0],
+          requestContext,
+        );
+        logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: requestContext.projectId, path: input.path, duration_ms: Date.now() - start });
+        return result;
+      });
+    } catch (err) {
+      if (!(err instanceof ToolError) || err.code !== 'tool_call_failed') throw err;
+      const { emptyCanopyMap } = await import('./canopy-map.js');
+      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
+    }
   }
 
   async function dispatchCanopyMap(
@@ -322,25 +319,30 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     start: number,
     handleCortexCanopyMap: typeof import('./cortex.js')['handleCortexCanopyMap'],
   ): Promise<unknown> {
-    const guard = await ensureCanopyDb();
-    if (!guard.ready) return guard.emptyResult;
-
-    const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
-    const projectId = requestContext.projectId;
-    const machineId = requestContext.machineId;
-    const sessionId = requestContext.sessionId;
-    const result = await handleCortexCanopyMap({ projectId, machineId });
-    if (sessionId) {
-      try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+    try {
+      return await runWithRequestDatabase(async () => {
+        const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
+        const projectId = requestContext.projectId;
+        const machineId = requestContext.machineId;
+        const sessionId = requestContext.sessionId;
+        const result = await handleCortexCanopyMap({ projectId, machineId });
+        if (sessionId) {
+          try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+        }
+        logActivity(TOOL_CORTEX, {
+          op: 'canopy_map',
+          is_empty: (result as { is_empty?: boolean }).is_empty === true,
+          token_estimate: (result as { token_estimate?: number }).token_estimate,
+          session_id: sessionId,
+          duration_ms: Date.now() - start,
+        });
+        return result;
+      });
+    } catch (err) {
+      if (!(err instanceof ToolError) || err.code !== 'tool_call_failed') throw err;
+      const { emptyCanopyMap } = await import('./canopy-map.js');
+      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
     }
-    logActivity(TOOL_CORTEX, {
-      op: 'canopy_map',
-      is_empty: (result as { is_empty?: boolean }).is_empty === true,
-      token_estimate: (result as { token_estimate?: number }).token_estimate,
-      session_id: sessionId,
-      duration_ms: Date.now() - start,
-    });
-    return result;
   }
 
   return {
@@ -364,17 +366,8 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
 
       const loader = HANDLERS.get(name);
       if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
-      // Tools that call services in-process (myco_plans save/list/get,
-      // myco_sessions list, myco_spores write ops) reach getDatabase()
-      // directly and would throw on a fresh CLI subprocess where the vault
-      // DB hasn't been opened yet. Ensure init for every dispatch — the
-      // first call opens the connection, subsequent calls are no-ops via
-      // the singleton in db/client.ts.
-      if (!await ensureDb()) {
-        throw new ToolError('tool_call_failed', 'Vault database is not available');
-      }
       const entry = await loader();
-      const result = await entry.handle(input, client, requestContext);
+      const result = await runWithRequestDatabase(() => entry.handle(input, client, requestContext));
       logActivity(name, {
         ...(entry.summarize?.(input, result) ?? {}),
         duration_ms: Date.now() - start,

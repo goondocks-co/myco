@@ -9,8 +9,6 @@ daemon:
   log_level: info
   log_retention_days: 30
   stale_session_threshold_ms: 3600000
-hub:
-  url: http://127.0.0.1:21000
 capture:
   transcript_paths: []
   plan_dirs:
