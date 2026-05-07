@@ -163,10 +163,15 @@ export function useTeamSyncSummary(enabled: boolean) {
 }
 
 export function useTeamDlq(enabled: boolean) {
+  // No auto-refetch: every fetch leases the messages with a new
+  // lease_id (5-min visibility window). Auto-refetching invalidates
+  // the lease_id the user sees in the row, so Retry/Discard hit the
+  // CF API with a stale lease and silently no-op. Refreshes are
+  // triggered explicitly after retry/discard actions via
+  // queryClient.invalidateQueries.
   return usePowerQuery<DlqListResponse | CfApiTokenMissing>({
     queryKey: ['team-dlq'],
     queryFn: ({ signal }) => fetchJson<DlqListResponse | CfApiTokenMissing>('/team/dlq', { signal }),
-    refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
     enabled,
     placeholderData: keepPreviousData,
