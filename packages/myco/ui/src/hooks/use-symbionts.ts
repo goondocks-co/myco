@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -25,8 +26,9 @@ interface SymbiontsResponse {
 /* ---------- Hook ---------- */
 
 export function useSymbionts() {
+  const queryKey = useProjectScopedQueryKey(['symbionts']);
   return useQuery<SymbiontsResponse>({
-    queryKey: ['symbionts'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SymbiontsResponse>('/symbionts', { signal }),
     staleTime: SYMBIONTS_STALE_TIME,
   });

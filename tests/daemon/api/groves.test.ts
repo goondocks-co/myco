@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
-import { createListGroveProjectsHandler, createListGrovesHandler } from '@myco/daemon/api/groves.js';
+import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from '@myco/daemon/api/groves.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 
@@ -55,7 +55,7 @@ describe('Grove discovery API', () => {
     expect(body.groves[0].projects[0].manifest_state).toBe('present');
   });
 
-  it('filters to served Groves when scope.groveIds is non-null (dev daemon mode)', async () => {
+  it('filters to served Groves when scope.groveIds is non-null (project-local daemon mode)', async () => {
     const dogfood = createGrove('Myco Dogfood');
     const otherGrove = createGrove('Default Projects');
     registerProjectInGrove(dogfood.id, {
@@ -82,6 +82,36 @@ describe('Grove discovery API', () => {
     expect(body.groves[0].name).toBe('Myco Dogfood');
   });
 
+  it('serves the full registry for the global daemon even when startup came from one Grove', async () => {
+    const startupGrove = createGrove('Myco Dogfood');
+    createGrove('Default Projects');
+
+    const scope = servedGroveScopeForDaemon({
+      daemonScope: 'global',
+      startupGroveId: startupGrove.id,
+    });
+    const result = await listNames(scope);
+
+    expect(scope.groveIds).toBeNull();
+    expect(result).toHaveLength(2);
+    expect(result).toContain('Myco Dogfood');
+    expect(result).toContain('Default Projects');
+  });
+
+  it('keeps legacy project-local daemon discovery scoped to the startup Grove', async () => {
+    const startupGrove = createGrove('Myco Dogfood');
+    createGrove('Default Projects');
+
+    const scope = servedGroveScopeForDaemon({
+      daemonScope: 'legacy-project',
+      startupGroveId: startupGrove.id,
+    });
+    const result = await listNames(scope);
+
+    expect(scope.groveIds).toEqual([startupGrove.id]);
+    expect(result).toEqual(['Myco Dogfood']);
+  });
+
   it('lists projects for one Grove by id', async () => {
     const grove = createGrove('Work');
     registerProjectInGrove(grove.id, {
@@ -101,3 +131,14 @@ describe('Grove discovery API', () => {
     expect(body.projects.map((project) => project.project_id)).toEqual(['proj_a']);
   });
 });
+
+async function listNames(scope: ReturnType<typeof servedGroveScopeForDaemon>): Promise<string[]> {
+  const result = await createListGrovesHandler(scope)({
+    body: undefined,
+    query: {},
+    params: {},
+    pathname: '/api/groves',
+  });
+  const body = result.body as { groves: Array<{ name: string }> };
+  return body.groves.map((grove) => grove.name);
+}

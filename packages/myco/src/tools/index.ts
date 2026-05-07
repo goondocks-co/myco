@@ -7,6 +7,7 @@ import {
   resolveRequestContextForVault,
   type MycoRequestContext,
 } from './request-context.js';
+import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
   COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_AGENT,
@@ -144,9 +145,9 @@ const HANDLERS = new Map<string, ToolLoader>([
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
   let logDirReady = false;
-  const logDir = path.join(vaultDir, 'logs');
   let collectiveProbe: Promise<boolean> | null = null;
   const requestContext = options.requestContext ?? resolveRequestContextForVault(vaultDir);
+  const logDir = resolveDaemonLogDir(vaultDir, { requestContext, env: process.env });
 
   async function runWithRequestDatabase<T>(fn: () => Promise<T>): Promise<T> {
     const { openDatabase, withDatabase } = await import('@myco/db/client.js');

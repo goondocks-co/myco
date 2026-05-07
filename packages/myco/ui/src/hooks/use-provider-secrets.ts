@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { deleteJson, fetchJson, putJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 const PROVIDER_SECRETS_QUERY_KEY = ['provider-secrets'] as const;
 const PROVIDERS_QUERY_KEY = ['providers'] as const;
@@ -19,8 +20,9 @@ export interface ProviderSecretsResponse {
 }
 
 export function useProviderSecrets() {
+  const queryKey = useProjectScopedQueryKey([...PROVIDER_SECRETS_QUERY_KEY]);
   return useQuery<ProviderSecretsResponse>({
-    queryKey: PROVIDER_SECRETS_QUERY_KEY,
+    queryKey,
     queryFn: ({ signal }) => fetchJson<ProviderSecretsResponse>('/providers/secrets', { signal }),
   });
 }

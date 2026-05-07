@@ -1,6 +1,26 @@
 import type { DatabaseMaintenanceManager } from '../database/manager.js';
 import { VacuumPrecheckError, VACUUM_ERROR_CODE } from '../database/types.js';
-import type { RouteResponse } from '../router.js';
+import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
+
+export interface DatabaseMaintenanceRouteDeps {
+  createManager(req: RouteRequest): DatabaseMaintenanceManager;
+}
+
+export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRouteDeps): {
+  handleDetails: RouteHandler;
+  handleOptimize: RouteHandler;
+  handleVacuum: RouteHandler;
+  handleReindex: RouteHandler;
+  handleIntegrityCheck: RouteHandler;
+} {
+  return {
+    handleDetails: (req) => handleDatabaseDetails(deps.createManager(req)),
+    handleOptimize: (req) => handleDatabaseOptimize(deps.createManager(req)),
+    handleVacuum: (req) => handleDatabaseVacuum(deps.createManager(req)),
+    handleReindex: (req) => handleDatabaseReindex(deps.createManager(req)),
+    handleIntegrityCheck: (req) => handleDatabaseIntegrityCheck(deps.createManager(req)),
+  };
+}
 
 export async function handleDatabaseDetails(
   manager: DatabaseMaintenanceManager,

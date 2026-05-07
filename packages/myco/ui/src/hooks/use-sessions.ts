@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, deleteJson, postJson } from '../lib/api';
 import { usePowerQuery } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -191,8 +192,9 @@ export function useSessionBatches(sessionId: string | undefined) {
 }
 
 export function useBatchActivities(batchId: number | undefined) {
+  const queryKey = useProjectScopedQueryKey(['batch-activities', batchId]);
   return useQuery<ActivityRow[]>({
-    queryKey: ['batch-activities', batchId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<ActivityRow[]>(`/batches/${batchId}/activities`, { signal }),
     enabled: batchId !== undefined,
@@ -201,8 +203,9 @@ export function useBatchActivities(batchId: number | undefined) {
 }
 
 export function useSessionAttachments(sessionId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['session-attachments', sessionId]);
   return useQuery<AttachmentRow[]>({
-    queryKey: ['session-attachments', sessionId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<AttachmentRow[]>(`/sessions/${sessionId}/attachments`, { signal }),
     enabled: sessionId !== undefined,
@@ -234,8 +237,9 @@ export function useCompleteSession() {
 }
 
 export function useSessionImpact(sessionId: string | null) {
+  const queryKey = useProjectScopedQueryKey(['session-impact', sessionId]);
   return useQuery<SessionImpact>({
-    queryKey: ['session-impact', sessionId],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SessionImpact>(`/sessions/${sessionId}/impact`, { signal }),
     enabled: sessionId !== null,
     staleTime: IMPACT_STALE_TIME,

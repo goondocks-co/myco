@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, putJson, postJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 import {
   PROVIDER_METADATA_BY_TYPE,
   getSupportedHarnessesForProviderType,
@@ -274,8 +275,9 @@ export interface UpdateTaskConfigPayload {
 
 /** Fetch the current config override for a task from myco.yaml. */
 export function useTaskConfig(taskId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['task-config', taskId]);
   return useQuery<TaskConfigResponse>({
-    queryKey: ['task-config', taskId],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<TaskConfigResponse>(`/agent/tasks/${taskId}/config`, { signal }),
     enabled: taskId !== undefined,
     staleTime: PROVIDERS_STALE_TIME,
@@ -284,8 +286,9 @@ export function useTaskConfig(taskId: string | undefined) {
 
 /** Fetch available providers and their models. */
 export function useProviders() {
+  const queryKey = useProjectScopedQueryKey(['providers']);
   return useQuery<ProvidersResponse>({
-    queryKey: ['providers'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<ProvidersResponse>('/providers', { signal }),
     staleTime: PROVIDERS_STALE_TIME,
   });

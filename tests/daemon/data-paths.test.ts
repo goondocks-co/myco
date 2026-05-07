@@ -5,9 +5,11 @@ import path from 'node:path';
 import { vaultDbPath } from '@myco/db/client.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveDaemonDataPaths } from '@myco/daemon/data-paths.js';
+import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
   GROVE_VECTORS_FILENAME,
   resolveGroveDbPath,
+  resolveServiceDir,
   resolveGroveVectorsPath,
 } from '@myco/grove/paths.js';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
@@ -55,6 +57,10 @@ describe('resolveDaemonDataPaths', () => {
     expect(paths.databasePath).toBe(vaultDbPath(vaultDir));
     expect(paths.vectorsPath).toBe(path.join(vaultDir, GROVE_VECTORS_FILENAME));
     expect(paths.requestContext.groveId).toBeNull();
+    expect(resolveDaemonLogDir(vaultDir, {
+      requestContext: paths.requestContext,
+      env: { MYCO_HOME: mycoHome },
+    })).toBe(path.join(vaultDir, 'logs'));
   });
 
   it('uses Grove data paths for a registered bound project', () => {
@@ -81,5 +87,9 @@ describe('resolveDaemonDataPaths', () => {
     expect(paths.requestContext.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(paths.requestContext.groveId).toBe(grove.id);
     expect(paths.requestContext.projectVaultDir).toBe(vaultDir);
+    expect(resolveDaemonLogDir(vaultDir, {
+      requestContext: paths.requestContext,
+      env: { MYCO_HOME: mycoHome },
+    })).toBe(path.join(resolveServiceDir(mycoHome), 'logs'));
   });
 });

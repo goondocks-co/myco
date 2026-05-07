@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import {
   projectPath,
   selectionKey,
@@ -66,4 +66,17 @@ export function useProjectPathBuilder(): (suffix?: string) => string {
   return useCallback((suffix = '') => (
     selection ? projectPath(selection, suffix) : suffix || '/'
   ), [selection]);
+}
+
+export function projectScopedQueryKey(
+  selection: ProjectSelection | null,
+  queryKey: QueryKey,
+): QueryKey {
+  if (!selection) return queryKey;
+  const [namespace, ...rest] = queryKey;
+  return [namespace, { projectSelection: selectionKey(selection) }, ...rest];
+}
+
+export function useProjectScopedQueryKey(queryKey: QueryKey): QueryKey {
+  return projectScopedQueryKey(useProjectSelection(), queryKey);
 }

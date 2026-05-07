@@ -10,6 +10,7 @@ import {
 } from '@myco/grove/registry.js';
 import { slugifyGroveName } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
+import type { DaemonServiceScope } from '@myco/daemon/service-state.js';
 
 export interface GroveProjectSummary {
   project_id: string;
@@ -40,12 +41,19 @@ export interface GrovesResponse {
 export interface ServedGroveScope {
   /**
    * Grove ids this daemon should advertise. `null` means "every Grove
-   * the global registry knows about" (the production-daemon model that
-   * serves the user's full Grove set). A populated array means single-
-   * Grove mode (e.g. the dogfood dev binary), and the API surfaces
-   * only those Groves to UI consumers like the project switcher.
+   * the global registry knows about" (the global daemon model that serves
+   * the user's full Grove set). A populated array is reserved for legacy
+   * project-local daemon mode.
    */
   groveIds: readonly string[] | null;
+}
+
+export function servedGroveScopeForDaemon(input: {
+  daemonScope: DaemonServiceScope;
+  startupGroveId: string | null;
+}): ServedGroveScope {
+  if (input.daemonScope === 'global') return { groveIds: null };
+  return { groveIds: input.startupGroveId ? [input.startupGroveId] : null };
 }
 
 export function createListGrovesHandler(scope: ServedGroveScope): RouteHandler {

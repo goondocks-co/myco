@@ -119,7 +119,11 @@ const ExternalLogBody = z.object({
 export function createLogIngestionHandler(logger: DaemonLogger): RouteHandler {
   return async (req: RouteRequest): Promise<RouteResponse> => {
     const { level, component, message, data } = ExternalLogBody.parse(req.body);
-    logger.log(level, LOG_KINDS.MCP_EVENT, message, { ...data, mcp_component: component });
+    logger.log(level, LOG_KINDS.MCP_EVENT, message, {
+      ...data,
+      mcp_component: component,
+      ...(req.requestContext?.projectId ? { project_id: req.requestContext.projectId } : {}),
+    });
     return { body: { ok: true } };
   };
 }

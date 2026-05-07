@@ -53,6 +53,7 @@ export function useUpdateStatus() {
     queryFn: ({ signal }) => fetchJson<UpdateStatus>('/update/status', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
+    contextFree: true,
   });
 }
 

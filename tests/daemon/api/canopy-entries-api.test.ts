@@ -2,22 +2,25 @@
  * Tests for the /canopy/entries daemon HTTP handlers (list, detail, reembed).
  *
  * The handlers are pure functions over a plain args object so they can be
- * called directly without standing up the HTTP server. The route layer is a
- * thin shim that pulls `project_id` from the daemon context and forwards
- * query/path params verbatim.
+ * called directly without standing up the HTTP server. The route layer stays
+ * thin but must pull `project_id` from each request context so Grove/project
+ * switches do not leak through the daemon's startup context.
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
+import type { RouteHandler, RouteRequest } from '@myco/daemon/router.js';
 import {
   handleCanopyEntriesList,
   handleCanopyEntryGet,
   handleCanopyEntryReembed,
   handleCanopyEntryRedescribe,
+  registerCanopyReadRoutes,
 } from '@myco/daemon/api/canopy-read.js';
 
 const PROJECT_ID = '/repo/myco';
+const SWITCHED_PROJECT_ID = '/repo/other';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 interface SeedOpts {
@@ -52,6 +55,16 @@ function seedTrio() {
   seedEntry({ path: 'src/b.ts', language: 'typescript', embedded: 0 });
   // c.py: python, described, embedded=0
   seedEntry({ path: 'c.py', language: 'python', description: 'describes c', embedded: 0 });
+}
+
+function routeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
+  return {
+    body: undefined,
+    query: {},
+    params: {},
+    pathname: '/api/canopy/entries',
+    ...overrides,
+  };
 }
 
 describe('handleCanopyEntriesList', () => {
@@ -225,6 +238,47 @@ describe('handleCanopyEntriesList', () => {
     });
     const res = await handleCanopyEntriesList({ project_id: PROJECT_ID });
     expect(res.total).toBe(3);
+  });
+});
+
+describe('registerCanopyReadRoutes', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => { cleanTestDb(); });
+
+  it('scopes entries routes to the request project instead of the daemon fallback project', async () => {
+    seedEntry({ path: 'fallback.ts', language: 'typescript', embedded: 0 });
+    seedCanopyEntry(getDatabase(), {
+      project_id: SWITCHED_PROJECT_ID,
+      path: 'switched.ts',
+      size_bytes: 0,
+      token_estimate: 0,
+      line_count: 0,
+      language: 'typescript',
+      exports_json: '[]',
+      imports_json: '[]',
+      mechanical_updated_at: epochNow(),
+      embedded: 0,
+    });
+
+    const routes = new Map<string, RouteHandler>();
+    registerCanopyReadRoutes({
+      registerRoute(method, pattern, handler) {
+        routes.set(`${method} ${pattern}`, handler);
+      },
+    }, {
+      resolveProjectId: (req) => req.requestContext?.projectId ?? PROJECT_ID,
+    });
+
+    const listHandler = routes.get('GET /api/canopy/entries');
+    expect(listHandler).toBeDefined();
+    const res = await listHandler!(routeRequest({
+      requestContext: { projectId: SWITCHED_PROJECT_ID } as RouteRequest['requestContext'],
+    }));
+
+    const body = res.body as { total: number; rows: Array<{ path: string }> };
+    expect(body.total).toBe(1);
+    expect(body.rows[0].path).toBe('switched.ts');
   });
 });
 

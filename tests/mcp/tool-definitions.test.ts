@@ -116,7 +116,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // OpenAI's strict tool schema validator rejects schemas that carry
   // oneOf/anyOf/allOf/enum/not at the top level. Anthropic's API rejects
   // the same shapes. The xor between source_path and plan_key is enforced
-  // by the daemon handler (zod refine in mcp-proxy.ts), so no top-level
+  // by the myco_plans handler's input validation, so no top-level
   // combinator is needed — and adding one crashes provider clients such
   // as opencode + GPT-5.
   it('no tool schema has oneOf/anyOf/allOf/not at the top level', () => {

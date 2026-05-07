@@ -10,7 +10,7 @@
 import { DaemonServer } from './server.js';
 import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
-import { DaemonLogger } from './logger.js';
+import { DaemonLogger, type Logger } from './logger.js';
 import { loadMergedConfig } from '../config/loader.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
@@ -51,7 +51,7 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
-import { createListGroveProjectsHandler, createListGrovesHandler } from './api/groves.js';
+import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from './api/groves.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -85,13 +85,7 @@ import {
   handleEmbeddingCleanOrphans,
   handleEmbeddingReembedStale,
 } from './api/embedding.js';
-import {
-  handleDatabaseDetails,
-  handleDatabaseOptimize,
-  handleDatabaseVacuum,
-  handleDatabaseReindex,
-  handleDatabaseIntegrityCheck,
-} from './api/database.js';
+import { createDatabaseMaintenanceHandlers } from './api/database.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
@@ -160,11 +154,13 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths } from './data-paths.js';
 import { GROVE_VECTORS_FILENAME, resolveGroveVectorsPath } from '../grove/paths.js';
+import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
 import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
   removeDaemonState,
+  resolveDaemonLogDir,
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from './service-state.js';
@@ -301,6 +297,19 @@ export async function reconcileExistingDaemon(
 // Main
 // ---------------------------------------------------------------------------
 
+function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
+  const addProject = (data?: Record<string, unknown>) => ({
+    ...data,
+    project_id: typeof data?.project_id === 'string' ? data.project_id : projectId,
+  });
+  return {
+    debug: (kind, message, data) => logger.debug(kind, message, addProject(data)),
+    info: (kind, message, data) => logger.info(kind, message, addProject(data)),
+    warn: (kind, message, data) => logger.warn(kind, message, addProject(data)),
+    error: (kind, message, data) => logger.error(kind, message, addProject(data)),
+  };
+}
+
 export async function main(): Promise<void> {
   // The vault always lives at `<projectRoot>/.myco/`. The daemon spawns
   // with cwd = projectRoot; resolveVaultDir walks up (worktree-aware) to
@@ -330,21 +339,8 @@ export async function main(): Promise<void> {
     extensions: config.capture.artifact_extensions,
   };
 
-  const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
-    level: config.daemon.log_level,
-  });
-
-  // When debug logging is on, surface per-turn tool_use / tool_result detail
-  // from the agent executor. The executor reads this env var directly because
-  // it has no logger handle. Used to diagnose turn-budget exhaustion (e.g.
-  // local-model rejection loops in skill-generate).
-  if (config.daemon.log_level === 'debug') {
-    process.env.MYCO_AGENT_DEBUG = '1';
-  }
-
   // --- Machine identity ---
   const machineId = getMachineId(vaultDir);
-  logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
   const dataPaths = resolveDaemonDataPaths(vaultDir, {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
@@ -353,6 +349,21 @@ export async function main(): Promise<void> {
     requestContext: dataPaths.requestContext,
     env: process.env,
   });
+  const logger = new DaemonLogger(resolveDaemonLogDir(vaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  }), {
+    level: config.daemon.log_level,
+  });
+  logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+
+  // When debug logging is on, surface per-turn tool_use / tool_result detail
+  // from the agent executor. The executor reads this env var directly because
+  // it has no logger handle. Used to diagnose turn-budget exhaustion (e.g.
+  // local-model rejection loops in skill-generate).
+  if (config.daemon.log_level === 'debug') {
+    process.env.MYCO_AGENT_DEBUG = '1';
+  }
 
   // Reconcile with any existing daemon for the resolved service. Grove-bound
   // projects use the per-user global daemon state; legacy projects keep the
@@ -481,22 +492,30 @@ export async function main(): Promise<void> {
   const daemonProjectId = dataPaths.requestContext.projectId;
   logger.setPersistFn((entry) => {
     const { timestamp, level, kind, component, message, ...rest } = entry;
+    const {
+      project_id: entryProjectId,
+      session_id: entrySessionId,
+      ...data
+    } = rest;
     insertLogEntry({
       timestamp,
       level,
       kind,
       component,
       message,
-      data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
-      session_id: (rest.session_id as string) ?? null,
-      project_id: daemonProjectId,
+      data: Object.keys(data).length > 0 ? JSON.stringify(data) : null,
+      session_id: (entrySessionId as string | undefined) ?? null,
+      project_id: typeof entryProjectId === 'string' ? assertGroveProjectId(entryProjectId) : daemonProjectId,
     });
   });
 
   // Reconcile log entries missed while daemon was down
   const lastLogTimestamp = getMaxTimestamp();
   if (lastLogTimestamp) {
-    const logDir = path.join(vaultDir, 'logs');
+    const logDir = resolveDaemonLogDir(vaultDir, {
+      requestContext: dataPaths.requestContext,
+      env: process.env,
+    });
     const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonProjectId);
     if (replayedCount > 0) {
       logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
@@ -512,6 +531,14 @@ export async function main(): Promise<void> {
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
   const databaseManager = new DatabaseMaintenanceManager(dataPaths.databasePath, vaultDir, logger);
+  const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
+    req.requestContext?.databasePath ?? dataPaths.databasePath,
+    req.requestContext?.projectVaultDir ?? vaultDir,
+    loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
+  );
+  const databaseHandlers = createDatabaseMaintenanceHandlers({
+    createManager: databaseManagerForRequest,
+  });
   const scopedEmbeddingManagers = new Map<string, {
     manager: EmbeddingManager;
     db: Database;
@@ -865,15 +892,10 @@ export async function main(): Promise<void> {
     server,
     configHash: configHashRef,
   }));
-  // Single-Grove mode: this daemon was launched against a specific
-  // project context (dev daemon, dogfood). Advertise only the bound
-  // Grove so the project switcher and `/groves` list don't surface
-  // Groves served by a different daemon. When the daemon is launched
-  // without a Grove pin (future production LaunchAgent path), the
-  // `groveId` is null and the API returns the full registry.
-  const groveScope = {
-    groveIds: dataPaths.requestContext.groveId ? [dataPaths.requestContext.groveId] : null,
-  };
+  const groveScope = servedGroveScopeForDaemon({
+    daemonScope: daemonService.scope,
+    startupGroveId: dataPaths.requestContext.groveId,
+  });
   server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
   server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
 
@@ -925,8 +947,8 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    resolveProjectId: () => dataPaths.requestContext.projectId,
-    resolveMachineId: () => getMachineId(vaultDir),
+    resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
+    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(vaultDir),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction, fire
@@ -1296,11 +1318,11 @@ export async function main(): Promise<void> {
     const runtime = getEmbeddingRuntime(req.requestContext);
     return handleEmbeddingReembedStale(runtime.manager);
   });
-  server.registerRoute('GET', '/api/database/details', async () => handleDatabaseDetails(databaseManager));
-  server.registerRoute('POST', '/api/database/optimize', async () => handleDatabaseOptimize(databaseManager));
-  server.registerRoute('POST', '/api/database/vacuum', async () => handleDatabaseVacuum(databaseManager));
-  server.registerRoute('POST', '/api/database/reindex', async () => handleDatabaseReindex(databaseManager));
-  server.registerRoute('POST', '/api/database/integrity-check', async () => handleDatabaseIntegrityCheck(databaseManager));
+  server.registerRoute('GET', '/api/database/details', databaseHandlers.handleDetails);
+  server.registerRoute('POST', '/api/database/optimize', databaseHandlers.handleOptimize);
+  server.registerRoute('POST', '/api/database/vacuum', databaseHandlers.handleVacuum);
+  server.registerRoute('POST', '/api/database/reindex', databaseHandlers.handleReindex);
+  server.registerRoute('POST', '/api/database/integrity-check', databaseHandlers.handleIntegrityCheck);
 
   // --- Notification API routes ---
   server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query, req.requestContext));

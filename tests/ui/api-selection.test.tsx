@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { fetchJson } from '../../packages/myco/ui/src/lib/api';
 import { setCurrentRequestSelection, type ProjectSelection } from '../../packages/myco/ui/src/lib/selection';
+import { projectScopedQueryKey } from '../../packages/myco/ui/src/hooks/use-project-selection';
 
 const selection: ProjectSelection = {
   grove: {
@@ -56,5 +57,14 @@ describe('UI API request context', () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers | undefined;
     expect(headers?.get('x-myco-grove-id')).toBeUndefined();
     expect(headers?.get('x-myco-project-id')).toBeUndefined();
+  });
+
+  it('adds selected project identity inside query keys while preserving namespace invalidation', () => {
+    expect(projectScopedQueryKey(selection, ['sessions', { status: 'active' }])).toEqual([
+      'sessions',
+      { projectSelection: 'grove-a:project-a' },
+      { status: 'active' },
+    ]);
+    expect(projectScopedQueryKey(null, ['sessions'])).toEqual(['sessions']);
   });
 });

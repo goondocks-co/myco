@@ -60,6 +60,13 @@ export function resolveDaemonServiceState(
   };
 }
 
+export function resolveDaemonLogDir(
+  vaultDir: string,
+  options: ResolveDaemonServiceStateOptions = {},
+): string {
+  return path.join(resolveDaemonServiceState(vaultDir, options).stateDir, 'logs');
+}
+
 export function readDaemonState(statePath: string): DaemonState | null {
   try {
     const info = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as Partial<DaemonState>;

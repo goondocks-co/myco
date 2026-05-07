@@ -73,23 +73,6 @@ describe('myco tool CLI', () => {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
-      if (req.url?.startsWith('/api/mcp/plans')) {
-        const url = new URL(req.url, 'http://127.0.0.1');
-        const id = url.searchParams.get('id') ?? 'plan-1';
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          plans: [{
-            id,
-            title: 'Large plan',
-            status: 'active',
-            progress: 'planned',
-            tags: [],
-            created_at: Date.now(),
-            content: 'x'.repeat(70_000),
-          }],
-        }));
-        return;
-      }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not_found' }));
     });
