@@ -87,10 +87,11 @@ export function createSessionContextHandler(deps: ContextDeps) {
         return { body: { text: '' } };
       }
 
+      const requestProjectId = req.requestContext?.projectId ?? null;
       let sourceRunId: string | null = null;
       let cortexContent = '';
       if (cortexEnabled) {
-        const snapshot = getCortexInstructionsSnapshot(config);
+        const snapshot = getCortexInstructionsSnapshot(config, requestProjectId);
         if (snapshot.content) {
           cortexContent = snapshot.content;
           sourceRunId = snapshot.sourceRunId;
@@ -101,7 +102,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         }
       }
 
-      const composed = composeSessionStartContext(config, cortexContent);
+      const composed = composeSessionStartContext(config, cortexContent, requestProjectId);
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
         p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,

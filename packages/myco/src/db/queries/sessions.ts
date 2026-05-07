@@ -610,6 +610,13 @@ export interface DeleteCascadeResult {
   deletedSporeIds: string[];
   /** Attachment file paths that were deleted from DB (needed for disk cleanup). */
   deletedAttachmentPaths: string[];
+  /**
+   * Project id of the deleted session, captured before the row was removed.
+   * Multi-Grove session-maintenance uses this to look up the registered
+   * project's vault dir and clean up the right project's session/spore
+   * markdown files; null when the session row was not found.
+   */
+  projectId: string | null;
 }
 
 /**
@@ -643,11 +650,16 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     counts: { prompts: 0, spores: 0, attachments: 0, graphEdges: 0, resolutionEvents: 0 },
     deletedSporeIds: [],
     deletedAttachmentPaths: [],
+    projectId: null,
   };
 
-  // Check session exists first
-  const exists = db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
-  if (!exists) return zeroCounts;
+  // Capture project_id and existence in one round-trip; we need it for
+  // post-transaction vault cleanup since the row will be gone by then.
+  const sessionRow = db.prepare(
+    `SELECT project_id FROM sessions WHERE id = ?`,
+  ).get(sessionId) as { project_id: string | null } | undefined;
+  if (!sessionRow) return zeroCounts;
+  const projectId = sessionRow.project_id;
 
   // Collect IDs/paths needed for post-transaction cleanup before deleting.
   // Spores can reference prompt_batches from a different session (cross-session
@@ -726,5 +738,6 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     ...result,
     deletedSporeIds: sporeIds,
     deletedAttachmentPaths: attachmentPaths,
+    projectId,
   };
 }

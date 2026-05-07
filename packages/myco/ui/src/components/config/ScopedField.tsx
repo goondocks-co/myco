@@ -32,6 +32,12 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
   commitOn?: 'change' | 'blur';
   /** Optional transform applied before writing (e.g. string-to-number for text inputs). */
   parse?: (v: T) => T;
+  /**
+   * Override the inactive-state scope badge. Use 'grove' for settings
+   * stored at project scope but applied across every project in the
+   * Grove (e.g. log retention, embedded against the shared Grove DB).
+   */
+  scopeBadgeOverride?: 'personal' | 'project' | 'grove';
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
@@ -44,6 +50,7 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   requiresRestart,
   commitOn = 'change',
   parse,
+  scopeBadgeOverride,
   children,
 }: ScopedFieldProps<P, T>) {
   const { effective: effectiveConfig, local, setField, resetField, promoteField } = useScopedConfig();
@@ -119,7 +126,7 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
             onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
           />
         ) : (
-          <ScopeBadge scope={lockScope === 'local' ? 'personal' : 'project'} />
+          <ScopeBadge scope={scopeBadgeOverride ?? (lockScope === 'local' ? 'personal' : 'project')} />
         )}
       </div>
       {children({ value: draft, onChange: handleChange, onBlur: handleBlur })}

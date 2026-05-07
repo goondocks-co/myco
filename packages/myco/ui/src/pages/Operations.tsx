@@ -20,6 +20,8 @@ import { Button } from '../components/ui/button';
 import { cn } from '../lib/cn';
 import { BackupCard } from '../components/operations/BackupCard';
 import { UpdateCard } from '../components/operations/UpdateCard';
+import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
+import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
 import { LogRow } from '../components/operations/LogRow';
 import type { Tab } from '../components/ui/tab-switcher';
 
@@ -712,6 +714,8 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 function SystemTab() {
   return (
     <div className="space-y-6">
+      <GrovesOverviewCard />
+      <ProjectsActivityCard />
       <UpdateCard />
       <BackupCard />
     </div>

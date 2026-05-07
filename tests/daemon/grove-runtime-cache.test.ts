@@ -71,4 +71,100 @@ describe('GroveRuntimeCache', () => {
     expect(cache.size()).toBe(0);
     expect(() => dbA.prepare('SELECT 1').get()).toThrow();
   });
+
+  it('pin prevents eviction even when capacity is exceeded', () => {
+    const cache = new GroveRuntimeCache({ capacity: 2 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+    const c = dbPath('c');
+
+    const dbA = cache.getDatabase(a);
+    cache.pin(a);
+    cache.getDatabase(b);
+    cache.getDatabase(c); // would normally evict A (LRU); pinned, so B goes instead.
+
+    expect(cache.size()).toBe(2);
+    expect(cache.getDatabase(a)).toBe(dbA);
+    cache.unpin(a);
+    cache.closeAll();
+  });
+
+  it('cache may temporarily exceed capacity when every entry is pinned', () => {
+    const cache = new GroveRuntimeCache({ capacity: 1 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+
+    cache.getDatabase(a);
+    cache.pin(a);
+    cache.getDatabase(b);
+    cache.pin(b);
+
+    expect(cache.size()).toBe(2);
+    cache.unpin(a);
+    // Next unpin/insert reclaims; nothing inserted, but unpin already triggered reclamation.
+    expect(cache.size()).toBe(1);
+    cache.unpin(b);
+    cache.closeAll();
+  });
+
+  it('withPinned releases the pin synchronously', () => {
+    const cache = new GroveRuntimeCache({ capacity: 1 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+
+    cache.getDatabase(a);
+    cache.withPinned(a, () => {
+      cache.getDatabase(b);
+      expect(cache.size()).toBe(2);
+    });
+    cache.getDatabase(b);
+    expect(cache.size()).toBe(1);
+    cache.closeAll();
+  });
+
+  it('withPinned releases the pin after an async fn settles', async () => {
+    const cache = new GroveRuntimeCache({ capacity: 1 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+
+    cache.getDatabase(a);
+    await cache.withPinned(a, async () => {
+      cache.getDatabase(b);
+      expect(cache.size()).toBe(2);
+    });
+    cache.getDatabase(b);
+    expect(cache.size()).toBe(1);
+    cache.closeAll();
+  });
+
+  it('withPinned releases the pin even if fn throws', () => {
+    const cache = new GroveRuntimeCache({ capacity: 1 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+
+    cache.getDatabase(a);
+    expect(() =>
+      cache.withPinned(a, () => {
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+    cache.getDatabase(b);
+    expect(cache.size()).toBe(1);
+    cache.closeAll();
+  });
+
+  it('balanced pin/unpin pairs leave eviction free to remove the entry', () => {
+    const cache = new GroveRuntimeCache({ capacity: 1 });
+    const a = dbPath('a');
+    const b = dbPath('b');
+
+    cache.getDatabase(a);
+    cache.pin(a);
+    cache.pin(a);
+    cache.unpin(a);
+    cache.unpin(a);
+    cache.getDatabase(b); // should evict A now that all pins are released
+    expect(cache.size()).toBe(1);
+    cache.closeAll();
+  });
 });

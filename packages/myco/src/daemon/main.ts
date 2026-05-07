@@ -86,6 +86,9 @@ import {
   handleEmbeddingReembedStale,
 } from './api/embedding.js';
 import { createDatabaseMaintenanceHandlers } from './api/database.js';
+import { createMaintenanceHandlers } from './api/maintenance.js';
+import { createProjectsActivityHandler } from './api/projects-activity.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
@@ -119,6 +122,13 @@ import {
 import { registerScheduledTasks } from './task-scheduling.js';
 import { initDatabase, closeDatabase, getDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
+import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
+import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
+import {
+  ProjectPowerStateTracker,
+  readProjectActivitySeed,
+} from './project-power-state.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -171,6 +181,8 @@ export {
 } from './event-handlers.js';
 import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import { MS_PER_DAY } from '../constants.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import {
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_STALE_GRACE_PERIOD_MS,
@@ -310,6 +322,43 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
   };
 }
 
+/**
+ * Fan out canopy initial-populate across every registered project on
+ * boot. Cold projects (no recent activity) defer to their next
+ * SessionStart's delta scan so idle Groves don't pay a full-scan cost
+ * for projects nobody has used in weeks. Errors per project are isolated.
+ */
+async function runInitialCanopyPopulateAcrossProjects(
+  cache: GroveRuntimeCache,
+  logger: DaemonLogger,
+  machineId: string,
+  registry: CanopyJobsRegistry,
+  liveConfig: { current: MycoConfig },
+): Promise<void> {
+  try {
+    const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
+    const cutoffSeconds = thresholdDays > 0
+      ? Math.floor((Date.now() - thresholdDays * MS_PER_DAY) / 1000)
+      : 0;
+    await forEachRegisteredProject(
+      cache,
+      logger,
+      async ({ databasePath, projectId, projectRoot, grove, db }) => {
+        if (cutoffSeconds > 0 && !isProjectActive(db, projectId, cutoffSeconds)) {
+          // Cold project — let SessionStart trigger when the user returns.
+          return;
+        }
+        await registry.initialPopulate({ databasePath, projectId, projectRoot, groveId: grove.id });
+      },
+      { machineId },
+    );
+  } catch (err) {
+    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate fan-out failed', {
+      error: errorMessage(err),
+    });
+  }
+}
+
 export async function main(): Promise<void> {
   // The vault always lives at `<projectRoot>/.myco/`. The daemon spawns
   // with cwd = projectRoot; resolveVaultDir walks up (worktree-aware) to
@@ -393,7 +442,7 @@ export async function main(): Promise<void> {
     logger.debug(LOG_KINDS.DAEMON_START, 'npm global prefix resolved', { prefix: globalPrefix });
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   }
 
@@ -427,10 +476,14 @@ export async function main(): Promise<void> {
   const db = initDatabase(dataPaths.databasePath);
   createSchema(db, machineId);
   registerBuiltinDomains();
+  // Boot-DB sweep only — the Grove fan-out for any other registered
+  // Groves runs after `runtimeCache` is built (see "interrupt stale runs
+  // across registered Groves" below).
   const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed');
   if (interruptedRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
       count: interruptedRuns,
+      grove_id: dataPaths.requestContext.groveId,
     });
   }
 
@@ -468,7 +521,7 @@ export async function main(): Promise<void> {
               to_version: raw.to_version,
               local_update_ran: raw.local_update_ran ?? false,
             },
-          });
+          }, undefined, { scope: 'daemon' });
 
           logger.info(LOG_KINDS.DAEMON_START, 'Version sync restart detected', {
             from: raw.from_version,
@@ -479,7 +532,7 @@ export async function main(): Promise<void> {
       }
     } catch (err) {
       logger.warn(LOG_KINDS.DAEMON_START, 'Failed to read restart-reason file', {
-        error: (err as Error).message,
+        error: errorMessage(err),
       });
     }
   }
@@ -530,7 +583,6 @@ export async function main(): Promise<void> {
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
-  const databaseManager = new DatabaseMaintenanceManager(dataPaths.databasePath, vaultDir, logger);
   const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
     req.requestContext?.databasePath ?? dataPaths.databasePath,
     req.requestContext?.projectVaultDir ?? vaultDir,
@@ -540,24 +592,33 @@ export async function main(): Promise<void> {
     createManager: databaseManagerForRequest,
   });
   const runtimeCache = new GroveRuntimeCache();
+  /**
+   * Build a per-Grove embedding runtime for any DB handle the runtime
+   * cache opens. Used both by Phase-1 power-job fan-out (one tick body
+   * per Grove) and by per-request HTTP handlers below. The vectors file
+   * is co-located with the DB (both Grove home and legacy vault layouts
+   * follow that convention).
+   */
+  const buildGroveEmbeddingRuntime = (db: Database, databasePath: string) => {
+    const scopedVectorsPath = path.join(path.dirname(databasePath), 'vectors.db');
+    const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
+    return {
+      vectorStore: scopedVectorStore,
+      embeddingManager: new EmbeddingManager(
+        scopedVectorStore,
+        embeddingProvider,
+        new SqliteRecordSource(db),
+        logger,
+      ),
+    };
+  };
   const getEmbeddingRuntime = (requestContext?: MycoRequestContext): { manager: EmbeddingManager; db?: Database } => {
     if (!requestContext) return { manager: embeddingManager };
     const scopedVectorsPath = resolveVectorsPathForRequestContext(requestContext);
     if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
       return { manager: embeddingManager };
     }
-    const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, (db) => {
-      const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
-      return {
-        vectorStore: scopedVectorStore,
-        embeddingManager: new EmbeddingManager(
-          scopedVectorStore,
-          embeddingProvider,
-          new SqliteRecordSource(db),
-          logger,
-        ),
-      };
-    });
+    const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, buildGroveEmbeddingRuntime);
     return { manager: entry.embeddingManager!, db: entry.db };
   };
 
@@ -569,7 +630,7 @@ export async function main(): Promise<void> {
     await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
     logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
-    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: errorMessage(err) });
   }
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
@@ -601,7 +662,7 @@ export async function main(): Promise<void> {
       });
     }
   } catch (err) {
-    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: errorMessage(err) });
   }
 
   // Resolve dist/ui/ from the package root. Two candidate origins:
@@ -644,6 +705,21 @@ export async function main(): Promise<void> {
     activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
+  });
+
+  // Per-project power state. Pre-Grove, each project ran in its own
+  // daemon with its own PowerManager. With one global daemon hosting
+  // many projects, each project still needs its own active/idle/sleep/
+  // deep_sleep machine — the user expects symbionts on project B to
+  // keep running while they view project A. The global PowerManager
+  // above still drives Grove-level housekeeping (embedding-reconcile,
+  // backup, …); per-project state is consulted by scheduled-task
+  // dispatch.
+  const mycoHome = resolveMycoHome();
+  const projectStateTracker = new ProjectPowerStateTracker({
+    idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
+    sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
+    deepSleepThresholdMs: POWER_DEEP_SLEEP_THRESHOLD_MS,
   });
 
   // Tracks fire-and-forget Cortex runs so daemon shutdown can await them
@@ -709,6 +785,7 @@ export async function main(): Promise<void> {
   const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor,
     server, powerManager, machineId, logger, liveConfig, vaultDir,
+    projectStateTracker,
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
@@ -727,6 +804,7 @@ export async function main(): Promise<void> {
     reconcileSession: reconciler.reconcileSession,
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
+    projectStateTracker,
   });
   server.registerRoute('POST', '/events', eventDispatcher);
 
@@ -819,7 +897,11 @@ export async function main(): Promise<void> {
     }
   });
 
-  let scheduledTaskKicker: { kick: (taskName: string) => void } = { kick: () => {} };
+  let scheduledTaskKicker: {
+    kick: (taskName: string, target?: { groveId: string; projectId: GroveProjectId }) => void;
+  } = {
+    kick: () => {},
+  };
 
   async function syncScheduledTasks() {
     scheduledTaskKicker = await registerScheduledTasks(powerManager, {
@@ -829,6 +911,10 @@ export async function main(): Promise<void> {
       logger,
       liveConfig,
       getTeamClient: () => teamSync.getTeamClient(),
+      cache: runtimeCache,
+      mycoHome,
+      machineId,
+      projectStateTracker,
     });
   }
 
@@ -981,14 +1067,14 @@ export async function main(): Promise<void> {
 
       // runAgent inserts the agent_runs row synchronously before its first
       // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, requestContext.projectId);
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
       // they don't vanish.
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-map regenerate threw', {
-          error: (err as Error).message ?? String(err),
+          error: errorMessage(err),
         });
       });
 
@@ -1028,11 +1114,11 @@ export async function main(): Promise<void> {
         logger,
       });
 
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, requestContext.projectId);
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
-          error: (err as Error).message ?? String(err),
+          error: errorMessage(err),
         });
       });
 
@@ -1139,13 +1225,23 @@ export async function main(): Promise<void> {
   }));
 
   // --- Backup routes ---
-  const backupHandlers = createBackupHandlers({ db, machineId, vaultDir, liveConfig });
+  const backupHandlers = createBackupHandlers({
+    bootDb: db,
+    bootVaultDir: vaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+    cache: runtimeCache,
+    machineId,
+    liveConfig,
+  });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
-  const backupConfigHandlers = createBackupConfigHandlers({ vaultDir });
+  const backupConfigHandlers = createBackupConfigHandlers({
+    vaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+  });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
   server.registerRoute('PUT', '/api/backup/config', async (req) => {
     const result = await backupConfigHandlers.handlePutBackupConfig(req);
@@ -1318,6 +1414,32 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/database/reindex', databaseHandlers.handleReindex);
   server.registerRoute('POST', '/api/database/integrity-check', databaseHandlers.handleIntegrityCheck);
 
+  // --- Multi-Grove operator surface ---
+  //
+  // /api/maintenance/summary aggregates per-Grove backup, optimize,
+  // integrity, and embedding-pending status into a single payload so
+  // the Operations dashboard renders a multi-Grove overview without
+  // fanning out per-Grove HTTP calls itself.
+  // /api/groves/:id/maintenance returns one Grove's full status with
+  // 404 on unknown id (UI distinguishes "Grove gone" from "Grove broken").
+  // /api/projects/activity returns daemon-global active vs cold project
+  // status backed by the same window the scheduler uses.
+  const maintenanceHandlers = createMaintenanceHandlers({
+    logger,
+    liveConfig,
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+  });
+  server.registerRoute('GET', '/api/maintenance/summary', maintenanceHandlers.handleSummary);
+  server.registerRoute('GET', '/api/groves/:id/maintenance', maintenanceHandlers.handleGroveMaintenance);
+
+  const projectsActivityHandler = createProjectsActivityHandler({
+    logger,
+    liveConfig,
+    cache: runtimeCache,
+  });
+  server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
+
   // --- Notification API routes ---
   server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query, req.requestContext));
   server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body, req.requestContext));
@@ -1325,7 +1447,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body, req.requestContext));
   server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body, req.requestContext));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext));
+  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
 
   // --- Start server ---
   //
@@ -1384,11 +1506,27 @@ export async function main(): Promise<void> {
     import('../symbionts/installer.js'),
   ]).catch((err) => {
     logger.warn(LOG_KINDS.DAEMON_START, 'Pre-warm of dynamic imports failed', {
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   });
 
   // -- Dynamic task scheduling --
+  // Seed the per-project power state tracker from durable state across
+  // every Grove. Without this, a daemon restart collapses every project
+  // to `deep_sleep` for 90 minutes after boot — dropping warm projects
+  // out of `runIn: ['active', 'idle', 'sleep']` task lists until a fresh
+  // session or prompt arrives. Best-effort: an empty seed is fine on
+  // first launch; recordActivity hooks below will populate live.
+  try {
+    await forEachGrove(runtimeCache, logger, ({ grove, db }) => {
+      projectStateTracker.seed(readProjectActivitySeed(db, grove.id));
+    });
+  } catch (err) {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Project power-state seed failed', {
+      error: errorMessage(err),
+    });
+  }
+
   // Registered first so its kicker is available as a normal dep when
   // power jobs register below.
   await syncScheduledTasks();
@@ -1398,33 +1536,65 @@ export async function main(): Promise<void> {
   // populate or recovery scan drains immediately on the next compatible
   // tick instead of waiting one full canopy-describe interval.
   const powerJobs = registerPowerJobs(powerManager, {
-    embeddingManager,
     registry,
     logger,
     liveConfig,
-    db,
     machineId,
-    vaultDir,
-    projectRoot,
-    projectId: dataPaths.requestContext.projectId,
-    databaseManager,
-    onCanopyMassAdd: () => scheduledTaskKicker.kick('canopy-describe'),
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    onCanopyMassAdd: (groveId, projectId) =>
+      scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
+    daemonVaultDir: vaultDir,
   });
   teamSync.registerFlushJob(powerManager);
 
-  // Wire the canopy delta runner into the session-register path so each
-  // SessionStart triggers a fire-and-forget refresh. The runner debounces.
-  (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
+  // Wire the project-keyed canopy registry into the session-register path.
+  // Each SessionStart looks up (or materializes) the right project's runner
+  // and triggers a fire-and-forget delta refresh; the runner debounces.
+  (sessionLifecycleDeps as {
+    canopyRegistry?: typeof powerJobs.canopy.registry;
+  }).canopyRegistry = powerJobs.canopy.registry;
 
-  // Initial canopy populate runs in the background only when the table is
-  // empty. On a fresh vault the scan adds every file (well above the
-  // mass-add threshold), so onCanopyMassAdd kicks canopy-describe and
-  // descriptions start draining on the next tick.
-  powerJobs.canopy.runInitialPopulate().catch((err) => {
-    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
-      error: (err as Error).message,
-    });
-  });
+  // Initial canopy populate fans out across every registered project. The
+  // populate is a no-op for projects that already have canopy rows; on a
+  // fresh vault the first scan adds every file (well above the mass-add
+  // threshold), so onCanopyMassAdd kicks canopy-describe and descriptions
+  // start draining on the next tick.
+  void runInitialCanopyPopulateAcrossProjects(
+    runtimeCache,
+    logger,
+    machineId,
+    powerJobs.canopy.registry,
+    liveConfig,
+  );
+
+  // Fan markRunningRunsInterrupted across every registered Grove so a
+  // crash on Grove A doesn't leave Grove B's runs hanging in `running`.
+  // Boot-DB sweep already ran above; this catches the rest.
+  void (async () => {
+    try {
+      const { markRunningRunsInterrupted: markStale } = await import('../db/queries/runs.js');
+      await forEachGrove(
+        runtimeCache,
+        logger,
+        ({ grove }) => {
+          if (grove.id === dataPaths.requestContext.groveId) return;
+          const count = markStale('Daemon restarted before the run completed');
+          if (count > 0) {
+            logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
+              count,
+              grove_id: grove.id,
+            });
+          }
+        },
+        { jobName: 'mark-stale-running-runs' },
+      );
+    } catch (err) {
+      logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to fan stale-run sweep across Groves', {
+        error: errorMessage(err),
+      });
+    }
+  })();
 
   powerManager.start();
 

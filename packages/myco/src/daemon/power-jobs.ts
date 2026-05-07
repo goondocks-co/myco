@@ -1,69 +1,73 @@
-/**
- * Power-managed job registrations.
- *
- * Extracted from main.ts — registers the 4 core housekeeping jobs
- * with the PowerManager: embedding reconciliation, session maintenance,
- * log retention, and auto-backup.
- */
-
-import type { Database } from 'bun:sqlite';
-import type { DaemonLogger } from './logger.js';
+import type { DaemonLogger, Logger } from './logger.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import type { DatabaseMaintenanceManager } from './database/manager.js';
+import { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
-import { registerCanopyJobs, type CanopyJobsRegistration } from './jobs/canopy-scan.js';
-import type { GroveProjectId } from '@myco/grove/ids.js';
-import { createBackup } from './backup.js';
-import { resolveBackupDir } from './api/backup.js';
+import {
+  registerCanopyJobs,
+  type CanopyJobsRegistration,
+  type CanopyJobsRegistry,
+} from './jobs/canopy-scan.js';
+import { createBackup, pruneBackups } from './backup.js';
+import { resolveGroveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
+import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
+import { notify } from '@myco/notifications/notify.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import {
   listStaleStagingDirs,
   cleanupStagedSkill,
 } from '@myco/agent/tools/skill-staging.js';
 import { EMBEDDING_BATCH_SIZE, MS_PER_DAY, MS_PER_HOUR } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { POWER_JOB_NAMES, type PowerJobName } from '@myco/constants/power-jobs.js';
+import {
+  forEachGrove,
+  forEachRegisteredProject,
+  type GroveScope,
+  type ProjectScope,
+} from './scope-iteration.js';
+import {
+  resolveMycoHome,
+  resolveProjectVaultDir,
+  resolveGroveDbPath,
+} from '@myco/grove/paths.js';
+import { listGroves, listRegisteredProjects } from '@myco/grove/registry.js';
+import { withDatabase } from '@myco/db/client.js';
+import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
-/**
- * Maximum age for a staging directory before the sweep reclaims it.
- * 24 hours is well beyond any legitimate skill-generate run — a task
- * that failed to clean up via the executor hook has long since gone.
- */
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Cached results for `totalPendingAcrossGroves`. The predicate fires on
+// every PowerManager tick to gate sleep transitions; once the queue
+// drains we don't need to re-walk every Grove for ZERO_PENDING_TTL_MS.
+const ZERO_PENDING_TTL_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface PowerJobDeps {
-  embeddingManager: EmbeddingManager;
   registry: SessionRegistry;
   logger: DaemonLogger;
-  // Holder so each job observes the current merged config at run time and
-  // picks up setting flips without a daemon restart.
   liveConfig: { current: MycoConfig };
-  db: Database;
   machineId: string;
-  vaultDir: string;
-  /** Repo root used for canopy scans and any project-rooted job. */
-  projectRoot: string;
   /**
-   * Grove-era project id, supplied by the daemon's request context. Power-
-   * managed writers must use this branded id — never derive `project_id`
-   * from `vaultDir` here, since that legacy path is the source of orphan
-   * canopy rows that no scan ever reconciles.
+   * Vault dir consulted for daemon-scope notification gating
+   * (`notifications.enabled`, per-domain enabled flags). Daemon-scope
+   * rows themselves carry `project_id = NULL`.
    */
-  projectId: GroveProjectId;
-  databaseManager: DatabaseMaintenanceManager;
-  /**
-   * Optional callback fired when a canopy scan adds many rows in one
-   * pass (initial populate or recovery). Called from the canopy delta
-   * runner and the full scan; null on early-boot paths that don't have
-   * a scheduled-task kicker yet.
-   */
-  onCanopyMassAdd?: () => void;
+  daemonVaultDir: string;
+  /** Per-Grove runtime cache shared with the HTTP layer. */
+  cache: GroveRuntimeCache;
+  /** Lazily build a per-Grove embedding manager + vector store from an open DB. */
+  embeddingRuntimeFactory: EmbeddingRuntimeFactory;
+  /** Override Myco home (tests); defaults to the resolved global home. */
+  mycoHome?: string;
+  onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
 export interface PowerJobsResult {
@@ -72,35 +76,173 @@ export interface PowerJobsResult {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// Tag every log entry from a per-Grove body with the Grove. Project ids
+// are not tagged here — a single body may delete sessions across many
+// projects and each delete logs its own project_id.
+function buildLoggerForGrove(logger: Logger, scope: GroveScope): Logger {
+  const tag = (data?: Record<string, unknown>) => ({
+    ...data,
+    grove_id: typeof data?.grove_id === 'string' ? data.grove_id : scope.grove.id,
+    grove_slug: typeof data?.grove_slug === 'string' ? data.grove_slug : scope.grove.slug,
+  });
+  return {
+    debug: (kind, message, data) => logger.debug(kind, message, tag(data)),
+    info: (kind, message, data) => logger.info(kind, message, tag(data)),
+    warn: (kind, message, data) => logger.warn(kind, message, tag(data)),
+    error: (kind, message, data) => logger.error(kind, message, tag(data)),
+  };
+}
+
+// Per-Grove memo for the logger and the projectVaultDir resolver. Both
+// derive from the Grove + its registered projects which only changes
+// when a project is registered/removed; recomputing per tick wastes work.
+class PerGroveCache<T> {
+  private readonly entries = new Map<string, T>();
+  constructor(private readonly build: (scope: GroveScope) => T) {}
+  get(scope: GroveScope): T {
+    const cached = this.entries.get(scope.grove.id);
+    if (cached !== undefined) return cached;
+    const fresh = this.build(scope);
+    this.entries.set(scope.grove.id, fresh);
+    return fresh;
+  }
+  invalidate(groveId: string): void {
+    this.entries.delete(groveId);
+  }
+}
+
+function getGroveEmbeddingManager(
+  cache: GroveRuntimeCache,
+  factory: EmbeddingRuntimeFactory,
+  scope: GroveScope,
+): EmbeddingManager {
+  const entry = cache.getEmbeddingRuntime(scope.databasePath, factory);
+  if (!entry.embeddingManager) {
+    throw new Error('grove embedding runtime missing manager');
+  }
+  return entry.embeddingManager;
+}
+
+interface PendingProbeCache {
+  total: number;
+  expiresAt: number;
+}
+
+// Sum of pending embedding work across every Grove. Caches the
+// last-known zero state for ZERO_PENDING_TTL_MS so the deep-sleep
+// predicate doesn't walk every Grove on every tick when fully drained.
+function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
+  let cache: PendingProbeCache | null = null;
+  return () => {
+    if (cache && Date.now() < cache.expiresAt) return cache.total;
+    const mycoHome = deps.mycoHome ?? resolveMycoHome();
+    let total = 0;
+    for (const grove of listGroves(mycoHome)) {
+      try {
+        const databasePath = resolveGroveDbPath(grove.id, mycoHome);
+        const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);
+        const manager = entry.embeddingManager;
+        if (!manager) continue;
+        // withDatabase is sync (AsyncLocalStorage.run returns fn's value).
+        total += withDatabase(entry.db, () => manager.totalPendingCount());
+        if (total > 0) {
+          cache = null;
+          return total;
+        }
+      } catch {
+        // Swallow per-Grove failure — better to risk an early sleep than
+        // hold the whole machine awake on a transiently-broken signal.
+      }
+    }
+    cache = { total: 0, expiresAt: Date.now() + ZERO_PENDING_TTL_MS };
+    return total;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
 export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps): PowerJobsResult {
-  const { embeddingManager, registry, logger, liveConfig, db, machineId, vaultDir, projectRoot, projectId, databaseManager, onCanopyMassAdd } = deps;
+  const {
+    registry,
+    logger,
+    liveConfig,
+    machineId,
+    cache,
+    embeddingRuntimeFactory,
+    onCanopyMassAdd,
+    daemonVaultDir,
+  } = deps;
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
+  const groveLoggers = new PerGroveCache<Logger>((scope) => buildLoggerForGrove(logger, scope));
+  const projectVaultDirResolvers = new PerGroveCache<(projectId: string | null) => string | null>(
+    (scope) => {
+      const projects = listRegisteredProjects(scope.grove.id, mycoHome);
+      const byId = new Map(
+        projects.map((p) => [p.project_id, resolveProjectVaultDir(p.root)]),
+      );
+      return (projectId) => (projectId ? byId.get(projectId) ?? null : null);
+    },
+  );
+
+  const totalPendingProbe = makeTotalPendingProbe(deps);
+
+  // Daemon-scope notification (project_id = NULL) so failures surface in
+  // the dashboard regardless of which project the user is viewing.
+  const notifyDaemon = (
+    type: string,
+    title: string,
+    message: string,
+    metadata: Record<string, unknown> = {},
+  ): void => {
+    notify(
+      daemonVaultDir,
+      { domain: 'daemon', type, title, message, metadata },
+      undefined,
+      { scope: 'daemon' },
+    );
+  };
+
+  // Standard error path for Grove-DB jobs: tagged log + daemon notification.
+  const notifyOnFailure = (
+    scope: GroveScope,
+    logKind: string,
+    notifyType: string,
+    titleVerb: string,
+    err: unknown,
+  ): void => {
+    const message = errorMessage(err);
+    logger.error(logKind, `${titleVerb} failed`, {
+      error: message,
+      grove_id: scope.grove.id,
+      grove_slug: scope.grove.slug,
+    });
+    notifyDaemon(
+      notifyType,
+      `${titleVerb} failed for ${scope.grove.name}`,
+      message,
+      { grove_id: scope.grove.id, grove_slug: scope.grove.slug },
+    );
+  };
+
+  const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
+    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
+
+  // Every tick processes one batch per Grove that has pending work; a Grove
+  // with N records drains in N / batch ticks while peers drain in parallel.
   let reconcileRunning = false;
   powerManager.register({
-    name: 'embedding-reconcile',
-    // The job ticks in active/idle/sleep. `sleep` is the slow tick the
-    // PowerManager uses to drain queues; without it, the loop stalls as
-    // soon as the user steps away. Deep-sleep is reached by exhaustion of
-    // the predicate below, not by the job's runIn list (deep-sleep stops
-    // the timer entirely, so adding it here would be a no-op).
+    name: POWER_JOB_NAMES.EMBEDDING_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
-    /**
-     * When the toggle is on AND the embedding queue still has pending work,
-     * hold the daemon in `sleep` state so the slow tick keeps draining the
-     * backlog. Once the queue empties, the predicate returns false and the
-     * machine is free to transition to deep_sleep on the next evaluation.
-     *
-     * The flag defaults to true so out-of-the-box behavior matches the
-     * "queue should drain overnight" expectation operators have. Operators
-     * that want strict deep-sleep can flip the toggle off in Operations.
-     */
     preventsDeepSleep: () => {
       if (liveConfig.current.embedding.run_in_deep_sleep === false) return false;
       try {
-        return embeddingManager.totalPendingCount() > 0;
+        return totalPendingProbe() > 0;
       } catch {
         return false;
       }
@@ -109,7 +251,10 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       if (reconcileRunning) return;
       reconcileRunning = true;
       try {
-        await embeddingManager.reconcile(EMBEDDING_BATCH_SIZE);
+        await fanOutGroves(POWER_JOB_NAMES.EMBEDDING_RECONCILE, async (scope) => {
+          const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
+          await manager.reconcile(EMBEDDING_BATCH_SIZE);
+        })();
       } finally {
         reconcileRunning = false;
       }
@@ -117,96 +262,174 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   });
 
   powerManager.register({
-    name: 'session-maintenance',
+    name: POWER_JOB_NAMES.SESSION_MAINTENANCE,
     runIn: ['active', 'idle', 'sleep'],
-    fn: () => runSessionMaintenance({
-      logger,
-      registeredSessionIds: () => registry.sessions,
-      embeddingManager,
-      vaultDir,
-      staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
+    fn: fanOutGroves(POWER_JOB_NAMES.SESSION_MAINTENANCE, async (scope) => {
+      const manager = getGroveEmbeddingManager(cache, embeddingRuntimeFactory, scope);
+      await runSessionMaintenance({
+        logger: groveLoggers.get(scope),
+        registeredSessionIds: () => [...registry.sessions],
+        embeddingManager: manager,
+        resolveProjectVaultDir: projectVaultDirResolvers.get(scope),
+        staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
+      });
     }),
   });
 
   powerManager.register({
-    name: 'log-retention',
+    name: POWER_JOB_NAMES.LOG_RETENTION,
     runIn: ['idle', 'sleep'],
-    fn: async () => {
+    fn: fanOutGroves(POWER_JOB_NAMES.LOG_RETENTION, async (scope) => {
       const retentionDays = liveConfig.current.daemon.log_retention_days;
       const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY).toISOString();
       const deleted = deleteOldLogs(cutoff);
       if (deleted > 0) {
-        logger.info(LOG_KINDS.LOG_RETENTION, `Deleted ${deleted} log entries older than ${retentionDays} days`, { deleted, retention_days: retentionDays });
+        logger.info(
+          LOG_KINDS.LOG_RETENTION,
+          `Deleted ${deleted} log entries older than ${retentionDays} days`,
+          {
+            deleted,
+            retention_days: retentionDays,
+            grove_id: scope.grove.id,
+            grove_slug: scope.grove.slug,
+          },
+        );
       }
-    },
+    }),
   });
 
-  // Auto-backup: create a local SQL dump during idle/sleep cycles
   powerManager.register({
-    name: 'auto-backup',
+    name: POWER_JOB_NAMES.AUTO_BACKUP,
     runIn: ['idle', 'sleep'],
-    fn: async () => {
+    fn: fanOutGroves(POWER_JOB_NAMES.AUTO_BACKUP, async (scope) => {
       try {
-        const backupDir = resolveBackupDir(liveConfig.current, vaultDir);
-        logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting');
-        const filePath = createBackup(db, backupDir, machineId);
-        logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', { file_path: filePath });
+        const backupDir = resolveGroveBackupDir(liveConfig.current, scope.grove, scope.groveHome);
+        logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting', {
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+        });
+        const filePath = createBackup(scope.db, backupDir, machineId);
+        const pruneResult = pruneBackups(backupDir, liveConfig.current.backup.retention);
+        logger.info(LOG_KINDS.BACKUP_COMPLETE, 'Auto-backup complete', {
+          file_path: filePath,
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+          pruned: pruneResult.removed.length,
+          retained: pruneResult.kept,
+        });
       } catch (err) {
-        logger.error(LOG_KINDS.BACKUP_ERROR, 'Auto-backup failed', { error: (err as Error).message });
+        notifyOnFailure(scope, LOG_KINDS.BACKUP_ERROR, 'daemon.backup_failed', 'Backup', err);
       }
-    },
+    }),
   });
 
-  // Database optimize: run VACUUM + WAL checkpoint + ANALYZE during idle/sleep cycles
   powerManager.register({
-    name: 'database-optimize',
+    name: POWER_JOB_NAMES.DATABASE_OPTIMIZE,
     runIn: ['idle', 'sleep'],
-    fn: async () => {
+    fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_OPTIMIZE, async (scope) => {
       const config = liveConfig.current;
       if (!config.maintenance?.auto_optimize) return;
       const intervalMs = (config.maintenance.auto_optimize_interval_hours ?? 24) * MS_PER_HOUR;
-      const lastRun = await databaseManager.getLastOptimizeAt();
+      const dbm = new DatabaseMaintenanceManager(scope.databasePath, scope.groveHome, groveLoggers.get(scope));
+      const lastRun = await dbm.getLastOptimizeAt();
       if (lastRun !== null && Date.now() - lastRun < intervalMs) return;
       try {
-        await databaseManager.optimize();
+        await dbm.optimize();
       } catch (err) {
-        logger.error(LOG_KINDS.DATABASE_ERROR, 'Auto-optimize failed', {
-          error: (err as Error).message,
-        });
+        notifyOnFailure(scope, LOG_KINDS.DATABASE_ERROR, 'daemon.optimize_failed', 'Optimize', err);
       }
-    },
+    }),
   });
 
-  // Staging GC: belt-and-suspenders cleanup for skill-generate staging
-  // dirs that escaped the executor's per-run failure hook — e.g., a
-  // daemon crash between draft stage and the failure handler. Running
-  // on every idle tick is cheap because the happy path has zero stale
-  // entries and the check is a single readdir on a typically-empty
-  // directory.
   powerManager.register({
-    name: 'staging-gc',
+    name: POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK,
+    // Heavier than optimize; only run when the user is away.
+    runIn: ['sleep'],
+    fn: fanOutGroves(POWER_JOB_NAMES.DATABASE_INTEGRITY_CHECK, async (scope) => {
+      const config = liveConfig.current;
+      if (!config.maintenance?.auto_integrity_check) return;
+      const intervalMs = (config.maintenance.auto_integrity_check_interval_hours ?? 168) * MS_PER_HOUR;
+      const dbm = new DatabaseMaintenanceManager(scope.databasePath, scope.groveHome, groveLoggers.get(scope));
+      const lastRuns = getLastDatabaseLogTimestamps([
+        LOG_KINDS.DATABASE_INTEGRITY_CHECK,
+        LOG_KINDS.DATABASE_INTEGRITY_ISSUES,
+      ]);
+      const lastRunMs = Math.max(
+        lastRuns.get(LOG_KINDS.DATABASE_INTEGRITY_CHECK) ?? 0,
+        lastRuns.get(LOG_KINDS.DATABASE_INTEGRITY_ISSUES) ?? 0,
+      );
+      if (lastRunMs > 0 && Date.now() - lastRunMs < intervalMs) return;
+      try {
+        const result = await dbm.integrityCheck();
+        if (result.status !== 'ok') {
+          notifyDaemon(
+            'daemon.integrity_issues',
+            `Integrity issues in ${scope.grove.name}`,
+            `${result.issues.length} issue(s), ${result.fk_violations} FK violation(s)`,
+            {
+              grove_id: scope.grove.id,
+              grove_slug: scope.grove.slug,
+              issues: result.issues.length,
+              fk_violations: result.fk_violations,
+            },
+          );
+        }
+      } catch (err) {
+        notifyOnFailure(scope, LOG_KINDS.DATABASE_ERROR, 'daemon.integrity_issues', 'Integrity check', err);
+      }
+    }),
+  });
+
+  powerManager.register({
+    name: POWER_JOB_NAMES.STAGING_GC,
     runIn: ['idle', 'sleep'],
     fn: async () => {
-      const stale = listStaleStagingDirs(vaultDir, STAGING_MAX_AGE_MS);
-      if (stale.length === 0) return;
-      for (const candidateId of stale) {
-        cleanupStagedSkill(vaultDir, candidateId);
-      }
-      logger.info(LOG_KINDS.MAINTENANCE_STAGING_GC, 'Staging GC swept stale skill drafts', {
-        count: stale.length,
-        candidate_ids: stale,
-      });
+      await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ project, projectVaultDir }: ProjectScope) => {
+          const stale = listStaleStagingDirs(projectVaultDir, STAGING_MAX_AGE_MS);
+          if (stale.length === 0) return;
+          for (const candidateId of stale) {
+            cleanupStagedSkill(projectVaultDir, candidateId);
+          }
+          logger.info(
+            LOG_KINDS.MAINTENANCE_STAGING_GC,
+            'Staging GC swept stale skill drafts',
+            {
+              count: stale.length,
+              candidate_ids: stale,
+              project_id: project.project_id,
+              project_root: project.root,
+            },
+          );
+        },
+        { mycoHome, machineId },
+      );
     },
   });
 
   const canopy = registerCanopyJobs(powerManager, {
-    db,
     logger,
     machineId,
-    projectRoot,
-    projectId,
     liveConfig,
+    resolveDb: (databasePath: string) => cache.getDatabase(databasePath),
     onCanopyMassAdd,
+    dispatchBackground: (canopyRegistry: CanopyJobsRegistry, now: number) =>
+      forEachRegisteredProject(
+        cache,
+        logger,
+        async ({ databasePath, projectId, projectRoot, grove }: ProjectScope) => {
+          const runner = canopyRegistry.ensureRunner({
+            databasePath,
+            projectId,
+            projectRoot,
+            groveId: grove.id,
+          });
+          await runner.run(now);
+        },
+        { mycoHome, machineId },
+      ).then(() => undefined),
   });
 
   return { canopy };

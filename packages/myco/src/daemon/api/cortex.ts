@@ -30,8 +30,9 @@ const PromptBuilderStatusParams = z.object({
 });
 
 export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
-  async function handleGetInstructions(): Promise<RouteResponse> {
-    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current);
+  async function handleGetInstructions(req: RouteRequest): Promise<RouteResponse> {
+    const projectId = req.requestContext?.projectId ?? null;
+    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current, projectId);
     return { body: snapshot };
   }
 
@@ -81,7 +82,7 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
 
   async function handleGetPromptResult(req: RouteRequest): Promise<RouteResponse> {
     const { runId } = PromptBuilderStatusParams.parse(req.params);
-    const result = getCortexPromptResult(runId);
+    const result = getCortexPromptResult(runId, req.requestContext?.projectId ?? null);
     if (!result) {
       return { status: 404, body: errorBody('run-not-found', 'Run not found') };
     }

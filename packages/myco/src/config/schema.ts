@@ -106,6 +106,14 @@ const AgentSchema = rejectLegacyRuntimeKey(z.object({
   scheduled_tasks_enabled: z.boolean().default(true),
   /** Global toggle for event-driven agent tasks (title-summary, Cortex refresh). */
   event_tasks_enabled: z.boolean().default(true),
+  /**
+   * Skip scheduled agent tasks when the project has had no session or
+   * prompt-batch activity within this window. Token-spending tasks
+   * (canopy-describe, skill-survey, …) shouldn't keep firing on a
+   * project the user hasn't touched in weeks. Set to 0 to disable
+   * cold-project gating entirely.
+   */
+  cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
   /** Global default harness — applies to all tasks unless overridden per-task. */
@@ -116,9 +124,17 @@ const AgentSchema = rejectLegacyRuntimeKey(z.object({
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
 }));
 
+const BackupRetentionSchema = z.object({
+  /** Number of most-recent daily backups to keep per (Grove, machine). */
+  keep_daily: z.number().int().min(1).max(365).default(14),
+  /** Number of weekly backups to keep beyond the daily window. */
+  keep_weekly: z.number().int().min(0).max(52).default(8),
+});
+
 const BackupSchema = z.object({
-  /** Override directory for backup files. Supports ~ for home directory. When unset, defaults to .myco/backups. */
+  /** Override directory for backup files. Supports ~ for home directory. When unset, defaults to <groveHome>/backups. */
   dir: z.string().optional(),
+  retention: BackupRetentionSchema.default(() => BackupRetentionSchema.parse({})),
 });
 
 const MaintenanceSchema = z.object({
@@ -126,6 +142,14 @@ const MaintenanceSchema = z.object({
   auto_optimize: z.boolean().default(true),
   /** How often to run auto-optimize, in hours (1–720). */
   auto_optimize_interval_hours: z.number().int().min(1).max(720).default(24),
+  /**
+   * Automatically run an integrity + foreign-key check on a slow cadence.
+   * Failures are surfaced via LOG_KINDS.DATABASE_INTEGRITY_ISSUES so they
+   * appear in the Database panel without a separate notification path.
+   */
+  auto_integrity_check: z.boolean().default(true),
+  /** How often to run auto integrity-check, in hours. Default = 168 (weekly). */
+  auto_integrity_check_interval_hours: z.number().int().min(1).max(8760).default(168),
 });
 
 const UpdateSchema = z.object({

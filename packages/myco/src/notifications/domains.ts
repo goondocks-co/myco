@@ -51,6 +51,9 @@ export function registerBuiltinDomains(): void {
     label: 'Daemon',
     types: [
       { id: 'daemon.version_sync', label: 'Version sync restart', defaultMode: 'summary', defaultLevel: 'info' },
+      { id: 'daemon.backup_failed', label: 'Backup failed', defaultMode: 'banner', defaultLevel: 'error' },
+      { id: 'daemon.integrity_issues', label: 'Database integrity issues', defaultMode: 'banner', defaultLevel: 'error' },
+      { id: 'daemon.optimize_failed', label: 'Database optimize failed', defaultMode: 'summary', defaultLevel: 'warning' },
     ],
   });
 

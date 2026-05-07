@@ -45,6 +45,8 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
 import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
+import type { ProjectPowerStateTracker } from './project-power-state.js';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -69,6 +71,12 @@ export interface EventDispatchDeps {
   reconcileSession: (sessionId: string) => void;
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
   triggerTitleSummary: (sessionId: string) => Promise<void>;
+  /**
+   * Per-project power state. user_prompt events on a session count as
+   * activity for that session's project, keeping its scheduler ticking
+   * even when it isn't the foreground project in the web UI.
+   */
+  projectStateTracker?: ProjectPowerStateTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +248,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
       powerManager.recordActivity();
+      const requestProjectId = req.requestContext?.projectId;
+      if (
+        deps.projectStateTracker &&
+        requestProjectId &&
+        isGroveEraId(requestProjectId, 'project') &&
+        req.requestContext?.groveId
+      ) {
+        deps.projectStateTracker.recordActivity(
+          req.requestContext.groveId,
+          assertGroveProjectId(requestProjectId),
+        );
+      }
       const promptText = String(event.prompt ?? '');
 
       // Skip system-injected messages (task notifications, system reminders) —

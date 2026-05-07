@@ -15,6 +15,10 @@ function makeRequest(body: unknown = {}): RouteRequest {
   return { params: {}, query: {}, body } as RouteRequest;
 }
 
+function makeBootDb(): never {
+  return { close: vi.fn() } as never;
+}
+
 describe('resolveBackupDir', () => {
   it('falls back to <vault>/backups when no dir is configured', () => {
     const vault = '/tmp/vault';
@@ -59,9 +63,11 @@ describe('createBackupHandlers — liveConfig hot-reload', () => {
 
     const liveConfig = { current: makeConfig({ dir: firstDir }) };
     const handlers = createBackupHandlers({
-      db: { close: vi.fn() } as never,
+      bootDb: makeBootDb(),
+      bootVaultDir: vaultDir,
+      bootGroveId: null,
+      resolveDatabase: () => makeBootDb(),
       machineId: 'machineA',
-      vaultDir,
       liveConfig,
     });
 

@@ -121,6 +121,33 @@ npm install --force
 npm rebuild
 ```
 
+### Tree-Shaking Quality Validation
+
+Tree-shaking can introduce subtle build failures when value imports contaminate package boundaries:
+
+1. **Detect tree-shaking fragility**:
+```bash
+# Check for value imports of type helpers across package boundaries
+grep -r "import.*{.*}" packages/myco-*/src/ | grep -v "type.*{.*}"
+# Look for non-type imports that should be type-only
+```
+
+2. **Fix contaminated imports**:
+```typescript
+// BAD: Value import contaminates bundle
+import { PromptInput } from '@goondocks/myco';
+
+// GOOD: Type-only import preserves tree-shaking
+import type { PromptInput } from '@goondocks/myco';
+```
+
+3. **Bundle contamination validation**:
+```bash
+# After build, check package sizes for unexpected bloat
+ls -lh packages/myco-*/dist/
+# Compare against baseline - sudden size increases indicate contamination
+```
+
 ### Build Matrix Management
 
 1. **Platform-specific gotchas**:
@@ -198,7 +225,7 @@ git branch -r | grep dependabot | head -5  # Process in batches
 git checkout -b deps/batch-update
 for branch in $(git branch -r | grep dependabot | head -5); do
   git merge $branch --no-edit
-done
+ndone
 npm test
 ```
 
@@ -431,12 +458,99 @@ npm ls --depth=0
 grep -r "@goondocks/myco" packages/*/package.json
 ```
 
+## Procedure 7: Grove Multi-Project Infrastructure Quality
+
+Validate Grove daemon multi-project fan-out patterns, scope iteration infrastructure, and runtime cache management for quality engineering.
+
+### Scope Iterator Validation
+
+Grove daemon uses three-tier scope iterators for multi-project operations. Validate proper implementation:
+
+1. **Scope iterator testing**:
+```bash
+# Test Grove scope iteration patterns
+npm run test:scope-iterators
+
+# Validate three-tier fan-out: forEachGrove -> forEachProject -> forEachProjectCold
+npm run test:multi-project-fanout
+```
+
+2. **Scope iterator patterns**:
+```typescript
+// Validate proper scope iteration implementation
+import { forEachGrove, forEachProject, forEachProjectCold } from './scope-iteration';
+
+// BAD: Direct iteration without cold gating
+projects.forEach(project => processProject(project));
+
+// GOOD: Proper scope iteration with cold gating
+await forEachProjectCold(cache, logger, async (projectId, projectRoot) => {
+  await processProject(projectId, projectRoot);
+}, { maxConcurrency: 4 });
+```
+
+### Grove Runtime Cache Quality Validation
+
+Grove daemon maintains bounded LRU caches for database and embedding handles. Validate cache behavior:
+
+1. **Cache bounds validation**:
+```bash
+# Test Grove runtime cache bounds
+npm run test:grove-cache-bounds
+
+# Monitor cache handle accumulation
+npm run monitor:grove-handles
+```
+
+2. **Cache invalidation patterns**:
+```typescript
+// Validate proper cache invalidation on config changes
+// BAD: Unbounded handle accumulation
+const dbHandle = await openDatabase(projectRoot);
+
+// GOOD: Bounded LRU with re-resolution
+const dbHandle = await cache.resolveDatabase(projectId, projectRoot);
+```
+
+3. **Handle management validation**:
+   - Database handles properly cached and reused
+   - Embedding manager handles bounded by LRU
+   - Pin/unpin patterns prevent premature eviction during operations
+   - Re-resolution works when handles are evicted
+
+### Per-Project Lifecycle Management
+
+Validate cold project gating and scheduled task dispatch patterns:
+
+1. **Cold project gating validation**:
+```bash
+# Test cold project detection and gating
+npm run test:cold-project-gating
+
+# Validate scheduled task dispatch respects project state
+npm run test:scheduled-dispatch
+```
+
+2. **Project lifecycle patterns**:
+```typescript
+// Validate proper cold project handling
+// BAD: Processing inactive projects
+await processAllProjects();
+
+// GOOD: Cold gating with activity detection
+await forEachProjectCold(cache, logger, async (projectId, projectRoot) => {
+  // Only processes projects with recent activity
+  await processActiveProject(projectId, projectRoot);
+});
+```
+
 ## Cross-Cutting Gotchas
 
 ### Build System Pitfalls
 - **Silent bundler failures**: Always validate that `npm run build` actually created expected artifacts in each workspace
 - **Native dependency conflicts**: Use `npm rebuild` after Node version changes or branch switches
 - **Workspace hoisting issues**: Some packages may need explicit dependencies even if available in root
+- **Tree-shaking fragility**: Value imports of type helpers contaminate package bundles - use type-only imports
 
 ### Release Workflow Traps
 - **npm global installations in CI**: Never `npm install -g npm@latest` - corrupts npm's dependencies
@@ -457,3 +571,6 @@ grep -r "@goondocks/myco" packages/*/package.json
 - **Public release readiness**: Grove deployments need additional validation for tenant security and isolation
 - **Grove enforcement bypassing**: Multi-tenant enforcement patterns can be circumvented without proper validation gates
 - **Cross-project contamination**: Grove activation can introduce cross-project dependencies without proper isolation checks
+- **Scope iterator misuse**: Direct project iteration bypasses cold gating and can process inactive projects
+- **Cache handle leaks**: Unbounded handle accumulation without proper LRU bounds degrades Grove daemon performance
+- **Multi-project staging failures**: Fan-out operations can accumulate GC pressure without proper resource management

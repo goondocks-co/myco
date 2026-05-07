@@ -54,10 +54,21 @@ export async function handleListNotifications(
   const mode = query.mode as NotificationMode | undefined;
   const limit = query.limit ? Number(query.limit) : undefined;
   const offset = query.offset ? Number(query.offset) : undefined;
+  // ?include_daemon=1 (or =true) merges daemon-scope rows in alongside
+  // the request's project rows so a single feed surfaces both layers.
+  const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
 
   const projectId = rowProjectIdFromRequestContext(requestContext);
-  const items = listNotifications({ status, domain, mode, project_id: projectId, limit, offset });
-  const unreadCount = countNotifications('unread', projectId);
+  const items = listNotifications({
+    status,
+    domain,
+    mode,
+    project_id: projectId,
+    include_daemon_scope: includeDaemon,
+    limit,
+    offset,
+  });
+  const unreadCount = countNotifications('unread', projectId, { includeDaemonScope: includeDaemon });
 
   return {
     body: {
@@ -159,8 +170,18 @@ export async function handleGetRegistry(): Promise<RouteResponse> {
 }
 
 /** GET /api/notifications/unread-count — lightweight unread count endpoint. */
-export async function handleUnreadCount(requestContext?: MycoRequestContext): Promise<RouteResponse> {
-  return { body: { count: countNotifications('unread', rowProjectIdFromRequestContext(requestContext)) } };
+export async function handleUnreadCount(
+  requestContext?: MycoRequestContext,
+  query: Record<string, string> = {},
+): Promise<RouteResponse> {
+  const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
+  return {
+    body: {
+      count: countNotifications('unread', rowProjectIdFromRequestContext(requestContext), {
+        includeDaemonScope: includeDaemon,
+      }),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

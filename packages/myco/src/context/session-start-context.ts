@@ -39,6 +39,7 @@ export interface ComposedSessionStartContext {
 export function composeSessionStartContext(
   config: MycoConfig,
   cortexContent: string,
+  projectId: string | null = null,
 ): ComposedSessionStartContext {
   const cortexEnabled = shouldInjectCortex(config.cortex);
   const digestEnabled = shouldInjectSessionStartDigest(config.cortex.digest);
@@ -48,7 +49,7 @@ export function composeSessionStartContext(
     parts.push({ kind: 'cortex', text: cortexContent });
   }
   if (digestEnabled) {
-    const digest = getSessionStartDigestPayload(config.cortex.digest);
+    const digest = getSessionStartDigestPayload(config.cortex.digest, projectId);
     if (digest.content) {
       const tier = digest.tier ?? config.cortex.digest.tier;
       parts.push({

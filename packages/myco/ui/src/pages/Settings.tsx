@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
+import { useProjectSelection } from '../hooks/use-project-selection';
 import {
   CONFIG_SECTION_IDS,
   configFieldId,
@@ -74,7 +75,7 @@ export default function Settings() {
     );
   }
 
-  const vaultName = stats?.vault.name ?? effective.embedding.provider;
+  const runningPort = stats?.daemon.port ?? null;
 
   return (
     <RestartGateProvider>
@@ -99,7 +100,7 @@ export default function Settings() {
         <PlanCaptureCard />
 
         {/* ---- Project section (scoped-field POC) ---- */}
-        <ProjectCard vaultName={vaultName} />
+        <ProjectCard runningPort={runningPort} />
       </div>
     </div>
     </RestartGateProvider>
@@ -573,7 +574,16 @@ function EmbeddingCard() {
 /** Project card rebuilt on the scoped-field pattern — writes immediately to
  *  the chosen scope, surfaces a page-level "Restart required" banner, and
  *  lets any field be promoted/reset between personal and project scope. */
-function ProjectCard({ vaultName }: { vaultName: string }) {
+function ProjectCard({ runningPort }: { runningPort: number | null }) {
+  const selection = useProjectSelection();
+  // Slug uniquely identifies the project within the daemon; the URL
+  // already exposes it, so showing it here matches the user's mental
+  // model. Falls back to name if slug isn't available.
+  const projectLabel = selection
+    ? `${selection.project.slug}${selection.project.name && selection.project.name !== selection.project.slug ? ` (${selection.project.name})` : ''}`
+    : '—';
+  const groveLabel = selection ? `${selection.grove.name} (${selection.grove.slug})` : '—';
+
   return (
     <Surface
       id={CONFIG_SECTION_IDS.settingsProject}
@@ -583,20 +593,27 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
       <SectionHeader>Project</SectionHeader>
 
       <div className="space-y-4">
-        {/* Vault name -- read-only */}
-        <div
-          id={configFieldId('vault.name')}
-          data-config-field="vault.name"
-          className="space-y-1.5 rounded-md transition-all duration-300"
-        >
-          <label className="font-sans text-sm font-medium text-on-surface">Vault Name</label>
-          <Input value={vaultName} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
+        {/* Project + Grove identity — read-only, sourced from the active selection. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div
+            id={configFieldId('vault.name')}
+            data-config-field="vault.name"
+            className="space-y-1.5 rounded-md transition-all duration-300"
+          >
+            <label className="font-sans text-sm font-medium text-on-surface">Project</label>
+            <Input value={projectLabel} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
+          </div>
+          <div className="space-y-1.5 rounded-md transition-all duration-300">
+            <label className="font-sans text-sm font-medium text-on-surface">Grove</label>
+            <Input value={groveLabel} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
+          </div>
         </div>
 
         <ScopedField
           path="daemon.port"
           label="Daemon Port"
           defaultScope="local"
+          lockScope="local"
           requiresRestart
           commitOn="blur"
         >
@@ -609,7 +626,11 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
                 onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
                 onBlur={onBlur}
               />
-              <p className="font-sans text-xs text-on-surface-variant">Leave blank to use a random available port.</p>
+              <p className="font-sans text-xs text-on-surface-variant">
+                Leave blank to use a random available port. The global daemon is
+                {runningPort !== null ? ` currently running on port ${runningPort}.` : ' currently running.'}
+                {' '}This setting takes effect on the next daemon restart.
+              </p>
             </>
           )}
         </ScopedField>
@@ -618,20 +639,26 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_level"
           label="Log Level"
           defaultScope="local"
+          scopeBadgeOverride="grove"
         >
           {({ value, onChange }) => (
-            <Select value={value ?? 'info'} onValueChange={(v) => onChange(v as LogLevel)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LOG_LEVELS.map((level) => (
-                  <SelectItem key={level} value={level}>
-                    {level}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <>
+              <Select value={value ?? 'info'} onValueChange={(v) => onChange(v as LogLevel)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LOG_LEVELS.map((level) => (
+                    <SelectItem key={level} value={level}>
+                      {level}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="font-sans text-xs text-on-surface-variant">
+                Applied across every project in this Grove — log entries land in the shared Grove database.
+              </p>
+            </>
           )}
         </ScopedField>
 
@@ -639,18 +666,24 @@ function ProjectCard({ vaultName }: { vaultName: string }) {
           path="daemon.log_retention_days"
           label="Log Retention (days)"
           defaultScope="local"
+          scopeBadgeOverride="grove"
           commitOn="blur"
         >
           {({ value, onChange, onBlur }) => (
-            <Input
-              type="number"
-              min={1}
-              max={365}
-              className="w-24"
-              value={value ?? ''}
-              onChange={(e) => onChange(Number(e.target.value))}
-              onBlur={onBlur}
-            />
+            <>
+              <Input
+                type="number"
+                min={1}
+                max={365}
+                className="w-24"
+                value={value ?? ''}
+                onChange={(e) => onChange(Number(e.target.value))}
+                onBlur={onBlur}
+              />
+              <p className="font-sans text-xs text-on-surface-variant">
+                Retention applies to the Grove&apos;s shared log_entries table.
+              </p>
+            </>
           )}
         </ScopedField>
       </div>

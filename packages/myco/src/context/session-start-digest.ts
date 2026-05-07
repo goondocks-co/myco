@@ -11,10 +11,13 @@ export function shouldInjectSessionStartDigest(digest: MycoConfig['cortex']['dig
   return digest.inject_on_session_start === true;
 }
 
-export function getSessionStartDigestPayload(digest: MycoConfig['cortex']['digest']): SessionStartDigestPayload {
+export function getSessionStartDigestPayload(
+  digest: MycoConfig['cortex']['digest'],
+  projectId: string | null = null,
+): SessionStartDigestPayload {
   const extract =
-    getDigestExtract(DEFAULT_AGENT_ID, digest.tier) ??
-    getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER);
+    getDigestExtract(DEFAULT_AGENT_ID, digest.tier, projectId) ??
+    getDigestExtract(DEFAULT_AGENT_ID, DIGEST_FALLBACK_TIER, projectId);
 
   return {
     content: extract?.content ?? '',

@@ -35,8 +35,13 @@ export interface NotificationInsert {
   mode: NotificationMode;
   link: string | null;
   metadata: string | null;
-  /** Branded Grove project id this notification belongs to. */
-  project_id: GroveProjectId;
+  /**
+   * Grove project id this notification belongs to, or `null` for
+   * daemon-scope notifications that aren't tied to any single
+   * project (e.g. backup failure for a Grove with no recently-active
+   * project).
+   */
+  project_id: GroveProjectId | null;
 }
 
 /** Row shape returned from notifications queries. */
@@ -74,6 +79,12 @@ export function listNotifications(opts: {
   domain?: string;
   mode?: NotificationMode;
   project_id?: ProjectScope;
+  /**
+   * When `true` and `project_id` is a string, also include daemon-scope
+   * rows (`project_id IS NULL`). Used by UI surfaces that should show
+   * daemon-level notifications alongside the current project's.
+   */
+  include_daemon_scope?: boolean;
   limit?: number;
   offset?: number;
 } = {}): NotificationRow[] {
@@ -93,7 +104,12 @@ export function listNotifications(opts: {
     conditions.push('mode = ?');
     params.push(opts.mode);
   }
-  appendProjectCondition(conditions, params, opts.project_id);
+  if (opts.include_daemon_scope && typeof opts.project_id === 'string') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(opts.project_id);
+  } else {
+    appendProjectCondition(conditions, params, opts.project_id);
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -105,7 +121,11 @@ export function listNotifications(opts: {
 }
 
 /** Count notifications by status. */
-export function countNotifications(status?: NotificationStatus, projectId?: ProjectScope): number {
+export function countNotifications(
+  status?: NotificationStatus,
+  projectId?: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): number {
   const db = getDatabase();
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -113,7 +133,12 @@ export function countNotifications(status?: NotificationStatus, projectId?: Proj
     conditions.push('status = ?');
     params.push(status);
   }
-  appendProjectCondition(conditions, params, projectId);
+  if (options.includeDaemonScope && typeof projectId === 'string') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(projectId);
+  } else {
+    appendProjectCondition(conditions, params, projectId);
+  }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const row = db.prepare(`SELECT COUNT(*) as count FROM notifications ${where}`).get(...params) as { count: number };
   return row.count;
