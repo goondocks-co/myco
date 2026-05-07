@@ -238,13 +238,35 @@ async function listLocalDlq(creds: CloudflareQueueCredentials, queueName: string
   return {
     messages: (body.result?.messages ?? []).map((message) => ({
       msg_id: String(message.lease_id ?? ''),
-      body: (message.body ?? {}) as Record<string, unknown>,
+      body: parseDlqBody(message.body),
       attempts: typeof message.attempts === 'number' ? message.attempts : 0,
       last_failure: typeof message.metadata?.last_failure === 'string' ? message.metadata.last_failure : undefined,
       enqueued_at: typeof message.metadata?.enqueued_at === 'number' ? message.metadata.enqueued_at : undefined,
     })),
     next_cursor: null,
   };
+}
+
+/**
+ * CF Queues' pull-consumer returns message body as a JSON string when
+ * the producer sent JSON. Parse so the UI can render
+ * `<table>/<id>` / `machine=<…>` instead of `?/?` `machine=?`.
+ */
+function parseDlqBody(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through.
+    }
+  }
+  return {};
 }
 
 async function ackLocalDlq(creds: CloudflareQueueCredentials, queueName: string, leaseIds: string[], action: 'retry' | 'discard'): Promise<void> {
