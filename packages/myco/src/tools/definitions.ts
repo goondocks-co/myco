@@ -110,7 +110,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_CORTEX,
-    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path.',
+    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-Grove project activity feed (last activity, scheduled runs, active flag).',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -118,18 +118,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, and op: "canopy_entry" to retrieve a Canopy result returned by search.',
+      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, op: "canopy_entry" to retrieve a Canopy result returned by search, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active across the machine.',
       priority: 10,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry'], description: 'Operation (default: "digest")' },
+        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'], description: 'Operation (default: "digest")' },
         tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
         id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
         project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
         grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
+        unread_only: { type: 'boolean', description: 'op: "notifications" — return only unread entries (default: false)' },
+        limit: { type: 'number', description: 'op: "notifications" — max entries to return' },
       },
     },
   },

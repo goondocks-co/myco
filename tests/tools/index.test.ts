@@ -174,4 +174,81 @@ describe('Myco tools dispatcher', () => {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     });
   });
+
+  // Stream J — agent-native parity reads on myco_cortex.
+  describe('myco_cortex agent-native parity ops (J4)', () => {
+    function captureClient(endpointResponses: Record<string, unknown>): { client: DaemonClient; calls: { endpoint: string; headers?: unknown }[] } {
+      const calls: { endpoint: string; headers?: unknown }[] = [];
+      const client = {
+        get: vi.fn(async (endpoint: string, options?: { headers?: unknown }) => {
+          calls.push({ endpoint, headers: options?.headers });
+          if (endpoint.startsWith('/api/team/status')) {
+            return { ok: true, data: { collective_connected: false } };
+          }
+          for (const [prefix, body] of Object.entries(endpointResponses)) {
+            if (endpoint === prefix || endpoint.startsWith(`${prefix}?`)) {
+              return { ok: true, data: body };
+            }
+          }
+          return { ok: true, data: {} };
+        }),
+        post: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+        put: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+        delete: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+      } as unknown as DaemonClient;
+      return { client, calls };
+    }
+
+    it('op: "notifications" forwards request-context headers and unread_only/limit query params', async () => {
+      const { client, calls } = captureClient({
+        '/api/notifications': { notifications: [{ id: 'n1' }] },
+      });
+      const tools = createMycoTools('/tmp/myco-vault', client, { requestContext: FIXTURE_CONTEXT });
+      const result = await tools.callTool('myco_cortex', { op: 'notifications', unread_only: true, limit: 5 }) as { notifications: unknown[] };
+      expect(result.notifications).toHaveLength(1);
+      const call = calls.find((c) => c.endpoint.startsWith('/api/notifications'));
+      expect(call).toBeDefined();
+      expect(call!.endpoint).toContain('unread_only=true');
+      expect(call!.endpoint).toContain('limit=5');
+      // Header forwarding is the agent-native contract: the daemon
+      // re-resolves request context from these and scopes the read.
+      expect(call!.headers).toMatchObject({ 'x-myco-project-id': FIXTURE_PROJECT_ID });
+    });
+
+    it('op: "maintenance_summary" forwards request-context headers', async () => {
+      const summary = { groves: [], flags: { backup_overdue: 0, optimize_overdue: 0, integrity_issues: 0, error_count: 0 } };
+      const { client, calls } = captureClient({ '/api/maintenance/summary': summary });
+      const tools = createMycoTools('/tmp/myco-vault', client, { requestContext: FIXTURE_CONTEXT });
+      const result = await tools.callTool('myco_cortex', { op: 'maintenance_summary' });
+      expect(result).toEqual(summary);
+      const call = calls.find((c) => c.endpoint === '/api/maintenance/summary');
+      expect(call).toBeDefined();
+      expect(call!.headers).toMatchObject({ 'x-myco-project-id': FIXTURE_PROJECT_ID });
+    });
+
+    it('op: "projects_activity" returns the daemon body verbatim', async () => {
+      const activity = { projects: [], active_window_days: 7, generated_at: '2026-05-08T00:00:00Z' };
+      const { client, calls } = captureClient({ '/api/projects/activity': activity });
+      const tools = createMycoTools('/tmp/myco-vault', client, { requestContext: FIXTURE_CONTEXT });
+      const result = await tools.callTool('myco_cortex', { op: 'projects_activity' });
+      expect(result).toEqual(activity);
+      const call = calls.find((c) => c.endpoint === '/api/projects/activity');
+      expect(call).toBeDefined();
+    });
+
+    it('falls back to a typed failure when the daemon returns !ok', async () => {
+      const client = {
+        get: vi.fn(async (endpoint: string) => {
+          if (endpoint.startsWith('/api/team/status')) return { ok: true, data: { collective_connected: false } };
+          return { ok: false, data: undefined };
+        }),
+        post: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+        put: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+        delete: vi.fn().mockResolvedValue({ ok: true, data: {} }),
+      } as unknown as DaemonClient;
+      const tools = createMycoTools('/tmp/myco-vault', client, { requestContext: FIXTURE_CONTEXT });
+      await expect(tools.callTool('myco_cortex', { op: 'notifications' }))
+        .resolves.toEqual({ ok: false, error: 'Notifications unavailable' });
+    });
+  });
 });

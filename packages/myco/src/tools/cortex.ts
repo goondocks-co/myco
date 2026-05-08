@@ -7,6 +7,7 @@ import type { DaemonClient } from '@myco/hooks/client.js';
 import { handleCanopyEntryGet } from '@myco/daemon/api/canopy-read.js';
 import { handleCanopyMap, type CanopyMapResult } from './canopy-map.js';
 import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
+import { buildEndpoint } from './shared.js';
 import type { ToolFailure } from './error.js';
 
 export type CortexFailure = ToolFailure;
@@ -15,11 +16,13 @@ const DEFAULT_CONTEXT_TIER = 5000;
 const NO_DIGEST_MESSAGE = 'Digest context is not yet available. The first digest cycle has not completed.';
 
 export interface CortexInput {
-  op?: 'digest' | 'instructions' | 'canopy_map' | 'canopy_entry';
+  op?: 'digest' | 'instructions' | 'canopy_map' | 'canopy_entry' | 'notifications' | 'maintenance_summary' | 'projects_activity';
   tier?: number;
   id?: string;
   project_id?: string;
   path?: string;
+  unread_only?: boolean;
+  limit?: number;
 }
 
 export interface CortexDigestResult {
@@ -123,6 +126,62 @@ export async function handleCortexCanopyEntry(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'Canopy entry not found' };
   }
+}
+
+/**
+ * Stream J — agent-native parity reads (op: "notifications" |
+ * "maintenance_summary" | "projects_activity").
+ *
+ * Each handler proxies a daemon GET endpoint that today is reachable
+ * only from the UI. Wrapping them in `myco_cortex` ops lets agents
+ * answer dashboard-shaped questions ("are any Groves overdue for
+ * backup?", "which projects are still active?", "what notifications
+ * are pending?") without shelling out to HTTP. All three are
+ * read-only and forward the request context as headers so the daemon
+ * can scope per Grove/project the same way the UI does.
+ */
+export async function handleCortexNotifications(
+  input: { unread_only?: boolean; limit?: number },
+  client: DaemonClient,
+  requestContext?: MycoRequestContext,
+): Promise<unknown | CortexFailure> {
+  const endpoint = buildEndpoint('/api/notifications', {
+    unread_only: input.unread_only ? 'true' : undefined,
+    limit: input.limit,
+  });
+  const result = requestContext
+    ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+    : await client.get(endpoint);
+  if (!result.ok || !result.data) {
+    return { ok: false, error: 'Notifications unavailable' };
+  }
+  return result.data;
+}
+
+export async function handleCortexMaintenanceSummary(
+  client: DaemonClient,
+  requestContext?: MycoRequestContext,
+): Promise<unknown | CortexFailure> {
+  const result = requestContext
+    ? await client.get('/api/maintenance/summary', { headers: requestContextHeaders(requestContext) })
+    : await client.get('/api/maintenance/summary');
+  if (!result.ok || !result.data) {
+    return { ok: false, error: 'Maintenance summary unavailable' };
+  }
+  return result.data;
+}
+
+export async function handleCortexProjectsActivity(
+  client: DaemonClient,
+  requestContext?: MycoRequestContext,
+): Promise<unknown | CortexFailure> {
+  const result = requestContext
+    ? await client.get('/api/projects/activity', { headers: requestContextHeaders(requestContext) })
+    : await client.get('/api/projects/activity');
+  if (!result.ok || !result.data) {
+    return { ok: false, error: 'Projects activity feed unavailable' };
+  }
+  return result.data;
 }
 
 function resolveCanopyEntry(

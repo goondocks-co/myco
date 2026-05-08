@@ -325,6 +325,21 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
         return await dispatchCanopyEntry(input, context, start, cortex.handleCortexCanopyEntry);
       case 'canopy_map':
         return await dispatchCanopyMap(input, context, start, cortex.handleCortexCanopyMap);
+      case 'notifications': {
+        const result = await cortex.handleCortexNotifications(input as unknown as Parameters<typeof cortex.handleCortexNotifications>[0], client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'maintenance_summary': {
+        const result = await cortex.handleCortexMaintenanceSummary(client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'projects_activity': {
+        const result = await cortex.handleCortexProjectsActivity(client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
       default:
         throw new ToolError('invalid_input', `Unknown op '${String(op)}' for tool ${TOOL_CORTEX}`);
     }
