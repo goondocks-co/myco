@@ -17,14 +17,12 @@ import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from '../grove-runtime-cache.js';
 import type { Logger } from '../logger.js';
 import { forEachGrove } from '../scope-iteration.js';
-import { errorMessage } from '@myco/utils/error-message.js';
-import {
-  resolveActionScope,
-  actionScopeKey,
-  InvalidActionScopeError,
-  type ActionScope,
-} from './action-scope.js';
 import { ActionInflightRegistry } from './action-inflight.js';
+import {
+  runScopedAction,
+  wrapPerGroveResult,
+  type PerGroveResultBase as SharedPerGroveResultBase,
+} from './scoped-dispatch.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -217,12 +215,7 @@ export interface EmbeddingActionDeps {
   mycoHome?: string;
 }
 
-interface PerGroveResultBase {
-  grove_id: string;
-  grove_slug: string;
-  ok: boolean;
-  error?: string;
-}
+type PerGroveResultBase = SharedPerGroveResultBase;
 
 export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
   handleRebuild: RouteHandler;
@@ -245,20 +238,12 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
   ): Promise<PerGroveResultBase & T> {
     const grove = loadGroveRecord(groveId, mycoHome);
     const slug = grove?.slug ?? groveId;
-    try {
+    return wrapPerGroveResult(groveId, slug, async () => {
       const { manager, db, databasePath } = buildManagerForGrove(groveId);
-      const value = await deps.cache.withPinned(databasePath, async () =>
+      return deps.cache.withPinned(databasePath, async () =>
         withDatabase(db, async () => run(manager, db)),
       );
-      return { grove_id: groveId, grove_slug: slug, ok: true, ...value } as PerGroveResultBase & T;
-    } catch (err) {
-      return {
-        grove_id: groveId,
-        grove_slug: slug,
-        ok: false,
-        error: errorMessage(err),
-      } as PerGroveResultBase & T;
-    }
+    });
   }
 
   async function dispatchAllGroves<T>(
@@ -269,23 +254,12 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
       deps.cache,
       deps.logger,
       async (scope) => {
-        try {
-          const entry = deps.cache.getEmbeddingRuntime(scope.databasePath, deps.embeddingRuntimeFactory);
-          const value = await run(entry.embeddingManager!, entry.db);
-          results.push({
-            grove_id: scope.grove.id,
-            grove_slug: scope.grove.slug,
-            ok: true,
-            ...value,
-          } as PerGroveResultBase & T);
-        } catch (err) {
-          results.push({
-            grove_id: scope.grove.id,
-            grove_slug: scope.grove.slug,
-            ok: false,
-            error: errorMessage(err),
-          } as PerGroveResultBase & T);
-        }
+        results.push(
+          await wrapPerGroveResult(scope.grove.id, scope.grove.slug, () => {
+            const entry = deps.cache.getEmbeddingRuntime(scope.databasePath, deps.embeddingRuntimeFactory);
+            return run(entry.embeddingManager!, entry.db);
+          }),
+        );
       },
       // Each Grove has its own vectors.db + DB file; cross-Grove
       // parallelism is safe.
@@ -299,57 +273,21 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     req: RouteRequest,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<RouteResponse> {
-    let scope: ActionScope;
-    try {
-      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
-    } catch (err) {
-      if (err instanceof InvalidActionScopeError) {
-        return { status: 400, body: { error: 'invalid_scope', message: err.message } };
-      }
-      throw err;
-    }
-
-    const key = `${endpoint}:${actionScopeKey(scope)}`;
-    return inflight.run(key, async (): Promise<RouteResponse> => {
-      let results: Array<PerGroveResultBase & T>;
-      if (scope.kind === 'all-groves') {
-        results = await dispatchAllGroves(run);
-      } else if (scope.kind === 'grove') {
-        results = [await dispatchSingleGrove(scope.grove_id, run)];
-      } else {
-        // 'project' — embedding actions for spores/plans have project-
-        // scoped namespaces, so for these endpoints 'project' is the
-        // narrowed path. Today's EmbeddingManager fans out across the
-        // Grove DB regardless of the request's project_id; the
-        // narrowing happens via the scope-aware queue-depth filter
-        // when the manager is invoked under withDatabase. Use the
-        // request runtime so non-Grove (legacy) deployments still work.
-        const runtime = deps.resolveRequestRuntime(req);
-        const single: PerGroveResultBase & T = await (async () => {
-          try {
-            const value = await run(runtime.manager, runtime.db ?? (undefined as unknown as Database));
-            return {
-              grove_id: scope.grove_id,
-              grove_slug:
-                loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id,
-              ok: true,
-              ...value,
-            } as PerGroveResultBase & T;
-          } catch (err) {
-            return {
-              grove_id: scope.grove_id,
-              grove_slug:
-                loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id,
-              ok: false,
-              error: errorMessage(err),
-            } as PerGroveResultBase & T;
-          }
-        })();
-        results = [single];
-      }
-      const ok = results.filter((r) => r.ok).length;
-      const failed = results.length - ok;
-      return { body: { scope, results, summary: { ok, failed } } };
+    return runScopedAction<T>(endpoint, req, inflight, async (scope) => {
+      if (scope.kind === 'all-groves') return dispatchAllGroves(run);
+      if (scope.kind === 'grove') return [await dispatchSingleGrove(scope.grove_id, run)];
+      // 'project' — embedding actions for spores/plans have project-
+      // scoped namespaces, so 'project' is the narrowed path. Today's
+      // EmbeddingManager fans out across the Grove DB regardless of the
+      // request's project_id; the narrowing happens via the scope-aware
+      // queue-depth filter when the manager is invoked under
+      // withDatabase. Use the request runtime so non-Grove (legacy)
+      // deployments still work.
+      const runtime = deps.resolveRequestRuntime(req);
+      const slug = loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id;
+      return [await wrapPerGroveResult(scope.grove_id, slug, () =>
+        run(runtime.manager, runtime.db ?? (undefined as unknown as Database)),
+      )];
     });
   }
 

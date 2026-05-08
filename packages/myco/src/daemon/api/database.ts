@@ -19,7 +19,11 @@ import {
   type ActionScope,
 } from './action-scope.js';
 import { ActionInflightRegistry } from './action-inflight.js';
-import { errorMessage } from '@myco/utils/error-message.js';
+import {
+  runScopedAction,
+  wrapPerGroveResult,
+  type PerGroveResultBase,
+} from './scoped-dispatch.js';
 
 export interface DatabaseMaintenanceRouteDeps {
   /** Legacy per-request manager factory used for the `details` endpoint. */
@@ -32,19 +36,6 @@ export interface DatabaseMaintenanceRouteDeps {
   vaultDir: string;
   /** Override Myco home (tests). */
   mycoHome?: string;
-}
-
-interface PerGroveResultBase {
-  grove_id: string;
-  grove_slug: string;
-  ok: boolean;
-  error?: string;
-}
-
-interface DispatchResult<T> {
-  scope: ActionScope;
-  results: Array<PerGroveResultBase & T>;
-  summary: { ok: number; failed: number };
 }
 
 // Database maintenance is Grove-DB-only — there is no project-narrowed
@@ -78,19 +69,11 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     const slug = grove?.slug ?? groveId;
     const dbPath = resolveGroveDbPath(groveId, mycoHome);
     const db = deps.cache.getDatabase(dbPath);
-    try {
-      const value = await deps.cache.withPinned(dbPath, async () =>
+    return wrapPerGroveResult(groveId, slug, () =>
+      deps.cache.withPinned(dbPath, async () =>
         withDatabase(db, async () => run(buildManagerForGrove(groveId))),
-      );
-      return { grove_id: groveId, grove_slug: slug, ok: true, ...value } as PerGroveResultBase & T;
-    } catch (err) {
-      return {
-        grove_id: groveId,
-        grove_slug: slug,
-        ok: false,
-        error: errorMessage(err),
-      } as PerGroveResultBase & T;
-    }
+      ),
+    );
   }
 
   async function dispatchAllGroves<T>(
@@ -101,22 +84,11 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
       deps.cache,
       deps.logger,
       async (scope) => {
-        try {
-          const value = await run(buildManagerForGrove(scope.grove.id));
-          results.push({
-            grove_id: scope.grove.id,
-            grove_slug: scope.grove.slug,
-            ok: true,
-            ...value,
-          } as PerGroveResultBase & T);
-        } catch (err) {
-          results.push({
-            grove_id: scope.grove.id,
-            grove_slug: scope.grove.slug,
-            ok: false,
-            error: errorMessage(err),
-          } as PerGroveResultBase & T);
-        }
+        results.push(
+          await wrapPerGroveResult(scope.grove.id, scope.grove.slug, () =>
+            run(buildManagerForGrove(scope.grove.id)),
+          ),
+        );
       },
       // Each Grove has its own DB file; cross-Grove parallelism is safe
       // (per-DB write locks don't span Groves).
@@ -130,30 +102,11 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     req: RouteRequest,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<RouteResponse> {
-    let scope: ActionScope;
-    try {
-      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
-    } catch (err) {
-      if (err instanceof InvalidActionScopeError) {
-        return { status: 400, body: { error: 'invalid_scope', message: err.message } };
-      }
-      throw err;
-    }
-
-    const key = `${endpoint}:${actionScopeKey(scope)}`;
-    return inflight.run(key, async (): Promise<RouteResponse> => {
-      let results: Array<PerGroveResultBase & T>;
-      if (scope.kind === 'all-groves') {
-        results = await dispatchAllGroves(run);
-      } else {
-        // 'project' is treated as 'grove' here: database maintenance has
-        // no project-narrowed path — the whole Grove DB is the unit.
-        results = [await dispatchSingleGrove(scope.grove_id, run)];
-      }
-      const ok = results.filter((r) => r.ok).length;
-      const failed = results.length - ok;
-      const body: DispatchResult<T> = { scope, results, summary: { ok, failed } };
-      return { body };
+    return runScopedAction<T>(endpoint, req, inflight, async (scope) => {
+      if (scope.kind === 'all-groves') return dispatchAllGroves(run);
+      // 'project' is treated as 'grove' here: database maintenance has no
+      // project-narrowed path — the whole Grove DB is the unit.
+      return [await dispatchSingleGrove(scope.grove_id, run)];
     });
   }
 

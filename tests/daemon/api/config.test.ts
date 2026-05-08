@@ -41,16 +41,20 @@ describe('config API', () => {
   });
 
   it('PUT scoped patch preserves unrelated sections', async () => {
+    // Patch a project-tier field; verify previously-saved fields stay
+    // intact. (Machine-tier fields like `daemon.log_level` are silently
+    // dropped from the project file by ProjectConfigSchema — that's
+    // covered separately in tier-dispatch tests.)
     await handlePutScopedConfig(vaultDir, {
       scope: 'project',
-      patch: { daemon: { log_level: 'debug' } },
+      patch: { capture: { ignore_plan_dirs_in_git: true } },
     });
     const saved = YAML.parse(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')) as {
       embedding?: { model?: string };
-      daemon?: { log_level?: string };
+      capture?: { ignore_plan_dirs_in_git?: boolean };
     };
     expect(saved.embedding?.model).toBe('bge-m3');
-    expect(saved.daemon?.log_level).toBe('debug');
+    expect(saved.capture?.ignore_plan_dirs_in_git).toBe(true);
   });
 
   it('PUT scoped returns 400 for missing patch', async () => {
