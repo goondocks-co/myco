@@ -235,7 +235,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     return { manager: entry.embeddingManager!, db: entry.db, databasePath };
   }
 
-  async function dispatchSingleGrove<T>(
+  async function dispatchSingleGrove<T extends object>(
     groveId: string,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<PerGroveResultBase & T> {
@@ -249,7 +249,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     });
   }
 
-  async function dispatchAllGroves<T>(
+  async function dispatchAllGroves<T extends object>(
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<Array<PerGroveResultBase & T>> {
     const results: Array<PerGroveResultBase & T> = [];
@@ -271,7 +271,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     return results;
   }
 
-  async function dispatch<T>(
+  async function dispatch<T extends object>(
     endpoint: string,
     req: RouteRequest,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,

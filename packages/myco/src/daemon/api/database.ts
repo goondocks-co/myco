@@ -61,7 +61,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     return new DatabaseMaintenanceManager(dbPath, groveDir, deps.logger);
   }
 
-  async function dispatchSingleGrove<T>(
+  async function dispatchSingleGrove<T extends object>(
     groveId: string,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<PerGroveResultBase & T> {
@@ -76,7 +76,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     );
   }
 
-  async function dispatchAllGroves<T>(
+  async function dispatchAllGroves<T extends object>(
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<Array<PerGroveResultBase & T>> {
     const results: Array<PerGroveResultBase & T> = [];
@@ -97,7 +97,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     return results;
   }
 
-  async function dispatch<T>(
+  async function dispatch<T extends object>(
     endpoint: string,
     req: RouteRequest,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
