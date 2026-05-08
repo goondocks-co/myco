@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
+import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { errorMessage } from '../lib/error';
@@ -9,7 +9,6 @@ import { useDatabaseDetails, type DatabaseDetails } from '../hooks/use-database-
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { ScopedField } from '../components/config/ScopedField';
 import { Switch } from '../components/ui/switch';
-import { useLogFeed } from '../hooks/use-log-feed';
 import { Badge } from '../components/ui/badge';
 import { postJson, ApiError } from '../lib/api';
 import { formatBytes, formatTimeAgo, SECONDS_PER_HOUR } from '../lib/format';
@@ -20,8 +19,6 @@ import { StatCard } from '../components/ui/stat-card';
 import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
 import { cn } from '../lib/cn';
-import { BackupCard } from '../components/operations/BackupCard';
-import { LogRow } from '../components/operations/LogRow';
 import {
   OperationsScopePill,
   type OperationsScope,
@@ -57,8 +54,6 @@ const EMBEDDABLE_NAMESPACES = [
  */
 const NAMESPACE_LABELS: Partial<Record<(typeof EMBEDDABLE_NAMESPACES)[number], string>> = {};
 
-const EMBEDDING_LOG_CATEGORY = 'embedding';
-const DATABASE_LOG_CATEGORY = 'database';
 
 /** Fragmentation percentage at or above which the stat card uses a warning accent. */
 const FRAGMENTATION_WARN_PCT = 15;
@@ -71,15 +66,14 @@ const SPARKLINE_HISTORY_LENGTH = 20;
 
 /* ---------- Tabs ---------- */
 
-type ActiveTab = 'embedding' | 'database' | 'backup';
+type ActiveTab = 'embedding' | 'database';
 
 const MAINTENANCE_TABS: Tab[] = [
   { id: 'embedding', label: 'Embedding' },
   { id: 'database', label: 'Database' },
-  { id: 'backup', label: 'Backup' },
 ];
 
-const VALID_TABS = new Set<ActiveTab>(['embedding', 'database', 'backup']);
+const VALID_TABS = new Set<ActiveTab>(['embedding', 'database']);
 
 /**
  * Scope options on the Database tab. SQLite operations target a whole
@@ -264,68 +258,6 @@ function TablesTable({ tables }: { tables: DatabaseDetails['tables'] }) {
   );
 }
 
-function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
-  const [expanded, setExpanded] = useState(false);
-  const [pillScope, setPillScope] = useState<OperationsScope>('grove');
-  const btreeCount = indexes.filter((i) => i.type === 'btree').length;
-  const autoCount = indexes.filter((i) => i.type === 'auto').length;
-
-  return (
-    <Surface
-      id={CONFIG_SECTION_IDS.operationsMaintenance}
-      level="low"
-      className="rounded-lg p-6 space-y-4 transition-all duration-300"
-    >
-      <div className="flex items-center justify-between">
-        <PillSectionTitle title="Indexes" value={pillScope} onChange={setPillScope} available={DATABASE_SCOPE_AVAILABLE} />
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="font-sans text-xs text-on-surface-variant hover:text-on-surface transition-colors"
-        >
-          {expanded ? 'Hide' : 'Show all ' + indexes.length}
-        </button>
-      </div>
-      <PillScopeHelper scope={pillScope} />
-      <p className="font-sans text-sm text-on-surface-variant">
-        {btreeCount} btree {btreeCount === 1 ? 'index' : 'indexes'}
-        {autoCount > 0 && <> · {autoCount} auto-{autoCount === 1 ? 'index' : 'indexes'}</>}
-      </p>
-      {expanded && (
-        <div className="overflow-x-auto">
-          <table className="w-full font-mono text-xs" aria-label="All database indexes">
-            <thead>
-              <tr className="text-left text-on-surface-variant">
-                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Name</th>
-                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Table</th>
-                <th className="pb-2 pr-4 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">Type</th>
-                <th className="pb-2 font-sans font-medium text-[10px] uppercase tracking-widest" scope="col">SQL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {indexes.map((idx, i) => (
-                <tr
-                  key={idx.name}
-                  className={cn(
-                    'transition-colors hover:bg-surface-container-high/50',
-                    i % 2 === 1 ? 'bg-surface-container-low/30' : '',
-                  )}
-                >
-                  <td className="py-1.5 pr-4">{idx.name}</td>
-                  <td className="py-1.5 pr-4 text-on-surface-variant">{idx.table}</td>
-                  <td className="py-1.5 pr-4 text-on-surface-variant uppercase">{idx.type}</td>
-                  <td className="py-1.5 text-on-surface-variant/70 truncate max-w-[300px]" title={idx.sql ?? ''}>
-                    {idx.sql ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Surface>
-  );
-}
 
 function ScheduledMaintenanceCard({
   details,
@@ -657,16 +589,8 @@ function EmbeddingTab() {
     });
   }, [totalForSparkline]);
 
-  // Log feed (shared hook)
-  const {
-    filteredEntries,
-    scrollRef,
-    autoScroll,
-    setAutoScroll,
-    hasNewEntries,
-    handleScroll,
-    scrollToBottom,
-  } = useLogFeed(EMBEDDING_LOG_CATEGORY);
+  // Activity log moved to /logs?component=embedding — see the
+  // link rendered at the bottom of the tab.
 
   // --- Action handlers ---
 
@@ -888,66 +812,17 @@ function EmbeddingTab() {
         )}
       </Surface>
 
-      {/* Activity log — recessed terminal feel */}
-      <Surface level="low" className="flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4">
-          <SectionHeader>Activity Log</SectionHeader>
-          <Button
-            size="sm"
-            variant={autoScroll ? 'default' : 'ghost'}
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => {
-              if (autoScroll) {
-                setAutoScroll(false);
-              } else {
-                scrollToBottom();
-              }
-            }}
-            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
-          >
-            {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {autoScroll ? 'Pause' : 'Resume'}
-          </Button>
-        </div>
-        <div className="relative flex-1 p-0">
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="h-64 overflow-y-auto font-mono text-xs bg-surface-container-lowest"
-          >
-            {filteredEntries.length === 0 ? (
-              <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
-                No embedding log entries
-              </div>
-            ) : (
-              <table className="w-full border-collapse" aria-label="Embedding activity log">
-                <tbody>
-                  {filteredEntries.map((entry, idx) => (
-                    <LogRow key={`${entry.timestamp}-${idx}`} entry={entry} />
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* "New entries below" indicator */}
-          {hasNewEntries && !autoScroll && (
-            <button
-              type="button"
-              onClick={scrollToBottom}
-              className={cn(
-                'absolute bottom-4 left-1/2 -translate-x-1/2',
-                'flex items-center gap-1.5 rounded-full',
-                'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
-                'text-on-surface-variant transition-colors hover:text-on-surface',
-              )}
-            >
-              <ArrowDown className="h-3 w-3" />
-              New entries below
-            </button>
-          )}
-        </div>
-      </Surface>
+      {/* Activity log replaced with a deep-link to the Logs page
+          pre-filtered by the embedding component — keeps the page
+          action-focused and avoids duplicating logs UI here. */}
+      <div className="flex justify-end">
+        <Link
+          to="/logs?component=embedding"
+          className="font-sans text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
+        >
+          View embedding activity in Logs →
+        </Link>
+      </div>
       {pendingDialog && (
         <ActionConfirmDialog
           open
@@ -975,18 +850,6 @@ function EmbeddingTab() {
   );
 }
 
-/* ---------- Backup Tab ---------- */
-
-function BackupTab() {
-  // Cross-Grove cards (Groves overview, Project activity) live on
-  // Machine Dashboard now; this tab focuses on per-Grove backup
-  // create/restore for the active Grove.
-  return (
-    <div className="space-y-6">
-      <BackupCard />
-    </div>
-  );
-}
 
 /* ---------- Database Tab ---------- */
 
@@ -1007,16 +870,8 @@ function DatabaseTab() {
     });
   }, [data]);
 
-  // Log feed (shared hook)
-  const {
-    filteredEntries,
-    scrollRef,
-    autoScroll,
-    setAutoScroll,
-    hasNewEntries,
-    handleScroll,
-    scrollToBottom,
-  } = useLogFeed(DATABASE_LOG_CATEGORY);
+  // Activity log moved to /logs?component=database — see the
+  // link rendered at the bottom of the tab.
 
   if (isLoading) return <div className="text-on-surface-variant">Loading database details...</div>;
   if (isError) return <div className="text-tertiary">Error: {(error as Error).message}</div>;
@@ -1080,7 +935,9 @@ function DatabaseTab() {
         <TablesTable tables={data.tables} />
       </Surface>
 
-      <IndexesPanel indexes={data.indexes} />
+      {/* Index summary moved to Grove Dashboard — it's read-only
+          information, not an action surface, so it lives next to
+          the database stats. */}
 
       <ScheduledMaintenanceCard details={data} onActionResult={setActionResult} />
 
@@ -1097,65 +954,17 @@ function DatabaseTab() {
         </p>
       )}
 
-      {/* Activity log — recessed terminal feel */}
-      <Surface level="low" className="flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4">
-          <SectionHeader>Activity Log</SectionHeader>
-          <Button
-            size="sm"
-            variant={autoScroll ? 'default' : 'ghost'}
-            className="h-7 gap-1.5 px-2 text-xs"
-            onClick={() => {
-              if (autoScroll) {
-                setAutoScroll(false);
-              } else {
-                scrollToBottom();
-              }
-            }}
-            title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}
-          >
-            {autoScroll ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
-            {autoScroll ? 'Pause' : 'Resume'}
-          </Button>
-        </div>
-        <div className="relative flex-1 p-0">
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="h-64 overflow-y-auto font-mono text-xs bg-surface-container-lowest"
-          >
-            {filteredEntries.length === 0 ? (
-              <div className="flex h-32 items-center justify-center font-sans text-on-surface-variant">
-                No database log entries
-              </div>
-            ) : (
-              <table className="w-full border-collapse" aria-label="Database activity log">
-                <tbody>
-                  {filteredEntries.map((entry, idx) => (
-                    <LogRow key={entry.timestamp + '-' + idx} entry={entry} />
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {hasNewEntries && !autoScroll && (
-            <button
-              type="button"
-              onClick={scrollToBottom}
-              className={cn(
-                'absolute bottom-4 left-1/2 -translate-x-1/2',
-                'flex items-center gap-1.5 rounded-full',
-                'bg-surface-container-high px-3 py-1.5 text-xs font-medium shadow-ambient',
-                'text-on-surface-variant transition-colors hover:text-on-surface',
-              )}
-            >
-              <ArrowDown className="h-3 w-3" />
-              New entries below
-            </button>
-          )}
-        </div>
-      </Surface>
+      {/* Activity log moved to Logs (deep-link with database
+          component pre-filtered) — keeps Maintenance focused on
+          actions. */}
+      <div className="flex justify-end">
+        <Link
+          to="/logs?component=database"
+          className="font-sans text-xs text-primary hover:text-primary/80 transition-colors flex items-center gap-1"
+        >
+          View database activity in Logs →
+        </Link>
+      </div>
     </div>
   );
 }
@@ -1163,9 +972,8 @@ function DatabaseTab() {
 /* ---------- Grove Maintenance Page ---------- */
 
 const TAB_SUBTITLES: Record<ActiveTab, string> = {
-  embedding: 'Embedding actions and activity log',
+  embedding: 'Embedding actions for this Grove',
   database: 'Database actions and scheduled maintenance',
-  backup: 'Create and restore Grove backups',
 };
 
 export default function GroveMaintenance() {
@@ -1198,7 +1006,6 @@ export default function GroveMaintenance() {
         <div className="px-6 pb-6">
           {activeTab === 'embedding' && <EmbeddingTab />}
           {activeTab === 'database' && <DatabaseTab />}
-          {activeTab === 'backup' && <BackupTab />}
         </div>
       </div>
     </div>

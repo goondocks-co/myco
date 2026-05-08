@@ -76,7 +76,19 @@ interface BackupAllResponse {
   summary: { ok: number; failed: number };
 }
 
-export function BackupCard() {
+export interface BackupCardProps {
+  /**
+   * When true, hide the Surface wrapper, the section header,
+   * the scope pill, and the duplicate `backup.dir` ScopedField —
+   * those duplicates the embedding parent already provides. The
+   * Settings page passes `embedded` so its Backups Surface owns
+   * the header + dir field, and BackupCard contributes only the
+   * action buttons + list + preview/restore.
+   */
+  embedded?: boolean;
+}
+
+export function BackupCard({ embedded = false }: BackupCardProps = {}) {
   const [backups, setBackups] = useState<BackupMeta[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -169,19 +181,32 @@ export function BackupCard() {
     }
   }
 
-  return (
-    <Surface
-      id={CONFIG_SECTION_IDS.operationsBackup}
-      level="low"
-      className="rounded-lg p-6 space-y-4 transition-all duration-300"
-    >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <HardDrive className="h-4 w-4 text-primary" />
-          <SectionHeader>Backup &amp; Restore</SectionHeader>
-          <OperationsScopePill value={pillScope} onChange={setPillScope} available={BACKUP_SCOPE_AVAILABLE} />
+  const body = (
+    <>
+      {!embedded && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <HardDrive className="h-4 w-4 text-primary" />
+            <SectionHeader>Backup &amp; Restore</SectionHeader>
+            <OperationsScopePill value={pillScope} onChange={setPillScope} available={BACKUP_SCOPE_AVAILABLE} />
+          </div>
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={refreshBackups}>
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              Refresh
+            </Button>
+            <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={busy}>
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Backup Now
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
+      )}
+      {embedded && (
+        // Embedded mode shows the action row without the section
+        // header — the parent Surface owns the header + the
+        // backup.dir editor.
+        <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={refreshBackups}>
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             Refresh
@@ -191,7 +216,7 @@ export function BackupCard() {
             Backup Now
           </Button>
         </div>
-      </div>
+      )}
       <ActionConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
@@ -205,31 +230,34 @@ export function BackupCard() {
       />
 
 
-      {/* Backup directory — personal-default: each machine writes backups
-          to its own filesystem location (network share, external disk, etc). */}
-      <ScopedField
-        path="backup.dir"
-        label="Backup Directory"
-        defaultScope="local"
-        commitOn="blur"
-        requiresRestart
-        hint="leave blank for default .myco/backups; ~ supported"
-        parse={(v) => (v === '' ? (undefined as unknown as string) : v)}
-      >
-        {({ value, onChange, onBlur }) => (
-          <div className="flex items-center gap-2">
-            <FolderOpen className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
-            <input
-              type="text"
-              value={value ?? ''}
-              onChange={(e) => onChange(e.target.value)}
-              onBlur={onBlur}
-              placeholder=".myco/backups"
-              className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-hidden border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
-            />
-          </div>
-        )}
-      </ScopedField>
+      {!embedded && (
+        // Standalone mode keeps the legacy backup.dir editor for
+        // back-compat. Settings (`embedded`) provides its own
+        // Grove-tier directory editor + retention fields.
+        <ScopedField
+          path="backup.dir"
+          label="Backup Directory"
+          defaultScope="local"
+          commitOn="blur"
+          requiresRestart
+          hint="leave blank for default .myco/backups; ~ supported"
+          parse={(v) => (v === '' ? (undefined as unknown as string) : v)}
+        >
+          {({ value, onChange, onBlur }) => (
+            <div className="flex items-center gap-2">
+              <FolderOpen className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
+              <input
+                type="text"
+                value={value ?? ''}
+                onChange={(e) => onChange(e.target.value)}
+                onBlur={onBlur}
+                placeholder=".myco/backups"
+                className="flex-1 bg-surface-container text-on-surface font-mono text-sm rounded px-3 py-1.5 outline-hidden border border-outline-variant/15 focus:border-primary/40 placeholder:text-on-surface-variant/50"
+              />
+            </div>
+          )}
+        </ScopedField>
+      )}
 
       {/* Message */}
       {message && (
@@ -322,6 +350,19 @@ export function BackupCard() {
           </div>
         </Surface>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return <div className="space-y-4">{body}</div>;
+  }
+  return (
+    <Surface
+      id={CONFIG_SECTION_IDS.operationsBackup}
+      level="low"
+      className="rounded-lg p-6 space-y-4 transition-all duration-300"
+    >
+      {body}
     </Surface>
   );
 }

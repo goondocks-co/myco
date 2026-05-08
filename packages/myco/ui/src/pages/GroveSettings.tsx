@@ -6,6 +6,7 @@ import { SectionHeader } from '../components/ui/section-header';
 import { Switch } from '../components/ui/switch';
 import { FieldShell } from '../components/config/FieldShell';
 import { ScopeBadge } from '../components/config/ScopePill';
+import { BackupCard } from '../components/operations/BackupCard';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import { useGroveConfig, useUpdateGroveConfig, type GroveConfig } from '../hooks/use-grove-config';
 import { setAtPath } from '@myco/utils/dot-path';
@@ -235,45 +236,53 @@ export default function GroveSettings() {
       </p>
 
       <div className="space-y-6">
-        {/* Top row: Backups + Maintenance side by side on lg screens */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Backups */}
+      {/* Backups — full-width card. Hosts the auto-backup config
+          (directory + retention) AND the per-Grove backup list with
+          create/preview/restore controls (lifted from the old
+          Operations.System tab — backups are Grove-scoped and live
+          most contextually next to their settings here). */}
       <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300">
         <SectionHeader>Backups</SectionHeader>
         <p className="font-sans text-xs text-on-surface-variant">
           Auto-backup writes to this Grove's backup directory; pruning runs after each backup.
         </p>
-        <TextField
-          id="backup-dir"
-          label="Backup directory"
-          description="Use ~/path to expand to the user's home directory."
-          placeholder="~/Library/Application Support/myco/backups"
-          value={config.backup.dir ?? ''}
-          disabled={saving}
-          onCommit={(v) => patch('backup.dir', v.length > 0 ? v : null)}
-        />
-        <NumberField
-          id="backup-keep-daily"
-          label="Keep daily backups"
-          value={config.backup.retention.keep_daily}
-          min={1}
-          max={365}
-          suffix="day(s)"
-          disabled={saving}
-          onCommit={(v) => patch('backup.retention.keep_daily', v)}
-        />
-        <NumberField
-          id="backup-keep-weekly"
-          label="Keep weekly backups"
-          value={config.backup.retention.keep_weekly}
-          min={0}
-          max={52}
-          suffix="week(s)"
-          disabled={saving}
-          onCommit={(v) => patch('backup.retention.keep_weekly', v)}
-        />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <TextField
+            id="backup-dir"
+            label="Backup directory"
+            description="Use ~/path to expand to the user's home directory."
+            placeholder="~/Library/Application Support/myco/backups"
+            value={config.backup.dir ?? ''}
+            disabled={saving}
+            onCommit={(v) => patch('backup.dir', v.length > 0 ? v : null)}
+          />
+          <NumberField
+            id="backup-keep-daily"
+            label="Keep daily backups"
+            value={config.backup.retention.keep_daily}
+            min={1}
+            max={365}
+            suffix="day(s)"
+            disabled={saving}
+            onCommit={(v) => patch('backup.retention.keep_daily', v)}
+          />
+          <NumberField
+            id="backup-keep-weekly"
+            label="Keep weekly backups"
+            value={config.backup.retention.keep_weekly}
+            min={0}
+            max={52}
+            suffix="week(s)"
+            disabled={saving}
+            onCommit={(v) => patch('backup.retention.keep_weekly', v)}
+          />
+        </div>
+        <BackupCard embedded />
       </Surface>
 
+        {/* Top row: Maintenance side by side on lg screens (was 2-col with
+            Backups; Backups now lives full-width above). */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Maintenance */}
       <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300">
         <SectionHeader>Maintenance</SectionHeader>
