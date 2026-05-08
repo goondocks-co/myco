@@ -29,6 +29,7 @@ import {
   TOOL_SESSIONS,
   TOOL_SKILLS,
   TOOL_SPORES,
+  TOOL_UPDATE,
   type ToolDefinition,
 } from './definitions.js';
 
@@ -178,6 +179,24 @@ const HANDLERS = new Map<string, ToolLoader>([
       },
       // HTTP-only proxy. The local DB stays untouched; restore_preview
       // in particular runs even when the local DB is locked.
+      skipDatabase: true,
+    };
+  }],
+  [TOOL_UPDATE, async () => {
+    const { handleMycoUpdate } = await import('./update.js');
+    return {
+      handle: (input, client, context) => handleMycoUpdate(input as unknown as Parameters<typeof handleMycoUpdate>[0], client, context),
+      summarize: (input, result) => {
+        const r = result as { ok?: boolean; status?: string; running_version?: string };
+        return {
+          op: input.op ?? 'status',
+          status: r.status,
+          running_version: r.running_version,
+          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
+        };
+      },
+      // myco_update is a pure HTTP proxy onto the daemon's
+      // /api/update/* routes — no local DB access required.
       skipDatabase: true,
     };
   }],

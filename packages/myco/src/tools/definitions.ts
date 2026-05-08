@@ -65,6 +65,7 @@ export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
 export const TOOL_MAINTENANCE = 'myco_maintenance';
+export const TOOL_UPDATE = 'myco_update';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
@@ -327,6 +328,23 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         async: { type: 'boolean', description: 'embedding_rebuild — when true, queue work for the background loop and return immediately instead of draining inline.' },
       },
       required: ['op'],
+    },
+  },
+  {
+    name: TOOL_UPDATE,
+    description: 'Manage Myco self-update: read installed/latest versions and channel (op: "status"), force a registry check (op: "check"), apply pending updates (op: "apply"), and switch release channel (op: "set_channel"). Cross-Grove fan-out on apply is built into the daemon installer (it calls `myco update --all-projects` post-install) so a single op: "apply" call drives every registered project.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['status', 'check', 'apply', 'set_channel'], description: 'Operation: status (default), check, apply, or set_channel.' },
+        channel: { type: 'string', enum: ['stable', 'beta'], description: 'Required for op: "set_channel" — the release channel to switch to.' },
+      },
     },
   },
 ];

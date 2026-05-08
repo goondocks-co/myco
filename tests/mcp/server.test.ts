@@ -27,7 +27,7 @@ describe('MCP tool surface (createMycoTools)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated core tool surface (7 retrieval/entity tools + 1 operator tool)', () => {
+  it('registers the consolidated core tool surface (7 retrieval/entity tools + 2 operator tools)', () => {
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
@@ -36,9 +36,10 @@ describe('MCP tool surface (createMycoTools)', () => {
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_spores');
     expect(tools).toContain('myco_agent');
-    // Stream J — agent-native parity (operator action tool).
+    // Stream J — agent-native parity (operator action tools).
     expect(tools).toContain('myco_maintenance');
-    expect(tools).toHaveLength(8);
+    expect(tools).toContain('myco_update');
+    expect(tools).toHaveLength(9);
   });
 
   it('no longer registers the retired MCP surfaces', () => {
