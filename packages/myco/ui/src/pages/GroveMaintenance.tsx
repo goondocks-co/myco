@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { Cpu, Database, Play, Trash2, RefreshCw, RotateCcw, ArrowDown, Pause } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
@@ -387,43 +388,26 @@ function ScheduledMaintenanceCard({
     void doRunNow();
   }
 
+  const groveSlug = selection?.grove.slug ?? '';
+  const settingsHref = `/g/${groveSlug}/settings`;
+
   return (
     <Surface level="low" className="p-6 space-y-4">
       <PillSectionTitle title="Scheduled Maintenance" value={pillScope} onChange={setPillScope} available={DATABASE_SCOPE_AVAILABLE} />
       <PillScopeHelper scope={pillScope} />
-      <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
-        <ScopedField
-          path="maintenance.auto_optimize"
-          label="Auto-optimize"
-          defaultScope="local"
-        >
-          {({ value, onChange }) => (
-            <Switch checked={value ?? false} onCheckedChange={onChange} />
-          )}
-        </ScopedField>
-        <span className="text-on-surface-variant">every</span>
-        <ScopedField
-          path="maintenance.auto_optimize_interval_hours"
-          label=""
-          defaultScope="local"
-        >
-          {({ value, onChange }) => (
-            <select
-              value={value ?? 24}
-              disabled={!enabled}
-              onChange={(e) => onChange(Number(e.target.value))}
-              className="rounded-md border border-outline bg-surface-container px-2 py-1 text-on-surface text-sm"
-            >
-              <option value={6}>6 hours</option>
-              <option value={12}>12 hours</option>
-              <option value={24}>24 hours</option>
-              <option value={72}>3 days</option>
-              <option value={168}>7 days</option>
-              <option value={720}>30 days</option>
-            </select>
-          )}
-        </ScopedField>
-      </div>
+      <p className="font-sans text-sm text-on-surface">
+        <span className="font-medium">Auto-optimize</span>{' '}
+        {enabled ? (
+          <>
+            <span className="text-primary">on</span>, every {intervalHours}h.
+          </>
+        ) : (
+          <span className="text-on-surface-variant">off.</span>
+        )}{' '}
+        <Link to={settingsHref} className="text-primary hover:text-primary/80 transition-colors text-xs">
+          Configure in Settings →
+        </Link>
+      </p>
       <p className="font-sans text-sm text-on-surface-variant">
         Last run: {details.last_optimize_at ? formatTimeAgo(details.last_optimize_at) : 'never'}
         {enabled && lastRunMs !== null && <> · Next: {formatCountdown(nextRunMs)}</>}
@@ -864,33 +848,9 @@ function EmbeddingTab() {
         <NamespaceTable data={data} />
       </Surface>
 
-      {/* Reconcile policy — the section holds a single ScopedField,
-          which carries its own per-field scope indicator. The
-          section-level pill confused write tier with view tier and
-          had no narrowing semantics of its own, so it's been removed. */}
-      <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>Reconcile Policy</SectionHeader>
-        <ScopedField<'embedding.run_in_deep_sleep', boolean>
-          path="embedding.run_in_deep_sleep"
-          label="Continue embedding in deep sleep"
-          defaultScope="local"
-        >
-          {({ value, onChange }) => (
-            <div className="flex items-start gap-3">
-              <Switch
-                checked={value ?? true}
-                onCheckedChange={onChange}
-                aria-label="Continue embedding in deep sleep"
-              />
-              <p className="font-sans text-xs text-on-surface-variant max-w-xl">
-                Keep the queue draining when the machine is idle long enough to
-                deep sleep — recommended for repos with large embedding
-                backlogs.
-              </p>
-            </div>
-          )}
-        </ScopedField>
-      </Surface>
+      {/* Reconcile Policy moved to Grove Settings → Embedding
+          (`run_in_deep_sleep`). Maintenance is action-only now;
+          settings live with their categorical siblings. */}
 
       {/* Action toolbar */}
       <Surface level="low" className="p-6 space-y-3">

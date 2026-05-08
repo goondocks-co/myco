@@ -188,12 +188,12 @@ export default function GroveSettings() {
 
   if (!selection) {
     return (
-      <div className="px-8 py-8 max-w-4xl">
+      <div className="p-6">
         <PageHeader
           title="Grove Settings"
           subtitle="Settings here apply to every project in the selected Grove."
         />
-        <Surface level="low" className="rounded-lg p-6">
+        <Surface level="low" className="rounded-lg p-6 mt-4">
           <p className="text-sm text-on-surface-variant">
             Pick a project from the switcher to see Grove Settings.
           </p>
@@ -223,14 +223,22 @@ export default function GroveSettings() {
   }
 
   return (
-    <div className="px-8 py-8 max-w-4xl space-y-6">
+    <div className="p-6">
       <PageHeader
         title="Grove Settings"
         subtitle={`Settings here apply to every project in ${groveName}.`}
       />
+      <p className="font-sans text-sm text-on-surface-variant mt-2 mb-4">
+        Project-scoped configuration lives under <strong className="font-medium text-on-surface">Settings</strong>;
+        machine-wide settings (daemon port, log retention, update channel) live under{' '}
+        <strong className="font-medium text-on-surface">Machine → Settings</strong>.
+      </p>
 
+      <div className="space-y-6">
+        {/* Top row: Backups + Maintenance side by side on lg screens */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Backups */}
-      <Surface level="low" className="rounded-lg p-6 space-y-5">
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300">
         <SectionHeader>Backups</SectionHeader>
         <p className="font-sans text-xs text-on-surface-variant">
           Auto-backup writes to this Grove's backup directory; pruning runs after each backup.
@@ -267,7 +275,7 @@ export default function GroveSettings() {
       </Surface>
 
       {/* Maintenance */}
-      <Surface level="low" className="rounded-lg p-6 space-y-5">
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300">
         <SectionHeader>Maintenance</SectionHeader>
         <p className="font-sans text-xs text-on-surface-variant">
           Cadences applied to this Grove's database.
@@ -309,9 +317,12 @@ export default function GroveSettings() {
           onCommit={(v) => patch('maintenance.auto_integrity_check_interval_hours', v)}
         />
       </Surface>
+        </div>{/* end top row grid */}
 
+        {/* Middle row: Embedding + Sessions */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Embedding */}
-      <Surface level="low" className="rounded-lg p-6 space-y-5">
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-terracotta transition-all duration-300">
         <SectionHeader>Embedding</SectionHeader>
         <ToggleField
           id="embedding-run-in-deep-sleep"
@@ -323,8 +334,25 @@ export default function GroveSettings() {
         />
       </Surface>
 
-      {/* Scheduled tasks */}
-      <Surface level="low" className="rounded-lg p-6 space-y-5">
+      {/* Sessions */}
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-secondary transition-all duration-300">
+        <SectionHeader>Sessions</SectionHeader>
+        <NumberField
+          id="daemon-stale-session-threshold"
+          label="Stale-session threshold"
+          description="Time without new prompts before an active session is auto-completed."
+          value={Math.round(config.daemon.stale_session_threshold_ms / MS_PER_MINUTE)}
+          min={1}
+          max={10_080}
+          suffix="minutes"
+          disabled={saving}
+          onCommit={(v) => patch('daemon.stale_session_threshold_ms', v * MS_PER_MINUTE)}
+        />
+      </Surface>
+        </div>{/* end middle row grid */}
+
+      {/* Scheduled tasks (full width — single field) */}
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-tertiary transition-all duration-300">
         <SectionHeader>Scheduled tasks</SectionHeader>
         <NumberField
           id="agent-active-window-days"
@@ -339,22 +367,6 @@ export default function GroveSettings() {
         />
       </Surface>
 
-      {/* Sessions */}
-      <Surface level="low" className="rounded-lg p-6 space-y-5">
-        <SectionHeader>Sessions</SectionHeader>
-        <NumberField
-          id="daemon-stale-session-threshold"
-          label="Stale-session threshold"
-          description="Time without new prompts before an active session is auto-completed."
-          value={Math.round(config.daemon.stale_session_threshold_ms / MS_PER_MINUTE)}
-          min={1}
-          max={10_080}
-          suffix="minutes"
-          disabled={saving}
-          onCommit={(v) => patch('daemon.stale_session_threshold_ms', v * MS_PER_MINUTE)}
-        />
-      </Surface>
-
       {update.isError && (
         <Surface level="low" className="rounded-lg p-4">
           <p className="text-sm text-tertiary">
@@ -362,6 +374,7 @@ export default function GroveSettings() {
           </p>
         </Surface>
       )}
+      </div>{/* end space-y-6 wrapper */}
     </div>
   );
 }
