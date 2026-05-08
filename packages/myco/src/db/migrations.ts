@@ -92,6 +92,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 36, migrate: (db) => migrateV35ToV36(db) },
   { version: 37, migrate: (db) => migrateV36ToV37(db) },
   { version: 38, migrate: (db) => migrateV37ToV38(db) },
+  { version: 39, migrate: (db) => migrateV38ToV39(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2361,6 +2362,48 @@ function migrateV37ToV38(db: Database): void {
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(38, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v39 — Composite (project_id, created_at) indexes on `sessions` and
+ * `prompt_batches`.
+ *
+ * The `getProjectActivitySeconds` /
+ * `getProjectActivityWithBacklog` queries scan
+ * `MAX(created_at) WHERE project_id = ?` per project, called both per
+ * scheduler tick (project-power-state) and per `/api/projects/activity`
+ * request. v38 added `idx_prompt_batches_project_origin_created` whose
+ * `(project_id, origin, created_at)` shape can serve a `project_id = ?`
+ * predicate via prefix scan, but only when the planner picks that
+ * index — and `sessions` had nothing better than the per-column
+ * `idx_sessions_created_at`, forcing a full-table scan for any project
+ * with a small share of the rows.
+ *
+ * Adding the dedicated `(project_id, created_at)` composites lets SQLite
+ * resolve `MAX(created_at)` as an index range-max in O(log n) per project.
+ * Both indexes are additive — existing data and existing v38 indexes are
+ * untouched. CREATE INDEX IF NOT EXISTS makes the migration idempotent.
+ */
+function migrateV38ToV39(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_project_created
+         ON sessions (project_id, created_at)`,
+    ).run();
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created
+         ON prompt_batches (project_id, created_at)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(39, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

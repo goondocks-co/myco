@@ -292,6 +292,11 @@ const POST_MIGRATION_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created ON prompt_batches (project_id, origin, created_at)',
+  // v39 mirror — composite (project_id, created_at) indexes that back
+  // per-project recency queries on the local SQLite vault. D1 carries
+  // them so the same query plan works against the synced replica.
+  'CREATE INDEX IF NOT EXISTS idx_sessions_project_created ON sessions (project_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
 ];
 
 const PROJECT_SCOPE_INDEXES = [

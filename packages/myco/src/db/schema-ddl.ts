@@ -769,6 +769,8 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions (started_at)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions (agent)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions (created_at)',
+  // v39 — supports getProjectActivitySeconds MAX(created_at) WHERE project_id = ?
+  'CREATE INDEX IF NOT EXISTS idx_sessions_project_created ON sessions (project_id, created_at)',
 
   // Prompt batches
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_session_id ON prompt_batches (session_id)',
@@ -776,6 +778,9 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_status ON prompt_batches (status)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created ON prompt_batches (project_id, origin, created_at)',
+  // v39 — supports getProjectActivitySeconds without forcing the planner
+  // to use the wider (project_id, origin, created_at) index.
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
 
   // Activities
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
