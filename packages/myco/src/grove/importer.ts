@@ -72,6 +72,63 @@ interface ImportContext {
   targetMachineId: string | null;
 }
 
+/**
+ * Outcome of importing a single source row into the target Grove DB.
+ *
+ * - 'imported': the row was inserted (or rebound to an existing target id) on
+ *   this pass. Increments the per-table imported counter.
+ * - 'skipped':  the row could not be imported because a required mapping was
+ *   missing (dangling reference). Increments the per-table skipped counter.
+ *   Skipped rows are recorded in the import journal so re-runs are idempotent.
+ * - 'unchanged': the target row already exists or this row was already
+ *   imported on a previous run. No counter is incremented.
+ *
+ * Every per-table importer returns this union; counter wiring lives in
+ * `runTable` so the orchestrator stays declarative.
+ */
+export type ImportOutcome = 'imported' | 'skipped' | 'unchanged';
+
+type ImportedCounter = {
+  [K in keyof ImportProjectCoreResult]: K extends `skipped_${string}` ? never : K
+}[keyof ImportProjectCoreResult];
+
+type SkippedCounter = {
+  [K in keyof ImportProjectCoreResult]: K extends `skipped_${string}` ? K : never
+}[keyof ImportProjectCoreResult];
+
+interface RunTableSpec<Row> {
+  rows: readonly Row[];
+  run: (row: Row) => ImportOutcome;
+  imported: ImportedCounter;
+  skipped?: SkippedCounter;
+}
+
+/**
+ * Iterate `rows`, run the per-table importer, and increment the right
+ * counters on `result`. Centralizes the counter wiring so per-table
+ * orchestrator blocks no longer need hand-written `if (outcome === 'imported')`
+ * ladders. If `skipped` is omitted, this importer is not expected to skip;
+ * a 'skipped' outcome will throw to surface the contract mismatch loudly.
+ */
+function runTable<Row>(
+  spec: RunTableSpec<Row>,
+  result: ImportProjectCoreResult,
+): void {
+  for (const row of spec.rows) {
+    const outcome = spec.run(row);
+    if (outcome === 'imported') {
+      result[spec.imported] += 1;
+    } else if (outcome === 'skipped') {
+      if (!spec.skipped) {
+        throw new Error(
+          `runTable: importer for "${spec.imported}" returned 'skipped' but no skipped counter was configured`,
+        );
+      }
+      result[spec.skipped] += 1;
+    }
+  }
+}
+
 interface SourceSessionRow {
   id: string;
   agent: string;
@@ -595,9 +652,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => row.id,
       });
     }
-    for (const row of agents) {
-      if (importAgent(ctx, row)) result.agents += 1;
-    }
+    runTable({
+      rows: agents,
+      run: (row) => importAgent(ctx, row),
+      imported: 'agents',
+    }, result);
 
     const agentTasks = listSourceAgentTasks(ctx.sourceDb);
     for (const row of agentTasks) {
@@ -608,11 +667,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => row.id,
       });
     }
-    for (const row of agentTasks) {
-      const imported = importAgentTask(ctx, row);
-      if (imported === 'imported') result.agent_tasks += 1;
-      if (imported === 'skipped') result.skipped_agent_tasks += 1;
-    }
+    runTable({
+      rows: agentTasks,
+      run: (row) => importAgentTask(ctx, row),
+      imported: 'agent_tasks',
+      skipped: 'skipped_agent_tasks',
+    }, result);
 
     const agentState = listSourceAgentState(ctx.sourceDb);
     for (const row of agentState) {
@@ -623,11 +683,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => agentStateTargetId(ctx, row),
       });
     }
-    for (const row of agentState) {
-      const imported = importAgentState(ctx, row);
-      if (imported === 'imported') result.agent_state += 1;
-      if (imported === 'skipped') result.skipped_agent_state += 1;
-    }
+    runTable({
+      rows: agentState,
+      run: (row) => importAgentState(ctx, row),
+      imported: 'agent_state',
+      skipped: 'skipped_agent_state',
+    }, result);
 
     const sessions = listSourceSessions(ctx.sourceDb);
     for (const row of sessions) {
@@ -639,9 +700,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of sessions) {
-      if (importSession(ctx, row)) result.sessions += 1;
-    }
+    runTable({
+      rows: sessions,
+      run: (row) => importSession(ctx, row),
+      imported: 'sessions',
+    }, result);
 
     const promptBatches = listSourcePromptBatches(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -651,13 +714,17 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       sourceId: (row) => row.id,
       sourceMachineId: (row) => row.machine_id,
     });
-    for (const row of sortPromptBatchesForImport(promptBatches)) {
-      if (importPromptBatch(ctx, row)) result.prompt_batches += 1;
-    }
+    runTable({
+      rows: sortPromptBatchesForImport(promptBatches),
+      run: (row) => importPromptBatch(ctx, row),
+      imported: 'prompt_batches',
+    }, result);
 
-    for (const row of listSourceActivities(ctx.sourceDb)) {
-      if (importActivity(ctx, row)) result.activities += 1;
-    }
+    runTable({
+      rows: listSourceActivities(ctx.sourceDb),
+      run: (row) => importActivity(ctx, row),
+      imported: 'activities',
+    }, result);
 
     const attachments = listSourceAttachments(ctx.sourceDb);
     for (const row of attachments) {
@@ -668,9 +735,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => createGroveEraId('attachment'),
       });
     }
-    for (const row of attachments) {
-      if (importAttachment(ctx, row)) result.attachments += 1;
-    }
+    runTable({
+      rows: attachments,
+      run: (row) => importAttachment(ctx, row),
+      imported: 'attachments',
+    }, result);
 
     const plans = listSourcePlans(ctx.sourceDb);
     for (const row of plans) {
@@ -682,9 +751,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of plans) {
-      if (importPlan(ctx, row)) result.plans += 1;
-    }
+    runTable({
+      rows: plans,
+      run: (row) => importPlan(ctx, row),
+      imported: 'plans',
+    }, result);
 
     const artifacts = listSourceArtifacts(ctx.sourceDb);
     for (const row of artifacts) {
@@ -696,9 +767,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of artifacts) {
-      if (importArtifact(ctx, row)) result.artifacts += 1;
-    }
+    runTable({
+      rows: artifacts,
+      run: (row) => importArtifact(ctx, row),
+      imported: 'artifacts',
+    }, result);
 
     const spores = listSourceSpores(ctx.sourceDb);
     for (const row of spores) {
@@ -710,9 +783,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of spores) {
-      if (importSpore(ctx, row)) result.spores += 1;
-    }
+    runTable({
+      rows: spores,
+      run: (row) => importSpore(ctx, row),
+      imported: 'spores',
+    }, result);
 
     const entities = listSourceEntities(ctx.sourceDb);
     for (const row of entities) {
@@ -724,13 +799,17 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of entities) {
-      if (importEntity(ctx, row)) result.entities += 1;
-    }
+    runTable({
+      rows: entities,
+      run: (row) => importEntity(ctx, row),
+      imported: 'entities',
+    }, result);
 
-    for (const row of listSourceEntityMentions(ctx.sourceDb)) {
-      if (importEntityMention(ctx, row)) result.entity_mentions += 1;
-    }
+    runTable({
+      rows: listSourceEntityMentions(ctx.sourceDb),
+      run: (row) => importEntityMention(ctx, row),
+      imported: 'entity_mentions',
+    }, result);
 
     const resolutionEvents = listSourceResolutionEvents(ctx.sourceDb);
     for (const row of resolutionEvents) {
@@ -742,11 +821,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of resolutionEvents) {
-      const imported = importResolutionEvent(ctx, row);
-      if (imported === 'imported') result.resolution_events += 1;
-      if (imported === 'skipped') result.skipped_resolution_events += 1;
-    }
+    runTable({
+      rows: resolutionEvents,
+      run: (row) => importResolutionEvent(ctx, row),
+      imported: 'resolution_events',
+      skipped: 'skipped_resolution_events',
+    }, result);
 
     const graphEdges = listSourceGraphEdges(ctx.sourceDb);
     for (const row of graphEdges) {
@@ -758,11 +838,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of graphEdges) {
-      const imported = importGraphEdge(ctx, row);
-      if (imported === 'imported') result.graph_edges += 1;
-      if (imported === 'skipped') result.skipped_graph_edges += 1;
-    }
+    runTable({
+      rows: graphEdges,
+      run: (row) => importGraphEdge(ctx, row),
+      imported: 'graph_edges',
+      skipped: 'skipped_graph_edges',
+    }, result);
 
     const agentRuns = listSourceAgentRuns(ctx.sourceDb);
     for (const row of agentRuns) {
@@ -773,9 +854,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => createGroveEraId('agent_run'),
       });
     }
-    for (const row of agentRuns) {
-      if (importAgentRun(ctx, row)) result.agent_runs += 1;
-    }
+    runTable({
+      rows: agentRuns,
+      run: (row) => importAgentRun(ctx, row),
+      imported: 'agent_runs',
+    }, result);
 
     const agentReports = listSourceAgentReports(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -784,11 +867,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       targetTable: 'agent_reports',
       sourceId: (row) => row.id,
     });
-    for (const row of agentReports) {
-      const imported = importAgentReport(ctx, row);
-      if (imported === 'imported') result.agent_reports += 1;
-      if (imported === 'skipped') result.skipped_agent_reports += 1;
-    }
+    runTable({
+      rows: agentReports,
+      run: (row) => importAgentReport(ctx, row),
+      imported: 'agent_reports',
+      skipped: 'skipped_agent_reports',
+    }, result);
 
     const agentTurns = listSourceAgentTurns(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -797,11 +881,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       targetTable: 'agent_turns',
       sourceId: (row) => row.id,
     });
-    for (const row of agentTurns) {
-      const imported = importAgentTurn(ctx, row);
-      if (imported === 'imported') result.agent_turns += 1;
-      if (imported === 'skipped') result.skipped_agent_turns += 1;
-    }
+    runTable({
+      rows: agentTurns,
+      run: (row) => importAgentTurn(ctx, row),
+      imported: 'agent_turns',
+      skipped: 'skipped_agent_turns',
+    }, result);
 
     const writeIntents = listSourceAgentRunWriteIntents(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -810,11 +895,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       targetTable: 'agent_run_write_intents',
       sourceId: (row) => row.id,
     });
-    for (const row of writeIntents) {
-      const imported = importAgentRunWriteIntent(ctx, row);
-      if (imported === 'imported') result.agent_run_write_intents += 1;
-      if (imported === 'skipped') result.skipped_agent_run_write_intents += 1;
-    }
+    runTable({
+      rows: writeIntents,
+      run: (row) => importAgentRunWriteIntent(ctx, row),
+      imported: 'agent_run_write_intents',
+      skipped: 'skipped_agent_run_write_intents',
+    }, result);
 
     const skillRecords = listSourceSkillRecords(ctx.sourceDb);
     for (const row of skillRecords) {
@@ -838,17 +924,19 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       });
     }
 
-    for (const row of skillRecords) {
-      const imported = importSkillRecord(ctx, row);
-      if (imported === 'imported') result.skill_records += 1;
-      if (imported === 'skipped') result.skipped_skill_records += 1;
-    }
+    runTable({
+      rows: skillRecords,
+      run: (row) => importSkillRecord(ctx, row),
+      imported: 'skill_records',
+      skipped: 'skipped_skill_records',
+    }, result);
 
-    for (const row of skillCandidates) {
-      const imported = importSkillCandidate(ctx, row);
-      if (imported === 'imported') result.skill_candidates += 1;
-      if (imported === 'skipped') result.skipped_skill_candidates += 1;
-    }
+    runTable({
+      rows: skillCandidates,
+      run: (row) => importSkillCandidate(ctx, row),
+      imported: 'skill_candidates',
+      skipped: 'skipped_skill_candidates',
+    }, result);
 
     for (const row of skillRecords) {
       linkSkillRecordCandidate(ctx, row);
@@ -863,11 +951,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => createGroveEraId('skill_lineage'),
       });
     }
-    for (const row of skillLineage) {
-      const imported = importSkillLineage(ctx, row);
-      if (imported === 'imported') result.skill_lineage += 1;
-      if (imported === 'skipped') result.skipped_skill_lineage += 1;
-    }
+    runTable({
+      rows: skillLineage,
+      run: (row) => importSkillLineage(ctx, row),
+      imported: 'skill_lineage',
+      skipped: 'skipped_skill_lineage',
+    }, result);
 
     const skillUsage = listSourceSkillUsage(ctx.sourceDb);
     for (const row of skillUsage) {
@@ -879,11 +968,12 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of skillUsage) {
-      const imported = importSkillUsage(ctx, row);
-      if (imported === 'imported') result.skill_usage += 1;
-      if (imported === 'skipped') result.skipped_skill_usage += 1;
-    }
+    runTable({
+      rows: skillUsage,
+      run: (row) => importSkillUsage(ctx, row),
+      imported: 'skill_usage',
+      skipped: 'skipped_skill_usage',
+    }, result);
 
     const canopyEntries = listSourceCanopyEntries(ctx.sourceDb);
     for (const row of canopyEntries) {
@@ -895,9 +985,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of canopyEntries) {
-      if (importCanopyEntry(ctx, row)) result.canopy_entries += 1;
-    }
+    runTable({
+      rows: canopyEntries,
+      run: (row) => importCanopyEntry(ctx, row),
+      imported: 'canopy_entries',
+    }, result);
 
     const canopyMaps = listSourceCanopyMaps(ctx.sourceDb);
     for (const row of canopyMaps) {
@@ -909,9 +1001,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of canopyMaps) {
-      if (importCanopyMap(ctx, row)) result.canopy_maps += 1;
-    }
+    runTable({
+      rows: canopyMaps,
+      run: (row) => importCanopyMap(ctx, row),
+      imported: 'canopy_maps',
+    }, result);
 
     const digestExtracts = listSourceDigestExtracts(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -921,9 +1015,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       sourceId: (row) => row.id,
       sourceMachineId: (row) => row.machine_id,
     });
-    for (const row of digestExtracts) {
-      if (importDigestExtract(ctx, row)) result.digest_extracts += 1;
-    }
+    runTable({
+      rows: digestExtracts,
+      run: (row) => importDigestExtract(ctx, row),
+      imported: 'digest_extracts',
+    }, result);
 
     const digestExtractRevisions = listSourceDigestExtractRevisions(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -932,9 +1028,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       targetTable: 'digest_extract_revisions',
       sourceId: (row) => row.id,
     });
-    for (const row of sortDigestExtractRevisionsForImport(digestExtractRevisions)) {
-      if (importDigestExtractRevision(ctx, row)) result.digest_extract_revisions += 1;
-    }
+    runTable({
+      rows: sortDigestExtractRevisionsForImport(digestExtractRevisions),
+      run: (row) => importDigestExtractRevision(ctx, row),
+      imported: 'digest_extract_revisions',
+    }, result);
 
     const cortexInstructions = listSourceCortexInstructions(ctx.sourceDb);
     for (const row of cortexInstructions) {
@@ -946,9 +1044,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         sourceMachineId: row.machine_id,
       });
     }
-    for (const row of cortexInstructions) {
-      if (importCortexInstructions(ctx, row)) result.cortex_instructions += 1;
-    }
+    runTable({
+      rows: cortexInstructions,
+      run: (row) => importCortexInstructions(ctx, row),
+      imported: 'cortex_instructions',
+    }, result);
 
     const notifications = listSourceNotifications(ctx.sourceDb);
     for (const row of notifications) {
@@ -959,9 +1059,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
         targetId: () => createGroveEraId('notification'),
       });
     }
-    for (const row of notifications) {
-      if (importNotification(ctx, row)) result.notifications += 1;
-    }
+    runTable({
+      rows: notifications,
+      run: (row) => importNotification(ctx, row),
+      imported: 'notifications',
+    }, result);
 
     const logEntries = listSourceLogEntries(ctx.sourceDb);
     ensureIntegerMappings(ctx, {
@@ -970,9 +1072,11 @@ export function importProjectCoreRows(input: ImportProjectCoreInput): ImportProj
       targetTable: 'log_entries',
       sourceId: (row) => row.id,
     });
-    for (const row of logEntries) {
-      if (importLogEntry(ctx, row)) result.log_entries += 1;
-    }
+    runTable({
+      rows: logEntries,
+      run: (row) => importLogEntry(ctx, row),
+      imported: 'log_entries',
+    }, result);
 
     rebuildCoreFtsIndexes(ctx.targetDb);
   })();
@@ -999,11 +1103,11 @@ function normalizeInput(input: ImportProjectCoreInput): ImportContext {
   };
 }
 
-function importAgent(ctx: ImportContext, row: SourceAgentRow): boolean {
+function importAgent(ctx: ImportContext, row: SourceAgentRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agents', row.id);
   if (targetRowExists(ctx.targetDb, 'agents', mapping.target_id)) {
     markImported(ctx, 'agents', row.id);
-    return false;
+    return 'unchanged';
   }
 
   ctx.targetDb.prepare(
@@ -1034,10 +1138,10 @@ function importAgent(ctx: ImportContext, row: SourceAgentRow): boolean {
   );
 
   markImported(ctx, 'agents', row.id);
-  return true;
+  return 'imported';
 }
 
-function importAgentTask(ctx: ImportContext, row: SourceAgentTaskRow): 'imported' | 'skipped' | 'unchanged' {
+function importAgentTask(ctx: ImportContext, row: SourceAgentTaskRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agent_tasks', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
 
@@ -1081,7 +1185,7 @@ function importAgentTask(ctx: ImportContext, row: SourceAgentTaskRow): 'imported
   return 'imported';
 }
 
-function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): 'imported' | 'skipped' | 'unchanged' {
+function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): ImportOutcome {
   const sourceId = agentStateSourceId(row);
   const mapping = requireMapping(ctx, 'agent_state', sourceId);
   if (mapping.status === 'skipped') return 'unchanged';
@@ -1118,11 +1222,11 @@ function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): 'import
   return 'unchanged';
 }
 
-function importSession(ctx: ImportContext, row: SourceSessionRow): boolean {
+function importSession(ctx: ImportContext, row: SourceSessionRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'sessions', row.id);
   if (targetRowExists(ctx.targetDb, 'sessions', mapping.target_id)) {
     markImported(ctx, 'sessions', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const parentSessionId = mapOptionalTextId(ctx, 'sessions', row.parent_session_id);
@@ -1177,20 +1281,20 @@ function importSession(ctx: ImportContext, row: SourceSessionRow): boolean {
   );
 
   markImported(ctx, 'sessions', row.id);
-  return true;
+  return 'imported';
 }
 
-function importPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow): boolean {
+function importPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow): ImportOutcome {
   const existing = lookupSourceMapping(ctx, 'prompt_batches', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'prompt_batches', targetId)) {
       markImported(ctx, 'prompt_batches', row.id);
-      return false;
+      return 'unchanged';
     }
     insertPromptBatch(ctx, row, targetId);
     markImported(ctx, 'prompt_batches', row.id);
-    return true;
+    return 'imported';
   }
 
   const info = insertPromptBatch(ctx, row);
@@ -1202,7 +1306,7 @@ function importPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow): boole
     targetId: String(targetId),
     sourceMachineId: row.machine_id,
   });
-  return true;
+  return 'imported';
 }
 
 function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, targetId?: number) {
@@ -1254,17 +1358,17 @@ function insertPromptBatch(ctx: ImportContext, row: SourcePromptBatchRow, target
     : ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importActivity(ctx: ImportContext, row: SourceActivityRow): boolean {
+function importActivity(ctx: ImportContext, row: SourceActivityRow): ImportOutcome {
   const existing = lookupSourceMapping(ctx, 'activities', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'activities', targetId)) {
       markImported(ctx, 'activities', row.id);
-      return false;
+      return 'unchanged';
     }
     insertActivity(ctx, row, targetId);
     markImported(ctx, 'activities', row.id);
-    return true;
+    return 'imported';
   }
 
   const info = insertActivity(ctx, row);
@@ -1276,7 +1380,7 @@ function importActivity(ctx: ImportContext, row: SourceActivityRow): boolean {
     targetId: String(targetId),
     sourceMachineId: null,
   });
-  return true;
+  return 'imported';
 }
 
 function insertActivity(ctx: ImportContext, row: SourceActivityRow, targetId?: number) {
@@ -1330,11 +1434,11 @@ function insertActivity(ctx: ImportContext, row: SourceActivityRow, targetId?: n
     : ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importAttachment(ctx: ImportContext, row: SourceAttachmentRow): boolean {
+function importAttachment(ctx: ImportContext, row: SourceAttachmentRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'attachments', row.id);
   if (targetRowExists(ctx.targetDb, 'attachments', mapping.target_id)) {
     markImported(ctx, 'attachments', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
@@ -1362,14 +1466,14 @@ function importAttachment(ctx: ImportContext, row: SourceAttachmentRow): boolean
   );
 
   markImported(ctx, 'attachments', row.id);
-  return true;
+  return 'imported';
 }
 
-function importPlan(ctx: ImportContext, row: SourcePlanRow): boolean {
+function importPlan(ctx: ImportContext, row: SourcePlanRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'plans', row.id);
   if (targetRowExists(ctx.targetDb, 'plans', mapping.target_id)) {
     markImported(ctx, 'plans', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const sessionId = mapOptionalTextId(ctx, 'sessions', row.session_id);
@@ -1408,14 +1512,14 @@ function importPlan(ctx: ImportContext, row: SourcePlanRow): boolean {
   );
 
   markImported(ctx, 'plans', row.id);
-  return true;
+  return 'imported';
 }
 
-function importArtifact(ctx: ImportContext, row: SourceArtifactRow): boolean {
+function importArtifact(ctx: ImportContext, row: SourceArtifactRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'artifacts', row.id);
   if (targetRowExists(ctx.targetDb, 'artifacts', mapping.target_id)) {
     markImported(ctx, 'artifacts', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
@@ -1447,14 +1551,14 @@ function importArtifact(ctx: ImportContext, row: SourceArtifactRow): boolean {
   );
 
   markImported(ctx, 'artifacts', row.id);
-  return true;
+  return 'imported';
 }
 
-function importSpore(ctx: ImportContext, row: SourceSporeRow): boolean {
+function importSpore(ctx: ImportContext, row: SourceSporeRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'spores', row.id);
   if (targetRowExists(ctx.targetDb, 'spores', mapping.target_id)) {
     markImported(ctx, 'spores', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
@@ -1497,14 +1601,14 @@ function importSpore(ctx: ImportContext, row: SourceSporeRow): boolean {
   );
 
   markImported(ctx, 'spores', row.id);
-  return true;
+  return 'imported';
 }
 
-function importEntity(ctx: ImportContext, row: SourceEntityRow): boolean {
+function importEntity(ctx: ImportContext, row: SourceEntityRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'entities', row.id);
   if (targetRowExists(ctx.targetDb, 'entities', mapping.target_id)) {
     markImported(ctx, 'entities', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
@@ -1533,13 +1637,13 @@ function importEntity(ctx: ImportContext, row: SourceEntityRow): boolean {
   );
 
   markImported(ctx, 'entities', row.id);
-  return true;
+  return 'imported';
 }
 
-function importEntityMention(ctx: ImportContext, row: SourceEntityMentionRow): boolean {
+function importEntityMention(ctx: ImportContext, row: SourceEntityMentionRow): ImportOutcome {
   const sourceId = entityMentionSourceId(row);
   const existing = lookupSourceMapping(ctx, 'entity_mentions', sourceId);
-  if (existing?.status === 'imported') return false;
+  if (existing?.status === 'imported') return 'unchanged';
 
   const entityId = mapRequiredTextId(ctx, 'entities', row.entity_id);
   const noteId = mapRequiredPolymorphicId(ctx, row.note_type, row.note_id);
@@ -1584,14 +1688,14 @@ function importEntityMention(ctx: ImportContext, row: SourceEntityMentionRow): b
       row.synced_at,
     );
     markImported(ctx, 'entity_mentions', sourceId);
-    return true;
+    return 'imported';
   }
 
   markImported(ctx, 'entity_mentions', sourceId);
-  return false;
+  return 'unchanged';
 }
 
-function importResolutionEvent(ctx: ImportContext, row: SourceResolutionEventRow): 'imported' | 'skipped' | 'unchanged' {
+function importResolutionEvent(ctx: ImportContext, row: SourceResolutionEventRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'resolution_events', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'resolution_events', mapping.target_id)) {
@@ -1635,7 +1739,7 @@ function importResolutionEvent(ctx: ImportContext, row: SourceResolutionEventRow
   return 'imported';
 }
 
-function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): 'imported' | 'skipped' | 'unchanged' {
+function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'graph_edges', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'graph_edges', mapping.target_id)) {
@@ -1685,11 +1789,11 @@ function importGraphEdge(ctx: ImportContext, row: SourceGraphEdgeRow): 'imported
   return 'imported';
 }
 
-function importAgentRun(ctx: ImportContext, row: SourceAgentRunRow): boolean {
+function importAgentRun(ctx: ImportContext, row: SourceAgentRunRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agent_runs', row.id);
   if (targetRowExists(ctx.targetDb, 'agent_runs', mapping.target_id)) {
     markImported(ctx, 'agent_runs', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
@@ -1744,10 +1848,10 @@ function importAgentRun(ctx: ImportContext, row: SourceAgentRunRow): boolean {
   );
 
   markImported(ctx, 'agent_runs', row.id);
-  return true;
+  return 'imported';
 }
 
-function importAgentReport(ctx: ImportContext, row: SourceAgentReportRow): 'imported' | 'skipped' | 'unchanged' {
+function importAgentReport(ctx: ImportContext, row: SourceAgentReportRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agent_reports', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   const targetId = parseMappedInteger(mapping);
@@ -1790,7 +1894,7 @@ function insertAgentReport(
   return ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importAgentTurn(ctx: ImportContext, row: SourceAgentTurnRow): 'imported' | 'skipped' | 'unchanged' {
+function importAgentTurn(ctx: ImportContext, row: SourceAgentTurnRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agent_turns', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   const targetId = parseMappedInteger(mapping);
@@ -1836,7 +1940,7 @@ function insertAgentTurn(
   return ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importAgentRunWriteIntent(ctx: ImportContext, row: SourceAgentRunWriteIntentRow): 'imported' | 'skipped' | 'unchanged' {
+function importAgentRunWriteIntent(ctx: ImportContext, row: SourceAgentRunWriteIntentRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'agent_run_write_intents', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   const targetId = parseMappedInteger(mapping);
@@ -1880,7 +1984,7 @@ function insertAgentRunWriteIntent(
   return ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importSkillRecord(ctx: ImportContext, row: SourceSkillRecordRow): 'imported' | 'skipped' | 'unchanged' {
+function importSkillRecord(ctx: ImportContext, row: SourceSkillRecordRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'skill_records', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'skill_records', mapping.target_id)) {
@@ -1934,7 +2038,7 @@ function importSkillRecord(ctx: ImportContext, row: SourceSkillRecordRow): 'impo
   return 'imported';
 }
 
-function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow): 'imported' | 'skipped' | 'unchanged' {
+function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'skill_candidates', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'skill_candidates', mapping.target_id)) {
@@ -1999,7 +2103,7 @@ function linkSkillRecordCandidate(ctx: ImportContext, row: SourceSkillRecordRow)
   ).run(candidateId, record.target_id, candidateId);
 }
 
-function importSkillLineage(ctx: ImportContext, row: SourceSkillLineageRow): 'imported' | 'skipped' | 'unchanged' {
+function importSkillLineage(ctx: ImportContext, row: SourceSkillLineageRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'skill_lineage', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'skill_lineage', mapping.target_id)) {
@@ -2034,7 +2138,7 @@ function importSkillLineage(ctx: ImportContext, row: SourceSkillLineageRow): 'im
   return 'imported';
 }
 
-function importSkillUsage(ctx: ImportContext, row: SourceSkillUsageRow): 'imported' | 'skipped' | 'unchanged' {
+function importSkillUsage(ctx: ImportContext, row: SourceSkillUsageRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'skill_usage', row.id);
   if (mapping.status === 'skipped') return 'unchanged';
   if (targetRowExists(ctx.targetDb, 'skill_usage', mapping.target_id)) {
@@ -2068,12 +2172,12 @@ function importSkillUsage(ctx: ImportContext, row: SourceSkillUsageRow): 'import
   return 'imported';
 }
 
-function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): boolean {
+function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): ImportOutcome {
   const sourceId = canopyEntrySourceId(row);
   requireMapping(ctx, 'canopy_entries', sourceId);
   if (canopyEntryExists(ctx.targetDb, ctx.targetProjectId, row.path)) {
     markImported(ctx, 'canopy_entries', sourceId);
-    return false;
+    return 'unchanged';
   }
 
   const machineId = row.machine_id ?? ctx.targetMachineId ?? 'local';
@@ -2109,16 +2213,16 @@ function importCanopyEntry(ctx: ImportContext, row: SourceCanopyEntryRow): boole
   );
 
   markImported(ctx, 'canopy_entries', sourceId);
-  return true;
+  return 'imported';
 }
 
-function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): boolean {
+function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): ImportOutcome {
   const sourceId = canopyMapSourceId(row);
   const mapping = requireMapping(ctx, 'canopy_maps', sourceId);
   const machineId = canopyMapMachineIdFromTargetId(mapping.target_id);
   if (canopyMapExists(ctx.targetDb, ctx.targetProjectId, machineId)) {
     markImported(ctx, 'canopy_maps', sourceId);
-    return false;
+    return 'unchanged';
   }
 
   const generatedByRunId = mapOptionalTextIdIfMapped(ctx, 'agent_runs', row.generated_by_run_id);
@@ -2139,20 +2243,20 @@ function importCanopyMap(ctx: ImportContext, row: SourceCanopyMapRow): boolean {
   );
 
   markImported(ctx, 'canopy_maps', sourceId);
-  return true;
+  return 'imported';
 }
 
-function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): boolean {
+function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): ImportOutcome {
   const existing = lookupSourceMapping(ctx, 'digest_extracts', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'digest_extracts', targetId)) {
       markImported(ctx, 'digest_extracts', row.id);
-      return false;
+      return 'unchanged';
     }
     insertDigestExtract(ctx, row, targetId);
     markImported(ctx, 'digest_extracts', row.id);
-    return true;
+    return 'imported';
   }
 
   const info = insertDigestExtract(ctx, row);
@@ -2164,7 +2268,7 @@ function importDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow): b
     targetId: String(targetId),
     sourceMachineId: row.machine_id,
   });
-  return true;
+  return 'imported';
 }
 
 function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, targetId?: number) {
@@ -2196,17 +2300,17 @@ function insertDigestExtract(ctx: ImportContext, row: SourceDigestExtractRow, ta
     : ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow): boolean {
+function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow): ImportOutcome {
   const existing = lookupSourceMapping(ctx, 'digest_extract_revisions', row.id);
   if (existing) {
     const targetId = parseMappedInteger(existing);
     if (targetRowExists(ctx.targetDb, 'digest_extract_revisions', targetId)) {
       markImported(ctx, 'digest_extract_revisions', row.id);
-      return false;
+      return 'unchanged';
     }
     insertDigestExtractRevision(ctx, row, targetId);
     markImported(ctx, 'digest_extract_revisions', row.id);
-    return true;
+    return 'imported';
   }
 
   const info = insertDigestExtractRevision(ctx, row);
@@ -2217,7 +2321,7 @@ function importDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtrac
     targetTable: 'digest_extract_revisions',
     targetId: String(targetId),
   });
-  return true;
+  return 'imported';
 }
 
 function insertDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtractRevisionRow, targetId?: number) {
@@ -2250,11 +2354,11 @@ function insertDigestExtractRevision(ctx: ImportContext, row: SourceDigestExtrac
     : ctx.targetDb.prepare(sql).run(targetId, ...params);
 }
 
-function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructionsRow): boolean {
+function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructionsRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'cortex_instructions', row.id);
   if (cortexInstructionsExists(ctx.targetDb, ctx.targetProjectId, mapping.target_id)) {
     markImported(ctx, 'cortex_instructions', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const agentId = mapRequiredTextId(ctx, 'agents', row.agent_id);
@@ -2282,14 +2386,14 @@ function importCortexInstructions(ctx: ImportContext, row: SourceCortexInstructi
   );
 
   markImported(ctx, 'cortex_instructions', row.id);
-  return true;
+  return 'imported';
 }
 
-function importNotification(ctx: ImportContext, row: SourceNotificationRow): boolean {
+function importNotification(ctx: ImportContext, row: SourceNotificationRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'notifications', row.id);
   if (targetRowExists(ctx.targetDb, 'notifications', mapping.target_id)) {
     markImported(ctx, 'notifications', row.id);
-    return false;
+    return 'unchanged';
   }
 
   ctx.targetDb.prepare(
@@ -2316,7 +2420,7 @@ function importNotification(ctx: ImportContext, row: SourceNotificationRow): boo
   );
 
   markImported(ctx, 'notifications', row.id);
-  return true;
+  return 'imported';
 }
 
 function cortexInstructionsExists(db: Database, projectId: string, id: string): boolean {
@@ -2329,12 +2433,12 @@ function cortexInstructionsExists(db: Database, projectId: string, id: string): 
   return row?.present === 1;
 }
 
-function importLogEntry(ctx: ImportContext, row: SourceLogEntryRow): boolean {
+function importLogEntry(ctx: ImportContext, row: SourceLogEntryRow): ImportOutcome {
   const mapping = requireMapping(ctx, 'log_entries', row.id);
   const targetId = parseMappedInteger(mapping);
   if (targetRowExists(ctx.targetDb, 'log_entries', targetId)) {
     markImported(ctx, 'log_entries', row.id);
-    return false;
+    return 'unchanged';
   }
 
   const sessionId = mapOptionalTextIdIfMapped(ctx, 'sessions', row.session_id);
@@ -2360,7 +2464,7 @@ function importLogEntry(ctx: ImportContext, row: SourceLogEntryRow): boolean {
   );
 
   markImported(ctx, 'log_entries', row.id);
-  return true;
+  return 'imported';
 }
 
 function ensureTextMapping(

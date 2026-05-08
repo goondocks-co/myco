@@ -6,7 +6,7 @@ import {
   listImportMappingsForMigration,
   lookupImportMappingBySource,
 } from '@myco/db/queries/migration-import-journal.js';
-import { importProjectCoreRows } from '@myco/grove/importer.js';
+import { type ImportOutcome, importProjectCoreRows } from '@myco/grove/importer.js';
 import { createMigrationId } from '@myco/grove/ids.js';
 
 const TARGET_GROVE_ID = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -31,6 +31,27 @@ describe('Grove project core importer', () => {
   afterEach(() => {
     sourceDb.close();
     targetDb.close();
+  });
+
+  it('exposes a stable ImportOutcome union shape', () => {
+    // Runtime guard for the documented per-table outcome contract. If a
+    // future change introduces a new outcome (e.g. 'partial'), the
+    // exhaustive switch below stops compiling and the orchestrator
+    // counter wiring in `runTable` must be updated to match.
+    const outcomes: readonly ImportOutcome[] = ['imported', 'skipped', 'unchanged'];
+    for (const outcome of outcomes) {
+      switch (outcome) {
+        case 'imported':
+        case 'skipped':
+        case 'unchanged':
+          break;
+        default: {
+          const _exhaustive: never = outcome;
+          throw new Error(`unexpected outcome: ${String(_exhaustive)}`);
+        }
+      }
+    }
+    expect(outcomes).toHaveLength(3);
   });
 
   it('imports capture and plan rows with project scope, rekeyed ids, and rewritten relationships', () => {
