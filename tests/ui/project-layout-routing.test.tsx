@@ -132,11 +132,14 @@ describe('project-scoped layout routing', () => {
       </QueryClientProvider>,
     );
 
-    // Operations is Grove-scoped post-P8 — the link drops the
-    // /p/<project>/ segment so the page can render under
-    // /g/<grove>/operations regardless of which project is active.
-    const operationsLink = screen.getByText('Operations').closest('a');
-    expect(operationsLink?.getAttribute('href')).toBe('/g/work/operations');
+    // Grove section is Dashboard / Maintenance / Settings post-
+    // sidebar-regroup; Operations dissolved into Dashboard +
+    // Maintenance. The Grove > Maintenance link is the natural
+    // assertion — it's Grove-scoped (no project segment) and
+    // tests the same path-template-replacement that used to be
+    // exercised by Operations.
+    const maintenanceLink = screen.getAllByText('Maintenance')[0]?.closest('a');
+    expect(maintenanceLink?.getAttribute('href')).toBe('/g/work/maintenance');
     expect(screen.getByText('Dashboard content')).toBeTruthy();
   });
 });
