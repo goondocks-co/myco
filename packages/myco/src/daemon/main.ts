@@ -84,10 +84,7 @@ import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
-  handleEmbeddingRebuild,
-  handleEmbeddingReconcile,
-  handleEmbeddingCleanOrphans,
-  handleEmbeddingReembedStale,
+  createEmbeddingActionHandlers,
 } from './api/embedding.js';
 import { createDatabaseMaintenanceHandlers } from './api/database.js';
 import { createMaintenanceHandlers } from './api/maintenance.js';
@@ -596,10 +593,13 @@ export async function main(): Promise<void> {
     req.requestContext?.projectVaultDir ?? vaultDir,
     loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
   );
+  const runtimeCache = new GroveRuntimeCache();
   const databaseHandlers = createDatabaseMaintenanceHandlers({
     createManager: databaseManagerForRequest,
+    cache: runtimeCache,
+    logger,
+    vaultDir,
   });
-  const runtimeCache = new GroveRuntimeCache();
   /**
    * Build a per-Grove embedding runtime for any DB handle the runtime
    * cache opens. Used both by Phase-1 power-job fan-out (one tick body
@@ -1431,26 +1431,16 @@ export async function main(): Promise<void> {
     const runtime = getEmbeddingRuntime(req.requestContext);
     return handleEmbeddingDetails(runtime.manager);
   });
-  server.registerRoute('POST', '/api/embedding/rebuild', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleEmbeddingRebuild(runtime.manager, {
-      async: req.query.async === 'true',
-      db: runtime.db,
-      scope: projectScopeFromRequestContext(req.requestContext),
-    });
+  const embeddingActionHandlers = createEmbeddingActionHandlers({
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    logger,
+    resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
   });
-  server.registerRoute('POST', '/api/embedding/reconcile', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleEmbeddingReconcile(runtime.manager);
-  });
-  server.registerRoute('POST', '/api/embedding/clean-orphans', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleEmbeddingCleanOrphans(runtime.manager);
-  });
-  server.registerRoute('POST', '/api/embedding/reembed-stale', async (req) => {
-    const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleEmbeddingReembedStale(runtime.manager);
-  });
+  server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);
+  server.registerRoute('POST', '/api/embedding/reconcile', embeddingActionHandlers.handleReconcile);
+  server.registerRoute('POST', '/api/embedding/clean-orphans', embeddingActionHandlers.handleCleanOrphans);
+  server.registerRoute('POST', '/api/embedding/reembed-stale', embeddingActionHandlers.handleReembedStale);
   server.registerRoute('GET', '/api/database/details', databaseHandlers.handleDetails);
   server.registerRoute('POST', '/api/database/optimize', databaseHandlers.handleOptimize);
   server.registerRoute('POST', '/api/database/vacuum', databaseHandlers.handleVacuum);

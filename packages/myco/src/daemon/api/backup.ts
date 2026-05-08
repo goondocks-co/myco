@@ -21,11 +21,19 @@ import {
   restoreBackup,
 } from '../backup.js';
 import { loadMergedConfig, updateBackupConfig } from '../../config/loader.js';
-import { loadGroveRecord, type GroveRecord } from '../../grove/registry.js';
-import { resolveGroveDir, resolveMycoHome } from '../../grove/paths.js';
+import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
+import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  resolveActionScope,
+  actionScopeKey,
+  InvalidActionScopeError,
+  type ActionScope,
+} from './action-scope.js';
+import { ActionInflightRegistry } from './action-inflight.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,8 +123,108 @@ export function createBackupHandlers(deps: BackupDeps) {
     };
   }
 
+  const inflight = new ActionInflightRegistry();
+
+  function performBackupForGrove(grove: GroveRecord): {
+    grove_id: string;
+    grove_slug: string;
+    ok: boolean;
+    file_path?: string;
+    size_bytes?: number;
+    error?: string;
+  } {
+    try {
+      const groveHome = resolveGroveDir(grove.id, mycoHome);
+      const backupDir = resolveGroveBackupDir(deps.liveConfig.current, grove, groveHome);
+      const databasePath = resolveGroveDbPath(grove.id, mycoHome);
+      const db = deps.cache.getDatabase(databasePath);
+      const filePath = createBackup(db, backupDir, deps.machineId);
+      pruneBackups(backupDir, deps.liveConfig.current.backup.retention);
+      const backups = listBackups(backupDir);
+      const created = backups.find((b) => b.machine_id === deps.machineId);
+      return {
+        grove_id: grove.id,
+        grove_slug: grove.slug,
+        ok: true,
+        file_path: filePath,
+        size_bytes: created?.size_bytes ?? 0,
+      };
+    } catch (err) {
+      return {
+        grove_id: grove.id,
+        grove_slug: grove.slug,
+        ok: false,
+        error: errorMessage(err),
+      };
+    }
+  }
+
   /** POST /api/backup — create a new backup of all synced tables. */
   async function handleCreateBackup(req: RouteRequest): Promise<RouteResponse> {
+    // Try to read explicit scope from body. If absent or malformed and
+    // request context is missing, fall back to legacy single-Grove
+    // resolution so old clients continue to work.
+    let scope: ActionScope | null = null;
+    try {
+      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+    } catch (err) {
+      if (err instanceof InvalidActionScopeError) {
+        const raw = (req.body as { scope?: unknown } | null | undefined)?.scope;
+        if (raw !== undefined) {
+          return { status: 400, body: { error: 'invalid_scope', message: err.message } };
+        }
+        scope = null;
+      } else {
+        throw err;
+      }
+    }
+
+    if (scope && scope.kind === 'all-groves') {
+      const key = `backup:${actionScopeKey(scope)}`;
+      return inflight.run(key, async (): Promise<RouteResponse> => {
+        const groves = listGroves(mycoHome);
+        const results = groves.map((g) => performBackupForGrove(g));
+        const ok = results.filter((r) => r.ok).length;
+        return {
+          body: {
+            scope,
+            results,
+            summary: { ok, failed: results.length - ok },
+          },
+        };
+      });
+    }
+
+    if (scope && (scope.kind === 'grove' || scope.kind === 'project')) {
+      const grove = loadGroveRecord(scope.grove_id, mycoHome);
+      if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
+      const key = `backup:${actionScopeKey(scope)}`;
+      return inflight.run(key, async (): Promise<RouteResponse> => {
+        // Comment: 'project' has no narrower path here — backup files
+        // are per-Grove, not per-project — so 'project' is treated
+        // identically to 'grove'.
+        const result = performBackupForGrove(grove);
+        if (!result.ok) {
+          return { status: 500, body: { scope, results: [result], summary: { ok: 0, failed: 1 } } };
+        }
+        // Legacy clients that send `{kind:'project'}` from the
+        // request-context default get the legacy flat shape; explicit
+        // grove/project scopes from the new UI get the wrapped shape.
+        return {
+          body: {
+            scope,
+            results: [result],
+            summary: { ok: 1, failed: 0 },
+            // Legacy fields for backward compatibility.
+            file_path: result.file_path,
+            machine_id: deps.machineId,
+            size_bytes: result.size_bytes,
+          },
+        };
+      });
+    }
+
+    // Legacy fallback path: no scope and no resolvable Grove in context.
     const { db, backupDir } = resolveScope(req);
     const filePath = createBackup(db, backupDir, deps.machineId);
     pruneBackups(backupDir, deps.liveConfig.current.backup.retention);

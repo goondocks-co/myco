@@ -63,7 +63,7 @@ const PROJECT_NAV_ITEMS: readonly NavItem[] = [
 ];
 
 const GROVE_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/operations', label: 'Operations', icon: Wrench, scope: 'grove' },
+  { to: '/g/:groveSlug/operations', label: 'Operations', icon: Wrench, scope: 'grove' },
   { to: '/team', label: 'Team', icon: Users, scope: 'grove' },
   { to: '/g/:groveSlug/settings', label: 'Grove Settings', icon: Trees, scope: 'grove' },
 ];
@@ -169,7 +169,10 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 /** Self-contained Operations nav link — owns update polling, controls link target and badge. */
 function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
   const { data } = useUpdateStatus();
-  const operationsPath = useProjectPath('/operations');
+  const selection = useProjectSelection();
+  const operationsPath = selection
+    ? `/g/${selection.grove.slug}/operations`
+    : '/operations';
   const hasUpdate = !!(data && !data.exempt && data.update_available);
   const to = hasUpdate ? `${operationsPath}?tab=system` : operationsPath;
 
@@ -264,7 +267,7 @@ function SidebarContent({
 
         <NavGroup label="Grove" collapsed={collapsed}>
           {GROVE_NAV_ITEMS.map((item) =>
-            item.to === '/operations' ? (
+            item.to === '/g/:groveSlug/operations' ? (
               <OperationsNavLink key={item.to} collapsed={collapsed} />
             ) : (
               <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />

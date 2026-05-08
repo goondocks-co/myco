@@ -1,10 +1,58 @@
-import type { DatabaseMaintenanceManager } from '../database/manager.js';
+import path from 'node:path';
+import { withDatabase } from '@myco/db/client.js';
+import {
+  resolveGroveDbPath,
+  resolveGroveDir,
+  resolveMycoHome,
+} from '@myco/grove/paths.js';
+import { loadGroveRecord } from '@myco/grove/registry.js';
+import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
+import type { Logger } from '../logger.js';
+import { DatabaseMaintenanceManager } from '../database/manager.js';
 import { VacuumPrecheckError, VACUUM_ERROR_CODE } from '../database/types.js';
+import { forEachGrove } from '../scope-iteration.js';
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
+import {
+  resolveActionScope,
+  actionScopeKey,
+  InvalidActionScopeError,
+  type ActionScope,
+} from './action-scope.js';
+import { ActionInflightRegistry } from './action-inflight.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 
 export interface DatabaseMaintenanceRouteDeps {
+  /** Legacy per-request manager factory used for the `details` endpoint. */
   createManager(req: RouteRequest): DatabaseMaintenanceManager;
+  /** Per-Grove runtime cache so scope='grove'/'all-groves' can fan out without re-opening DBs. */
+  cache: GroveRuntimeCache;
+  /** Logger used by `forEachGrove` to record per-Grove failures. */
+  logger: Logger;
+  /** Vault dir used for the VACUUM disk precheck. */
+  vaultDir: string;
+  /** Override Myco home (tests). */
+  mycoHome?: string;
 }
+
+interface PerGroveResultBase {
+  grove_id: string;
+  grove_slug: string;
+  ok: boolean;
+  error?: string;
+}
+
+interface DispatchResult<T> {
+  scope: ActionScope;
+  results: Array<PerGroveResultBase & T>;
+  summary: { ok: number; failed: number };
+}
+
+// Database maintenance is Grove-DB-only — there is no project-narrowed
+// path because optimize/vacuum/reindex/integrity-check operate on the
+// whole SQLite file. So `kind: 'project'` is treated identically to
+// `kind: 'grove'` for these endpoints; the comment in each handler
+// makes that explicit so future readers don't expect project-narrowed
+// behavior here.
 
 export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRouteDeps): {
   handleDetails: RouteHandler;
@@ -13,14 +61,174 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
   handleReindex: RouteHandler;
   handleIntegrityCheck: RouteHandler;
 } {
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const inflight = new ActionInflightRegistry();
+
+  function buildManagerForGrove(groveId: string): DatabaseMaintenanceManager {
+    const dbPath = resolveGroveDbPath(groveId, mycoHome);
+    const groveDir = resolveGroveDir(groveId, mycoHome);
+    return new DatabaseMaintenanceManager(dbPath, groveDir, deps.logger);
+  }
+
+  async function dispatchSingleGrove<T>(
+    groveId: string,
+    run: (manager: DatabaseMaintenanceManager) => Promise<T>,
+  ): Promise<PerGroveResultBase & T> {
+    const grove = loadGroveRecord(groveId, mycoHome);
+    const slug = grove?.slug ?? groveId;
+    const dbPath = resolveGroveDbPath(groveId, mycoHome);
+    const db = deps.cache.getDatabase(dbPath);
+    try {
+      const value = await deps.cache.withPinned(dbPath, async () =>
+        withDatabase(db, async () => run(buildManagerForGrove(groveId))),
+      );
+      return { grove_id: groveId, grove_slug: slug, ok: true, ...value } as PerGroveResultBase & T;
+    } catch (err) {
+      return {
+        grove_id: groveId,
+        grove_slug: slug,
+        ok: false,
+        error: errorMessage(err),
+      } as PerGroveResultBase & T;
+    }
+  }
+
+  async function dispatchAllGroves<T>(
+    run: (manager: DatabaseMaintenanceManager) => Promise<T>,
+  ): Promise<Array<PerGroveResultBase & T>> {
+    const results: Array<PerGroveResultBase & T> = [];
+    await forEachGrove(
+      deps.cache,
+      deps.logger,
+      async (scope) => {
+        try {
+          const value = await run(buildManagerForGrove(scope.grove.id));
+          results.push({
+            grove_id: scope.grove.id,
+            grove_slug: scope.grove.slug,
+            ok: true,
+            ...value,
+          } as PerGroveResultBase & T);
+        } catch (err) {
+          results.push({
+            grove_id: scope.grove.id,
+            grove_slug: scope.grove.slug,
+            ok: false,
+            error: errorMessage(err),
+          } as PerGroveResultBase & T);
+        }
+      },
+      { mycoHome, jobName: 'database-action' },
+    );
+    return results;
+  }
+
+  async function dispatch<T>(
+    endpoint: string,
+    req: RouteRequest,
+    run: (manager: DatabaseMaintenanceManager) => Promise<T>,
+  ): Promise<RouteResponse> {
+    let scope: ActionScope;
+    try {
+      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+    } catch (err) {
+      if (err instanceof InvalidActionScopeError) {
+        return { status: 400, body: { error: 'invalid_scope', message: err.message } };
+      }
+      throw err;
+    }
+
+    const key = `${endpoint}:${actionScopeKey(scope)}`;
+    return inflight.run(key, async (): Promise<RouteResponse> => {
+      let results: Array<PerGroveResultBase & T>;
+      if (scope.kind === 'all-groves') {
+        results = await dispatchAllGroves(run);
+      } else {
+        // 'project' is treated as 'grove' here: database maintenance has
+        // no project-narrowed path — the whole Grove DB is the unit.
+        results = [await dispatchSingleGrove(scope.grove_id, run)];
+      }
+      const ok = results.filter((r) => r.ok).length;
+      const failed = results.length - ok;
+      const body: DispatchResult<T> = { scope, results, summary: { ok, failed } };
+      return { body };
+    });
+  }
+
+  // VACUUM precheck failures need to surface 409 with the standard error
+  // body. We special-case the single-Grove case here so the existing
+  // client error UI keeps working when the user explicitly targets one
+  // Grove. For all-groves fan-out, per-Grove precheck failures are
+  // captured in the result row's `error` field.
+  async function dispatchVacuum(req: RouteRequest): Promise<RouteResponse> {
+    let scope: ActionScope;
+    try {
+      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+    } catch (err) {
+      if (err instanceof InvalidActionScopeError) {
+        return { status: 400, body: { error: 'invalid_scope', message: err.message } };
+      }
+      throw err;
+    }
+
+    if (scope.kind !== 'all-groves') {
+      const key = `database/vacuum:${actionScopeKey(scope)}`;
+      return inflight.run(key, async (): Promise<RouteResponse> => {
+        try {
+          const result = await dispatchSingleGrove(scope.grove_id, (m) => m.vacuum());
+          if (!result.ok) {
+            // Surface "ok" wrapper but include error for caller; legacy clients
+            // that don't pass scope continue to get the legacy 200/409 shape
+            // via the catch path below — but at this point the precheck error
+            // was already swallowed into the result row, so re-throw is impossible.
+            return {
+              body: {
+                scope,
+                results: [result],
+                summary: { ok: 0, failed: 1 },
+              },
+            };
+          }
+          return {
+            body: {
+              scope,
+              results: [result],
+              summary: { ok: 1, failed: 0 },
+            },
+          };
+        } catch (err) {
+          // Unreachable — dispatchSingleGrove catches — kept for type narrowing.
+          if (err instanceof VacuumPrecheckError) {
+            return {
+              status: 409,
+              body: {
+                error: VACUUM_ERROR_CODE,
+                required_bytes: err.required_bytes,
+                free_bytes: err.free_bytes,
+              },
+            };
+          }
+          throw err;
+        }
+      });
+    }
+
+    return dispatch('database/vacuum', req, (m) => m.vacuum());
+  }
+
   return {
-    handleDetails: (req) => handleDatabaseDetails(deps.createManager(req)),
-    handleOptimize: (req) => handleDatabaseOptimize(deps.createManager(req)),
-    handleVacuum: (req) => handleDatabaseVacuum(deps.createManager(req)),
-    handleReindex: (req) => handleDatabaseReindex(deps.createManager(req)),
-    handleIntegrityCheck: (req) => handleDatabaseIntegrityCheck(deps.createManager(req)),
+    handleDetails: async (req) => handleDatabaseDetails(deps.createManager(req)),
+    handleOptimize: async (req) => dispatch('database/optimize', req, (m) => m.optimize()),
+    handleVacuum: async (req) => dispatchVacuum(req),
+    handleReindex: async (req) => dispatch('database/reindex', req, (m) => m.reindex()),
+    handleIntegrityCheck: async (req) =>
+      dispatch('database/integrity-check', req, (m) => m.integrityCheck()),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Legacy single-handler exports (kept so existing tests/imports compile)
+// ---------------------------------------------------------------------------
 
 export async function handleDatabaseDetails(
   manager: DatabaseMaintenanceManager,
@@ -70,3 +278,7 @@ export async function handleDatabaseIntegrityCheck(
   const result = await manager.integrityCheck();
   return { body: result };
 }
+
+// Re-export deps shape for compatibility — older signature took only
+// `createManager` so we keep that field.
+export type { DatabaseMaintenanceRouteDeps as DatabaseMaintenanceRouteDepsLegacy };

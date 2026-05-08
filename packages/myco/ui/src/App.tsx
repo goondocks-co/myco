@@ -48,6 +48,9 @@ export default function App() {
       <Route path="/g/:groveSlug/settings" element={<GroveScopedLayout />}>
         <Route index element={<GroveSettings />} />
       </Route>
+      <Route path="/g/:groveSlug/operations" element={<GroveScopedLayout />}>
+        <Route index element={<Operations />} />
+      </Route>
       <Route path="/sessions" element={<LegacyProjectRedirect suffix="/sessions" />} />
       <Route path="/sessions/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/cortex" element={<LegacyProjectRedirect suffix="/cortex" />} />
@@ -55,7 +58,7 @@ export default function App() {
       <Route path="/agent" element={<LegacyProjectRedirect suffix="/agent" />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
-      <Route path="/operations" element={<LegacyProjectRedirect suffix="/operations" />} />
+      <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
       <Route path="/team" element={<LegacyProjectRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -87,6 +90,26 @@ function LegacyProjectRedirect({
   const selection = selectionFromLast(data?.groves ?? []) ?? defaultSelection(data?.groves ?? []);
   if (!selection) return <Navigate to="/onboarding" replace />;
   return <Navigate to={projectPath(selection, suffixFromPath ? location.pathname : suffix)} replace />;
+}
+
+/**
+ * Legacy Grove-scoped redirect: resolves the active Grove (via last-selection
+ * or default) and forwards to `/g/<grove-slug><suffix>`. Used for pages that
+ * P8 lifted from project-scoped to Grove-scoped (Operations).
+ */
+function LegacyGroveRedirect({ suffix }: { suffix: string }) {
+  const { data, isLoading, error } = useGroves();
+  if (isLoading) return <RouteLoading text="Loading Grove..." />;
+  if (error) return <RouteLoading text={error.message} />;
+  const groves = data?.groves ?? [];
+  const selection = selectionFromLast(groves) ?? defaultSelection(groves);
+  // Fall back to the first Grove that exists at all, even if it has no
+  // projects — the Grove-scoped route will redirect onward to /onboarding
+  // if needed.
+  const grove = selection?.grove ?? groves[0];
+  if (!grove) return <Navigate to="/onboarding" replace />;
+  const normalizedSuffix = suffix.startsWith('/') ? suffix : `/${suffix}`;
+  return <Navigate to={`/g/${grove.slug}${normalizedSuffix}`} replace />;
 }
 
 function ProjectScopedLayout() {

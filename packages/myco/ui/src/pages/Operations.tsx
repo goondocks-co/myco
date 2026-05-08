@@ -23,8 +23,19 @@ import { UpdateCard } from '../components/operations/UpdateCard';
 import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
 import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
 import { LogRow } from '../components/operations/LogRow';
-import { ScopeBadge } from '../components/config/ScopePill';
-import { SCOPE_HELPER_TEXT, type SectionScope } from '../components/operations/scope-helpers';
+import {
+  OperationsScopePill,
+  type OperationsScope,
+} from '../components/operations/OperationsScopePill';
+import {
+  OPERATIONS_SCOPE_HELPER_TEXT,
+  buildActionScope,
+} from '../components/operations/scope-helpers';
+import {
+  ActionConfirmDialog,
+  actionRequiresConfirmation,
+} from '../components/operations/ActionConfirmDialog';
+import { useProjectSelection } from '../hooks/use-project-selection';
 import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
@@ -112,17 +123,37 @@ function formatCountdown(ms: number): string {
 
 /* ---------- Sub-components ---------- */
 
-function ScopedSectionTitle({ title, scope }: { title: string; scope: SectionScope }) {
+/**
+ * Section header that renders a live OperationsScopePill instead of the
+ * read-only ScopeBadge — lets users widen the action target from project
+ * (default) to grove or all-groves. The pill state lives in the calling
+ * section so different sections can hold different scopes concurrently.
+ */
+function PillSectionTitle({
+  title,
+  value,
+  onChange,
+  available,
+}: {
+  title: string;
+  value: OperationsScope;
+  onChange: (next: OperationsScope) => void;
+  available?: ReadonlyArray<OperationsScope>;
+}) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-3">
       <SectionHeader>{title}</SectionHeader>
-      <ScopeBadge scope={scope} />
+      <OperationsScopePill value={value} onChange={onChange} available={available} />
     </div>
   );
 }
 
-function ScopeHelper({ scope }: { scope: SectionScope }) {
-  return <p className="font-sans text-xs text-on-surface-variant">{SCOPE_HELPER_TEXT[scope]}</p>;
+function PillScopeHelper({ scope }: { scope: OperationsScope }) {
+  return (
+    <p className="font-sans text-xs text-on-surface-variant">
+      {OPERATIONS_SCOPE_HELPER_TEXT[scope]}
+    </p>
+  );
 }
 
 function NamespaceTable({ data }: { data: EmbeddingDetails }) {
@@ -221,6 +252,7 @@ function TablesTable({ tables }: { tables: DatabaseDetails['tables'] }) {
 
 function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
   const [expanded, setExpanded] = useState(false);
+  const [pillScope, setPillScope] = useState<OperationsScope>('project');
   const btreeCount = indexes.filter((i) => i.type === 'btree').length;
   const autoCount = indexes.filter((i) => i.type === 'auto').length;
 
@@ -231,7 +263,7 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
       className="rounded-lg p-6 space-y-4 transition-all duration-300"
     >
       <div className="flex items-center justify-between">
-        <ScopedSectionTitle title="Indexes" scope="grove" />
+        <PillSectionTitle title="Indexes" value={pillScope} onChange={setPillScope} />
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -240,7 +272,7 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
           {expanded ? 'Hide' : 'Show all ' + indexes.length}
         </button>
       </div>
-      <ScopeHelper scope="grove" />
+      <PillScopeHelper scope={pillScope} />
       <p className="font-sans text-sm text-on-surface-variant">
         {btreeCount} btree {btreeCount === 1 ? 'index' : 'indexes'}
         {autoCount > 0 && <> · {autoCount} auto-{autoCount === 1 ? 'index' : 'indexes'}</>}
@@ -290,7 +322,10 @@ function ScheduledMaintenanceCard({
 }) {
   const { effective } = useScopedConfig();
   const queryClient = useQueryClient();
+  const selection = useProjectSelection();
   const [running, setRunning] = useState(false);
+  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (!effective) return null;
 
@@ -300,19 +335,28 @@ function ScheduledMaintenanceCard({
   const lastRunMs = details.last_optimize_at ? new Date(details.last_optimize_at).getTime() : null;
   const nextRunMs = lastRunMs !== null ? lastRunMs + intervalHours * SECONDS_PER_HOUR * 1000 - Date.now() : 0;
 
-  async function handleRunNow() {
+  async function doRunNow() {
     setRunning(true);
     try {
+      const wireScope = buildActionScope(pillScope, selection);
       const result = await postJson<{
-        actions_completed: Array<{ name: string }>;
-        actions_failed: Array<{ name: string; error?: string }>;
-        duration_ms: number;
-      }>('/database/optimize');
-      const failed = result.actions_failed.length;
-      onActionResult({
-        type: failed > 0 ? 'error' : 'success',
-        text: 'Optimize complete: ' + result.actions_completed.length + ' steps, ' + failed + ' failed (' + result.duration_ms + 'ms)',
-      });
+        actions_completed?: Array<{ name: string }>;
+        actions_failed?: Array<{ name: string; error?: string }>;
+        duration_ms?: number;
+        summary?: { ok: number; failed: number };
+      }>('/database/optimize', { scope: wireScope });
+      if (result.summary) {
+        onActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Optimize dispatched across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        const failed = result.actions_failed?.length ?? 0;
+        onActionResult({
+          type: failed > 0 ? 'error' : 'success',
+          text: 'Optimize complete: ' + (result.actions_completed?.length ?? 0) + ' steps, ' + failed + ' failed (' + (result.duration_ms ?? 0) + 'ms)',
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
       onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
@@ -321,10 +365,19 @@ function ScheduledMaintenanceCard({
     }
   }
 
+  function handleRunNow() {
+    const wireScope = buildActionScope(pillScope, selection);
+    if (wireScope && actionRequiresConfirmation('optimize', wireScope)) {
+      setConfirmOpen(true);
+      return;
+    }
+    void doRunNow();
+  }
+
   return (
     <Surface level="low" className="p-6 space-y-4">
-      <ScopedSectionTitle title="Scheduled Maintenance" scope="grove" />
-      <ScopeHelper scope="grove" />
+      <PillSectionTitle title="Scheduled Maintenance" value={pillScope} onChange={setPillScope} />
+      <PillScopeHelper scope={pillScope} />
       <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
         <ScopedField
           path="maintenance.auto_optimize"
@@ -366,6 +419,17 @@ function ScheduledMaintenanceCard({
         <Play className="mr-2 h-4 w-4" />
         {running ? 'Running...' : 'Run now'}
       </Button>
+      <ActionConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        action="Optimize database"
+        scope={buildActionScope(pillScope, selection) ?? { kind: 'all-groves' }}
+        isPending={running}
+        onConfirm={async () => {
+          await doRunNow();
+          setConfirmOpen(false);
+        }}
+      />
     </Surface>
   );
 }
@@ -376,23 +440,54 @@ function DatabaseActions({
   onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
 }) {
   const queryClient = useQueryClient();
+  const selection = useProjectSelection();
   const [busy, setBusy] = useState(false);
+  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [pendingDialog, setPendingDialog] = useState<
+    | null
+    | {
+        action: string;
+        run: () => Promise<void>;
+        variant?: 'destructive';
+      }
+  >(null);
 
-  async function handleIntegrityCheck() {
+  function gatedRun(
+    actionKey: 'integrity-check' | 'vacuum' | 'reindex',
+    label: string,
+    run: () => Promise<void>,
+    variant?: 'destructive',
+  ) {
+    const wireScope = buildActionScope(pillScope, selection);
+    const requires = wireScope ? actionRequiresConfirmation(actionKey, wireScope) : false;
+    if (!requires) {
+      void run();
+      return;
+    }
+    setPendingDialog({ action: label, run, variant });
+  }
+
+  async function doIntegrityCheck() {
     setBusy(true);
     try {
       const result = await postJson<{
-        status: string;
-        issues: string[];
-        fk_violations: number;
-        duration_ms: number;
-      }>('/database/integrity-check');
-      if (result.status === 'ok') {
-        onActionResult({ type: 'success', text: 'Integrity check OK (' + result.duration_ms + 'ms)' });
+        status?: string;
+        issues?: string[];
+        fk_violations?: number;
+        duration_ms?: number;
+        summary?: { ok: number; failed: number };
+      }>('/database/integrity-check', { scope: buildActionScope(pillScope, selection) });
+      if (result.summary) {
+        onActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Integrity check across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else if (result.status === 'ok') {
+        onActionResult({ type: 'success', text: 'Integrity check OK (' + (result.duration_ms ?? 0) + 'ms)' });
       } else {
         onActionResult({
           type: 'error',
-          text: 'Integrity issues: ' + result.issues.length + ' problems, ' + result.fk_violations + ' FK violations',
+          text: 'Integrity issues: ' + (result.issues?.length ?? 0) + ' problems, ' + (result.fk_violations ?? 0) + ' FK violations',
         });
       }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
@@ -402,21 +497,31 @@ function DatabaseActions({
       setBusy(false);
     }
   }
+  function handleIntegrityCheck() {
+    gatedRun('integrity-check', 'Run integrity check', doIntegrityCheck);
+  }
 
-  async function handleVacuum() {
-    if (!confirm('VACUUM rebuilds the entire DB file and may take a while. Continue?')) return;
+  async function doVacuum() {
     setBusy(true);
     try {
       const result = await postJson<{
-        size_before: number;
-        size_after: number;
-        freed_bytes: number;
-        duration_ms: number;
-      }>('/database/vacuum');
-      onActionResult({
-        type: 'success',
-        text: 'Vacuum complete: freed ' + formatBytes(result.freed_bytes) + ' in ' + result.duration_ms + 'ms',
-      });
+        size_before?: number;
+        size_after?: number;
+        freed_bytes?: number;
+        duration_ms?: number;
+        summary?: { ok: number; failed: number };
+      }>('/database/vacuum', { scope: buildActionScope(pillScope, selection) });
+      if (result.summary) {
+        onActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Vacuum across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        onActionResult({
+          type: 'success',
+          text: 'Vacuum complete: freed ' + formatBytes(result.freed_bytes ?? 0) + ' in ' + (result.duration_ms ?? 0) + 'ms',
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
       if (err instanceof ApiError) {
@@ -434,13 +539,27 @@ function DatabaseActions({
       setBusy(false);
     }
   }
+  function handleVacuum() {
+    gatedRun('vacuum', 'Vacuum database', doVacuum, 'destructive');
+  }
 
-  async function handleReindex() {
-    if (!confirm('REINDEX rebuilds all indexes. Continue?')) return;
+  async function doReindex() {
     setBusy(true);
     try {
-      const result = await postJson<{ duration_ms: number }>('/database/reindex');
-      onActionResult({ type: 'success', text: 'Reindex complete (' + result.duration_ms + 'ms)' });
+      const result = await postJson<{
+        duration_ms?: number;
+        summary?: { ok: number; failed: number };
+      }>('/database/reindex', {
+        scope: buildActionScope(pillScope, selection),
+      });
+      if (result.summary) {
+        onActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Reindex across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        onActionResult({ type: 'success', text: 'Reindex complete (' + (result.duration_ms ?? 0) + 'ms)' });
+      }
       queryClient.invalidateQueries({ queryKey: ['database-details'] });
     } catch (err) {
       onActionResult({ type: 'error', text: 'Error: ' + (err as Error).message });
@@ -448,11 +567,14 @@ function DatabaseActions({
       setBusy(false);
     }
   }
+  function handleReindex() {
+    gatedRun('reindex', 'Reindex database', doReindex);
+  }
 
   return (
     <Surface level="low" className="p-6 space-y-3">
-      <ScopedSectionTitle title="Actions" scope="grove" />
-      <ScopeHelper scope="grove" />
+      <PillSectionTitle title="Actions" value={pillScope} onChange={setPillScope} />
+      <PillScopeHelper scope={pillScope} />
       <div className="flex flex-wrap gap-2">
         <Button variant="ghost" size="sm" onClick={handleIntegrityCheck} disabled={busy}>
           <RefreshCw className="mr-2 h-4 w-4" />
@@ -467,6 +589,20 @@ function DatabaseActions({
           Reindex
         </Button>
       </div>
+      {pendingDialog && (
+        <ActionConfirmDialog
+          open
+          onOpenChange={(o) => { if (!o) setPendingDialog(null); }}
+          action={pendingDialog.action}
+          scope={buildActionScope(pillScope, selection) ?? { kind: 'all-groves' }}
+          variant={pendingDialog.variant}
+          isPending={busy}
+          onConfirm={async () => {
+            await pendingDialog.run();
+            setPendingDialog(null);
+          }}
+        />
+      )}
     </Surface>
   );
 }
@@ -475,7 +611,37 @@ function DatabaseActions({
 
 function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
   const queryClient = useQueryClient();
+  const selection = useProjectSelection();
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // Per-section pill state — sections can hold different scopes concurrently.
+  const [namespaceScope, setNamespaceScope] = useState<OperationsScope>('project');
+  const [reconcileScope, setReconcileScope] = useState<OperationsScope>('project');
+  const [actionScope, setActionScope] = useState<OperationsScope>('project');
+  const [pendingDialog, setPendingDialog] = useState<
+    | null
+    | {
+        action: string;
+        scopeKind: OperationsScope;
+        run: () => Promise<void>;
+        variant?: 'destructive';
+      }
+  >(null);
+  const [dialogPending, setDialogPending] = useState(false);
+
+  function confirmAndRun(
+    actionKey: 'reconcile' | 'reembed-stale' | 'rebuild' | 'clean-orphans',
+    label: string,
+    run: () => Promise<void>,
+    variant?: 'destructive',
+  ) {
+    const wireScope = buildActionScope(actionScope, selection);
+    const requires = wireScope ? actionRequiresConfirmation(actionKey, wireScope) : false;
+    if (!requires) {
+      void run();
+      return;
+    }
+    setPendingDialog({ action: label, scopeKind: actionScope, run, variant });
+  }
 
   // --- Sparkline history tracking ---
   const [totalHistory, setTotalHistory] = useState<number[]>([]);
@@ -502,67 +668,127 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
   // --- Action handlers ---
 
-  async function handleReembedStale() {
-    setActionResult(null);
-    try {
-      const result = await postJson<{ reembedded: number; passes: number; batch_size: number }>('/embedding/reembed-stale');
-      setActionResult({
-        type: 'success',
-        text: `Re-embedded ${result.reembedded} stale vectors in ${result.passes} pass${result.passes !== 1 ? 'es' : ''} (batch ${result.batch_size})`,
-      });
-      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
-    } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
-    }
-  }
-
-  async function handleRebuild() {
-    if (!confirm('This will re-embed all vectors. Continue?')) return;
+  async function doReembedStale() {
     setActionResult(null);
     try {
       const result = await postJson<{
-        queued: number;
-        embedded: number;
-        stale_reembedded: number;
-        passes: number;
-        batch_size: number;
-        remaining_queue_depth: number;
-      }>('/embedding/rebuild');
-      setActionResult({
-        type: 'success',
-        text: `Rebuild cleared ${result.queued} vectors and re-embedded ${result.embedded} records in ${result.passes} pass${result.passes !== 1 ? 'es' : ''} (batch ${result.batch_size}, remaining ${result.remaining_queue_depth})`,
-      });
-      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
-    } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
-    }
-  }
-
-  async function handleCleanOrphans() {
-    setActionResult(null);
-    try {
-      const result = await postJson<{ orphans_cleaned: number }>('/embedding/clean-orphans');
-      setActionResult({ type: 'success', text: `Cleaned ${result.orphans_cleaned} orphan vectors` });
-      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
-    } catch (err) {
-      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
-    }
-  }
-
-  async function handleReconcile() {
-    setActionResult(null);
-    try {
-      const result = await postJson<{ embedded: number; orphans_cleaned: number; duration_ms: number; batch_size: number }>(
-        '/embedding/reconcile',
+        reembedded?: number;
+        passes?: number;
+        batch_size?: number;
+        summary?: { ok: number; failed: number };
+      }>(
+        '/embedding/reembed-stale',
+        { scope: buildActionScope(actionScope, selection) },
       );
-      setActionResult({
-        type: 'success',
-        text: `Reconcile complete: ${result.embedded} embedded, ${result.orphans_cleaned} orphans cleaned (${result.duration_ms}ms, batch ${result.batch_size})`,
-      });
+      if (result.summary) {
+        setActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Re-embed dispatched across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        setActionResult({
+          type: 'success',
+          text: `Re-embedded ${result.reembedded ?? 0} stale vectors in ${result.passes ?? 0} pass(es)`,
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
     } catch (err) {
       setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
     }
+  }
+  function handleReembedStale() {
+    confirmAndRun('reembed-stale', 'Re-embed stale vectors', doReembedStale);
+  }
+
+  async function doRebuild() {
+    setActionResult(null);
+    try {
+      const result = await postJson<{
+        queued?: number;
+        embedded?: number;
+        passes?: number;
+        batch_size?: number;
+        remaining_queue_depth?: number;
+        results?: Array<{ grove_slug: string; ok: boolean; queued?: number; embedded?: number }>;
+        summary?: { ok: number; failed: number };
+      }>('/embedding/rebuild', { scope: buildActionScope(actionScope, selection) });
+      if (result.summary) {
+        setActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Rebuild dispatched across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        setActionResult({
+          type: 'success',
+          text: `Rebuild cleared ${result.queued ?? 0} vectors and re-embedded ${result.embedded ?? 0} records (passes ${result.passes ?? 0}, remaining ${result.remaining_queue_depth ?? 0})`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
+    } catch (err) {
+      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
+    }
+  }
+  function handleRebuild() {
+    confirmAndRun('rebuild', 'Rebuild all vectors', doRebuild, 'destructive');
+  }
+
+  async function doCleanOrphans() {
+    setActionResult(null);
+    try {
+      const result = await postJson<{
+        orphans_cleaned?: number;
+        summary?: { ok: number; failed: number };
+      }>('/embedding/clean-orphans', {
+        scope: buildActionScope(actionScope, selection),
+      });
+      if (result.summary) {
+        setActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Clean orphans dispatched across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        setActionResult({ type: 'success', text: `Cleaned ${result.orphans_cleaned ?? 0} orphan vectors` });
+      }
+      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
+    } catch (err) {
+      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
+    }
+  }
+  function handleCleanOrphans() {
+    confirmAndRun('clean-orphans', 'Clean orphan vectors', doCleanOrphans);
+  }
+
+  async function doReconcile() {
+    setActionResult(null);
+    try {
+      const result = await postJson<{
+        embedded?: number;
+        orphans_cleaned?: number;
+        duration_ms?: number;
+        batch_size?: number;
+        summary?: { ok: number; failed: number };
+      }>(
+        '/embedding/reconcile',
+        { scope: buildActionScope(actionScope, selection) },
+      );
+      if (result.summary) {
+        setActionResult({
+          type: result.summary.failed > 0 ? 'error' : 'success',
+          text: `Reconcile dispatched across ${result.summary.ok + result.summary.failed} Grove(s); ${result.summary.failed} failed`,
+        });
+      } else {
+        setActionResult({
+          type: 'success',
+          text: `Reconcile complete: ${result.embedded ?? 0} embedded, ${result.orphans_cleaned ?? 0} orphans cleaned (${result.duration_ms ?? 0}ms)`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['embedding-details'] });
+    } catch (err) {
+      setActionResult({ type: 'error', text: `Error: ${(err as Error).message}` });
+    }
+  }
+  function handleReconcile() {
+    confirmAndRun('reconcile', 'Force reconcile embeddings', doReconcile);
   }
 
   // --- Aggregate totals ---
@@ -599,15 +825,23 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
       {/* Namespace breakdown */}
       <Surface level="low" className="p-6 space-y-4">
-        <ScopedSectionTitle title="Namespace Breakdown" scope="grove" />
-        <ScopeHelper scope="grove" />
+        <PillSectionTitle
+          title="Namespace Breakdown"
+          value={namespaceScope}
+          onChange={setNamespaceScope}
+        />
+        <PillScopeHelper scope={namespaceScope} />
         <NamespaceTable data={data} />
       </Surface>
 
       {/* Reconcile policy */}
       <Surface level="low" className="p-6 space-y-3">
-        <ScopedSectionTitle title="Reconcile Policy" scope="grove" />
-        <ScopeHelper scope="grove" />
+        <PillSectionTitle
+          title="Reconcile Policy"
+          value={reconcileScope}
+          onChange={setReconcileScope}
+        />
+        <PillScopeHelper scope={reconcileScope} />
         <ScopedField<'embedding.run_in_deep_sleep', boolean>
           path="embedding.run_in_deep_sleep"
           label="Continue embedding in deep sleep"
@@ -632,8 +866,8 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
       {/* Action toolbar */}
       <Surface level="low" className="p-6 space-y-3">
-        <ScopedSectionTitle title="Actions" scope="grove" />
-        <ScopeHelper scope="grove" />
+        <PillSectionTitle title="Actions" value={actionScope} onChange={setActionScope} />
+        <PillScopeHelper scope={actionScope} />
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" size="sm" onClick={handleReembedStale}>
             <RefreshCw className="mr-2 h-4 w-4" />
@@ -726,6 +960,29 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
           )}
         </div>
       </Surface>
+      {pendingDialog && (
+        <ActionConfirmDialog
+          open
+          onOpenChange={(o) => { if (!o) setPendingDialog(null); }}
+          action={pendingDialog.action}
+          scope={
+            buildActionScope(pendingDialog.scopeKind, selection) ?? {
+              kind: 'all-groves',
+            }
+          }
+          variant={pendingDialog.variant}
+          isPending={dialogPending}
+          onConfirm={async () => {
+            setDialogPending(true);
+            try {
+              await pendingDialog.run();
+            } finally {
+              setDialogPending(false);
+              setPendingDialog(null);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -751,6 +1008,7 @@ function DatabaseTab() {
   // Sparkline history for DB size
   const [sizeHistory, setSizeHistory] = useState<number[]>([]);
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [schemaScope, setSchemaScope] = useState<OperationsScope>('project');
   useEffect(() => {
     if (!data) return;
     setSizeHistory((prev) => {
@@ -822,8 +1080,12 @@ function DatabaseTab() {
 
       {/* Schema breakdown */}
       <Surface level="low" className="p-6 space-y-4">
-        <ScopedSectionTitle title="Schema Breakdown" scope="grove" />
-        <ScopeHelper scope="grove" />
+        <PillSectionTitle
+          title="Schema Breakdown"
+          value={schemaScope}
+          onChange={setSchemaScope}
+        />
+        <PillScopeHelper scope={schemaScope} />
         <TablesTable tables={data.tables} />
       </Surface>
 

@@ -14,6 +14,7 @@ import {
   handleDatabaseReindex,
   handleDatabaseIntegrityCheck,
 } from '@myco/daemon/api/database';
+import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache';
 import type { RouteRequest } from '@myco/daemon/router';
 
 function makeLogger() {
@@ -94,6 +95,9 @@ describe('database API handlers', () => {
         seen.push(req);
         return fakeManager;
       },
+      cache: new GroveRuntimeCache(),
+      logger: makeLogger() as never,
+      vaultDir: tmpDir,
     });
     const req = {
       body: undefined,

@@ -9,6 +9,10 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 import { ScopedField } from '../config/ScopedField';
+import { OperationsScopePill, type OperationsScope } from './OperationsScopePill';
+import { buildActionScope } from './scope-helpers';
+import { useProjectSelection } from '../../hooks/use-project-selection';
+import { ActionConfirmDialog, actionRequiresConfirmation } from './ActionConfirmDialog';
 
 /* ---------- Types ---------- */
 
@@ -63,12 +67,22 @@ function formatDate(iso: string): string {
 
 /* ---------- BackupCard ---------- */
 
+interface BackupAllResponse {
+  scope: { kind: string };
+  results: Array<{ grove_id: string; grove_slug: string; ok: boolean; size_bytes?: number; error?: string }>;
+  summary: { ok: number; failed: number };
+}
+
 export function BackupCard() {
   const [backups, setBackups] = useState<BackupMeta[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
+  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const selection = useProjectSelection();
 
   const refreshBackups = useCallback(async () => {
     try {
@@ -86,19 +100,42 @@ export function BackupCard() {
     refreshBackups().finally(() => setLoading(false));
   }
 
-  async function handleCreateBackup() {
+  async function doCreateBackup() {
+    setBusy(true);
     setMessage(null);
     setPreview(null);
     try {
-      const res = await postJson<BackupCreateResponse>('/backup');
-      setMessage({
-        type: 'success',
-        text: `Backup created: ${res.machine_id} (${formatBytes(res.size_bytes)})`,
-      });
+      const wireScope = buildActionScope(pillScope, selection);
+      const res = await postJson<BackupCreateResponse & Partial<BackupAllResponse>>(
+        '/backup',
+        { scope: wireScope },
+      );
+      if (res.summary) {
+        setMessage({
+          type: res.summary.failed > 0 ? 'error' : 'success',
+          text: `Backed up ${res.summary.ok} Grove(s); ${res.summary.failed} failed`,
+        });
+      } else {
+        setMessage({
+          type: 'success',
+          text: `Backup created: ${res.machine_id} (${formatBytes(res.size_bytes)})`,
+        });
+      }
       await refreshBackups();
     } catch (err) {
       setMessage({ type: 'error', text: `Backup failed: ${(err as Error).message}` });
+    } finally {
+      setBusy(false);
     }
+  }
+
+  function handleCreateBackup() {
+    const wireScope = buildActionScope(pillScope, selection);
+    if (wireScope && actionRequiresConfirmation('backup', wireScope)) {
+      setConfirmOpen(true);
+      return;
+    }
+    void doCreateBackup();
   }
 
   async function handlePreview(machineId: string) {
@@ -133,21 +170,34 @@ export function BackupCard() {
       className="rounded-lg p-6 space-y-4 transition-all duration-300"
     >
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <HardDrive className="h-4 w-4 text-primary" />
           <SectionHeader>Backup &amp; Restore</SectionHeader>
+          <OperationsScopePill value={pillScope} onChange={setPillScope} />
         </div>
         <div className="flex gap-2">
           <Button variant="ghost" size="sm" onClick={refreshBackups}>
             <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             Refresh
           </Button>
-          <Button variant="default" size="sm" onClick={handleCreateBackup}>
+          <Button variant="default" size="sm" onClick={handleCreateBackup} disabled={busy}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             Backup Now
           </Button>
         </div>
       </div>
+      <ActionConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        action="Create backup"
+        scope={buildActionScope(pillScope, selection) ?? { kind: 'all-groves' }}
+        isPending={busy}
+        onConfirm={async () => {
+          await doCreateBackup();
+          setConfirmOpen(false);
+        }}
+      />
+
 
       {/* Backup directory — personal-default: each machine writes backups
           to its own filesystem location (network share, external disk, etc). */}
