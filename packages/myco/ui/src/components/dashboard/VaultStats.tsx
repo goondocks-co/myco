@@ -1,17 +1,10 @@
 import { type StatsResponse } from '../../hooks/use-daemon';
-import { formatUptime, formatEpochAgo } from '../../lib/format';
+import { formatEpochAgo } from '../../lib/format';
 import { StatCard } from '../ui/stat-card';
 import { useProjectPathBuilder } from '../../hooks/use-project-selection';
 
 export function VaultStats({ stats }: { stats: StatsResponse }) {
   const projectPath = useProjectPathBuilder();
-
-  const embeddingPercent =
-    stats.embedding.total_embeddable > 0
-      ? Math.round(
-          (stats.embedding.embedded_count / stats.embedding.total_embeddable) * 100,
-        )
-      : 0;
 
   // Agent tile: the lifetime run count is ambient noise — what matters
   // is whether the agent is active and how recently. Show the relative
@@ -30,8 +23,10 @@ export function VaultStats({ stats }: { stats: StatsResponse }) {
     ? `${canopyDescribed}/${canopyTotal} described`
     : 'no entries yet';
 
+  // Embedding lives on the Grove Dashboard and uptime/version on the
+  // Machine Dashboard now — keep this row to project-scoped stats only.
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       <StatCard
         label="Sessions"
         value={String(stats.vault.session_count)}
@@ -46,13 +41,6 @@ export function VaultStats({ stats }: { stats: StatsResponse }) {
         href={projectPath('/mycelium?tab=spores')}
       />
       <StatCard
-        label="Embedding"
-        value={`${embeddingPercent}%`}
-        sublabel={`${stats.embedding.embedded_count}/${stats.embedding.total_embeddable}`}
-        accent={stats.embedding.queue_depth > 0 ? 'ochre' : 'sage'}
-        href={projectPath('/operations')}
-      />
-      <StatCard
         label="Canopy"
         value={String(canopyTotal)}
         sublabel={canopySublabel}
@@ -65,12 +53,6 @@ export function VaultStats({ stats }: { stats: StatsResponse }) {
         sublabel={agentSublabel}
         accent={stats.agent.last_run_status === 'error' ? 'terracotta' : 'outline'}
         href={projectPath('/agent')}
-      />
-      <StatCard
-        label="Uptime"
-        value={formatUptime(stats.daemon.uptime_seconds)}
-        sublabel={`v${stats.daemon.version}`}
-        accent="outline"
       />
     </div>
   );
