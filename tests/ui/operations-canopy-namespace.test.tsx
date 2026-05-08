@@ -3,6 +3,7 @@
 import { describe, expect, it, beforeEach, mock } from 'bun:test';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { vi } from '../helpers/vi-shim.js';
 import type { EmbeddingDetails } from '../../packages/myco/ui/src/hooks/use-embedding-details';
 
@@ -99,7 +100,9 @@ function renderPage() {
   const client = makeQueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <GroveMaintenance />
+      <MemoryRouter>
+        <GroveMaintenance />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
