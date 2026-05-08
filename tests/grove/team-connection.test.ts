@@ -59,4 +59,43 @@ describe('Grove team connection storage', () => {
     expect(readTeamConnectionSecrets(vaultDir, context)[TEAM_API_KEY_SECRET]).toBe('secret');
     expect(fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8')).toContain('enabled: false');
   });
+
+  describe('Grove registry membership gate (G6)', () => {
+    it('refuses to materialize a store path when the Grove is unknown', () => {
+      const ghostContext: MycoRequestContext = {
+        ...context,
+        groveId: 'grove_dddddddddddddddddddddddddddddddd',
+        databasePath: path.join(mycoHome, 'groves', 'grove_dddddddddddddddddddddddddddddddd', 'myco.db'),
+      };
+      expect(() => resolveTeamConnectionStore(vaultDir, ghostContext)).toThrow(/not registered/);
+    });
+
+    it('refuses writes that target an unknown Grove (defense vs hostile request context)', () => {
+      const attackerContext: MycoRequestContext = {
+        ...context,
+        groveId: 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        databasePath: path.join(mycoHome, 'groves', 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'myco.db'),
+      };
+      expect(() => writeTeamConnectionSecret(vaultDir, attackerContext, TEAM_API_KEY_SECRET, 'pwned')).toThrow(/not registered/);
+      // The attacker-chosen path must not have been created.
+      expect(fs.existsSync(path.join(mycoHome, 'groves', 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'secrets.env'))).toBe(false);
+    });
+
+    it('refuses reads from an unknown Grove for symmetry', () => {
+      const ghostContext: MycoRequestContext = {
+        ...context,
+        groveId: 'grove_ffffffffffffffffffffffffffffffff',
+        databasePath: path.join(mycoHome, 'groves', 'grove_ffffffffffffffffffffffffffffffff', 'myco.db'),
+      };
+      expect(() => loadTeamConnectionConfig(vaultDir, ghostContext)).toThrow(/not registered/);
+      expect(() => readTeamConnectionSecrets(vaultDir, ghostContext)).toThrow(/not registered/);
+    });
+
+    it('still falls through to the legacy vault path when groveId is null', () => {
+      const legacyContext: MycoRequestContext = { ...context, groveId: null };
+      const store = resolveTeamConnectionStore(vaultDir, legacyContext);
+      expect(store.groveId).toBeNull();
+      expect(store.configDir).toBe(vaultDir);
+    });
+  });
 });

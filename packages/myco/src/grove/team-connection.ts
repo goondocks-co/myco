@@ -5,6 +5,7 @@ import { TeamSchema, type TeamConfig } from '@myco/config/schema.js';
 import { loadMergedConfig, updateTeamConfig } from '@myco/config/loader.js';
 import { readSecrets, writeSecret } from '@myco/config/secrets.js';
 import { resolveGroveConfigPath, resolveGroveDir } from '@myco/grove/paths.js';
+import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 export interface TeamConnectionStore {
@@ -26,6 +27,18 @@ export function resolveTeamConnectionStore(
 ): TeamConnectionStore {
   if (requestContext?.groveId) {
     const groveId = requestContext.groveId;
+    // Defense in depth: refuse to materialize a Grove-scoped store path
+    // unless the Grove is registered. Without this gate a hostile request
+    // context could redirect the team API key write into an attacker-
+    // chosen `~/.myco/groves/<arbitrary>/secrets.env`. The path resolvers
+    // already enforce the structural id shape (G3); this adds the
+    // registry-membership check on top.
+    const grove = loadGroveRecord(groveId);
+    if (!grove) {
+      throw new Error(
+        `Refusing team connection store: Grove ${groveId} is not registered`,
+      );
+    }
     const configDir = resolveGroveDir(groveId);
     return {
       configDir,

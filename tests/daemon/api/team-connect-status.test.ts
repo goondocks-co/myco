@@ -194,45 +194,60 @@ describe('createTeamHandlers.handleStatus', () => {
 
   it('reports the selected Grove context for Grove-scoped callers', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
-    const handlers = createTeamHandlers({
-      vaultDir,
-      machineId: 'machine-test',
-      globalPrefix: null,
-      logger: {
-        debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined,
-      },
-      getTeamClient: (requestContext) => {
-        expect(requestContext?.groveId).toBe('grove_0123456789abcdef0123456789abcdef');
-        expect(requestContext?.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
-        return null;
-      },
-      setTeamClient: () => undefined,
-    });
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
 
-    const response = await handlers.handleStatus({
-      requestContext: {
-        projectRoot: path.join(tempDir, 'project'),
-        projectVaultDir: vaultDir,
-        projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        groveId: 'grove_0123456789abcdef0123456789abcdef',
+    // G6: resolveTeamConnectionStore now requires the Grove to be
+    // registered before it will materialize a per-Grove store path.
+    // Register a real Grove under a scoped MYCO_HOME so the assertion
+    // passes and the test exercises the same code path users hit.
+    const mycoHome = path.join(tempDir, 'home');
+    const previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    try {
+      const grove = createGrove('Status Test Grove', mycoHome);
+      const handlers = createTeamHandlers({
+        vaultDir,
         machineId: 'machine-test',
-        sessionId: null,
-        databasePath: path.join(tempDir, 'home', 'groves', 'grove_0123456789abcdef0123456789abcdef', 'myco.db'),
-        source: 'headers',
-      },
-    } as never);
-    const body = response.body as {
-      connection_scope: string;
-      grove: { id: string; name: string; slug: string } | null;
-      project: { id: string; name: string; root: string };
-    };
+        globalPrefix: null,
+        logger: {
+          debug: () => undefined,
+          info: () => undefined,
+          warn: () => undefined,
+          error: () => undefined,
+        },
+        getTeamClient: (requestContext) => {
+          expect(requestContext?.groveId).toBe(grove.id);
+          expect(requestContext?.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+          return null;
+        },
+        setTeamClient: () => undefined,
+      });
 
-    expect(body.connection_scope).toBe('grove');
-    expect(body.grove).toMatchObject({ id: 'grove_0123456789abcdef0123456789abcdef' });
-    expect(body.project).toMatchObject({ id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' });
+      const response = await handlers.handleStatus({
+        requestContext: {
+          projectRoot: path.join(tempDir, 'project'),
+          projectVaultDir: vaultDir,
+          projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          groveId: grove.id,
+          machineId: 'machine-test',
+          sessionId: null,
+          databasePath: path.join(mycoHome, 'groves', grove.id, 'myco.db'),
+          source: 'headers',
+        },
+      } as never);
+      const body = response.body as {
+        connection_scope: string;
+        grove: { id: string; name: string; slug: string } | null;
+        project: { id: string; name: string; root: string };
+      };
+
+      expect(body.connection_scope).toBe('grove');
+      expect(body.grove).toMatchObject({ id: grove.id });
+      expect(body.project).toMatchObject({ id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' });
+    } finally {
+      if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousMycoHome;
+    }
   });
 
   it('reports local and remote sync summary counts', async () => {
