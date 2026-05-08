@@ -64,7 +64,6 @@ export interface ActivateProjectMigrationResult {
   grove_binding_id: string;
   import_result: ImportProjectCoreResult | null;
   validation: ActivationValidationSummary | null;
-  team_sync_disabled: boolean;
   marker_path: string;
 }
 
@@ -82,7 +81,6 @@ interface ActivationMarker {
   activated_at: string;
   import_result: ImportProjectCoreResult;
   validation: ActivationValidationSummary;
-  team_sync_disabled: boolean;
   legacy_archived?: { archived_at: string; archive_dir: string };
   legacy_archive_error?: { failed_at: string; message: string };
 }
@@ -229,7 +227,6 @@ export function activateProjectMigration(
       grove_binding_id: identity.bindingId,
       import_result: existingMarker.import_result,
       validation: existingMarker.validation,
-      team_sync_disabled: existingMarker.team_sync_disabled,
       marker_path: markerPath,
     };
   }
@@ -240,7 +237,6 @@ export function activateProjectMigration(
   const targetDb = openDatabase(targetDbInfo.dbPath);
   let importResult: ImportProjectCoreResult | null = null;
   let validation: ActivationValidationSummary | null = null;
-  let teamSyncDisabled = false;
 
   try {
     createSchema(targetDb);
@@ -307,7 +303,6 @@ export function activateProjectMigration(
         activated_at: new Date().toISOString(),
         import_result: importResult!,
         validation: validation!,
-        team_sync_disabled: teamSyncDisabled,
       });
 
       // Archive legacy vault data on success. Done outside the DB
@@ -342,7 +337,6 @@ export function activateProjectMigration(
     grove_binding_id: identity.bindingId,
     import_result: importResult,
     validation,
-    team_sync_disabled: teamSyncDisabled,
     marker_path: markerPath,
   };
 }

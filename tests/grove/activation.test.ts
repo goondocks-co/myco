@@ -93,7 +93,6 @@ describe('Grove project activation', () => {
     });
 
     expect(result.dry_run).toBe(false);
-    expect(result.team_sync_disabled).toBe(false);
     expect(result.import_result?.sessions).toBe(1);
     expect(result.import_result?.plans).toBe(1);
     expect(result.validation?.embedded_rows_pending.sessions).toBe(0);
