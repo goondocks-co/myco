@@ -1013,6 +1013,105 @@ describe('Grove project core importer', () => {
     expect(updatedState.value).toBe('skill-a,skill-b');
     expect(updatedState.updated_at).toBe(492);
   });
+
+  // Pins the targetDb.transaction(() => {...})() wrap inside
+  // importProjectCoreRows. Activation depends on this contract:
+  // a mid-import failure rolls the whole import back so the next
+  // attempt sees an empty target and a clean journal. If a refactor
+  // ever removed or split that transaction, this test fails.
+  it('rolls back the entire import (rows + journal) when a row fails mid-stream', () => {
+    const migrationId = createMigrationId();
+
+    // Fail the first plan INSERT mid-import. Plans run after sessions
+    // and prompt_batches, so by the time we throw the importer has
+    // already inserted real rows and recorded multiple journal
+    // mappings — proving the transaction rollback covers everything,
+    // not just the table we crashed on.
+    const originalPrepare = targetDb.prepare.bind(targetDb);
+    let injected = false;
+    const failingPrepare: typeof originalPrepare = ((sql: string) => {
+      if (!injected && sql.trimStart().startsWith('INSERT INTO plans')) {
+        injected = true;
+        throw new Error('injected mid-import failure');
+      }
+      return originalPrepare(sql);
+    }) as typeof originalPrepare;
+
+    (targetDb as unknown as { prepare: typeof originalPrepare }).prepare = failingPrepare;
+    try {
+      expect(() =>
+        importProjectCoreRows({
+          migrationId,
+          sourceDb,
+          targetDb,
+          sourceProjectRoot: SOURCE_PROJECT_ROOT,
+          sourceDbPath: SOURCE_DB_PATH,
+          targetGroveId: TARGET_GROVE_ID,
+          targetProjectId: TARGET_PROJECT_ID,
+          targetMachineId: 'target-machine',
+        }),
+      ).toThrow('injected mid-import failure');
+    } finally {
+      (targetDb as unknown as { prepare: typeof originalPrepare }).prepare = originalPrepare;
+    }
+    expect(injected).toBe(true);
+
+    // (a) Zero project-scoped rows landed on the target.
+    for (const table of [
+      'sessions',
+      'prompt_batches',
+      'activities',
+      'attachments',
+      'plans',
+      'artifacts',
+      'spores',
+      'entities',
+      'entity_mentions',
+      'resolution_events',
+      'graph_edges',
+      'agent_runs',
+      'agent_reports',
+      'agent_turns',
+      'agent_run_write_intents',
+      'skill_records',
+      'skill_candidates',
+      'skill_lineage',
+      'skill_usage',
+      'canopy_entries',
+      'canopy_maps',
+      'digest_extracts',
+      'digest_extract_revisions',
+      'cortex_instructions',
+      'notifications',
+      'log_entries',
+    ]) {
+      expect(countRows(targetDb, table, TARGET_PROJECT_ID)).toBe(0);
+    }
+
+    // (b) Zero journal mappings recorded for this migrationId.
+    expect(listImportMappingsForMigration(migrationId, targetDb)).toHaveLength(0);
+
+    // (c) A clean retry with a fresh migrationId completes the full
+    // import — nothing on the target remembers the aborted attempt.
+    const retryMigrationId = createMigrationId();
+    const retry = importProjectCoreRows({
+      migrationId: retryMigrationId,
+      sourceDb,
+      targetDb,
+      sourceProjectRoot: SOURCE_PROJECT_ROOT,
+      sourceDbPath: SOURCE_DB_PATH,
+      targetGroveId: TARGET_GROVE_ID,
+      targetProjectId: TARGET_PROJECT_ID,
+      targetMachineId: 'target-machine',
+    });
+
+    expect(retry.sessions).toBe(2);
+    expect(retry.plans).toBe(1);
+    expect(retry.spores).toBe(2);
+    expect(countRows(targetDb, 'sessions', TARGET_PROJECT_ID)).toBe(2);
+    expect(countRows(targetDb, 'plans', TARGET_PROJECT_ID)).toBe(1);
+    expect(listImportMappingsForMigration(retryMigrationId, targetDb).length).toBeGreaterThan(0);
+  });
 });
 
 function seedSourceProject(db: Database): void {

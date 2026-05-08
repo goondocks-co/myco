@@ -64,7 +64,6 @@ export interface ActivateProjectMigrationResult {
   grove_binding_id: string;
   import_result: ImportProjectCoreResult | null;
   validation: ActivationValidationSummary | null;
-  team_sync_disabled: boolean;
   marker_path: string;
 }
 
@@ -82,7 +81,6 @@ interface ActivationMarker {
   activated_at: string;
   import_result: ImportProjectCoreResult;
   validation: ActivationValidationSummary;
-  team_sync_disabled: boolean;
   legacy_archived?: { archived_at: string; archive_dir: string };
   legacy_archive_error?: { failed_at: string; message: string };
 }
@@ -229,7 +227,6 @@ export function activateProjectMigration(
       grove_binding_id: identity.bindingId,
       import_result: existingMarker.import_result,
       validation: existingMarker.validation,
-      team_sync_disabled: existingMarker.team_sync_disabled,
       marker_path: markerPath,
     };
   }
@@ -240,7 +237,6 @@ export function activateProjectMigration(
   const targetDb = openDatabase(targetDbInfo.dbPath);
   let importResult: ImportProjectCoreResult | null = null;
   let validation: ActivationValidationSummary | null = null;
-  let teamSyncDisabled = false;
 
   try {
     createSchema(targetDb);
@@ -265,6 +261,27 @@ export function activateProjectMigration(
 
       if (input.dryRun) throw new DryRunRollback();
 
+      // Drop the migration journal — it's mid-import working state
+      // (FK lookups + status checks during validation) and nothing
+      // reads it post-marker. Cleanup runs inside the same
+      // transaction as the import so it commits atomically.
+      deleteImportMappingsForMigration(migrationId, targetDb);
+    })();
+
+    // FS side effects run only after the DB transaction has committed.
+    // If anything inside the transaction throws — import error,
+    // validation failure, journal cleanup, or COMMIT itself — SQLite
+    // rolls back AND the marker file never lands. Re-runs see a clean
+    // target DB and no marker, so they retry the full import instead
+    // of false-success-shortcutting on a poisoned marker.
+    //
+    // Within the FS phase, marker is written LAST: manifest +
+    // registry writes are idempotent (re-running activation overwrites
+    // them with the same values), so a failure between them and the
+    // marker write leaves the next run able to recover. A failure
+    // BEFORE the marker write means the next run repeats those FS
+    // writes and tries again from a still-empty Grove DB.
+    if (!input.dryRun) {
       saveProjectManifest(projectVaultDir, identity.manifest);
       registerProjectInGrove(grove.id, {
         projectId: identity.projectId,
@@ -284,25 +301,14 @@ export function activateProjectMigration(
         source_db_path: sourceDbPath,
         target_db_path: targetDbInfo.dbPath,
         activated_at: new Date().toISOString(),
-        import_result: importResult,
-        validation,
-        team_sync_disabled: teamSyncDisabled,
+        import_result: importResult!,
+        validation: validation!,
       });
 
-      // Drop the migration journal — it's mid-import working state
-      // (FK lookups + status checks during validation) and nothing
-      // reads it post-marker. Real-world projects produce 100k+
-      // rows; carrying them forever was carrying 100s of MB of
-      // vestigial data per Grove. Cleanup runs inside the same
-      // transaction as the marker write so it commits atomically.
-      deleteImportMappingsForMigration(migrationId, targetDb);
-    })();
-
-    // Archive legacy vault data on success. Done outside the DB
-    // transaction because it touches the filesystem; the marker has
-    // already been written, so any failure here is recoverable via
-    // `completeLegacyArchive`. Skipped on dry runs.
-    if (!input.dryRun) {
+      // Archive legacy vault data on success. Done outside the DB
+      // transaction because it touches the filesystem; the marker has
+      // already been written, so any failure here is recoverable via
+      // `completeLegacyArchive`.
       stampLegacyArchiveOnMarker(projectVaultDir, markerPath);
     }
   } catch (error) {
@@ -331,7 +337,6 @@ export function activateProjectMigration(
     grove_binding_id: identity.bindingId,
     import_result: importResult,
     validation,
-    team_sync_disabled: teamSyncDisabled,
     marker_path: markerPath,
   };
 }

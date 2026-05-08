@@ -109,7 +109,6 @@ describe('completeLegacyArchive', () => {
       activated_at: new Date().toISOString(),
       import_result: {},
       validation: {},
-      team_sync_disabled: false,
     };
     if (withArchiveFlag) {
       marker.legacy_archived = { archived_at: new Date().toISOString(), archive_dir: '' };

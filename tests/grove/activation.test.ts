@@ -6,13 +6,14 @@ import { parse as parseToml } from 'smol-toml';
 import YAML from 'yaml';
 import { saveConfig, loadConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
   activateProjectMigration,
   activationMarkerPath,
 } from '@myco/grove/activation.js';
-import { createGrove, setDefaultGrove } from '@myco/grove/registry.js';
+import { createGrove, registerProjectInGrove, setDefaultGrove } from '@myco/grove/registry.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { listRegisteredProjects } from '@myco/grove/registry.js';
 import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
@@ -93,7 +94,6 @@ describe('Grove project activation', () => {
     });
 
     expect(result.dry_run).toBe(false);
-    expect(result.team_sync_disabled).toBe(false);
     expect(result.import_result?.sessions).toBe(1);
     expect(result.import_result?.plans).toBe(1);
     expect(result.validation?.embedded_rows_pending.sessions).toBe(0);
@@ -164,6 +164,132 @@ describe('Grove project activation', () => {
     expect(result.dry_run).toBe(true);
     expect(fs.existsSync(path.join(vaultDir, 'project.toml'))).toBe(false);
     expect(listRegisteredProjects(defaultGrove.id, mycoHome)).toEqual([]);
+  });
+
+  it('refuses migration when project.toml binding belongs to a different Grove', () => {
+    const targetGrove = createGrove('Target Grove', mycoHome);
+    const otherGrove = createGrove('Other Grove', mycoHome);
+    const sharedBindingId = 'grove_binding_aaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const sharedProjectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    saveProjectManifest(vaultDir, {
+      project: { id: sharedProjectId, name: 'My Project' },
+      grove: { binding_id: sharedBindingId, mode: 'local' },
+    });
+    registerProjectInGrove(otherGrove.id, {
+      projectId: sharedProjectId,
+      projectName: 'My Project',
+      projectRoot,
+      bindingId: sharedBindingId,
+    }, mycoHome);
+
+    expect(() =>
+      activateProjectMigration({
+        projectRoot,
+        groveRef: targetGrove.id,
+        mycoHome,
+      }),
+    ).toThrow(/binding .* belongs to Grove Other Grove/);
+    expect(fs.existsSync(activationMarkerPath(vaultDir))).toBe(false);
+    expect(listRegisteredProjects(targetGrove.id, mycoHome)).toEqual([]);
+  });
+
+  it('refuses migration when project.toml binding is registered to a different project id', () => {
+    const grove = createGrove('Target Grove', mycoHome);
+    const sharedBindingId = 'grove_binding_bbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const manifestProjectId = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const registeredProjectId = 'proj_cccccccccccccccccccccccccccccccc';
+
+    saveProjectManifest(vaultDir, {
+      project: { id: manifestProjectId, name: 'My Project' },
+      grove: { binding_id: sharedBindingId, mode: 'local' },
+    });
+    // Same Grove, same binding, but the binding is registered against
+    // a different projectId — schema corruption that activation must
+    // refuse rather than silently overwrite.
+    registerProjectInGrove(grove.id, {
+      projectId: registeredProjectId,
+      projectName: 'Imposter Project',
+      projectRoot,
+      bindingId: sharedBindingId,
+    }, mycoHome);
+
+    expect(() =>
+      activateProjectMigration({
+        projectRoot,
+        groveRef: grove.id,
+        mycoHome,
+      }),
+    ).toThrow(/is registered to project .* not /);
+    expect(fs.existsSync(activationMarkerPath(vaultDir))).toBe(false);
+  });
+
+  it('refuses migration when project.toml binding is registered at a different root', () => {
+    const grove = createGrove('Target Grove', mycoHome);
+    const sharedBindingId = 'grove_binding_dddddddddddddddddddddddddddd';
+    const sharedProjectId = 'proj_dddddddddddddddddddddddddddddddd';
+    const otherRoot = path.join(tmpDir, 'other-project');
+    fs.mkdirSync(otherRoot, { recursive: true });
+
+    saveProjectManifest(vaultDir, {
+      project: { id: sharedProjectId, name: 'My Project' },
+      grove: { binding_id: sharedBindingId, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: sharedProjectId,
+      projectName: 'My Project',
+      projectRoot: otherRoot,
+      bindingId: sharedBindingId,
+    }, mycoHome);
+
+    expect(() =>
+      activateProjectMigration({
+        projectRoot,
+        groveRef: grove.id,
+        mycoHome,
+      }),
+    ).toThrow(/is already registered at .* refusing to rebind/);
+    expect(fs.existsSync(activationMarkerPath(vaultDir))).toBe(false);
+  });
+
+  it('stamps legacy_archive_error on the marker when archival fails after a successful import', () => {
+    const grove = createGrove('Target Grove', mycoHome);
+
+    // Force archiveLegacyVaultData to fail by intercepting renameSync
+    // for the move out of the project vault. The DB import + marker
+    // write should still succeed; the archive failure must be
+    // captured on the marker for forensic visibility, not lost.
+    const originalRename = fs.renameSync;
+    let archiveAttempted = false;
+    fs.renameSync = ((src: fs.PathLike, dest: fs.PathLike) => {
+      if (typeof src === 'string' && src.startsWith(vaultDir) && src.includes('myco.db')) {
+        archiveAttempted = true;
+        throw new Error('injected archive failure');
+      }
+      return originalRename(src, dest);
+    }) as typeof fs.renameSync;
+
+    let result;
+    try {
+      result = activateProjectMigration({
+        projectRoot,
+        groveRef: grove.id,
+        mycoHome,
+      });
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
+    expect(archiveAttempted).toBe(true);
+    expect(result.import_result?.sessions).toBe(1);
+    expect(fs.existsSync(activationMarkerPath(vaultDir))).toBe(true);
+
+    const marker = JSON.parse(fs.readFileSync(activationMarkerPath(vaultDir), 'utf-8')) as Record<string, any>;
+    expect(marker.status).toBe('activated');
+    expect(marker.legacy_archive_error).toBeDefined();
+    expect(marker.legacy_archive_error.message).toContain('injected archive failure');
+    expect(typeof marker.legacy_archive_error.failed_at).toBe('string');
+    expect(marker.legacy_archived).toBeUndefined();
   });
 
   it('normalizes older source schemas through a snapshot without mutating the source DB', () => {
