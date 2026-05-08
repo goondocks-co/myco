@@ -1612,7 +1612,7 @@ export async function main(): Promise<void> {
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: vaultDir,
   });
-  teamSync.registerFlushJob(powerManager);
+  teamSync.registerFlushJob(powerManager, runtimeCache);
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner
@@ -1666,7 +1666,23 @@ export async function main(): Promise<void> {
 
   // --- Shutdown ---
 
-  const shutdown = async (signal: string) => {
+  // Guard against SIGTERM + SIGINT (or repeated signals) running the
+  // shutdown body twice. Without this, the second invocation re-enters
+  // closeDatabase() / runtimeCache.closeAll() against already-closed
+  // better-sqlite3 handles, which throws inside libuv. We capture the
+  // first invocation's promise so subsequent signals just await the same
+  // settled outcome.
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) {
+      logger.info(LOG_KINDS.DAEMON_START, `${signal} received during in-progress shutdown; awaiting prior signal`);
+      return shutdownPromise;
+    }
+    shutdownPromise = runShutdown(signal);
+    return shutdownPromise;
+  };
+
+  const runShutdown = async (signal: string) => {
     logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
     powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
@@ -1688,6 +1704,26 @@ export async function main(): Promise<void> {
           remaining: outcome.remaining,
         });
       }
+    }
+    // Drain pending team-sync outbox rows across every Grove before
+    // closing DBs. Without this, SIGTERM/suspend leaves rows queued
+    // locally with no trigger to retry until the next daemon boot. The
+    // PowerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
+    try {
+      const aggregate = await teamSync.flushAllGroves(runtimeCache);
+      if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Team-sync drain at shutdown', {
+          groves: aggregate.groves,
+          flushed: aggregate.flushed,
+          rejected: aggregate.rejected,
+          batches: aggregate.batches,
+          errors: aggregate.errors,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team-sync drain at shutdown failed', {
+        error: errorMessage(err),
+      });
     }
     registry.destroy();
     await server.stop();
