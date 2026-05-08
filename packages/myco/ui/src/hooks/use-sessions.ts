@@ -71,6 +71,8 @@ export interface SessionsResponse {
   limit: number;
 }
 
+export type PromptBatchOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
+
 export interface BatchRow {
   id: number;
   session_id: string;
@@ -87,6 +89,7 @@ export interface BatchRow {
   created_at: number;
   parent_prompt_batch_id: number | null;
   kind: string;
+  origin: PromptBatchOrigin;
 }
 
 export interface ActivityRow {
@@ -180,11 +183,26 @@ export function useSession(id: string | undefined) {
   });
 }
 
-export function useSessionBatches(sessionId: string | undefined) {
+/**
+ * Fetch the prompt batches for a session.
+ *
+ * `origins` filters which batches are included. Default `['human']` hides
+ * system-injected and agent-dispatched batches (e.g. <task-notification>,
+ * <subagent_notification>, <skill> envelope expansions) from the main
+ * Sessions view, leaving only user-typed prompts.
+ *
+ * Pass `'all'` to include every batch — useful for the developer drawer
+ * or operator views where the full transcript shape matters.
+ */
+export function useSessionBatches(
+  sessionId: string | undefined,
+  origins: readonly PromptBatchOrigin[] | 'all' = ['human'],
+) {
+  const query = origins === 'all' ? '' : `?origins=${origins.join(',')}`;
   return usePowerQuery<BatchRow[]>({
-    queryKey: ['session-batches', sessionId],
+    queryKey: ['session-batches', sessionId, origins === 'all' ? 'all' : [...origins].sort().join(',')],
     queryFn: ({ signal }) =>
-      fetchJson<BatchRow[]>(`/sessions/${sessionId}/batches`, { signal }),
+      fetchJson<BatchRow[]>(`/sessions/${sessionId}/batches${query}`, { signal }),
     enabled: sessionId !== undefined,
     pollCategory: 'standard',
     refetchInterval: BATCHES_POLL_INTERVAL,

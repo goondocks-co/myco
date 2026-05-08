@@ -1,5 +1,5 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession, countBatchesBySession, getBatchById } from '@myco/db/queries/batches.js';
+import { listBatchesBySession, countBatchesBySession, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
@@ -88,10 +88,24 @@ export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
 /** Back-compat: no-team-fallback handler for existing call sites. */
 export const handleGetSession = createGetSessionHandler();
 
+/**
+ * Parse a comma-separated `origins` query parameter into a typed origin list.
+ * Returns undefined when the param is omitted (callers default to "all
+ * origins" — preserves legacy behavior). Unknown values are silently
+ * dropped so a misbehaving client can't break the query.
+ */
+function parseOriginsQuery(raw: unknown): readonly PromptBatchOrigin[] | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  const known = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
+  const parsed = raw.split(',').map((s) => s.trim()).filter((s) => known.has(s)) as PromptBatchOrigin[];
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {
   const scope = projectScopeFromRequestContext(req.requestContext);
   if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
-  const batches = listBatchesBySession(req.params.id, { scope });
+  const origins = parseOriginsQuery(req.query.origins);
+  const batches = listBatchesBySession(req.params.id, { scope, origins });
   return { body: batches };
 }
 

@@ -101,6 +101,13 @@ export interface ListBatchesBySessionOptions {
   limit?: number;
   offset?: number;
   scope: ProjectScope;
+  /**
+   * If provided, only batches whose `origin` is in this set are returned.
+   * Default (omitted) returns ALL origins, preserving legacy behavior for
+   * intelligence tasks and reconcile callers that need to see every batch
+   * regardless of provenance.
+   */
+  origins?: readonly PromptBatchOrigin[];
 }
 
 /** Fields required (or optional) when inserting a prompt batch. */
@@ -690,6 +697,12 @@ export function listBatchesBySession(
   const conditions = ['session_id = ?'];
   const params: unknown[] = [sessionId];
   appendProjectCondition(conditions, params, options.scope);
+
+  if (options.origins && options.origins.length > 0) {
+    const placeholders = options.origins.map(() => '?').join(', ');
+    conditions.push(`origin IN (${placeholders})`);
+    params.push(...options.origins);
+  }
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
