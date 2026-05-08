@@ -23,7 +23,7 @@ import { upsertSession, closeSession, updateSession } from '@myco/db/queries/ses
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
@@ -145,7 +145,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       machine_id: requestMachineId,
     });
     // Clear ended_at if session was previously completed (reload scenario)
-    updateSession(session_id, { ended_at: null, status: 'active' }, projectId);
+    updateSession(session_id, { ended_at: null, status: 'active' }, projectScopeFromRequestContext(req.requestContext));
 
     // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
     reconciler.reconcileSession(session_id);

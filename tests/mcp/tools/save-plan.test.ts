@@ -17,6 +17,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { getPlan, upsertPlan } from '@myco/db/queries/plans.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 function mockClient(): DaemonClient {
   return {
@@ -127,7 +128,7 @@ describe('myco_plans op: save (in-process)', () => {
     expect(result.logical_key).toBe(existing.logical_key);
     expect(result.tags).toEqual(['grove']);
 
-    const row = getPlan(existing.id);
+    const row = getPlan(existing.id, ALL_PROJECTS_SCOPE);
     expect(row?.content).toBe('# Updated Addendum\n\nCurrent details.');
     expect(row?.session_id).toBe('sess-1');
     expect(row?.logical_key).toBe(existing.logical_key);

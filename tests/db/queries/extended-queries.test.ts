@@ -2,9 +2,9 @@
  * Tests for extended list-by-parent query helpers added in the v2 dashboard
  * overhaul. Covers:
  *
- *   - listBatchesBySession   (batches.ts)
+ *   - listBatchesBySession   (batches.ts, { scope: ALL_PROJECTS_SCOPE })
  *   - listActivitiesByBatch  (activities.ts)
- *   - listEntities           (entities.ts — new mentioned_in + offset filters)
+ *   - listEntities           (entities.ts — new mentioned_in + offset filters, { scope: ALL_PROJECTS_SCOPE })
  *   - listDigestExtracts     (digest-extracts.ts)
  *   - listTurnsByRun         (turns.ts)
  *   - listTasksByAgent     (tasks.ts)
@@ -36,6 +36,7 @@ import type { EntityInsert } from '@myco/db/queries/entities.js';
 import type { TurnInsert } from '@myco/db/queries/turns.js';
 import type { TaskInsert } from '@myco/db/queries/tasks.js';
 import type { SporeInsert } from '@myco/db/queries/spores.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,7 +189,7 @@ describe('extended list-by-parent query helpers', () => {
       insertBatch(makeBatch(sessionId, { prompt_number: 1, created_at: now + 1 }));
       insertBatch(makeBatch(sessionId, { prompt_number: 2, created_at: now + 2 }));
 
-      const rows = listBatchesBySession(sessionId);
+      const rows = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       // Ordered by prompt_number ASC — nulls sort before positives in PG
       const nonNull = rows.filter(r => r.prompt_number !== null);
@@ -198,7 +199,7 @@ describe('extended list-by-parent query helpers', () => {
     });
 
     it('returns empty array when session has no batches', () => {
-      const rows = listBatchesBySession('no-such-session');
+      const rows = listBatchesBySession('no-such-session', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -209,7 +210,7 @@ describe('extended list-by-parent query helpers', () => {
       insertBatch(makeBatch(sessionId, { prompt_number: 1 }));
       insertBatch(makeBatch(session2.id, { prompt_number: 2 }));
 
-      const rows = listBatchesBySession(sessionId);
+      const rows = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].session_id).toBe(sessionId);
     });
@@ -219,7 +220,7 @@ describe('extended list-by-parent query helpers', () => {
         insertBatch(makeBatch(sessionId, { prompt_number: i }));
       }
 
-      const rows = listBatchesBySession(sessionId, { limit: 2 });
+      const rows = listBatchesBySession(sessionId, { limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
@@ -228,8 +229,8 @@ describe('extended list-by-parent query helpers', () => {
         insertBatch(makeBatch(sessionId, { prompt_number: i }));
       }
 
-      const page1 = listBatchesBySession(sessionId, { limit: 2, offset: 0 });
-      const page2 = listBatchesBySession(sessionId, { limit: 2, offset: 2 });
+      const page1 = listBatchesBySession(sessionId, { limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
+      const page2 = listBatchesBySession(sessionId, { limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
       expect(page2).toHaveLength(2);
       // Pages must not overlap
@@ -265,7 +266,7 @@ describe('extended list-by-parent query helpers', () => {
         timestamp: now + 1,
       }));
 
-      const rows = listActivitiesByBatch(batch.id);
+      const rows = listActivitiesByBatch(batch.id, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].tool_name).toBe('Read');
       expect(rows[1].tool_name).toBe('Edit');
@@ -273,7 +274,7 @@ describe('extended list-by-parent query helpers', () => {
     });
 
     it('returns empty array when batch has no activities', () => {
-      const rows = listActivitiesByBatch(999999);
+      const rows = listActivitiesByBatch(999999, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -293,14 +294,14 @@ describe('extended list-by-parent query helpers', () => {
         timestamp: now + 1,
       }));
 
-      const rows = listActivitiesByBatch(batch1.id);
+      const rows = listActivitiesByBatch(batch1.id, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].tool_name).toBe('Read');
     });
   });
 
   // =========================================================================
-  // listEntities (extended filters: mentioned_in, offset)
+  // listEntities (extended filters: mentioned_in, offset, { scope: ALL_PROJECTS_SCOPE })
   // =========================================================================
 
   describe('insertEntity — project-scoped identity', () => {
@@ -343,9 +344,9 @@ describe('extended list-by-parent query helpers', () => {
       expect(updatedA.last_seen).toBe(now + 10);
       expect(updatedA.properties).toBe('{"scope":"a"}');
 
-      expect(listEntities({ project_id: null, ...identity })).toHaveLength(1);
-      expect(listEntities({ project_id: 'proj-entities-a', ...identity })).toHaveLength(1);
-      expect(listEntities({ project_id: 'proj-entities-b', ...identity })).toHaveLength(1);
+      expect(listEntities({ scope: GLOBAL_SCOPE, ...identity })).toHaveLength(1);
+      expect(listEntities({ scope: projectScope('proj-entities-a' as GroveProjectId), ...identity })).toHaveLength(1);
+      expect(listEntities({ scope: projectScope('proj-entities-b' as GroveProjectId), ...identity })).toHaveLength(1);
     });
   });
 
@@ -373,8 +374,7 @@ describe('extended list-by-parent query helpers', () => {
 
       const rows = listEntities({
         mentioned_in: 'note-abc',
-        note_type: 'session',
-      });
+        note_type: 'session',scope: ALL_PROJECTS_SCOPE });
 
       expect(rows).toHaveLength(2);
       const ids = rows.map(r => r.id);
@@ -387,8 +387,7 @@ describe('extended list-by-parent query helpers', () => {
       insertEntity(makeEntity());
       const rows = listEntities({
         mentioned_in: 'nonexistent-note',
-        note_type: 'session',
-      });
+        note_type: 'session',scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });
@@ -401,8 +400,8 @@ describe('extended list-by-parent query helpers', () => {
         insertEntity(makeEntity({ last_seen: now + i }));
       }
 
-      const page1 = listEntities({ limit: 2, offset: 0 });
-      const page2 = listEntities({ limit: 2, offset: 2 });
+      const page1 = listEntities({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
+      const page2 = listEntities({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
 
       expect(page1).toHaveLength(2);
       expect(page2).toHaveLength(2);
@@ -425,7 +424,7 @@ describe('extended list-by-parent query helpers', () => {
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'tier 1500', generated_at: now });
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 5000, content: 'tier 5000', generated_at: now });
 
-      const rows = listDigestExtracts(TEST_AGENT_ID);
+      const rows = listDigestExtracts(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(rows).toHaveLength(3);
       expect(rows[0].tier).toBe(1500);
       expect(rows[1].tier).toBe(5000);
@@ -438,13 +437,13 @@ describe('extended list-by-parent query helpers', () => {
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 3000, content: 'stale', generated_at: now });
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 7500, content: 'stale', generated_at: now });
 
-      const rows = listDigestExtracts(TEST_AGENT_ID);
+      const rows = listDigestExtracts(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(rows).toHaveLength(1);
       expect(rows[0].tier).toBe(1500);
     });
 
     it('returns empty array when agent has no extracts', () => {
-      const rows = listDigestExtracts('no-such-agent');
+      const rows = listDigestExtracts('no-such-agent', ALL_PROJECTS_SCOPE);
       expect(rows).toEqual([]);
     });
 
@@ -454,7 +453,7 @@ describe('extended list-by-parent query helpers', () => {
       upsertDigestExtract({ agent_id: TEST_AGENT_ID, tier: 1500, content: 'mine', generated_at: now });
       upsertDigestExtract({ agent_id: 'agent-other', tier: 1500, content: 'theirs', generated_at: now });
 
-      const rows = listDigestExtracts(TEST_AGENT_ID);
+      const rows = listDigestExtracts(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(rows).toHaveLength(1);
       expect(rows[0].content).toBe('mine');
     });
@@ -470,7 +469,7 @@ describe('extended list-by-parent query helpers', () => {
       insertTurn(makeTurn({ turn_number: 1, tool_name: 'vault_search' }));
       insertTurn(makeTurn({ turn_number: 2, tool_name: 'vault_read' }));
 
-      const rows = listTurnsByRun(TEST_RUN_ID);
+      const rows = listTurnsByRun(TEST_RUN_ID, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].turn_number).toBe(1);
       expect(rows[0].tool_name).toBe('vault_search');
@@ -479,7 +478,7 @@ describe('extended list-by-parent query helpers', () => {
     });
 
     it('returns empty array when run has no turns', () => {
-      const rows = listTurnsByRun('no-such-run');
+      const rows = listTurnsByRun('no-such-run', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });
@@ -529,8 +528,8 @@ describe('extended list-by-parent query helpers', () => {
         insertSpore(makeSpore({ created_at: now + i }));
       }
 
-      const page1 = listSpores({ limit: 2, offset: 0 });
-      const page2 = listSpores({ limit: 2, offset: 2 });
+      const page1 = listSpores({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
+      const page2 = listSpores({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
 
       expect(page1).toHaveLength(2);
       expect(page2).toHaveLength(2);
@@ -544,7 +543,7 @@ describe('extended list-by-parent query helpers', () => {
     it('returns empty array when offset exceeds total rows', () => {
       insertSpore(makeSpore());
 
-      const rows = listSpores({ offset: 10 });
+      const rows = listSpores({ offset: 10, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });

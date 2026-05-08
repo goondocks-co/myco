@@ -11,6 +11,7 @@ import { getSession } from '@myco/db/queries/sessions.js';
 import { countActivities } from '@myco/db/queries/activities.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 function makeHandler() {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
@@ -69,9 +70,9 @@ describe('createEventDispatcher', () => {
     });
 
     expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation' });
-    expect(registry.getSession(sessionId)).toBeUndefined();
-    expect(getSession(sessionId)).toBeNull();
-    expect(countActivities(sessionId)).toBe(0);
+    expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeUndefined();
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(0);
     expect(sessionBuffers.has(sessionId)).toBe(false);
 
     logger.close();
@@ -105,9 +106,9 @@ describe('createEventDispatcher', () => {
     });
 
     expect(res.body).toEqual({ ok: true });
-    expect(registry.getSession(sessionId)).toBeDefined();
-    expect(getSession(sessionId)?.agent).toBe('codex');
-    expect(countActivities(sessionId)).toBe(1);
+    expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeDefined();
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent).toBe('codex');
+    expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
 
     logger.close();
     fs.rmSync(vaultDir, { recursive: true, force: true });
@@ -146,12 +147,12 @@ describe('createEventDispatcher', () => {
 
     expect(res.body).toMatchObject({ ok: true });
 
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].user_prompt).toBe(prompt);
     expect(res.body).toMatchObject({ batchId: batches[0].id });
 
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);
     expect(plans[0].title).toBe('Full-Intelligence Efficiency & Tuning Harness');
     expect(plans[0].prompt_batch_id).toBe(batches[0].id);
@@ -186,7 +187,7 @@ describe('createEventDispatcher', () => {
         created_at: Math.floor(Date.now() / 1000) - 60,
         machine_id: 'local',
       });
-      expect(registry.getSession(sessionId)).toBeUndefined();
+      expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeUndefined();
 
       // Opencode events never carry transcript_path. Before the fix this
       // would get dropped by codex's any_agent rule via the capture gate.
@@ -205,9 +206,9 @@ describe('createEventDispatcher', () => {
 
       expect(res.body).toMatchObject({ ok: true });
       expect(res.body).toHaveProperty('batchId');
-      expect(registry.getSession(sessionId)).toBeDefined();
+      expect(registry.getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeDefined();
 
-      const batches = listBatchesBySession(sessionId);
+      const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
       expect(batches).toHaveLength(1);
       expect(batches[0].user_prompt).toBe('a real prompt that arrived after the daemon restarted');
 
@@ -237,7 +238,7 @@ describe('createEventDispatcher', () => {
       });
 
       expect(res.body).toEqual({ ok: true, ignored: 'ephemeral-sub-invocation' });
-      expect(getSession(sessionId)).toBeNull();
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
       expect(sessionBuffers.has(sessionId)).toBe(false);
 
       logger.close();

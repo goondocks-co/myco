@@ -25,6 +25,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { initTeamContext } from '@myco/daemon/team-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
@@ -269,7 +270,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     const result = await handleMycoPlans({ op: 'delete', id: 'plan-local' }, client, vaultDir);
 
     expect(result).toMatchObject({ ok: true, id: 'plan-local', session_id: 'sess-1' });
-    expect(getPlan('plan-local')).toBeNull();
+    expect(getPlan('plan-local', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('forwards force_remote to the daemon when set', async () => {
@@ -290,7 +291,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     );
 
     expect(result).toMatchObject({ ok: true, id: 'plan-remote-force' });
-    expect(getPlan('plan-remote-force')).toBeNull();
+    expect(getPlan('plan-remote-force', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('surfaces the daemon-side rejection when force_remote is omitted for a remote plan', async () => {
@@ -314,6 +315,6 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
       ok: false,
       error: expect.stringContaining('force_remote'),
     });
-    expect(getPlan('plan-remote-naked')).not.toBeNull();
+    expect(getPlan('plan-remote-naked', ALL_PROJECTS_SCOPE)).not.toBeNull();
   });
 });

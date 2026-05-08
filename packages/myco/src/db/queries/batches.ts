@@ -8,7 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,7 +63,7 @@ export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 export interface ListBatchesBySessionOptions {
   limit?: number;
   offset?: number;
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 /** Fields required (or optional) when inserting a prompt batch. */
@@ -288,7 +288,7 @@ export function populateBatchResponses(
  * preserve behavior for tests and any non-agent caller.
  */
 export function getUnprocessedBatches(
-  options: { after_id?: number; limit?: number; includeActive?: boolean; project_id?: string | null } = {},
+  options: { after_id?: number; limit?: number; includeActive?: boolean; scope: ProjectScope },
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -306,7 +306,7 @@ export function getUnprocessedBatches(
     );
   }
 
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const limit = options.limit ?? DEFAULT_UNPROCESSED_LIMIT;
   params.push(limit);
@@ -332,12 +332,12 @@ export function getUnprocessedBatches(
  * about prompt_batches schema.
  */
 export function countUnprocessedSettledBatches(
+  scope: ProjectScope,
   limit?: number,
-  projectId?: string | null,
 ): number {
   const projectConditions: string[] = [];
   const projectParams: unknown[] = [];
-  appendProjectCondition(projectConditions, projectParams, projectId, 'pb');
+  appendProjectCondition(projectConditions, projectParams, scope, 'pb');
   const projectWhere = projectConditions.length > 0
     ? ` AND ${projectConditions.join(' AND ')}`
     : '';
@@ -400,13 +400,13 @@ export function incrementActivityCount(
  */
 export function markBatchProcessed(
   id: number,
-  projectId?: string | null,
+  scope: ProjectScope,
 ): BatchRow | null {
   const db = getDatabase();
 
   const conditions = ['id = ?'];
   const params: unknown[] = [id];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
 
   const info = db.prepare(
     `UPDATE prompt_batches
@@ -424,11 +424,11 @@ export function markBatchProcessed(
 /**
  * Fetch a single batch by id. Returns null if not found.
  */
-export function getBatchById(id: number, projectId?: string | null): BatchRow | null {
+export function getBatchById(id: number, scope: ProjectScope): BatchRow | null {
   const db = getDatabase();
   const conditions = ['id = ?'];
   const params: unknown[] = [id];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE ${conditions.join(' AND ')}`,
   ).get(...params) as Record<string, unknown> | undefined;
@@ -612,7 +612,7 @@ export function getLatestOpenBatch(
 
 export function listBatchesBySession(
   sessionId: string,
-  options: ListBatchesBySessionOptions = {},
+  options: ListBatchesBySessionOptions,
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -620,7 +620,7 @@ export function listBatchesBySession(
   const offset = options.offset ?? 0;
   const conditions = ['session_id = ?'];
   const params: unknown[] = [sessionId];
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}

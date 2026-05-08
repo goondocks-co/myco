@@ -7,6 +7,7 @@ import { listBatchesBySession, setResponseSummary } from '@myco/db/queries/batch
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const silentLogger = {
   debug: () => {}, info: () => {}, warn: () => {}, error: () => {},
@@ -50,7 +51,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
     const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
-    const batches = listBatchesBySession('s-stop');
+    const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].id).toBe(batchId);
     expect(batches[0].response_summary).toBe('recovered summary');
@@ -69,7 +70,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
     const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
-    const batches = listBatchesBySession('s-stop');
+    const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
     expect(batches[0].response_summary).toBe('original summary');
   });
 
@@ -85,7 +86,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
     const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
-    const batches = listBatchesBySession('s-stop');
+    const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
     expect(batches[0].response_summary).toBeNull();
   });
 
@@ -104,7 +105,7 @@ describe('Buffer reconciliation — stop events (opencode response_summary recov
     const reconciler = createReconciler({ bufferDir, logger: silentLogger, projectRoot: process.cwd() });
     reconciler.reconcileSession('s-stop');
 
-    const batches = listBatchesBySession('s-stop');
+    const batches = listBatchesBySession('s-stop', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].id).toBe(batchId);
     expect(batches[0].response_summary).toBe('late summary');

@@ -7,7 +7,7 @@ import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { listGroves, type GroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 
 /** Compute config hash from the YAML file on disk. Cache this at startup and after saves. */
@@ -59,13 +59,13 @@ export interface StatsContext {
 export function createLiveStatsHandler(deps: LiveStatsDeps): RouteHandler {
   return async (req): Promise<RouteResponse> => {
     const statsVaultDir = req.requestContext?.projectVaultDir ?? deps.vaultDir;
-    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const scope = projectScopeFromRequestContext(req.requestContext);
     // The daemon's request middleware pins the per-Grove DB handle via
     // withDatabase(requestDb, ...) before invoking the route handler, so
     // gatherStats picks it up via getDatabase() — no need to re-open.
     const stats = gatherStats(statsVaultDir, {
       active_sessions: deps.registry.sessions,
-      project_id: projectId,
+      scope,
     });
     // Overlay live daemon fields from the running process (more accurate than daemon.json)
     stats.daemon.pid = process.pid;

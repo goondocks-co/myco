@@ -18,6 +18,7 @@ import {
   countActivities,
 } from '@myco/db/queries/activities.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -148,7 +149,7 @@ describe('activity query helpers', () => {
       insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
       insertActivity(makeActivity(sessionId, { tool_name: 'Bash', timestamp: now + 2 }));
 
-      const rows = listActivities({ session_id: sessionId });
+      const rows = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].tool_name).toBe('Read');
       expect(rows[1].tool_name).toBe('Edit');
@@ -164,7 +165,7 @@ describe('activity query helpers', () => {
       insertActivity(makeActivity(sessionId, { prompt_batch_id: batch2.id, tool_name: 'Edit', timestamp: now + 1 }));
       insertActivity(makeActivity(sessionId, { prompt_batch_id: batch1.id, tool_name: 'Bash', timestamp: now + 2 }));
 
-      const rows = listActivities({ prompt_batch_id: batch1.id });
+      const rows = listActivities({ prompt_batch_id: batch1.id, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].tool_name).toBe('Read');
       expect(rows[1].tool_name).toBe('Bash');
@@ -180,7 +181,7 @@ describe('activity query helpers', () => {
       insertActivity(makeActivity(sessionId, { prompt_batch_id: batch.id, tool_name: 'Read', timestamp: now }));
       insertActivity(makeActivity(sessionId, { tool_name: 'Edit', timestamp: now + 1 }));
 
-      const rows = listActivities({ session_id: sessionId, prompt_batch_id: batch.id });
+      const rows = listActivities({ session_id: sessionId, prompt_batch_id: batch.id, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].tool_name).toBe('Read');
     });
@@ -191,12 +192,12 @@ describe('activity query helpers', () => {
         insertActivity(makeActivity(sessionId, { timestamp: now + i }));
       }
 
-      const rows = listActivities({ session_id: sessionId, limit: 2 });
+      const rows = listActivities({ session_id: sessionId, limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array when no activities match', () => {
-      const rows = listActivities({ session_id: 'nonexistent' });
+      const rows = listActivities({ session_id: 'nonexistent', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });
@@ -207,7 +208,7 @@ describe('activity query helpers', () => {
 
   describe('countActivities', () => {
     it('returns 0 when no activities exist for a session', () => {
-      const count = countActivities(sessionId);
+      const count = countActivities(sessionId, ALL_PROJECTS_SCOPE);
       expect(count).toBe(0);
     });
 
@@ -217,7 +218,7 @@ describe('activity query helpers', () => {
       insertActivity(makeActivity(sessionId, { timestamp: now + 1 }));
       insertActivity(makeActivity(sessionId, { timestamp: now + 2 }));
 
-      const count = countActivities(sessionId);
+      const count = countActivities(sessionId, ALL_PROJECTS_SCOPE);
       expect(count).toBe(3);
     });
 
@@ -229,7 +230,7 @@ describe('activity query helpers', () => {
       insertActivity(makeActivity(sessionId, { timestamp: now }));
       insertActivity(makeActivity(session2.id, { timestamp: now + 1 }));
 
-      const count = countActivities(sessionId);
+      const count = countActivities(sessionId, ALL_PROJECTS_SCOPE);
       expect(count).toBe(1);
     });
   });

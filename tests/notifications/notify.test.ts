@@ -9,6 +9,7 @@ import {
   listNotifications,
   countNotifications,
 } from '@myco/db/queries/notifications';
+import { ALL_PROJECTS_SCOPE, assertGroveProjectId, projectScope } from '@myco/grove/ids';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { registerBuiltinDomains } from '@myco/notifications/domains';
 import { notify } from '@myco/notifications/notify';
@@ -42,7 +43,7 @@ describe('notify', () => {
     });
 
     expect(id).toBeTruthy();
-    expect(getNotification(id!)).toMatchObject({
+    expect(getNotification(id!, ALL_PROJECTS_SCOPE)).toMatchObject({
       domain: 'agents',
       type: 'agent.task.success',
       mode: 'summary',
@@ -71,7 +72,7 @@ describe('notify', () => {
     });
 
     expect(id).toBeTruthy();
-    expect(getNotification(id!)).toMatchObject({
+    expect(getNotification(id!, ALL_PROJECTS_SCOPE)).toMatchObject({
       domain: 'agents',
       type: 'agent.task.failure',
       mode: 'banner',
@@ -102,7 +103,7 @@ describe('notify', () => {
         { scope: 'daemon' },
       );
       expect(id).toBeTruthy();
-      const row = getNotification(id!);
+      const row = getNotification(id!, ALL_PROJECTS_SCOPE);
       expect(row).toMatchObject({ domain: 'daemon', type: 'daemon.backup_failed' });
       expect(row?.project_id).toBeNull();
     });
@@ -114,7 +115,7 @@ describe('notify', () => {
         title: 'ok',
       });
       expect(id).toBeTruthy();
-      const row = getNotification(id!);
+      const row = getNotification(id!, ALL_PROJECTS_SCOPE);
       // The project manifest setup gives this row a non-null project_id;
       // the exact id is manifest-dependent, just confirm it's set.
       expect(row?.project_id).not.toBeNull();
@@ -127,7 +128,7 @@ describe('notify', () => {
         type: 'agent.task.success',
         title: 'project',
       });
-      const projectRow = getNotification(projectId!);
+      const projectRow = getNotification(projectId!, ALL_PROJECTS_SCOPE);
       const projectIdStr = projectRow!.project_id as string;
 
       // Daemon-scope row.
@@ -139,12 +140,13 @@ describe('notify', () => {
       );
 
       // Without include_daemon_scope, only the project row is visible.
-      const projectOnly = listNotifications({ project_id: projectIdStr });
+      const scope = projectScope(assertGroveProjectId(projectIdStr));
+      const projectOnly = listNotifications({ scope });
       expect(projectOnly.map((r) => r.id)).toEqual([projectId!]);
 
       // With include_daemon_scope, both surface.
       const merged = listNotifications({
-        project_id: projectIdStr,
+        scope,
         include_daemon_scope: true,
       });
       const ids = merged.map((r) => r.id).sort();
@@ -157,7 +159,7 @@ describe('notify', () => {
         type: 'agent.task.success',
         title: 'project',
       });
-      const row = getNotification(id!);
+      const row = getNotification(id!, ALL_PROJECTS_SCOPE);
       const projectIdStr = row!.project_id as string;
       notify(
         tmpDir,
@@ -166,9 +168,10 @@ describe('notify', () => {
         { scope: 'daemon' },
       );
 
-      expect(countNotifications('unread', projectIdStr)).toBe(1);
+      const scope = projectScope(assertGroveProjectId(projectIdStr));
+      expect(countNotifications('unread', scope)).toBe(1);
       expect(
-        countNotifications('unread', projectIdStr, { includeDaemonScope: true }),
+        countNotifications('unread', scope, { includeDaemonScope: true }),
       ).toBe(2);
     });
   });
@@ -192,7 +195,7 @@ describe('notify', () => {
     });
 
     expect(id).toBeTruthy();
-    expect(getNotification(id!)).toMatchObject({
+    expect(getNotification(id!, ALL_PROJECTS_SCOPE)).toMatchObject({
       domain: 'settings',
       type: 'settings.saved',
       mode: 'banner',

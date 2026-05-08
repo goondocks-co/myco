@@ -12,9 +12,10 @@ import {
 } from '@myco/db/queries/plans.js';
 import { lookupLatestImportMappingBySource } from '@myco/db/queries/migration-import-journal.js';
 import {
-  rowProjectIdFromRequestContext,
+  projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import { type ProjectScope, projectScope as toProjectScope } from '@myco/grove/ids.js';
 
 export interface PlanSummary {
   id: string;
@@ -65,7 +66,7 @@ export type ListPlansForMcpResult =
   | { ok: false; code: 'invalid-arguments'; message: string };
 
 export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpResult {
-  const projectId = rowProjectIdFromRequestContext(input.requestContext);
+  const scope = projectScopeFromRequestContext(input.requestContext);
 
   if (input.id && input.session) {
     return {
@@ -76,8 +77,8 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   }
 
   if (input.id) {
-    const row = getPlan(input.id, projectId)
-      ?? getPlanByLegacyImportId(input.id, projectId);
+    const row = getPlan(input.id, scope)
+      ?? getPlanByLegacyImportId(input.id, scope);
     if (!row) return { ok: true, plans: [] };
     return {
       ok: true,
@@ -86,21 +87,21 @@ export function listPlansForMcp(input: ListPlansForMcpInput): ListPlansForMcpRes
   }
 
   if (input.session) {
-    const rows = listPlansBySession(input.session, projectId);
+    const rows = listPlansBySession(input.session, scope);
     return { ok: true, plans: rows.map(toPlanSummary) };
   }
 
   const statusFilter = input.status === 'all' ? undefined : input.status;
-  const rows = listPlans({ project_id: projectId, status: statusFilter, limit: input.limit });
+  const rows = listPlans({ scope, status: statusFilter, limit: input.limit });
   return { ok: true, plans: rows.map(toPlanSummary) };
 }
 
-function getPlanByLegacyImportId(id: string, projectId: string | null | undefined): PlanRow | null {
-  if (!projectId) return null;
+function getPlanByLegacyImportId(id: string, scope: ProjectScope): PlanRow | null {
+  if (scope.kind !== 'project') return null;
   const mapping = lookupLatestImportMappingBySource('plans', id, {
     target_table: 'plans',
-    target_project_id: projectId,
+    target_project_id: scope.id,
   });
   if (!mapping || mapping.status !== 'imported') return null;
-  return getPlan(mapping.target_id, projectId);
+  return getPlan(mapping.target_id, scope);
 }

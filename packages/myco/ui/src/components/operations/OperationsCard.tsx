@@ -1,9 +1,13 @@
 import { type ReactNode } from 'react';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
+import { ScopeBadge } from '../config/ScopePill';
+import { SCOPE_HELPER_TEXT, type SectionScope } from './scope-helpers';
 
 export interface OperationsCardProps {
   title: string;
+  /** Data scope for this card; renders an inline chip + helper line. */
+  scope?: SectionScope;
   /** Right-aligned chip rendered next to the title (status pill, etc). */
   meta?: ReactNode;
   loading: boolean;
@@ -15,6 +19,7 @@ export interface OperationsCardProps {
 
 export function OperationsCard({
   title,
+  scope,
   meta,
   loading,
   error,
@@ -22,10 +27,17 @@ export function OperationsCard({
   emptyText,
   children,
 }: OperationsCardProps) {
+  const titleNode = (
+    <div className="flex items-center gap-2">
+      <SectionHeader>{title}</SectionHeader>
+      {scope && <ScopeBadge scope={scope} />}
+    </div>
+  );
+
   if (loading) {
     return (
       <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>{title}</SectionHeader>
+        {titleNode}
         <p className="font-sans text-sm text-on-surface-variant">Loading…</p>
       </Surface>
     );
@@ -34,7 +46,7 @@ export function OperationsCard({
   if (error) {
     return (
       <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>{title}</SectionHeader>
+        {titleNode}
         <p className="font-sans text-sm text-tertiary">
           Failed to load: {error.message}
         </p>
@@ -45,7 +57,7 @@ export function OperationsCard({
   if (empty) {
     return (
       <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>{title}</SectionHeader>
+        {titleNode}
         <p className="font-sans text-sm text-on-surface-variant">{emptyText}</p>
       </Surface>
     );
@@ -54,9 +66,12 @@ export function OperationsCard({
   return (
     <Surface level="low" className="p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <SectionHeader>{title}</SectionHeader>
+        {titleNode}
         {meta}
       </div>
+      {scope && (
+        <p className="font-sans text-xs text-on-surface-variant">{SCOPE_HELPER_TEXT[scope]}</p>
+      )}
       {children}
     </Surface>
   );

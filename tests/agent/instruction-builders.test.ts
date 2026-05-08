@@ -41,6 +41,7 @@ import {
   SKILL_EVOLVE_TASK,
 } from '@myco/agent/instruction-builders.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -477,7 +478,7 @@ describe('buildSkillGenerateInstruction', () => {
       updated_at: now,
     });
     if (status !== CANDIDATE_STATUS.IDENTIFIED) {
-      updateCandidate(id, { status, updated_at: now });
+      updateCandidate(id, { status, updated_at: now }, ALL_PROJECTS_SCOPE);
     }
   }
 
@@ -706,7 +707,7 @@ describe('buildTaskInstruction', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
+    updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
     const result = await buildTaskInstruction(SKILL_GENERATE_TASK);
     expect(result).toBeDefined();

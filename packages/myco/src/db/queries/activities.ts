@@ -69,7 +69,7 @@ export interface ActivityRow {
 export interface ListActivitiesOptions {
   session_id?: string;
   prompt_batch_id?: number;
-  project_id?: ProjectScope;
+  scope: ProjectScope;
   limit?: number;
 }
 
@@ -274,7 +274,7 @@ export function insertActivityWithBatch(
  * to avoid unbounded queries.
  */
 export function listActivities(
-  options: ListActivitiesOptions = {},
+  options: ListActivitiesOptions,
 ): ActivityRow[] {
   const db = getDatabase();
 
@@ -291,7 +291,7 @@ export function listActivities(
     params.push(options.prompt_batch_id);
   }
 
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
@@ -314,12 +314,12 @@ export function listActivities(
  */
 export function listActivitiesByBatch(
   batchId: number,
-  options: { project_id?: ProjectScope } = {},
+  options: { scope: ProjectScope },
 ): ActivityRow[] {
   const db = getDatabase();
   const conditions = ['a.prompt_batch_id = ?'];
   const params: unknown[] = [batchId];
-  appendProjectCondition(conditions, params, options.project_id, 'b');
+  appendProjectCondition(conditions, params, options.scope, 'b');
   const selectColumns = ACTIVITY_COLUMNS.map((column) => `a.${column} AS ${column}`).join(', ');
 
   const rows = db.prepare(

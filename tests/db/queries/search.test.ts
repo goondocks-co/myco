@@ -19,6 +19,7 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,7 +90,7 @@ describe('fullTextSearch', () => {
       prompt_number: 2,
     }));
 
-    const results = fullTextSearch('pgvector');
+    const results = fullTextSearch('pgvector', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     const batchResult = results.find((r) => r.type === 'prompt_batch');
@@ -103,7 +104,7 @@ describe('fullTextSearch', () => {
       prompt_number: 1,
     }));
 
-    const results = fullTextSearch('zzznomatchzzzxxx');
+    const results = fullTextSearch('zzznomatchzzzxxx', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results).toEqual([]);
   });
@@ -118,7 +119,7 @@ describe('fullTextSearch', () => {
       tool_input: 'some file content',
     }));
 
-    const results = fullTextSearch('WebSearch');
+    const results = fullTextSearch('WebSearch', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     const activityResult = results.find((r) => r.type === 'activity');
@@ -132,7 +133,7 @@ describe('fullTextSearch', () => {
       tool_input: 'npx vitest run tests/search',
     }));
 
-    const results = fullTextSearch('vitest');
+    const results = fullTextSearch('vitest', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].type).toBe('activity');
@@ -144,7 +145,7 @@ describe('fullTextSearch', () => {
       file_path: 'searchbar',
     }));
 
-    const results = fullTextSearch('searchbar');
+    const results = fullTextSearch('searchbar', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].type).toBe('activity');
@@ -159,7 +160,7 @@ describe('fullTextSearch', () => {
       }));
     }
 
-    const results = fullTextSearch('refactor', { limit: 2 });
+    const results = fullTextSearch('refactor', { limit: 2, scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeLessThanOrEqual(2);
   });
@@ -174,7 +175,7 @@ describe('fullTextSearch', () => {
     insertActivity(makeActivity(sessionA.id, { tool_name: 'Read', tool_input: 'shared needle from activity a' }));
     insertActivity(makeActivity(sessionB.id, { tool_name: 'Read', tool_input: 'shared needle from activity b' }));
 
-    const results = fullTextSearch('needle', { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const results = fullTextSearch('needle',{ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)});
 
     expect(results).toHaveLength(2);
     expect(results.every((result) => result.preview.includes('activity a') || result.preview.includes('batch a'))).toBe(true);
@@ -182,7 +183,7 @@ describe('fullTextSearch', () => {
 
   it('returns empty array when tables have no FTS data', () => {
     // Insert session but no batches or activities
-    const results = fullTextSearch('anything');
+    const results = fullTextSearch('anything', { scope: ALL_PROJECTS_SCOPE });
     expect(results).toEqual([]);
   });
 });
@@ -237,7 +238,7 @@ describe('hydrateSearchResults', () => {
       },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
 
     expect(hydrated).toHaveLength(1);
     const hit = hydrated[0];
@@ -278,7 +279,7 @@ describe('hydrateSearchResults', () => {
       },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
 
     expect(hydrated).toHaveLength(2);
     const types = hydrated.map((r) => r.type).sort();
@@ -304,7 +305,7 @@ describe('hydrateSearchResults', () => {
       { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0].path).toBe('src/foo.ts');
   });
@@ -330,7 +331,7 @@ describe('hydrateSearchResults', () => {
       { id: sessionB.id, namespace: 'sessions', similarity: 0.8, metadata: {} },
       { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts', namespace: 'canopy_entries', similarity: 0.7, metadata: {} },
       { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:src/b.ts', namespace: 'canopy_entries', similarity: 0.6, metadata: {} },
-    ], { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    ],{ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)});
 
     expect(hydrated.map((result) => result.id)).toEqual([sessionA.id, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts']);
   });
@@ -349,7 +350,7 @@ describe('hydrateSearchResults', () => {
         similarity: 0.9,
         metadata: {},
       },
-    ], { project_id: null });
+    ],{ scope: ALL_PROJECTS_SCOPE});
 
     expect(hydrated.map((result) => result.id)).toEqual(['legacy-canopy-project:src/legacy.ts']);
   });

@@ -18,7 +18,7 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -58,17 +58,17 @@ export async function handleListNotifications(
   // the request's project rows so a single feed surfaces both layers.
   const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
 
-  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scope = projectScopeFromRequestContext(requestContext);
   const items = listNotifications({
     status,
     domain,
     mode,
-    project_id: projectId,
+    scope,
     include_daemon_scope: includeDaemon,
     limit,
     offset,
   });
-  const unreadCount = countNotifications('unread', projectId, { includeDaemonScope: includeDaemon });
+  const unreadCount = countNotifications('unread', scope, { includeDaemonScope: includeDaemon });
 
   return {
     body: {
@@ -111,13 +111,13 @@ export async function handleCreateNotification(
   if (!id) {
     return { body: { ok: true, suppressed: true, reason: 'unknown' } };
   }
-  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scope = projectScopeFromRequestContext(requestContext);
 
   return {
     body: {
       ok: true,
       id,
-      notification: parseNotificationRow(getNotification(id, projectId)!),
+      notification: parseNotificationRow(getNotification(id, scope)!),
     },
   };
 }
@@ -134,7 +134,7 @@ export async function handleUpdateNotification(
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const updated = updateNotificationStatus(id, parsed.data.status, rowProjectIdFromRequestContext(requestContext));
+  const updated = updateNotificationStatus(id, parsed.data.status, projectScopeFromRequestContext(requestContext));
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
@@ -149,7 +149,7 @@ export async function handleDismissAll(
   requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain, rowProjectIdFromRequestContext(requestContext));
+  const count = dismissAllNotifications(domain, projectScopeFromRequestContext(requestContext));
   return { body: { ok: true, dismissed: count } };
 }
 
@@ -160,7 +160,7 @@ export async function handleMarkAllRead(
   requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain, rowProjectIdFromRequestContext(requestContext));
+  const count = markAllRead(domain, projectScopeFromRequestContext(requestContext));
   return { body: { ok: true, marked: count } };
 }
 
@@ -177,7 +177,7 @@ export async function handleUnreadCount(
   const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
   return {
     body: {
-      count: countNotifications('unread', rowProjectIdFromRequestContext(requestContext), {
+      count: countNotifications('unread', projectScopeFromRequestContext(requestContext), {
         includeDaemonScope: includeDaemon,
       }),
     },

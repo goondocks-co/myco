@@ -16,6 +16,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,7 +68,7 @@ export function createDigestRevisionHandlers(deps: DigestRevisionDeps) {
     }
     const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIMIT;
 
-    const revisions = listDigestRevisions({ agentId, tier, limit });
+    const revisions = listDigestRevisions({ agentId, tier, limit, scope: projectScopeFromRequestContext(req.requestContext) });
     return { body: { revisions, count: revisions.length } };
   }
 

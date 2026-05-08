@@ -17,6 +17,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { buildPhaseAudit } from '@myco/services/phase-audit.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import type { RouteRequest } from '@myco/daemon/router';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Mocks required by createAgentRunHandlers (not exercised in audit tests)
@@ -170,7 +171,7 @@ describe('buildPhaseAudit', () => {
     insertTurn({ run_id: 'run-a', agent_id: 'myco-agent', turn_number: 2, tool_name: 'vault_create_spore' });
     insertTurn({ run_id: 'run-a', agent_id: 'myco-agent', turn_number: 3, tool_name: 'vault_recall' });
 
-    const audit = buildPhaseAudit('run-a');
+    const audit = buildPhaseAudit('run-a', ALL_PROJECTS_SCOPE);
 
     expect(audit).not.toBeNull();
     expect(audit!.runId).toBe('run-a');
@@ -276,7 +277,7 @@ describe('buildPhaseAudit', () => {
       syntheticOutput: JSON.stringify({ id: 'stub-4' }),
     });
 
-    const audit = buildPhaseAudit('run-dry');
+    const audit = buildPhaseAudit('run-dry', ALL_PROJECTS_SCOPE);
 
     expect(audit).not.toBeNull();
     expect(audit!.dryRun).toBe(true);
@@ -302,7 +303,7 @@ describe('buildPhaseAudit', () => {
   // -------------------------------------------------------------------------
 
   it('returns null for an unknown run id', () => {
-    const audit = buildPhaseAudit('does-not-exist');
+    const audit = buildPhaseAudit('does-not-exist', ALL_PROJECTS_SCOPE);
     expect(audit).toBeNull();
   });
 
@@ -312,7 +313,7 @@ describe('buildPhaseAudit', () => {
 
   it('returns empty phases array when run has no phase data and no turns', () => {
     insertRun({ id: 'run-empty', agent_id: 'myco-agent', task: null });
-    const audit = buildPhaseAudit('run-empty');
+    const audit = buildPhaseAudit('run-empty', ALL_PROJECTS_SCOPE);
     expect(audit).not.toBeNull();
     expect(audit!.phases).toHaveLength(0);
     expect(audit!.taskName).toBeNull();
@@ -344,7 +345,7 @@ describe('buildPhaseAudit', () => {
     insertTurn({ run_id: 'run-flat', agent_id: 'myco-agent', turn_number: 2, tool_name: 'vault_recall' });
     insertTurn({ run_id: 'run-flat', agent_id: 'myco-agent', turn_number: 3, tool_name: 'vault_search' });
 
-    const audit = buildPhaseAudit('run-flat');
+    const audit = buildPhaseAudit('run-flat', ALL_PROJECTS_SCOPE);
     expect(audit).not.toBeNull();
     expect(audit!.phases).toHaveLength(1);
 
@@ -388,7 +389,7 @@ describe('buildPhaseAudit', () => {
       syntheticOutput: '{}',
     });
 
-    const audit = buildPhaseAudit('run-dry-flat');
+    const audit = buildPhaseAudit('run-dry-flat', ALL_PROJECTS_SCOPE);
     expect(audit!.phases).toHaveLength(1);
     const [only] = audit!.phases;
     expect(only.writeIntents).not.toBeNull();

@@ -9,7 +9,7 @@ import {
   markAllRead,
   updateNotificationStatus,
 } from '@myco/db/queries/notifications.js';
-import type { GroveProjectId } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT_A = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId;
 const PROJECT_B = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId;
@@ -38,20 +38,20 @@ describe('notification query project scope', () => {
     seedNotification('notif-a', PROJECT_A);
     seedNotification('notif-b', PROJECT_B);
 
-    expect(listNotifications({ project_id: PROJECT_A }).map((row) => row.id)).toEqual(['notif-a']);
-    expect(countNotifications('unread', PROJECT_A)).toBe(1);
-    expect(getNotification('notif-b', PROJECT_A)).toBeUndefined();
+    expect(listNotifications({ scope: projectScope(PROJECT_A) }).map((row) => row.id)).toEqual(['notif-a']);
+    expect(countNotifications('unread', projectScope(PROJECT_A))).toBe(1);
+    expect(getNotification('notif-b', projectScope(PROJECT_A))).toBeUndefined();
 
-    expect(updateNotificationStatus('notif-b', 'read', PROJECT_A)).toBe(false);
-    expect(updateNotificationStatus('notif-a', 'read', PROJECT_A)).toBe(true);
-    expect(getNotification('notif-a', PROJECT_A)?.status).toBe('read');
-    expect(getNotification('notif-b', PROJECT_B)?.status).toBe('unread');
+    expect(updateNotificationStatus('notif-b', 'read', projectScope(PROJECT_A))).toBe(false);
+    expect(updateNotificationStatus('notif-a', 'read', projectScope(PROJECT_A))).toBe(true);
+    expect(getNotification('notif-a', projectScope(PROJECT_A))?.status).toBe('read');
+    expect(getNotification('notif-b', projectScope(PROJECT_B))?.status).toBe('unread');
 
-    expect(markAllRead(undefined, PROJECT_B)).toBe(1);
-    expect(getNotification('notif-b', PROJECT_B)?.status).toBe('read');
+    expect(markAllRead(undefined, projectScope(PROJECT_B))).toBe(1);
+    expect(getNotification('notif-b', projectScope(PROJECT_B))?.status).toBe('read');
 
-    expect(dismissAllNotifications(undefined, PROJECT_A)).toBe(1);
-    expect(getNotification('notif-a', PROJECT_A)?.status).toBe('dismissed');
-    expect(getNotification('notif-b', PROJECT_B)?.status).toBe('read');
+    expect(dismissAllNotifications(undefined, projectScope(PROJECT_A))).toBe(1);
+    expect(getNotification('notif-a', projectScope(PROJECT_A))?.status).toBe('dismissed');
+    expect(getNotification('notif-b', projectScope(PROJECT_B))?.status).toBe('read');
   });
 });

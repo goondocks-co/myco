@@ -4,6 +4,7 @@ import { loadMergedConfig } from '../../config/loader.js';
 import { EMBEDDING_BATCH_SIZE } from '../../constants.js';
 import type { EmbeddingManager } from '../embedding/index.js';
 import type { RouteResponse } from '../router.js';
+import { ALL_PROJECTS_SCOPE, type ProjectScope } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -20,14 +21,15 @@ const FOREGROUND_REEMBED_MAX_PASSES = 25;
 
 interface EmbeddingScopeOptions {
   db?: Database;
-  project_id?: string | null;
+  scope?: ProjectScope;
 }
 
 function readQueueDepthSafely(options: EmbeddingScopeOptions = {}): number {
+  const scope = options.scope ?? ALL_PROJECTS_SCOPE;
   try {
     return options.db
-      ? getEmbeddingQueueDepth(options.project_id, options.db).queue_depth
-      : getEmbeddingQueueDepth(options.project_id).queue_depth;
+      ? getEmbeddingQueueDepth(scope, options.db).queue_depth
+      : getEmbeddingQueueDepth(scope).queue_depth;
   } catch {
     return 0;
   }
@@ -113,9 +115,10 @@ export async function handleGetEmbeddingStatus(
 ): Promise<RouteResponse> {
   const config = loadMergedConfig(vaultDir);
 
+  const scope = options.scope ?? ALL_PROJECTS_SCOPE;
   const { queue_depth, embedded_count } = options.db
-    ? getEmbeddingQueueDepth(options.project_id, options.db)
-    : getEmbeddingQueueDepth(options.project_id);
+    ? getEmbeddingQueueDepth(scope, options.db)
+    : getEmbeddingQueueDepth(scope);
 
   return {
     body: {

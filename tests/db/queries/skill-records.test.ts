@@ -16,6 +16,7 @@ import {
   deleteSkillRecordCascade,
 } from '@myco/db/queries/skill-records.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -76,7 +77,7 @@ describe('skill record query helpers', () => {
       expect(row.last_used_at).toBeNull();
       expect(row.properties).toBe('{}');
 
-      const fetched = getSkillRecord(data.id);
+      const fetched = getSkillRecord(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.display_name).toBe('Extract reusable DB helpers');
@@ -128,15 +129,15 @@ describe('skill record query helpers', () => {
 
   describe('getSkillRecord', () => {
     it('returns null for non-existent id', () => {
-      const row = getSkillRecord('does-not-exist');
+      const row = getSkillRecord('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
 
     it('returns null when the id exists outside the requested project scope', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
 
-      expect(getSkillRecord('skill-project-a', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBeNull();
-      expect(getSkillRecord('skill-project-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')!.id).toBe('skill-project-a');
+      expect(getSkillRecord('skill-project-a', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).toBeNull();
+      expect(getSkillRecord('skill-project-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))!.id).toBe('skill-project-a');
     });
   });
 
@@ -149,7 +150,7 @@ describe('skill record query helpers', () => {
       const data = makeSkillRecord({ name: 'use-typed-errors', path: '.myco/skills/use-typed-errors.md' });
       insertSkillRecord(data);
 
-      const fetched = getSkillRecordByName('use-typed-errors');
+      const fetched = getSkillRecordByName('use-typed-errors', ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.name).toBe('use-typed-errors');
@@ -170,13 +171,13 @@ describe('skill record query helpers', () => {
         path: '.myco/skills/b.md',
       }));
 
-      expect(getSkillRecordByName(name)).toBeNull();
-      expect(getSkillRecordByName(name, 'proj_a')!.id).toBe('skill-project-a');
-      expect(getSkillRecordByName(name, 'proj_b')!.id).toBe('skill-project-b');
+      expect(getSkillRecordByName(name, GLOBAL_SCOPE)).toBeNull();
+      expect(getSkillRecordByName(name, projectScope('proj_a' as GroveProjectId))!.id).toBe('skill-project-a');
+      expect(getSkillRecordByName(name, projectScope('proj_b' as GroveProjectId))!.id).toBe('skill-project-b');
     });
 
     it('returns null for non-existent name', () => {
-      const row = getSkillRecordByName('no-such-skill');
+      const row = getSkillRecordByName('no-such-skill', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -192,7 +193,7 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-new', updated_at: now + 2 }));
       insertSkillRecord(makeSkillRecord({ id: 'skill-mid', updated_at: now + 1 }));
 
-      const rows = listSkillRecords();
+      const rows = listSkillRecords({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('skill-new');
       expect(rows[1].id).toBe('skill-mid');
@@ -205,7 +206,7 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-deprecated', status: 'deprecated', updated_at: now + 1 }));
       insertSkillRecord(makeSkillRecord({ id: 'skill-archived', status: 'archived', updated_at: now + 2 }));
 
-      const rows = listSkillRecords({ status: 'active' });
+      const rows = listSkillRecords({ status: 'active', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('skill-active');
     });
@@ -217,7 +218,7 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-a1', agent_id: 'agent-test', updated_at: now }));
       insertSkillRecord(makeSkillRecord({ id: 'skill-a2', agent_id: 'agent-other', updated_at: now + 1 }));
 
-      const rows = listSkillRecords({ agent_id: 'agent-test' });
+      const rows = listSkillRecords({ agent_id: 'agent-test', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('skill-a1');
     });
@@ -228,8 +229,8 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'proj_a', updated_at: now + 1 }));
       insertSkillRecord(makeSkillRecord({ id: 'skill-project-b', project_id: 'proj_b', updated_at: now + 2 }));
 
-      expect(listSkillRecords({ project_id: null }).map((r) => r.id)).toEqual(['skill-legacy']);
-      expect(listSkillRecords({ project_id: 'proj_a' }).map((r) => r.id)).toEqual(['skill-project-a']);
+      expect(listSkillRecords({ scope: GLOBAL_SCOPE}).map((r) => r.id)).toEqual(['skill-legacy']);
+      expect(listSkillRecords({ scope: projectScope('proj_a' as GroveProjectId)}).map((r) => r.id)).toEqual(['skill-project-a']);
     });
 
     it('respects limit and offset', () => {
@@ -238,18 +239,18 @@ describe('skill record query helpers', () => {
         insertSkillRecord(makeSkillRecord({ updated_at: now + i }));
       }
 
-      const page1 = listSkillRecords({ limit: 2, offset: 0 });
+      const page1 = listSkillRecords({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
 
-      const page2 = listSkillRecords({ limit: 2, offset: 2 });
+      const page2 = listSkillRecords({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page2).toHaveLength(2);
 
-      const page3 = listSkillRecords({ limit: 2, offset: 4 });
+      const page3 = listSkillRecords({ limit: 2, offset: 4, scope: ALL_PROJECTS_SCOPE });
       expect(page3).toHaveLength(1);
     });
 
     it('returns empty array when no records match', () => {
-      const rows = listSkillRecords({ status: 'nonexistent' });
+      const rows = listSkillRecords({ status: 'nonexistent', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });
@@ -268,7 +269,7 @@ describe('skill record query helpers', () => {
         display_name: 'Updated display name',
         description: 'New description after review',
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.display_name).toBe('Updated display name');
@@ -285,7 +286,7 @@ describe('skill record query helpers', () => {
         status: 'deprecated',
         generation: 2,
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('deprecated');
@@ -302,7 +303,7 @@ describe('skill record query helpers', () => {
         usage_count: 5,
         last_used_at: usedAt,
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.usage_count).toBe(5);
@@ -319,7 +320,7 @@ describe('skill record query helpers', () => {
         path: '.myco/skills/updated-path.md',
         properties: '{"tags":["db","testing"]}',
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.source_ids).toBe('["sess-1","sess-2"]');
@@ -328,7 +329,7 @@ describe('skill record query helpers', () => {
     });
 
     it('returns null for non-existent record', () => {
-      const result = updateSkillRecord('nope', { updated_at: epochNow() });
+      const result = updateSkillRecord('nope', { updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
       expect(result).toBeNull();
     });
 
@@ -338,11 +339,11 @@ describe('skill record query helpers', () => {
       const miss = updateSkillRecord('skill-project-a', {
         status: 'deprecated',
         updated_at: epochNow(),
-      }, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+      }, projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId));
       const hit = updateSkillRecord('skill-project-a', {
         status: 'deprecated',
         updated_at: epochNow(),
-      }, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+      }, projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId));
 
       expect(miss).toBeNull();
       expect(hit!.status).toBe('deprecated');
@@ -353,7 +354,7 @@ describe('skill record query helpers', () => {
       insertSkillRecord(data);
 
       const now = epochNow() + 10;
-      const row = updateSkillRecord(data.id, { status: 'deprecated', updated_at: now });
+      const row = updateSkillRecord(data.id, { status: 'deprecated', updated_at: now }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.display_name).toBe('Original name');
@@ -421,7 +422,7 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ updated_at: now + 1 }));
       insertSkillRecord(makeSkillRecord({ updated_at: now + 2 }));
 
-      expect(countSkillRecords()).toBe(3);
+      expect(countSkillRecords({ scope: ALL_PROJECTS_SCOPE })).toBe(3);
     });
 
     it('counts records matching a status filter', () => {
@@ -430,9 +431,9 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ status: 'active', updated_at: now + 1 }));
       insertSkillRecord(makeSkillRecord({ status: 'deprecated', updated_at: now + 2 }));
 
-      expect(countSkillRecords({ status: 'active' })).toBe(2);
-      expect(countSkillRecords({ status: 'deprecated' })).toBe(1);
-      expect(countSkillRecords({ status: 'archived' })).toBe(0);
+      expect(countSkillRecords({ status: 'active', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countSkillRecords({ status: 'deprecated', scope: ALL_PROJECTS_SCOPE })).toBe(1);
+      expect(countSkillRecords({ status: 'archived', scope: ALL_PROJECTS_SCOPE })).toBe(0);
     });
 
     it('counts records matching an agent_id filter', () => {
@@ -443,8 +444,8 @@ describe('skill record query helpers', () => {
       insertSkillRecord(makeSkillRecord({ agent_id: 'agent-test', updated_at: now + 1 }));
       insertSkillRecord(makeSkillRecord({ agent_id: 'agent-count', updated_at: now + 2 }));
 
-      expect(countSkillRecords({ agent_id: 'agent-test' })).toBe(2);
-      expect(countSkillRecords({ agent_id: 'agent-count' })).toBe(1);
+      expect(countSkillRecords({ agent_id: 'agent-test', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countSkillRecords({ agent_id: 'agent-count', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
   });
 
@@ -452,9 +453,9 @@ describe('skill record query helpers', () => {
     it('does not delete records outside the requested project scope', () => {
       insertSkillRecord(makeSkillRecord({ id: 'skill-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
 
-      expect(deleteSkillRecordCascade('skill-project-a', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBeNull();
-      expect(getSkillRecord('skill-project-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).not.toBeNull();
-      expect(deleteSkillRecordCascade('skill-project-a', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')!.id).toBe('skill-project-a');
+      expect(deleteSkillRecordCascade('skill-project-a', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).toBeNull();
+      expect(getSkillRecord('skill-project-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))).not.toBeNull();
+      expect(deleteSkillRecordCascade('skill-project-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))!.id).toBe('skill-project-a');
     });
   });
 });

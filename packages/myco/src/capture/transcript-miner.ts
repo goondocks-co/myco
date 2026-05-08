@@ -169,7 +169,7 @@ export class TranscriptMiner {
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
     );
-    const batches = listBatchesBySession(sessionId).sort((a, b) => a.id - b.id);
+    const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
 
     let reclassified = 0;
     let inserted = 0;
@@ -234,7 +234,7 @@ export class TranscriptMiner {
 
     // Stateless insert assigns MAX+1; renumber in transcript order for the UI.
     if (inserted > 0) {
-      const renumber = buildPrefixBuckets(listBatchesBySession(sessionId).sort((a, b) => a.id - b.id));
+      const renumber = buildPrefixBuckets(listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id));
       let nextNumber = 1;
       for (const record of records) {
         const match = renumber.consume(record.text);

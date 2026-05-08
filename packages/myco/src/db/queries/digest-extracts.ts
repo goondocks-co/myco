@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { DIGEST_TIERS, epochSeconds } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { type ProjectScope } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,6 +120,17 @@ function normalizeProjectId(projectId: string | null | undefined): string | null
   return projectId ?? null;
 }
 
+/**
+ * Collapse a ProjectScope to the row-shaped `string | null` (or undefined
+ * meaning "no scope filter") used by the legacy identity helpers below.
+ * `'all'` → `undefined` (no filter), `'global'` → `null`, `'project'` → id.
+ */
+function scopeToRowProjectId(scope: ProjectScope): string | null | undefined {
+  if (scope.kind === 'all') return undefined;
+  if (scope.kind === 'global') return null;
+  return scope.id;
+}
+
 function digestIdentityWhere(projectId: string | null): { where: string; params: unknown[] } {
   return projectId === null
     ? { where: 'project_id IS NULL AND agent_id = ? AND tier = ?', params: [] }
@@ -224,10 +236,18 @@ export function upsertDigestExtract(
 export function getDigestExtract(
   agentId: string,
   tier: number,
-  projectIdInput?: string | null,
+  scope: ProjectScope,
 ): DigestExtractRow | null {
   const db = getDatabase();
-  const projectId = normalizeProjectId(projectIdInput);
+  if (scope.kind === 'all') {
+    const row = db.prepare(
+      `SELECT ${SELECT_COLUMNS} FROM digest_extracts
+       WHERE agent_id = ? AND tier = ?
+       LIMIT 1`,
+    ).get(agentId, tier) as Record<string, unknown> | undefined;
+    return row ? toDigestExtractRow(row) : null;
+  }
+  const projectId = scopeToRowProjectId(scope) ?? null;
   const identity = digestIdentityWhere(projectId);
 
   const row = db.prepare(
@@ -244,14 +264,18 @@ export function getDigestExtract(
  */
 export function listDigestExtracts(
   agentId: string,
-  projectIdInput?: string | null,
+  scope: ProjectScope,
 ): DigestExtractRow[] {
   const db = getDatabase();
   const tierPlaceholders = DIGEST_TIERS.map(() => '?').join(', ');
-  const projectId = normalizeProjectId(projectIdInput);
-  const identity = projectId === null
-    ? { where: 'project_id IS NULL AND agent_id = ?', params: [agentId] }
-    : { where: 'project_id = ? AND agent_id = ?', params: [projectId, agentId] };
+  let identity: { where: string; params: unknown[] };
+  if (scope.kind === 'all') {
+    identity = { where: 'agent_id = ?', params: [agentId] };
+  } else if (scope.kind === 'global') {
+    identity = { where: 'project_id IS NULL AND agent_id = ?', params: [agentId] };
+  } else {
+    identity = { where: 'project_id = ? AND agent_id = ?', params: [scope.id, agentId] };
+  }
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
@@ -300,11 +324,21 @@ function toRevisionRow(row: Record<string, unknown>): DigestExtractRevisionRow {
  * Used by operators who want to roll back a digest to an earlier state.
  */
 export function listDigestRevisions(
-  options: { agentId: string; tier: number; limit?: number; projectId?: string | null },
+  options: { agentId: string; tier: number; limit?: number; scope: ProjectScope },
 ): DigestExtractRevisionRow[] {
   const db = getDatabase();
   const limit = options.limit ?? 50;
-  const projectId = normalizeProjectId(options.projectId);
+  if (options.scope.kind === 'all') {
+    const rows = db.prepare(
+      `SELECT ${REVISION_SELECT}
+       FROM digest_extract_revisions
+       WHERE agent_id = ? AND tier = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+    ).all(options.agentId, options.tier, limit) as Record<string, unknown>[];
+    return rows.map(toRevisionRow);
+  }
+  const projectId = scopeToRowProjectId(options.scope) ?? null;
   const identity = digestIdentityWhere(projectId);
   const rows = db.prepare(
     `SELECT ${REVISION_SELECT}

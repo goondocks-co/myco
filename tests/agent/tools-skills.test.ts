@@ -26,6 +26,7 @@ import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.j
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,7 +55,8 @@ function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
  * these tools.
  */
 function approveCandidate(id: string, projectId?: string | null): void {
-  updateCandidate(id, { status: CANDIDATE_STATUS.APPROVED, updated_at: epochNow() }, projectId);
+  const scope = projectId == null ? ALL_PROJECTS_SCOPE : projectScope(projectId as GroveProjectId);
+  updateCandidate(id, { status: CANDIDATE_STATUS.APPROVED, updated_at: epochNow() }, scope);
 }
 
 /** Insert an agent directly into the agents table. */
@@ -316,7 +318,7 @@ describe('vault skill tools', () => {
           await t.handler({ action: 'create', topic, rationale: 'seed' }, undefined),
         ) as { id: string };
         if (targetStatus !== 'identified') {
-          updateCandidate(created.id, { status: targetStatus, updated_at: epochNow() });
+          updateCandidate(created.id, { status: targetStatus, updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
         }
         return created.id;
       }
@@ -1307,7 +1309,7 @@ describe('vault skill tools', () => {
           undefined,
         ),
       ) as { id: string };
-      updateCandidate(candidate.id, { status: 'dismissed', updated_at: epochNow() });
+      updateCandidate(candidate.id, { status: 'dismissed', updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
 
       const result = await stage(candidate.id, 'gate-dismissed');
       expect(result.error).toBeDefined();
@@ -1324,7 +1326,7 @@ describe('vault skill tools', () => {
           undefined,
         ),
       ) as { id: string };
-      updateCandidate(candidate.id, { status: 'generated', updated_at: epochNow() });
+      updateCandidate(candidate.id, { status: 'generated', updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
 
       const result = await stage(candidate.id, 'gate-generated');
       expect(result.error).toBeDefined();
@@ -1729,7 +1731,7 @@ describe('vault skill tools', () => {
       updateCandidate(candidateRaw.id, {
         status: 'approved',
         updated_at: approvedAt,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       await stageForFinalize(candidateRaw.id, 'audit-preserve');
       const finalizeTool = findTool(tools, 'vault_finalize_skill');

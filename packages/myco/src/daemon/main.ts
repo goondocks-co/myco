@@ -165,7 +165,7 @@ import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext 
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
 import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
 import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
 import {
   daemonStateMtimeMs,
   readDaemonState,
@@ -479,7 +479,7 @@ export async function main(): Promise<void> {
   // Boot-DB sweep only — the Grove fan-out for any other registered
   // Groves runs after `runtimeCache` is built (see "interrupt stale runs
   // across registered Groves" below).
-  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed');
+  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed', { kind: 'all' });
   if (interruptedRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
       count: interruptedRuns,
@@ -1067,7 +1067,7 @@ export async function main(): Promise<void> {
 
       // runAgent inserts the agent_runs row synchronously before its first
       // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, requestContext.projectId);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
@@ -1114,7 +1114,7 @@ export async function main(): Promise<void> {
         logger,
       });
 
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, requestContext.projectId);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
@@ -1381,7 +1381,7 @@ export async function main(): Promise<void> {
     const runtime = getEmbeddingRuntime(req.requestContext);
     return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? vaultDir, {
       db: runtime.db,
-      project_id: rowProjectIdFromRequestContext(req.requestContext),
+      scope: projectScopeFromRequestContext(req.requestContext),
     });
   });
   server.registerRoute('GET', '/api/embedding/details', async (req) => {
@@ -1393,7 +1393,7 @@ export async function main(): Promise<void> {
     return handleEmbeddingRebuild(runtime.manager, {
       async: req.query.async === 'true',
       db: runtime.db,
-      project_id: rowProjectIdFromRequestContext(req.requestContext),
+      scope: projectScopeFromRequestContext(req.requestContext),
     });
   });
   server.registerRoute('POST', '/api/embedding/reconcile', async (req) => {
@@ -1579,7 +1579,7 @@ export async function main(): Promise<void> {
         logger,
         ({ grove }) => {
           if (grove.id === dataPaths.requestContext.groveId) return;
-          const count = markStale('Daemon restarted before the run completed');
+          const count = markStale('Daemon restarted before the run completed', { kind: 'all' });
           if (count > 0) {
             logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
               count,

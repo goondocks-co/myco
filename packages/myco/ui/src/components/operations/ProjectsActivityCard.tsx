@@ -56,6 +56,7 @@ export function ProjectsActivityCard() {
   return (
     <OperationsCard
       title="Project Activity"
+      scope="all-groves"
       loading={isLoading}
       error={errorObj}
       empty={!!data && data.projects.length === 0}

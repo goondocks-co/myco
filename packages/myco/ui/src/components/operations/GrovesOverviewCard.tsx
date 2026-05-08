@@ -103,6 +103,7 @@ export function GrovesOverviewCard() {
   return (
     <OperationsCard
       title="Groves Overview"
+      scope="all-groves"
       loading={isLoading}
       error={errorObj}
       empty={!!data && data.groves.length === 0}

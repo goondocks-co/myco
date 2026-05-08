@@ -8,6 +8,7 @@ import { getDatabase } from '@myco/db/client.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 describe('TranscriptMiner.reconcileBatchKinds', () => {
   let tmpDir: string;
@@ -39,7 +40,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const { batchId: secondId } = handleUserPrompt('s-reconcile', 'steering nudge', { kind: 'initial' });
 
     // Verify the starting state: both batches are kind='initial'
-    const before = listBatchesBySession('s-reconcile');
+    const before = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(before).toHaveLength(2);
     expect(before[0].kind).toBe('initial');
     expect(before[1].kind).toBe('initial');
@@ -64,7 +65,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     expect(result.reclassified).toBeGreaterThanOrEqual(1);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     const first = after.find((b) => b.id === firstId)!;
     const second = after.find((b) => b.id === secondId)!;
 
@@ -96,7 +97,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     });
 
     expect(result.reclassified).toBe(0);
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     // The steering batch should still have the correct parent
     const steering = after.find((b) => b.kind === 'steering')!;
     expect(steering.parent_prompt_batch_id).toBe(parentId);
@@ -150,7 +151,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     // listBatchesBySession orders by prompt_number; reconciliation must
     // renumber so recovered prompts land in transcript order, not MAX+1.
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(4);
     expect(after.map((b) => b.user_prompt)).toEqual([
       'captured prompt',
@@ -190,7 +191,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(second.inserted).toBe(0);
     expect(second.reclassified).toBe(0);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(2);
     expect(after.map((b) => b.user_prompt)).toEqual(['captured', 'missed steering']);
   });
@@ -221,7 +222,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     const second = miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
     expect(second.inserted).toBe(1);
-    const batches = listBatchesBySession('s-reconcile');
+    const batches = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(batches.map((b) => b.user_prompt)).toEqual(['first', 'second']);
   });
 
@@ -241,7 +242,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const result = miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
     // The walker saw exactly one prompt ("post-rotation"); the original
     // "pre-rotation" batch becomes a stranded DB row (reported in errors).
-    const batches = listBatchesBySession('s-reconcile');
+    const batches = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     const prompts = batches.map((b) => b.user_prompt);
     expect(prompts).toContain('pre-rotation');
     expect(prompts).toContain('post-rotation');
@@ -295,7 +296,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(result.inserted).toBe(0);
     expect(result.errors).toEqual([]);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(1);
     expect(after[0].user_prompt).toContain('/simplify Okay.');
     expect(after[0].user_prompt).not.toContain('<command-message>');
@@ -319,7 +320,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     expect(result.inserted).toBe(2);
     expect(result.reclassified).toBe(0);
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after.map((b) => b.user_prompt)).toEqual(['first', 'second']);
   });
 });

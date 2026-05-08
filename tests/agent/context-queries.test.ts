@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import type { ContextQuery } from '@myco/agent/types.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Mocks: DB query functions
@@ -149,7 +150,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
       ]);
 
-      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false });
+      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false, scope: ALL_PROJECTS_SCOPE });
     });
 
     it('passes request-context project scope to getUnprocessedBatches', async () => {
@@ -162,7 +163,7 @@ describe('executeContextQueries', () => {
       expect(getUnprocessedBatches).toHaveBeenCalledWith({
         limit: 5,
         includeActive: false,
-        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        scope: { kind: 'project', id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
       });
     });
   });
@@ -187,6 +188,7 @@ describe('executeContextQueries', () => {
         agent_id: TEST_AGENT_ID,
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
         includeActive: false,
+        scope: ALL_PROJECTS_SCOPE,
       });
     });
 
@@ -201,6 +203,7 @@ describe('executeContextQueries', () => {
         agent_id: TEST_AGENT_ID,
         limit: 20,
         includeActive: false,
+        scope: ALL_PROJECTS_SCOPE,
       });
     });
 
@@ -213,7 +216,7 @@ describe('executeContextQueries', () => {
 
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
-        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        scope: { kind: 'project', id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
         limit: 20,
         includeActive: false,
       });
@@ -239,7 +242,7 @@ describe('executeContextQueries', () => {
         prompt_count: 3,
         started_at: 1000,
       }]);
-      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false });
+      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false, scope: ALL_PROJECTS_SCOPE });
     });
 
     it('passes request-context project scope to listSessions', async () => {
@@ -250,7 +253,7 @@ describe('executeContextQueries', () => {
       ], requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
 
       expect(listSessions).toHaveBeenCalledWith({
-        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        scope: { kind: 'project', id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
         limit: 5,
         includeActive: false,
       });
@@ -334,6 +337,7 @@ describe('executeContextQueries', () => {
       expect(getUnprocessedBatches).toHaveBeenCalledWith({
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
         includeActive: false,
+        scope: ALL_PROJECTS_SCOPE,
       });
     });
 
@@ -344,7 +348,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_sessions', limit: 50 }),
       ]);
 
-      expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false });
+      expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false, scope: ALL_PROJECTS_SCOPE });
     });
   });
 

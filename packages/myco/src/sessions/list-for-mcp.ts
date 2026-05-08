@@ -8,7 +8,7 @@ import { MCP_SESSIONS_DEFAULT_LIMIT, SESSION_SUMMARY_PREVIEW_CHARS } from '@myco
 import { getPlan } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import {
-  rowProjectIdFromRequestContext,
+  projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
 
@@ -47,17 +47,17 @@ function isoToEpochSeconds(iso: string): number | undefined {
 export function listSessionsForMcp(input: ListSessionsForMcpInput): SessionSummary[] {
   const limit = input.limit ?? MCP_SESSIONS_DEFAULT_LIMIT;
   const since = input.since ? isoToEpochSeconds(input.since) : undefined;
-  const projectId = rowProjectIdFromRequestContext(input.requestContext);
+  const scope = projectScopeFromRequestContext(input.requestContext);
 
   let id: string | undefined;
   if (input.plan) {
-    const planRow = getPlan(input.plan, projectId);
+    const planRow = getPlan(input.plan, scope);
     if (!planRow || !planRow.session_id) return [];
     id = planRow.session_id;
   }
 
   const rows = listSessions({
-    project_id: projectId,
+    scope,
     limit,
     status: input.status,
     branch: input.branch,

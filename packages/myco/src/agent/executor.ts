@@ -17,7 +17,7 @@ import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.j
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -139,7 +139,8 @@ export async function runAgent(
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
   const projectId = rowProjectIdFromRequestContext(options?.requestContext);
-  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId, projectId) : null;
+  const scope = projectScopeFromRequestContext(options?.requestContext);
+  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId, scope) : null;
   if (options?.resumeRunId && !resumedRun) {
     return {
       runId: options.resumeRunId,
@@ -154,7 +155,7 @@ export async function runAgent(
     const effectiveTask = requestedTask
       ?? getDefaultTask(agentId)?.id;
     if (effectiveTask) {
-      const runningId = getRunningRunForTask(agentId, effectiveTask, projectId);
+      const runningId = getRunningRunForTask(agentId, effectiveTask, scope);
       if (runningId) {
         return {
           runId: runningId,
@@ -316,7 +317,7 @@ export async function runAgent(
       cost_source: resumedRun.cost_source,
       cost_data: resumedRun.cost_data,
       error: null,
-    }, projectId);
+    }, scope);
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
@@ -407,7 +408,7 @@ export async function runAgent(
         usage: currentUsage,
         costData: currentCost,
         phaseResults: currentPhaseResults,
-      }), projectId);
+      }), scope);
     };
 
     const projectRoot = options?.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
@@ -524,7 +525,7 @@ export async function runAgent(
         phaseResults,
         sessionRef: runSessionRef,
       }),
-    }, projectId);
+    }, scope);
 
     return {
       runId,
@@ -606,7 +607,7 @@ export async function runAgent(
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
         ...accountingUpdate,
-      }, projectId);
+      }, scope);
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
       options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
@@ -702,8 +703,9 @@ export async function finalizeOnTaskSuccess(args: {
 function findLastReportByAction(
   runId: string,
   action: string,
+  scope: import('@myco/grove/ids.js').ProjectScope,
 ): ReturnType<typeof listReports>[number] | undefined {
-  const reports = listReports(runId);
+  const reports = listReports(runId, { scope });
   for (let i = reports.length - 1; i >= 0; i -= 1) {
     if (reports[i]?.action === action) return reports[i];
   }
@@ -729,7 +731,7 @@ function finalizeCortexInstructions(args: {
   requestContext?: RunOptions['requestContext'];
   instruction?: string;
 }): void {
-  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION);
+  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
   if (!report) {
     throw new Error('cortex-instructions completed without a cortex_instructions report');
   }
@@ -758,7 +760,7 @@ function finalizeCanopyMap(args: {
     throw new Error('canopy-map completed but vaultDir is unavailable — cannot resolve project_id');
   }
 
-  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION);
+  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
   if (!report) {
     throw new Error('canopy-map completed without a canopy_map report');
   }

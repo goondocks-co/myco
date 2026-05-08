@@ -213,7 +213,10 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   const updatedAt = input.updatedAt ?? createdAt;
   const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
   const projectId = input.projectId ?? null;
-  const existingPlan = getPlanByLogicalKey(input.logicalKey, projectId);
+  const lookupScope: import('@myco/grove/ids.js').ProjectScope = projectId
+    ? { kind: 'project', id: projectId as import('@myco/grove/ids.js').GroveProjectId }
+    : { kind: 'global' };
+  const existingPlan = getPlanByLogicalKey(input.logicalKey, lookupScope);
   const status = input.status ?? existingPlan?.status ?? 'active';
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)

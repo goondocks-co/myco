@@ -13,6 +13,7 @@ import {
 } from '@myco/db/queries/digest-extracts.js';
 import { createDigestRevisionHandlers } from '@myco/daemon/api/digest-revisions';
 import type { RouteRequest } from '@myco/daemon/router';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 const AGENT_ID = 'myco-agent';
@@ -100,7 +101,7 @@ describe('digest-revisions API', () => {
       expect(body.restored).toBe(v1Rev.id);
       expect(typeof body.newRevisionId).toBe('number');
 
-      expect(getDigestExtract(AGENT_ID, TIER)!.content).toBe('v1');
+      expect(getDigestExtract(AGENT_ID, TIER, { scope: ALL_PROJECTS_SCOPE })!.content).toBe('v1');
       expect(logger.info).toHaveBeenCalled();
     });
 

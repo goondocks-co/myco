@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,7 +85,7 @@ function toTurnRow(row: Record<string, unknown>): TurnRow {
 }
 
 export interface ListTurnsOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,11 +156,11 @@ export function updateTurn(id: number, completion: TurnCompletion): TurnRow | nu
 /**
  * List all turns for a specific run, ordered by turn_number ASC.
  */
-export function listTurns(runId: string, options: ListTurnsOptions = {}): TurnRow[] {
+export function listTurns(runId: string, options: ListTurnsOptions): TurnRow[] {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
@@ -178,7 +178,7 @@ export function listTurns(runId: string, options: ListTurnsOptions = {}): TurnRo
  * Alias for `listTurns` with an explicit "by run" naming convention used
  * by the dashboard API layer.
  */
-export function listTurnsByRun(runId: string, options: ListTurnsOptions = {}): TurnRow[] {
+export function listTurnsByRun(runId: string, options: ListTurnsOptions): TurnRow[] {
   return listTurns(runId, options);
 }
 

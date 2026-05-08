@@ -44,7 +44,7 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 
@@ -177,7 +177,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       // this run); re-gating it risks applying phantom-detection rules to a
       // legitimate mid-flight session whose in-memory registry was lost on
       // daemon restart. The capture gate is for first-sight sessions only.
-      const existingRow = getSession(event.session_id, requestProjectId);
+      const existingRow = getSession(event.session_id, projectScopeFromRequestContext(req.requestContext));
       if (existingRow) {
         registry.register(event.session_id, { started_at: event.timestamp });
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Rehydrated registry from DB', {
@@ -280,7 +280,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // isn't in the in-memory registry (e.g., after daemon restart) —
         // without this, a manually-completed or stale-swept session stays
         // hidden from intelligence-task queries even after the user resumes.
-        if (reactivateSessionIfCompleted(event.session_id, requestProjectId)) {
+        if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
           logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
             session_id: event.session_id,
           });

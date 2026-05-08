@@ -5,7 +5,7 @@ import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 
@@ -54,8 +54,9 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const search = req.query.search || undefined;
   const projectId = rowProjectIdFromRequestContext(req.requestContext);
 
+  const scope = projectScopeFromRequestContext(req.requestContext);
   const filterOpts = {
-    project_id: projectId,
+    scope,
     ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
@@ -71,8 +72,8 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
 /** Factory form — supports team fallback when the spore is missing locally. */
 export function createGetSporeHandler(deps: TeamFallbackDeps = {}) {
   return async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {
-    const projectId = rowProjectIdFromRequestContext(req.requestContext);
-    const spore = getSpore(req.params.id, projectId);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const spore = getSpore(req.params.id, scope);
     if (spore) return { body: { ...spore, source: 'local' } };
 
     const fallback = await fetchTeamFallback(deps, 'spores', req.params.id);
@@ -99,7 +100,9 @@ export async function handleListEntities(req: RouteRequest): Promise<RouteRespon
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
 
+  const scope = projectScopeFromRequestContext(req.requestContext);
   const entities = listEntities({
+    scope,
     agent_id: agentId,
     type,
     mentioned_in,
@@ -244,16 +247,17 @@ export async function handleGetGraph(req: RouteRequest): Promise<RouteResponse> 
   const projectScope = projectScopeClause(projectId);
 
   // Resolve center node — spore or session (entity layer retired in schema v21).
+  const scope = projectScopeFromRequestContext(req.requestContext);
   let centerType: 'spore' | 'session';
-  if (getSpore(id, projectId)) {
+  if (getSpore(id, scope)) {
     centerType = 'spore';
-  } else if (getSession(id, projectId)) {
+  } else if (getSession(id, scope)) {
     centerType = 'session';
   } else {
     return { status: 404, body: { error: 'not_found' } };
   }
 
-  const graph = getGraphForNode(id, centerType, { depth, projectId });
+  const graph = getGraphForNode(id, centerType, { depth, scope });
 
   // Filter out batch-related edges (too granular for visualization)
   const filteredEdges = graph.edges.filter(
@@ -420,7 +424,7 @@ export async function handleGetFullGraph(req: RouteRequest): Promise<RouteRespon
 
 export async function handleGetDigest(req: RouteRequest): Promise<RouteResponse> {
   const agentId = req.query.agent_id ?? DEFAULT_AGENT_ID;
-  const projectId = rowProjectIdFromRequestContext(req.requestContext);
-  const extracts = listDigestExtracts(agentId, projectId);
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  const extracts = listDigestExtracts(agentId, scope);
   return { body: { tiers: extracts } };
 }

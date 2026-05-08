@@ -35,7 +35,7 @@ import {
 } from './scope-iteration.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
-import { assertGroveProjectId, isGroveEraId, type GroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope as ReadProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
@@ -203,9 +203,10 @@ export async function registerScheduledTasks(
   ): Promise<void> {
     const config = liveConfig.current;
     const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
+    const readScope: ReadProjectScope = toProjectScope(projectId);
     const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
       ? null
-      : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, projectId);
+      : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, readScope);
 
     if (resumableRun) {
       const resumed = await runAgent(projectVaultDir, {
@@ -383,13 +384,13 @@ export async function registerScheduledTasks(
     },
     preConditions: {
       'has-unprocessed-batches': (scope) =>
-        countUnprocessedSettledBatches(undefined, scope.projectId) > 0,
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId)) > 0,
       'has-pending-canopy-rows': (scope) =>
         countPendingCanopyDescribe(null, scope.projectId) > 0,
       'has-active-skills': (scope) =>
-        countSkillRecords({ status: 'active', project_id: scope.projectId }) > 0,
+        countSkillRecords({ status: 'active', scope: toProjectScope(scope.projectId) }) > 0,
       'has-approved-candidates': (scope) =>
-        countCandidates({ status: 'approved', project_id: scope.projectId }) > 0,
+        countCandidates({ status: 'approved', scope: toProjectScope(scope.projectId) }) > 0,
       'has-skill-survey-evidence': (scope) =>
         getSkillSurveyEligibility(
           taskAgentMap.get(SKILL_SURVEY_TASK),
@@ -400,7 +401,7 @@ export async function registerScheduledTasks(
       'canopy-pending-describe': (scope, limit) =>
         countPendingCanopyDescribe(null, scope.projectId, limit),
       'unprocessed-settled-batches': (scope, limit) =>
-        countUnprocessedSettledBatches(limit, scope.projectId),
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId), limit),
     },
     onTaskError: (taskName, groveId, projectId, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {

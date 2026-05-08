@@ -17,7 +17,7 @@ import {
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
-import { rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -97,6 +97,7 @@ async function handleSearchWithDatabase(
     const limit = Number(req.query.limit) || SEARCH_RESULTS_DEFAULT_LIMIT;
     const namespace = req.query.namespace;
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const scope = projectScopeFromRequestContext(req.requestContext);
     const metadataFilters = {
       ...(req.query.status ? { status: req.query.status } : {}),
       ...(req.query.session_id ? { session_id: req.query.session_id } : {}),
@@ -134,7 +135,7 @@ async function handleSearchWithDatabase(
     // --- FTS-only mode ---
     if (mode === 'fts') {
       try {
-        const results = fullTextSearch(sanitized, { type, limit, project_id: projectId, db });
+        const results = fullTextSearch(sanitized, { type, limit, scope, db });
         return { body: { mode: 'fts', results: normalizeSearchResults(results) } };
       } catch (err) {
         return {
@@ -175,7 +176,7 @@ async function handleSearchWithDatabase(
     if (queryVector === null) {
       if (mode === 'auto') {
         try {
-          const results = fullTextSearch(sanitized, { type, limit, project_id: projectId, db });
+          const results = fullTextSearch(sanitized, { type, limit, scope, db });
           return { body: { mode: 'fts', results: normalizeSearchResults(results), fallback: true } };
         } catch (err) {
           return {
@@ -206,7 +207,7 @@ async function handleSearchWithDatabase(
       : vectorResults;
 
     // Hydrate local vector results into full SearchResults
-    const localResults = hydrateSearchResults(filteredVectorResults, { project_id: projectId, db }).map((r) => ({
+    const localResults = hydrateSearchResults(filteredVectorResults, { scope, db }).map((r) => ({
       ...r,
       source: 'local',
     }));

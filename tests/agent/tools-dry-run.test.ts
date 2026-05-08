@@ -38,6 +38,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants / helpers
@@ -286,7 +287,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
         created_at: now,
         updated_at: now,
       });
-      updateCandidate(candidate.id, { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
+      updateCandidate(candidate.id, { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
       const t = findTool(tools, 'vault_stage_skill');
       const result = await t.handler({

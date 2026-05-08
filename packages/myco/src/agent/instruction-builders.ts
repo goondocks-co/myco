@@ -25,9 +25,10 @@ import { readCanopyMap, type CanopyMapRow } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
-  rowProjectIdFromRequestContext,
+  projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
@@ -105,8 +106,8 @@ export interface SkillSurveyEligibility {
   reason: 'insufficient-settled-sessions' | 'insufficient-settled-spores' | 'no-new-settled-knowledge' | null;
 }
 
-function scopedOptions(projectId: string | null | undefined): { project_id?: string | null } {
-  return projectId !== undefined ? { project_id: projectId } : {};
+function scopedOptions(scope: ProjectScope): { scope: ProjectScope } {
+  return { scope };
 }
 
 /**
@@ -117,13 +118,13 @@ export function getSkillSurveyEligibility(
   agentId?: string,
   requestContext?: MycoRequestContext,
 ): SkillSurveyEligibility {
-  const projectId = rowProjectIdFromRequestContext(requestContext);
-  const settledSessionCount = countSessions({ ...scopedOptions(projectId), includeActive: false });
+  const scope = projectScopeFromRequestContext(requestContext);
+  const settledSessionCount = countSessions({ ...scopedOptions(scope), includeActive: false });
   if (settledSessionCount < SURVEY_MIN_SETTLED_SESSIONS) {
     return { eligible: false, reason: 'insufficient-settled-sessions' };
   }
 
-  const settledSporeCount = countSpores({ ...scopedOptions(projectId), includeActive: false, status: 'active' });
+  const settledSporeCount = countSpores({ ...scopedOptions(scope), includeActive: false, status: 'active' });
   if (settledSporeCount < SURVEY_MIN_SETTLED_ACTIVE_SPORES) {
     return { eligible: false, reason: 'insufficient-settled-spores' };
   }
@@ -139,7 +140,7 @@ export function getSkillSurveyEligibility(
   }
 
   const hasNewSettledSessions = countSessions({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     includeActive: false,
     since: watermarkEpoch,
   }) > 0;
@@ -148,7 +149,7 @@ export function getSkillSurveyEligibility(
   }
 
   const hasNewSettledSpores = countSpores({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     includeActive: false,
     status: 'active',
     since: watermarkEpoch,
@@ -178,8 +179,8 @@ export function getSkillSurveyEligibility(
 export function buildSkillGenerateInstruction(
   requestContext?: MycoRequestContext,
 ): BuiltTaskInstruction | undefined {
-  const projectId = rowProjectIdFromRequestContext(requestContext);
-  const candidates = listCandidates({ ...scopedOptions(projectId), status: 'approved', limit: 1 });
+  const scope = projectScopeFromRequestContext(requestContext);
+  const candidates = listCandidates({ ...scopedOptions(scope), status: 'approved', limit: 1 });
   if (candidates.length === 0) return undefined;
   const c = candidates[0];
 
@@ -197,7 +198,7 @@ export function buildSkillGenerateInstruction(
 
   for (const src of sourceIds) {
     if (src.type === 'spore') {
-      const spore = getSpore(src.id, projectId);
+      const spore = getSpore(src.id, scope);
       if (spore) {
         parts.push(`\n### Spore: ${src.id} (${spore.observation_type}, importance ${spore.importance})`);
         parts.push(spore.content);
@@ -205,7 +206,7 @@ export function buildSkillGenerateInstruction(
         if (spore.tags) parts.push(`Tags: ${spore.tags}`);
       }
     } else if (src.type === 'session') {
-      const session = getSession(src.id, projectId);
+      const session = getSession(src.id, scope);
       if (session) {
         parts.push(`\n### Session: ${src.id}`);
         if (session.title) parts.push(`Title: ${session.title}`);
@@ -236,7 +237,7 @@ export function buildSkillSurveyInstruction(
   agentId: string,
   requestContext?: MycoRequestContext,
 ): BuiltTaskInstruction | undefined {
-  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scope = projectScopeFromRequestContext(requestContext);
   const eligibility = getSkillSurveyEligibility(agentId, requestContext);
   if (!eligibility.eligible) {
     return undefined;
@@ -265,7 +266,7 @@ export function buildSkillSurveyInstruction(
   // 1. Digest — smallest tier only (landscape overview without flooding context).
   // Full digests can be 50K+ chars across tiers; the smallest tier provides
   // sufficient orientation for the explore phase to direct follow-up queries.
-  const digests = listDigestExtracts(agentId, projectId);
+  const digests = listDigestExtracts(agentId, scope);
   if (digests.length > 0) {
     const smallest = digests.reduce((a, b) => a.tier < b.tier ? a : b);
     parts.push('### Digest');
@@ -278,7 +279,7 @@ export function buildSkillSurveyInstruction(
   // Skill-survey runs against settled work only so spores from in-flight
   // sessions don't bait candidates for procedures that haven't stabilized.
   const wisdomSpores = listSpores({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     observation_type: 'wisdom',
     limit: SURVEY_MAX_WISDOM_SPORES,
     includeActive: false,
@@ -294,14 +295,14 @@ export function buildSkillSurveyInstruction(
 
   // 3. Recent decisions and gotchas
   const decisions = listSpores({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     observation_type: 'decision',
     limit: 20,
     includeActive: false,
     ...sinceFilter,
   });
   const gotchas = listSpores({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     observation_type: 'gotcha',
     limit: 10,
     includeActive: false,
@@ -317,7 +318,7 @@ export function buildSkillSurveyInstruction(
 
   // 4. Recent sessions
   const sessions = listSessions({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     limit: SURVEY_MAX_SESSIONS,
     includeActive: false,
     ...sinceFilter,
@@ -331,7 +332,7 @@ export function buildSkillSurveyInstruction(
   }
 
   // 5. Current skill inventory (for dedup awareness)
-  const activeSkills = listSkillRecords({ ...scopedOptions(projectId), status: 'active', limit: 100 });
+  const activeSkills = listSkillRecords({ ...scopedOptions(scope), status: 'active', limit: 100 });
   parts.push(`### Active Skills (${activeSkills.length})`);
   for (const s of activeSkills) {
     parts.push(`- **${s.name}**: ${s.description.slice(0, 150)}`);
@@ -439,11 +440,11 @@ function selectRelevantSporeIdsByLexicalOverlap(
 async function selectRelevantSporeIdsForSkill(
   skill: { name: string; description: string },
   sinceEpoch: number,
-  retrievalProvider?: SemanticSearchProvider,
-  projectId?: string | null,
+  retrievalProvider: SemanticSearchProvider | undefined,
+  scope: ProjectScope,
 ): Promise<string[]> {
   const recentSpores = listSpores({
-    ...scopedOptions(projectId),
+    ...scopedOptions(scope),
     status: 'active',
     since: sinceEpoch,
     includeActive: false,
@@ -461,7 +462,7 @@ async function selectRelevantSporeIdsForSkill(
     threshold: SKILL_EVOLVE_SEMANTIC_THRESHOLD,
     filters: {
       status: 'active',
-      ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
+      ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
       created_at_gte: sinceEpoch,
     },
   });
@@ -569,14 +570,14 @@ export async function buildSkillEvolveInstruction(
   retrievalProvider?: SemanticSearchProvider,
   requestContext?: MycoRequestContext,
 ): Promise<string | undefined> {
-  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scope = projectScopeFromRequestContext(requestContext);
   const assessIntervalHours = Number(params?.assess_interval_hours ?? SKILL_EVOLVE_DEFAULT_ASSESS_INTERVAL_HOURS);
   const maxSkillsPerRun = Number(params?.max_skills_per_run ?? SKILL_EVOLVE_DEFAULT_MAX_SKILLS_PER_RUN);
 
   const now = epochSeconds();
   const intervalSeconds = assessIntervalHours * 3600;
 
-  const allSkills = listSkillRecords({ ...scopedOptions(projectId), status: 'active', limit: 100 });
+  const allSkills = listSkillRecords({ ...scopedOptions(scope), status: 'active', limit: 100 });
   const needsAssessment: SkillAssessmentEntry[] = [];
 
   for (const skill of allSkills) {
@@ -592,7 +593,7 @@ export async function buildSkillEvolveInstruction(
 
     if (lastAssessedAt > 0 && (now - lastAssessedAt) < intervalSeconds) continue;
 
-    const newSporeIds = await selectRelevantSporeIdsForSkill(skill, knowledgeWatermark, retrievalProvider, projectId);
+    const newSporeIds = await selectRelevantSporeIdsForSkill(skill, knowledgeWatermark, retrievalProvider, scope);
     if (newSporeIds.length === 0) continue;
 
     needsAssessment.push({
@@ -709,7 +710,7 @@ export async function buildSkillEvolveInstruction(
     updateSkillRecord(skill.id, {
       updated_at: nowEpoch,
       properties: JSON.stringify(props),
-    }, projectId);
+    }, scope);
   }
 
   let semanticPairs: Array<{ idA: string; idB: string; similarity: number }> = [];

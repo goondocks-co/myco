@@ -10,6 +10,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -122,20 +123,13 @@ export function insertLineage(data: LineageInsert): LineageRow {
  */
 export function listLineageForSkill(
   skillId: string,
+  scope: ProjectScope,
   limit = 50,
-  projectId?: string | null,
 ): LineageRow[] {
   const db = getDatabase();
   const conditions = ['skill_id = ?'];
   const params: unknown[] = [skillId];
-  if (projectId !== undefined) {
-    if (projectId === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(projectId);
-    }
-  }
+  appendProjectCondition(conditions, params, scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}

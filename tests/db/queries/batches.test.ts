@@ -18,6 +18,7 @@ import {
   markBatchProcessed,
 } from '@myco/db/queries/batches.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -161,13 +162,13 @@ describe('prompt batch query helpers', () => {
       const batch = insertBatch(makeBatch(sessionId));
       expect(batch.processed).toBe(0);
 
-      const row = markBatchProcessed(batch.id);
+      const row = markBatchProcessed(batch.id, ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.processed).toBe(1);
     });
 
     it('returns null for non-existent batch', () => {
-      const result = markBatchProcessed(999999);
+      const result = markBatchProcessed(999999, ALL_PROJECTS_SCOPE);
       expect(result).toBeNull();
     });
 
@@ -176,8 +177,8 @@ describe('prompt batch query helpers', () => {
       upsertSession(scopedSession);
       const batch = insertBatch(makeBatch(scopedSession.id));
 
-      expect(markBatchProcessed(batch.id, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBeNull();
-      expect(markBatchProcessed(batch.id, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')!.processed).toBe(1);
+      expect(markBatchProcessed(batch.id, projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).toBeNull();
+      expect(markBatchProcessed(batch.id, projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))!.processed).toBe(1);
     });
   });
 
@@ -192,9 +193,9 @@ describe('prompt batch query helpers', () => {
       insertBatch(makeBatch(sessionId, { user_prompt: 'third' }));
 
       // Mark b2 as processed
-      markBatchProcessed(b2.id);
+      markBatchProcessed(b2.id, ALL_PROJECTS_SCOPE);
 
-      const rows = getUnprocessedBatches();
+      const rows = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe(b1.id);
       expect(rows[0].user_prompt).toBe('first');
@@ -206,7 +207,7 @@ describe('prompt batch query helpers', () => {
         insertBatch(makeBatch(sessionId));
       }
 
-      const rows = getUnprocessedBatches({ limit: 2 });
+      const rows = getUnprocessedBatches({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
@@ -215,7 +216,7 @@ describe('prompt batch query helpers', () => {
       const b2 = insertBatch(makeBatch(sessionId, { user_prompt: 'b' }));
       const b3 = insertBatch(makeBatch(sessionId, { user_prompt: 'c' }));
 
-      const rows = getUnprocessedBatches({ after_id: b1.id });
+      const rows = getUnprocessedBatches({ after_id: b1.id, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe(b2.id);
       expect(rows[1].id).toBe(b3.id);
@@ -226,20 +227,20 @@ describe('prompt batch query helpers', () => {
       insertBatch(makeBatch(sessionId));
       insertBatch(makeBatch(sessionId));
 
-      const rows = getUnprocessedBatches({ after_id: b1.id, limit: 1 });
+      const rows = getUnprocessedBatches({ after_id: b1.id, limit: 1, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
     });
 
     it('returns empty array when all batches are processed', () => {
       const batch = insertBatch(makeBatch(sessionId));
-      markBatchProcessed(batch.id);
+      markBatchProcessed(batch.id, ALL_PROJECTS_SCOPE);
 
-      const rows = getUnprocessedBatches();
+      const rows = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
     it('returns empty array when no batches exist', () => {
-      const rows = getUnprocessedBatches();
+      const rows = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -251,7 +252,7 @@ describe('prompt batch query helpers', () => {
       insertBatch(makeBatch(sessionA.id, { user_prompt: 'project a work' }));
       insertBatch(makeBatch(sessionB.id, { user_prompt: 'project b work' }));
 
-      const rows = getUnprocessedBatches({ project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', includeActive: false });
+      const rows = getUnprocessedBatches({ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId), includeActive: false });
 
       expect(rows).toHaveLength(1);
       expect(rows[0].user_prompt).toBe('project a work');
@@ -260,13 +261,13 @@ describe('prompt batch query helpers', () => {
     describe('active-session gating (includeActive flag)', () => {
       it('by default (omitted) includes batches from active sessions', () => {
         insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
-        const rows = getUnprocessedBatches();
+        const rows = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
         expect(rows).toHaveLength(1);
       });
 
       it('with includeActive:false excludes batches from active sessions', () => {
         insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
-        const rows = getUnprocessedBatches({ includeActive: false });
+        const rows = getUnprocessedBatches({ includeActive: false, scope: ALL_PROJECTS_SCOPE });
         expect(rows).toEqual([]);
       });
 
@@ -276,14 +277,14 @@ describe('prompt batch query helpers', () => {
         upsertSession(completedSession);
         insertBatch(makeBatch(completedSession.id, { user_prompt: 'settled' }));
 
-        const rows = getUnprocessedBatches({ includeActive: false });
+        const rows = getUnprocessedBatches({ includeActive: false, scope: ALL_PROJECTS_SCOPE });
         expect(rows).toHaveLength(1);
         expect(rows[0].user_prompt).toBe('settled');
       });
 
       it('with includeActive:true bypasses the filter even for active sessions', () => {
         insertBatch(makeBatch(sessionId, { user_prompt: 'live' }));
-        const rows = getUnprocessedBatches({ includeActive: true });
+        const rows = getUnprocessedBatches({ includeActive: true, scope: ALL_PROJECTS_SCOPE });
         expect(rows).toHaveLength(1);
       });
     });
@@ -295,8 +296,8 @@ describe('prompt batch query helpers', () => {
       upsertSession(scopedSession);
       insertBatch(makeBatch(scopedSession.id, { prompt_number: 1 }));
 
-      expect(listBatchesBySession(scopedSession.id, { project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' })).toEqual([]);
-      expect(listBatchesBySession(scopedSession.id, { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })).toHaveLength(1);
+      expect(listBatchesBySession(scopedSession.id,{ scope: projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId)})).toEqual([]);
+      expect(listBatchesBySession(scopedSession.id,{ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)})).toHaveLength(1);
     });
   });
 
@@ -328,16 +329,16 @@ describe('prompt batch query helpers', () => {
       expect(closed!.activity_count).toBe(3);
 
       // Still shows as unprocessed
-      const unprocessed = getUnprocessedBatches();
+      const unprocessed = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(unprocessed).toHaveLength(1);
       expect(unprocessed[0].id).toBe(batch.id);
 
       // Mark as processed
-      const processed = markBatchProcessed(batch.id);
+      const processed = markBatchProcessed(batch.id, ALL_PROJECTS_SCOPE);
       expect(processed!.processed).toBe(1);
 
       // No longer in unprocessed list
-      const empty = getUnprocessedBatches();
+      const empty = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(empty).toEqual([]);
     });
   });

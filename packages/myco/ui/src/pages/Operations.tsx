@@ -23,6 +23,8 @@ import { UpdateCard } from '../components/operations/UpdateCard';
 import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
 import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
 import { LogRow } from '../components/operations/LogRow';
+import { ScopeBadge } from '../components/config/ScopePill';
+import { SCOPE_HELPER_TEXT, type SectionScope } from '../components/operations/scope-helpers';
 import type { Tab } from '../components/ui/tab-switcher';
 
 /* ---------- Constants ---------- */
@@ -109,6 +111,19 @@ function formatCountdown(ms: number): string {
 }
 
 /* ---------- Sub-components ---------- */
+
+function ScopedSectionTitle({ title, scope }: { title: string; scope: SectionScope }) {
+  return (
+    <div className="flex items-center gap-2">
+      <SectionHeader>{title}</SectionHeader>
+      <ScopeBadge scope={scope} />
+    </div>
+  );
+}
+
+function ScopeHelper({ scope }: { scope: SectionScope }) {
+  return <p className="font-sans text-xs text-on-surface-variant">{SCOPE_HELPER_TEXT[scope]}</p>;
+}
 
 function NamespaceTable({ data }: { data: EmbeddingDetails }) {
   return (
@@ -216,7 +231,7 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
       className="rounded-lg p-6 space-y-4 transition-all duration-300"
     >
       <div className="flex items-center justify-between">
-        <SectionHeader>Indexes</SectionHeader>
+        <ScopedSectionTitle title="Indexes" scope="grove" />
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -225,6 +240,7 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
           {expanded ? 'Hide' : 'Show all ' + indexes.length}
         </button>
       </div>
+      <ScopeHelper scope="grove" />
       <p className="font-sans text-sm text-on-surface-variant">
         {btreeCount} btree {btreeCount === 1 ? 'index' : 'indexes'}
         {autoCount > 0 && <> · {autoCount} auto-{autoCount === 1 ? 'index' : 'indexes'}</>}
@@ -307,7 +323,8 @@ function ScheduledMaintenanceCard({
 
   return (
     <Surface level="low" className="p-6 space-y-4">
-      <SectionHeader>Scheduled Maintenance</SectionHeader>
+      <ScopedSectionTitle title="Scheduled Maintenance" scope="grove" />
+      <ScopeHelper scope="grove" />
       <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
         <ScopedField
           path="maintenance.auto_optimize"
@@ -434,7 +451,8 @@ function DatabaseActions({
 
   return (
     <Surface level="low" className="p-6 space-y-3">
-      <SectionHeader>Actions</SectionHeader>
+      <ScopedSectionTitle title="Actions" scope="grove" />
+      <ScopeHelper scope="grove" />
       <div className="flex flex-wrap gap-2">
         <Button variant="ghost" size="sm" onClick={handleIntegrityCheck} disabled={busy}>
           <RefreshCw className="mr-2 h-4 w-4" />
@@ -581,13 +599,15 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
       {/* Namespace breakdown */}
       <Surface level="low" className="p-6 space-y-4">
-        <SectionHeader>Namespace Breakdown</SectionHeader>
+        <ScopedSectionTitle title="Namespace Breakdown" scope="grove" />
+        <ScopeHelper scope="grove" />
         <NamespaceTable data={data} />
       </Surface>
 
       {/* Reconcile policy */}
       <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>Reconcile Policy</SectionHeader>
+        <ScopedSectionTitle title="Reconcile Policy" scope="grove" />
+        <ScopeHelper scope="grove" />
         <ScopedField<'embedding.run_in_deep_sleep', boolean>
           path="embedding.run_in_deep_sleep"
           label="Continue embedding in deep sleep"
@@ -612,7 +632,8 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
       {/* Action toolbar */}
       <Surface level="low" className="p-6 space-y-3">
-        <SectionHeader>Actions</SectionHeader>
+        <ScopedSectionTitle title="Actions" scope="grove" />
+        <ScopeHelper scope="grove" />
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" size="sm" onClick={handleReembedStale}>
             <RefreshCw className="mr-2 h-4 w-4" />
@@ -801,7 +822,8 @@ function DatabaseTab() {
 
       {/* Schema breakdown */}
       <Surface level="low" className="p-6 space-y-4">
-        <SectionHeader>Schema Breakdown</SectionHeader>
+        <ScopedSectionTitle title="Schema Breakdown" scope="grove" />
+        <ScopeHelper scope="grove" />
         <TablesTable tables={data.tables} />
       </Surface>
 

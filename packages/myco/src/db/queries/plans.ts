@@ -10,6 +10,7 @@ import { epochSeconds } from '@myco/constants.js';
 import { getTeamMachineId, isTeamSyncEnabled } from '@myco/daemon/team-context.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,7 +73,7 @@ export interface PlanRow {
 
 /** Filter options for `listPlans`. */
 export interface ListPlansOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   status?: string;
   limit?: number;
 }
@@ -143,8 +144,10 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
  */
 export function upsertPlan(data: PlanInsert): PlanRow {
   const db = getDatabase();
-  const projectId = data.project_id ?? null;
-  const existing = getPlanByLogicalKey(data.logical_key, projectId);
+  const scope: ProjectScope = data.project_id == null
+    ? { kind: 'global' }
+    : { kind: 'project', id: data.project_id as import('@myco/grove/ids.js').GroveProjectId };
+  const existing = getPlanByLogicalKey(data.logical_key, scope);
 
   if (existing) {
     db.prepare(
@@ -183,7 +186,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
       existing.id,
     );
 
-    const row = getPlan(data.id);
+    const row = getPlan(data.id, scope);
     if (!row) throw new Error(`Plan upsert failed for logical key: ${data.logical_key}`);
     syncRow('plans', row);
     return row;
@@ -201,7 +204,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
      )`,
   ).run(
     data.id,
-    projectId,
+    data.project_id ?? null,
     data.logical_key,
     data.status ?? DEFAULT_STATUS,
     data.author ?? null,
@@ -232,21 +235,14 @@ export function upsertPlan(data: PlanInsert): PlanRow {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlan(id: string, projectId?: string | null): PlanRow | null {
+export function getPlan(id: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-
-  const row = projectId === undefined
-    ? db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`,
-    ).get(id) as Record<string, unknown> | undefined
-    : projectId === null
-      ? db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ? AND project_id IS NULL`,
-      ).get(id) as Record<string, unknown> | undefined
-      : db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ? AND project_id = ?`,
-      ).get(id, projectId) as Record<string, unknown> | undefined;
-
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toPlanRow(row);
 }
@@ -256,23 +252,14 @@ export function getPlan(id: string, projectId?: string | null): PlanRow | null {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlanByLogicalKey(logicalKey: string, projectId?: string | null): PlanRow | null {
+export function getPlanByLogicalKey(logicalKey: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-
-  const row = projectId == null
-    ? db.prepare(
-      `SELECT ${SELECT_COLUMNS}
-         FROM plans
-        WHERE project_id IS NULL
-          AND logical_key = ?`,
-    ).get(logicalKey) as Record<string, unknown> | undefined
-    : db.prepare(
-      `SELECT ${SELECT_COLUMNS}
-         FROM plans
-        WHERE project_id = ?
-          AND logical_key = ?`,
-    ).get(projectId, logicalKey) as Record<string, unknown> | undefined;
-
+  const conditions = ['logical_key = ?'];
+  const params: unknown[] = [logicalKey];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toPlanRow(row);
 }
@@ -282,16 +269,17 @@ export function getPlanByLogicalKey(logicalKey: string, projectId?: string | nul
  *
  * @returns the deleted plan row, or null if not found.
  */
-export function deletePlan(id: string, projectId?: string | null): PlanRow | null {
+export function deletePlan(id: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-  const row = getPlan(id, projectId);
+  const row = getPlan(id, scope);
   if (!row) return null;
 
-  const info = projectId === undefined
-    ? db.prepare(`DELETE FROM plans WHERE id = ?`).run(id)
-    : projectId === null
-      ? db.prepare(`DELETE FROM plans WHERE id = ? AND project_id IS NULL`).run(id)
-      : db.prepare(`DELETE FROM plans WHERE id = ? AND project_id = ?`).run(id, projectId);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(
+    `DELETE FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   if (info.changes === 0) return null;
 
   if (isTeamSyncEnabled()) {
@@ -317,21 +305,14 @@ export function deletePlan(id: string, projectId?: string | null): PlanRow | nul
  * List plans with optional filters, ordered by created_at DESC.
  */
 export function listPlans(
-  options: ListPlansOptions = {},
+  options: ListPlansOptions,
 ): PlanRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
@@ -357,19 +338,11 @@ export function listPlans(
 /**
  * List all plans associated with a specific session, ordered by created_at DESC.
  */
-export function listPlansBySession(sessionId: string, projectId?: string | null): PlanRow[] {
+export function listPlansBySession(sessionId: string, scope: ProjectScope): PlanRow[] {
   const db = getDatabase();
   const conditions = ['session_id = ?'];
   const params: unknown[] = [sessionId];
-
-  if (projectId !== undefined) {
-    if (projectId === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(projectId);
-    }
-  }
+  appendProjectCondition(conditions, params, scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}

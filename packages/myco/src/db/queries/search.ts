@@ -13,7 +13,7 @@ import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
   SEARCH_PREVIEW_CHARS,
 } from '@myco/constants.js';
-import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 
@@ -68,8 +68,8 @@ export interface SearchOptions {
    * reads opt in to this; UI/CLI callers leave it unset.
    */
   includeActive?: boolean;
-  /** Restrict project-scoped tables to one project. undefined preserves legacy broad reads. */
-  project_id?: string | null;
+  /** Project scope for project-scoped tables. */
+  scope: ProjectScope;
   /** Optional database handle for request-scoped Grove reads. Defaults to the process singleton. */
   db?: Database;
 }
@@ -134,7 +134,7 @@ export function sanitizeFtsQuery(query: string): string {
  */
 export function fullTextSearch(
   query: string,
-  options: SearchOptions = {},
+  options: SearchOptions,
 ): SearchResult[] {
   const db = options.db ?? getDatabase();
   const limit = options.limit ?? SEARCH_RESULTS_DEFAULT_LIMIT;
@@ -150,7 +150,7 @@ export function fullTextSearch(
     if (excludeActive) {
       conditions.push(`EXISTS (SELECT 1 FROM sessions s WHERE s.id = pb.session_id AND s.status != 'active')`);
     }
-    appendProjectCondition(conditions, params, options.project_id, 'pb');
+    appendProjectCondition(conditions, params, options.scope, 'pb');
     const batchRows = db.prepare(
       `SELECT pb.id, pb.prompt_number, pb.session_id,
               substr(COALESCE(pb.user_prompt, '') || ' ' || COALESCE(pb.response_summary, ''), 1, ?) AS preview,
@@ -189,7 +189,7 @@ export function fullTextSearch(
     if (excludeActive) {
       conditions.push(`EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id AND s.status != 'active')`);
     }
-    appendProjectCondition(conditions, params, options.project_id, 'a');
+    appendProjectCondition(conditions, params, options.scope, 'a');
     const activityRows = db.prepare(
       `SELECT a.id, a.tool_name, a.tool_input, a.file_path, a.session_id,
               fts.rank
@@ -230,7 +230,7 @@ export function fullTextSearch(
     if (excludeActive) {
       conditions.push(`(s.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions ss WHERE ss.id = s.session_id AND ss.status != 'active'))`);
     }
-    appendProjectCondition(conditions, params, options.project_id, 's');
+    appendProjectCondition(conditions, params, options.scope, 's');
     const sporeRows = db.prepare(
       `SELECT s.id, s.observation_type, s.session_id,
               substr(COALESCE(s.content, ''), 1, ?) AS preview,
@@ -267,7 +267,7 @@ export function fullTextSearch(
     if (excludeActive) {
       conditions.push(`s.status != 'active'`);
     }
-    appendProjectCondition(conditions, params, options.project_id, 's');
+    appendProjectCondition(conditions, params, options.scope, 's');
     const sessionRows = db.prepare(
       `SELECT s.id, s.title,
               substr(COALESCE(s.summary, s.title, ''), 1, ?) AS preview,
@@ -344,7 +344,7 @@ interface ArtifactRow {
  */
 export function hydrateSearchResults(
   vectorResults: VectorSearchResult[],
-  options: { project_id?: string | null; db?: Database } = {},
+  options: { scope: ProjectScope; db?: Database },
 ): SearchResult[] {
   if (vectorResults.length === 0) return [];
 
@@ -360,11 +360,11 @@ export function hydrateSearchResults(
   }
 
   // Use json_each so statement text remains compact even for large result sets.
-  const sessionScope = projectScopeClause(options.project_id);
-  const sporeScope = projectScopeClause(options.project_id);
-  const planScope = projectScopeClause(options.project_id);
-  const artifactScope = projectScopeClause(options.project_id);
-  const skillScope = projectScopeClause(options.project_id);
+  const sessionScope = projectScopeClause(options.scope);
+  const sporeScope = projectScopeClause(options.scope);
+  const planScope = projectScopeClause(options.scope);
+  const artifactScope = projectScopeClause(options.scope);
+  const skillScope = projectScopeClause(options.scope);
 
   // --- sessions ---
   const sessionResults = byNamespace.get('sessions');
@@ -478,9 +478,11 @@ export function hydrateSearchResults(
       const p = parseCanopyRecordId(vr.id);
       if (p) parsed.push({ id: vr.id, projectId: p.projectId, path: p.path, vr });
     }
-    const scopedParsed = parsed.filter((p) =>
-      options.project_id === undefined || options.project_id === null || p.projectId === options.project_id,
-    );
+    const scopedParsed = parsed.filter((p) => {
+      if (options.scope.kind === 'all') return true;
+      if (options.scope.kind === 'global') return false;
+      return p.projectId === options.scope.id;
+    });
     if (scopedParsed.length > 0) {
       const placeholders = scopedParsed.map(() => '(?, ?)').join(', ');
       const args = scopedParsed.flatMap((p) => [p.projectId, p.path]);

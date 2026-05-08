@@ -11,6 +11,7 @@ import { insertRun, getRunningRunForTask, getLatestRunId, STATUS_RUNNING, STATUS
 import { insertCandidate, deleteCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { insertSkillRecord, deleteSkillRecordCascade, getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { insertSkillUsage, countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { validateSkillContent } from '@myco/agent/tools.js';
 import {
@@ -53,7 +54,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    const result = getRunningRunForTask(AGENT_ID, 'vault-evolve');
+    const result = getRunningRunForTask(AGENT_ID, 'vault-evolve', ALL_PROJECTS_SCOPE);
     expect(result).toBe('run-1');
   });
 
@@ -63,7 +64,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    expect(getRunningRunForTask(AGENT_ID, 'skill-generate')).toBeNull();
+    expect(getRunningRunForTask(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('getLatestRunId returns most recent run', () => {
@@ -76,8 +77,8 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    expect(getLatestRunId(AGENT_ID, 'skill-generate')).toBe('run-new');
-    expect(getLatestRunId(AGENT_ID)).toBe('run-new');
+    expect(getLatestRunId(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBe('run-new');
+    expect(getLatestRunId(AGENT_ID, undefined, ALL_PROJECTS_SCOPE)).toBe('run-new');
   });
 });
 
@@ -268,12 +269,12 @@ describe('Delete operations', () => {
       topic: 't', rationale: 'r', created_at: now, updated_at: now,
     });
 
-    expect(deleteCandidate('cand-del')).toBe(true);
-    expect(getCandidate('cand-del')).toBeNull();
+    expect(deleteCandidate('cand-del', ALL_PROJECTS_SCOPE)).toBe(true);
+    expect(getCandidate('cand-del', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('deleteCandidate returns false for non-existent', () => {
-    expect(deleteCandidate('nonexistent')).toBe(false);
+    expect(deleteCandidate('nonexistent', ALL_PROJECTS_SCOPE)).toBe(false);
   });
 
   it('deleteSkillRecordCascade removes record, lineage, and usage', async () => {
@@ -292,11 +293,11 @@ describe('Delete operations', () => {
       id: 'usage-1', skill_id: 'skill-del', session_id: 'sess-1', detected_at: now,
     });
 
-    const result = deleteSkillRecordCascade('skill-del');
+    const result = deleteSkillRecordCascade('skill-del', ALL_PROJECTS_SCOPE);
     expect(result).toEqual({ id: 'skill-del', project_id: null, name: 'test-skill' });
 
-    expect(getSkillRecord('skill-del')).toBeNull();
-    expect(listLineageForSkill('skill-del')).toHaveLength(0);
+    expect(getSkillRecord('skill-del', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(listLineageForSkill('skill-del', ALL_PROJECTS_SCOPE)).toHaveLength(0);
     expect(countUsageForSkill('skill-del')).toBe(0);
   });
 
@@ -305,7 +306,7 @@ describe('Delete operations', () => {
       id: 'cand-linked', agent_id: AGENT_ID, machine_id: 'test',
       topic: 't', rationale: 'r', created_at: now, updated_at: now,
     });
-    updateCandidate('cand-linked', { status: 'generated', skill_id: 'skill-cascade', updated_at: now });
+    updateCandidate('cand-linked', { status: 'generated', skill_id: 'skill-cascade', updated_at: now }, ALL_PROJECTS_SCOPE);
 
     insertSkillRecord({
       id: 'skill-cascade', agent_id: AGENT_ID, machine_id: 'test', name: 'cascade-skill',
@@ -313,15 +314,15 @@ describe('Delete operations', () => {
       candidate_id: 'cand-linked', created_at: now, updated_at: now,
     });
 
-    deleteSkillRecordCascade('skill-cascade');
+    deleteSkillRecordCascade('skill-cascade', ALL_PROJECTS_SCOPE);
 
-    const candidate = getCandidate('cand-linked');
+    const candidate = getCandidate('cand-linked', ALL_PROJECTS_SCOPE);
     expect(candidate?.status).toBe('dismissed');
     expect(candidate?.skill_id).toBeNull();
   });
 
   it('deleteSkillRecordCascade returns null for non-existent', () => {
-    expect(deleteSkillRecordCascade('nonexistent')).toBeNull();
+    expect(deleteSkillRecordCascade('nonexistent', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 });
 
@@ -345,8 +346,8 @@ describe('P2 #14: listLineageForSkill LIMIT', () => {
       });
     }
 
-    expect(listLineageForSkill('skill-lin', 3)).toHaveLength(3);
-    expect(listLineageForSkill('skill-lin')).toHaveLength(5);
+    expect(listLineageForSkill('skill-lin', ALL_PROJECTS_SCOPE, 3)).toHaveLength(3);
+    expect(listLineageForSkill('skill-lin', ALL_PROJECTS_SCOPE)).toHaveLength(5);
   });
 });
 

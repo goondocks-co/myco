@@ -6,7 +6,7 @@ import { getDatabase, openDatabase, type Database } from '@myco/db/client.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
-import { projectScopeClause } from '@myco/db/queries/project-scope.js';
+import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { isProcessAlive } from '@myco/cli/shared.js';
 import { DIGEST_TIERS } from '@myco/constants.js';
@@ -82,7 +82,7 @@ export interface V2Stats {
 export interface GatherStatsOptions {
   active_sessions?: string[];
   databasePath?: string;
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 /**
@@ -92,10 +92,10 @@ export interface GatherStatsOptions {
  */
 function countProjectScopedTables(
   db: Database,
-  projectId: string | null | undefined,
+  scopeArg: ProjectScope,
 ): Record<string, number> {
   const tables = Array.from(PROJECT_SCOPED_COUNT_TABLES);
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   // The leading `WHERE 1 = 1` lets `scope.sql` (which always starts with ` AND`)
   // splice in cleanly whether or not a scope is active.
   const sql = tables
@@ -113,25 +113,25 @@ function countProjectScopedTables(
 // Public API
 // ---------------------------------------------------------------------------
 
-export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}): V2Stats {
+export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2Stats {
   const ownsConnection = Boolean(options.databasePath);
   const db = options.databasePath ? openDatabase(options.databasePath) : getDatabase();
-  const projectId = options.project_id;
+  const scopeArg = options.scope;
 
   try {
     // Active sessions come from two sources: the live daemon registry, and
-    // persisted DB rows still marked active (survives restarts). When scoped to
-    // a project, the live registry might include sessions from other projects,
-    // so intersect against the persisted (already-scoped) set.
-    const persistedActiveSessionIds = getActiveSessionIds(projectId, db);
-    const active_session_ids = projectId === undefined
+    // persisted DB rows still marked active (survives restarts). When the
+    // scope spans every project, the live registry can be merged in directly;
+    // when scoped tighter we trust the already-scoped persisted set.
+    const persistedActiveSessionIds = getActiveSessionIds(scopeArg, db);
+    const active_session_ids = scopeArg.kind === 'all'
       ? Array.from(new Set([...persistedActiveSessionIds, ...(options.active_sessions ?? [])]))
       : Array.from(persistedActiveSessionIds);
 
     const config = loadMergedConfig(vaultDir);
 
-    const counts = countProjectScopedTables(db, projectId);
-    const canopyScope = projectScopeClause(projectId);
+    const counts = countProjectScopedTables(db, scopeArg);
+    const canopyScope = projectScopeClause(scopeArg);
     const canopyCounts = db.prepare(
       `SELECT
          COUNT(*) AS total,
@@ -140,10 +140,10 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions = {}):
         WHERE 1 = 1${canopyScope.sql}`,
     ).get(...canopyScope.params) as { total: number; described: number } | undefined;
 
-    const embeddingStats = getEmbeddingQueueDepth(projectId, db);
+    const embeddingStats = getEmbeddingQueueDepth(scopeArg, db);
     const { queue_depth, embedded_count, total: total_embeddable } = embeddingStats;
 
-    const scope = projectScopeClause(projectId);
+    const scope = projectScopeClause(scopeArg);
 
     const unprocessedRow = db.prepare(
       `SELECT COUNT(*) AS cnt FROM prompt_batches WHERE processed = 0${scope.sql}`,

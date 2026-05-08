@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,7 +52,7 @@ export interface ResolutionEventRow {
 
 /** Filter options for `listResolutionEvents`. */
 export interface ListResolutionEventsOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   agent_id?: string;
   spore_id?: string;
   limit?: number;
@@ -140,7 +141,7 @@ export function insertResolutionEvent(
  * List resolution events with optional filters, ordered by created_at DESC.
  */
 export function listResolutionEvents(
-  options: ListResolutionEventsOptions = {},
+  options: ListResolutionEventsOptions,
 ): ResolutionEventRow[] {
   const db = getDatabase();
 
@@ -152,14 +153,7 @@ export function listResolutionEvents(
     params.push(options.agent_id);
   }
 
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.spore_id !== undefined) {
     conditions.push(`spore_id = ?`);

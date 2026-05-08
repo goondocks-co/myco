@@ -18,9 +18,10 @@ import {
   projectSporeForAgent,
 } from './tools/read-projections.js';
 import {
-  rowProjectIdFromRequestContext,
+  projectScopeFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,13 +70,13 @@ export async function executeContextQueries(
     validateTool(query.tool);
   }
 
-  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scope = projectScopeFromRequestContext(requestContext);
 
   // Execute all queries in parallel — they hit independent DB tables.
   const settled = await Promise.allSettled(
     queries.map(async (query) => {
       const limit = query.limit ?? DEFAULT_CONTEXT_QUERY_LIMIT;
-      const data = await executeQuery(agentId, query.tool, limit, projectId);
+      const data = await executeQuery(agentId, query.tool, limit, scope);
       return { tool: query.tool, purpose: query.purpose, data } satisfies ContextQueryResult;
     }),
   );
@@ -140,7 +141,7 @@ async function executeQuery(
   agentId: string,
   tool: string,
   limit: number,
-  projectId: string | null | undefined,
+  scope: ProjectScope,
 ): Promise<unknown> {
   switch (tool) {
     case 'vault_unprocessed':
@@ -149,13 +150,13 @@ async function executeQuery(
       return getUnprocessedBatches({
         limit,
         includeActive: false,
-        ...(projectId !== undefined ? { project_id: projectId } : {}),
+        scope,
       }).map(projectBatchForAgent);
 
     case 'vault_spores':
       return listSpores({
         agent_id: agentId,
-        ...(projectId !== undefined ? { project_id: projectId } : {}),
+        scope,
         limit,
         includeActive: false,
       })
@@ -163,7 +164,7 @@ async function executeQuery(
 
     case 'vault_sessions':
       return listSessions({
-        ...(projectId !== undefined ? { project_id: projectId } : {}),
+        scope,
         limit,
         includeActive: false,
       }).map(projectSessionForAgent);

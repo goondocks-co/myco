@@ -12,6 +12,7 @@ import {
 } from '@myco/db/queries/skill-lineage.js';
 import type { LineageInsert } from '@myco/db/queries/skill-lineage.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -134,7 +135,7 @@ describe('skill lineage query helpers', () => {
         created_at: now + 10,
       }));
 
-      const rows = listLineageForSkill(skill.id);
+      const rows = listLineageForSkill(skill.id, ALL_PROJECTS_SCOPE);
 
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('lin-gen2');
@@ -146,13 +147,13 @@ describe('skill lineage query helpers', () => {
     it('returns empty array for a skill with no lineage entries', () => {
       const skill = insertSkillRecord(makeSkillRecord());
 
-      const rows = listLineageForSkill(skill.id);
+      const rows = listLineageForSkill(skill.id, ALL_PROJECTS_SCOPE);
 
       expect(rows).toEqual([]);
     });
 
     it('returns empty array for a non-existent skill id', () => {
-      const rows = listLineageForSkill('skill-does-not-exist');
+      const rows = listLineageForSkill('skill-does-not-exist', ALL_PROJECTS_SCOPE);
 
       expect(rows).toEqual([]);
     });
@@ -165,7 +166,7 @@ describe('skill lineage query helpers', () => {
       insertLineage(makeLineage(skillA.id, { id: 'lin-a1', generation: 1, created_at: now }));
       insertLineage(makeLineage(skillB.id, { id: 'lin-b1', generation: 1, created_at: now + 1 }));
 
-      const rows = listLineageForSkill(skillA.id);
+      const rows = listLineageForSkill(skillA.id, ALL_PROJECTS_SCOPE);
 
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('lin-a1');
@@ -179,8 +180,8 @@ describe('skill lineage query helpers', () => {
       insertLineage(makeLineage(skillA.id, { id: 'lin-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
       insertLineage(makeLineage(skillB.id, { id: 'lin-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
 
-      expect(listLineageForSkill(skillA.id, 50, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toEqual([]);
-      expect(listLineageForSkill(skillA.id, 50, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa').map((row) => row.id)).toEqual(['lin-project-a']);
+      expect(listLineageForSkill(skillA.id, projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId), 50)).toEqual([]);
+      expect(listLineageForSkill(skillA.id, projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId), 50).map((row) => row.id)).toEqual(['lin-project-a']);
     });
   });
 });

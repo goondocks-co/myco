@@ -13,6 +13,7 @@ import { insertSpore } from '@myco/db/queries/spores.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { markEmbedded } from '@myco/db/queries/embeddings.js';
 import { gatherStats } from '@myco/services/stats.js';
 
@@ -114,7 +115,7 @@ describe('gatherStats', () => {
       'utf-8',
     );
 
-    const stats = gatherStats(vaultDir, { active_sessions: ['sess-1', 'sess-2'] });
+    const stats = gatherStats(vaultDir, { active_sessions: ['sess-1', 'sess-2'], scope: ALL_PROJECTS_SCOPE });
 
     expect(stats.vault.path).toBe(vaultDir);
     expect(stats.vault.name).toBe(path.basename(tempDir));
@@ -192,7 +193,7 @@ describe('gatherStats', () => {
     const stats = gatherStats(targetVaultDir, {
       active_sessions: ['legacy-session'],
       databasePath: targetDbPath,
-      project_id: 'proj_target',
+      scope: projectScope('proj_target' as GroveProjectId),
     });
 
     expect(stats.vault.session_count).toBe(1);

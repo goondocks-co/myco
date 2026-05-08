@@ -22,6 +22,7 @@ import { upsertTask } from '@myco/db/queries/tasks.js';
 import { getRun } from '@myco/db/queries/runs.js';
 import { epochSeconds } from '@myco/constants.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -280,7 +281,7 @@ describe('executor dry-run threading', () => {
     expect(result.status).toBe('completed');
     expect(result.runId).toBeDefined();
 
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.dry_run).toBe(true);
   });
@@ -331,7 +332,7 @@ describe('executor dry-run threading', () => {
     const result = await runAgent(TEST_VAULT_DIR, { task: noPostconditionTask });
 
     // vault-evolve has no postcondition rule, so it completes.
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.dry_run).toBe(false);
   });

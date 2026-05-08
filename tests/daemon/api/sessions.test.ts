@@ -11,6 +11,7 @@ import { createSessionMutationHandlers, createGetSessionHandler, handleListSessi
 import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context';
 import type { RouteRequest } from '@myco/daemon/router';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /**
  * Handlers depend on an EmbeddingManager for the delete path; the complete
@@ -140,7 +141,7 @@ describe('handleCompleteSession', () => {
       was_active: true,
     });
 
-    const after = getSession('sess-active');
+    const after = getSession('sess-active', ALL_PROJECTS_SCOPE);
     expect(after?.status).toBe('completed');
     expect(after?.ended_at).toBeGreaterThanOrEqual(now);
   });
@@ -165,7 +166,7 @@ describe('handleCompleteSession', () => {
       was_active: false,
     });
 
-    const after = getSession('sess-done');
+    const after = getSession('sess-done', ALL_PROJECTS_SCOPE);
     expect(after?.status).toBe('completed');
     expect(after?.ended_at).toBe(originalEnd);
   });
@@ -225,7 +226,7 @@ describe('handleDeletePlan', () => {
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-delete' } }));
 
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-delete')).toBeNull();
+    expect(getPlan('plan-delete', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-delete');
   });
 
@@ -263,7 +264,7 @@ describe('handleDeletePlan', () => {
     }));
 
     expect(res.status).toBe(404);
-    expect(getPlan('plan-other-project', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).not.toBeNull();
+    expect(getPlan('plan-other-project', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).not.toBeNull();
     expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
   });
 });
@@ -315,7 +316,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
     const { handleDeletePlan } = makeHandlers();
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
     expect(res.status).toBe(403);
-    expect(getPlan('plan-owned')).not.toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).not.toBeNull();
     expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
   });
 
@@ -327,7 +328,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       body: { force_remote: true },
     }));
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-owned')).toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-owned');
   });
 
@@ -336,7 +337,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
     const { handleDeletePlan } = makeHandlers();
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-owned')).toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 });
 

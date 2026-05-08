@@ -15,6 +15,7 @@ import {
 import { persistPlan } from '../daemon/plan-capture.js';
 import type { PlanRow } from '@myco/db/queries/plans.js';
 import {
+  projectScopeFromRequestContext,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
@@ -41,6 +42,7 @@ export type SaveMcpPlanResult =
 
 export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   const projectId = rowProjectIdFromRequestContext(input.requestContext);
+  const scope = projectScopeFromRequestContext(input.requestContext);
   const hasSourcePath = Boolean(input.source_path);
   const hasPlanKey = Boolean(input.plan_key);
   if (input.id) {
@@ -51,11 +53,11 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
         message: 'Pass id without source_path or plan_key when updating an existing plan',
       };
     }
-    const existingPlan = getPlan(input.id, projectId);
+    const existingPlan = getPlan(input.id, scope);
     if (!existingPlan) {
       return { ok: false, code: 'plan-not-found', message: 'Plan not found' };
     }
-    if (input.session_id && !getSession(input.session_id, projectId)) {
+    if (input.session_id && !getSession(input.session_id, scope)) {
       return { ok: false, code: 'session-not-found', message: 'Session not found' };
     }
     const openBatch = input.session_id ? getLatestOpenBatch(input.session_id) : null;
@@ -83,7 +85,7 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
   }
 
   const sessionId = input.session_id!;
-  const session = getSession(sessionId, projectId);
+  const session = getSession(sessionId, scope);
   if (!session) {
     return { ok: false, code: 'session-not-found', message: 'Session not found' };
   }

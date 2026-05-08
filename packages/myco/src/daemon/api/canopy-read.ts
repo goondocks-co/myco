@@ -2,6 +2,7 @@
 
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -39,7 +40,7 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
   const sessionId = req.params.id;
   if (!sessionId) return badRequest('missing_session_id');
 
-  const session = getSession(sessionId);
+  const session = getSession(sessionId, projectScopeFromRequestContext(req.requestContext));
   if (!session) return notFound('session');
 
   // Flat shape with column-name parity (see SessionCanopyAggregate in

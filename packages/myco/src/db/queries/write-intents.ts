@@ -10,7 +10,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import { epochSeconds } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
 
@@ -95,7 +95,7 @@ function toWriteIntentRow(row: Record<string, unknown>): WriteIntentRow {
 export interface ListWriteIntentsOptions {
   limit?: number;
   offset?: number;
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,12 +133,12 @@ export function insertWriteIntent(data: WriteIntentInsert): number {
  */
 export function listWriteIntents(
   runId: string,
-  options: ListWriteIntentsOptions = {},
+  options: ListWriteIntentsOptions,
 ): WriteIntentRow[] {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
   let tail = 'ORDER BY id ASC';
   if (options.limit !== undefined) {
     tail += ' LIMIT ?';
@@ -175,11 +175,11 @@ export interface WriteIntentToolRow {
  * no JSON payload parsing. Preferred over {@link listWriteIntents} when
  * the caller only needs tool names / phase grouping.
  */
-export function listWriteIntentTools(runId: string, projectId?: string | null): WriteIntentToolRow[] {
+export function listWriteIntentTools(runId: string, scope: ProjectScope): WriteIntentToolRow[] {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
   const rows = db.prepare(
     `SELECT id, project_id, run_id, phase_id, tool_name
      FROM agent_run_write_intents
@@ -196,11 +196,11 @@ export function listWriteIntentTools(runId: string, projectId?: string | null): 
 }
 
 /** Return the total number of write intents for a run. */
-export function countWriteIntents(runId: string, projectId?: string | null): number {
+export function countWriteIntents(runId: string, scope: ProjectScope): number {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT COUNT(*) AS count
      FROM agent_run_write_intents
@@ -214,11 +214,11 @@ export function countWriteIntents(runId: string, projectId?: string | null): num
  * plain object so callers can cheaply render summaries like "8 spores, 2
  * digest writes".
  */
-export function countWriteIntentsByTool(runId: string, projectId?: string | null): Record<string, number> {
+export function countWriteIntentsByTool(runId: string, scope: ProjectScope): Record<string, number> {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
   const rows = db.prepare(
     `SELECT tool_name, COUNT(*) AS count
      FROM agent_run_write_intents

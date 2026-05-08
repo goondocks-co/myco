@@ -1,15 +1,16 @@
 /**
  * Shared helpers for project-scoped query predicates.
  *
- * Project scope is a three-state value: `undefined` means "no scope filter"
- * (legacy broad reads), `null` means "rows that have no project_id"
- * (pre-Grove rows), and a string id means "rows belonging to that project".
- *
- * Centralizing the predicate keeps WHERE-clause assembly consistent across
- * every query module — drift here causes silent cross-project leaks.
+ * Every read-side query that filters on `project_id` must take a
+ * `ProjectScope` (the strict union from `@myco/grove/ids.js`). The three
+ * kinds — `'project'`, `'global'`, `'all'` — force callers to make the
+ * choice explicit at the type level. No more `projectId?: string | null`
+ * defaulting silently to `WHERE project_id IS NULL` or "no filter".
  */
 
-export type ProjectScope = string | null | undefined;
+import type { ProjectScope } from '@myco/grove/ids.js';
+
+export type { ProjectScope };
 
 /**
  * Append a project_id condition to an in-progress WHERE-clause builder.
@@ -20,30 +21,30 @@ export type ProjectScope = string | null | undefined;
 export function appendProjectCondition(
   conditions: string[],
   params: unknown[],
-  projectId: ProjectScope,
+  scope: ProjectScope,
   qualifier = '',
 ): void {
-  if (projectId === undefined) return;
+  if (scope.kind === 'all') return;
   const column = qualifier ? `${qualifier}.project_id` : 'project_id';
-  if (projectId === null) {
+  if (scope.kind === 'global') {
     conditions.push(`${column} IS NULL`);
   } else {
     conditions.push(`${column} = ?`);
-    params.push(projectId);
+    params.push(scope.id);
   }
 }
 
 /**
  * Build a standalone `(sql, params)` fragment for a project_id predicate.
- * `sql` is `''` when there is no scope, otherwise a leading `AND` clause
- * suitable for splicing onto an existing WHERE.
+ * `sql` is `''` when the scope is `'all'`, otherwise a leading `AND`
+ * clause suitable for splicing onto an existing WHERE.
  */
 export function projectScopeClause(
-  projectId: ProjectScope,
+  scope: ProjectScope,
   qualifier = '',
 ): { sql: string; params: unknown[] } {
-  if (projectId === undefined) return { sql: '', params: [] };
+  if (scope.kind === 'all') return { sql: '', params: [] };
   const column = qualifier ? `${qualifier}.project_id` : 'project_id';
-  if (projectId === null) return { sql: ` AND ${column} IS NULL`, params: [] };
-  return { sql: ` AND ${column} = ?`, params: [projectId] };
+  if (scope.kind === 'global') return { sql: ` AND ${column} IS NULL`, params: [] };
+  return { sql: ` AND ${column} = ?`, params: [scope.id] };
 }

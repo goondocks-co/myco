@@ -19,7 +19,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
 import { searchCanopy } from '@myco/canopy/search.js';
-import { rowProjectIdFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
+import { projectScopeFromVaultToolDeps, textResult, type VaultToolDeps } from './types.js';
 import {
   projectBatchForAgent,
   projectBatchForSessionSummary,
@@ -84,7 +84,7 @@ function classifyEmbeddingProviderError(message: string): string | undefined {
 
 export function createReadTools(deps: VaultToolDeps) {
   const { agentId, embeddingManager, teamClient, machineId } = deps;
-  const projectId = rowProjectIdFromVaultToolDeps(deps);
+  const scope = projectScopeFromVaultToolDeps(deps);
 
   const vaultUnprocessed = tool(
     'vault_unprocessed',
@@ -100,7 +100,7 @@ export function createReadTools(deps: VaultToolDeps) {
         after_id: args.after_id,
         limit: args.limit ?? DEFAULT_UNPROCESSED_LIMIT,
         includeActive: args.include_active === true,
-        project_id: projectId,
+        scope,
       });
       return projectToolRows(
         batches,
@@ -124,7 +124,7 @@ export function createReadTools(deps: VaultToolDeps) {
       const batches = listBatchesBySession(args.session_id, {
         limit: args.limit,
         offset: args.offset,
-        project_id: projectId,
+        scope,
       });
       return projectToolRows(
         batches,
@@ -143,14 +143,14 @@ export function createReadTools(deps: VaultToolDeps) {
       include_active: z.boolean().optional().describe('Allow active sessions (default: true for exact session reads)'),
     },
     async (args) => {
-      const session = getSession(args.session_id, projectId);
+      const session = getSession(args.session_id, scope);
       if (!session) {
         return textResult({ session_id: args.session_id, found: false, batches: [] });
       }
       if (args.include_active === false && session.status === 'active') {
         return textResult({ session_id: args.session_id, found: false, message: 'Session is still active' });
       }
-      const batches = listBatchesBySession(args.session_id, { project_id: projectId });
+      const batches = listBatchesBySession(args.session_id, { scope });
       return textResult({
         session_id: session.id,
         status: session.status,
@@ -181,7 +181,7 @@ export function createReadTools(deps: VaultToolDeps) {
       const includeMetadata = args.include_metadata ?? DEFAULT_INCLUDE_METADATA;
       if (args.ids && args.ids.length > 0) {
         const spores = args.ids
-          .map((id) => getSpore(id, projectId))
+          .map((id) => getSpore(id, scope))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
         return projectToolRows(
           spores,
@@ -194,7 +194,7 @@ export function createReadTools(deps: VaultToolDeps) {
         observation_type: args.observation_type,
         status: args.status,
         session_id: args.session_id,
-        project_id: projectId,
+        scope,
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
         includeActive: args.include_active === true,
       });
@@ -220,7 +220,7 @@ export function createReadTools(deps: VaultToolDeps) {
     async (args) => {
       const sessions = listSessions({
         id: args.id,
-        project_id: projectId,
+        scope,
         limit: args.limit ?? DEFAULT_SESSIONS_LIMIT,
         status: args.status,
         includeActive: args.include_active === true,
@@ -250,7 +250,7 @@ export function createReadTools(deps: VaultToolDeps) {
           type: args.type,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
           includeActive: args.include_active === true,
-          project_id: projectId,
+          scope,
         });
         return textResult({ results, sanitized_query: sanitizedQuery !== args.query ? sanitizedQuery : undefined });
       } catch (err) {
@@ -297,12 +297,12 @@ export function createReadTools(deps: VaultToolDeps) {
         }
         const searchLimit = args.limit ?? DEFAULT_SEARCH_LIMIT;
         const excludeActive = args.include_active !== true;
-        const activeIds = excludeActive ? getActiveSessionIds(projectId) : new Set<string>();
+        const activeIds = excludeActive ? getActiveSessionIds(scope) : new Set<string>();
         const metadataFilters = {
           ...(args.status !== undefined ? { status: args.status } : {}),
           ...(args.session_id !== undefined ? { session_id: args.session_id } : {}),
           ...(args.observation_type !== undefined ? { observation_type: args.observation_type } : {}),
-          ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
+          ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
           ...(args.since !== undefined ? { created_at_gte: args.since } : {}),
           ...(args.until !== undefined ? { created_at_lte: args.until } : {}),
         };
@@ -327,7 +327,7 @@ export function createReadTools(deps: VaultToolDeps) {
                 since: args.since,
                 until: args.until,
                 session_id: args.session_id,
-                project_id: typeof projectId === 'string' ? projectId : undefined,
+                project_id: scope.kind === 'project' ? scope.id : undefined,
               })
                 .then((res) => res.results.map((r) => ({ ...r, source: `${TEAM_SOURCE_PREFIX}${r.machine_id}` })))
                 .catch(() => [] as Array<Record<string, unknown>>)
@@ -345,7 +345,7 @@ export function createReadTools(deps: VaultToolDeps) {
           ? localResults.filter((r) => matchesSemanticSearchFilters(r.metadata, metadataFilters))
           : localResults;
 
-        const hydratedLocalResults = hydrateSearchResults(filteredLocalResults, { project_id: projectId }).map((r) => ({
+        const hydratedLocalResults = hydrateSearchResults(filteredLocalResults, { scope }).map((r) => ({
           ...r,
           source: 'local' as const,
         }));
@@ -409,7 +409,7 @@ export function createReadTools(deps: VaultToolDeps) {
           query: args.query,
           limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
           threshold: SEARCH_SIMILARITY_THRESHOLD,
-          project_id: projectId,
+          project_id: scope.kind === 'project' ? scope.id : null,
           language: args.language,
         });
         if (results === null) {
@@ -456,7 +456,7 @@ export function createReadTools(deps: VaultToolDeps) {
         targetId: args.target_id,
         type: args.type,
         agentId: agentId,
-        projectId,
+        scope,
         limit: args.limit ?? DEFAULT_EDGES_LIMIT,
       });
       return projectToolRows(

@@ -9,7 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 
 /** Default status for new skill records. */
@@ -79,7 +79,7 @@ export interface SkillRecordRow {
 
 /** Filter options for `listSkillRecords`. */
 export interface ListSkillRecordsOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   agent_id?: string;
   status?: string;
   limit?: number;
@@ -148,7 +148,7 @@ function buildWhere(
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -220,11 +220,11 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecord(id: string, projectId?: string | null): SkillRecordRow | null {
+export function getSkillRecord(id: string, scope: ProjectScope): SkillRecordRow | null {
   const db = getDatabase();
   const conditions = ['id = ?'];
   const params: unknown[] = [id];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
 
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
@@ -239,12 +239,12 @@ export function getSkillRecord(id: string, projectId?: string | null): SkillReco
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecordByName(name: string, projectId: string | null | undefined = null): SkillRecordRow | null {
+export function getSkillRecordByName(name: string, scope: ProjectScope): SkillRecordRow | null {
   const db = getDatabase();
 
   const conditions = ['name = ?'];
   const params: unknown[] = [name];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
   ).get(...params) as Record<string, unknown> | undefined;
@@ -257,7 +257,7 @@ export function getSkillRecordByName(name: string, projectId: string | null | un
  * List skill records with optional filters, ordered by updated_at DESC.
  */
 export function listSkillRecords(
-  options: ListSkillRecordsOptions = {},
+  options: ListSkillRecordsOptions,
 ): SkillRecordRow[] {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -284,7 +284,7 @@ export function listSkillRecords(
 export function updateSkillRecord(
   id: string,
   updates: SkillRecordUpdate,
-  projectId?: string | null,
+  scope: ProjectScope,
 ): SkillRecordRow | null {
   const db = getDatabase();
 
@@ -311,11 +311,11 @@ export function updateSkillRecord(
     }
   }
 
-  if (setClauses.length === 0) return getSkillRecord(id, projectId);
+  if (setClauses.length === 0) return getSkillRecord(id, scope);
 
   params.push(id);
   const conditions = ['id = ?'];
-  appendProjectCondition(conditions, params, projectId);
+  appendProjectCondition(conditions, params, scope);
 
   db.prepare(
     `UPDATE skill_records
@@ -323,7 +323,7 @@ export function updateSkillRecord(
      WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
 
-  const updated = getSkillRecord(id, projectId);
+  const updated = getSkillRecord(id, scope);
 
   if (updated) syncRow('skill_records', updated);
 
@@ -351,7 +351,7 @@ export function incrementSkillUsageCount(id: string, now: number): void {
  * Saves callers from issuing two separate function calls.
  */
 export function listSkillRecordsWithCount(
-  options: ListSkillRecordsOptions = {},
+  options: ListSkillRecordsOptions,
 ): { items: SkillRecordRow[]; total: number } {
   const items = listSkillRecords(options);
   const total = countSkillRecords(options);
@@ -362,7 +362,7 @@ export function listSkillRecordsWithCount(
  * Count skill records matching optional filters (for pagination totals).
  */
 export function countSkillRecords(
-  options: Omit<ListSkillRecordsOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSkillRecordsOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -383,12 +383,12 @@ export function countSkillRecords(
  */
 export function deleteSkillRecordCascade(
   idOrName: string,
-  projectId?: string | null,
+  scope: ProjectScope,
 ): { id: string; project_id: string | null; name: string } | null {
   const db = getDatabase();
-  const record = getSkillRecord(idOrName, projectId) ?? getSkillRecordByName(idOrName, projectId);
+  const record = getSkillRecord(idOrName, scope) ?? getSkillRecordByName(idOrName, scope);
   if (!record) return null;
-  const candidateScope = projectScopeClause(projectId);
+  const candidateScope = projectScopeClause(scope);
 
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);

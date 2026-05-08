@@ -13,7 +13,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,7 +84,7 @@ export interface ListGraphEdgesOptions {
   targetId?: string;
   type?: string;
   agentId?: string;
-  projectId?: string | null;
+  scope: ProjectScope;
   limit?: number;
 }
 
@@ -182,7 +182,7 @@ export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
  * List graph edges with optional filters, ordered by created_at DESC.
  */
 export function listGraphEdges(
-  options: ListGraphEdgesOptions = {},
+  options: ListGraphEdgesOptions,
 ): GraphEdgeRow[] {
   const db = getDatabase();
 
@@ -209,7 +209,7 @@ export function listGraphEdges(
     params.push(options.agentId);
   }
 
-  appendProjectCondition(conditions, params, options.projectId);
+  appendProjectCondition(conditions, params, options.scope);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? QUERY_DEFAULT_LIST_LIMIT;
@@ -239,10 +239,10 @@ export function listGraphEdges(
 export function getGraphForNode(
   nodeId: string,
   nodeType: GraphNodeType,
-  options?: { depth?: number; projectId?: string | null },
+  options: { depth?: number; scope: ProjectScope },
 ): { edges: GraphEdgeRow[] } {
   const db = getDatabase();
-  const depth = Math.min(Math.max(options?.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
+  const depth = Math.min(Math.max(options.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
 
   const seenEdgeIds = new Set<string>();
   const collectedEdges: GraphEdgeRow[] = [];
@@ -259,7 +259,7 @@ export function getGraphForNode(
       `(source_id IN (${placeholders}) OR target_id IN (${placeholders}))`,
     ];
     const params: unknown[] = [...frontierArray, ...frontierArray];
-    appendProjectCondition(conditions, params, options?.projectId);
+    appendProjectCondition(conditions, params, options.scope);
 
     const rows = db.prepare(
       `SELECT ${SELECT_COLUMNS}

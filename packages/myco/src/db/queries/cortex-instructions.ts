@@ -1,5 +1,6 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import { type ProjectScope } from '@myco/grove/ids.js';
 
 const CORTEX_INSTRUCTION_COLUMNS = [
   'id',
@@ -124,11 +125,20 @@ export function upsertCortexInstructions(input: CortexInstructionsUpsert): Corte
   return toCortexInstructionsRow(row);
 }
 
-export function getCortexInstructions(agentId: string, projectIdInput?: string | null): CortexInstructionsRow | null {
+export function getCortexInstructions(agentId: string, scope: ProjectScope): CortexInstructionsRow | null {
   const db = getDatabase();
-  const projectId = normalizeProjectId(projectIdInput);
-  const projectWhere = projectId === null ? 'project_id IS NULL' : 'project_id = ?';
-  const params = projectId === null ? [agentId] : [projectId, agentId];
+  let projectWhere: string;
+  let params: unknown[];
+  if (scope.kind === 'all') {
+    projectWhere = '1 = 1';
+    params = [agentId];
+  } else if (scope.kind === 'global') {
+    projectWhere = 'project_id IS NULL';
+    params = [agentId];
+  } else {
+    projectWhere = 'project_id = ?';
+    params = [scope.id, agentId];
+  }
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM cortex_instructions

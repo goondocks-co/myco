@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,7 +51,7 @@ export interface EntityRow {
 
 /** Filter options for `listEntities`. */
 export interface ListEntitiesOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   agent_id?: string;
   type?: string;
   /** Filter by exact entity name. */
@@ -208,21 +209,14 @@ export function getEntity(id: string): EntityRow | null {
  * referenced in a specific note via the entity_mentions subquery.
  */
 export function listEntities(
-  options: ListEntitiesOptions = {},
+  options: ListEntitiesOptions,
 ): EntityRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);

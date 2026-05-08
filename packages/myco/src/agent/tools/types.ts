@@ -6,10 +6,12 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
 import {
+  projectScopeFromRequestContext,
   resolveRequestContextForVault,
   rowProjectIdFromRequestContext,
   type MycoRequestContext,
 } from '@myco/tools/request-context.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 
 export interface MycoToolDefinition<TInput = any> {
   name: string;
@@ -98,4 +100,12 @@ export function rowProjectIdFromVaultToolDeps(deps: VaultToolDeps): string | nul
       machineId: deps.machineId,
     }) : undefined);
   return rowProjectIdFromRequestContext(context);
+}
+
+export function projectScopeFromVaultToolDeps(deps: VaultToolDeps): ProjectScope {
+  const context = deps.requestContext
+    ?? (deps.vaultDir ? resolveRequestContextForVault(deps.vaultDir, {
+      machineId: deps.machineId,
+    }) : undefined);
+  return projectScopeFromRequestContext(context);
 }

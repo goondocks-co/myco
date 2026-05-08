@@ -9,7 +9,7 @@
 import { listSkillRecords, incrementSkillUsageCount } from '@myco/db/queries/skill-records.js';
 import { insertSkillUsage, hasUsageForSkillAndSession } from '@myco/db/queries/skill-usage.js';
 import { epochSeconds } from '@myco/constants.js';
-import type { GroveProjectId } from '@myco/grove/ids.js';
+import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import crypto from 'node:crypto';
 
 /** Set to true to enable automatic skill usage detection from transcripts. */
@@ -37,7 +37,7 @@ export function detectSkillUsage(
   // specific tag that Claude Code emits when loading a skill file).
   if (!SKILL_USAGE_DETECTION_ENABLED) return;
 
-  const activeSkills = listSkillRecords({ status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
+  const activeSkills = listSkillRecords({ scope: projectScope(projectId), status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
   if (activeSkills.length === 0) return;
 
   // Pre-compile patterns for all skills outside the loop

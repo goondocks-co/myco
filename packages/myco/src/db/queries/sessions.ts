@@ -8,7 +8,7 @@
 import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { appendProjectCondition, projectScopeClause } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -114,7 +114,7 @@ export interface SessionUpdate {
 
 /** Filter options for `listSessions`. */
 export interface ListSessionsOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   limit?: number;
   offset?: number;
   status?: string;
@@ -301,9 +301,9 @@ export function upsertSession(data: SessionInsert): SessionRow {
  *
  * @returns the session row, or null if not found.
  */
-export function getSession(id: string, projectId?: string | null): SessionRow | null {
+export function getSession(id: string, scopeArg: ProjectScope): SessionRow | null {
   const db = getDatabase();
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?${scope.sql}`,
   ).get(id, ...scope.params) as Record<string, unknown> | undefined;
@@ -324,7 +324,7 @@ function buildSessionsWhere(
     params.push(options.status);
   }
 
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent !== undefined) {
     conditions.push(`agent = ?`);
@@ -373,7 +373,7 @@ function buildSessionsWhere(
  * List sessions with optional filters, ordered by created_at DESC.
  */
 export function listSessions(
-  options: ListSessionsOptions = {},
+  options: ListSessionsOptions,
 ): SessionRow[] {
   const db = getDatabase();
   const { where, params } = buildSessionsWhere(options);
@@ -396,7 +396,7 @@ export function listSessions(
  * Count sessions matching optional filters (for pagination totals).
  */
 export function countSessions(
-  options: Omit<ListSessionsOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSessionsOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildSessionsWhere(options);
@@ -416,13 +416,13 @@ export function countSessions(
  * results in-memory against this set instead. Bounded by the number of
  * concurrent in-flight sessions — typically small.
  */
-export function getActiveSessionIds(projectId?: string | null): Set<string>;
-export function getActiveSessionIds(projectId: string | null | undefined, db: Database): Set<string>;
+export function getActiveSessionIds(scope: ProjectScope): Set<string>;
+export function getActiveSessionIds(scope: ProjectScope, db: Database): Set<string>;
 export function getActiveSessionIds(
-  projectId?: string | null,
+  scopeArg: ProjectScope,
   db: Database = getDatabase(),
 ): Set<string> {
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   const rows = db.prepare(
     `SELECT id FROM sessions WHERE status = 'active'${scope.sql}`,
   ).all(...scope.params) as Array<{ id: string }>;
@@ -442,9 +442,9 @@ export function getActiveSessionIds(
  *
  * @returns true if a row was updated (session was completed and is now active)
  */
-export function reactivateSessionIfCompleted(id: string, projectId?: string | null): boolean {
+export function reactivateSessionIfCompleted(id: string, scopeArg: ProjectScope): boolean {
   const db = getDatabase();
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   const info = db.prepare(
     `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'${scope.sql}`,
   ).run(id, ...scope.params);
@@ -466,7 +466,7 @@ export function reactivateSessionIfCompleted(id: string, projectId?: string | nu
 export function updateSession(
   id: string,
   updates: SessionUpdate,
-  projectId?: string | null,
+  scopeArg: ProjectScope,
 ): SessionRow | null {
   const db = getDatabase();
 
@@ -498,10 +498,10 @@ export function updateSession(
     }
   }
 
-  if (setClauses.length === 0) return getSession(id, projectId);
+  if (setClauses.length === 0) return getSession(id, scopeArg);
 
   params.push(id);
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   params.push(...scope.params);
 
   db.prepare(
@@ -510,7 +510,7 @@ export function updateSession(
      WHERE id = ?${scope.sql}`,
   ).run(...params);
 
-  const updated = getSession(id, projectId);
+  const updated = getSession(id, scopeArg);
 
   if (updated) syncRow('sessions', updated);
 
@@ -560,7 +560,7 @@ export function closeSession(
      WHERE id = ?`,
   ).run(STATUS_COMPLETED, endedAt, id);
 
-  const closed = getSession(id);
+  const closed = getSession(id, { kind: 'all' });
 
   if (closed) syncRow('sessions', closed);
 

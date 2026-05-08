@@ -95,6 +95,32 @@ export function assertGroveProjectId(value: unknown): GroveProjectId {
   return value as GroveProjectId;
 }
 
+/**
+ * Read-side scope for queries that filter on `project_id`. Required at
+ * every call site so the compiler forces an explicit choice — no more
+ * `projectId?: string | null` defaulting silently to `WHERE project_id IS NULL`
+ * or to "no filter".
+ *
+ * - `{ kind: 'project', id }` — filters to a single Grove-era project.
+ * - `{ kind: 'global' }` — reads only daemon-wide rows where
+ *   `project_id IS NULL` (rare; truly daemon-scoped data only — startup
+ *   logs, daemon notifications).
+ * - `{ kind: 'all' }` — no `project_id` filter, returns rows across
+ *   every project in the scoped Grove DB. Use for admin/aggregation
+ *   views; treat as the riskier choice and prefer `project` when in doubt.
+ */
+export type ProjectScope =
+  | { kind: 'project'; id: GroveProjectId }
+  | { kind: 'global' }
+  | { kind: 'all' };
+
+export function projectScope(id: GroveProjectId): ProjectScope {
+  return { kind: 'project', id };
+}
+
+export const GLOBAL_SCOPE: ProjectScope = { kind: 'global' };
+export const ALL_PROJECTS_SCOPE: ProjectScope = { kind: 'all' };
+
 export function slugifyGroveName(name: string): string {
   const slug = name
     .trim()

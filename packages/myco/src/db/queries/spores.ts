@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,7 +73,7 @@ export interface SporeRow {
 
 /** Filter options for `listSpores`. */
 export interface ListSporesOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
   agent_id?: string;
   observation_type?: string;
   status?: string;
@@ -208,21 +209,14 @@ export function insertSpore(data: SporeInsert): SporeRow {
  *
  * @returns the spore row, or null if not found.
  */
-export function getSpore(id: string, projectId?: string | null): SporeRow | null {
+export function getSpore(id: string, scope: ProjectScope): SporeRow | null {
   const db = getDatabase();
-
-  const row = projectId === undefined
-    ? db.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`,
-    ).get(id) as Record<string, unknown> | undefined
-    : projectId === null
-      ? db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ? AND project_id IS NULL`,
-      ).get(id) as Record<string, unknown> | undefined
-      : db.prepare(
-        `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ? AND project_id = ?`,
-      ).get(id, projectId) as Record<string, unknown> | undefined;
-
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM spores WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toSporeRow(row);
 }
@@ -241,14 +235,7 @@ function buildSporeWhere(
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
-  if (options.project_id !== undefined) {
-    if (options.project_id === null) {
-      conditions.push(`project_id IS NULL`);
-    } else {
-      conditions.push(`project_id = ?`);
-      params.push(options.project_id);
-    }
-  }
+  appendProjectCondition(conditions, params, options.scope);
   if (options.observation_type !== undefined) {
     conditions.push(`observation_type = ?`);
     params.push(options.observation_type);
@@ -291,7 +278,7 @@ function buildSporeWhere(
  * List spores with optional filters, ordered by created_at DESC.
  */
 export function listSpores(
-  options: ListSporesOptions = {},
+  options: ListSporesOptions,
 ): SporeRow[] {
   const db = getDatabase();
   const { where, params } = buildSporeWhere(options);
@@ -314,7 +301,7 @@ export function listSpores(
  * Count spores matching optional filters (for pagination totals).
  */
 export function countSpores(
-  options: Omit<ListSporesOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSporesOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildSporeWhere(options);
@@ -358,31 +345,19 @@ export function updateSporeStatus(
   id: string,
   status: string,
   updatedAt: number,
-  projectId?: string | null,
+  scope: ProjectScope,
 ): SporeRow | null {
   const db = getDatabase();
-
-  const info = projectId === undefined
-    ? db.prepare(
-      `UPDATE spores
-       SET status = ?, updated_at = ?
-       WHERE id = ?`,
-    ).run(status, updatedAt, id)
-    : projectId === null
-      ? db.prepare(
-        `UPDATE spores
-         SET status = ?, updated_at = ?
-         WHERE id = ? AND project_id IS NULL`,
-      ).run(status, updatedAt, id)
-      : db.prepare(
-        `UPDATE spores
-         SET status = ?, updated_at = ?
-         WHERE id = ? AND project_id = ?`,
-      ).run(status, updatedAt, id, projectId);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [status, updatedAt, id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(
+    `UPDATE spores SET status = ?, updated_at = ? WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
 
   if (info.changes === 0) return null;
 
-  const row = getSpore(id, projectId);
+  const row = getSpore(id, scope);
   if (!row) return null;
 
   syncRow('spores', row);

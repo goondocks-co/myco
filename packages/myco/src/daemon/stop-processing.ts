@@ -48,6 +48,7 @@ import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -222,7 +223,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
   function findOwningParent(child: BatchRow): BatchRow | null {
     let current: BatchRow | null = child;
     while (current?.parent_prompt_batch_id != null) {
-      const parent = getBatchById(current.parent_prompt_batch_id);
+      const parent = getBatchById(current.parent_prompt_batch_id, ALL_PROJECTS_SCOPE);
       if (!parent || parent.id === current.id) break;
       current = parent;
     }
@@ -281,7 +282,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // transcript path. This repairs any hook-race misclassifications (e.g.,
     // two consecutive initial batches where the second should be steering).
     if (hookTranscriptPath) {
-      const agent = getSession(sessionId)?.agent;
+      const agent = getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent;
       if (agent) {
         try {
           transcriptMiner.reconcileBatchKinds(sessionId, { agent, transcriptPath: hookTranscriptPath });
@@ -338,13 +339,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Derive a simple title from the first user prompt — but only if the
     // session has no title yet. Once the LLM (or anything else) sets a title,
     // stop overwriting it with the fallback.
-    const existingSession = getSession(sessionId);
+    const existingSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
     const hasTitle = existingSession?.title !== null && existingSession?.title !== undefined;
 
     if (!hasTitle) {
       let title = sessionTitleCache.get(sessionId) ?? null;
       if (!title) {
-        const firstBatch = listBatchesBySession(sessionId, { limit: 1 })[0];
+        const firstBatch = listBatchesBySession(sessionId, { limit: 1, scope: ALL_PROJECTS_SCOPE })[0];
         if (firstBatch?.user_prompt) {
           title = firstBatch.user_prompt.slice(0, TITLE_PREVIEW_CHARS);
           if (firstBatch.user_prompt.length > TITLE_PREVIEW_CHARS) {
@@ -359,7 +360,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Use MAX of current DB count vs transcript-derived count — the incremental
     // count from handleUserPrompt is authoritative during active sessions; the
     // transcript parse may see fewer turns if the file is incomplete.
-    const currentSession = getSession(sessionId);
+    const currentSession = getSession(sessionId, ALL_PROJECTS_SCOPE);
     const transcriptPromptCount = allTurns.length;
     const transcriptToolCount = allTurns.reduce((sum, t) => sum + t.toolCount, 0);
 
@@ -373,7 +374,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       updateFields.title = sessionTitleCache.get(sessionId);
     }
 
-    updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1]);
+    updateSession(sessionId, updateFields as Parameters<typeof updateSession>[1], ALL_PROJECTS_SCOPE);
 
     // Detect skill usage from transcript content (best-effort, non-blocking).
     // Skip transcript I/O entirely when detection is disabled.
@@ -449,7 +450,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // end up with mtimeMs > Date.now() by a fraction. Quantize mtime to
     // integer ms so the boundary check is stable across filesystems.
     const sessionStopMs = Date.now();
-    const sessionBatches = listBatchesBySession(sessionId);
+    const sessionBatches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
 
     for (const watchDir of planWatchConfig.watchDirs) {
       const absoluteWatchDir = resolvePlanWatchDir(watchDir, planWatchConfig.projectRoot);
@@ -568,7 +569,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
 
     if (hookTranscriptPath) {
-      const detectedAgent = agent ?? getSession(sessionId)?.agent ?? 'claude-code';
+      const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';
       const { decision } = gateEventByCaptureRules(
         { agent: detectedAgent, transcriptPath: hookTranscriptPath },
         { manifests: loadManifests() },
@@ -598,7 +599,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // Stop is legitimate even when the in-memory registry missed it after a
     // daemon restart — rehydrate before falling through to the phantom drop.
     const existingSessionMeta = registry.getSession(sessionId);
-    const dbSession = existingSessionMeta ? undefined : getSession(sessionId);
+    const dbSession = existingSessionMeta ? undefined : getSession(sessionId, ALL_PROJECTS_SCOPE);
     if (!hookTranscriptPath && !existingSessionMeta && !dbSession) {
       // Info level so `grep hooks.stop` in the default daemon log confirms
       // the ephemeral-sub-invocation drop pattern is firing without

@@ -5,6 +5,7 @@ import { MIGRATIONS } from '@myco/db/migrations.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { getDatabase } from '@myco/db/client.js';
 import { EMBEDDABLE_TABLES, EMBEDDABLE_TEXT_COLUMNS, getUnembedded, getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 describe('canopy_entries.embedded migration v26', () => {
   it('adds embedded column with default 0 on fresh install', () => {
@@ -93,6 +94,6 @@ describe('canopy_entries in embeddable allowlist', () => {
         token_estimate, line_count, mechanical_updated_at, llm_description, embedded)
        VALUES ('p', 'local', 'a.ts', 'h', 1, 1, 1, ?, 'desc', 0)`,
     ).run(now);
-    expect(getEmbeddingQueueDepth().queue_depth).toBeGreaterThanOrEqual(1);
+    expect(getEmbeddingQueueDepth( ALL_PROJECTS_SCOPE).queue_depth).toBeGreaterThanOrEqual(1);
   });
 });

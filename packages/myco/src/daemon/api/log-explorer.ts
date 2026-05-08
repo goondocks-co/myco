@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { searchLogs, getLogsSince, getLogTail, getLogEntry } from '@myco/db/queries/logs.js';
 import type { LogEntryRow } from '@myco/db/queries/logs.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { RouteRequest, RouteResponse, RouteHandler } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
@@ -85,7 +86,7 @@ export async function handleLogDetail(req: RouteRequest): Promise<RouteResponse>
   // Resolve session_id to session title
   if (entry.session_id) {
     try {
-      const session = getSession(entry.session_id);
+      const session = getSession(entry.session_id, projectScopeFromRequestContext(req.requestContext));
       if (session) {
         resolved.session_title = (session as { title?: string }).title ?? null;
       }

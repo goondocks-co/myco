@@ -4,6 +4,7 @@ import { nowSec, seedSession } from '../helpers/sessions.js';
 import { handleUserPrompt } from '@myco/daemon/event-handlers.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { getDatabase } from '@myco/db/client.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 describe('handleUserPrompt steering nesting', () => {
   beforeAll(() => { setupTestDb(); });
@@ -16,7 +17,7 @@ describe('handleUserPrompt steering nesting', () => {
 
   it('creates an initial batch with kind=initial and no parent', () => {
     const { batchId } = handleUserPrompt('s1', 'first', { kind: 'initial' });
-    const batches = listBatchesBySession('s1');
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].id).toBe(batchId);
     expect(batches[0].kind).toBe('initial');
@@ -28,7 +29,7 @@ describe('handleUserPrompt steering nesting', () => {
     const { batchId: parentId } = handleUserPrompt('s1', 'first', { kind: 'initial' });
     const { batchId: childId } = handleUserPrompt('s1', 'steer me', { kind: 'steering' });
 
-    const batches = listBatchesBySession('s1');
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(2);
 
     const parent = batches.find((b) => b.id === parentId)!;
@@ -51,7 +52,7 @@ describe('handleUserPrompt steering nesting', () => {
     // Now send steering — no open parent exists
     const { batchId: fallbackId } = handleUserPrompt('s1', 'steer with no parent', { kind: 'steering' });
 
-    const batches = listBatchesBySession('s1');
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
     const fallback = batches.find((b) => b.id === fallbackId)!;
     expect(fallback.kind).toBe('initial');
     expect(fallback.parent_prompt_batch_id).toBeNull();
@@ -59,7 +60,7 @@ describe('handleUserPrompt steering nesting', () => {
 
   it('backwards-compat: no options still creates a valid initial batch', () => {
     const { batchId } = handleUserPrompt('s1', 'legacy prompt');
-    const batches = listBatchesBySession('s1');
+    const batches = listBatchesBySession('s1', { scope: ALL_PROJECTS_SCOPE });
     expect(batches).toHaveLength(1);
     expect(batches[0].id).toBe(batchId);
     expect(batches[0].kind).toBe('initial');

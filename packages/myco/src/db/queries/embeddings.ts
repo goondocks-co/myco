@@ -6,7 +6,7 @@
  */
 
 import { getDatabase, type Database } from '@myco/db/client.js';
-import { projectScopeClause } from '@myco/db/queries/project-scope.js';
+import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -109,25 +109,25 @@ export function getUnembedded(
 }
 
 /** Get aggregated embedding queue depth across all embeddable tables. */
-export function getEmbeddingQueueDepth(projectId?: string | null): {
+export function getEmbeddingQueueDepth(scope: ProjectScope): {
   queue_depth: number;
   embedded_count: number;
   total: number;
 };
-export function getEmbeddingQueueDepth(projectId: string | null | undefined, db: Database): {
+export function getEmbeddingQueueDepth(scope: ProjectScope, db: Database): {
   queue_depth: number;
   embedded_count: number;
   total: number;
 };
 export function getEmbeddingQueueDepth(
-  projectId?: string | null,
+  scopeArg: ProjectScope,
   db: Database = getDatabase(),
 ): {
   queue_depth: number;
   embedded_count: number;
   total: number;
 } {
-  const scope = projectScopeClause(projectId);
+  const scope = projectScopeClause(scopeArg);
   // Six SELECTs per row, identical params per arm.
   const ARMS = 6;
   const repeatedParams = (): unknown[] => {

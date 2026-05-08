@@ -58,7 +58,7 @@ describe('createCortexHandlers', () => {
     });
     const handlers = makeHandlers();
 
-    const response = await handlers.handleGetInstructions();
+    const response = await handlers.handleGetInstructions(makeRequest());
 
     expect(response.body).toEqual({
       content: 'Stored instructions',

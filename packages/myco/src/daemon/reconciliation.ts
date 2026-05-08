@@ -15,6 +15,7 @@ import {
   setResponseSummary,
 } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
@@ -151,7 +152,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
     // Buffer files outlive session rows — sessions may have been manually
     // deleted or cleaned up by the session cleanup job. Skip reconciliation
     // for sessions that no longer exist rather than resurrecting them.
-    if (!getSession(sessionId)) {
+    if (!getSession(sessionId, ALL_PROJECTS_SCOPE)) {
       logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation for deleted session', { session_id: sessionId });
       return;
     }
@@ -176,7 +177,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
     }
 
     // Find the divergence point: how many real prompts does the DB have?
-    const existingBatchCount = listBatchesBySession(sessionId).length;
+    const existingBatchCount = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length;
 
     let promptsSeen = 0;
     let replayStartIndex = -1;

@@ -23,6 +23,7 @@ import { upsertTask } from '@myco/db/queries/tasks.js';
 import { getRun, insertRun } from '@myco/db/queries/runs.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -290,7 +291,7 @@ describe('executor with openai-agents harness', () => {
     });
 
     expect(result.status).toBe('completed');
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');
     expect(runnerCalls).toHaveLength(1);
   });
@@ -306,7 +307,7 @@ describe('executor with openai-agents harness', () => {
 
     expect(result.status).toBe('completed');
     expect(result.harness).toBe('openai-agents');
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');
     expect(runnerCalls).toHaveLength(1);
   });
@@ -323,7 +324,7 @@ describe('executor with openai-agents harness', () => {
     });
 
     expect(result.status).toBe('completed');
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.dry_run).toBe(true);
 
     expect(localMcpCalls.length).toBeGreaterThan(0);
@@ -389,7 +390,7 @@ describe('executor with openai-agents harness', () => {
       { type: 'user', content: 'first turn before failure' },
     ]);
 
-    const run = getRun(existingRunId);
+    const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');
   });
 });

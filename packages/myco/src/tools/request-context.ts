@@ -3,7 +3,13 @@ import path from 'node:path';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
-import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
+import {
+  assertGroveProjectId,
+  GLOBAL_SCOPE,
+  projectScope,
+  type GroveProjectId,
+  type ProjectScope,
+} from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
@@ -212,6 +218,19 @@ export function rowProjectIdFromRequestContext(
 ): GroveProjectId | null | undefined {
   if (!context) return undefined;
   return context.groveId ? context.projectId : null;
+}
+
+/**
+ * Build a strict `ProjectScope` from a request context for read-side
+ * filtering. Grove-bound requests scope to their project; legacy
+ * project-local contexts scope to global (NULL project_id) rows; missing
+ * contexts are explicit "all projects" reads.
+ */
+export function projectScopeFromRequestContext(
+  context?: MycoRequestContext,
+): ProjectScope {
+  if (!context) return { kind: 'all' };
+  return context.groveId ? projectScope(context.projectId) : GLOBAL_SCOPE;
 }
 
 function compactHeaders(values: Record<string, string | null | undefined>): Record<string, string> {

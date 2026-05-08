@@ -26,6 +26,7 @@ import { epochSeconds } from '@myco/constants.js';
 import { composeTaskPrompt, composePhasePrompt, resolvePhaseExecution } from '@myco/agent/executor.js';
 import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig, EffectiveConfig, RunOptions, ProviderConfig } from '@myco/agent/types.js';
 import type { ReportRow } from '@myco/db/queries/reports.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -836,7 +837,7 @@ describe('runAgent', () => {
     expect(result.costUsd).toBe(0.0042);
     expect(result.costSource).toBe('actual');
 
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('completed');
     expect(run!.tokens_used).toBe(1850);
@@ -896,7 +897,7 @@ describe('runAgent', () => {
     expect(result.error).toContain('API rate limit exceeded');
     expect(result.runId).toBeDefined();
 
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('API rate limit exceeded');
@@ -943,7 +944,7 @@ describe('runAgent', () => {
     });
 
     expect(result.status).toBe('failed');
-    const run = getRun(existingRunId);
+    const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.resumable).toBe(0);
     expect(run!.resume_status).toBe('session_expired');
@@ -988,7 +989,7 @@ describe('runAgent', () => {
     });
 
     expect(result.status).toBe('failed');
-    const run = getRun(existingRunId);
+    const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run!.resumable).toBe(1);
     expect(run!.resume_status).toBe('ready');
   });
@@ -1024,7 +1025,7 @@ describe('runAgent', () => {
     });
 
     expect(result.status).toBe('completed');
-    const run = getRun(existingRunId);
+    const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run).not.toBeNull();
     expect(run!.started_at).toBeGreaterThan(originalStartedAt);
     expect(run!.started_at).toBeGreaterThanOrEqual(run!.resumed_at ?? 0);
@@ -1040,7 +1041,7 @@ describe('runAgent', () => {
 
     expect(result.status).toBe('completed');
 
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run!.instruction).toBe('Focus on security observations only.');
 
     expect(capturedQueryArgs!.prompt).toContain('## User Instruction');
@@ -1133,7 +1134,7 @@ describe('runAgent', () => {
 
     expect(result.status).toBe('failed');
     expect(result.error).toContain('title-summary');
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.status).toBe('failed');
     expect(run?.error).toContain('title-summary');
   });
@@ -1332,7 +1333,7 @@ describe('runAgent — phased execution', () => {
     expect(allQueryCalls.length).toBe(2);
 
     // The DB row must also reflect the failure — the UI reads from here.
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run!.status).toBe('failed');
     expect(run!.error).toContain('extract');
   });
@@ -1641,7 +1642,7 @@ describe('runAgent — phased execution', () => {
     expect(result.costUsd).toBeCloseTo(0.0126);
 
     // Verify DB record
-    const run = getRun(result.runId);
+    const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run!.tokens_used).toBe(5550);
     expect(run!.cost_usd).toBeCloseTo(0.0126);
     expect(run!.actual_cost_usd).toBeCloseTo(0.0126);

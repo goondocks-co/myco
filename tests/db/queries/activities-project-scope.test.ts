@@ -3,6 +3,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { insertActivity, listActivitiesByBatch } from '@myco/db/queries/activities.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT_A = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const PROJECT_B = 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -32,7 +33,7 @@ describe('activity query project scope', () => {
       created_at: 12,
     });
 
-    expect(listActivitiesByBatch(batchA.id, { project_id: PROJECT_A }).map((row) => row.tool_name)).toEqual(['Edit']);
-    expect(listActivitiesByBatch(batchA.id, { project_id: PROJECT_B })).toEqual([]);
+    expect(listActivitiesByBatch(batchA.id, { scope: projectScope(PROJECT_A as GroveProjectId) }).map((row) => row.tool_name)).toEqual(['Edit']);
+    expect(listActivitiesByBatch(batchA.id, { scope: projectScope(PROJECT_B as GroveProjectId) })).toEqual([]);
   });
 });

@@ -16,7 +16,7 @@ import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
-import { textResult, dryRunResult, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -25,6 +25,7 @@ import { textResult, dryRunResult, rowProjectIdFromVaultToolDeps, type VaultTool
 export function createWriteTools(deps: VaultToolDeps) {
   const { agentId, embeddingManager, machineId } = deps;
   const projectId = rowProjectIdFromVaultToolDeps(deps);
+  const scope = projectScopeFromVaultToolDeps(deps);
 
   const vaultCreateSpore = tool(
     'vault_create_spore',
@@ -99,15 +100,15 @@ export function createWriteTools(deps: VaultToolDeps) {
         consolidate: 'consolidated',
       };
       const newStatus = statusMap[args.action] ?? args.action;
-      const existingSpore = getSpore(args.spore_id, projectId);
+      const existingSpore = getSpore(args.spore_id, scope);
       if (!existingSpore) {
         return textResult({ error: `Spore not found: ${args.spore_id}` });
       }
-      if (args.new_spore_id && !getSpore(args.new_spore_id, projectId)) {
+      if (args.new_spore_id && !getSpore(args.new_spore_id, scope)) {
         return textResult({ error: `Replacement spore not found: ${args.new_spore_id}` });
       }
 
-      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now, projectId);
+      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now, scope);
       if (!updatedSpore) {
         return textResult({ error: `Spore not found: ${args.spore_id}` });
       }
@@ -149,7 +150,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       if (args.title !== undefined) updates.title = args.title;
       if (args.summary !== undefined) updates.summary = args.summary;
 
-      const session = updateSession(args.session_id, updates, projectId);
+      const session = updateSession(args.session_id, updates, scope);
 
       if (!session) {
         return textResult({ error: `Session not found: ${args.session_id}` });
@@ -191,7 +192,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       min_staleness_seconds: z.number().optional().describe('Used with pick="rotate_oldest". If every tier\'s generated_at is newer than (now - min_staleness_seconds), the tool returns {skip: true, reason, all_tiers} instead of selecting a tier. Defaults to 0 (never skip).'),
     },
     async (args) => {
-      const extracts = listDigestExtracts(agentId, projectId);
+      const extracts = listDigestExtracts(agentId, scope);
 
       if (args.pick === 'rotate_oldest') {
         const now = epochSeconds();
@@ -298,7 +299,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
     },
     async (args) => {
-      const batch = markBatchProcessed(args.batch_id, projectId);
+      const batch = markBatchProcessed(args.batch_id, scope);
 
       if (!batch) {
         return textResult({ error: `Prompt batch not found: ${args.batch_id}` });

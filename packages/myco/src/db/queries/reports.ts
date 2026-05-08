@@ -6,7 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
-import { appendProjectCondition } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,11 +45,11 @@ export interface ReportRow {
 /** Filter options for `listReportsByAgent`. */
 export interface ListReportsByAgentOptions {
   limit?: number;
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 export interface ListReportsOptions {
-  project_id?: string | null;
+  scope: ProjectScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,11 +126,11 @@ export function insertReport(data: ReportInsert): ReportRow {
 /**
  * List all reports for a specific run, ordered by created_at ASC.
  */
-export function listReports(runId: string, options: ListReportsOptions = {}): ReportRow[] {
+export function listReports(runId: string, options: ListReportsOptions): ReportRow[] {
   const db = getDatabase();
   const conditions = ['run_id = ?'];
   const params: unknown[] = [runId];
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
@@ -147,14 +147,14 @@ export function listReports(runId: string, options: ListReportsOptions = {}): Re
  */
 export function listReportsByAgent(
   agentId: string,
-  options: ListReportsByAgentOptions = {},
+  options: ListReportsByAgentOptions,
 ): ReportRow[] {
   const db = getDatabase();
 
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
   const conditions = ['agent_id = ?'];
   const params: unknown[] = [agentId];
-  appendProjectCondition(conditions, params, options.project_id);
+  appendProjectCondition(conditions, params, options.scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
