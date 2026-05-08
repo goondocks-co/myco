@@ -16,9 +16,12 @@ import { spawnSync } from 'node:child_process';
 const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
 
 type Helpers = {
-  readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv) => string | null;
+  readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => string | null;
   pointsAtSelf: (target: string, selfPath: string) => boolean;
+  checkRuntimeCommandTrust: (filePath: string) => { ok: boolean; reason?: string };
 };
+
+const POSIX = process.platform !== 'win32';
 
 // Fresh require each test so module cache can't carry state between them.
 function loadModule(): Helpers {
@@ -58,6 +61,63 @@ describe('readMachineRuntimeCommand', () => {
     fs.writeFileSync(path.join(tmpRoot, 'runtime.command'), '   \n');
     const { readMachineRuntimeCommand } = loadModule();
     expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // G7: refuse to honor a pin file that's group/other-writable or foreign-owned
+  // ---------------------------------------------------------------------------
+
+  it('refuses a pin file that is group-writable', () => {
+    if (!POSIX) return;
+    const filePath = path.join(tmpRoot, 'runtime.command');
+    fs.writeFileSync(filePath, '/opt/pinned/myco');
+    fs.chmodSync(filePath, 0o664);
+    const traces: string[] = [];
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot }, (reason) => traces.push(reason))).toBeNull();
+    expect(traces.some((t) => t.includes('writable by group/other'))).toBe(true);
+  });
+
+  it('refuses a pin file that is other-writable', () => {
+    if (!POSIX) return;
+    const filePath = path.join(tmpRoot, 'runtime.command');
+    fs.writeFileSync(filePath, '/opt/pinned/myco');
+    fs.chmodSync(filePath, 0o646);
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBeNull();
+  });
+
+  it('accepts a pin file with 0o600 perms', () => {
+    if (!POSIX) return;
+    const filePath = path.join(tmpRoot, 'runtime.command');
+    fs.writeFileSync(filePath, '/opt/pinned/myco');
+    fs.chmodSync(filePath, 0o600);
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
+  });
+
+  it('accepts a pin file with 0o644 perms (group/other readable but not writable)', () => {
+    if (!POSIX) return;
+    const filePath = path.join(tmpRoot, 'runtime.command');
+    fs.writeFileSync(filePath, '/opt/pinned/myco');
+    fs.chmodSync(filePath, 0o644);
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
+  });
+
+  it('checkRuntimeCommandTrust returns ok for owner-only files', () => {
+    if (!POSIX) return;
+    const filePath = path.join(tmpRoot, 'runtime.command');
+    fs.writeFileSync(filePath, 'x', { mode: 0o600 });
+    const { checkRuntimeCommandTrust } = loadModule();
+    expect(checkRuntimeCommandTrust(filePath).ok).toBe(true);
+  });
+
+  it('checkRuntimeCommandTrust returns ok=false for missing files', () => {
+    const { checkRuntimeCommandTrust } = loadModule();
+    const result = checkRuntimeCommandTrust(path.join(tmpRoot, 'absent'));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/missing/);
   });
 
   it('expands a leading ~ in MYCO_HOME', () => {
