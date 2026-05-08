@@ -65,6 +65,7 @@ export const PROMPT_BATCHES_TABLE = `
     session_id             TEXT NOT NULL REFERENCES sessions(id),
     parent_prompt_batch_id INTEGER REFERENCES prompt_batches(id),
     kind                   TEXT NOT NULL DEFAULT 'initial',
+    origin                 TEXT NOT NULL DEFAULT 'human',
     prompt_number          INTEGER,
     user_prompt            TEXT,
     response_summary       TEXT,
@@ -774,6 +775,7 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_processed ON prompt_batches (processed)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_status ON prompt_batches (status)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created ON prompt_batches (project_id, origin, created_at)',
 
   // Activities
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
