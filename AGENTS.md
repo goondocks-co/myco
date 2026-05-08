@@ -35,6 +35,18 @@ Myco captures project memory in a local vault and serves it back through context
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
 
+## Grove Primitives
+
+Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of projects served by a single global daemon, each with its own SQLite database. The following invariants are non-negotiable for new daemon code:
+
+- `GroveProjectId` is a branded string. Never derive a project_id from a filesystem path, the cwd, or string concatenation. Always thread through the branded ID supplied by the request context or migration plan.
+- One global daemon serves many Groves, and each Grove owns its own SQLite DB. Do not assume the daemon is single-project. Code that opens a database must resolve the path through the request context, not from `vaultDir` alone.
+- Reads must pass a `ProjectScope` (the discriminated union over Grove/project tenancy). API handlers, query helpers, and tools take `ProjectScope` so the right database, project_id, and machine_id are bound for the call.
+- Config is a three-tier scoped system: **machine** (`~/.myco/config.yaml`), **grove** (`~/.myco/groves/<id>/config.yaml`), **project** (`<project>/.myco/myco.yaml`), and **personal** (`<project>/.myco/local.yaml`) overlays merge in that order. Use the `safe-config-updates` skill when adding a new configurable field — it covers scope assignment, Zod schema extension, and the `ScopedField` UI wiring.
+- `myco init` is a precondition for any vault operation. Do not silently bootstrap a vault from cwd in new code paths; require explicit init and surface a clear error otherwise. Bootstrap-from-cwd in `daemon/main.ts` is a transitional concept (see `bootstrapVaultDir`).
+- Power state is per-project. Scheduled work iterates Grove scopes; do not collapse multiple projects into one power loop or assume a single PowerManager owns all projects.
+- After changing daemon code, run `make build` and then `myco-dev restart`. Restart is per-machine (one daemon serves all Groves), not per-project.
+
 ## Working Style
 
 - Think before coding. Surface assumptions and ambiguities instead of guessing.
