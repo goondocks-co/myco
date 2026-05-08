@@ -242,4 +242,45 @@ describe('CanopyJobsRegistry.ensureRunner', () => {
     expect(registry.getRunner(PROJECT_ID)).toBe(a);
     expect(registry.getRunner(otherId)).toBe(b);
   });
+
+  it('replaces a stale runner when identity (databasePath/groveId/projectRoot) changes for the same projectId', () => {
+    const { shared, calls } = buildShared();
+    const registry = new CanopyJobsRegistry(shared);
+    const a = registry.ensureRunner({
+      databasePath: dbPath,
+      projectId: PROJECT_ID,
+      projectRoot,
+      groveId: 'grove-a',
+    });
+    // Same projectId but a different groveId → must produce a fresh
+    // runner so the next scan hits the right Grove DB.
+    const b = registry.ensureRunner({
+      databasePath: dbPath,
+      projectId: PROJECT_ID,
+      projectRoot,
+      groveId: 'grove-b',
+    });
+    expect(a).not.toBe(b);
+    expect(registry.getRunner(PROJECT_ID)).toBe(b);
+    // Re-bind is logged at warn so a runtime registry change is visible.
+    expect(calls.some((c) => c.level === 'warn' && /identity changed/.test(c.msg))).toBe(true);
+  });
+
+  it('reuses the runner when full identity matches', () => {
+    const { shared } = buildShared();
+    const registry = new CanopyJobsRegistry(shared);
+    const a = registry.ensureRunner({
+      databasePath: dbPath,
+      projectId: PROJECT_ID,
+      projectRoot,
+      groveId: 'grove-a',
+    });
+    const b = registry.ensureRunner({
+      databasePath: dbPath,
+      projectId: PROJECT_ID,
+      projectRoot,
+      groveId: 'grove-a',
+    });
+    expect(a).toBe(b);
+  });
 });
