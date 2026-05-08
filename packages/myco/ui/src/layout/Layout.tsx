@@ -23,6 +23,8 @@ import {
   Sparkles,
   Bell,
   Brain,
+  Trees,
+  Cpu,
 } from 'lucide-react';
 import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
@@ -41,7 +43,16 @@ import { AppearanceSection } from './AppearanceSection';
 
 /* ---------- Constants ---------- */
 
-const NAV_ITEMS = [
+type NavScope = 'project' | 'grove' | 'machine';
+
+interface NavItem {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  scope: NavScope;
+}
+
+const PROJECT_NAV_ITEMS: readonly NavItem[] = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project' },
   { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project' },
   { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project' },
@@ -49,10 +60,18 @@ const NAV_ITEMS = [
   { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project' },
   { to: '/agent', label: 'Agent', icon: Bot, scope: 'project' },
   { to: '/settings', label: 'Settings', icon: Settings, scope: 'project' },
-  { to: '/operations', label: 'Operations', icon: Wrench, scope: 'project' },
-  { to: '/team', label: 'Team', icon: Users, scope: 'project' },
-  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'global' },
-] as const;
+];
+
+const GROVE_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/operations', label: 'Operations', icon: Wrench, scope: 'grove' },
+  { to: '/team', label: 'Team', icon: Users, scope: 'grove' },
+  { to: '/g/:groveSlug/settings', label: 'Grove Settings', icon: Trees, scope: 'grove' },
+];
+
+const MACHINE_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/system', label: 'System', icon: Cpu, scope: 'machine' },
+  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine' },
+];
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
 
@@ -237,13 +256,27 @@ function SidebarContent({
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) =>
-          item.to === '/operations' ? (
-            <OperationsNavLink key={item.to} collapsed={collapsed} />
-          ) : (
+        <NavGroup label="Project" collapsed={collapsed}>
+          {PROJECT_NAV_ITEMS.map((item) => (
             <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-          ),
-        )}
+          ))}
+        </NavGroup>
+
+        <NavGroup label="Grove" collapsed={collapsed}>
+          {GROVE_NAV_ITEMS.map((item) =>
+            item.to === '/operations' ? (
+              <OperationsNavLink key={item.to} collapsed={collapsed} />
+            ) : (
+              <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+            ),
+          )}
+        </NavGroup>
+
+        <NavGroup label="Machine" collapsed={collapsed}>
+          {MACHINE_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
+        </NavGroup>
       </nav>
 
       {/* Footer */}
@@ -274,15 +307,52 @@ function SidebarContent({
   );
 }
 
+function NavGroup({
+  label,
+  collapsed,
+  children,
+}: {
+  label: string;
+  collapsed: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {!collapsed && (
+        <div className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
+          {label}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 function SidebarNavLink({
   item,
   collapsed,
 }: {
-  item: typeof NAV_ITEMS[number];
+  item: NavItem;
   collapsed: boolean;
 }) {
+  const selection = useProjectSelection();
   const projectScopedTo = useProjectPath(item.to);
-  const to = item.scope === 'project' ? projectScopedTo : item.to;
+
+  let to: string;
+  if (item.scope === 'project') {
+    to = projectScopedTo;
+  } else if (item.scope === 'grove') {
+    // Grove-scoped: replace :groveSlug template if present, otherwise the
+    // path is project-relative for now (Operations, Team) and stays under
+    // /g/<grove>/p/<project>/<page> until P8 lifts them.
+    if (item.to.includes(':groveSlug')) {
+      to = selection ? item.to.replace(':groveSlug', selection.grove.slug) : '/';
+    } else {
+      to = projectScopedTo;
+    }
+  } else {
+    to = item.to;
+  }
   return (
     <NavLink
       to={to}

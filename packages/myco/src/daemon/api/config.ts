@@ -4,10 +4,21 @@ import {
   updateLocalConfig,
   loadMergedConfig,
   loadLocalConfig,
+  loadGroveConfig,
+  saveGroveConfig,
+  loadMachineConfig,
+  saveMachineConfig,
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
-import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
+import {
+  MycoConfigSchema,
+  GroveConfigSchema,
+  MachineConfigSchema,
+  type MycoConfig,
+  type GroveConfig,
+  type MachineConfig,
+} from '../../config/schema.js';
 import { unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -141,6 +152,167 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
   } catch (err) {
     if (err instanceof z.ZodError) {
       return { status: 400, body: { error: 'validation_failed', issues: err.issues } };
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grove-tier config handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/grove-config — return the current Grove's config.
+ *
+ * Sources `groveId` from the request context (x-myco-grove-id header).
+ * Returns 404 when no Grove is bound — UI surfaces that as the
+ * "pick a project" placeholder.
+ */
+export async function handleGetGroveConfig(
+  groveId: string | null | undefined,
+): Promise<RouteResponse> {
+  if (!groveId) {
+    return { status: 404, body: { error: 'no_grove_in_context' } };
+  }
+  const config = loadGroveConfig(groveId);
+  return { body: { groveId, config } };
+}
+
+interface GrovePutBody {
+  patch?: Record<string, unknown>;
+}
+
+/**
+ * PUT /api/grove-config — patch the current Grove's config.
+ *
+ * Request body: `{ patch: Partial<GroveConfig> }`. Patch is deep-merged
+ * (array-replace semantics) into the existing Grove config, validated,
+ * and written via `saveGroveConfig`. Returns the resulting full
+ * GroveConfig (post-merge).
+ */
+export async function handlePutGroveConfig(
+  groveId: string | null | undefined,
+  body: unknown,
+): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
+  if (!groveId) {
+    return {
+      response: { status: 404, body: { error: 'no_grove_in_context' } },
+      touchedPaths: [],
+    };
+  }
+
+  const payload = (body ?? {}) as GrovePutBody;
+  const patch = payload.patch ?? {};
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    return {
+      response: { status: 400, body: { error: 'patch must be an object' } },
+      touchedPaths: [],
+    };
+  }
+  const patchLeaves = enumerateLeafPaths(patch);
+  if (patchLeaves.length === 0) {
+    return {
+      response: { status: 400, body: { error: 'patch required' } },
+      touchedPaths: [],
+    };
+  }
+
+  try {
+    const current = loadGroveConfig(groveId);
+    const merged = deepMergeConfig(
+      current as Record<string, unknown>,
+      patch as Record<string, unknown>,
+    );
+    const validated = GroveConfigSchema.parse(merged) as GroveConfig;
+    saveGroveConfig(groveId, validated);
+    return {
+      response: { body: validated },
+      touchedPaths: patchLeaves,
+    };
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return {
+        response: { status: 400, body: { error: 'validation_failed', issues: err.issues } },
+        touchedPaths: [],
+      };
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Machine-tier config handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/machine-config — return the current machine config.
+ *
+ * Always present: defaults are filled in by the schema when the underlying
+ * `~/.myco/config.yaml` is missing. Body shape: `{ config: MachineConfig }`.
+ */
+export async function handleGetMachineConfig(): Promise<RouteResponse> {
+  const config = loadMachineConfig();
+  return { body: { config } };
+}
+
+interface MachinePutBody {
+  patch?: Record<string, unknown>;
+}
+
+/**
+ * PUT /api/machine-config — patch the machine-wide config.
+ *
+ * Request body: `{ patch: Partial<MachineConfig> }`. Patch is deep-merged
+ * (array-replace semantics) into the existing machine config, validated
+ * with `MachineConfigSchema.parse`, and written via `saveMachineConfig`.
+ * Returns the resulting full `MachineConfig` (post-merge).
+ *
+ * The Grove registry's `grove.default_grove_id` block is owned by the
+ * Grove resolver (separate write surface). We strip `grove` from any
+ * incoming patch so the System page can never accidentally rewrite it.
+ */
+export async function handlePutMachineConfig(
+  body: unknown,
+): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
+  const payload = (body ?? {}) as MachinePutBody;
+  const incoming = payload.patch ?? {};
+  if (typeof incoming !== 'object' || incoming === null || Array.isArray(incoming)) {
+    return {
+      response: { status: 400, body: { error: 'patch must be an object' } },
+      touchedPaths: [],
+    };
+  }
+
+  // Strip the Grove registry passthrough — owned by the registry, not
+  // user-editable from this endpoint.
+  const { grove: _grove, ...patch } = incoming as Record<string, unknown>;
+
+  const patchLeaves = enumerateLeafPaths(patch);
+  if (patchLeaves.length === 0) {
+    return {
+      response: { status: 400, body: { error: 'patch required' } },
+      touchedPaths: [],
+    };
+  }
+
+  try {
+    const current = loadMachineConfig();
+    const merged = deepMergeConfig(
+      current as Record<string, unknown>,
+      patch as Record<string, unknown>,
+    );
+    const validated = MachineConfigSchema.parse(merged) as MachineConfig;
+    saveMachineConfig(validated);
+    return {
+      response: { body: validated },
+      touchedPaths: patchLeaves,
+    };
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return {
+        response: { status: 400, body: { error: 'validation_failed', issues: err.issues } },
+        touchedPaths: [],
+      };
     }
     throw err;
   }

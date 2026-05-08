@@ -25,6 +25,10 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
+  handleGetGroveConfig,
+  handlePutGroveConfig,
+  handleGetMachineConfig,
+  handlePutMachineConfig,
   createPlanDirHandlers,
 } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
@@ -960,6 +964,38 @@ export async function main(): Promise<void> {
       }
     }
     return result;
+  });
+
+  // Grove-tier config (~/.myco/groves/<id>/grove.yaml) — separate tier
+  // from project/local. The handler reads groveId from the request
+  // context (x-myco-grove-id header).
+  server.registerRoute('GET', '/api/grove-config', async (req) =>
+    handleGetGroveConfig(req.requestContext?.groveId ?? null));
+
+  server.registerRoute('PUT', '/api/grove-config', async (req) => {
+    const { response, touchedPaths } = await handlePutGroveConfig(
+      req.requestContext?.groveId ?? null,
+      req.body,
+    );
+    if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
+      await applyConfigWriteReactions(touchedPaths);
+    }
+    return response;
+  });
+
+  // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
+  // channel. One daemon per machine, so the route is global (no scope
+  // header required). Reactions fire so liveConfig and dependent runtime
+  // surfaces (logger level, configHash) refresh on write.
+  server.registerRoute('GET', '/api/machine-config', async () =>
+    handleGetMachineConfig());
+
+  server.registerRoute('PUT', '/api/machine-config', async (req) => {
+    const { response, touchedPaths } = await handlePutMachineConfig(req.body);
+    if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
+      await applyConfigWriteReactions(touchedPaths);
+    }
+    return response;
   });
 
   const planDirHandlers = createPlanDirHandlers({
