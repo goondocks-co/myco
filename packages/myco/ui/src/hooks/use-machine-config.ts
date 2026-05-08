@@ -71,7 +71,7 @@ export function useUpdateMachineConfig() {
         [...MACHINE_CONFIG_QUERY_KEY],
         { config },
       );
-      queryClient.invalidateQueries({ queryKey: ['merged-config'] });
+      queryClient.invalidateQueries({ queryKey: ['config', 'merged'] });
     },
   });
 }

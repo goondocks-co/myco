@@ -162,12 +162,14 @@ const MaintenanceSchema = z.object({
   auto_integrity_check_interval_hours: z.number().int().min(1).max(8760).default(168),
 });
 
+/**
+ * Per-project release channel override. Lives in project local.yaml so
+ * one project can dogfood/beta-test without changing the machine-wide
+ * baseline that's stored on `daemon.update_channel` of the machine
+ * config. The two settings coexist intentionally — machine config is
+ * the default, project local override is the per-project preference.
+ */
 const UpdateSchema = z.object({
-  /**
-   * Per-project release preference for the Operations update flow.
-   * Stored in local.yaml so one project can dogfood/beta-test without
-   * changing the machine-wide baseline used by unrelated projects.
-   */
   channel: z.enum(['stable', 'beta']).default('stable'),
 });
 

@@ -118,7 +118,9 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
           } as PerGroveResultBase & T);
         }
       },
-      { mycoHome, jobName: 'database-action' },
+      // Each Grove has its own DB file; cross-Grove parallelism is safe
+      // (per-DB write locks don't span Groves).
+      { mycoHome, jobName: 'database-action', parallel: true },
     );
     return results;
   }

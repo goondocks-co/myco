@@ -321,8 +321,8 @@ export function createBackupConfigHandlers(deps: BackupConfigDeps) {
 
   /** GET /api/backup/config — read the configured backup directory (merged). */
   async function handleGetBackupConfig(req: RouteRequest): Promise<RouteResponse> {
-    const cfg = loadMergedConfig(vaultDir);
     const groveId = req.requestContext?.groveId ?? deps.bootGroveId;
+    const cfg = loadMergedConfig(vaultDir, { groveId, mycoHome });
     const grove = groveId ? loadGroveRecord(groveId, mycoHome) : null;
     return {
       body: {

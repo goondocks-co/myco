@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { CONFIG_SECTION_IDS } from '@myco/config/focus';
 import { HardDrive, Download, Upload, RefreshCw, FolderOpen } from 'lucide-react';
 import { postJson, fetchJson } from '../../lib/api';
+import { errorMessage } from '../../lib/error';
 import { formatBytes } from '../../lib/format';
 import { Surface } from '../ui/surface';
 import { SectionHeader } from '../ui/section-header';
@@ -90,7 +91,7 @@ export function BackupCard() {
       setBackups(res.backups);
       setLoaded(true);
     } catch (err) {
-      setMessage({ type: 'error', text: `Failed to load backups: ${(err as Error).message}` });
+      setMessage({ type: 'error', text: `Failed to load backups: ${errorMessage(err)}` });
     }
   }, []);
 
@@ -123,7 +124,7 @@ export function BackupCard() {
       }
       await refreshBackups();
     } catch (err) {
-      setMessage({ type: 'error', text: `Backup failed: ${(err as Error).message}` });
+      setMessage({ type: 'error', text: `Backup failed: ${errorMessage(err)}` });
     } finally {
       setBusy(false);
     }
@@ -145,7 +146,7 @@ export function BackupCard() {
       const res = await postJson<RestorePreviewResponse>('/restore/preview', { machine_id: machineId });
       setPreview(res);
     } catch (err) {
-      setMessage({ type: 'error', text: `Preview failed: ${(err as Error).message}` });
+      setMessage({ type: 'error', text: `Preview failed: ${errorMessage(err)}` });
     }
   }
 
@@ -159,7 +160,7 @@ export function BackupCard() {
         text: `Restored ${res.total_restored} records, skipped ${res.total_skipped} duplicates`,
       });
     } catch (err) {
-      setMessage({ type: 'error', text: `Restore failed: ${(err as Error).message}` });
+      setMessage({ type: 'error', text: `Restore failed: ${errorMessage(err)}` });
     }
   }
 

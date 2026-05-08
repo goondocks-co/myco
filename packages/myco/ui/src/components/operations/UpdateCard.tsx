@@ -5,6 +5,7 @@ import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
+import { errorMessage as toErrorMessage } from '../../lib/error';
 import { RELEASE_CHANNELS } from '../../lib/constants';
 import { withBasePath } from '../../lib/base-path';
 import {
@@ -113,9 +114,9 @@ export function UpdateCard() {
       window.location.reload();
     } catch (err) {
       setApplyState('error');
-      const msg = (err as Error).message === 'timeout'
+      const msg = toErrorMessage(err) === 'timeout'
         ? 'Daemon did not restart within the expected time. Check the terminal.'
-        : (err as Error).message;
+        : toErrorMessage(err);
       setErrorMessage(msg);
     }
   }, [applyMutation]);

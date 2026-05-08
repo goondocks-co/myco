@@ -117,14 +117,14 @@ npx wrangler vectorize get myco-embeddings
 npx wrangler vectorize query myco-embeddings \
   --vector="[0.1,0.2,...]" \
   --top-k=5 \
-  --metadata-filter="{\"grove_id\": \"user_primary\"}"
+  --metadata-filter='{"grove_id": "user_primary"}'
 ```
 
 Embeddings now include grove metadata for cross-grove filtering and project isolation. Global daemon coordinates embedding sync across groves while maintaining proper access boundaries.
 
 ### Grove Team Sync Visibility Metrics
 
-Monitor team sync deployment with Grove-scoped visibility:
+Monitor team sync deployment with Grove-scoped visibility metrics:
 
 ```bash
 # Check team sync health with Grove metrics
@@ -138,9 +138,17 @@ curl "https://your-team-worker.workers.dev/health" \
   "sync_status": "active",
   "last_sync_at": "2024-04-23T10:30:00Z",
   "pending_operations": 0,
-  "grove_projects": ["proj_123", "proj_456"]
+  "grove_projects": ["proj_123", "proj_456"],
+  "sync_metrics": {
+    "outbox_queue_depth": 0,
+    "last_successful_sync": "2024-04-23T10:28:15Z",
+    "sync_failures_last_24h": 0,
+    "grove_data_volume_mb": 145.2
+  }
 }
 ```
+
+**Enhanced visibility patterns**: Grove sync visibility now includes operational metrics for monitoring sync health, queue depth, failure rates, and data volume trends across grove projects.
 
 ### Grove-Coordinated Backup and Restore
 
@@ -202,6 +210,36 @@ curl https://your-team-worker.workers.dev/health
 ```
 
 **Critical distinction**: Team Keys enable organization-wide coordination while MCP Access Tokens provide grove-scoped API access. **Team Key** is the preferred organizational-level credential name (replaces older "auth_token" terminology).
+
+### Credential UX Improvements
+
+**Enhanced credential management UX** for Grove deployments:
+
+```bash
+# Improved Team Key validation with clear error messages
+curl https://your-team-worker.workers.dev/validate-team-key \
+  -H "Authorization: Bearer $TEAM_KEY"
+
+# Response includes actionable credential status
+{
+  "valid": false,
+  "error_type": "expired_team_key",
+  "message": "Team Key expired 3 days ago",
+  "actions": {
+    "renew_url": "https://app.myco.ai/org/settings/team-sync",
+    "support_docs": "https://docs.myco.ai/grove/credentials",
+    "estimated_downtime": "< 5 minutes after renewal"
+  },
+  "grove_impact": ["user_primary", "staging_grove"]
+}
+```
+
+**Credential UX enhancements**:
+- Clear error types (expired, invalid, missing permissions)
+- Actionable renewal guidance with direct links
+- Impact assessment showing affected groves
+- Estimated resolution timeframes
+- Support documentation links contextual to the error type
 
 ### Grove Token Rotation Detection
 
@@ -294,17 +332,33 @@ const projectSwitcher = {
     grove_id: grove_id,
     url: `/projects/${key.metadata.project_id}`,
     lastAccessed: key.metadata.last_accessed_at,
-    sessionCount: key.metadata.active_sessions
+    sessionCount: key.metadata.active_sessions,
+    projectStatus: key.metadata.status, // active, paused, archived
+    quickActions: key.metadata.quick_actions // recent tasks, pinned workflows
   })),
   switchUrl: `/api/grove/${grove_id}/switch-project`,
   preferences: {
     rememberLastProject: true,
-    autoSwitchOnActivity: false
+    autoSwitchOnActivity: false,
+    showInactiveProjects: true,
+    projectSortOrder: 'last_accessed' // or 'name', 'activity'
+  },
+  uiEnhancements: {
+    keyboardShortcuts: true,
+    projectPreview: true,
+    quickSearch: true,
+    recentProjects: 5
   }
 };
 ```
 
-**Enhanced UI integration pattern**: The collective worker provides rich project switching context that integrates with Grove UI for seamless multi-project navigation, including project activity indicators and user preferences for project switching behavior.
+**Enhanced UI integration patterns**:
+- **Project status indicators**: Visual cues for active, paused, or archived projects
+- **Quick actions**: Contextual shortcuts for recent tasks and pinned workflows  
+- **Keyboard navigation**: Cmd/Ctrl+K project switcher with quick search
+- **Project preview**: Hover preview showing recent activity and key metrics
+- **Smart sorting**: Last accessed, activity level, or alphabetical project ordering
+- **User preferences**: Configurable switcher behavior and display options
 
 ### Grove Config Isolation Patterns
 

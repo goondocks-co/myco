@@ -287,7 +287,9 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
           } as PerGroveResultBase & T);
         }
       },
-      { mycoHome, jobName: 'embedding-action' },
+      // Each Grove has its own vectors.db + DB file; cross-Grove
+      // parallelism is safe.
+      { mycoHome, jobName: 'embedding-action', parallel: true },
     );
     return results;
   }

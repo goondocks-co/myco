@@ -104,30 +104,68 @@ function stripLegacyProjectFields(
 // Machine tier — ~/.myco/config.yaml
 // ---------------------------------------------------------------------------
 
+interface CachedTierConfig<T> {
+  mtimeMs: number | null;
+  size: number | null;
+  config: T;
+}
+
+const machineConfigCache = new Map<string, CachedTierConfig<MachineConfig>>();
+const groveConfigCache = new Map<string, CachedTierConfig<GroveConfig>>();
+
+function readTierConfig<T>(
+  filePath: string,
+  cache: Map<string, CachedTierConfig<T>>,
+  parseEmpty: () => T,
+  parseDoc: (doc: unknown) => T,
+): T {
+  const stat = statOrNull(filePath);
+  const cached = cache.get(filePath);
+  if (cached
+    && cached.mtimeMs === (stat?.mtimeMs ?? null)
+    && cached.size === (stat?.size ?? null)) {
+    return cached.config;
+  }
+  let result: T;
+  if (!stat) {
+    result = parseEmpty();
+  } else {
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    if (!raw) {
+      result = parseEmpty();
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = YAML.parse(raw);
+      } catch (err) {
+        process.stderr.write(`[myco config] Failed to parse ${filePath}: ${(err as Error).message}\n`);
+        result = parseEmpty();
+        cache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, config: result });
+        return result;
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        result = parseEmpty();
+      } else {
+        try {
+          result = parseDoc(parsed);
+        } catch {
+          result = parseEmpty();
+        }
+      }
+    }
+  }
+  cache.set(filePath, { mtimeMs: stat?.mtimeMs ?? null, size: stat?.size ?? null, config: result });
+  return result;
+}
+
 export function loadMachineConfig(mycoHome = resolveMycoHome()): MachineConfig {
   const filePath = resolveGlobalConfigPath(mycoHome);
-  if (!fs.existsSync(filePath)) {
-    return MachineConfigSchema.parse({});
-  }
-  const raw = fs.readFileSync(filePath, 'utf-8').trim();
-  if (!raw) return MachineConfigSchema.parse({});
-  let parsed: unknown;
-  try {
-    parsed = YAML.parse(raw);
-  } catch (err) {
-    process.stderr.write(`[myco config] Failed to parse ${filePath}: ${(err as Error).message}\n`);
-    return MachineConfigSchema.parse({});
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return MachineConfigSchema.parse({});
-  }
-  // Lenient: ignore unknown keys silently rather than throw, so a future
-  // daemon downgrade reading a newer file doesn't crash boot.
-  try {
-    return MachineConfigSchema.parse(parsed);
-  } catch {
-    return MachineConfigSchema.parse({});
-  }
+  return readTierConfig(
+    filePath,
+    machineConfigCache,
+    () => MachineConfigSchema.parse({}),
+    (doc) => MachineConfigSchema.parse(doc),
+  );
 }
 
 export function saveMachineConfig(config: MachineConfig, mycoHome = resolveMycoHome()): void {
@@ -135,6 +173,7 @@ export function saveMachineConfig(config: MachineConfig, mycoHome = resolveMycoH
   const filePath = resolveGlobalConfigPath(mycoHome);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, YAML.stringify(validated), 'utf-8');
+  machineConfigCache.delete(filePath);
   invalidateMergedConfigCache();
 }
 
@@ -144,26 +183,12 @@ export function saveMachineConfig(config: MachineConfig, mycoHome = resolveMycoH
 
 export function loadGroveConfig(groveId: string, mycoHome = resolveMycoHome()): GroveConfig {
   const filePath = resolveGroveConfigPath(groveId, mycoHome);
-  if (!fs.existsSync(filePath)) {
-    return GroveConfigSchema.parse({});
-  }
-  const raw = fs.readFileSync(filePath, 'utf-8').trim();
-  if (!raw) return GroveConfigSchema.parse({});
-  let parsed: unknown;
-  try {
-    parsed = YAML.parse(raw);
-  } catch (err) {
-    process.stderr.write(`[myco config] Failed to parse ${filePath}: ${(err as Error).message}\n`);
-    return GroveConfigSchema.parse({});
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return GroveConfigSchema.parse({});
-  }
-  try {
-    return GroveConfigSchema.parse(parsed);
-  } catch {
-    return GroveConfigSchema.parse({});
-  }
+  return readTierConfig(
+    filePath,
+    groveConfigCache,
+    () => GroveConfigSchema.parse({}),
+    (doc) => GroveConfigSchema.parse(doc),
+  );
 }
 
 export function saveGroveConfig(
@@ -175,6 +200,7 @@ export function saveGroveConfig(
   const filePath = resolveGroveConfigPath(groveId, mycoHome);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, YAML.stringify(validated), 'utf-8');
+  groveConfigCache.delete(filePath);
   invalidateMergedConfigCache();
 }
 

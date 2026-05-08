@@ -91,8 +91,10 @@ export async function handleCreateNotification(
 
   const { domain, type, title, message, link, metadata } = parsed.data;
 
-  // Check config for structured HTTP responses before delegating
-  const config = loadMergedConfig(vaultDir);
+  // Check config for structured HTTP responses before delegating.
+  // Passing groveId routes Grove-tier notification settings through the
+  // merge AND keeps cache slots aligned with Grove-aware callers.
+  const config = loadMergedConfig(vaultDir, { groveId: requestContext?.groveId ?? null });
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }
