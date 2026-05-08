@@ -295,53 +295,52 @@ export default function GroveSettings() {
         <BackupCard embedded />
       </Surface>
 
-        {/* Top row: Maintenance side by side on lg screens (was 2-col with
-            Backups; Backups now lives full-width above). */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Maintenance */}
+      {/* Maintenance — full width: only one card in this row so the
+          previous 2-col grid left a giant empty half. */}
       <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-ochre transition-all duration-300">
         <SectionHeader>Maintenance</SectionHeader>
         <p className="font-sans text-xs text-on-surface-variant">
           Cadences applied to this Grove's database.
         </p>
-        <ToggleField
-          id="maintenance-auto-optimize"
-          label="Auto optimize"
-          description="Run SQLite PRAGMA optimize on the configured cadence."
-          value={config.maintenance.auto_optimize}
-          disabled={saving}
-          onChange={(v) => patch('maintenance.auto_optimize', v)}
-        />
-        <NumberField
-          id="maintenance-auto-optimize-interval"
-          label="Auto-optimize interval"
-          value={config.maintenance.auto_optimize_interval_hours}
-          min={1}
-          max={720}
-          suffix="hours"
-          disabled={saving || !config.maintenance.auto_optimize}
-          onCommit={(v) => patch('maintenance.auto_optimize_interval_hours', v)}
-        />
-        <ToggleField
-          id="maintenance-auto-integrity"
-          label="Auto integrity check"
-          description="Run SQLite integrity_check on the configured cadence."
-          value={config.maintenance.auto_integrity_check}
-          disabled={saving}
-          onChange={(v) => patch('maintenance.auto_integrity_check', v)}
-        />
-        <NumberField
-          id="maintenance-auto-integrity-interval"
-          label="Integrity-check interval"
-          value={config.maintenance.auto_integrity_check_interval_hours}
-          min={1}
-          max={8760}
-          suffix="hours"
-          disabled={saving || !config.maintenance.auto_integrity_check}
-          onCommit={(v) => patch('maintenance.auto_integrity_check_interval_hours', v)}
-        />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-5">
+          <ToggleField
+            id="maintenance-auto-optimize"
+            label="Auto optimize"
+            description="Run SQLite PRAGMA optimize on the configured cadence."
+            value={config.maintenance.auto_optimize}
+            disabled={saving}
+            onChange={(v) => patch('maintenance.auto_optimize', v)}
+          />
+          <NumberField
+            id="maintenance-auto-optimize-interval"
+            label="Auto-optimize interval"
+            value={config.maintenance.auto_optimize_interval_hours}
+            min={1}
+            max={720}
+            suffix="hours"
+            disabled={saving || !config.maintenance.auto_optimize}
+            onCommit={(v) => patch('maintenance.auto_optimize_interval_hours', v)}
+          />
+          <ToggleField
+            id="maintenance-auto-integrity"
+            label="Auto integrity check"
+            description="Run SQLite integrity_check on the configured cadence."
+            value={config.maintenance.auto_integrity_check}
+            disabled={saving}
+            onChange={(v) => patch('maintenance.auto_integrity_check', v)}
+          />
+          <NumberField
+            id="maintenance-auto-integrity-interval"
+            label="Integrity-check interval"
+            value={config.maintenance.auto_integrity_check_interval_hours}
+            min={1}
+            max={8760}
+            suffix="hours"
+            disabled={saving || !config.maintenance.auto_integrity_check}
+            onCommit={(v) => patch('maintenance.auto_integrity_check_interval_hours', v)}
+          />
+        </div>
       </Surface>
-        </div>{/* end top row grid */}
 
         {/* Middle row: Embedding + Sessions */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
