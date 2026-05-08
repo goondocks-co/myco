@@ -235,6 +235,37 @@ export function isUpdateExempt(): boolean {
 }
 
 /**
+ * Classify how the daemon was launched, for the sidebar runtime badge.
+ *
+ * - `'dev'`   — `detectDevBuild` flagged this binary as outside the npm
+ *               global prefix (dogfood `make dev-link`, `npm link`, etc.).
+ * - `'beta'`  — `~/.myco/runtime.command` points inside the managed
+ *               runtime dir (`~/.myco/runtime/`).
+ * - `'stable'` — neither: the global myco install on PATH answers.
+ *
+ * Mutually exclusive in practice: a dev build always wins over a beta
+ * runtime since the dev binary is actually executing the daemon.
+ */
+export type RuntimeOrigin = 'stable' | 'dev' | 'beta';
+
+export interface RuntimeOriginInfo {
+  source: RuntimeOrigin;
+  /** The pin value when present, else null. UI surfaces this in a tooltip. */
+  command: string | null;
+}
+
+export function getRuntimeOrigin(): RuntimeOriginInfo {
+  if (devBuildCliEntry !== null) {
+    return { source: 'dev', command: devBuildCliEntry };
+  }
+  const runtimeCommand = resolveRuntimeCommand();
+  if (runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)) {
+    return { source: 'beta', command: runtimeCommand };
+  }
+  return { source: 'stable', command: runtimeCommand };
+}
+
+/**
  * Detects whether the running daemon is a dev build by comparing the CLI
  * entry point's realpath against the npm global prefix's realpath.
  *

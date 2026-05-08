@@ -32,6 +32,7 @@ export interface StatsResponse {
     version: string;
     uptime_seconds: number;
     active_sessions: string[];
+    runtime?: { source: 'stable' | 'dev' | 'beta'; command: string | null };
   };
   vault: {
     path: string;

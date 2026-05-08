@@ -176,6 +176,57 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
 /**
+ * Visual indicator that the daemon is running off a non-stable runtime
+ * — a dev binary (`make dev-link`, `npm link`, etc.) or the managed
+ * beta runtime under `~/.myco/runtime/`. Always visible while non-
+ * stable; nothing rendered for stable installs.
+ *
+ * Lives in the sidebar so it's persistent across pages — there's no
+ * good reason to hunt for it on a settings tab when the question is
+ * "am I on the dogfood daemon right now?"
+ */
+function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
+  const { data } = useDaemon();
+  const runtime = data?.daemon.runtime;
+  if (!runtime || runtime.source === 'stable') return null;
+
+  const isDev = runtime.source === 'dev';
+  const label = isDev ? 'DEV' : 'BETA';
+  const tooltip = isDev
+    ? 'Daemon is running from a dev binary (make dev-link / npm link).'
+    : 'Daemon is running from the managed beta runtime under ~/.myco/runtime/.';
+  const colorClasses = isDev
+    ? 'bg-tertiary/20 text-tertiary border-tertiary/40'
+    : 'bg-secondary/20 text-secondary border-secondary/40';
+
+  if (collapsed) {
+    return (
+      <div
+        className={cn(
+          'mx-auto flex h-5 w-8 items-center justify-center rounded border text-[10px] font-bold tracking-wider',
+          colorClasses,
+        )}
+        title={tooltip}
+      >
+        {label}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        'mx-2 flex items-center justify-center rounded border px-2 py-1 text-[11px] font-semibold tracking-wider',
+        colorClasses,
+      )}
+      title={tooltip}
+    >
+      {label} runtime
+    </div>
+  );
+}
+
+/**
  * Self-contained Machine Settings nav link — adds an
  * "update available" dot when an upgrade is pending. Updates live
  * on the Machine Settings page now (the Operations page that used
@@ -299,6 +350,7 @@ function SidebarContent({
 
       {/* Footer */}
       <div className={cn('py-3 space-y-2 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+        <RuntimeBadge collapsed={collapsed} />
         {!collapsed && <AppearanceSection collapsed={collapsed} />}
         <RestartButton collapsed={collapsed} />
       </div>
