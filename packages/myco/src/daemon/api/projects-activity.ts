@@ -10,7 +10,10 @@ import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import { MS_PER_DAY, epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { errorMessage } from '@myco/utils/error-message.js';
-import { getProjectActivityWithBacklog } from '@myco/db/queries/project-activity.js';
+import {
+  getActivityWithBacklogForProjects,
+  type ProjectActivityWithBacklog,
+} from '@myco/db/queries/project-activity.js';
 import { forEachGrove, type GroveScope } from '../scope-iteration.js';
 
 // ---------------------------------------------------------------------------
@@ -52,13 +55,12 @@ const SECONDS_PER_DAY = MS_PER_DAY / 1000;
 function buildProjectRow(
   scope: GroveScope,
   project: RegisteredProject,
+  activity: ProjectActivityWithBacklog,
   activeWindowSeconds: number,
   nowSeconds: number,
 ): ProjectActivityRow {
   const projectId = assertGroveProjectId(project.project_id);
   const cutoff = nowSeconds - activeWindowSeconds;
-  const twentyFourHoursAgo = nowSeconds - SECONDS_PER_DAY;
-  const activity = getProjectActivityWithBacklog(scope.db, projectId, twentyFourHoursAgo);
   return {
     grove_id: scope.grove.id,
     grove_slug: scope.grove.slug,
@@ -88,14 +90,43 @@ export function createProjectsActivityHandler(deps: ProjectsActivityHandlersDeps
     const nowSeconds = epochSeconds();
 
     const projects: ProjectActivityRow[] = [];
+    const twentyFourHoursAgo = nowSeconds - SECONDS_PER_DAY;
     await forEachGrove(
       deps.cache,
       deps.logger,
       (scope) => {
         const groveProjects = listRegisteredProjects(scope.grove.id, mycoHome);
+        if (groveProjects.length === 0) return;
+
+        // One batched query per Grove instead of N per-project queries.
+        // Falls back to a neutral row per project on failure rather than
+        // re-running the loop one project at a time.
+        let activityByProject: Map<GroveProjectId, ProjectActivityWithBacklog>;
+        try {
+          activityByProject = getActivityWithBacklogForProjects(
+            scope.db,
+            groveProjects.map((p) => assertGroveProjectId(p.project_id)),
+            twentyFourHoursAgo,
+          );
+        } catch (err) {
+          deps.logger.warn(
+            LOG_KINDS.DAEMON_START,
+            'project-activity batched query failed; falling back to neutral rows',
+            {
+              grove_id: scope.grove.id,
+              error: errorMessage(err),
+            },
+          );
+          for (const project of groveProjects) projects.push(neutralRow(scope.grove, project));
+          return;
+        }
+
         for (const project of groveProjects) {
           try {
-            projects.push(buildProjectRow(scope, project, activeWindowSeconds, nowSeconds));
+            const projectId = assertGroveProjectId(project.project_id);
+            const activity = activityByProject.get(projectId)
+              ?? { last_seconds: null, scheduled_runs_in_window: 0 };
+            projects.push(buildProjectRow(scope, project, activity, activeWindowSeconds, nowSeconds));
           } catch (err) {
             // Keep the row so the UI still shows the project in its registered list.
             deps.logger.warn(
