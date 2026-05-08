@@ -91,15 +91,31 @@ export async function wrapPerGroveResult<T extends object & { [K in PerGroveEnve
  * standard envelope. The caller's `run` callback decides how the scope
  * maps to per-Grove work (single Grove vs fan-out).
  */
+export interface RunScopedActionOptions {
+  /**
+   * Default scope kind when the request body omits `scope`. See
+   * `ResolveActionScopeOptions.defaultKind` — set to `'grove'` for
+   * endpoints whose data plane is whole-Grove (backup, vacuum,
+   * optimize, etc.) so the implicit default doesn't fall into the
+   * `'project'` arm. (P2 #36)
+   */
+  defaultKind?: 'project' | 'grove';
+}
+
 export async function runScopedAction<T extends object>(
   endpoint: string,
   req: RouteRequest,
   inflight: ActionInflightRegistry,
   run: (scope: ActionScope) => Promise<Array<PerGroveResultBase & T>>,
+  options: RunScopedActionOptions = {},
 ): Promise<RouteResponse> {
   let scope: ActionScope;
   try {
-    scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+    scope = resolveActionScope({
+      body: req.body,
+      requestContext: req.requestContext,
+      defaultKind: options.defaultKind,
+    });
   } catch (err) {
     if (err instanceof InvalidActionScopeError) {
       return { status: 400, body: { error: 'invalid_scope', message: err.message } };
@@ -109,7 +125,18 @@ export async function runScopedAction<T extends object>(
 
   const key = `${endpoint}:${actionScopeKey(scope)}`;
   return inflight.run(key, async (): Promise<RouteResponse> => {
-    const results = await run(scope);
+    let results: Array<PerGroveResultBase & T>;
+    try {
+      results = await run(scope);
+    } catch (err) {
+      // Endpoints can throw `InvalidActionScopeError` from inside their
+      // run callback when a wire-level scope kind isn't supported by
+      // their data plane (e.g. database maintenance rejecting `project`).
+      if (err instanceof InvalidActionScopeError) {
+        return { status: 400, body: { error: 'invalid_scope', message: err.message } };
+      }
+      throw err;
+    }
     const ok = results.filter((r) => r.ok).length;
     const failed = results.length - ok;
     const body: DispatchResult<T> = { scope, results, summary: { ok, failed } };

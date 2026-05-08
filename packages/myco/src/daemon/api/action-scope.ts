@@ -58,13 +58,24 @@ export type ActionScope = z.infer<typeof ActionScopeSchema>;
 export interface ResolveActionScopeOptions {
   body: unknown;
   requestContext?: MycoRequestContext;
+  /**
+   * Default scope kind when no `scope` is supplied in the body. Defaults
+   * to `'project'` (the historical behavior — the request context's
+   * project becomes the implicit scope). Set to `'grove'` for endpoints
+   * whose data plane has no project-narrowed path (whole-DB backup,
+   * vacuum, optimize, integrity-check, reindex) so the missing-body
+   * default doesn't silently route a Grove-only action through the
+   * `'project'` arm. (P2 #36)
+   */
+  defaultKind?: 'project' | 'grove';
 }
 
 /**
  * Read an `ActionScope` from the body if present; otherwise default to
- * a project-scoped action derived from the request context. Throws
- * `InvalidActionScopeError` when the body has a malformed `scope` or
- * when no scope is supplied and the request lacks a Grove context.
+ * a project-scoped (or grove-scoped, per `defaultKind`) action derived
+ * from the request context. Throws `InvalidActionScopeError` when the
+ * body has a malformed `scope` or when no scope is supplied and the
+ * request lacks a Grove context.
  */
 export function resolveActionScope(options: ResolveActionScopeOptions): ActionScope {
   const raw = (options.body as { scope?: unknown } | null | undefined)?.scope;
@@ -80,6 +91,9 @@ export function resolveActionScope(options: ResolveActionScopeOptions): ActionSc
     throw new InvalidActionScopeError(
       'No scope in body and request context lacks Grove/project ids',
     );
+  }
+  if (options.defaultKind === 'grove') {
+    return { kind: 'grove', grove_id: ctx.groveId };
   }
   // ctx.projectId is already typed as GroveProjectId (branded at the
   // request-context boundary), so no cast is needed here.
