@@ -204,26 +204,22 @@ function listAllBackupEntries(backupDir: string): RawBackupEntry[] {
 }
 
 /**
- * One BackupMeta per machine_id — the most recent file is exposed.
- * Older history files remain on disk until `pruneBackups` reclaims them.
+ * Full backup history for `backupDir`, sorted newest-first. Includes
+ * every timestamped file plus any legacy untimestamped one-per-machine
+ * file. The retention engine (`pruneBackups`) caps how many entries
+ * survive on disk; this function returns whatever's currently there
+ * so the UI can render point-in-time restore choices.
  */
 export function listBackups(backupDir: string): BackupMeta[] {
   const all = listAllBackupEntries(backupDir);
-  const newestPerMachine = new Map<string, RawBackupEntry>();
-  for (const entry of all) {
-    const existing = newestPerMachine.get(entry.machine_id);
-    if (!existing || entry.modified_ms > existing.modified_ms) {
-      newestPerMachine.set(entry.machine_id, entry);
-    }
-  }
-  return Array.from(newestPerMachine.values())
+  return all
+    .sort((a, b) => b.modified_ms - a.modified_ms)
     .map((e) => ({
       machine_id: e.machine_id,
       file_name: e.file_name,
       size_bytes: e.size_bytes,
       modified_at: new Date(e.modified_ms).toISOString(),
-    }))
-    .sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+    }));
 }
 
 export interface PruneRetentionPolicy {
@@ -299,6 +295,54 @@ export function pruneBackups(
   }
 
   return { removed, kept };
+}
+
+/**
+ * One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
+ * files at the top of the user's backup root into a sibling
+ * `.legacy/` folder. Pre-Grove backups wrote directly to
+ * `~/myco_backups/<vault>/`; the per-Grove split moved active
+ * backups into `<vault>/<groveSlug>/` subdirs, leaving the old
+ * top-level files orphaned (still on disk, but unreachable through
+ * any Grove's backup directory). Sweeping them aside keeps the
+ * data on disk while removing the visual noise from the user's
+ * Finder/`ls` view.
+ *
+ * `rootDir` is the user-configured `backup.dir` (already expanded
+ * + absolute). Subdirectories are skipped; only loose `.sql` files
+ * at the top get moved. Idempotent.
+ */
+export interface LegacySweepResult {
+  moved: string[];
+  legacyDir: string | null;
+}
+
+export function sweepLegacyBackupRoot(rootDir: string): LegacySweepResult {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  } catch {
+    return { moved: [], legacyDir: null };
+  }
+  const orphans = entries.filter(
+    (e) => e.isFile() && e.name.endsWith(BACKUP_EXTENSION),
+  );
+  if (orphans.length === 0) return { moved: [], legacyDir: null };
+
+  const legacyDir = path.join(rootDir, '.legacy');
+  fs.mkdirSync(legacyDir, { recursive: true });
+  const moved: string[] = [];
+  for (const entry of orphans) {
+    const src = path.join(rootDir, entry.name);
+    const dest = path.join(legacyDir, entry.name);
+    try {
+      fs.renameSync(src, dest);
+      moved.push(entry.name);
+    } catch {
+      // Best effort. Don't block boot on a single failed rename.
+    }
+  }
+  return { moved, legacyDir };
 }
 
 // ---------------------------------------------------------------------------

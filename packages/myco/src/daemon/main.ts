@@ -38,6 +38,7 @@ import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, detectDevBuild, setDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
+import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
@@ -1268,6 +1269,31 @@ export async function main(): Promise<void> {
   }));
 
   // --- Backup routes ---
+  // One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
+  // files out of the configured backup root into `.legacy/`. Per-
+  // Grove backups now live under `<root>/<groveSlug>/`; the top-
+  // level files are leftovers from the pre-Grove era.
+  try {
+    const configuredDir = liveConfig.current.backup.dir;
+    if (configuredDir) {
+      const expanded = path.resolve(
+        configuredDir.startsWith('~/')
+          ? path.join(os.homedir(), configuredDir.slice(2))
+          : configuredDir,
+      );
+      const sweepResult = sweepLegacyBackupRoot(expanded);
+      if (sweepResult.moved.length > 0) {
+        logger.info(
+          'backup.legacy.sweep',
+          `Moved ${sweepResult.moved.length} pre-Grove orphan(s) into .legacy/`,
+          { moved: sweepResult.moved, legacy_dir: sweepResult.legacyDir },
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn('backup.legacy.sweep_failed', errorMessage(err));
+  }
+
   const backupHandlers = createBackupHandlers({
     bootDb: db,
     bootVaultDir: vaultDir,

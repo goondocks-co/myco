@@ -246,16 +246,23 @@ export function createBackupHandlers(deps: BackupDeps) {
     return { body: { backups: listBackups(backupDir) } };
   }
 
-  /** POST /api/restore/preview — dry-run restore to show new/existing counts. */
+  /**
+   * POST /api/restore/preview — dry-run restore to show new/existing
+   * counts. Accepts `file_name` for point-in-time restore (preferred);
+   * falls back to `machine_id` (newest entry for that machine) for
+   * back-compat with callers that haven't been updated.
+   */
   async function handleRestorePreview(req: RouteRequest): Promise<RouteResponse> {
-    const { machine_id } = req.body as { machine_id?: string };
-    if (!machine_id) {
+    const { machine_id, file_name } = req.body as { machine_id?: string; file_name?: string };
+    if (!file_name && !machine_id) {
       return { status: 400, body: { error: 'missing_machine_id' } };
     }
 
     const { db, backupDir } = resolveScope(req);
     const backups = listBackups(backupDir);
-    const backup = backups.find((b) => b.machine_id === machine_id);
+    const backup = file_name
+      ? backups.find((b) => b.file_name === file_name)
+      : backups.find((b) => b.machine_id === machine_id);
     if (!backup) {
       return { status: 404, body: { error: 'backup_not_found' } };
     }
@@ -265,19 +272,29 @@ export function createBackupHandlers(deps: BackupDeps) {
     const total_new = tables.reduce((sum, t) => sum + t.new, 0);
     const total_existing = tables.reduce((sum, t) => sum + t.existing, 0);
 
-    return { body: { machine_id, tables, total_new, total_existing } };
+    return {
+      body: {
+        machine_id: backup.machine_id,
+        file_name: backup.file_name,
+        tables,
+        total_new,
+        total_existing,
+      },
+    };
   }
 
   /** POST /api/restore — execute restore from a backup file. */
   async function handleRestore(req: RouteRequest): Promise<RouteResponse> {
-    const { machine_id } = req.body as { machine_id?: string };
-    if (!machine_id) {
+    const { machine_id, file_name } = req.body as { machine_id?: string; file_name?: string };
+    if (!file_name && !machine_id) {
       return { status: 400, body: { error: 'missing_machine_id' } };
     }
 
     const { db, backupDir } = resolveScope(req);
     const backups = listBackups(backupDir);
-    const backup = backups.find((b) => b.machine_id === machine_id);
+    const backup = file_name
+      ? backups.find((b) => b.file_name === file_name)
+      : backups.find((b) => b.machine_id === machine_id);
     if (!backup) {
       return { status: 404, body: { error: 'backup_not_found' } };
     }
@@ -285,7 +302,9 @@ export function createBackupHandlers(deps: BackupDeps) {
     const backupPath = `${backupDir}/${backup.file_name}`;
     const result = restoreBackup(db, backupPath);
 
-    return { body: { machine_id, ...result } };
+    return {
+      body: { machine_id: backup.machine_id, file_name: backup.file_name, ...result },
+    };
   }
 
   return {

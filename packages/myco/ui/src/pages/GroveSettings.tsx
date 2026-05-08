@@ -244,7 +244,11 @@ export default function GroveSettings() {
       <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300">
         <SectionHeader>Backups</SectionHeader>
         <p className="font-sans text-xs text-on-surface-variant">
-          Auto-backup writes to this Grove's backup directory; pruning runs after each backup.
+          Auto-backup writes to this Grove's backup directory after each
+          successful run; older files are pruned per retention. The
+          policy keeps the configured number of recent daily backups,
+          then one backup per week-bucket for the configured weekly
+          tail (so a 14d / 8w policy holds up to 22 files per machine).
         </p>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <TextField

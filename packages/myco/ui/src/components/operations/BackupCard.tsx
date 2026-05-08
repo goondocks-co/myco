@@ -68,6 +68,32 @@ function formatDate(iso: string): string {
   });
 }
 
+/**
+ * Group backup history by ISO date so the user sees a Files-style
+ * "today / yesterday / older" sectioning rather than a flat list of
+ * 14+ daily entries followed by 8 weeklies. Sorting + ordering done
+ * server-side; this just buckets for visual scanning.
+ */
+function groupByDay(backups: BackupMeta[]): Map<string, BackupMeta[]> {
+  const out = new Map<string, BackupMeta[]>();
+  for (const b of backups) {
+    const day = new Date(b.modified_at).toISOString().slice(0, 10);
+    const arr = out.get(day) ?? [];
+    arr.push(b);
+    out.set(day, arr);
+  }
+  return out;
+}
+
+function dayLabel(isoDay: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = new Date(isoDay);
+  const yesterday = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
+  if (isoDay === today) return 'Today';
+  if (isoDay === yesterday) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
 /* ---------- BackupCard ---------- */
 
 interface BackupAllResponse {
@@ -156,22 +182,22 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
     void doCreateBackup();
   }
 
-  async function handlePreview(machineId: string) {
+  async function handlePreview(fileName: string) {
     setMessage(null);
     setPreview(null);
     try {
-      const res = await postJson<RestorePreviewResponse>('/restore/preview', { machine_id: machineId });
+      const res = await postJson<RestorePreviewResponse>('/restore/preview', { file_name: fileName });
       setPreview(res);
     } catch (err) {
       setMessage({ type: 'error', text: `Preview failed: ${errorMessage(err)}` });
     }
   }
 
-  async function handleRestore(machineId: string) {
+  async function handleRestore(fileName: string) {
     setMessage(null);
     setPreview(null);
     try {
-      const res = await postJson<RestoreResponse>('/restore', { machine_id: machineId });
+      const res = await postJson<RestoreResponse>('/restore', { file_name: fileName });
       setMessage({
         type: 'success',
         text: `Restored ${res.total_restored} records, skipped ${res.total_skipped} duplicates`,
@@ -271,35 +297,49 @@ export function BackupCard({ embedded = false }: BackupCardProps = {}) {
         </p>
       )}
 
-      {/* Backup list */}
+      {/* Backup history — full list, grouped by day, newest first.
+          The retention engine keeps up to `keep_daily + keep_weekly`
+          files on disk; we render them all so any can be picked for
+          point-in-time restore. */}
       {backups.length > 0 ? (
-        <div className="space-y-2">
-          {backups.map((b) => (
-            <div
-              key={b.machine_id}
-              className={cn(
-                'flex items-center justify-between rounded-md px-4 py-3',
-                'bg-surface-container-lowest transition-colors',
-              )}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <span className="font-mono text-sm text-on-surface truncate">{b.machine_id}</span>
-                <Badge variant="secondary">{formatBytes(b.size_bytes)}</Badge>
-                <span className="text-xs text-on-surface-variant">{formatDate(b.modified_at)}</span>
-              </div>
-              <div className="flex gap-2 shrink-0 ml-3">
-                <Button variant="ghost" size="sm" onClick={() => handlePreview(b.machine_id)}>
-                  Preview
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleRestore(b.machine_id)}
+        <div className="space-y-4">
+          {Array.from(groupByDay(backups).entries()).map(([day, group]) => (
+            <div key={day} className="space-y-2">
+              <p className="font-sans text-[11px] uppercase tracking-wider text-on-surface-variant">
+                {dayLabel(day)}
+              </p>
+              {group.map((b) => (
+                <div
+                  key={b.file_name}
+                  className={cn(
+                    'flex items-center justify-between rounded-md px-4 py-3',
+                    'bg-surface-container-lowest transition-colors',
+                  )}
                 >
-                  <Upload className="mr-1.5 h-3.5 w-3.5" />
-                  Restore
-                </Button>
-              </div>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="font-mono text-sm text-on-surface">
+                      {formatDate(b.modified_at)}
+                    </span>
+                    <Badge variant="secondary">{formatBytes(b.size_bytes)}</Badge>
+                    <span className="font-mono text-xs text-on-surface-variant truncate">
+                      {b.machine_id}
+                    </span>
+                  </div>
+                  <div className="flex gap-2 shrink-0 ml-3">
+                    <Button variant="ghost" size="sm" onClick={() => handlePreview(b.file_name)}>
+                      Preview
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleRestore(b.file_name)}
+                    >
+                      <Upload className="mr-1.5 h-3.5 w-3.5" />
+                      Restore
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
           ))}
         </div>
