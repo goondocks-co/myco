@@ -288,6 +288,29 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     );
   };
 
+  // Project-scope analogue passed to forEachRegisteredProject. The error
+  // log already happens inside the iterator's catch; this helper only
+  // surfaces a daemon-scope notification so operators see the failure
+  // in the dashboard, not just in the daemon log.
+  const buildProjectFailureNotifier = (
+    notifyType: string,
+    titleVerb: string,
+  ): ((scope: ProjectScope, message: string) => void) => {
+    return (scope, message) => {
+      notifyDaemon(
+        notifyType,
+        `${titleVerb} failed for ${scope.project.name ?? scope.project.project_id}`,
+        message,
+        {
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+          project_id: scope.project.project_id,
+          project_root: scope.project.root,
+        },
+      );
+    };
+  };
+
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
     () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
 
@@ -476,7 +499,14 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
             },
           );
         },
-        { mycoHome, machineId },
+        {
+          mycoHome,
+          machineId,
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.staging_gc_failed',
+            'Staging GC',
+          ),
+        },
       );
     },
   });
@@ -500,7 +530,14 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           });
           await runner.run(now);
         },
-        { mycoHome, machineId },
+        {
+          mycoHome,
+          machineId,
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.canopy_dispatch_failed',
+            'Canopy background scan',
+          ),
+        },
       ).then(() => undefined),
   });
 
