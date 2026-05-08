@@ -145,6 +145,14 @@ const BackupSchema = z.object({
    */
   dir: z.string().optional(),
   retention: BackupRetentionSchema.default(() => BackupRetentionSchema.parse({})),
+  /**
+   * Minimum hours between auto-backups. The auto-backup PowerJob fires
+   * on every idle/sleep tick by default; without this gate it would
+   * create a fresh backup whenever the daemon transitions through a
+   * dormant phase, churning through retention slots in hours. Default
+   * = 24 (one backup per day per machine_id).
+   */
+  auto_interval_hours: z.number().int().min(1).max(720).default(24),
 });
 
 const MaintenanceSchema = z.object({

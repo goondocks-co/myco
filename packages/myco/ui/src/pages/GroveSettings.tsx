@@ -250,7 +250,7 @@ export default function GroveSettings() {
           then one backup per week-bucket for the configured weekly
           tail (so a 14d / 8w policy holds up to 22 files per machine).
         </p>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <TextField
             id="backup-dir"
             label="Backup directory"
@@ -259,6 +259,17 @@ export default function GroveSettings() {
             value={config.backup.dir ?? ''}
             disabled={saving}
             onCommit={(v) => patch('backup.dir', v.length > 0 ? v : null)}
+          />
+          <NumberField
+            id="backup-auto-interval"
+            label="Auto-backup cadence"
+            description="Minimum hours between auto-backups. Without this gate the daemon would back up on every idle/sleep tick."
+            value={config.backup.auto_interval_hours}
+            min={1}
+            max={720}
+            suffix="hour(s)"
+            disabled={saving}
+            onCommit={(v) => patch('backup.auto_interval_hours', v)}
           />
           <NumberField
             id="backup-keep-daily"

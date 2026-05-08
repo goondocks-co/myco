@@ -10,7 +10,7 @@ import {
   type CanopyJobsRegistration,
   type CanopyJobsRegistry,
 } from './jobs/canopy-scan.js';
-import { createBackup, pruneBackups } from './backup.js';
+import { createBackup, listBackups, pruneBackups } from './backup.js';
 import { resolveGroveBackupDir } from './api/backup.js';
 import { deleteOldLogs } from '@myco/db/queries/logs.js';
 import { getLastDatabaseLogTimestamps } from '@myco/db/queries/database.js';
@@ -304,6 +304,20 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     fn: fanOutGroves(POWER_JOB_NAMES.AUTO_BACKUP, async (scope) => {
       try {
         const backupDir = resolveGroveBackupDir(liveConfig.current, scope.grove, scope.groveHome);
+
+        // Cadence gate. Without this, the PowerJob fires on every
+        // idle/sleep transition; a laptop cycling through dormant
+        // phases burns through retention slots in hours instead of
+        // spreading them across `keep_daily` days. Skip when the
+        // newest backup for this machine is younger than the
+        // configured interval.
+        const intervalMs = liveConfig.current.backup.auto_interval_hours * MS_PER_HOUR;
+        const recent = listBackups(backupDir).find((b) => b.machine_id === machineId);
+        if (recent) {
+          const ageMs = Date.now() - new Date(recent.modified_at).getTime();
+          if (ageMs < intervalMs) return;
+        }
+
         logger.info(LOG_KINDS.BACKUP_START, 'Auto-backup starting', {
           grove_id: scope.grove.id,
           grove_slug: scope.grove.slug,
