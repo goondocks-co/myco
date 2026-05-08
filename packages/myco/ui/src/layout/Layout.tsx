@@ -64,8 +64,15 @@ const PROJECT_NAV_ITEMS: readonly NavItem[] = [
 
 const GROVE_NAV_ITEMS: readonly NavItem[] = [
   { to: '/g/:groveSlug/operations', label: 'Operations', icon: Wrench, scope: 'grove' },
-  { to: '/team', label: 'Team', icon: Users, scope: 'grove' },
   { to: '/g/:groveSlug/settings', label: 'Grove Settings', icon: Trees, scope: 'grove' },
+];
+
+// Team is its own top-level section now — Grove-scoped configuration
+// lives in the Grove section, while Team has its own Dashboard +
+// Maintenance feature pages.
+const TEAM_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/g/:groveSlug/team', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
+  { to: '/g/:groveSlug/team/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
 ];
 
 const MACHINE_NAV_ITEMS: readonly NavItem[] = [
@@ -274,6 +281,12 @@ function SidebarContent({
               <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
             ),
           )}
+        </NavGroup>
+
+        <NavGroup label="Team" collapsed={collapsed}>
+          {TEAM_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
         </NavGroup>
 
         <NavGroup label="Machine" collapsed={collapsed}>

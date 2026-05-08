@@ -22,38 +22,6 @@ import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { StatCard } from '../components/ui/stat-card';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
-import type { Tab } from '../components/ui/tab-switcher';
-
-/* ---------- Tabs ---------- */
-
-type ActiveTab = 'status' | 'sync';
-
-const TEAM_TABS: Tab[] = [
-  { id: 'status', label: 'Status' },
-  { id: 'sync', label: 'Sync' },
-];
-
-const TAB_SUBTITLES: Record<ActiveTab, string> = {
-  status: 'Connection and team credentials',
-  sync: 'Backlog, queue health, and failed syncs',
-};
-
-const VALID_TABS = new Set<ActiveTab>(['status', 'sync']);
-const PARAM_TAB = 'tab';
-
-function readTabFromUrl(): ActiveTab {
-  const raw = new URLSearchParams(window.location.search).get(PARAM_TAB);
-  if (raw === 'outbox' || raw === 'synced') return 'sync';
-  return raw && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : 'status';
-}
-
-function writeTabToUrl(tab: ActiveTab): void {
-  const params = new URLSearchParams();
-  if (tab !== 'status') params.set(PARAM_TAB, tab);
-  const search = params.toString();
-  const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
-  window.history.replaceState(null, '', url);
-}
 
 /* ---------- Helpers ---------- */
 
@@ -1004,18 +972,66 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
   );
 }
 
-/* ---------- Page ---------- */
+/* ---------- Page wrappers ---------- */
 
-export default function Team() {
+/**
+ * Onboarding fallback shown on Team Dashboard when team sync isn't
+ * connected yet — install command, provision command, paste-credentials
+ * form. Dashboard is the entry point for first-time setup; once
+ * connected, the user normally never visits this content again.
+ */
+function NotConnectedView({ scopeName, onConnected }: { scopeName: string; onConnected: () => void }) {
+  return (
+    <div className="space-y-4">
+      <Surface level="low" ghostBorder className="p-6 space-y-4">
+        <SectionHeader>Getting Started</SectionHeader>
+        <p className="text-sm text-on-surface-variant">
+          Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
+          One team member provisions the worker, then shares the connection details.
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
+            <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
+              npm install -g @goondocks/myco-team wrangler && wrangler login
+            </code>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-on-surface mb-1">2. Provision the Grove worker</p>
+            <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
+              myco-team install
+            </code>
+            <p className="text-xs text-on-surface-variant mt-1">
+              Creates a D1 database, Vectorize index, and deploys the sync worker.
+              Outputs a Worker URL and Team key for the Grove.
+            </p>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
+            <p className="text-xs text-on-surface-variant">
+              Paste the Worker URL and Team key below, or if you ran <code className="font-mono">myco-team install</code>,
+              you're already connected.
+            </p>
+          </div>
+        </div>
+      </Surface>
+
+      <ConnectForm scopeName={scopeName} onConnected={onConnected} />
+    </div>
+  );
+}
+
+/**
+ * Team Dashboard — connection state, credentials, MCP endpoint,
+ * worker version. The Disconnect button lives here; this is also
+ * where the not-connected onboarding flow renders.
+ */
+export function TeamDashboard() {
   const { data: status, isLoading } = useTeamStatus();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<ActiveTab>(readTabFromUrl);
-
-  const handleTabChange = useCallback((tabId: string) => {
-    const tab = tabId as ActiveTab;
-    setActiveTab(tab);
-    writeTabToUrl(tab);
-  }, []);
 
   if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
 
@@ -1027,63 +1043,63 @@ export default function Team() {
       <div className="px-6 pt-6">
         <PageHeader
           title="Team"
-          subtitle={isConnected && status ? TAB_SUBTITLES[activeTab] : `Connect ${scopeName} to team sync`}
-          tabs={isConnected ? TEAM_TABS : undefined}
-          activeTab={isConnected ? activeTab : undefined}
-          onTabChange={isConnected ? handleTabChange : undefined}
+          subtitle={isConnected && status
+            ? 'Connection and team credentials'
+            : `Connect ${scopeName} to team sync`}
         />
       </div>
 
       <div className="flex-1 overflow-auto">
         <div className="px-6 pb-6">
           {isConnected && status ? (
-            <>
-              {activeTab === 'status' && <StatusTab status={status} />}
-              {activeTab === 'sync' && <SyncTab status={status} />}
-            </>
+            <StatusTab status={status} />
           ) : (
-            <div className="space-y-4">
-              <Surface level="low" ghostBorder className="p-6 space-y-4">
-                <SectionHeader>Getting Started</SectionHeader>
-                <p className="text-sm text-on-surface-variant">
-                  Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
-                  One team member provisions the worker, then shares the connection details.
-                </p>
+            <NotConnectedView
+              scopeName={scopeName}
+              onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
-                    <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                      npm install -g @goondocks/myco-team wrangler && wrangler login
-                    </code>
-                  </div>
+/**
+ * Team Maintenance — sync metrics, queue health, DLQ retry/discard,
+ * remote vector index status, backfill controls. Renamed from "Sync"
+ * tab; "Sync" is implementation detail, "Maintenance" matches the
+ * dashboard/settings/maintenance shape used across every section.
+ */
+export function TeamMaintenance() {
+  const { data: status, isLoading } = useTeamStatus();
+  const queryClient = useQueryClient();
 
-                  <div>
-                    <p className="text-sm font-medium text-on-surface mb-1">2. Provision the Grove worker</p>
-                    <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-                      myco-team install
-                    </code>
-                    <p className="text-xs text-on-surface-variant mt-1">
-                      Creates a D1 database, Vectorize index, and deploys the sync worker.
-                      Outputs a Worker URL and Team key for the Grove.
-                    </p>
-                  </div>
+  if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
 
-                  <div>
-                    <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
-                    <p className="text-xs text-on-surface-variant">
-                      Paste the Worker URL and Team key below, or if you ran <code className="font-mono">myco-team install</code>,
-                      you're already connected.
-                    </p>
-                  </div>
-                </div>
-              </Surface>
+  const isConnected = status?.enabled && status?.worker_url;
+  const scopeName = status?.grove?.name ?? status?.project.name ?? 'this Grove';
 
-              <ConnectForm
-                scopeName={scopeName}
-                onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
-              />
-            </div>
+  return (
+    <div className="flex h-full flex-col">
+      <div className="px-6 pt-6">
+        <PageHeader
+          title="Team maintenance"
+          subtitle={isConnected
+            ? 'Backlog, queue health, and failed syncs'
+            : `Connect ${scopeName} to team sync to access maintenance`}
+        />
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <div className="px-6 pb-6">
+          {isConnected && status ? (
+            <SyncTab status={status} />
+          ) : (
+            <NotConnectedView
+              scopeName={scopeName}
+              onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
+            />
           )}
         </div>
       </div>

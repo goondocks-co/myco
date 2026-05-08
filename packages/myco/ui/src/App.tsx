@@ -8,11 +8,11 @@ import Agent from './pages/Agent';
 import Skills from './pages/Skills';
 import Settings from './pages/Settings';
 import Operations from './pages/Operations';
-import Team from './pages/Team';
 import GroveSettings from './pages/GroveSettings';
 import Logs from './pages/Logs';
 import MachineDashboard from './pages/MachineDashboard';
 import MachineSettings from './pages/MachineSettings';
+import { TeamDashboard, TeamMaintenance } from './pages/Team';
 import Onboarding from './pages/Onboarding';
 import Groves from './pages/Groves';
 import { useGroves } from './hooks/use-groves';
@@ -50,13 +50,19 @@ export default function App() {
         <Route path="skills" element={<Skills />} />
         <Route path="settings" element={<Settings />} />
         <Route path="operations" element={<Operations />} />
-        <Route path="team" element={<Team />} />
+        {/* Legacy project-scoped /team → Grove-scoped /g/<slug>/team.
+            Team config is Grove-tier; the project segment was vestigial. */}
+        <Route path="team" element={<LegacyTeamRedirect />} />
       </Route>
       <Route path="/g/:groveSlug/settings" element={<GroveScopedLayout />}>
         <Route index element={<GroveSettings />} />
       </Route>
       <Route path="/g/:groveSlug/operations" element={<GroveScopedLayout />}>
         <Route index element={<Operations />} />
+      </Route>
+      <Route path="/g/:groveSlug/team" element={<GroveScopedLayout />}>
+        <Route index element={<TeamDashboard />} />
+        <Route path="maintenance" element={<TeamMaintenance />} />
       </Route>
       <Route path="/sessions" element={<LegacyProjectRedirect suffix="/sessions" />} />
       <Route path="/sessions/:id" element={<LegacyProjectRedirect suffixFromPath />} />
@@ -66,7 +72,7 @@ export default function App() {
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
       <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
-      <Route path="/team" element={<LegacyProjectRedirect suffix="/team" />} />
+      <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
@@ -117,6 +123,18 @@ function LegacyGroveRedirect({ suffix }: { suffix: string }) {
   if (!grove) return <Navigate to="/onboarding" replace />;
   const normalizedSuffix = suffix.startsWith('/') ? suffix : `/${suffix}`;
   return <Navigate to={`/g/${grove.slug}${normalizedSuffix}`} replace />;
+}
+
+/**
+ * Internal redirect for the legacy project-scoped Team route. Reads
+ * the current `:groveSlug` from the parent route params and bounces
+ * to `/g/<grove>/team`. Used for inbound `/g/<g>/p/<p>/team` URLs
+ * that pre-date the Team-as-Grove-section move.
+ */
+function LegacyTeamRedirect() {
+  const { groveSlug } = useParams();
+  if (!groveSlug) return <Navigate to="/" replace />;
+  return <Navigate to={`/g/${groveSlug}/team`} replace />;
 }
 
 function ProjectScopedLayout() {
