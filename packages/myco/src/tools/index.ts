@@ -23,6 +23,7 @@ import {
   TOOL_COLLECTIVE_SETTINGS,
   TOOL_CORTEX,
   TOOL_DEFINITIONS,
+  TOOL_MAINTENANCE,
   TOOL_PLANS,
   TOOL_SEARCH,
   TOOL_SESSIONS,
@@ -159,6 +160,25 @@ const HANDLERS = new Map<string, ToolLoader>([
         const r = result as { ok: unknown };
         return { op: input.op ?? 'runs', id: input.id, ok: r.ok };
       },
+    };
+  }],
+  [TOOL_MAINTENANCE, async () => {
+    const { handleMycoMaintenance } = await import('./maintenance.js');
+    return {
+      handle: (input, client, context) => handleMycoMaintenance(input as unknown as Parameters<typeof handleMycoMaintenance>[0], client, context),
+      summarize: (input, result) => {
+        const r = result as { ok?: boolean; summary?: { ok?: number; failed?: number } };
+        const scope = (input.scope as { kind?: string } | undefined)?.kind;
+        return {
+          op: input.op,
+          scope: scope,
+          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
+          summary: r.summary,
+        };
+      },
+      // HTTP-only proxy. The local DB stays untouched; restore_preview
+      // in particular runs even when the local DB is locked.
+      skipDatabase: true,
     };
   }],
 ]);
