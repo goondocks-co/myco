@@ -46,6 +46,12 @@ const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // drains we don't need to re-walk every Grove for ZERO_PENDING_TTL_MS.
 const ZERO_PENDING_TTL_MS = 30_000;
 
+// Rate-limit window for per-Grove embedding-probe failures. The probe
+// fires on every PowerManager tick; without throttling, a Grove with
+// a persistent embedding error would log on every tick. One warn per
+// hour per Grove is enough to expose the failure without flooding.
+const PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -136,6 +142,9 @@ interface PendingProbeCache {
 // predicate doesn't walk every Grove on every tick when fully drained.
 function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   let cache: PendingProbeCache | null = null;
+  // Per-Grove last-warn timestamps so a persistently-broken Grove
+  // surfaces in logs without flooding on every tick.
+  const lastWarnAt = new Map<string, number>();
   return () => {
     if (cache && Date.now() < cache.expiresAt) return cache.total;
     const mycoHome = deps.mycoHome ?? resolveMycoHome();
@@ -152,9 +161,25 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
           cache = null;
           return total;
         }
-      } catch {
+      } catch (err) {
         // Swallow per-Grove failure — better to risk an early sleep than
         // hold the whole machine awake on a transiently-broken signal.
+        // But surface the failure at warn level (rate-limited per Grove)
+        // so persistent breakage is visible in the daemon log.
+        const now = Date.now();
+        const last = lastWarnAt.get(grove.id) ?? 0;
+        if (now - last >= PROBE_FAILURE_WARN_INTERVAL_MS) {
+          lastWarnAt.set(grove.id, now);
+          deps.logger.warn(
+            LOG_KINDS.EMBEDDING_RECONCILE,
+            'Embedding pending-probe failed for Grove',
+            {
+              grove_id: grove.id,
+              grove_slug: grove.slug,
+              error: errorMessage(err),
+            },
+          );
+        }
       }
     }
     cache = { total: 0, expiresAt: Date.now() + ZERO_PENDING_TTL_MS };
