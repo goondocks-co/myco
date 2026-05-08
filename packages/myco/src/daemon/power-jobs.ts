@@ -105,12 +105,25 @@ function buildLoggerForGrove(logger: Logger, scope: GroveScope): Logger {
 // Per-Grove memo for the logger and the projectVaultDir resolver. Both
 // derive from the Grove + its registered projects which only changes
 // when a project is registered/removed; recomputing per tick wastes work.
+//
+// A consumer whose value depends on data that *can* change between ticks
+// (e.g. the registered-project list) supplies an optional `isStale`
+// predicate. The cache calls it on every `get()` and rebuilds when the
+// predicate returns true. This lets project register/unregister
+// flow through without a daemon restart even though the daemon doesn't
+// have a direct register-event hook today: the next tick after a new
+// project lands invalidates the cache automatically.
 class PerGroveCache<T> {
   private readonly entries = new Map<string, T>();
-  constructor(private readonly build: (scope: GroveScope) => T) {}
+  constructor(
+    private readonly build: (scope: GroveScope) => T,
+    private readonly isStale?: (scope: GroveScope, cached: T) => boolean,
+  ) {}
   get(scope: GroveScope): T {
     const cached = this.entries.get(scope.grove.id);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && !(this.isStale?.(scope, cached) ?? false)) {
+      return cached;
+    }
     const fresh = this.build(scope);
     this.entries.set(scope.grove.id, fresh);
     return fresh;
@@ -205,14 +218,34 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
   const groveLoggers = new PerGroveCache<Logger>((scope) => buildLoggerForGrove(logger, scope));
-  const projectVaultDirResolvers = new PerGroveCache<(projectId: string | null) => string | null>(
+  // The resolver carries a fingerprint of the project list it was
+  // built from so a project register/unregister forces a rebuild on the
+  // next tick without anyone calling `invalidate(...)` explicitly.
+  // The fingerprint is just `count + sorted-ids`, which is cheap to
+  // recompute and stable across ticks while the registry is unchanged.
+  interface ProjectVaultDirResolver {
+    resolve: (projectId: string | null) => string | null;
+    fingerprint: string;
+  }
+  const fingerprintProjects = (groveId: string): string => {
+    const ids = listRegisteredProjects(groveId, mycoHome).map((p) => p.project_id);
+    ids.sort();
+    return `${ids.length}:${ids.join(',')}`;
+  };
+  const projectVaultDirResolvers = new PerGroveCache<ProjectVaultDirResolver>(
     (scope) => {
       const projects = listRegisteredProjects(scope.grove.id, mycoHome);
       const byId = new Map(
         projects.map((p) => [p.project_id, resolveProjectVaultDir(p.root)]),
       );
-      return (projectId) => (projectId ? byId.get(projectId) ?? null : null);
+      const ids = projects.map((p) => p.project_id);
+      ids.sort();
+      return {
+        resolve: (projectId) => (projectId ? byId.get(projectId) ?? null : null),
+        fingerprint: `${ids.length}:${ids.join(',')}`,
+      };
     },
+    (scope, cached) => fingerprintProjects(scope.grove.id) !== cached.fingerprint,
   );
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
@@ -295,7 +328,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         logger: groveLoggers.get(scope),
         registeredSessionIds: () => [...registry.sessions],
         embeddingManager: manager,
-        resolveProjectVaultDir: projectVaultDirResolvers.get(scope),
+        resolveProjectVaultDir: projectVaultDirResolvers.get(scope).resolve,
         staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
       });
     }),
