@@ -14,6 +14,7 @@ import {
 import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { getTeamMachineId } from '../daemon/team-context.js';
 
 function promptPrefix(text: string | null | undefined): string {
@@ -216,7 +217,10 @@ export class TranscriptMiner {
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
       });
       inserted++;
-      try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, created.project_id); } catch { /* lineage best-effort */ }
+      try {
+        const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
+        createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
+      } catch { /* lineage best-effort */ }
       if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
     }
 

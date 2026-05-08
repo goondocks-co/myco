@@ -11,7 +11,7 @@ import { getTeamMachineId } from './team-context.js';
 import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
 import { getDatabase } from '@myco/db/client.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
@@ -117,7 +117,10 @@ export function handleUserPrompt(
 
   const promptNumber = batch.prompt_number!;
 
-  try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, batch.project_id); } catch { /* lineage best-effort */ }
+  try {
+    const lineageProjectId = batch.project_id ? assertGroveProjectId(batch.project_id) : null;
+    createBatchLineage(DEFAULT_AGENT_ID, sessionId, batch.id, now, lineageProjectId);
+  } catch { /* lineage best-effort */ }
 
   if (effectiveKind === BATCH_KIND.INITIAL) {
     updateSession(sessionId, { prompt_count: promptNumber }, ALL_PROJECTS_SCOPE);

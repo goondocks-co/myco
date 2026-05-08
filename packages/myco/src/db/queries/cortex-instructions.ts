@@ -1,6 +1,6 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
-import { type ProjectScope } from '@myco/grove/ids.js';
+import { type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 
 const CORTEX_INSTRUCTION_COLUMNS = [
   'id',
@@ -18,7 +18,13 @@ const SELECT_COLUMNS = CORTEX_INSTRUCTION_COLUMNS.join(', ');
 const DEFAULT_CORTEX_INSTRUCTIONS_ID = 'session-start';
 
 export interface CortexInstructionsUpsert {
-  project_id?: string | null;
+  /**
+   * Branded project id, or `null` for daemon-global instructions
+   * (rare — only the boot/legacy fallback path uses NULL today).
+   * Plain `string` is rejected so writers can't launder a path-derived
+   * id past the type system.
+   */
+  project_id?: GroveProjectId | null;
   agent_id: string;
   content: string;
   input_hash: string;
