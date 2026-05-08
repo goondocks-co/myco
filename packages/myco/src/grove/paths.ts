@@ -12,6 +12,7 @@ export const GROVE_REGISTRY_DIRNAME = 'registry';
 export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GLOBAL_CONFIG_FILENAME = 'config.yaml';
+export const GROVE_REGISTRY_FILENAME = 'registry.yaml';
 export const PROJECT_MANIFEST_FILENAME = 'project.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 
@@ -41,6 +42,16 @@ export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): str
 
 export function resolveGrovesDir(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, GROVES_DIRNAME);
+}
+
+/**
+ * `~/.myco/groves/registry.yaml` — owns the cross-Grove pointer
+ * (`default_grove_id`). Lives next to `groves/<id>/` so the registry
+ * stays close to its data; the machine-tier `config.yaml` no longer
+ * carries a `grove:` block.
+ */
+export function resolveGroveRegistryPath(mycoHome = resolveMycoHome()): string {
+  return path.join(resolveGrovesDir(mycoHome), GROVE_REGISTRY_FILENAME);
 }
 
 export function resolveGroveDir(groveId: string, mycoHome = resolveMycoHome()): string {

@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse } from 'smol-toml';
+import YAML from 'yaml';
 import {
+  clearGroveRegistryCaches,
   createGrove,
   ensureDefaultGrove,
   getDefaultGroveId,
@@ -45,6 +47,41 @@ describe('Grove registry', () => {
     const selected = setDefaultGrove('research', home);
 
     expect(getDefaultGroveId(home)).toBe(selected.id);
+  });
+
+  it('writes default_grove_id to groves/registry.yaml (not config.yaml)', () => {
+    const grove = createGrove('Research', home);
+    setDefaultGrove(grove.id, home);
+
+    const registry = YAML.parse(fs.readFileSync(path.join(home, 'groves', 'registry.yaml'), 'utf-8'));
+    expect(registry.default_grove_id).toBe(grove.id);
+
+    // Machine-tier config.yaml must NOT carry the registry block.
+    const configPath = path.join(home, 'config.yaml');
+    if (fs.existsSync(configPath)) {
+      const config = YAML.parse(fs.readFileSync(configPath, 'utf-8')) ?? {};
+      expect(config.grove).toBeUndefined();
+    }
+  });
+
+  it('migrates legacy ~/.myco/config.yaml { grove.default_grove_id } into registry.yaml on first read', () => {
+    // Seed the legacy layout: a grove dir + a config.yaml with the
+    // pre-Q-F1 registry block, no registry.yaml yet.
+    const grove = createGrove('Legacy Grove', home);
+    clearGroveRegistryCaches();
+    fs.rmSync(path.join(home, 'groves', 'registry.yaml'), { force: true });
+    fs.writeFileSync(
+      path.join(home, 'config.yaml'),
+      YAML.stringify({ daemon: { port: 9999 }, grove: { default_grove_id: grove.id } }),
+      'utf-8',
+    );
+    clearGroveRegistryCaches();
+
+    // First read should surface the legacy value AND auto-migrate it.
+    expect(getDefaultGroveId(home)).toBe(grove.id);
+
+    const registry = YAML.parse(fs.readFileSync(path.join(home, 'groves', 'registry.yaml'), 'utf-8'));
+    expect(registry.default_grove_id).toBe(grove.id);
   });
 
   it('registers projects in Grove-local project and root registries', () => {

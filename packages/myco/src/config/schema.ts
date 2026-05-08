@@ -383,21 +383,24 @@ const MachineDaemonSchema = z.object({
   update_channel: z.enum(['stable', 'beta']).default('stable'),
 });
 
-export const MachineConfigSchema = z.object({
+// NOTE: the registry block (`grove.default_grove_id`) used to live
+// inside MachineConfigSchema under `.passthrough()`. It now lives in
+// `~/.myco/groves/registry.yaml` (see `resolveGroveRegistryPath`).
+// The preprocess below strips the legacy field before strict
+// validation so existing installs keep parsing — the registry value
+// is migrated to the new file the first time `getDefaultGroveId`
+// runs after upgrade.
+export const MachineConfigSchema = z.preprocess((raw) => {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const { grove: _legacy, ...rest } = raw as Record<string, unknown>;
+    return rest;
+  }
+  return raw;
+}, z.object({
   daemon: MachineDaemonSchema.default(() => MachineDaemonSchema.parse({})),
   /** Optional override of the auto-resolved machine id. */
   machine_id: z.string().optional(),
-  /**
-   * Grove registry shared block — the Myco home file already stores
-   * `grove.default_grove_id` for the runtime Grove resolver. Keep it
-   * here as a passthrough so the same `~/.myco/config.yaml` can host
-   * both registry state and machine tier settings without strict-mode
-   * conflicts.
-   */
-  grove: z.object({
-    default_grove_id: z.string().optional(),
-  }).passthrough().optional(),
-}).strict();
+}).strict());
 
 /**
  * Grove tier — per-Grove-DB policies (backups, maintenance cadences,

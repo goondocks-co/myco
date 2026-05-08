@@ -11,6 +11,7 @@ import {
   resolveGroveMetadataPath,
   resolveGroveProjectsPath,
   resolveGroveRegistryDir,
+  resolveGroveRegistryPath,
   resolveGroveRootsPath,
   resolveGrovesDir,
   resolveMycoHome,
@@ -53,7 +54,22 @@ export interface FindRegisteredProjectInput {
   projectRoot?: string | null;
 }
 
-interface GlobalConfigDoc {
+/**
+ * Shape of `~/.myco/groves/registry.yaml`. Holds the cross-Grove
+ * pointer (`default_grove_id`) so the machine-tier `config.yaml` can
+ * stay strict (no `.passthrough()`).
+ */
+interface GroveRegistryDoc {
+  default_grove_id?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Legacy shape for `~/.myco/config.yaml` — the registry block used to
+ * live here as `grove.default_grove_id`. Kept so the migration path
+ * can read it once and copy the value into the new file.
+ */
+interface LegacyGlobalConfigDoc {
   grove?: {
     default_grove_id?: string;
   };
@@ -100,7 +116,7 @@ const tomlDocCache = createMtimeCache((filePath: string): TomlTableWithoutBigInt
   return isPlainTable(parsed) ? parsed as TomlTableWithoutBigInt : {};
 });
 
-const globalConfigCache = createMtimeCache((filePath: string): GlobalConfigDoc => {
+const groveRegistryCache = createMtimeCache((filePath: string): GroveRegistryDoc => {
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
@@ -109,14 +125,27 @@ const globalConfigCache = createMtimeCache((filePath: string): GlobalConfigDoc =
     throw err;
   }
   const parsed = YAML.parse(content) as unknown;
-  return isPlainTable(parsed) ? parsed as GlobalConfigDoc : {};
+  return isPlainTable(parsed) ? parsed as GroveRegistryDoc : {};
+});
+
+const legacyGlobalConfigCache = createMtimeCache((filePath: string): LegacyGlobalConfigDoc => {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
+  }
+  const parsed = YAML.parse(content) as unknown;
+  return isPlainTable(parsed) ? parsed as LegacyGlobalConfigDoc : {};
 });
 
 export function clearGroveRegistryCaches(): void {
   groveDirEntriesCache.clear();
   groveRecordCache.clear();
   tomlDocCache.clear();
-  globalConfigCache.clear();
+  groveRegistryCache.clear();
+  legacyGlobalConfigCache.clear();
 }
 
 export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
@@ -178,15 +207,27 @@ export function resolveGrove(ref: string | undefined, mycoHome = resolveMycoHome
 }
 
 export function getDefaultGroveId(mycoHome = resolveMycoHome()): string | null {
-  const doc = readGlobalConfig(mycoHome);
-  return typeof doc.grove?.default_grove_id === 'string' ? doc.grove.default_grove_id : null;
+  // Preferred home: ~/.myco/groves/registry.yaml.
+  const doc = readGroveRegistry(mycoHome);
+  if (typeof doc.default_grove_id === 'string') return doc.default_grove_id;
+
+  // Legacy home: ~/.myco/config.yaml had a `grove:` block. If we still
+  // have a value there, surface it AND auto-migrate it to the new file
+  // so subsequent reads hit the preferred home and the next config
+  // write strips the legacy block.
+  const legacy = readLegacyGlobalConfig(mycoHome);
+  const legacyId = legacy.grove?.default_grove_id;
+  if (typeof legacyId === 'string') {
+    writeGroveRegistry(mycoHome, { ...doc, default_grove_id: legacyId });
+    return legacyId;
+  }
+  return null;
 }
 
 export function setDefaultGrove(ref: string, mycoHome = resolveMycoHome()): GroveRecord {
   const grove = resolveGroveByIdOrName(ref, mycoHome);
-  const doc = readGlobalConfig(mycoHome);
-  doc.grove = { ...(isPlainTable(doc.grove) ? doc.grove : {}), default_grove_id: grove.id };
-  writeGlobalConfig(mycoHome, doc);
+  const doc = readGroveRegistry(mycoHome);
+  writeGroveRegistry(mycoHome, { ...doc, default_grove_id: grove.id });
   return grove;
 }
 
@@ -311,15 +352,24 @@ function writeGroveRecord(record: GroveRecord, mycoHome: string): void {
   groveDirEntriesCache.invalidate(resolveGrovesDir(mycoHome));
 }
 
-function readGlobalConfig(mycoHome: string): GlobalConfigDoc {
-  return globalConfigCache.get(resolveGlobalConfigPath(mycoHome));
+function readGroveRegistry(mycoHome: string): GroveRegistryDoc {
+  return groveRegistryCache.get(resolveGroveRegistryPath(mycoHome));
 }
 
-function writeGlobalConfig(mycoHome: string, doc: GlobalConfigDoc): void {
-  fs.mkdirSync(mycoHome, { recursive: true });
-  const filePath = resolveGlobalConfigPath(mycoHome);
+function writeGroveRegistry(mycoHome: string, doc: GroveRegistryDoc): void {
+  const filePath = resolveGroveRegistryPath(mycoHome);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, YAML.stringify(doc), 'utf-8');
-  globalConfigCache.invalidate(filePath);
+  groveRegistryCache.invalidate(filePath);
+}
+
+/**
+ * Read the legacy `~/.myco/config.yaml`. Only used to surface the
+ * previous home of `default_grove_id` during the one-shot migration to
+ * `groves/registry.yaml`.
+ */
+function readLegacyGlobalConfig(mycoHome: string): LegacyGlobalConfigDoc {
+  return legacyGlobalConfigCache.get(resolveGlobalConfigPath(mycoHome));
 }
 
 function readToml(filePath: string): TomlTableWithoutBigInt {
