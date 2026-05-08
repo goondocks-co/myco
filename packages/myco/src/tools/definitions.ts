@@ -73,6 +73,8 @@ export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
 const PROP_SINCE = 'ISO timestamp — entries after this date';
 const PROP_TAGS = 'Tags for discoverability — component names, technologies, concepts';
+const PROP_GROVE_ID_PIVOT = 'Optional Grove id to pivot this call to a different Grove (default: harness Grove). Mirrors the UI\'s project switcher; switches the underlying database when supplied.';
+const PROP_PROJECT_ID_PIVOT = 'Optional Grove project id (proj_<32 hex>) to pivot this call to a different project (default: harness project). When supplied alone, scopes within the current Grove.';
 
 // --- Tool definitions ---
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -100,6 +102,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
         language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
       required: ['query'],
     },
@@ -123,7 +127,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry'], description: 'Operation (default: "digest")' },
         tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
         id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
-        project_id: { type: 'string', description: 'Legacy Canopy project id hint. The resolved request context is authoritative when available.' },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
       },
     },
@@ -156,6 +161,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         limit: { type: 'number', description: 'Max results for op: "list"' },
         force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -183,6 +190,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'string', description: PROP_SINCE },
         status: { type: 'string', description: 'Filter by session status (e.g., active, completed)' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SESSIONS_DEFAULT_LIMIT})` },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -202,6 +211,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         id: { type: 'string', description: 'Skill id or name for op: "get"' },
         status: { type: 'string', description: 'Filter by status: active, stale, retired' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -237,6 +248,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         consolidated_content: { type: 'string', description: 'Merged content for op: "consolidate" — synthesize, do not just concatenate' },
         reason: { type: 'string', description: 'Reason for op: "supersede" or op: "consolidate"' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
