@@ -4,7 +4,7 @@ import { PageLoading } from '../components/ui/page-loading';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Switch } from '../components/ui/switch';
-import { ScopeBadge } from '../components/config/ScopePill';
+import { FieldShell } from '../components/config/FieldShell';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import { useGroveConfig, useUpdateGroveConfig, type GroveConfig } from '../hooks/use-grove-config';
 import { setAtPath } from '@myco/utils/dot-path';
@@ -33,20 +33,19 @@ interface FieldRowProps {
   children: React.ReactNode;
 }
 
+/**
+ * Grove-tier row wrapper. Description is rendered ABOVE the input on
+ * this page (vs System.tsx's helper-below convention), so we pass it
+ * as a sibling rather than via FieldShell's `helper` slot.
+ */
 function FieldRow({ id, label, description, children }: FieldRowProps) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium text-on-surface">
-          {label}
-          <ScopeBadge scope="grove" />
-        </label>
-      </div>
+    <FieldShell id={id} label={label} scope="grove">
       {description && (
         <p className="font-sans text-xs text-on-surface-variant">{description}</p>
       )}
       {children}
-    </div>
+    </FieldShell>
   );
 }
 

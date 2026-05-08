@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../components/ui/select';
-import { ScopeBadge } from '../components/config/ScopePill';
+import { FieldShell } from '../components/config/FieldShell';
 import { cn } from '../lib/cn';
 
 /* ---------- Helpers ---------- */
@@ -41,7 +41,12 @@ function formatUptime(seconds: number): string {
   return `${d}d ${h % 24}h`;
 }
 
-/** Tiny field-row primitive used by every editable card on this page. */
+/**
+ * Tiny field-row primitive used by every editable card on this page.
+ * Thin wrapper over `FieldShell` that locks the scope badge to
+ * 'machine' (toggle off via `badge={false}` for read-only stats rows
+ * like the machine-id display).
+ */
 function Field({
   id,
   label,
@@ -56,18 +61,9 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <label htmlFor={id} className="font-sans text-sm text-on-surface">
-          {label}
-        </label>
-        {badge && <ScopeBadge scope="machine" />}
-      </div>
+    <FieldShell id={id} label={label} helper={helper} scope={badge ? 'machine' : null}>
       {children}
-      {helper && (
-        <p className="font-sans text-xs text-on-surface-variant">{helper}</p>
-      )}
-    </div>
+    </FieldShell>
   );
 }
 
