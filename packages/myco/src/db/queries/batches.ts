@@ -55,6 +55,43 @@ export const BATCH_KIND = {
 
 export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
+/**
+ * Discriminated vocabulary for `prompt_batches.origin`. Orthogonal to `kind`
+ * — every batch has both. `kind` records WHERE the batch sits in conversation
+ * flow; `origin` records WHO issued the prompt.
+ *
+ *   human         — user-typed in their CLI/IDE (default)
+ *   system        — transcript-synthesized continuation event injected by
+ *                   the agent itself (e.g. <task-notification>,
+ *                   <environment_context>, <skill> envelope expansions)
+ *   agent_dispatch— prompts emitted by sub-agents back to the parent
+ *                   (e.g. Codex <subagent_notification>)
+ *   hook_injected — reserved; UserPromptSubmit hook output is currently
+ *                   appended to a real human prompt and stays 'human'
+ */
+export const PROMPT_BATCH_ORIGIN = {
+  HUMAN: 'human',
+  SYSTEM: 'system',
+  AGENT_DISPATCH: 'agent_dispatch',
+  HOOK_INJECTED: 'hook_injected',
+} as const;
+
+export type PromptBatchOrigin = typeof PROMPT_BATCH_ORIGIN[keyof typeof PROMPT_BATCH_ORIGIN];
+
+const VALID_ORIGINS = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
+
+/**
+ * Coerce an unknown row column into a valid `PromptBatchOrigin`. Any value
+ * outside the union — including a NULL leaked through a misconfigured
+ * COALESCE — collapses to 'human' so legacy rows remain queryable.
+ */
+function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
+  if (typeof value === 'string' && VALID_ORIGINS.has(value)) {
+    return value as PromptBatchOrigin;
+  }
+  return PROMPT_BATCH_ORIGIN.HUMAN;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -71,6 +108,7 @@ export interface BatchInsert {
   session_id: string;
   project_id?: string | null;
   created_at: number;
+  origin?: PromptBatchOrigin;
   prompt_number?: number | null;
   user_prompt?: string | null;
   response_summary?: string | null;
@@ -91,6 +129,7 @@ export interface BatchRow {
   project_id: string | null;
   parent_prompt_batch_id: number | null;
   kind: string;
+  origin: PromptBatchOrigin;
   prompt_number: number | null;
   user_prompt: string | null;
   response_summary: string | null;
@@ -116,6 +155,7 @@ const BATCH_COLUMNS = [
   'project_id',
   'parent_prompt_batch_id',
   'kind',
+  'origin',
   'prompt_number',
   'user_prompt',
   'response_summary',
@@ -145,6 +185,7 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
     project_id: (row.project_id as string) ?? null,
     parent_prompt_batch_id: row.parent_prompt_batch_id as number | null,
     kind: (row.kind as string) ?? 'initial',
+    origin: toPromptBatchOrigin(row.origin),
     prompt_number: (row.prompt_number as number) ?? null,
     user_prompt: (row.user_prompt as string) ?? null,
     response_summary: (row.response_summary as string) ?? null,
@@ -176,11 +217,11 @@ export function insertBatch(data: BatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, project_id, prompt_number, user_prompt, response_summary,
+       session_id, project_id, origin, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
@@ -188,6 +229,7 @@ export function insertBatch(data: BatchInsert): BatchRow {
     data.session_id,
     data.project_id ?? null,
     data.session_id,
+    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
     data.prompt_number ?? null,
     data.user_prompt ?? null,
     data.response_summary ?? null,
@@ -482,6 +524,7 @@ export interface StatelessBatchInsert {
   status?: string;
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
+  origin?: PromptBatchOrigin;               // defaults to 'human'
   parent_prompt_batch_id?: number | null;   // defaults to null
 }
 
@@ -499,12 +542,12 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, project_id, parent_prompt_batch_id, kind,
+       session_id, project_id, parent_prompt_batch_id, kind, origin,
        prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
        (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
        ?, NULL,
        NULL, ?, NULL, ?,
@@ -516,6 +559,7 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
     data.session_id,
     data.parent_prompt_batch_id ?? null,
     data.kind ?? 'initial',
+    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
     data.session_id,
     data.user_prompt ?? null,
     data.started_at ?? null,

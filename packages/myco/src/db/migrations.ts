@@ -91,6 +91,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 35, migrate: (db) => migrateV34ToV35(db) },
   { version: 36, migrate: (db) => migrateV35ToV36(db) },
   { version: 37, migrate: (db) => migrateV36ToV37(db) },
+  { version: 38, migrate: (db) => migrateV37ToV38(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2313,6 +2314,53 @@ function migrateV36ToV37(db: Database): void {
       `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(37, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v38 — Add `origin` column to prompt_batches.
+ *
+ * `kind` (initial/steering/interrupt) records WHERE the batch sits in the
+ * conversation flow. `origin` records WHO issued the prompt:
+ *   - 'human'         — user-typed in their CLI/IDE (the default)
+ *   - 'system'        — transcript-synthesized continuation event
+ *                       (e.g. <task-notification>, <environment_context>,
+ *                       <skill> envelope expansions)
+ *   - 'agent_dispatch'— prompts emitted by sub-agents (e.g. Codex
+ *                       <subagent_notification>)
+ *   - 'hook_injected' — reserved; UserPromptSubmit hook output is currently
+ *                       appended to a real human prompt and stays 'human'.
+ *
+ * The two are orthogonal — every batch has both a `kind` and an `origin`.
+ * Existing rows backfill to 'human' (the captures we have today were all
+ * assumed to be user prompts, even though some were actually misclassified
+ * system events; UI default-filtering will hide those once the classifier
+ * starts emitting 'system' for new captures).
+ *
+ * Index `(project_id, origin, created_at)` supports the common Sessions-page
+ * query: list human-origin batches in a project, newest first.
+ */
+function migrateV37ToV38(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'prompt_batches');
+    if (!cols.has('origin')) {
+      db.prepare(
+        "ALTER TABLE prompt_batches ADD COLUMN origin TEXT NOT NULL DEFAULT 'human'",
+      ).run();
+    }
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created
+         ON prompt_batches (project_id, origin, created_at)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(38, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();
