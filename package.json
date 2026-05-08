@@ -32,6 +32,7 @@
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@openai/agents": "^0.8.5",
     "chokidar": "^5.0.0",
+    "openai": "^6.36.0",
     "gray-matter": "^4.0.3",
     "semver": "^7.7.4",
     "yaml": "^2.8.4",

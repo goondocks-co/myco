@@ -1032,6 +1032,10 @@ describe('installMcp (TOML)', () => {
   });
 
   it('writes MCP server entry to TOML config', () => {
+    // Sandbox MYCO_HOME so the per-process sandbox can't carry a
+    // daemon.port value from earlier tests' machine-config writes.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
@@ -1046,13 +1050,21 @@ describe('installMcp (TOML)', () => {
     expect(content).not.toContain('[mcp_servers.myco.env]');
   });
 
-  it('uses daemon.port from myco.yaml when installing Codex MCP URL', () => {
+  it('uses daemon.port from machine config when installing Codex MCP URL', () => {
+    // Daemon port is machine-tier (one daemon per machine); seed
+    // ~/.myco/config.yaml rather than the project's myco.yaml.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
+    fs.writeFileSync(path.join(mycoHome, 'config.yaml'), [
+      'daemon:',
+      '  port: 21039',
+      '',
+    ].join('\n'));
+
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
       'version: 3',
-      'daemon:',
-      '  port: 21039',
       'embedding:',
       '  provider: ollama',
       '  model: bge-m3',
@@ -1066,7 +1078,12 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('url = "http://127.0.0.1:21039/mcp"');
   });
 
-  it('persists a stable daemon.port before installing Codex MCP URL when config omits it', () => {
+  it('persists a stable daemon.port to machine config before installing Codex MCP URL when omitted', () => {
+    // Sandbox MYCO_HOME so we don't pollute the user's real
+    // ~/.myco/config.yaml when the installer persists the derived port.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
+
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
@@ -1076,9 +1093,9 @@ describe('installMcp (TOML)', () => {
 
     const expectedPort = derivePort(path.join(projectRoot, '.myco'));
     const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    const mycoConfig = fs.readFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'utf-8');
+    const machineConfig = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
     expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-    expect(mycoConfig).toContain(`port: ${expectedPort}`);
+    expect(machineConfig).toContain(`port: ${expectedPort}`);
   });
 
   it('uses the global daemon port for Grove-bound project MCP URLs', () => {

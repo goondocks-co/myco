@@ -114,8 +114,12 @@ describe('myco init', () => {
     expect(manifest.grove.binding_id).toStartWith('gbind_');
     expect(manifest.grove.slug).toBe('default');
 
+    // Filter to directory entries — `~/.myco/groves/` also holds the
+    // top-level `registry.yaml` file (Grove registry pointer).
     const grovesDir = path.join(process.env.MYCO_HOME!, 'groves');
-    const groveIds = fs.readdirSync(grovesDir);
+    const groveIds = fs.readdirSync(grovesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
     expect(groveIds).toHaveLength(1);
     expect(fs.existsSync(path.join(grovesDir, groveIds[0], 'registry', 'projects.toml'))).toBe(true);
   });
@@ -186,8 +190,10 @@ describe('myco init', () => {
     expect(config.version).toBe(3);
     expect(config.embedding.provider).toBe('ollama');
     expect(config.embedding.model).toBe('bge-m3');
-    expect(config.daemon.log_level).toBe('info');
     expect(config.capture.artifact_extensions).toEqual(['.md']);
+    // `daemon.log_level` is machine-tier now (~/.myco/config.yaml);
+    // ProjectConfigSchema strips it from project myco.yaml on save.
+    expect(config.daemon).toBeUndefined();
   });
 
   it('uses correct base_url when explicitly passed', async () => {

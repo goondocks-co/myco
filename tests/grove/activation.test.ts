@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
+import YAML from 'yaml';
 import { saveConfig, loadConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { openDatabase, type Database } from '@myco/db/client.js';
@@ -66,14 +67,24 @@ describe('Grove project activation', () => {
 
   it('activates a project only after import validation and resolves future requests to the Grove DB', () => {
     const grove = createGrove('Myco Dogfood', mycoHome);
-    saveConfig(vaultDir, MycoConfigSchema.parse({
-      version: 3,
-      team: {
-        enabled: true,
-        worker_url: 'https://team.example.com',
-        team_id: 'legacy-team',
-      },
-    }));
+    // Simulate the legacy on-disk shape (team config in project
+    // myco.yaml). saveConfig now strips Grove-tier fields via
+    // ProjectConfigSchema, so write the YAML directly to set up the
+    // pre-migration state activateProjectMigration is meant to
+    // handle. The activation flow should detect team here and
+    // promote it to the Grove tier.
+    fs.writeFileSync(
+      path.join(vaultDir, 'myco.yaml'),
+      YAML.stringify({
+        version: 3,
+        team: {
+          enabled: true,
+          worker_url: 'https://team.example.com',
+          team_id: 'legacy-team',
+        },
+      }),
+      'utf-8',
+    );
 
     const result = activateProjectMigration({
       projectRoot,
