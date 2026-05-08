@@ -132,8 +132,11 @@ describe('project-scoped layout routing', () => {
       </QueryClientProvider>,
     );
 
+    // Operations is Grove-scoped post-P8 — the link drops the
+    // /p/<project>/ segment so the page can render under
+    // /g/<grove>/operations regardless of which project is active.
     const operationsLink = screen.getByText('Operations').closest('a');
-    expect(operationsLink?.getAttribute('href')).toBe('/g/work/p/project-a-123abc/operations');
+    expect(operationsLink?.getAttribute('href')).toBe('/g/work/operations');
     expect(screen.getByText('Dashboard content')).toBeTruthy();
   });
 });

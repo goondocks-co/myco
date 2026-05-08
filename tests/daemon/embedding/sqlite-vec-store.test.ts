@@ -77,7 +77,7 @@ describe('SqliteVecVectorStore', () => {
       const ids = store.getEmbeddedIds('sessions');
       expect(ids).toContain('rec-1');
 
-      const stats = store.stats('sessions');
+      const stats = store.stats({ namespace: 'sessions' });
       expect(stats.total).toBe(1);
       expect(stats.by_namespace['sessions']?.embedded).toBe(1);
       expect(stats.models['test-model']).toBe(1);
@@ -95,7 +95,7 @@ describe('SqliteVecVectorStore', () => {
       expect(ids).toEqual(['rec-1']);
 
       // Stats should show exactly 1 embedding
-      const stats = store.stats('spores');
+      const stats = store.stats({ namespace: 'spores' });
       expect(stats.total).toBe(1);
     });
 
@@ -111,14 +111,14 @@ describe('SqliteVecVectorStore', () => {
       store.upsert('plans', 'p1', unitVector(2), testMeta());
       store.upsert('artifacts', 'a1', unitVector(3), testMeta());
 
-      const stats = store.stats();
+      const stats = store.stats({});
       expect(stats.total).toBe(4);
       expect(Object.keys(stats.by_namespace)).toHaveLength(6);
     });
 
     it('stores metadata with default values when metadata is omitted', () => {
       store.upsert('sessions', 'rec-1', unitVector(0));
-      const stats = store.stats('sessions');
+      const stats = store.stats({ namespace: 'sessions' });
       expect(stats.models['unknown']).toBe(1);
     });
   });
@@ -135,14 +135,14 @@ describe('SqliteVecVectorStore', () => {
       store.remove('sessions', 'rec-1');
       expect(store.getEmbeddedIds('sessions')).not.toContain('rec-1');
 
-      const stats = store.stats('sessions');
+      const stats = store.stats({ namespace: 'sessions' });
       expect(stats.total).toBe(0);
     });
 
     it('is a silent no-op for non-existent ids', () => {
       // Should not throw
       store.remove('sessions', 'does-not-exist');
-      expect(store.stats('sessions').total).toBe(0);
+      expect(store.stats({ namespace: 'sessions' }).total).toBe(0);
     });
 
     it('validates namespace', () => {
@@ -311,7 +311,7 @@ describe('SqliteVecVectorStore', () => {
       store.upsert('sessions', 's2', unitVector(1), testMeta({ model: 'model-a' }));
       store.upsert('spores', 'sp1', unitVector(2), testMeta({ model: 'model-b' }));
 
-      const stats = store.stats();
+      const stats = store.stats({});
       expect(stats.total).toBe(3);
       expect(stats.by_namespace['sessions']?.embedded).toBe(2);
       expect(stats.by_namespace['spores']?.embedded).toBe(1);
@@ -323,7 +323,7 @@ describe('SqliteVecVectorStore', () => {
       store.upsert('sessions', 's1', unitVector(0), testMeta());
       store.upsert('spores', 'sp1', unitVector(1), testMeta());
 
-      const stats = store.stats('sessions');
+      const stats = store.stats({ namespace: 'sessions' });
       expect(stats.total).toBe(1);
       expect(stats.by_namespace['sessions']?.embedded).toBe(1);
       expect(stats.by_namespace['spores']).toBeUndefined();
@@ -334,13 +334,13 @@ describe('SqliteVecVectorStore', () => {
       store.upsert('sessions', 's2', unitVector(1), testMeta({ model: 'current' }));
       store.upsert('sessions', 's3', unitVector(2), testMeta({ model: 'old-model' }));
 
-      const stats = store.stats('sessions');
+      const stats = store.stats({ namespace: 'sessions' });
       // 'current' is the majority (2 of 3), so stale = 1
       expect(stats.by_namespace['sessions']?.stale).toBe(1);
     });
 
     it('returns zero totals when empty', () => {
-      const stats = store.stats();
+      const stats = store.stats({});
       expect(stats.total).toBe(0);
     });
   });
