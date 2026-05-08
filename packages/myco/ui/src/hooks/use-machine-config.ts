@@ -2,33 +2,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePowerQuery } from './use-power-query';
 import { fetchJson, putJson } from '../lib/api';
 
-/**
- * Machine config — `~/.myco/config.yaml`. One daemon per machine; this is
- * the durable home for the daemon port, log policy, and update channel.
- *
- * Mirrors the server-side `MachineConfigSchema` in
- * `packages/myco/src/config/schema.ts`. Optional fields here match the
- * Zod schema; required fields all have defaults so the GET response is
- * always populated.
- */
-export interface MachineConfig {
-  daemon: {
-    port: number | null;
-    log_level: 'debug' | 'info' | 'warn' | 'error';
-    log_retention_days: number;
-    update_channel: 'stable' | 'beta';
-  };
-  /** Optional override of the auto-resolved machine id. */
-  machine_id?: string;
-  /**
-   * Grove registry passthrough — read-only on this surface; the registry
-   * (myco_groves) owns this block.
-   */
-  grove?: {
-    default_grove_id?: string;
-    [key: string]: unknown;
-  };
-}
+// Single source of truth for the Machine-tier shape lives next to the
+// Zod schema. Type-only import keeps zod runtime out of the UI bundle.
+export type { MachineConfig } from '@myco/config/schema';
+import type { MachineConfig } from '@myco/config/schema';
 
 export interface MachineConfigResponse {
   config: MachineConfig;

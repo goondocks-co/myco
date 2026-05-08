@@ -5,6 +5,7 @@ import {
   MycoConfigSchema,
   MachineConfigSchema,
   GroveConfigSchema,
+  ProjectConfigSchema,
   PROJECT_TIER_LEGACY_FIELDS,
   type MycoConfig,
   type MachineConfig,
@@ -14,6 +15,7 @@ import {
 } from './schema.js';
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { deepMerge } from '../utils/deep-merge.js';
+import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
 import {
   resolveGlobalConfigPath,
   resolveGroveConfigPath,
@@ -36,38 +38,8 @@ export function deepMergeConfig<T extends Record<string, unknown>>(target: T, so
 }
 
 // ---------------------------------------------------------------------------
-// Tier helpers — strip mistier'd fields, walk dotted paths
+// Tier helpers — strip mistier'd fields
 // ---------------------------------------------------------------------------
-
-function lookupAt(doc: Record<string, unknown>, segments: readonly string[]): unknown {
-  let cursor: unknown = doc;
-  for (const seg of segments) {
-    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
-    cursor = (cursor as Record<string, unknown>)[seg];
-  }
-  return cursor;
-}
-
-function deleteAt(doc: Record<string, unknown>, segments: readonly string[]): boolean {
-  if (segments.length === 0) return false;
-  let cursor: Record<string, unknown> = doc;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const next = cursor[segments[i]!];
-    if (!next || typeof next !== 'object' || Array.isArray(next)) return false;
-    cursor = next as Record<string, unknown>;
-  }
-  const leaf = segments[segments.length - 1]!;
-  if (!(leaf in cursor)) return false;
-  delete cursor[leaf];
-  // Prune empty parent objects so the resulting YAML stays clean.
-  for (let i = segments.length - 2; i >= 0; i -= 1) {
-    const parentSegments = segments.slice(0, i + 1);
-    const parent = lookupAt(doc, parentSegments) as Record<string, unknown> | undefined;
-    if (!parent || Object.keys(parent).length > 0) break;
-    deleteAt(doc, parentSegments);
-  }
-  return true;
-}
 
 /**
  * Silently remove project-tier fields that have been successfully moved
@@ -95,7 +67,7 @@ function stripLegacyProjectFields(
   let stripped = false;
   for (const segments of PROJECT_TIER_LEGACY_FIELDS) {
     if (!options.hasGrove && groveTierKeys.has(segments.join('.'))) continue;
-    if (deleteAt(doc, segments)) stripped = true;
+    if (unsetAtPath(doc, segments, { pruneEmptyParents: true })) stripped = true;
   }
   return stripped;
 }
@@ -219,18 +191,6 @@ function readRawYamlDoc(filePath: string): Record<string, unknown> {
   return {};
 }
 
-function setAt(doc: Record<string, unknown>, segments: readonly string[], value: unknown): void {
-  let cursor = doc;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const seg = segments[i]!;
-    if (typeof cursor[seg] !== 'object' || cursor[seg] === null || Array.isArray(cursor[seg])) {
-      cursor[seg] = {};
-    }
-    cursor = cursor[seg] as Record<string, unknown>;
-  }
-  cursor[segments[segments.length - 1]!] = value;
-}
-
 /**
  * One-shot migration: copy mistier'd fields out of a project's myco.yaml
  * into the right Grove/Machine config files. Idempotent — running on an
@@ -255,10 +215,10 @@ function migrateLegacyProjectFields(
     let groveDirty = false;
 
     const tryMove = (sourcePath: readonly string[], targetPath: readonly string[]): void => {
-      const value = lookupAt(parsed, sourcePath);
+      const value = getAtPath(parsed, sourcePath);
       if (value === undefined) return;
-      if (lookupAt(groveRaw, targetPath) !== undefined) return; // explicit value already
-      setAt(groveRaw, targetPath, value);
+      if (getAtPath(groveRaw, targetPath) !== undefined) return; // explicit value already
+      setAtPath(groveRaw, targetPath, value);
       groveDirty = true;
     };
 
@@ -287,10 +247,10 @@ function migrateLegacyProjectFields(
   let machineDirty = false;
 
   const moveMachine = (sourcePath: readonly string[], targetPath: readonly string[]): void => {
-    const value = lookupAt(parsed, sourcePath);
+    const value = getAtPath(parsed, sourcePath);
     if (value === undefined) return;
-    if (lookupAt(machineRaw, targetPath) !== undefined) return;
-    setAt(machineRaw, targetPath, value);
+    if (getAtPath(machineRaw, targetPath) !== undefined) return;
+    setAtPath(machineRaw, targetPath, value);
     machineDirty = true;
   };
 
@@ -298,9 +258,9 @@ function migrateLegacyProjectFields(
   moveMachine(['daemon', 'log_level'], ['daemon', 'log_level']);
   moveMachine(['daemon', 'log_retention_days'], ['daemon', 'log_retention_days']);
   // `update.channel` from legacy schema → daemon.update_channel.
-  const updateChannel = lookupAt(parsed, ['update', 'channel']);
-  if (updateChannel !== undefined && lookupAt(machineRaw, ['daemon', 'update_channel']) === undefined) {
-    setAt(machineRaw, ['daemon', 'update_channel'], updateChannel);
+  const updateChannel = getAtPath(parsed, ['update', 'channel']);
+  if (updateChannel !== undefined && getAtPath(machineRaw, ['daemon', 'update_channel']) === undefined) {
+    setAtPath(machineRaw, ['daemon', 'update_channel'], updateChannel);
     machineDirty = true;
   }
 
@@ -338,7 +298,17 @@ export interface LoadConfigOptions {
   migrateTiers?: boolean;
 }
 
-export function loadConfig(vaultDir: string, options: LoadConfigOptions = {}): MycoConfig {
+interface LoadConfigInternalResult {
+  config: MycoConfig;
+  /**
+   * Post-migration sparse doc. Identical to what's persisted on disk
+   * after the (optional) write-back. Returned so loadMergedConfig can
+   * skip a second read+parse of the same file.
+   */
+  parsed: Record<string, unknown>;
+}
+
+function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): LoadConfigInternalResult {
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
 
   if (!fs.existsSync(configPath)) {
@@ -442,17 +412,26 @@ export function loadConfig(vaultDir: string, options: LoadConfigOptions = {}): M
     fs.writeFileSync(configPath, YAML.stringify(parsed), 'utf-8');
   }
 
-  return config;
+  return { config, parsed };
+}
+
+export function loadConfig(vaultDir: string, options: LoadConfigOptions = {}): MycoConfig {
+  return loadConfigInternal(vaultDir, options).config;
 }
 
 export function saveConfig(vaultDir: string, config: MycoConfig): void {
-  // Validate before writing — OAK lesson: validate on write, not just read.
-  // This is the single parse point for all write paths.
+  // Validate full shape first (OAK lesson: validate on write, not just
+  // read), then filter through ProjectConfigSchema so Grove/Machine-tier
+  // fields can't sneak back into the project file. Zod's default strip
+  // semantics drop any unknown keys — daemon/backup/team/update etc. all
+  // belong in their own tier files. The returned MycoConfig still has
+  // those tiers; we just don't persist them here.
   const validated = MycoConfigSchema.parse(config);
+  const projectOnly = ProjectConfigSchema.parse(validated);
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(configPath, YAML.stringify(validated), 'utf-8');
+  fs.writeFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
   invalidateMergedConfigCache(vaultDir);
 }
 
@@ -648,17 +627,19 @@ export function loadMergedConfig(vaultDir: string, options: LoadMergedConfigOpti
     return cached.config;
   }
 
-  // Force loadConfig to run pending v2/v3 + numbered + tier-strip
-  // migrations on this project's myco.yaml before we read the raw doc
-  // back. Discard the returned (Zod-defaulted) value — we use sparse
-  // raw docs for the merge so Zod defaults only kick in at the end.
-  // Tier migration is opt-in so test fixtures that don't sandbox
-  // MYCO_HOME don't contaminate the developer's real ~/.myco/.
-  loadConfig(vaultDir, { groveId, mycoHome, migrateTiers: true });
+  // Run pending v2/v3 + numbered + tier-strip migrations on the project
+  // file and capture the post-migration sparse doc directly — saves a
+  // second read+parse of myco.yaml against disk. Tier migration is
+  // opt-in so test fixtures that don't sandbox MYCO_HOME don't
+  // contaminate the developer's real ~/.myco/.
+  const { parsed: projectRaw } = loadConfigInternal(vaultDir, {
+    groveId,
+    mycoHome,
+    migrateTiers: true,
+  });
 
   const machineRaw = readRawYamlDoc(machinePath);
   const groveRaw = grovePath ? readRawYamlDoc(grovePath) : {};
-  const projectRaw = readRawYamlDoc(configPath);
   const local = loadLocalConfig(vaultDir);
 
   // Sparse merge — each tier contributes only the keys it explicitly

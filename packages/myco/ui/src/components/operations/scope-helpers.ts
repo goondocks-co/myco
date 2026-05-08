@@ -25,9 +25,13 @@ export const OPERATIONS_SCOPE_HELPER_TEXT: Record<OperationsScope, string> = {
 };
 
 /**
- * Wire-format scope envelope sent in action POST bodies. P7 owns the
- * server-side validation; absent or unknown values currently fall through
- * to the request's header-bound Grove/project context.
+ * Wire-format scope envelope sent in action POST bodies. Mirrors the
+ * server's `ActionScopeSchema` (`packages/myco/src/daemon/api/action-scope.ts`).
+ * Hand-mirrored rather than `z.infer`'d because the server brands
+ * `project_id` as `GroveProjectId` — a compile-time guarantee the UI
+ * can't reproduce without runtime assertion. The wire JSON is identical
+ * (a plain string), so the server's Zod parse re-applies the brand on
+ * receipt.
  */
 export type ActionScope =
   | { kind: 'project'; grove_id: string; project_id: string }

@@ -141,8 +141,25 @@ function lastBackupAt(backupDir: string): string | null {
   return result;
 }
 
-function logCount(db: Database): number {
+// Cache log_count keyed by (databasePath, max(rowid)). The summary
+// endpoint polls every 10s; on a Grove with 100k+ rows the unconditional
+// COUNT(*) shows up in the hot path. MAX(rowid) is an O(1) btree-rightmost
+// lookup; only re-run COUNT(*) when new rows have appeared since the last
+// call. Rotation deletes won't be detected immediately, but log_count is
+// a display value — slight staleness during rotation is fine.
+interface LogCountCacheEntry {
+  maxRowid: number;
+  count: number;
+}
+const logCountCache = new Map<string, LogCountCacheEntry>();
+
+function logCount(db: Database, databasePath: string): number {
+  const maxRow = db.prepare('SELECT MAX(rowid) AS m FROM log_entries').get() as { m: number | null };
+  const maxRowid = maxRow.m ?? 0;
+  const cached = logCountCache.get(databasePath);
+  if (cached && cached.maxRowid === maxRowid) return cached.count;
   const row = db.prepare('SELECT COUNT(*) AS c FROM log_entries').get() as { c: number };
+  logCountCache.set(databasePath, { maxRowid, count: row.c });
   return row.c;
 }
 
@@ -215,7 +232,7 @@ function buildGroveSummary(
     },
     project_count: projects.length,
     db_size_bytes: fileStats.size_bytes,
-    log_count: logCount(scope.db),
+    log_count: logCount(scope.db, scope.databasePath),
     embedding_pending: embeddingPending(cache, embeddingFactory, scope),
     last_backup_at: lastBackupAt(backupDir),
     last_optimize_at: ts.optimize ? new Date(ts.optimize).toISOString() : null,
