@@ -30,6 +30,9 @@ import {
 } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import type { GroveRuntimeCache } from './grove-runtime-cache.js';
+import { forEachGrove } from './scope-iteration.js';
+import { withDatabase } from '@myco/db/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,7 +55,14 @@ export interface TeamSyncResult {
   setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   reconcileClient: (requestContext?: MycoRequestContext) => Promise<void>;
   flushPending: (requestContext?: MycoRequestContext) => Promise<TeamFlushResult>;
-  registerFlushJob: (powerManager: PowerManager) => void;
+  /**
+   * Run flushPending across every registered Grove. Each Grove's outbox
+   * lives in its own SQLite DB, so this fans out via `forEachGrove` and
+   * scopes `getDatabase()` to the per-Grove handle inside each iteration.
+   * Errors are isolated per Grove. Returns the aggregate per-Grove summary.
+   */
+  flushAllGroves: (cache: GroveRuntimeCache) => Promise<TeamFlushAggregate>;
+  registerFlushJob: (powerManager: PowerManager, cache: GroveRuntimeCache) => void;
 }
 
 export interface TeamFlushResult {
@@ -60,6 +70,14 @@ export interface TeamFlushResult {
   rejected: number;
   batches: number;
   error?: string;
+}
+
+export interface TeamFlushAggregate {
+  groves: number;
+  flushed: number;
+  rejected: number;
+  batches: number;
+  errors: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +213,62 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     }
   }
 
+  /**
+   * Synthesize a Grove-scoped request context for the team-sync flush
+   * fan-out. Team-sync only consumes `groveId` off the context (see
+   * `loadTeamConnectionConfig`, `readTeamConnectionSecrets`,
+   * `teamConnectionKey`); the other branded fields are filled with safe
+   * stubs so the type is satisfied without minting a fake `GroveProjectId`
+   * via `assertGroveProjectId`. This stub MUST NOT leak outside the
+   * team-sync flush path.
+   */
+  function groveSyncContext(groveId: string, databasePath: string, projectVaultDir: string): MycoRequestContext {
+    return {
+      projectRoot: projectVaultDir,
+      // Cast — never read by team-sync code paths. Documented above.
+      projectId: '' as MycoRequestContext['projectId'],
+      groveId,
+      machineId,
+      sessionId: null,
+      projectVaultDir,
+      databasePath,
+      source: 'explicit',
+    };
+  }
+
+  /**
+   * Fan team-sync flush across every registered Grove. Each Grove has its
+   * own SQLite DB (and therefore its own `team_outbox` table), so we open
+   * each Grove's DB through the runtime cache and scope `getDatabase()`
+   * via `withDatabase` for the duration of the per-Grove flush. Errors
+   * are isolated per Grove via `forEachGrove`.
+   */
+  async function flushAllGroves(cache: GroveRuntimeCache): Promise<TeamFlushAggregate> {
+    const aggregate: TeamFlushAggregate = { groves: 0, flushed: 0, rejected: 0, batches: 0, errors: 0 };
+    await forEachGrove(
+      cache,
+      logger,
+      async ({ grove, databasePath, db, groveHome }) => {
+        // forEachGrove already ran withDatabase(db, ...) around this body,
+        // so listPending/countPending in flushPending will read this
+        // Grove's outbox. We re-pin via withDatabase to be explicit and
+        // resilient to future refactors that lift this body out of the
+        // forEachGrove scope.
+        await withDatabase(db, async () => {
+          aggregate.groves += 1;
+          const ctx = groveSyncContext(grove.id, databasePath, groveHome);
+          const result = await flushPending(ctx);
+          aggregate.flushed += result.handedOff;
+          aggregate.rejected += result.rejected;
+          aggregate.batches += result.batches;
+          if (result.error) aggregate.errors += 1;
+        });
+      },
+      { jobName: 'team-sync-flush' },
+    );
+    return aggregate;
+  }
+
   return {
     getTeamClient: (requestContext = defaultRequestContext) => teamClients.get(teamConnectionKey(vaultDir, requestContext)) ?? null,
     setTeamClient: (client, requestContext = defaultRequestContext) => {
@@ -209,14 +283,33 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     },
     reconcileClient,
     flushPending,
-    registerFlushJob: (powerManager) => {
+    flushAllGroves,
+    registerFlushJob: (powerManager, cache) => {
       // Registered unconditionally; team.enabled is checked at run time so
-      // Settings toggles take effect without a daemon restart.
+      // Settings toggles take effect without a daemon restart. The job
+      // fans out across every registered Grove so non-boot Groves' outboxes
+      // drain on the same cadence as the boot Grove (release-blocker fix
+      // for the global daemon — see plan 4ab20d9762619a6e #A1).
+      let running = false;
       powerManager.register({
         name: 'team-sync-flush',
         runIn: ['active', 'idle', 'sleep'],
-        preventsDeepSleep: () => loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0,
-        fn: async () => { await flushPending(defaultRequestContext); },
+        preventsDeepSleep: () => {
+          // Best-effort: the boot/legacy outbox guarded the deep-sleep
+          // gate previously. With multi-Grove fan-out we'd need to scope
+          // countPending() per Grove; keep the cheap boot-context probe
+          // and rely on the regular tick to drain non-boot Groves.
+          return loadTeamConnectionConfig(vaultDir, defaultRequestContext).enabled && countPending() > 0;
+        },
+        fn: async () => {
+          if (running) return;
+          running = true;
+          try {
+            await flushAllGroves(cache);
+          } finally {
+            running = false;
+          }
+        },
       });
     },
   };

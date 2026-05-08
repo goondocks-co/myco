@@ -1612,7 +1612,7 @@ export async function main(): Promise<void> {
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: vaultDir,
   });
-  teamSync.registerFlushJob(powerManager);
+  teamSync.registerFlushJob(powerManager, runtimeCache);
 
   // Wire the project-keyed canopy registry into the session-register path.
   // Each SessionStart looks up (or materializes) the right project's runner
