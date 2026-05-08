@@ -543,8 +543,13 @@ function EmbeddingTab() {
   const selection = useProjectSelection();
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   // Per-section pill state — sections can hold different scopes concurrently.
-  const [namespaceScope, setNamespaceScope] = useState<OperationsScope>('project');
-  const [actionScope, setActionScope] = useState<OperationsScope>('project');
+  // Embedding namespace + actions are Grove-wide. There's no
+  // project-narrowed path on the server (vector store doesn't carry
+  // project_id) and the actions (rebuild/reconcile/clean) iterate
+  // every namespace. Pinned to 'grove' instead of exposing a pill
+  // that pretended to switch behavior.
+  const namespaceScope: OperationsScope = 'grove';
+  const actionScope: OperationsScope = 'grove';
   // The Namespace Breakdown pill drives the data query — switching to
   // 'grove' refetches without the project_id filter so counts span
   // every project in the active Grove.
@@ -761,14 +766,11 @@ function EmbeddingTab() {
         <StatCard label="Stale" value={String(totalStale)} accent={totalStale > 0 ? 'terracotta' : 'outline'} />
       </div>
 
-      {/* Namespace breakdown */}
+      {/* Namespace breakdown — always Grove-wide (the vector store
+          doesn't carry project_id, so project narrowing isn't a real
+          option). */}
       <Surface level="low" className="p-6 space-y-4">
-        <PillSectionTitle
-          title="Namespace Breakdown"
-          value={namespaceScope}
-          onChange={setNamespaceScope}
-        />
-        <PillScopeHelper scope={namespaceScope} />
+        <SectionHeader>Namespace Breakdown</SectionHeader>
         <NamespaceTable data={data} />
       </Surface>
 
@@ -776,10 +778,11 @@ function EmbeddingTab() {
           (`run_in_deep_sleep`). Maintenance is action-only now;
           settings live with their categorical siblings. */}
 
-      {/* Action toolbar */}
+      {/* Action toolbar — always Grove-wide. The action handlers
+          iterate every embeddable namespace; there's no
+          project-narrowed code path on the server side. */}
       <Surface level="low" className="p-6 space-y-3">
-        <PillSectionTitle title="Actions" value={actionScope} onChange={setActionScope} />
-        <PillScopeHelper scope={actionScope} />
+        <SectionHeader>Actions</SectionHeader>
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" size="sm" onClick={handleReembedStale}>
             <RefreshCw className="mr-2 h-4 w-4" />
