@@ -57,7 +57,11 @@ export interface InstallParams {
  * Generates a POSIX shell script string that:
  * 1. Waits UPDATE_SCRIPT_DELAY_SECONDS for the daemon to exit.
  * 2. Runs `npm install -g <package>@<version>`.
- * 3. On success: runs `myco update --project <projectRoot>` (non-fatal).
+ * 3. On success: runs `myco update --all-projects` (non-fatal). Iterates
+ *    every (Grove, project) registered with this machine's daemon and
+ *    syncs each project's symbiont/skill/manifest files to the new
+ *    binary's templates. The single-daemon Grove era replaces the old
+ *    "each project's daemon syncs itself" loop with this fan-out.
  * 4. On success: clears ~/.myco/update-error.json.
  * 5. On failure: writes error JSON to ~/.myco/update-error.json.
  * 6. Always: `cd <projectRoot> && myco daemon &` so the new daemon's
@@ -126,8 +130,9 @@ fi
   MYCO="myco"
 fi
 ` : ''}if [ "$update_failed" -eq 0 ]; then
-  # Sync project files (gitignore, symbiont registration)
-  "$MYCO" update --project ${quotedProjectRoot} || true
+  # Fan out per-project sync (gitignore, symbiont registration) across
+  # every Grove project registered with this machine.
+  "$MYCO" update --all-projects || true
   # Clear any previous error
   rm -f ${quotedErrorPath}
 else
@@ -180,11 +185,11 @@ export function spawnUpdateScript(params: InstallParams): string {
 
 /** Parameters for a restart-only script (no global npm install). */
 export interface RestartParams {
-  /** Absolute path to the project root for `myco update --project`. */
+  /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
   projectRoot: string;
-  /** Absolute path to the vault directory (used to compute localRuntime paths). */
+  /** Absolute path to the vault directory (used to write restart-reason.json). */
   vaultDir: string;
-  /** Whether to run `myco update --project` before restarting. */
+  /** Whether to run `myco update --all-projects` before restarting. */
   runLocalUpdate: boolean;
   /** The version currently running (baked into the script to avoid shell interpolation). */
   fromVersion: string;
@@ -192,8 +197,8 @@ export interface RestartParams {
   toVersion: string;
   /**
    * Literal myco binary the script should invoke for the optional
-   * `update --project` step and the final daemon respawn. Baked into
-   * the script at generation time; see `resolveMycoBinary()` in
+   * project sync step and the final daemon respawn. Baked into the
+   * script at generation time; see `resolveMycoBinary()` in
    * update-checker for how callers pick it.
    */
   mycoBinary: string;
@@ -202,7 +207,8 @@ export interface RestartParams {
 /**
  * Generates a POSIX shell script that:
  * 1. Waits for the daemon to exit.
- * 2. Optionally runs `myco update --project` when runLocalUpdate is true.
+ * 2. Optionally runs `myco update --all-projects` when runLocalUpdate is
+ *    true — fans the per-project sync out across every Grove project.
  * 3. Writes restart-reason.json into the vault.
  * 4. `cd <projectRoot> && myco daemon &` so resolveVaultDir picks up the vault.
  * 5. Cleans up the script file.
@@ -224,8 +230,8 @@ export function generateRestartScript(params: RestartParams): string {
 
   const updateBlock = runLocalUpdate
     ? `
-# Run local project update (hooks, symbionts, gitignore)
-"$MYCO" update --project ${quotedProjectRoot} || true`
+# Fan out per-project sync (hooks, symbionts, gitignore) across every Grove
+"$MYCO" update --all-projects || true`
     : '';
 
   // MYCO is baked as a literal at generation time — see InstallParams

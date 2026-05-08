@@ -159,7 +159,7 @@ dev-link: dev-build
 	@# rely on `bin/myco-run` to read runtime.command at spawn time are
 	@# unaffected — `myco update` is a no-op for them.
 	@if command -v myco-dev >/dev/null 2>&1; then \
-		myco-dev update --project "$(PWD)" || echo "⚠ 'myco-dev update --project $(PWD)' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
+		myco-dev update --all-projects || echo "⚠ 'myco-dev update --all-projects' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
 	else \
 		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
 	fi

@@ -10,14 +10,16 @@ describe('generateRestartScript()', () => {
     mycoBinary: 'myco',
   };
 
-  it('includes myco update when runLocalUpdate is true', () => {
+  it('includes myco update --all-projects when runLocalUpdate is true', () => {
     const script = generateRestartScript({ ...baseParams, runLocalUpdate: true });
-    expect(script).toContain('update --project');
+    expect(script).toContain('update --all-projects');
+    // Restart still cd's into projectRoot so the new daemon picks up the vault.
     expect(script).toContain('/home/user/project');
   });
 
   it('skips myco update when runLocalUpdate is false', () => {
     const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
+    expect(script).not.toContain('update --all-projects');
     expect(script).not.toContain('update --project');
   });
 
@@ -89,7 +91,7 @@ describe('generateUpdateScript()', () => {
   it('generates a valid update script (existing behavior sanity check)', () => {
     const script = generateUpdateScript(baseParams);
     expect(script).toContain('npm install -g "@goondocks/myco@1.0.0"');
-    expect(script).toContain('update --project');
+    expect(script).toContain('update --all-projects');
   });
 
   it('bakes the myco binary literal (no MYCO_CMD env-var dispatch)', () => {
