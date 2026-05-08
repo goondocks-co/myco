@@ -69,7 +69,8 @@ const GROVE_NAV_ITEMS: readonly NavItem[] = [
 ];
 
 const MACHINE_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/system', label: 'System', icon: Cpu, scope: 'machine' },
+  { to: '/machine', label: 'Dashboard', icon: Cpu, scope: 'machine' },
+  { to: '/machine/settings', label: 'Settings', icon: Settings, scope: 'machine' },
   { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine' },
 ];
 

@@ -11,7 +11,8 @@ import Operations from './pages/Operations';
 import Team from './pages/Team';
 import GroveSettings from './pages/GroveSettings';
 import Logs from './pages/Logs';
-import System from './pages/System';
+import MachineDashboard from './pages/MachineDashboard';
+import MachineSettings from './pages/MachineSettings';
 import Onboarding from './pages/Onboarding';
 import Groves from './pages/Groves';
 import { useGroves } from './hooks/use-groves';
@@ -31,7 +32,13 @@ export default function App() {
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/groves" element={<Groves />} />
         <Route path="/logs" element={<Logs />} />
-        <Route path="/system" element={<System />} />
+        <Route path="/machine" element={<MachineDashboard />} />
+        <Route path="/machine/settings" element={<MachineSettings />} />
+        {/* Legacy /system → /machine/settings (the "System" page used
+            to host every machine-tier setting; renamed during the
+            sidebar regroup so all four sections share Dashboard +
+            Settings + (specialized) shape). */}
+        <Route path="/system" element={<Navigate to="/machine/settings" replace />} />
       </Route>
       <Route path="/g/:groveSlug/p/:projectSlug" element={<ProjectScopedLayout />}>
         <Route index element={<Dashboard />} />
