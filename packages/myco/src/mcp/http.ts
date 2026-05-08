@@ -3,7 +3,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Database } from '../db/client.js';
 import { DaemonClient } from '../hooks/client.js';
 import { createMycoTools } from '../tools/index.js';
-import { requestContextFromHttpHeaders } from '../tools/request-context.js';
+import {
+  requestContextFromHttpHeaders,
+  tryResolveRequestContextForVault,
+} from '../tools/request-context.js';
 import { createMcpProtocolServer } from './server.js';
 
 export type StreamableMcpHttpHandler = (
@@ -17,12 +20,53 @@ export interface StreamableMcpHttpHandlerOptions {
   resolveDatabase?: (databasePath: string) => Database;
 }
 
+/**
+ * Pre-flight legacy-vault check. Pre-Grove vaults — those without a
+ * `project.toml` containing a Grove project id — would otherwise
+ * cause `requestContextFromHttpHeaders` to throw inside the MCP
+ * handler and surface as the opaque `tool_call_failed` JSON-RPC
+ * error. Detect that state up front and return a structured 503
+ * with a `legacy_vault` discriminator + a friendly message that
+ * tells the user to run `myco init`.
+ *
+ * Only triggers when the incoming request has *not* supplied
+ * project-context headers — Grove-bound transports always do, so
+ * the soft-fail path is reserved for callers that bind to the
+ * vault directory alone (legacy CLI-style HTTP MCP clients).
+ */
+function checkLegacyVault(req: http.IncomingMessage, vaultDir: string): { ok: false; body: string } | { ok: true } {
+  const hasContextHeaders = ['x-myco-project-root', 'x-myco-project-id', 'x-myco-grove-id']
+    .some((header) => typeof req.headers[header] === 'string' && (req.headers[header] as string).trim().length > 0);
+  if (hasContextHeaders) return { ok: true };
+
+  const result = tryResolveRequestContextForVault(vaultDir);
+  if (result.kind === 'grove') return { ok: true };
+
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    error: {
+      code: -32004,
+      message: result.reason,
+      data: { code: 'legacy_vault', vault_dir: result.vaultDir },
+    },
+    id: null,
+  });
+  return { ok: false, body };
+}
+
 export function createStreamableMcpHttpHandler(
   vaultDir: string,
   options: StreamableMcpHttpHandlerOptions = {},
 ): StreamableMcpHttpHandler {
   const client = options.client ?? new DaemonClient(vaultDir);
   return async (req, res) => {
+    const legacyCheck = checkLegacyVault(req, vaultDir);
+    if (!legacyCheck.ok) {
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(legacyCheck.body);
+      return;
+    }
     const requestContext = requestContextFromHttpHeaders(req.headers, vaultDir);
     const tools = createMycoTools(vaultDir, client, {
       requestContext,

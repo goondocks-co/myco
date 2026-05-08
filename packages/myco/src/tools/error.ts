@@ -21,6 +21,15 @@ export type ToolErrorCode =
   | 'tool_unavailable'
   | 'invalid_input'
   | 'invalid_json'
+  /**
+   * The vault has no Grove project id (project.toml missing or
+   * malformed). Surfaced by transports that wrap
+   * `tryResolveRequestContextForVault` so MCP clients can prompt
+   * for migration ("run `myco init`") instead of seeing the opaque
+   * `tool_call_failed` envelope. Distinct code so clients don't
+   * have to pattern-match on message prose.
+   */
+  | 'legacy_vault'
   | 'tool_call_failed';
 
 /**

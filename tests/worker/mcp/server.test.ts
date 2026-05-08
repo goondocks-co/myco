@@ -9,7 +9,8 @@ describe('createMcpServerInstance', () => {
       MYCO_TEAM_VECTORS: {} as VectorizeIndex,
       AI: {} as Ai,
       MYCO_TEAM_API_KEY: 'test-key',
-      SYNC_PROTOCOL_VERSION: '1',
+      SYNC_PROTOCOL_VERSION: '2',
+      MIN_COMPAT_CLIENT_VERSION: '1',
     };
     const server = createMcpServerInstance(fakeEnv as never);
     expect(server).toBeDefined();

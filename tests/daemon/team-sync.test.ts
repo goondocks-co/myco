@@ -410,7 +410,11 @@ describe('team context', () => {
   });
 
   it('returns sync protocol version', () => {
-    expect(getTeamSyncProtocolVersion()).toBe(1);
+    // Bumped to 2 in the C1 protocol bump (queue-driven `embed`
+    // SyncRecord operation + additive `/vectors/reindex` shape).
+    // Older daemons still in v1 are accepted by the worker via
+    // the MIN_COMPAT_CLIENT_VERSION window — see C2/C3.
+    expect(getTeamSyncProtocolVersion()).toBe(2);
   });
 
   it('resets to defaults', () => {

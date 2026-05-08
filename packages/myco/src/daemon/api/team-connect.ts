@@ -25,13 +25,16 @@ import {
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
+  LOCAL_ONLY_OUTBOX_TABLES,
+  LOCAL_ONLY_SYNC_COLUMNS,
+  LOCAL_ONLY_RATIONALES,
 } from '@myco/db/queries/team-outbox.js';
 import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
 import { buildCommandEnv, readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
 import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse } from '../team-sync.js';
-import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -520,6 +523,32 @@ function resolveNodeBinary(globalPrefix: string | null): string {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Documentation for fields the `/api/team/status` response keeps in
+ * its envelope but no longer populates. The fields are always null
+ * in the current protocol and exist only for envelope compatibility
+ * with older daemon UIs that still read them. The descriptive map
+ * is exposed under `deprecated_fields` so consumers can render a
+ * one-line "field X was removed for security; use Y instead"
+ * disclosure rather than silently ignoring the now-empty value.
+ *
+ * The api_key/team_key removal was intentional (commits ad2e549e
+ * and 9572a683 — "Redact reusable Team keys from status responses")
+ * and is not reverted by C6; this map only documents the change.
+ */
+const DEPRECATED_STATUS_FIELDS: Record<string, { since: string; reason: string; replacement: string }> = {
+  api_key: {
+    since: 'protocol-v2',
+    reason: 'Reusable team keys removed from status responses for security.',
+    replacement: 'has_api_key',
+  },
+  team_key: {
+    since: 'protocol-v2',
+    reason: 'Reusable team keys removed from status responses for security.',
+    replacement: 'has_team_key',
+  },
+};
+
 export function createTeamHandlers(deps: TeamHandlerDeps) {
   const { vaultDir, machineId, logger } = deps;
 
@@ -713,11 +742,41 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         vector_reindex_last_deleted: Number.isFinite(vectorReindexLastDeleted) ? vectorReindexLastDeleted : null,
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
+        min_compat_client_version: MIN_COMPAT_CLIENT_VERSION,
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
         mcp_healthy: healthy && workerHasMcpToken,
+        local_only_disclosures: buildLocalOnlyDisclosures(),
+        deprecated_fields: DEPRECATED_STATUS_FIELDS,
       },
     };
+  }
+
+  /**
+   * Snapshot the local-only sync policy for the UI's "What stays
+   * local" disclosure on the Synced data tab. Derived from the
+   * canonical LOCAL_ONLY_OUTBOX_TABLES + LOCAL_ONLY_SYNC_COLUMNS +
+   * LOCAL_ONLY_RATIONALES exports so the UI can never drift from
+   * the enforcement. Restored here after the Grove-scope refactor
+   * removed it; pre-Grove UIs treat the field as additive.
+   */
+  function buildLocalOnlyDisclosures(): Array<{ table: string; columns: string[]; rationale: string }> {
+    const disclosures: Array<{ table: string; columns: string[]; rationale: string }> = [];
+    for (const table of LOCAL_ONLY_OUTBOX_TABLES) {
+      disclosures.push({
+        table,
+        columns: ['(entire table)'],
+        rationale: LOCAL_ONLY_RATIONALES[table] ?? 'Local-only by policy.',
+      });
+    }
+    for (const [table, columns] of Object.entries(LOCAL_ONLY_SYNC_COLUMNS)) {
+      disclosures.push({
+        table,
+        columns: [...columns],
+        rationale: LOCAL_ONLY_RATIONALES[table] ?? 'Local-only columns by policy.',
+      });
+    }
+    return disclosures;
   }
 
   /**

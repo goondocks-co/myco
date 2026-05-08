@@ -30,7 +30,8 @@ main = "src/index.ts"
 compatibility_date = "2025-03-27"
 
 [vars]
-SYNC_PROTOCOL_VERSION = "1"
+SYNC_PROTOCOL_VERSION = "2"
+MIN_COMPAT_CLIENT_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"
 MYCO_SCHEMA_VERSION = "<MYCO_SCHEMA_VERSION>"
 SYNC_QUEUE_NAME = "<YOUR_SYNC_QUEUE_NAME>"
@@ -211,9 +212,17 @@ describe('teamInit', () => {
     });
 
     const { teamInit } = await import('../../packages/myco-team/src/cli.js');
-    await expect(teamInit(vaultDir)).rejects.toThrow('process.exit(1)');
+    // Pre-Grove vaults now exit with code 2 (configuration error) and a
+    // friendly migration prompt rather than the historical generic
+    // exit(1). The prompt tells operators to either run `myco init` or
+    // pass `--legacy` to bypass the gate.
+    await expect(teamInit(vaultDir)).rejects.toThrow('process.exit(2)');
 
-    expect(errors.join('\n')).toContain('myco-team install requires a Grove-bound project');
+    const stderr = errors.join('\n');
+    expect(stderr).toContain('myco-team install requires a Grove-bound project');
+    expect(stderr).toContain('myco init');
+    expect(stderr).toContain('--legacy');
     expect(execCalls).toHaveLength(0);
   });
+
 });
