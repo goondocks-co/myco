@@ -143,7 +143,16 @@ export async function forEachGrove(
 // forEachRegisteredProject
 // ---------------------------------------------------------------------------
 
-export interface ProjectScope extends GroveScope {
+/**
+ * Per-(grove, project) iteration record yielded to bodies of
+ * `forEachRegisteredProject`. Carries the open Grove DB plus the
+ * registered-project tuple this body should operate on.
+ *
+ * Distinct from `ProjectScope` in `@myco/grove/ids` — that is the
+ * read-side discriminated union used for SQL filter selection
+ * (`{ kind: 'project'|'global'|'all' }`). The two never compose.
+ */
+export interface RegisteredProjectScope extends GroveScope {
   project: RegisteredProject;
   projectId: GroveProjectId;
   projectRoot: string;
@@ -164,7 +173,7 @@ export interface ForEachRegisteredProjectOptions extends ForEachGroveOptions {
    * (see `isProjectActive`) when fan-out is restricted to "warm"
    * projects.
    */
-  shouldVisit?: (scope: ProjectScope) => boolean;
+  shouldVisit?: (scope: RegisteredProjectScope) => boolean;
 }
 
 /**
@@ -177,7 +186,7 @@ export interface ForEachRegisteredProjectOptions extends ForEachGroveOptions {
 export async function forEachRegisteredProject(
   cache: GroveRuntimeCache,
   logger: Logger,
-  body: (scope: ProjectScope) => Promise<void> | void,
+  body: (scope: RegisteredProjectScope) => Promise<void> | void,
   options: ForEachRegisteredProjectOptions,
 ): Promise<ScopeIterationSummary> {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
@@ -194,7 +203,7 @@ export async function forEachRegisteredProject(
     async ({ grove, groveHome, databasePath, db }) => {
       const projects = listRegisteredProjects(grove.id, mycoHome);
       for (const project of projects) {
-        const projectScope = buildProjectScope({
+        const registeredScope = buildRegisteredProjectScope({
           grove,
           groveHome,
           databasePath,
@@ -202,12 +211,12 @@ export async function forEachRegisteredProject(
           project,
           machineId,
         });
-        if (shouldVisit && !shouldVisit(projectScope)) continue;
+        if (shouldVisit && !shouldVisit(registeredScope)) continue;
         attempted += 1;
         try {
           // No additional pin/withDatabase — we're already inside the
           // Grove's pinned + scoped block from forEachGrove.
-          await body(projectScope);
+          await body(registeredScope);
           ok += 1;
         } catch (err) {
           failed += 1;
@@ -248,14 +257,14 @@ export function isProjectActive(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function buildProjectScope(input: {
+function buildRegisteredProjectScope(input: {
   grove: GroveRecord;
   groveHome: string;
   databasePath: string;
   db: Database;
   project: RegisteredProject;
   machineId: string;
-}): ProjectScope {
+}): RegisteredProjectScope {
   const projectRoot = path.resolve(input.project.root);
   const projectVaultDir = resolveProjectVaultDir(projectRoot);
   const projectId = assertGroveProjectId(input.project.project_id);

@@ -7,7 +7,7 @@ import type {
   ScheduledJobKicker,
 } from './task-scheduler.js';
 import { buildScheduledJobs, lastRunKey } from './task-scheduler.js';
-import type { ProjectScope } from './scope-iteration.js';
+import type { RegisteredProjectScope } from './scope-iteration.js';
 import {
   buildTaskInstruction,
   getSkillSurveyEligibility,
@@ -35,7 +35,7 @@ import {
 } from './scope-iteration.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
-import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope as ReadProjectScope } from '@myco/grove/ids.js';
+import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
@@ -198,12 +198,12 @@ export async function registerScheduledTasks(
   });
 
   async function dispatchScheduledTask(
-    scope: ProjectScope,
+    scope: RegisteredProjectScope,
     taskName: string,
   ): Promise<void> {
     const config = liveConfig.current;
     const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
-    const readScope: ReadProjectScope = toProjectScope(projectId);
+    const readScope: ProjectScope = toProjectScope(projectId);
     const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
       ? null
       : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, readScope);
