@@ -1689,6 +1689,26 @@ export async function main(): Promise<void> {
         });
       }
     }
+    // Drain pending team-sync outbox rows across every Grove before
+    // closing DBs. Without this, SIGTERM/suspend leaves rows queued
+    // locally with no trigger to retry until the next daemon boot. The
+    // PowerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
+    try {
+      const aggregate = await teamSync.flushAllGroves(runtimeCache);
+      if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Team-sync drain at shutdown', {
+          groves: aggregate.groves,
+          flushed: aggregate.flushed,
+          rejected: aggregate.rejected,
+          batches: aggregate.batches,
+          errors: aggregate.errors,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team-sync drain at shutdown failed', {
+        error: errorMessage(err),
+      });
+    }
     registry.destroy();
     await server.stop();
     runtimeCache.closeAll();
