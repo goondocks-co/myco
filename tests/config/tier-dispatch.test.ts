@@ -62,12 +62,12 @@ describe('Tier dispatch', () => {
       daemon: { port: 8888, log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
     });
 
-    const grovePath = resolveGroveConfigPath('any-id');
+    const grovePath = resolveGroveConfigPath('grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(fs.existsSync(grovePath)).toBe(false);
   });
 
   it('saveGroveConfig writes ~/.myco/groves/<id>/grove.yaml', () => {
-    const groveId = 'gv-test-123';
+    const groveId = 'grove_1111111111111111111111111111aaaa';
     saveGroveConfig(groveId, {
       ...loadGroveConfig(groveId),
       backup: { dir: '/tmp/grove-backup', retention_days: 30 },
@@ -82,8 +82,8 @@ describe('Tier dispatch', () => {
   });
 
   it('saveGroveConfig does NOT write to the machine config file', () => {
-    saveGroveConfig('gv-isolated', {
-      ...loadGroveConfig('gv-isolated'),
+    saveGroveConfig('grove_2222222222222222222222222222aaaa', {
+      ...loadGroveConfig('grove_2222222222222222222222222222aaaa'),
       backup: { dir: '/tmp/x', retention_days: 7 },
     });
 
@@ -100,14 +100,14 @@ describe('Tier dispatch', () => {
       ...loadMachineConfig(),
       daemon: { port: 7777, log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
     });
-    saveGroveConfig('gv-distinct', {
-      ...loadGroveConfig('gv-distinct'),
+    saveGroveConfig('grove_3333333333333333333333333333aaaa', {
+      ...loadGroveConfig('grove_3333333333333333333333333333aaaa'),
       // Grove tier owns daemon.stale_session_threshold_ms
       daemon: { stale_session_threshold_ms: 60_000 },
     });
 
     const machineDoc = YAML.parse(fs.readFileSync(resolveGlobalConfigPath(), 'utf-8'));
-    const groveDoc = YAML.parse(fs.readFileSync(resolveGroveConfigPath('gv-distinct'), 'utf-8'));
+    const groveDoc = YAML.parse(fs.readFileSync(resolveGroveConfigPath('grove_3333333333333333333333333333aaaa'), 'utf-8'));
 
     expect(machineDoc.daemon.port).toBe(7777);
     expect(machineDoc.daemon.stale_session_threshold_ms).toBeUndefined();
@@ -149,13 +149,13 @@ describe('Tier dispatch', () => {
       ...loadMachineConfig(),
       daemon: { port: 6666, log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
     });
-    saveGroveConfig('gv-readback', {
-      ...loadGroveConfig('gv-readback'),
+    saveGroveConfig('grove_4444444444444444444444444444aaaa', {
+      ...loadGroveConfig('grove_4444444444444444444444444444aaaa'),
       backup: { dir: '/tmp/readback', retention_days: 21 },
     });
 
     const machine = loadMachineConfig();
-    const grove = loadGroveConfig('gv-readback');
+    const grove = loadGroveConfig('grove_4444444444444444444444444444aaaa');
 
     expect(machine.daemon.port).toBe(6666);
     expect(machine.daemon.update_channel).toBe('beta');

@@ -4,7 +4,7 @@ import YAML from 'yaml';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
-import { createGroveId } from './ids.js';
+import { createGroveId, isGroveEraId } from './ids.js';
 import {
   resolveGlobalConfigPath,
   resolveGroveDir,
@@ -156,6 +156,12 @@ export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
 }
 
 export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): GroveRecord | null {
+  // Treat structurally invalid ids the same as "Grove not found" so
+  // callers (registry walks, status endpoints) can keep using `null`
+  // as the not-found signal without each having to validate first.
+  // The structural gate still applies on writes — `resolveGroveDir`
+  // rejects malformed ids before any path is constructed.
+  if (!isGroveEraId(groveId, 'grove')) return null;
   return groveRecordCache.get(resolveGroveMetadataPath(groveId, mycoHome));
 }
 

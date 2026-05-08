@@ -6,6 +6,7 @@ import {
   MACHINE_RUNTIME_DIRNAME,
   MACHINE_RUNTIME_TMP_DIRNAME,
 } from '../constants/update.js';
+import { assertGroveEraId } from './ids.js';
 
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
@@ -60,8 +61,23 @@ export function resolveGroveRegistryPath(mycoHome = resolveMycoHome()): string {
   return path.join(resolveGrovesDir(mycoHome), GROVE_REGISTRY_FILENAME);
 }
 
+/**
+ * Structural Grove-id gate. Every path resolver below funnels through
+ * this helper before joining `groveId` onto a `~/.myco/groves/...` path,
+ * so a hostile (or buggy) caller cannot escape the Grove namespace via
+ * `..` segments, absolute paths, or any value that fails the
+ * `grove_<32 hex chars>` shape.
+ *
+ * The brand is enforced structurally (defense in depth): even if an
+ * upstream caller drops its own validation, the resolver still refuses
+ * malformed ids. Throws via `assertGroveEraId` on bad input.
+ */
+function assertGroveIdSafe(groveId: string): string {
+  return assertGroveEraId(groveId, 'grove');
+}
+
 export function resolveGroveDir(groveId: string, mycoHome = resolveMycoHome()): string {
-  return path.join(resolveGrovesDir(mycoHome), groveId);
+  return path.join(resolveGrovesDir(mycoHome), assertGroveIdSafe(groveId));
 }
 
 export function resolveGroveMetadataPath(groveId: string, mycoHome = resolveMycoHome()): string {

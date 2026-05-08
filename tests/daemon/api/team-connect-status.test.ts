@@ -205,7 +205,7 @@ describe('createTeamHandlers.handleStatus', () => {
         error: () => undefined,
       },
       getTeamClient: (requestContext) => {
-        expect(requestContext?.groveId).toBe('grove_test');
+        expect(requestContext?.groveId).toBe('grove_0123456789abcdef0123456789abcdef');
         expect(requestContext?.projectId).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
         return null;
       },
@@ -217,10 +217,10 @@ describe('createTeamHandlers.handleStatus', () => {
         projectRoot: path.join(tempDir, 'project'),
         projectVaultDir: vaultDir,
         projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        groveId: 'grove_test',
+        groveId: 'grove_0123456789abcdef0123456789abcdef',
         machineId: 'machine-test',
         sessionId: null,
-        databasePath: path.join(tempDir, 'home', 'groves', 'grove_test', 'myco.db'),
+        databasePath: path.join(tempDir, 'home', 'groves', 'grove_0123456789abcdef0123456789abcdef', 'myco.db'),
         source: 'headers',
       },
     } as never);
@@ -231,7 +231,7 @@ describe('createTeamHandlers.handleStatus', () => {
     };
 
     expect(body.connection_scope).toBe('grove');
-    expect(body.grove).toMatchObject({ id: 'grove_test' });
+    expect(body.grove).toMatchObject({ id: 'grove_0123456789abcdef0123456789abcdef' });
     expect(body.project).toMatchObject({ id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' });
   });
 
