@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { saveConfig, loadConfig } from '@myco/config/loader.js';
+import { saveConfig, loadConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
@@ -103,7 +103,9 @@ describe('Grove project activation', () => {
     expect(marker.status).toBe('activated');
     expect(marker.project_id).toBe(result.project_id);
     expect(marker.grove_id).toBe(grove.id);
-    expect(loadConfig(vaultDir).team.enabled).toBe(true);
+    // After the three-tier split, team config moved from project to Grove
+    // tier — read it from the merged view scoped to the activated Grove.
+    expect(loadMergedConfig(vaultDir, { groveId: grove.id, mycoHome }).team.enabled).toBe(true);
 
     const requestContext = requestContextFromEnvironment({}, vaultDir);
     expect(requestContext.groveId).toBe(grove.id);

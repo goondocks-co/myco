@@ -182,7 +182,7 @@ The cloud MCP server exposes grove-scoped read-only Myco tools over authenticate
 
 `myco_search` results include grove context and stable IDs with `retrieve` hints. Follow those hints with the owning entity tool for grove-appropriate access.
 
-### Grove-Scoped Credential Naming (Team Key vs MCP Access Token)
+### Grove-Scoped Credential Management (Team Key vs MCP Access Token)
 
 **Updated credential terminology** for Grove team sync:
 - **Team Key**: Organization-level credential for team sync coordination (stored in organization settings)
@@ -201,7 +201,7 @@ curl https://your-team-worker.workers.dev/health
 # Look for mcp_token_hash field with grove_id scoping
 ```
 
-**Critical distinction**: Team Keys enable organization-wide coordination while MCP Access Tokens provide grove-scoped API access.
+**Critical distinction**: Team Keys enable organization-wide coordination while MCP Access Tokens provide grove-scoped API access. **Team Key** is the preferred organizational-level credential name (replaces older "auth_token" terminology).
 
 ### Grove Token Rotation Detection
 
@@ -277,7 +277,7 @@ Collective workers implement grove-aware four-tier scoping:
 
 ### Multi-Project UI Switcher Integration
 
-Grove collective workers now support multi-project UI switching:
+Grove collective workers now support **seamless multi-project UI switching** with grove-aware project context management:
 
 ```javascript
 // Grove-aware project switcher in collective worker
@@ -285,20 +285,26 @@ const groveProjects = await GROVE_SETTINGS.list({
   prefix: `grove:${grove_id}:projects:`
 });
 
-// Project switcher UI integration
+// Enhanced project switcher UI integration
 const projectSwitcher = {
   currentProject: await getCurrentGroveProject(grove_id),
   availableProjects: groveProjects.keys.map(key => ({
     id: key.metadata.project_id,
     name: key.metadata.project_name,
     grove_id: grove_id,
-    url: `/projects/${key.metadata.project_id}`
+    url: `/projects/${key.metadata.project_id}`,
+    lastAccessed: key.metadata.last_accessed_at,
+    sessionCount: key.metadata.active_sessions
   })),
-  switchUrl: `/api/grove/${grove_id}/switch-project`
+  switchUrl: `/api/grove/${grove_id}/switch-project`,
+  preferences: {
+    rememberLastProject: true,
+    autoSwitchOnActivity: false
+  }
 };
 ```
 
-**UI integration pattern**: The collective worker provides project switching context that integrates with Grove UI for seamless multi-project navigation.
+**Enhanced UI integration pattern**: The collective worker provides rich project switching context that integrates with Grove UI for seamless multi-project navigation, including project activity indicators and user preferences for project switching behavior.
 
 ### Grove Config Isolation Patterns
 

@@ -21,9 +21,12 @@ export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> 
 // Scoped config handlers (project vs. local overlay)
 // ---------------------------------------------------------------------------
 
-/** GET /api/config/merged — project config with local overlay applied. */
-export async function handleGetMergedConfig(vaultDir: string): Promise<RouteResponse> {
-  const config = loadMergedConfig(vaultDir);
+/** GET /api/config/merged — full four-tier merge (machine + grove + project + personal). */
+export async function handleGetMergedConfig(
+  vaultDir: string,
+  options: { groveId?: string | null } = {},
+): Promise<RouteResponse> {
+  const config = loadMergedConfig(vaultDir, { groveId: options.groveId ?? null });
   return { body: config };
 }
 

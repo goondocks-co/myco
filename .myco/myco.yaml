@@ -3,12 +3,6 @@ config_version: 9
 embedding:
   provider: ollama
   model: bge-m3:latest
-  run_in_deep_sleep: true
-daemon:
-  port: 21039
-  log_level: info
-  log_retention_days: 30
-  stale_session_threshold_ms: 3600000
 capture:
   transcript_paths: []
   plan_dirs:
@@ -92,17 +86,6 @@ agent:
       harness: claude-sdk
       schedule:
         enabled: true
-backup:
-  dir: ~/myco_backups/myco
-maintenance:
-  auto_optimize: true
-  auto_optimize_interval_hours: 24
-update:
-  channel: stable
-team:
-  enabled: false
-  worker_url: https://myco-team-974bc350.goondocks.workers.dev
-  interval_minutes: 15
 skills:
   confidence_threshold: 0.7
   usage_stale_days: 30

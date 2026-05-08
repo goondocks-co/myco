@@ -369,10 +369,21 @@ export async function main(): Promise<void> {
   // Load API keys from secrets.env into process.env before any provider init
   loadSecrets(vaultDir);
 
-  // Merged = project (myco.yaml) + personal overlay (local.yaml). Any gate
-  // downstream of this needs to see personal overrides, so the daemon loads
-  // the merged view and never the raw project config.
-  const config = loadMergedConfig(vaultDir);
+  // --- Machine identity (resolved early so config load can use the Grove id) ---
+  const machineId = getMachineId(vaultDir);
+  const dataPaths = resolveDaemonDataPaths(vaultDir, {
+    ...process.env,
+    MYCO_MACHINE_ID: machineId,
+  });
+
+  // Merged = machine + grove + project + personal. Any gate downstream
+  // of this needs to see all four tiers, so the daemon loads the merged
+  // view (sourced from `~/.myco/config.yaml`, `~/.myco/groves/<id>/config.yaml`,
+  // `<project>/.myco/myco.yaml`, and `<project>/.myco/local.yaml`).
+  const config = loadMergedConfig(vaultDir, {
+    groveId: dataPaths.requestContext.groveId,
+    mycoHome: undefined, // resolve from env at call time
+  });
   // Mutable holder that reactions update after each scoped-config write, so
   // runtime gates (scheduled-task registration, event triggers) observe the
   // flipped value without a daemon restart.
@@ -387,13 +398,6 @@ export async function main(): Promise<void> {
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
-
-  // --- Machine identity ---
-  const machineId = getMachineId(vaultDir);
-  const dataPaths = resolveDaemonDataPaths(vaultDir, {
-    ...process.env,
-    MYCO_MACHINE_ID: machineId,
-  });
   const daemonService = resolveDaemonServiceState(vaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -850,7 +854,8 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
 
-  server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
+  server.registerRoute('GET', '/api/config/merged', async (req) =>
+    handleGetMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null }));
   server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
@@ -923,7 +928,9 @@ export async function main(): Promise<void> {
   });
 
   async function applyConfigWriteReactions(touchedPaths: string[]) {
-    const reactionContext = loadReactionContext(vaultDir, logger);
+    const reactionContext = loadReactionContext(vaultDir, logger, {
+      groveId: dataPaths.requestContext.groveId,
+    });
     if (!reactionContext) {
       configHash = computeConfigHash(vaultDir);
       return null;

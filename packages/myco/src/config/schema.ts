@@ -114,6 +114,12 @@ const AgentSchema = rejectLegacyRuntimeKey(z.object({
    * cold-project gating entirely.
    */
   cold_project_threshold_days: z.number().int().min(0).max(365).default(14),
+  /**
+   * Grove-tier override for scheduled-task activity gating. The Grove
+   * config sets this; the merged config carries it for runtime consumers.
+   * (Storage tier: Grove. See GroveConfigSchema.)
+   */
+  scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
   /** Global default provider — applies to all tasks unless overridden per-task. */
   provider: ProviderOverrideSchema.optional(),
   /** Global default harness — applies to all tasks unless overridden per-task. */
@@ -132,7 +138,11 @@ const BackupRetentionSchema = z.object({
 });
 
 const BackupSchema = z.object({
-  /** Override directory for backup files. Supports ~ for home directory. When unset, defaults to <groveHome>/backups. */
+  /**
+   * Override directory for backup files. Supports ~ for home directory.
+   * When unset, defaults to <groveHome>/backups. Storage tier: Grove
+   * (one canonical backup root per Grove); see GroveConfigSchema.
+   */
   dir: z.string().optional(),
   retention: BackupRetentionSchema.default(() => BackupRetentionSchema.parse({})),
 });
@@ -332,6 +342,144 @@ export const AppearanceConfigSchema = z.object({
 }).default({ theme: 'sage', mode: 'dark', font: 'default', density: 'normal' });
 
 export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
+
+// ---------------------------------------------------------------------------
+// Tier schemas — three storage tiers, four files
+// ---------------------------------------------------------------------------
+//
+// Each setting has exactly one canonical tier. The loader reads each file
+// with its own tier schema (which uses `strictObject` to reject foreign
+// keys), then merges the per-tier values into the unified `MycoConfig`
+// shape that runtime consumers see.
+//
+// Storage layout:
+//   ~/.myco/config.yaml                     — Machine tier (one daemon per machine)
+//   ~/.myco/groves/<id>/config.yaml         — Grove tier (per-Grove DB policies)
+//   <project>/.myco/myco.yaml               — Project tier (VCS-tracked)
+//   <project>/.myco/local.yaml              — Personal override (gitignored, sparse)
+//
+// Resolution order on read: machine → grove → project → personal (highest).
+
+/**
+ * Machine tier — one daemon process per machine, one log policy, one port.
+ * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
+ */
+const MachineDaemonSchema = z.object({
+  /** Port the global daemon listens on. Null = pick an available port. */
+  port: z.number().int().min(1024).max(65535).nullable().default(null),
+  /** Log verbosity for the daemon process (stdout/stderr). */
+  log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /**
+   * Retention window for `log_entries` rows across every Grove DB this
+   * daemon serves. One daemon → one retention policy (different Groves
+   * could in principle have different policies, but uniformity here
+   * keeps the operator surface simple and matches the daemon-process
+   * mental model).
+   */
+  log_retention_days: z.number().int().min(1).max(365).default(30),
+  /** Update channel — `stable` (default) or `beta` for dogfood/preview builds. */
+  update_channel: z.enum(['stable', 'beta']).default('stable'),
+});
+
+export const MachineConfigSchema = z.object({
+  daemon: MachineDaemonSchema.default(() => MachineDaemonSchema.parse({})),
+  /** Optional override of the auto-resolved machine id. */
+  machine_id: z.string().optional(),
+  /**
+   * Grove registry shared block — the Myco home file already stores
+   * `grove.default_grove_id` for the runtime Grove resolver. Keep it
+   * here as a passthrough so the same `~/.myco/config.yaml` can host
+   * both registry state and machine tier settings without strict-mode
+   * conflicts.
+   */
+  grove: z.object({
+    default_grove_id: z.string().optional(),
+  }).passthrough().optional(),
+}).strict();
+
+/**
+ * Grove tier — per-Grove-DB policies (backups, maintenance cadences,
+ * embedding-pause behavior, scheduled-task activity window). Stored in
+ * `~/.myco/groves/<id>/config.yaml`. Each Grove on the machine has its
+ * own file; team-sync does NOT replicate this — it stays local per machine.
+ */
+const GroveDaemonSchema = z.object({
+  /**
+   * Time without new prompts before an active session is auto-completed (ms).
+   * Per-Grove because session lifecycle is per-Grove.
+   */
+  stale_session_threshold_ms: z.number().int().min(60_000).default(60 * 60 * 1000),
+});
+const GroveEmbeddingSchema = z.object({
+  /** Keep the embedding-reconcile loop running while the Grove sleeps. */
+  run_in_deep_sleep: z.boolean().default(true),
+});
+const GroveAgentSchema = z.object({
+  /**
+   * Cap how recently a project must have been active (sessions or
+   * prompt_batches) for scheduled tasks to fire against it. 0 disables
+   * cold-project gating.
+   */
+  scheduled_tasks_active_window_days: z.number().int().min(0).max(365).default(14),
+});
+
+export const GroveConfigSchema = z.object({
+  daemon: GroveDaemonSchema.default(() => GroveDaemonSchema.parse({})),
+  backup: BackupSchema.default(() => BackupSchema.parse({})),
+  maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
+  embedding: GroveEmbeddingSchema.default(() => GroveEmbeddingSchema.parse({})),
+  agent: GroveAgentSchema.default(() => GroveAgentSchema.parse({})),
+  /** Team sync activation — Grove-scoped per the migration plan. */
+  team: TeamSchema.default(() => TeamSchema.parse({})),
+}).strict();
+
+/**
+ * Project tier — VCS-tracked, defines the project's identity and the
+ * intelligence the daemon runs against it. Excludes machine fields
+ * (port, log policy) and Grove fields (backup, maintenance) — those are
+ * silently stripped on load if they appear here (legacy migration).
+ */
+export const ProjectConfigSchema = z.object({
+  version: z.literal(3),
+  config_version: z.number().int().nonnegative().default(0),
+  embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
+  capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+  agent: AgentSchema.default(() => AgentSchema.parse({})),
+  skills: SkillsSchema.default(() => SkillsSchema.parse({})),
+  notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
+  cortex: CortexSchema.default(() => CortexSchema.parse({})),
+  appearance: AppearanceConfigSchema,
+  symbionts: z.record(z.string(), SymbiontEntrySchema).optional(),
+});
+
+/**
+ * Personal tier — sparse per-project overrides on this machine.
+ * Gitignored. Lenient by design (sparse `Partial<MycoConfig>`-shaped) so
+ * users can drop in a small override without forcing every nested key to
+ * be present. The loader merges this on top of the resolved Project tier
+ * during read; no validation gate beyond the merged result hitting
+ * MycoConfigSchema.
+ */
+export const PersonalConfigSchema = z.record(z.string(), z.unknown());
+
+export type MachineConfig = z.output<typeof MachineConfigSchema>;
+export type GroveConfig = z.output<typeof GroveConfigSchema>;
+export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
+export type PersonalConfig = z.input<typeof PersonalConfigSchema>;
+
+/** Field paths the loader silently strips from project myco.yaml on load. */
+export const PROJECT_TIER_LEGACY_FIELDS: ReadonlyArray<readonly string[]> = [
+  ['daemon', 'port'],
+  ['daemon', 'log_level'],
+  ['daemon', 'log_retention_days'],
+  ['daemon', 'stale_session_threshold_ms'],
+  ['backup'],
+  ['maintenance'],
+  ['update'],
+  ['team'],
+  ['embedding', 'run_in_deep_sleep'],
+  ['agent', 'scheduled_tasks_active_window_days'],
+];
 
 export const MycoConfigSchema = z.preprocess(
   (raw: unknown) => {
