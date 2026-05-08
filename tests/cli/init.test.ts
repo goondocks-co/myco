@@ -213,8 +213,10 @@ describe('myco init', () => {
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('attachments/');
     expect(gitignore).toContain('migration/');
-    expect(gitignore).toContain('runtime/');
-    expect(gitignore).toContain('runtime.tmp/');
+    // runtime.command and runtime/ moved to ~/.myco/ — no longer
+    // project-local artifacts to gitignore.
+    expect(gitignore).not.toContain('runtime.command');
+    expect(gitignore).not.toContain('runtime.tmp/');
   });
 
   it('is idempotent — does not overwrite user-set values on re-init', async () => {

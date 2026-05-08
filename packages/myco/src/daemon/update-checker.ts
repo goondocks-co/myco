@@ -28,8 +28,6 @@ import {
   NPM_PACKAGE_NAME,
   UPDATE_PACKAGES,
   MYCO_GLOBAL_DIR,
-  PROJECT_RUNTIME_DIRNAME,
-  PROJECT_RUNTIME_COMMAND_FILENAME,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,
   UPDATE_ERROR_PATH,
@@ -40,6 +38,10 @@ import {
   type ReleaseChannel,
   type UpdatePackageId,
 } from '../constants/update.js';
+import {
+  resolveMachineRuntimeCommandPath,
+  resolveMachineRuntimeDir,
+} from '../grove/paths.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -96,7 +98,12 @@ export interface CheckResult {
   latest_beta: string | null;
   channel: ReleaseChannel;
   channel_scope: 'project';
-  runtime_scope: 'project' | 'machine';
+  /**
+   * `'managed'` — the daemon is dispatched through `~/.myco/runtime/`
+   * (managed beta runtime). `'machine'` — no machine-runtime pin, the
+   * global myco install on PATH answers.
+   */
+  runtime_scope: 'managed' | 'machine';
   check_interval_hours: number;
   last_check: string;
   error: string | null;
@@ -159,9 +166,19 @@ export function resolveMycoBinary(): string {
   return devBuildCliEntry ?? 'myco';
 }
 
-export function resolveRuntimeCommand(vaultDir: string): string | null {
+/**
+ * Read `~/.myco/runtime.command`. Returns the trimmed binary path/name
+ * the launcher should exec, or null when the file is absent or empty
+ * (the global PATH-resolved `myco` is the implicit default).
+ *
+ * Machine-scoped: there's exactly one daemon per machine, and the
+ * runtime that backs it is a machine-level choice. The launcher shims
+ * (`bin/myco.cjs`, `myco-run.cjs`, `myco-cli.cjs`) read this same file
+ * via their own filesystem code — they can't import this module.
+ */
+export function resolveRuntimeCommand(): string | null {
   try {
-    const raw = fs.readFileSync(path.join(vaultDir, PROJECT_RUNTIME_COMMAND_FILENAME), 'utf-8').trim();
+    const raw = fs.readFileSync(resolveMachineRuntimeCommandPath(), 'utf-8').trim();
     return raw || null;
   } catch {
     return null;
@@ -169,38 +186,14 @@ export function resolveRuntimeCommand(vaultDir: string): string | null {
 }
 
 /**
- * True when `cliEntry` points inside the project-local managed runtime.
- *
- * When `vaultDir` is known, prefer `startsWith` against the exact managed
- * runtime path — this is robust to `.myco` being relocated via
- * `MYCO_VAULT_DIR`. The path-less form falls back to a substring match,
- * used only in contexts where vaultDir is unavailable.
+ * True when `cliEntry` points inside `~/.myco/runtime/node_modules/`,
+ * i.e. the managed beta runtime install. Used to distinguish managed
+ * runtimes from external pins (dev binaries, `~/.local/bin/myco-dev`).
  */
-export function isManagedProjectRuntime(cliEntry: string, vaultDir?: string): boolean {
+export function isManagedMachineRuntime(cliEntry: string): boolean {
   const normalized = cliEntry.split(path.sep).join('/');
-  if (vaultDir !== undefined) {
-    const managedPrefix = `${vaultDir.split(path.sep).join('/')}/${PROJECT_RUNTIME_DIRNAME}/node_modules/`;
-    return normalized.startsWith(managedPrefix);
-  }
-  return normalized.includes(`/.myco/${PROJECT_RUNTIME_DIRNAME}/node_modules/`);
-}
-
-/**
- * Classify how the current project dispatches the `myco` binary.
- *
- * - `'project'` — a managed project-local runtime exists under the vault
- *   (`.myco/runtime/`), pointed at by `.myco/runtime.command`.
- * - `'machine'` — no project-local runtime; fall back to the machine-
- *   installed myco via PATH or its absolute path.
- *
- * Single source of truth for the "where does this project's myco live"
- * question. Prefer this over reading `runtime.command` directly.
- */
-export function getHarnessScope(vaultDir: string): 'project' | 'machine' {
-  const runtimeCommand = resolveRuntimeCommand(vaultDir);
-  return runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
-    ? 'project'
-    : 'machine';
+  const managedPrefix = `${resolveMachineRuntimeDir().split(path.sep).join('/')}/node_modules/`;
+  return normalized.startsWith(managedPrefix);
 }
 
 export function readProjectReleaseChannel(vaultDir: string): ReleaseChannel {
@@ -271,7 +264,7 @@ export function detectDevBuild(
   if (!cliEntry) return null;
   try {
     const resolvedEntry = realpath(cliEntry);
-    if (isManagedProjectRuntime(resolvedEntry)) {
+    if (isManagedMachineRuntime(resolvedEntry)) {
       return null;
     }
     const resolvedPrefix = realpath(globalPrefix);
@@ -498,13 +491,12 @@ function buildPackageResults(
   channel: ReleaseChannel,
   globalPrefix: string | null,
   runtimeCommand: string | null = null,
-  vaultDir?: string,
 ): PackageCheckResult[] {
   const installedVersions = buildInstalledPackageVersions(globalPrefix, currentVersion);
   const isManagedStableRevert =
     channel === 'stable'
     && runtimeCommand !== null
-    && isManagedProjectRuntime(runtimeCommand, vaultDir);
+    && isManagedMachineRuntime(runtimeCommand);
 
   return UPDATE_PACKAGES.map((pkg) => {
     const cached = cache.packages[pkg.id];
@@ -550,18 +542,17 @@ function buildCheckResult(
   error: string | null,
   globalPrefix: string | null,
   runtimeCommand: string | null = null,
-  vaultDir?: string,
 ): CheckResult {
-  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix, runtimeCommand, vaultDir);
+  const packages = buildPackageResults(currentVersion, cache, channel, globalPrefix, runtimeCommand);
   const primaryPackage = packages.find((pkg) => pkg.id === 'myco');
   const targetVersion = primaryPackage?.latest_version ?? currentVersion;
   const latestStable = primaryPackage?.latest_stable ?? currentVersion;
   const latestBeta = primaryPackage?.latest_beta ?? null;
   const updateAvailable = packages.some((pkg) => pkg.installed && pkg.update_available);
   const revertAvailable = packages.some((pkg) => pkg.revert_available);
-  const runtimeScope: 'project' | 'machine' =
-    runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
-      ? 'project'
+  const runtimeScope: 'managed' | 'machine' =
+    runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
+      ? 'managed'
       : 'machine';
 
   return {
@@ -635,7 +626,6 @@ export async function checkForUpdate(
   globalPrefix: string | null = null,
   runtimeCommand: string | null = null,
   channelOverride?: ReleaseChannel,
-  vaultDir?: string,
 ): Promise<CheckResult> {
   const config = readUpdateConfig();
   const existingCache = readCachedCheck();
@@ -700,8 +690,8 @@ export async function checkForUpdate(
       channel: effectiveChannel,
       channel_scope: 'project',
       runtime_scope:
-        runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
-          ? 'project'
+        runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
+          ? 'managed'
           : 'machine',
       check_interval_hours: config.check_interval_hours,
       last_check: new Date().toISOString(),
@@ -712,7 +702,6 @@ export async function checkForUpdate(
         effectiveChannel,
         globalPrefix,
         runtimeCommand,
-        vaultDir,
       ),
     };
   }
@@ -739,7 +728,6 @@ export async function checkForUpdate(
     error,
     globalPrefix,
     runtimeCommand,
-    vaultDir,
   );
 }
 
@@ -757,7 +745,6 @@ export function statusFromCache(
   globalPrefix: string | null = null,
   runtimeCommand: string | null = null,
   channelOverride?: ReleaseChannel,
-  vaultDir?: string,
 ): CheckResult | null {
   const resolvedCache = cache !== undefined ? cache : readCachedCheck();
   if (resolvedCache === null) return null;
@@ -772,6 +759,5 @@ export function statusFromCache(
     null,
     globalPrefix,
     runtimeCommand,
-    vaultDir,
   );
 }

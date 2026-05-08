@@ -83,7 +83,6 @@ interface ActivationMarker {
   import_result: ImportProjectCoreResult;
   validation: ActivationValidationSummary;
   team_sync_disabled: boolean;
-  runtime_command_preserved: boolean;
   legacy_archived?: { archived_at: string; archive_dir: string };
   legacy_archive_error?: { failed_at: string; message: string };
 }
@@ -101,7 +100,6 @@ interface ActivationMarker {
  * * `tasks/` — committed project-authored task overrides
  * * `buffer/` — fallback hook buffer used when the daemon is offline
  * * `migration/` — activation marker / per-project migration state
- * * `runtime.command` — optional dev launcher pin
  * * `secrets.env`, `machine_id`, `last-update-version`, `.gitignore`
  *
  * Anything not in this list above and not in `LEGACY_ARCHIVE_ENTRIES`
@@ -289,7 +287,6 @@ export function activateProjectMigration(
         import_result: importResult,
         validation,
         team_sync_disabled: teamSyncDisabled,
-        runtime_command_preserved: fs.existsSync(path.join(projectVaultDir, 'runtime.command')),
       });
 
       // Drop the migration journal — it's mid-import working state

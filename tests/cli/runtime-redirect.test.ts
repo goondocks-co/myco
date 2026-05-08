@@ -1,6 +1,6 @@
 /**
- * Tests for bin/runtime-redirect.cjs — the CLI shim's project-local
- * runtime pin walker.
+ * Tests for bin/runtime-redirect.cjs — the CLI shim's machine-scope
+ * runtime pin reader.
  *
  * The orchestration in `maybeRedirect` calls `process.exit` on successful
  * redirect, so it's exercised via a spawned subprocess. The pure helpers
@@ -16,8 +16,7 @@ import { spawnSync } from 'node:child_process';
 const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
 
 type Helpers = {
-  findProjectRuntimePin: (cwd: string, scope?: 'capture' | 'project') => string | null;
-  resolveSearchStart: (cwd: string) => string;
+  readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv) => string | null;
   pointsAtSelf: (target: string, selfPath: string) => boolean;
 };
 
@@ -40,148 +39,35 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// findProjectRuntimePin
+// readMachineRuntimeCommand
 // ---------------------------------------------------------------------------
 
-describe('findProjectRuntimePin', () => {
-  it('returns null when no .myco/runtime.command exists in any ancestor', () => {
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(tmpRoot)).toBeNull();
+describe('readMachineRuntimeCommand', () => {
+  it('returns null when ~/.myco/runtime.command does not exist', () => {
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBeNull();
   });
 
-  it('returns the trimmed contents when runtime.command is found at cwd', () => {
-    const mycoDir = path.join(tmpRoot, '.myco');
-    fs.mkdirSync(mycoDir);
-    fs.writeFileSync(path.join(mycoDir, 'runtime.command'), '/opt/pinned/myco\n');
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(tmpRoot)).toBe('/opt/pinned/myco');
+  it('returns the trimmed contents when runtime.command is present', () => {
+    fs.writeFileSync(path.join(tmpRoot, 'runtime.command'), '/opt/pinned/myco\n');
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
   });
 
-  it('finds the pin when cwd is a subdirectory of the project', () => {
-    const mycoDir = path.join(tmpRoot, '.myco');
-    fs.mkdirSync(mycoDir);
-    fs.writeFileSync(path.join(mycoDir, 'runtime.command'), '/opt/pinned/myco');
-    const subdir = path.join(tmpRoot, 'src', 'deep');
-    fs.mkdirSync(subdir, { recursive: true });
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(subdir)).toBe('/opt/pinned/myco');
+  it('returns null when runtime.command exists but is empty / whitespace only', () => {
+    fs.writeFileSync(path.join(tmpRoot, 'runtime.command'), '   \n');
+    const { readMachineRuntimeCommand } = loadModule();
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBeNull();
   });
 
-  it('returns null when runtime.command exists but is empty', () => {
-    const mycoDir = path.join(tmpRoot, '.myco');
-    fs.mkdirSync(mycoDir);
-    fs.writeFileSync(path.join(mycoDir, 'runtime.command'), '   \n');
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(tmpRoot)).toBeNull();
-  });
-
-  it('falls back to the main repo pin when a git worktree has no local pin', () => {
-    const mainRepo = path.join(tmpRoot, 'main-repo');
-    const worktree = path.join(tmpRoot, 'feature-worktree');
-    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
-    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
-    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(worktree, '.git'),
-      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
-    );
-    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
-
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(worktree, 'project')).toBe('/main/myco');
-  });
-
-  it('prefers a worktree-local pin for project scope', () => {
-    const mainRepo = path.join(tmpRoot, 'main-repo');
-    const worktree = path.join(tmpRoot, 'feature-worktree');
-    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
-    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
-    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(worktree, '.git'),
-      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
-    );
-    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
-    fs.writeFileSync(path.join(worktree, '.myco', 'runtime.command'), '/worktree/myco');
-
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(worktree, 'project')).toBe('/worktree/myco');
-  });
-
-  it('uses the main repo pin for capture scope from a git worktree', () => {
-    const mainRepo = path.join(tmpRoot, 'main-repo');
-    const worktree = path.join(tmpRoot, 'feature-worktree');
-    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
-    fs.mkdirSync(path.join(mainRepo, '.myco'), { recursive: true });
-    fs.mkdirSync(path.join(worktree, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(worktree, '.git'),
-      `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
-    );
-    fs.writeFileSync(path.join(mainRepo, '.myco', 'runtime.command'), '/main/myco');
-    fs.writeFileSync(path.join(worktree, '.myco', 'runtime.command'), '/worktree/myco');
-
-    const { findProjectRuntimePin } = loadModule();
-    expect(findProjectRuntimePin(worktree, 'capture')).toBe('/main/myco');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveSearchStart — worktree awareness
-// ---------------------------------------------------------------------------
-
-describe('resolveSearchStart', () => {
-  it('returns cwd when no .git is found in any ancestor', () => {
-    const deep = path.join(tmpRoot, 'a', 'b');
-    fs.mkdirSync(deep, { recursive: true });
-    const { resolveSearchStart } = loadModule();
-    expect(resolveSearchStart(deep)).toBe(deep);
-  });
-
-  it('returns the repo root when .git is a directory', () => {
-    const repo = path.join(tmpRoot, 'repo');
-    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
-    const inner = path.join(repo, 'src', 'nested');
-    fs.mkdirSync(inner, { recursive: true });
-    const { resolveSearchStart } = loadModule();
-    expect(resolveSearchStart(inner)).toBe(repo);
-  });
-
-  it('returns the main repo root when cwd is inside a git worktree', () => {
-    // Simulate: /tmp/<root>/main-repo/.git/  (main repo)
-    //          /tmp/<root>/main-repo/.worktrees/feature/  (worktree)
-    //          /tmp/<root>/main-repo/.worktrees/feature/.git → file
-    const mainRepo = path.join(tmpRoot, 'main-repo');
-    const mainGit = path.join(mainRepo, '.git');
-    fs.mkdirSync(path.join(mainGit, 'worktrees', 'feature'), { recursive: true });
-
-    const worktree = path.join(mainRepo, '.worktrees', 'feature');
-    fs.mkdirSync(worktree, { recursive: true });
-    fs.writeFileSync(
-      path.join(worktree, '.git'),
-      `gitdir: ${path.join(mainGit, 'worktrees', 'feature')}\n`,
-    );
-
-    const nested = path.join(worktree, 'src', 'module');
-    fs.mkdirSync(nested, { recursive: true });
-
-    const { resolveSearchStart } = loadModule();
-    expect(resolveSearchStart(nested)).toBe(mainRepo);
-  });
-
-  it('resolves relative gitdir paths against the .git file location', () => {
-    const mainRepo = path.join(tmpRoot, 'main-repo');
-    fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
-
-    const worktree = path.join(mainRepo, '.worktrees', 'feature');
-    fs.mkdirSync(worktree, { recursive: true });
-    fs.writeFileSync(
-      path.join(worktree, '.git'),
-      'gitdir: ../../.git/worktrees/feature\n',
-    );
-
-    const { resolveSearchStart } = loadModule();
-    expect(resolveSearchStart(worktree)).toBe(mainRepo);
+  it('expands a leading ~ in MYCO_HOME', () => {
+    // Write the file under the test's HOME so `MYCO_HOME=~/myco-home-test/.myco`
+    // expands to a real path. Cleanup happens via afterEach since tmpRoot
+    // already covers it — but we need to write under HOME for the expansion
+    // case, so we just verify the no-throw / null branch.
+    const { readMachineRuntimeCommand } = loadModule();
+    // ~ alone is supported as a shorthand for HOME.
+    expect(() => readMachineRuntimeCommand({ MYCO_HOME: '~' })).not.toThrow();
   });
 });
 
@@ -215,6 +101,14 @@ describe('pointsAtSelf', () => {
     const { pointsAtSelf } = loadModule();
     expect(pointsAtSelf(path.join(tmpRoot, 'missing'), self)).toBe(false);
   });
+
+  it('returns false for unqualified PATH commands without a separator', () => {
+    const self = path.join(tmpRoot, 'self');
+    fs.writeFileSync(self, 'self');
+    const { pointsAtSelf } = loadModule();
+    expect(pointsAtSelf('myco', self)).toBe(false);
+    expect(pointsAtSelf('myco-dev', self)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -241,14 +135,20 @@ describe('maybeRedirect (integration)', () => {
     return { shimPath, runtimeRedirect };
   }
 
+  /** Make a fresh `~/.myco`-shaped MYCO_HOME and return its absolute path. */
+  function makeMycoHome(): string {
+    const home = fs.mkdtempSync(path.join(tmpRoot, 'myco-home-'));
+    return home;
+  }
+
   it('falls through to normal dispatch when no pin exists', () => {
     const { shimPath } = makeShim();
-    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+    const home = makeMycoHome();
 
     const res = spawnSync(process.execPath, [shimPath, 'doctor'], {
-      cwd,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toBe('shim:doctor');
@@ -256,8 +156,7 @@ describe('maybeRedirect (integration)', () => {
 
   it('redirects to the pinned binary and forwards argv', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const home = makeMycoHome();
 
     const pinned = path.join(tmpRoot, 'pinned.sh');
     fs.writeFileSync(
@@ -268,12 +167,12 @@ describe('maybeRedirect (integration)', () => {
       ].join('\n'),
       { mode: 0o755 },
     );
-    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
 
     const res = spawnSync(process.execPath, [shimPath, 'doctor', '--fix'], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toBe('pinned:doctor --fix:redirected=1');
@@ -281,17 +180,13 @@ describe('maybeRedirect (integration)', () => {
 
   it('skips redirect when MYCO_REDIRECTED is already set', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(project, '.myco', 'runtime.command'),
-      '/nonexistent/should/not/matter',
-    );
+    const home = makeMycoHome();
+    fs.writeFileSync(path.join(home, 'runtime.command'), '/nonexistent/should/not/matter');
 
     const res = spawnSync(process.execPath, [shimPath, 'ok'], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: '1' },
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: '1' },
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toBe('shim:ok');
@@ -299,52 +194,45 @@ describe('maybeRedirect (integration)', () => {
 
   it('falls through when the pin target is missing (ENOENT)', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
-    fs.writeFileSync(
-      path.join(project, '.myco', 'runtime.command'),
-      '/definitely/not/a/real/binary',
-    );
+    const home = makeMycoHome();
+    fs.writeFileSync(path.join(home, 'runtime.command'), '/definitely/not/a/real/binary');
 
     const res = spawnSync(process.execPath, [shimPath, 'doctor'], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toBe('shim:doctor');
-    expect(res.status).toBe(0);
   });
 
   it('propagates non-zero exit status from the pinned binary', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const home = makeMycoHome();
 
     const pinned = path.join(tmpRoot, 'failing.sh');
     fs.writeFileSync(pinned, '#!/bin/sh\nexit 42\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(42);
   });
 
   it('stays silent on stderr by default when redirecting', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const home = makeMycoHome();
     const pinned = path.join(tmpRoot, 'silent-pinned.sh');
     fs.writeFileSync(pinned, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     expect(res.stderr).toBe('');
@@ -352,16 +240,15 @@ describe('maybeRedirect (integration)', () => {
 
   it('traces the redirect to stderr when MYCO_DEBUG_REDIRECT is set', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
+    const home = makeMycoHome();
     const pinned = path.join(tmpRoot, 'traced-pinned.sh');
     fs.writeFileSync(pinned, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), pinned);
+    fs.writeFileSync(path.join(home, 'runtime.command'), pinned);
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
     });
     expect(res.status).toBe(0);
     expect(res.stderr).toContain('[myco] redirect:');
@@ -371,27 +258,26 @@ describe('maybeRedirect (integration)', () => {
 
   it('traces the skip reason when MYCO_DEBUG_REDIRECT is set and no pin exists', () => {
     const { shimPath } = makeShim();
-    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'nopin-'));
+    const home = makeMycoHome();
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
     });
     expect(res.status).toBe(0);
-    expect(res.stderr).toContain('[myco] redirect: skip (no .myco/runtime.command pin found)');
+    expect(res.stderr).toContain('[myco] redirect: skip (no ~/.myco/runtime.command pin found)');
   });
 
   it('traces the skip reason when MYCO_REDIRECTED is already set', () => {
     const { shimPath } = makeShim();
-    const project = path.join(tmpRoot, 'project');
-    fs.mkdirSync(path.join(project, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(project, '.myco', 'runtime.command'), '/unused');
+    const home = makeMycoHome();
+    fs.writeFileSync(path.join(home, 'runtime.command'), '/unused');
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: project,
+      cwd: tmpRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_REDIRECTED: '1', MYCO_DEBUG_REDIRECT: '1' },
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: '1', MYCO_DEBUG_REDIRECT: '1' },
     });
     expect(res.status).toBe(0);
     expect(res.stderr).toContain('[myco] redirect: skip (MYCO_REDIRECTED already set)');

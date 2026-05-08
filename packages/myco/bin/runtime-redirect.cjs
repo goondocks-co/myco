@@ -1,102 +1,44 @@
-// Project-local runtime redirect for the myco CLI shim.
+// Machine-scope runtime redirect for the myco CLI shim.
 //
-// When `myco` is invoked inside a project that pins a specific runtime
-// via `.myco/runtime.command` (beta-channel projects and dogfood), this
-// helper re-execs into the pinned binary so the interactive CLI matches
-// the binary the project's daemon, hooks, and MCP server already use.
-// Without this, `myco doctor`, `myco update`, etc. resolve to the global
-// binary while every other dispatch path resolves to the local pin —
+// When the machine has `~/.myco/runtime.command` set (managed beta runtime
+// or `make dev-link`), this helper re-execs into that binary so the
+// interactive CLI matches the binary the daemon, hooks, and MCP server
+// already use. Without it, `myco doctor`, `myco update`, etc. resolve to
+// the global binary while every other dispatch path resolves to the pin —
 // producing version skew between CLI and daemon.
 //
-// This is the same dispatch pattern `myco-run.cjs` (the symbiont hook
-// guard) uses for hook invocations, applied to the CLI entry itself.
-// `runtime.command` is the single source of truth for "which myco does
-// this project use."
+// `~/.myco/runtime.command` is the single source of truth for "which myco
+// does this machine use." File absent → bare `myco` from PATH.
 
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 /**
- * Walk upward from `cwd` looking for `.myco/runtime.command`. Returns
- * the trimmed file contents (an absolute path or PATH-resolvable name)
- * or null when no pin is found.
+ * Read `~/.myco/runtime.command` (honoring `MYCO_HOME` when set). Returns
+ * the trimmed file contents, or null when the file is missing or empty.
  *
- * Worktree-aware: capture scope uses the main repo pin so session capture
- * keeps writing to the shared vault. Project scope can use a worktree-local
- * pin, then fall back to the main repo pin.
- *
- * Filename literals here mirror `PROJECT_RUNTIME_COMMAND_FILENAME` and
- * `.myco` from `src/constants/update.ts`. This file is plain CJS (runs
- * before bun) so it can't import the TS source of truth.
+ * Filename literal mirrors `MACHINE_RUNTIME_COMMAND_FILENAME` from
+ * `src/constants/update.ts`. This file is plain CJS (runs before bun) so
+ * it can't import the TS source of truth.
  */
-function findProjectRuntimePin(cwd, scope = 'project') {
+function readMachineRuntimeCommand(env = process.env) {
   try {
-    if (scope === 'capture') {
-      return findRuntimePinFrom(resolveSearchStart(cwd));
-    }
-
-    const local = findRuntimePinFrom(path.resolve(cwd));
-    if (local) return local;
-
-    const fallbackStart = resolveSearchStart(cwd);
-    if (path.resolve(fallbackStart) === path.resolve(cwd)) return null;
-    return findRuntimePinFrom(fallbackStart);
+    const home = env.MYCO_HOME ? expandHome(env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+    const raw = fs.readFileSync(path.join(home, 'runtime.command'), 'utf-8').trim();
+    return raw || null;
   } catch {
     return null;
   }
 }
 
-function findRuntimePinFrom(startDir) {
-  let dir = path.resolve(startDir);
-  while (true) {
-    const pinPath = path.join(dir, '.myco', 'runtime.command');
-    try {
-      const raw = fs.readFileSync(pinPath, 'utf-8').trim();
-      if (raw) return raw;
-    } catch {
-      // not here
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
- * If `cwd` is inside a git worktree, return the main repo root. Otherwise
- * return `cwd`. Detection is purely filesystem-based (no `git` spawn) so
- * this stays cheap in the shim's startup path.
- *
- * Worktree marker: `.git` is a file (not a directory) whose contents start
- * with `gitdir: <path>`. That path points at `<mainRepo>/.git/worktrees/<name>`;
- * the main repo root is three levels up.
- */
-function resolveSearchStart(cwd) {
-  let dir = cwd;
-  while (true) {
-    const gitEntry = path.join(dir, '.git');
-    try {
-      const stat = fs.lstatSync(gitEntry);
-      if (stat.isDirectory()) return dir;
-      if (stat.isFile()) {
-        const content = fs.readFileSync(gitEntry, 'utf-8').trim();
-        const match = content.match(/^gitdir:\s*(.+)$/m);
-        if (match && match[1]) {
-          const gitdir = path.isAbsolute(match[1]) ? match[1] : path.resolve(dir, match[1]);
-          return path.resolve(gitdir, '..', '..', '..');
-        }
-        return dir;
-      }
-    } catch {
-      // no .git here; keep walking
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return cwd;
-    dir = parent;
-  }
+function expandHome(value) {
+  if (value === '~') return os.homedir();
+  if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
+  return value;
 }
 
 /**
@@ -118,7 +60,7 @@ function pointsAtSelf(target, selfPath) {
 }
 
 /**
- * If a project-local runtime pin applies and points at a different binary
+ * If a machine-scope runtime pin applies and points at a different binary
  * than ourselves, re-exec into it with forwarded argv and an env var set
  * to prevent infinite redirect loops. Exits the process on successful
  * redirect (propagating the child's exit code).
@@ -131,7 +73,7 @@ function pointsAtSelf(target, selfPath) {
  * emits a single-line trace to stderr — useful when `which myco` reports
  * one binary but `myco --version` seems to run a different one.
  */
-function maybeRedirect(selfPath, cwd = process.cwd(), env = process.env) {
+function maybeRedirect(selfPath, env = process.env) {
   const debug = Boolean(env.MYCO_DEBUG_REDIRECT);
   const trace = (msg) => {
     if (debug) process.stderr.write(`[myco] redirect: ${msg}\n`);
@@ -141,9 +83,9 @@ function maybeRedirect(selfPath, cwd = process.cwd(), env = process.env) {
     trace('skip (MYCO_REDIRECTED already set)');
     return false;
   }
-  const pin = findProjectRuntimePin(cwd, env.MYCO_RUNTIME_SCOPE === 'capture' ? 'capture' : 'project');
+  const pin = readMachineRuntimeCommand(env);
   if (!pin) {
-    trace('skip (no .myco/runtime.command pin found)');
+    trace('skip (no ~/.myco/runtime.command pin found)');
     return false;
   }
   if (pointsAtSelf(pin, selfPath)) {
@@ -168,8 +110,7 @@ function maybeRedirect(selfPath, cwd = process.cwd(), env = process.env) {
 }
 
 module.exports = {
-  findProjectRuntimePin,
-  resolveSearchStart,
+  readMachineRuntimeCommand,
   pointsAtSelf,
   maybeRedirect,
 };

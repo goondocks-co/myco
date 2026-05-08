@@ -13,13 +13,15 @@ import { spawn } from 'node:child_process';
 
 import {
   MYCO_GLOBAL_DIR,
-  PROJECT_RUNTIME_DIRNAME,
-  PROJECT_RUNTIME_TMP_DIRNAME,
-  PROJECT_RUNTIME_COMMAND_FILENAME,
   UPDATE_ERROR_PATH,
   UPDATE_SCRIPT_DELAY_SECONDS,
   RESTART_REASON_FILENAME,
 } from '../constants/update.js';
+import {
+  resolveMachineRuntimeCommandPath,
+  resolveMachineRuntimeDir,
+  resolveMachineRuntimeTmpDir,
+} from '../grove/paths.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -29,17 +31,17 @@ import {
 export interface InstallParams {
   /** Fully-qualified npm package specs to install globally (e.g. ["@goondocks/myco-team@0.11.0"]). */
   packageSpecs: string[];
-  /** Optional core Myco package spec to install into the project-local runtime. */
+  /** Optional core Myco package spec to install into the managed machine runtime. */
   localRuntimeSpec?: string;
-  /** Remove the project-local runtime after a successful stable-channel apply. */
+  /** Remove the managed machine runtime after a successful stable-channel apply. */
   removeLocalRuntime?: boolean;
-  /** Absolute path to the project root for `myco update --project`. */
+  /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
   projectRoot: string;
-  /** Absolute path to the vault directory (used to compute localRuntime paths). */
+  /** Absolute path to the vault directory the daemon was running against (used as cwd for the respawn). */
   vaultDir: string;
   /**
    * Literal myco binary the script should invoke for the post-install
-   * `update --project` step and the final daemon respawn. Baked into the
+   * project sync step and the final daemon respawn. Baked into the
    * script at generation time — see `resolveMycoBinary()` in update-checker
    * for how the daemon picks it (dev build CLI entry in dev mode, bare
    * `myco` in prod).
@@ -68,7 +70,6 @@ export function generateUpdateScript(params: InstallParams): string {
     localRuntimeSpec,
     removeLocalRuntime = false,
     projectRoot,
-    vaultDir,
     mycoBinary,
   } = params;
 
@@ -77,15 +78,15 @@ export function generateUpdateScript(params: InstallParams): string {
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const quotedErrorPath = JSON.stringify(UPDATE_ERROR_PATH);
-  const localRuntimeDir = path.join(vaultDir, PROJECT_RUNTIME_DIRNAME);
-  const localRuntimeTmpDir = path.join(vaultDir, PROJECT_RUNTIME_TMP_DIRNAME);
-  const localRuntimeCommandPath = path.join(vaultDir, PROJECT_RUNTIME_COMMAND_FILENAME);
-  const localRuntimeMyco = path.join(localRuntimeDir, 'node_modules', '.bin', 'myco');
+  const machineRuntimeDir = resolveMachineRuntimeDir();
+  const machineRuntimeTmpDir = resolveMachineRuntimeTmpDir();
+  const machineRuntimeCommandPath = resolveMachineRuntimeCommandPath();
+  const machineRuntimeMyco = path.join(machineRuntimeDir, 'node_modules', '.bin', 'myco');
   const quotedLocalRuntimeSpec = localRuntimeSpec ? JSON.stringify(localRuntimeSpec) : null;
-  const quotedLocalRuntimeDir = JSON.stringify(localRuntimeDir);
-  const quotedLocalRuntimeTmpDir = JSON.stringify(localRuntimeTmpDir);
-  const quotedLocalRuntimeCommandPath = JSON.stringify(localRuntimeCommandPath);
-  const quotedLocalRuntimeMyco = JSON.stringify(localRuntimeMyco);
+  const quotedLocalRuntimeDir = JSON.stringify(machineRuntimeDir);
+  const quotedLocalRuntimeTmpDir = JSON.stringify(machineRuntimeTmpDir);
+  const quotedLocalRuntimeCommandPath = JSON.stringify(machineRuntimeCommandPath);
+  const quotedLocalRuntimeMyco = JSON.stringify(machineRuntimeMyco);
   const errorJson = JSON.stringify(
     JSON.stringify({ error: `npm install failed for ${[...packageSpecs, localRuntimeSpec].filter(Boolean).join(', ')}` }),
   );

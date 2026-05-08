@@ -1,6 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  MACHINE_RUNTIME_COMMAND_FILENAME,
+  MACHINE_RUNTIME_DIRNAME,
+  MACHINE_RUNTIME_TMP_DIRNAME,
+} from '../constants/update.js';
+
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
 export const SERVICE_DIRNAME = 'service';
@@ -92,6 +98,29 @@ export function resolveProjectVaultDir(projectRoot: string): string {
 
 export function resolveProjectManifestPath(projectVaultDir: string): string {
   return path.join(projectVaultDir, PROJECT_MANIFEST_FILENAME);
+}
+
+/**
+ * `~/.myco/runtime.command` — single source of truth for which `myco`
+ * binary the launcher (`myco-run.cjs`, `myco-cli.cjs`, `bin/myco.cjs`)
+ * should exec. Absent file means "use whatever PATH resolves `myco` to."
+ *
+ * Machine-scoped because the daemon itself is now machine-scoped: there
+ * is exactly one daemon per machine, and the runtime that backs it is a
+ * machine-level choice, not a per-project one.
+ */
+export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
+}
+
+/** `~/.myco/runtime/` — managed beta runtime install directory. */
+export function resolveMachineRuntimeDir(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, MACHINE_RUNTIME_DIRNAME);
+}
+
+/** `~/.myco/runtime.tmp/` — staging dir for atomic runtime swap on update. */
+export function resolveMachineRuntimeTmpDir(mycoHome = resolveMycoHome()): string {
+  return path.join(mycoHome, MACHINE_RUNTIME_TMP_DIRNAME);
 }
 
 function expandHome(value: string, homeDir = os.homedir()): string {

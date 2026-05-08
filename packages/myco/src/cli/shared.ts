@@ -9,11 +9,6 @@ import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
 import { requestContextFromEnvironment } from '../tools/request-context.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import {
-  PROJECT_RUNTIME_DIRNAME,
-  PROJECT_RUNTIME_TMP_DIRNAME,
-  PROJECT_RUNTIME_COMMAND_FILENAME,
-} from '../constants/update.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
@@ -104,16 +99,6 @@ staging/
 # Grove activation marker/state — local to this checkout and may contain
 # machine-specific validation paths from the activation run.
 migration/
-
-# Runtime command alias — per-contributor override for which myco binary
-# the hook guard invokes. Default (file absent) is \`myco\`; \`make dev-link\`
-# writes \`myco-dev\`; users can hand-edit for PATH conflicts or pinning.
-# Never committed — different contributors use different aliases.
-${PROJECT_RUNTIME_COMMAND_FILENAME}
-
-# Project-local managed runtime used for beta isolation
-${PROJECT_RUNTIME_DIRNAME}/
-${PROJECT_RUNTIME_TMP_DIRNAME}/
 
 # Per-user appearance and settings overrides
 local.yaml
