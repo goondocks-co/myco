@@ -255,11 +255,40 @@ function hasGroveTeamScope(scope: TeamCliScope): scope is GroveTeamCliScope {
   return Boolean(scope.requestContext.groveId && scope.resourceSlug);
 }
 
+/**
+ * Gate that asserts the resolved CLI scope is bound to a Grove. Pre-Grove
+ * vaults (no project.toml, no Grove binding) hit the friendly migration
+ * prompt below. Operators can override with `--legacy` when they're
+ * intentionally provisioning sync against a legacy vault — that flag is
+ * read from `process.argv` here because the CLI parser hasn't yet split
+ * arguments at this point in `teamInit`. Exits with code 2
+ * (configuration error) rather than the historical generic 1, so caller
+ * scripts can branch on the migration prompt vs. an unrelated failure.
+ */
 function requireGroveInstallScope(scope: TeamCliScope): asserts scope is GroveTeamCliScope {
   if (hasGroveTeamScope(scope)) return;
 
-  console.error('Error: myco-team install requires a Grove-bound project. Run `myco init` or migrate the project into a Grove first.');
-  process.exit(1);
+  if (process.argv.includes('--legacy')) {
+    // Operator-acknowledged legacy install path — preserved for
+    // intentional re-provisioning of pre-Grove vaults. The cast is
+    // safe at runtime because resolveTeamCliScope already filled in
+    // the resourceSlug fallback from the vault dir; `groveId` is the
+    // only field still null, and the historical legacy code path
+    // never read it.
+    return;
+  }
+
+  console.error('');
+  console.error('myco-team install requires a Grove-bound project.');
+  console.error('');
+  console.error('To activate Grove for this project:');
+  console.error('  1. Run `myco init` from your project root.');
+  console.error('  2. Re-run `myco-team install` to provision team sync.');
+  console.error('');
+  console.error('If you are intentionally provisioning team sync against a legacy');
+  console.error('project-local vault, re-run with `--legacy` to bypass this gate.');
+  console.error('');
+  process.exit(2);
 }
 
 function resolveTeamCliScope(vaultDir: string): TeamCliScope {

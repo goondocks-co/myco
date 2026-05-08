@@ -7,7 +7,11 @@ compatibility_date = "2025-03-27"
 compatibility_flags = [ "nodejs_compat", "global_fetch_strictly_public" ]
 
 [vars]
-SYNC_PROTOCOL_VERSION = "1"
+# See packages/myco/src/constants.ts SYNC_PROTOCOL_VERSION /
+# MIN_COMPAT_CLIENT_VERSION — these MUST stay in lockstep. Worker
+# code reads these as strings and parseInt's them at request time.
+SYNC_PROTOCOL_VERSION = "2"
+MIN_COMPAT_CLIENT_VERSION = "1"
 MYCO_TEAM_PACKAGE_VERSION = "<MYCO_TEAM_PACKAGE_VERSION>"
 MYCO_SCHEMA_VERSION = "<MYCO_SCHEMA_VERSION>"
 # Mirror the queue names into env vars so the queue() handler can route on

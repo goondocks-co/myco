@@ -326,11 +326,33 @@ const ALL_DDLS = [
   TEAM_CONFIG_TABLE,
 ];
 
+export interface InitD1Options {
+  /**
+   * Oldest sync protocol version the worker still accepts. The
+   * Grove-era project-id orphan prune is gated on every active node
+   * having registered at >= this version. Pre-Grove daemons that
+   * haven't connected since the worker upgrade still have valid
+   * pre-Grove rows in D1; deleting them on the worker's first boot
+   * after upgrade is what would silently destroy that teammate's
+   * data. When omitted, the prune runs unconditionally — preserving
+   * the historical behavior for callers that don't pass options.
+   */
+  minClientVersion?: number;
+}
+
 /**
  * Create all D1 tables and indexes. Fully idempotent via IF NOT EXISTS.
  * Includes ALTER TABLE migrations for columns added after initial deployment.
+ *
+ * The optional `minClientVersion` argument gates the destructive
+ * one-shot pre-Grove orphan-row prune. Without it, the function runs
+ * the prune on every boot — same as before. With it, the prune only
+ * runs once every active node in the `nodes` table has registered at
+ * the new floor (see `arePruneClientsAtMinVersion`). This protects
+ * unmigrated teammates from losing their pre-Grove rows the first
+ * time any teammate ships an upgraded worker.
  */
-export async function initD1Schema(db: D1Database): Promise<void> {
+export async function initD1Schema(db: D1Database, options: InitD1Options = {}): Promise<void> {
   const statements = [...ALL_DDLS, ...BASE_SECONDARY_INDEXES];
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
@@ -446,6 +468,21 @@ export async function initD1Schema(db: D1Database): Promise<void> {
     .first<{ value: string }>();
 
   if (!projectIdPruneMarker) {
+    // Compatibility gate: defer the destructive prune until every
+    // active node in the `nodes` table has registered at
+    // >= options.minClientVersion. Pre-Grove daemons (no
+    // sync_protocol_version row, or a value below the floor) still
+    // own valid pre-Grove rows in D1; running the prune on the
+    // worker's first boot after upgrade would silently delete that
+    // teammate's data on every other teammate's machine. Skipping
+    // the marker write means we re-evaluate next boot — the prune
+    // runs as soon as all teammates ship the upgrade, with no
+    // operator intervention.
+    const safeToPrune = await arePruneClientsAtMinVersion(db, options.minClientVersion);
+    if (!safeToPrune) {
+      return;
+    }
+
     const tablesToPrune: readonly string[] = [
       'sessions',
       'prompt_batches',
@@ -480,5 +517,51 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
       .bind('project_id_orphans_pruned_v36', '1')
       .run();
+  }
+}
+
+/**
+ * Active-node window for the prune gate. A node that hasn't checked
+ * in within this window is treated as departed and ignored — without
+ * this, a single stale node on protocol v0/null would block the
+ * prune forever. Mirrors the 30-day "active machine" definition the
+ * daemon uses on the local outbox.
+ */
+const PRUNE_ACTIVE_WINDOW_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * True when it's safe to run the v36 project-id orphan prune.
+ *
+ * Returns false when *any* active node has registered at a protocol
+ * below `minClientVersion`, OR has never recorded a protocol version
+ * at all (NULL is treated as v1 — the historical pre-version client).
+ *
+ * If `minClientVersion` is undefined the gate is bypassed (preserves
+ * the legacy "always prune" behavior for callers that don't pass it).
+ */
+async function arePruneClientsAtMinVersion(
+  db: D1Database,
+  minClientVersion: number | undefined,
+): Promise<boolean> {
+  if (typeof minClientVersion !== 'number' || !Number.isFinite(minClientVersion)) {
+    return true;
+  }
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - PRUNE_ACTIVE_WINDOW_SECONDS;
+    const row = await db
+      .prepare(
+        `SELECT COUNT(*) AS unsafe
+           FROM nodes
+          WHERE last_seen >= ?
+            AND COALESCE(sync_protocol_version, 1) < ?`,
+      )
+      .bind(cutoff, minClientVersion)
+      .first<{ unsafe: number }>();
+    return Number(row?.unsafe ?? 0) === 0;
+  } catch {
+    // `nodes` table may be missing on a brand-new D1 that hasn't
+    // received any /connect calls yet. With nothing to protect, the
+    // prune is safe — this is the fresh-deploy fast path.
+    return true;
   }
 }

@@ -60,10 +60,40 @@ export interface TeamSearchResponse {
   machine_ids: string[];
 }
 
+/**
+ * SyncRecord operations supported on the wire. The `embed` value
+ * was added in protocol v2 (queue-driven vector reindex). DlqEntry
+ * payloads echo this enum, so any consumer that types DLQ rows
+ * needs to handle all three values.
+ */
+export type SyncRecordOperation = 'upsert' | 'delete' | 'embed';
+
+/**
+ * Shape of a SyncRecord payload as it appears in the worker DLQ
+ * (after JSON deserialization). Mirrors the `SyncRecord` interface
+ * in `packages/myco-team/worker/src/index.ts` — kept here as the
+ * daemon-side public type so `DlqMessage.body` can be narrowed.
+ */
+export interface DlqSyncRecordPayload {
+  table: string;
+  operation: SyncRecordOperation;
+  id: string;
+  machine_id: string;
+  content_hash?: string | null;
+  data?: Record<string, unknown>;
+}
+
 export interface TeamHealthResponse {
   status: string;
   node_count: number;
   sync_protocol_version: number;
+  /**
+   * Oldest sync protocol the worker still accepts. Optional for
+   * back-compat with workers deployed before the field was added —
+   * absence means the worker enforces strict-equality on the
+   * server's protocol version.
+   */
+  min_compat_client_version?: number;
   package_version?: string;
   schema_version?: number | null;
   mcp_token_hash?: string;
@@ -79,6 +109,11 @@ export interface TeamConnectInfo {
 export interface TeamConfigResponse {
   config: Record<string, unknown>;
   sync_protocol_version: number;
+  /**
+   * Oldest sync protocol the worker still accepts. Optional for
+   * back-compat with workers deployed before the field was added.
+   */
+  min_compat_client_version?: number;
   mcp_token?: string;
   mcp_endpoint?: string;
 }
@@ -136,13 +171,25 @@ export interface TeamRemoteSyncSummaryResponse {
   sync_protocol_version: number;
 }
 
+/**
+ * Single DLQ message returned by the worker's `/api/team/dlq` and
+ * the daemon's local CF DLQ proxy. `body` typically holds a
+ * `DlqSyncRecordPayload`, but stays loose so non-record DLQ entries
+ * (e.g. malformed-JSON poison messages) still parse.
+ *
+ * `DlqEntry` is exported as an alias so consumers that prefer the
+ * shorter name don't have to deconflict with the @myco-team/worker
+ * type name. Both alias to the same shape.
+ */
 export interface DlqMessage {
   msg_id: string;
-  body: Record<string, unknown>;
+  body: Record<string, unknown> | DlqSyncRecordPayload;
   attempts: number;
   last_failure?: string;
   enqueued_at?: number;
 }
+
+export type DlqEntry = DlqMessage;
 
 export interface DlqListResponse {
   messages: DlqMessage[];

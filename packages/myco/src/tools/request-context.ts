@@ -156,19 +156,58 @@ export function requestContextFromEnvironment(
  * `GroveProjectId`. Pre-Grove vaults — where the manifest is missing or
  * lacks a `proj_<32hex>` id — throw with an explicit message instead of
  * silently producing a path-derived id.
+ *
+ * For tool/MCP entry points that prefer a soft-fail path (so MCP clients
+ * see a friendly "run `myco init`" message instead of `tool_call_failed`),
+ * use `tryResolveRequestContextForVault` instead.
  */
 export function resolveRequestContextForVault(
   vaultDir: string,
   overrides: { machineId?: string; sessionId?: string | null } = {},
 ): MycoRequestContext {
-  const { context: fallback, manifest } = buildVaultFallback(vaultDir, overrides);
-  // If the manifest binds the project to a Grove, return the
-  // registered context (with the real `groveId`) instead of the
-  // null-grove fallback. Otherwise downstream helpers like
-  // `rowProjectIdFromRequestContext` collapse `groveId: null` to
-  // `null` row scope and the daemon writes orphan rows under what
-  // the brand says is a real `proj_<32hex>` id.
-  return resolveManifestRequestContext(fallback, 'legacy-vault', manifest) ?? fallback;
+  const result = tryResolveRequestContextForVault(vaultDir, overrides);
+  if (result.kind === 'legacy') {
+    // Preserve the historical hard-error contract for callers that
+    // explicitly chose the throwing entry point.
+    throw new Error(result.reason);
+  }
+  return result.context;
+}
+
+/**
+ * Result of `tryResolveRequestContextForVault`. The `kind: 'grove'`
+ * variant carries the same `MycoRequestContext` the throwing function
+ * would have returned. The `kind: 'legacy'` variant carries the
+ * vault directory and a human-readable reason — surfaced by tool
+ * runtimes as a degraded-mode error so MCP clients render
+ * "run \`myco init\` to activate Grove features" instead of an
+ * opaque `tool_call_failed`.
+ */
+export type TryRequestContextResult =
+  | { kind: 'grove'; context: MycoRequestContext }
+  | { kind: 'legacy'; vaultDir: string; reason: string };
+
+/**
+ * Soft-fail variant of `resolveRequestContextForVault` for entry
+ * points that need to keep the daemon responsive on pre-Grove vaults
+ * (the project manifest is absent, the `project.toml` lacks a
+ * `proj_<32hex>` id, etc.). The caller decides what to do with the
+ * legacy state — the canonical pattern is to surface a
+ * `legacy_vault` typed tool error with the included `reason` rather
+ * than letting `resolveRequestContextForVault` throw `tool_call_failed`
+ * inside the MCP runtime.
+ */
+export function tryResolveRequestContextForVault(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null } = {},
+): TryRequestContextResult {
+  const result = tryBuildVaultFallback(vaultDir, overrides);
+  if (result.kind === 'legacy') {
+    return result;
+  }
+  const context = resolveManifestRequestContext(result.context, 'legacy-vault', result.manifest)
+    ?? result.context;
+  return { kind: 'grove', context };
 }
 
 /**
@@ -177,19 +216,45 @@ export function resolveRequestContextForVault(
  * (`requestContextFromEnvironment`, `requestContextFromHttpHeaders`)
  * pass the manifest through to `resolveManifestRequestContext` so it
  * doesn't read the same `project.toml` from disk twice.
+ *
+ * Throws on legacy vaults to preserve the historical hard-error
+ * contract for header/env paths. Tool runtimes that need a graceful
+ * degraded mode should call `tryBuildVaultFallback` directly.
  */
 function buildVaultFallback(
   vaultDir: string,
   overrides: { machineId?: string; sessionId?: string | null } = {},
 ): { context: MycoRequestContext; manifest: ProjectManifest | null } {
-  const projectRoot = resolveProjectRoot(vaultDir);
+  const result = tryBuildVaultFallback(vaultDir, overrides);
+  if (result.kind === 'legacy') {
+    throw new Error(result.reason);
+  }
+  return { context: result.context, manifest: result.manifest };
+}
+
+/**
+ * Internal: soft-fail variant of `buildVaultFallback`. Returns a
+ * discriminated union so call sites can branch on legacy state
+ * instead of catching exceptions. `kind: 'grove'` carries the
+ * resolved context plus the manifest we already had to read (so
+ * `resolveManifestRequestContext` doesn't re-read it). `kind:
+ * 'legacy'` carries the vault directory and a friendly reason.
+ */
+function tryBuildVaultFallback(
+  vaultDir: string,
+  overrides: { machineId?: string; sessionId?: string | null } = {},
+): { kind: 'grove'; context: MycoRequestContext; manifest: ProjectManifest } | { kind: 'legacy'; vaultDir: string; reason: string } {
   const manifest = readManifest(vaultDir);
   if (!manifest?.project?.id) {
-    throw new Error(
-      `No Grove project id available for vault ${vaultDir}. Run \`myco init\` to activate a Grove for this project.`,
-    );
+    return {
+      kind: 'legacy',
+      vaultDir,
+      reason: `No Grove project id available for vault ${vaultDir}. Run \`myco init\` to activate a Grove for this project.`,
+    };
   }
+  const projectRoot = resolveProjectRoot(vaultDir);
   return {
+    kind: 'grove',
     context: {
       projectRoot,
       projectId: assertGroveProjectId(manifest.project.id),

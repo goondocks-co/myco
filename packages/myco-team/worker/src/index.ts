@@ -33,7 +33,22 @@ export interface Env {
   MYCO_TEAM_VECTORS: VectorizeIndex;
   AI: Ai;
   MYCO_TEAM_API_KEY: string;
+  /**
+   * Server-side sync protocol version. Read as a string from
+   * `wrangler.toml [vars]` and parsed at request time. The worker
+   * accepts clients in the inclusive window
+   * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`.
+   */
   SYNC_PROTOCOL_VERSION: string;
+  /**
+   * Oldest sync protocol the worker still accepts. Mirrors the
+   * `MIN_COMPAT_CLIENT_VERSION` constant in
+   * `packages/myco/src/constants.ts`. Optional in the type so older
+   * deploys without the var still boot — `resolveProtocolBounds`
+   * falls back to "same as server" (preserving the historical
+   * strict-equality gate).
+   */
+  MIN_COMPAT_CLIENT_VERSION?: string;
   MYCO_SECRETS: KVNamespace;
   /**
    * Producer binding for the project's sync queue. Bound at deploy time via
@@ -88,6 +103,23 @@ const GROVE_PROJECT_ID_PATTERN = /^proj_[0-9a-f]{32}$/;
 function isGroveProjectId(value: unknown): value is string {
   return typeof value === 'string' && GROVE_PROJECT_ID_PATTERN.test(value);
 }
+
+/**
+ * Resolve the server-side protocol bounds. The worker accepts clients
+ * in the inclusive window `[minClientVersion, serverVersion]`. The
+ * min bound is optional in `Env` so older deploys without the var
+ * still boot — in that case we fall back to "same as server" (no
+ * compat window, equivalent to the historical strict-equality gate).
+ */
+function resolveProtocolBounds(env: Env): { serverVersion: number; minClientVersion: number } {
+  const serverVersion = parseInt(env.SYNC_PROTOCOL_VERSION, 10);
+  const parsedMin = env.MIN_COMPAT_CLIENT_VERSION
+    ? parseInt(env.MIN_COMPAT_CLIENT_VERSION, 10)
+    : NaN;
+  const minClientVersion = Number.isFinite(parsedMin) ? parsedMin : serverVersion;
+  return { serverVersion, minClientVersion };
+}
+
 const QUEUE_SEND_BATCH_SIZE = 100;
 const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
 
@@ -441,12 +473,14 @@ async function handleHealth(env: Env): Promise<Response> {
 
   const count = countResult?.count ?? 0;
   const mcpTokenHash = storedToken ? getMcpTokenHash(storedToken) : null;
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
 
   return jsonResponse({
     status: 'ok',
     nodes: count,
     node_count: count,
-    sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+    sync_protocol_version: serverVersion,
+    min_compat_client_version: minClientVersion,
     package_version: metadata.package_version,
     schema_version: metadata.schema_version,
     mcp_token_hash: mcpTokenHash,
@@ -457,6 +491,25 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as ConnectPayload;
   if (!body.machine_id) {
     return errorResponse('machine_id is required', 400);
+  }
+
+  // Reject pre-window clients up-front so they don't quietly register
+  // a node row that the worker then refuses every push from. The same
+  // window guards `/api/team/enqueue` below; surfacing it here means
+  // the daemon's connect step gets a clear typed error to display in
+  // the Team page (instead of "connected" followed by silent push
+  // failures). A missing `sync_protocol_version` is allowed for
+  // backward compatibility — older daemons that don't send the field
+  // are treated as v1 and gated below at enqueue time.
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
+  if (typeof body.sync_protocol_version === 'number'
+    && (body.sync_protocol_version < minClientVersion || body.sync_protocol_version > serverVersion)) {
+    return jsonResponse({
+      error: 'protocol_version_unsupported',
+      message: `Client protocol v${body.sync_protocol_version} is outside the worker's supported window [${minClientVersion}, ${serverVersion}]. Run \`myco update\` (or \`myco-team upgrade\`) on this machine.`,
+      sync_protocol_version: serverVersion,
+      min_compat_client_version: minClientVersion,
+    }, 409);
   }
 
   const now = epochSeconds();
@@ -486,7 +539,8 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
 
   return jsonResponse({
     status: 'connected',
-    sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+    sync_protocol_version: serverVersion,
+    min_compat_client_version: minClientVersion,
     config,
     mcp_token: mcpToken,
     mcp_endpoint: '/mcp',
@@ -503,16 +557,42 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as SyncPayload;
 
-  const serverVersion = parseInt(env.SYNC_PROTOCOL_VERSION, 10);
-  if (body.sync_protocol_version !== serverVersion) {
-    return errorResponse(
-      `Protocol version mismatch: client=${body.sync_protocol_version}, server=${serverVersion}`,
-      409,
-    );
+  // Accept clients in the inclusive `[minClientVersion, serverVersion]`
+  // window. This replaces the historical strict-equality gate so an
+  // upgraded worker doesn't lock out teammates whose daemon hasn't
+  // shipped the bump yet. Out-of-window payloads still 409 with an
+  // explicit typed error — silent shape changes are not allowed.
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
+  const clientVersion = body.sync_protocol_version;
+  if (clientVersion < minClientVersion || clientVersion > serverVersion) {
+    return jsonResponse({
+      error: 'protocol_version_unsupported',
+      message: `Client protocol v${clientVersion} is outside the worker's supported window [${minClientVersion}, ${serverVersion}]. Run \`myco update\` on this machine.`,
+      sync_protocol_version: serverVersion,
+      min_compat_client_version: minClientVersion,
+    }, 409);
   }
 
   if (!Array.isArray(body.records) || body.records.length === 0) {
     return jsonResponse({ accepted: 0 });
+  }
+
+  // Protocol v1 didn't define the `embed` SyncRecord operation. A v1
+  // client should never produce one, but if a payload sneaks through
+  // (e.g. a daemon mid-upgrade) reject it explicitly rather than
+  // letting the consumer route it through `coalescedEmbedBatch`
+  // against an empty data payload. Defense-in-depth — mirrors in
+  // spirit the project_id gate further down.
+  if (clientVersion < 2) {
+    const hasEmbed = body.records.some((record) => record.operation === 'embed');
+    if (hasEmbed) {
+      return jsonResponse({
+        error: 'protocol_too_old_for_embed',
+        message: `Client protocol v${clientVersion} cannot use the 'embed' SyncRecord operation (added in v2). Run \`myco update\` on this machine.`,
+        sync_protocol_version: serverVersion,
+        min_compat_client_version: minClientVersion,
+      }, 409);
+    }
   }
 
   // Validate table names up-front so the daemon can't poison the queue with
@@ -642,7 +722,7 @@ async function writeRecordToD1(
  */
 async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (!schemaInitialized) {
-    await initD1Schema(env.MYCO_TEAM_DB);
+    await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
     schemaInitialized = true;
   }
 
@@ -1114,7 +1194,31 @@ async function handleVectorReindex(request: Request, env: Env): Promise<Response
     vector_reindex_last_error: '',
   });
 
-  return jsonResponse({ enqueued: totalEnqueued, by_table: byTable });
+  // Response shape:
+  //   - New (v2) callers read `enqueued` and `by_table`.
+  //   - Pre-Grove (v1) callers expected
+  //     `{ table, processed, reindexed, deleted, next_cursor }` from
+  //     the inline-embedding implementation that this endpoint
+  //     replaced. Emit those fields *additively* so an upgraded
+  //     worker doesn't silently break a teammate whose daemon hasn't
+  //     shipped the bump yet — `processed` and `reindexed` map
+  //     1:1 to the enqueue count, `deleted` is always 0 (deletes are
+  //     handled by the queue consumer, not the producer), and
+  //     `next_cursor` is null because the queue-driven path does the
+  //     full table in a single enqueue. New code MUST NOT rely on
+  //     the legacy fields — they exist only for cross-version
+  //     compatibility during the v1 → v2 rollout.
+  const firstTable = tables[0] ?? null;
+  return jsonResponse({
+    enqueued: totalEnqueued,
+    by_table: byTable,
+    table: firstTable,
+    processed: totalEnqueued,
+    reindexed: totalEnqueued,
+    deleted: 0,
+    next_cursor: null,
+    sync_protocol_version: resolveProtocolBounds(env).serverVersion,
+  });
 }
 
 /**
@@ -1499,7 +1603,7 @@ export default {
     if (method === 'GET' && path === '/health') {
       try {
         if (!schemaInitialized) {
-          await initD1Schema(env.MYCO_TEAM_DB);
+          await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
           schemaInitialized = true;
         }
         return await handleHealth(env);
@@ -1512,7 +1616,7 @@ export default {
     // MCP routes — separate auth from sync routes
     if (path.startsWith('/mcp')) {
       if (!schemaInitialized) {
-        await initD1Schema(env.MYCO_TEAM_DB);
+        await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
         schemaInitialized = true;
       }
 
@@ -1538,7 +1642,7 @@ export default {
     if (authError) return authError;
 
     if (!schemaInitialized) {
-      await initD1Schema(env.MYCO_TEAM_DB);
+      await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
       schemaInitialized = true;
     }
 
@@ -1613,7 +1717,7 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     if (!schemaInitialized) {
-      await initD1Schema(env.MYCO_TEAM_DB);
+      await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
       schemaInitialized = true;
     }
     await syncCollectiveSettings(env);

@@ -374,8 +374,36 @@ export const DEFAULT_OLLAMA_EMBEDDING_MODEL = 'bge-m3';
 export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
 
 // --- Sync protocol ---
-/** Protocol version for backup and team sync wire format. */
-export const SYNC_PROTOCOL_VERSION = 1;
+/**
+ * Protocol version for backup and team sync wire format.
+ *
+ * Bumped when the wire format gains capabilities or fields that older
+ * clients/workers can't safely interpret. The matching value in
+ * `packages/myco-team/worker/wrangler.toml` MUST stay in lockstep —
+ * the worker reads it as `env.SYNC_PROTOCOL_VERSION` and parseInt's
+ * it at request time.
+ *
+ * Version history:
+ *   1 — initial sync protocol (upsert, delete operations).
+ *   2 — adds the SyncRecord `embed` operation for queue-driven
+ *       vector reindex, plus the additive `enqueued`/`by_table`
+ *       fields on `/vectors/reindex`. Older v1 clients still parse
+ *       the legacy fields the worker continues to emit.
+ */
+export const SYNC_PROTOCOL_VERSION = 2;
+
+/**
+ * Oldest sync protocol the current daemon/worker still accepts. Used
+ * to gate destructive worker startup chores (D1 one-shot prunes) and
+ * to refuse incompatible enqueue payloads with an explicit typed
+ * error rather than letting them quietly mis-write rows.
+ *
+ * The pair forms an inclusive window
+ * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`. Bump this
+ * only when a true breaking change lands and there is no
+ * additive-shape compat path available.
+ */
+export const MIN_COMPAT_CLIENT_VERSION = 1;
 
 // --- Team sync ---
 /** Default machine ID for rows created before multi-machine support. */
