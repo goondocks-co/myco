@@ -146,4 +146,172 @@ describe('migration v36 — project_id orphan cleanup', () => {
     const row = db.prepare('SELECT MAX(version) as v FROM schema_version').get() as { v: number };
     expect(row.v).toBe(36);
   });
+
+  // -------------------------------------------------------------------------
+  // Multi-table backfill coverage. The base test only proves the
+  // backfill branch on log_entries; v36 walks every table in
+  // GROVE_PROJECT_SCOPED_TABLES, so we exercise representative shapes:
+  //   * spores  — FK-free row-scoped sync table
+  //   * plans   — FK-free row-scoped sync table
+  //   * digest_extracts — INTEGER PRIMARY KEY surrogate
+  //   * agent_runs / agent_turns — FK parent + child (the migration
+  //     suspends FK enforcement; we assert orphans flow correctly).
+  // -------------------------------------------------------------------------
+
+  function seedAgent(db: Database, id: string): void {
+    db.prepare(
+      `INSERT INTO agents (id, name, created_at, updated_at)
+       VALUES (?, ?, 1700000000, 1700000000)`,
+    ).run(id, id);
+  }
+
+  it('backfills orphan project_id rows in spores/plans/digest_extracts to the single Grove id', () => {
+    const db = freshDbAtV35();
+    const goodId = createProjectId();
+    seedAgent(db, 'agent-x');
+
+    // spores: one good + one NULL + one path-string + one wrong-prefix.
+    const insertSpore = (projectId: string | null, suffix: string) => {
+      db.prepare(
+        `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at)
+         VALUES (?, ?, 'agent-x', 'note', ?, 1700000000)`,
+      ).run(`s-${suffix}`, projectId, `body-${suffix}`);
+    };
+    insertSpore(goodId, 'a');
+    insertSpore(null, 'b');
+    insertSpore('/Users/chris/Repos/myco', 'c');
+    insertSpore('', 'd');
+
+    // plans: one good + one NULL.
+    const insertPlan = (projectId: string | null, suffix: string) => {
+      db.prepare(
+        `INSERT INTO plans (id, project_id, logical_key, created_at)
+         VALUES (?, ?, ?, 1700000000)`,
+      ).run(`p-${suffix}`, projectId, `lk-${suffix}`);
+    };
+    insertPlan(goodId, 'good');
+    insertPlan(null, 'orphan');
+
+    // digest_extracts uses INTEGER PRIMARY KEY AUTOINCREMENT, but a
+    // UNIQUE (project_id, agent_id, tier) index forces us to use a
+    // different tier per row so the post-backfill rows (all stamped
+    // with the same project_id) don't collide.
+    const insertDigest = (projectId: string | null, content: string, tier: number) => {
+      db.prepare(
+        `INSERT INTO digest_extracts (project_id, agent_id, tier, content, generated_at)
+         VALUES (?, 'agent-x', ?, ?, 1700000000)`,
+      ).run(projectId, tier, content);
+    };
+    insertDigest(goodId, 'good', 5000);
+    insertDigest(null, 'orphan', 2500);
+    insertDigest('/legacy/path', 'pathy', 1000);
+
+    runV36(db);
+
+    // Every spore preserved, all stamped to goodId.
+    const spores = db.prepare(
+      'SELECT id, project_id FROM spores ORDER BY id',
+    ).all() as Array<{ id: string; project_id: string }>;
+    expect(spores).toHaveLength(4);
+    for (const row of spores) {
+      expect(row.project_id).toBe(goodId);
+    }
+
+    const plans = db.prepare(
+      'SELECT id, project_id FROM plans ORDER BY id',
+    ).all() as Array<{ id: string; project_id: string }>;
+    expect(plans).toHaveLength(2);
+    for (const row of plans) expect(row.project_id).toBe(goodId);
+
+    const digests = db.prepare(
+      'SELECT content, project_id FROM digest_extracts ORDER BY content',
+    ).all() as Array<{ content: string; project_id: string }>;
+    expect(digests).toHaveLength(3);
+    for (const row of digests) expect(row.project_id).toBe(goodId);
+  });
+
+  it('backfills FK-related agent_runs and agent_turns even when child orphans reference parent orphans', () => {
+    // agent_turns.run_id references agent_runs.id. The migration
+    // suspends FK enforcement so the order of UPDATEs/DELETEs across
+    // parent/child doesn't matter — the suspension is critical because
+    // children can have orphan project_ids whose parents are also orphan.
+    const db = freshDbAtV35();
+    const goodId = createProjectId();
+    seedAgent(db, 'agent-x');
+
+    const insertRun = (id: string, projectId: string | null) => {
+      db.prepare(
+        `INSERT INTO agent_runs (id, project_id, agent_id, status)
+         VALUES (?, ?, 'agent-x', 'pending')`,
+      ).run(id, projectId);
+    };
+    const insertTurn = (runId: string, projectId: string | null, n: number) => {
+      db.prepare(
+        `INSERT INTO agent_turns (project_id, run_id, agent_id, turn_number, tool_name)
+         VALUES (?, ?, 'agent-x', ?, 'tool')`,
+      ).run(projectId, runId, n);
+    };
+
+    insertRun('run-good', goodId);
+    insertRun('run-null', null);
+    insertRun('run-path', '/Users/chris/Repos/myco');
+    insertTurn('run-good', goodId, 1);
+    insertTurn('run-null', null, 1);     // both project_id and parent run are orphaned
+    insertTurn('run-path', '', 2);       // empty-string project_id, orphan parent
+
+    runV36(db);
+
+    // Every parent + every child preserved, all stamped to goodId.
+    const runs = db.prepare(
+      'SELECT id, project_id FROM agent_runs ORDER BY id',
+    ).all() as Array<{ id: string; project_id: string }>;
+    expect(runs).toHaveLength(3);
+    for (const row of runs) expect(row.project_id).toBe(goodId);
+
+    const turns = db.prepare(
+      'SELECT run_id, project_id FROM agent_turns ORDER BY turn_number, run_id',
+    ).all() as Array<{ run_id: string; project_id: string }>;
+    expect(turns).toHaveLength(3);
+    for (const row of turns) expect(row.project_id).toBe(goodId);
+  });
+
+  it('deletes orphans on every backfill table when multiple Grove ids exist', () => {
+    // Mirrors the existing log_entries multi-Grove case but for two
+    // additional tables — proves the "groveIds.length > 1 → DELETE"
+    // branch fires across the loop, not just for log_entries.
+    const db = freshDbAtV35();
+    const idA = createProjectId();
+    const idB = createProjectId();
+    seedAgent(db, 'agent-x');
+
+    db.prepare(
+      `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at)
+       VALUES ('s-A', ?, 'agent-x', 'n', 'a', 1)`,
+    ).run(idA);
+    db.prepare(
+      `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at)
+       VALUES ('s-B', ?, 'agent-x', 'n', 'b', 1)`,
+    ).run(idB);
+    db.prepare(
+      `INSERT INTO spores (id, project_id, agent_id, observation_type, content, created_at)
+       VALUES ('s-orphan', NULL, 'agent-x', 'n', 'o', 1)`,
+    ).run();
+
+    db.prepare(
+      `INSERT INTO plans (id, project_id, logical_key, created_at) VALUES ('p-A', ?, 'lk', 1)`,
+    ).run(idA);
+    db.prepare(
+      `INSERT INTO plans (id, project_id, logical_key, created_at) VALUES ('p-B', ?, 'lk2', 1)`,
+    ).run(idB);
+    db.prepare(
+      `INSERT INTO plans (id, project_id, logical_key, created_at) VALUES ('p-orphan', NULL, 'lk3', 1)`,
+    ).run();
+
+    runV36(db);
+
+    const spores = db.prepare('SELECT id FROM spores ORDER BY id').all() as Array<{ id: string }>;
+    expect(spores.map((r) => r.id).sort()).toEqual(['s-A', 's-B'].sort());
+    const plans = db.prepare('SELECT id FROM plans ORDER BY id').all() as Array<{ id: string }>;
+    expect(plans.map((r) => r.id).sort()).toEqual(['p-A', 'p-B'].sort());
+  });
 });
