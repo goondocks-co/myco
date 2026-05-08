@@ -323,4 +323,74 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after.map((b) => b.user_prompt)).toEqual(['first', 'second']);
   });
+
+  // K6 — renumber must preserve prompt_numbers of stranded batches.
+  // A "stranded" batch is one whose transcript peer was suppressed by a
+  // capture.rules `drop` decision (e.g. Claude Code <command-message>
+  // slash-command dispatch envelope, where the live UserPromptSubmit hook
+  // captured the raw `/name args` text upstream). The reconciler walks
+  // post-drop transcript records, which DON'T include the dropped peer,
+  // so the stranded batch must keep its existing prompt_number and the
+  // walker must skip that slot when assigning new numbers.
+  it('renumber: stranded batch retains its prompt_number; walker skips that slot', () => {
+    // Live hook captures the slash-command BEFORE Claude Code wraps it.
+    // This batch will be "stranded" because its transcript peer (the
+    // <command-message> envelope) is dropped by the manifest rule.
+    const { batchId: strandedId } = handleUserPrompt(
+      's-reconcile',
+      '/compound-engineering:ce-review review the diff',
+      { kind: 'initial' },
+    );
+    const db = getDatabase();
+    db.prepare(`UPDATE prompt_batches SET ended_at = ? WHERE id = ?`).run(nowSec(), strandedId);
+
+    // Transcript contains the dispatch envelope (will be dropped) and a
+    // following <task-notification> (passes through, classified system).
+    const events = [
+      // The dispatch envelope: user-role with content as a STRING starting
+      // with <command-message> — dropped by manifest rule.
+      {
+        type: 'user',
+        promptId: 'dispatch',
+        message: {
+          role: 'user',
+          content:
+            '<command-message>compound-engineering:ce-review</command-message>\n'
+            + '<command-name>/compound-engineering:ce-review</command-name>\n'
+            + '<command-args>review the diff</command-args>',
+        },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+      // System-injected <task-notification> — passes through, gets origin=system.
+      {
+        type: 'user',
+        promptId: 'tn1',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n</task-notification>' }],
+        },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
+    expect(after).toHaveLength(2);
+    const stranded = after.find((b) => b.id === strandedId)!;
+    const taskNotif = after.find((b) => b.id !== strandedId)!;
+
+    // Stranded batch keeps its original prompt_number=1.
+    expect(stranded.prompt_number).toBe(1);
+    expect(stranded.user_prompt).toContain('/compound-engineering:ce-review');
+    // Task-notification batch must NOT collide with prompt_number=1; it
+    // gets the next available slot.
+    expect(taskNotif.prompt_number).toBe(2);
+    expect(taskNotif.user_prompt).toContain('<task-notification>');
+    // Sanity: no two batches share a prompt_number.
+    const numbers = after.map((b) => b.prompt_number).sort();
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
 });

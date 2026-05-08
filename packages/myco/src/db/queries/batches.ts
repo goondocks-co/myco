@@ -602,6 +602,22 @@ export function closeOpenBatches(
  * Set response_summary on a batch if it doesn't already have one.
  *
  * Idempotent — only updates NULL response_summary.
+ *
+ * Cross-batch dedupe: refuses to write a summary that already appears
+ * verbatim on another batch in the same session. This guards against a
+ * known race between live UserPromptSubmit hook capture and the Stop hook:
+ * if a system-injected user prompt (e.g. a Claude Code <task-notification>
+ * arriving from a backgrounded Agent) lands in the transcript while the AI
+ * is still emitting its response, the Stop hook can fire BEFORE the live
+ * hook inserts the new batch, causing setResponseSummary to back-stamp the
+ * latest assistant text onto the previous (human) batch. By the time the
+ * new batch is inserted, populateBatchResponses (or another setResponseSummary
+ * call) writes the same text onto it, producing duplicate summaries
+ * across two batches with different user_prompts. The dedupe gate breaks
+ * that cycle: only the first batch to claim a given summary keeps it; the
+ * second write is silently skipped, and a follow-up populateBatchResponses
+ * pass fills the racing batch via prefix-keyed alignment with the correct
+ * (later-emitted) assistant text.
  */
 export function setResponseSummary(
   batchId: number,
@@ -609,8 +625,17 @@ export function setResponseSummary(
 ): void {
   const db = getDatabase();
   db.prepare(
-    `UPDATE prompt_batches SET response_summary = ? WHERE id = ? AND response_summary IS NULL`,
-  ).run(summary, batchId);
+    `UPDATE prompt_batches
+       SET response_summary = ?
+       WHERE id = ?
+         AND response_summary IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM prompt_batches sib
+           WHERE sib.session_id = (SELECT session_id FROM prompt_batches WHERE id = ?)
+             AND sib.id != ?
+             AND sib.response_summary = ?
+         )`,
+  ).run(summary, batchId, batchId, batchId, summary);
 }
 
 /**

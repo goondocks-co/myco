@@ -16,6 +16,7 @@ import {
   incrementActivityCount,
   listBatchesBySession,
   markBatchProcessed,
+  setResponseSummary,
 } from '@myco/db/queries/batches.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
@@ -340,6 +341,73 @@ describe('prompt batch query helpers', () => {
       // No longer in unprocessed list
       const empty = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
       expect(empty).toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // setResponseSummary — K4 cross-batch dedupe
+  // ---------------------------------------------------------------------------
+  //
+  // Regression coverage for the bug observed in session
+  // 01b979e4-13f3-47e4-a7eb-8a8973cf9226 where batches 3501 (real /ce-review
+  // user prompt) and 3502 (first <task-notification>) ended up with
+  // IDENTICAL response_summary text. The race: live UserPromptSubmit hook
+  // inserting 3502 lagged the Stop hook that fired after the AI emitted
+  // its response, so getLatestBatch returned 3501 and the summary was
+  // back-stamped onto the human batch. populateBatchResponses then filled
+  // 3502 with the same text on the next pass.
+
+  describe('setResponseSummary — cross-batch dedupe', () => {
+    it('writes a fresh summary to a NULL batch', () => {
+      const a = insertBatch(makeBatch(sessionId, { user_prompt: 'first' }));
+      setResponseSummary(a.id, 'response A');
+
+      const after = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+        .find((b) => b.id === a.id);
+      expect(after?.response_summary).toBe('response A');
+    });
+
+    it('refuses to write a summary that already exists on another batch in the same session', () => {
+      const a = insertBatch(makeBatch(sessionId, { user_prompt: 'human prompt' }));
+      const b = insertBatch(makeBatch(sessionId, { user_prompt: '<task-notification>...' }));
+
+      // First write claims the summary text.
+      setResponseSummary(a.id, 'shared response text');
+
+      // Second write attempts to plant the SAME text on a sibling — must
+      // be blocked by the dedupe guard.
+      setResponseSummary(b.id, 'shared response text');
+
+      const rows = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+      const aAfter = rows.find((r) => r.id === a.id);
+      const bAfter = rows.find((r) => r.id === b.id);
+      expect(aAfter?.response_summary).toBe('shared response text');
+      expect(bAfter?.response_summary).toBeNull();
+    });
+
+    it('allows the same summary text across DIFFERENT sessions', () => {
+      const otherSession = makeSession();
+      upsertSession(otherSession);
+
+      const a = insertBatch(makeBatch(sessionId, { user_prompt: 'p1' }));
+      const b = insertBatch(makeBatch(otherSession.id, { user_prompt: 'p1' }));
+
+      setResponseSummary(a.id, 'common text');
+      setResponseSummary(b.id, 'common text');
+
+      const rowsA = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+      const rowsB = listBatchesBySession(otherSession.id, { scope: ALL_PROJECTS_SCOPE });
+      expect(rowsA.find((r) => r.id === a.id)?.response_summary).toBe('common text');
+      expect(rowsB.find((r) => r.id === b.id)?.response_summary).toBe('common text');
+    });
+
+    it('still refuses to overwrite an already-set response_summary (legacy invariant)', () => {
+      const a = insertBatch(makeBatch(sessionId, { user_prompt: 'x', response_summary: 'original' }));
+      setResponseSummary(a.id, 'replacement');
+
+      const after = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })
+        .find((b) => b.id === a.id);
+      expect(after?.response_summary).toBe('original');
     });
   });
 });
