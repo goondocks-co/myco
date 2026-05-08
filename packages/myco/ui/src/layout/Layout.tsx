@@ -38,7 +38,7 @@ import { NotificationPanel } from '../components/notifications/NotificationPanel
 import { SystemNotifications } from '../components/notifications/SystemNotifications';
 import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
-import { applyProjectFavicon, monogramFor } from '../lib/selection';
+import { monogramFor } from '../lib/selection';
 import { AppearanceSection } from './AppearanceSection';
 
 /* ---------- Constants ---------- */
@@ -399,7 +399,12 @@ function useDocumentIdentity(vaultName: string | undefined) {
     document.title = projectName
       ? `${selection ? `${monogramFor(selection.project.name)} ` : ''}${projectName} - Myco`
       : 'Myco';
-    applyProjectFavicon(selection);
+    // Favicon stays as the static /favicon-<theme>.svg owned by
+    // appearance-apply.ts. The previous per-project monogram canvas
+    // favicon stomped on the theme favicon and bled the project
+    // switcher's branding into the OS tab UI; both are fine inside the
+    // app chrome (sidebar) but the favicon is global and should stay
+    // stable.
   }, [selection, vaultName]);
 }
 

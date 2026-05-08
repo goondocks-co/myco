@@ -139,30 +139,9 @@ export function colorForProjectId(id: string): string {
   return `hsl(${hue} 58% 48%)`;
 }
 
-export function applyProjectFavicon(selection: ProjectSelection | null): void {
-  if (!selection) return;
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  const color = colorForProjectId(selection.project.project_id);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  if ('roundRect' in ctx) ctx.roundRect(0, 0, 32, 32, 7);
-  else ctx.rect(0, 0, 32, 32);
-  ctx.fill();
-  ctx.fillStyle = 'white';
-  ctx.font = 'bold 14px ui-sans-serif, system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(monogramFor(selection.project.name), 16, 17);
-
-  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-  if (!link) {
-    link = document.createElement('link');
-    link.rel = 'icon';
-    document.head.appendChild(link);
-  }
-  link.href = canvas.toDataURL('image/png');
-}
+// `applyProjectFavicon` was removed — it generated a canvas with the
+// project's monogram + colored bg and overwrote the theme favicon
+// link. The result was that the OS tab UI lost the static
+// `/favicon-<theme>.svg` whenever a project was selected. The
+// project monogram still shines inside the app chrome (sidebar
+// project switcher, Groves page tile) where it belongs.
