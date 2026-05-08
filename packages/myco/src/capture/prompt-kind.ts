@@ -4,7 +4,7 @@
  */
 
 import { getAtPath } from '../utils/dot-path.js';
-import { evaluateUserPromptRules } from '../hooks/capture-rules.js';
+import { evaluateUserPromptRules, type PromptOrigin } from '../hooks/capture-rules.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import type {
   CapturePrompts,
@@ -19,7 +19,15 @@ export const CODEX_INTERRUPT_MARKER = '<turn_aborted>';
 const UNINITIALIZED = Symbol('uninitialized');
 
 export interface UserPromptRecord {
+  /** Conversation-flow position: 'initial' | 'steering' | 'interrupt'. */
   kind: string;
+  /**
+   * Provenance of the prompt — orthogonal to `kind`. Default 'human'.
+   * Set to 'system' / 'agent_dispatch' / 'hook_injected' by capture rules
+   * matching transcript-synthesized envelopes (e.g. <task-notification>,
+   * <subagent_notification>, <environment_context>, <skill>).
+   */
+  origin: PromptOrigin;
   text: string;
 }
 
@@ -74,6 +82,25 @@ export function classifyNextPromptKind(
     return 'interrupt';
   }
   return walkTranscript(config, agent, events, undefined).priorTurnEnded ? 'initial' : 'steering';
+}
+
+/**
+ * Classify the origin of a hypothetical next prompt. Returns 'human' when no
+ * rule matches — system/agent_dispatch only fire on transcript-synthesized
+ * envelopes the manifest rules tag explicitly.
+ */
+export function classifyNextPromptOrigin(
+  agent: string | undefined,
+  prompt: string,
+  transcriptPath?: string,
+): PromptOrigin {
+  if (!agent) return 'human';
+  const decision = evaluateUserPromptRules(
+    agent,
+    { prompt, transcriptPath: transcriptPath ?? '<transcript-walker>' },
+  );
+  if (decision.action === 'drop') return 'human';
+  return decision.origin ?? 'human';
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +166,7 @@ function walkTranscript(
       continue;
     }
     const text = decision.action === 'rewrite' ? decision.prompt : rawText;
+    const origin: PromptOrigin = decision.origin ?? 'human';
 
     const kind = config.interruptMarker && text.startsWith(config.interruptMarker)
       ? 'interrupt'
@@ -146,7 +174,7 @@ function walkTranscript(
         ? 'initial'
         : 'steering';
 
-    records.push({ kind, text });
+    records.push({ kind, origin, text });
     priorTurnEnded = false;
   }
 

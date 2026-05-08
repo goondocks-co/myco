@@ -212,6 +212,7 @@ export class TranscriptMiner {
         created_at: now,
         machine_id: getTeamMachineId(),
         kind: effectiveKind,
+        origin: record.origin,
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
       });
       inserted++;
