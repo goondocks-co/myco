@@ -188,10 +188,10 @@ symbionts:
 
 ```toml
 [features]
-codex_hooks = true
+hooks = true
 ```
 
-Without this block, hooks defined in the symbiont manifest are silently ignored by Codex regardless of how they are registered.
+Without this block, hooks defined in the symbiont manifest are silently ignored by Codex regardless of how they are registered. (Codex previously named the flag `codex_hooks`; that spelling is now deprecated and emits a warning. Updating the template drops the stale key automatically because `installSettingsToml` reconciles each Myco-managed section against the template — the section body is rewritten on every install, not just patched key-by-key.)
 
 **Class 2 agents cannot use this procedure.** Plugin-API agents (e.g., opencode) do not expose a config directory for file-based hook/MCP injection. Attempting to wire them via manifest + template steps will produce a silently incomplete integration. These agents require a dedicated installation code path in `SymbiontInstaller`. Do not adapt the Class 1 steps for a plugin-API agent.
 
