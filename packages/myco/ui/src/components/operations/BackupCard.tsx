@@ -11,6 +11,8 @@ import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
 import { ScopedField } from '../config/ScopedField';
 import { OperationsScopePill, type OperationsScope } from './OperationsScopePill';
+
+const BACKUP_SCOPE_AVAILABLE: ReadonlyArray<OperationsScope> = ['grove', 'all-groves'];
 import { buildActionScope } from './scope-helpers';
 import { useProjectSelection } from '../../hooks/use-project-selection';
 import { ActionConfirmDialog, actionRequiresConfirmation } from './ActionConfirmDialog';
@@ -80,7 +82,10 @@ export function BackupCard() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [preview, setPreview] = useState<RestorePreviewResponse | null>(null);
-  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  // Backup operates on a per-Grove SQLite file — there's no
+  // project-narrowed dump path. Pill defaults to Grove and excludes
+  // the project option.
+  const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const selection = useProjectSelection();
@@ -174,7 +179,7 @@ export function BackupCard() {
         <div className="flex items-center gap-3">
           <HardDrive className="h-4 w-4 text-primary" />
           <SectionHeader>Backup &amp; Restore</SectionHeader>
-          <OperationsScopePill value={pillScope} onChange={setPillScope} />
+          <OperationsScopePill value={pillScope} onChange={setPillScope} available={BACKUP_SCOPE_AVAILABLE} />
         </div>
         <div className="flex gap-2">
           <Button variant="ghost" size="sm" onClick={refreshBackups}>

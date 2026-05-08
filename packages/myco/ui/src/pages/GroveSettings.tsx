@@ -5,6 +5,7 @@ import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Switch } from '../components/ui/switch';
 import { FieldShell } from '../components/config/FieldShell';
+import { ScopeBadge } from '../components/config/ScopePill';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import { useGroveConfig, useUpdateGroveConfig, type GroveConfig } from '../hooks/use-grove-config';
 import { setAtPath } from '@myco/utils/dot-path';

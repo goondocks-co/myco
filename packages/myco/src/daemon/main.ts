@@ -1429,7 +1429,14 @@ export async function main(): Promise<void> {
   });
   server.registerRoute('GET', '/api/embedding/details', async (req) => {
     const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleEmbeddingDetails(runtime.manager);
+    // ?scope=project narrows counts to the request context's project_id.
+    // ?scope=grove returns Grove-wide totals (no project filter).
+    // Default = project for back-compat with existing callers.
+    const scope = typeof req.query.scope === 'string' ? req.query.scope : 'project';
+    const projectId = scope === 'grove'
+      ? null
+      : (req.requestContext?.projectId ?? null);
+    return handleEmbeddingDetails(runtime.manager, { projectId });
   });
   const embeddingActionHandlers = createEmbeddingActionHandlers({
     cache: runtimeCache,

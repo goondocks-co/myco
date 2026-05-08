@@ -150,8 +150,11 @@ export async function handleGetEmbeddingStatus(
   };
 }
 
-export function handleEmbeddingDetails(manager: EmbeddingManager): RouteResponse {
-  const details = manager.getDetails();
+export function handleEmbeddingDetails(
+  manager: EmbeddingManager,
+  options: { projectId?: string | null } = {},
+): RouteResponse {
+  const details = manager.getDetails({ projectId: options.projectId });
   return { body: details };
 }
 

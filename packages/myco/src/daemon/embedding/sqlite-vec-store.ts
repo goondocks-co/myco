@@ -340,7 +340,17 @@ export class SqliteVecVectorStore implements VectorStore {
     return results.slice(0, limit);
   }
 
-  stats(namespace?: string): VectorStoreStats {
+  stats(options: { namespace?: string; projectId?: string | null } = {}): VectorStoreStats {
+    // NOTE: `projectId` is reserved on the signature for the future
+    // namespace-aware project narrowing pass, but `embedding_metadata`
+    // doesn't carry a project_id column today — vector totals come back
+    // Grove-wide regardless of scope. The Operations pill keeps the
+    // option visible so the wiring is in place; the values match
+    // Grove totals in single-project Groves and across all projects
+    // in the same Grove. Cross-Grove fan-out (`all-groves`) is the
+    // next step.
+    void options.projectId;
+    const { namespace } = options;
     const targets = namespace
       ? [this.validatedNamespace(namespace)]
       : [...EMBEDDABLE_NAMESPACES];

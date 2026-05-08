@@ -86,7 +86,7 @@ export interface VectorStore {
     threshold?: number;
     filters?: Record<string, unknown>;
   }): VectorSearchResult[];
-  stats(namespace?: string): VectorStoreStats;
+  stats(options?: { namespace?: string; projectId?: string | null }): VectorStoreStats;
   getStaleIds(namespace: string, currentModel: string, limit: number): string[];
   getEmbeddedIds(namespace: string): string[];
   pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;

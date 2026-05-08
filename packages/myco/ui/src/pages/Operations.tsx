@@ -20,7 +20,6 @@ import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
 import { cn } from '../lib/cn';
 import { BackupCard } from '../components/operations/BackupCard';
-import { UpdateCard } from '../components/operations/UpdateCard';
 import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
 import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
 import { LogRow } from '../components/operations/LogRow';
@@ -82,6 +81,21 @@ const OPERATIONS_TABS: Tab[] = [
 ];
 
 const VALID_TABS = new Set<ActiveTab>(['embedding', 'database', 'system']);
+
+/**
+ * Scope options on the Database tab. SQLite operations target a whole
+ * `.sqlite` file; you can't narrow to a single project's rows for
+ * optimize/vacuum/reindex/integrity-check, and the schema breakdown
+ * counts entire tables. The pill therefore omits the project option
+ * across every Database section.
+ */
+const DATABASE_SCOPE_AVAILABLE: ReadonlyArray<OperationsScope> = ['grove', 'all-groves'];
+
+/**
+ * Scope options on Backup. A backup file is a per-Grove SQLite dump;
+ * project narrowing isn't a thing. The pill offers Grove and All-Groves.
+ */
+const BACKUP_SCOPE_AVAILABLE: ReadonlyArray<OperationsScope> = ['grove', 'all-groves'];
 const PARAM_TAB = 'tab';
 
 function readTabFromUrl(): ActiveTab {
@@ -253,7 +267,7 @@ function TablesTable({ tables }: { tables: DatabaseDetails['tables'] }) {
 
 function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
   const [expanded, setExpanded] = useState(false);
-  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const btreeCount = indexes.filter((i) => i.type === 'btree').length;
   const autoCount = indexes.filter((i) => i.type === 'auto').length;
 
@@ -264,7 +278,7 @@ function IndexesPanel({ indexes }: { indexes: DatabaseDetails['indexes'] }) {
       className="rounded-lg p-6 space-y-4 transition-all duration-300"
     >
       <div className="flex items-center justify-between">
-        <PillSectionTitle title="Indexes" value={pillScope} onChange={setPillScope} />
+        <PillSectionTitle title="Indexes" value={pillScope} onChange={setPillScope} available={DATABASE_SCOPE_AVAILABLE} />
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -325,7 +339,7 @@ function ScheduledMaintenanceCard({
   const queryClient = useQueryClient();
   const selection = useProjectSelection();
   const [running, setRunning] = useState(false);
-  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (!effective) return null;
@@ -377,7 +391,7 @@ function ScheduledMaintenanceCard({
 
   return (
     <Surface level="low" className="p-6 space-y-4">
-      <PillSectionTitle title="Scheduled Maintenance" value={pillScope} onChange={setPillScope} />
+      <PillSectionTitle title="Scheduled Maintenance" value={pillScope} onChange={setPillScope} available={DATABASE_SCOPE_AVAILABLE} />
       <PillScopeHelper scope={pillScope} />
       <div className="flex flex-wrap items-center gap-3 font-sans text-sm">
         <ScopedField
@@ -443,7 +457,7 @@ function DatabaseActions({
   const queryClient = useQueryClient();
   const selection = useProjectSelection();
   const [busy, setBusy] = useState(false);
-  const [pillScope, setPillScope] = useState<OperationsScope>('project');
+  const [pillScope, setPillScope] = useState<OperationsScope>('grove');
   const [pendingDialog, setPendingDialog] = useState<
     | null
     | {
@@ -574,7 +588,7 @@ function DatabaseActions({
 
   return (
     <Surface level="low" className="p-6 space-y-3">
-      <PillSectionTitle title="Actions" value={pillScope} onChange={setPillScope} />
+      <PillSectionTitle title="Actions" value={pillScope} onChange={setPillScope} available={DATABASE_SCOPE_AVAILABLE} />
       <PillScopeHelper scope={pillScope} />
       <div className="flex flex-wrap gap-2">
         <Button variant="ghost" size="sm" onClick={handleIntegrityCheck} disabled={busy}>
@@ -610,14 +624,17 @@ function DatabaseActions({
 
 /* ---------- Embedding Tab ---------- */
 
-function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
+function EmbeddingTab() {
   const queryClient = useQueryClient();
   const selection = useProjectSelection();
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   // Per-section pill state — sections can hold different scopes concurrently.
   const [namespaceScope, setNamespaceScope] = useState<OperationsScope>('project');
-  const [reconcileScope, setReconcileScope] = useState<OperationsScope>('project');
   const [actionScope, setActionScope] = useState<OperationsScope>('project');
+  // The Namespace Breakdown pill drives the data query — switching to
+  // 'grove' refetches without the project_id filter so counts span
+  // every project in the active Grove.
+  const { data, isLoading, isError, error } = useEmbeddingDetails(namespaceScope);
   const [pendingDialog, setPendingDialog] = useState<
     | null
     | {
@@ -646,15 +663,17 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 
   // --- Sparkline history tracking ---
   const [totalHistory, setTotalHistory] = useState<number[]>([]);
+  const totalForSparkline = data?.total ?? null;
 
   useEffect(() => {
+    if (totalForSparkline === null) return;
     setTotalHistory((prev) => {
-      const next = [...prev, data.total];
+      const next = [...prev, totalForSparkline];
       return next.length > SPARKLINE_HISTORY_LENGTH
         ? next.slice(-SPARKLINE_HISTORY_LENGTH)
         : next;
     });
-  }, [data]);
+  }, [totalForSparkline]);
 
   // Log feed (shared hook)
   const {
@@ -792,6 +811,18 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
     confirmAndRun('reconcile', 'Force reconcile embeddings', doReconcile);
   }
 
+  if (!data) {
+    return (
+      <PageLoading
+        isLoading={isLoading}
+        error={isError ? (error instanceof Error ? error : new Error('Unable to reach daemon')) : null}
+        loadingText="Loading embedding details..."
+      >
+        <div />
+      </PageLoading>
+    );
+  }
+
   // --- Aggregate totals ---
   const totalPending = Object.values(data.pending).reduce((a, b) => a + b, 0);
   const totalStale = Object.values(data.by_namespace).reduce((a, ns) => a + ns.stale, 0);
@@ -835,14 +866,12 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
         <NamespaceTable data={data} />
       </Surface>
 
-      {/* Reconcile policy */}
+      {/* Reconcile policy — the section holds a single ScopedField,
+          which carries its own per-field scope indicator. The
+          section-level pill confused write tier with view tier and
+          had no narrowing semantics of its own, so it's been removed. */}
       <Surface level="low" className="p-6 space-y-3">
-        <PillSectionTitle
-          title="Reconcile Policy"
-          value={reconcileScope}
-          onChange={setReconcileScope}
-        />
-        <PillScopeHelper scope={reconcileScope} />
+        <SectionHeader>Reconcile Policy</SectionHeader>
         <ScopedField<'embedding.run_in_deep_sleep', boolean>
           path="embedding.run_in_deep_sleep"
           label="Continue embedding in deep sleep"
@@ -991,11 +1020,13 @@ function EmbeddingTab({ data }: { data: EmbeddingDetails }) {
 /* ---------- System Tab ---------- */
 
 function SystemTab() {
+  // UpdateCard intentionally omitted here — software updates are
+  // machine-wide and live on the dedicated /system page (sidebar →
+  // Machine → System). Operations was duplicating it.
   return (
     <div className="space-y-6">
       <GrovesOverviewCard />
       <ProjectsActivityCard />
-      <UpdateCard />
       <BackupCard />
     </div>
   );
@@ -1009,7 +1040,9 @@ function DatabaseTab() {
   // Sparkline history for DB size
   const [sizeHistory, setSizeHistory] = useState<number[]>([]);
   const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [schemaScope, setSchemaScope] = useState<OperationsScope>('project');
+  // Database operations target a whole SQLite file — there's no
+  // project-narrowed path. Pill omits the project option.
+  const [schemaScope, setSchemaScope] = useState<OperationsScope>('grove');
   useEffect(() => {
     if (!data) return;
     setSizeHistory((prev) => {
@@ -1085,6 +1118,7 @@ function DatabaseTab() {
           title="Schema Breakdown"
           value={schemaScope}
           onChange={setSchemaScope}
+          available={DATABASE_SCOPE_AVAILABLE}
         />
         <PillScopeHelper scope={schemaScope} />
         <TablesTable tables={data.tables} />
@@ -1179,7 +1213,6 @@ const TAB_SUBTITLES: Record<ActiveTab, string> = {
 };
 
 export default function Operations() {
-  const { data, isLoading, isError, error } = useEmbeddingDetails();
   const [activeTab, setActiveTab] = useState<ActiveTab>(readTabFromUrl);
 
   const handleTabChange = useCallback((tabId: string) => {
@@ -1188,34 +1221,30 @@ export default function Operations() {
     writeTabToUrl(tab);
   }, []);
 
+  // Each tab owns its own data fetch — Embedding fetches namespace
+  // counts (scope-driven), Database fetches schema details, System
+  // queries Grove summaries. Lifting them used to share a loading
+  // gate at the page level but kept the Embedding fetch tied to
+  // 'project' scope no matter what the namespace pill was set to.
   return (
-    <PageLoading
-      isLoading={isLoading}
-      error={isError ? (error instanceof Error ? error : new Error('Unable to reach daemon')) : null}
-      loadingText="Loading operations..."
-    >
-      {data && (
-        <div className="flex h-full flex-col">
-          {/* Header with tabs */}
-          <div className="px-6 pt-6">
-            <PageHeader
-              title="Operations"
-              subtitle={TAB_SUBTITLES[activeTab]}
-              tabs={OPERATIONS_TABS}
-              activeTab={activeTab}
-              onTabChange={handleTabChange}
-            />
-          </div>
+    <div className="flex h-full flex-col">
+      <div className="px-6 pt-6">
+        <PageHeader
+          title="Operations"
+          subtitle={TAB_SUBTITLES[activeTab]}
+          tabs={OPERATIONS_TABS}
+          activeTab={activeTab}
+          onTabChange={handleTabChange}
+        />
+      </div>
 
-          <div className="flex-1 overflow-auto">
-            <div className="px-6 pb-6">
-              {activeTab === 'embedding' && <EmbeddingTab data={data} />}
-              {activeTab === 'database' && <DatabaseTab />}
-              {activeTab === 'system' && <SystemTab />}
-            </div>
-          </div>
+      <div className="flex-1 overflow-auto">
+        <div className="px-6 pb-6">
+          {activeTab === 'embedding' && <EmbeddingTab />}
+          {activeTab === 'database' && <DatabaseTab />}
+          {activeTab === 'system' && <SystemTab />}
         </div>
-      )}
-    </PageLoading>
+      </div>
+    </div>
   );
 }
