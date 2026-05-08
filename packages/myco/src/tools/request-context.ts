@@ -30,6 +30,56 @@ export const REQUEST_CONTEXT_ENV = {
   sessionId: 'MYCO_SESSION_ID',
 } as const;
 
+/**
+ * Header name for the daemon-issued bearer token that gates
+ * context-switching requests. The daemon mints this token at startup
+ * and exports it via `MYCO_DAEMON_AUTH` so spawned children inherit
+ * it; any local process that did not inherit it cannot redirect a
+ * request at a different Grove or project than its inherited context
+ * already implies.
+ *
+ * @see RequestContextAuthOptions for the resolver-side enforcement.
+ */
+export const REQUEST_CONTEXT_AUTH_HEADER = 'x-myco-auth';
+export const REQUEST_CONTEXT_AUTH_ENV = 'MYCO_DAEMON_AUTH';
+
+/**
+ * Header keys that, when present, switch the request's effective
+ * (Grove, project) scope away from the daemon's bootstrap context.
+ * If a request carries any of these, the auth gate must verify the
+ * caller knows the daemon's bearer token; otherwise a hostile local
+ * process could pick which Grove to act against.
+ */
+const CONTEXT_SWITCHING_HEADERS = [
+  REQUEST_CONTEXT_HEADERS.projectId,
+  REQUEST_CONTEXT_HEADERS.groveId,
+] as const;
+
+/**
+ * Thrown when context-switching headers arrive without a valid
+ * `x-myco-auth` bearer. Rejected at the transport boundary so handlers
+ * can return a 401 (or 403) without ever materializing the spoofed
+ * context.
+ */
+export class UnauthorizedRequestContextError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnauthorizedRequestContextError';
+  }
+}
+
+export interface RequestContextAuthOptions {
+  /**
+   * Daemon-issued bearer token. When provided, any request that carries
+   * a context-switching header (`x-myco-grove-id` or
+   * `x-myco-project-id`) must present a matching `x-myco-auth` header.
+   * When omitted (no token configured), the gate is disabled — this is
+   * the legacy / pre-G4 behavior preserved for backwards compatibility
+   * with non-daemon callers (e.g. unit tests).
+   */
+  expectedAuthToken?: string | null;
+}
+
 export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
 
 export interface MycoRequestContext {
@@ -102,7 +152,13 @@ export function requestContextHeaders(context: MycoRequestContext): Record<strin
 export function requestContextFromHttpHeaders(
   headers: IncomingHttpHeaders,
   fallbackVaultDir: string,
+  options: RequestContextAuthOptions = {},
 ): MycoRequestContext {
+  // G4: daemon-issued bearer-token gate on context-switching headers.
+  // Apply BEFORE buildVaultFallback so an unauthorized caller can't even
+  // trigger a manifest read — failure mode is "unauthorized" full stop.
+  enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
+
   const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir);
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
@@ -121,6 +177,53 @@ export function requestContextFromHttpHeaders(
   }
 
   return resolveManifestRequestContext(fallback, 'headers', manifest) ?? fallback;
+}
+
+/**
+ * Verify the caller's `x-myco-auth` header against the daemon's bearer
+ * token whenever context-switching headers are present. When no token
+ * is configured (legacy / unit-test path) the gate is a no-op so the
+ * function preserves backwards compatibility for non-daemon callers.
+ *
+ * Throws `UnauthorizedRequestContextError` on mismatch — call sites at
+ * the HTTP transport boundary translate this into a 401 response.
+ */
+function enforceContextSwitchAuth(
+  headers: IncomingHttpHeaders,
+  expectedToken: string | null,
+): void {
+  // No daemon-issued token configured (e.g. legacy callers, unit tests
+  // that build a context directly). Preserve legacy behavior.
+  if (!expectedToken) return;
+
+  const switching = CONTEXT_SWITCHING_HEADERS.some(
+    (name) => readHeader(headers, name) !== undefined,
+  );
+  if (!switching) return;
+
+  const presented = readHeader(headers, REQUEST_CONTEXT_AUTH_HEADER);
+  if (!presented || !timingSafeStringEqual(presented, expectedToken)) {
+    throw new UnauthorizedRequestContextError(
+      'Context-switching headers require the daemon-issued bearer token',
+    );
+  }
+}
+
+/**
+ * Constant-time string equality — same shape as the worker-side helper
+ * but kept local so this module has no Node-vs-Workers dependency
+ * differences. Both inputs are length-padded to the longer of the two
+ * before XOR, so a length mismatch still walks the whole comparison.
+ */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const length = Math.max(a.length, b.length);
+  let mismatch = a.length ^ b.length;
+  for (let i = 0; i < length; i += 1) {
+    const ai = i < a.length ? a.charCodeAt(i) : 0;
+    const bi = i < b.length ? b.charCodeAt(i) : 0;
+    mismatch |= ai ^ bi;
+  }
+  return mismatch === 0;
 }
 
 export function requestContextFromEnvironment(

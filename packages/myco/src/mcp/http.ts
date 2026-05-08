@@ -67,7 +67,11 @@ export function createStreamableMcpHttpHandler(
       res.end(legacyCheck.body);
       return;
     }
-    const requestContext = requestContextFromHttpHeaders(req.headers, vaultDir);
+    // G4: when the daemon has minted a bearer token (via env), enforce
+    // the same context-switch gate the daemon's main HTTP server uses.
+    const requestContext = requestContextFromHttpHeaders(req.headers, vaultDir, {
+      expectedAuthToken: process.env.MYCO_DAEMON_AUTH ?? null,
+    });
     const tools = createMycoTools(vaultDir, client, {
       requestContext,
       resolveDatabase: options.resolveDatabase,

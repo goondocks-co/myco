@@ -19,6 +19,14 @@ export interface DaemonState {
   started?: string;
   sessions?: string[];
   version?: string;
+  /**
+   * Daemon-issued bearer token surfaced via `MYCO_DAEMON_AUTH` and the
+   * `x-myco-auth` header. Local children inherit it through the env;
+   * the daemon also writes it here so newer-than-spawn children
+   * (manual `myco doctor`, third-party tools) can fetch it from
+   * daemon.json. Absent when the daemon predates G4.
+   */
+  auth_token?: string;
 }
 
 export interface DaemonServiceState {
@@ -79,7 +87,15 @@ export function readDaemonState(statePath: string): DaemonState | null {
 
 export function writeDaemonState(statePath: string, state: DaemonState): void {
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+  // 0o600 because daemon.json now carries the daemon-issued bearer
+  // token (G4); leaking it would let other local users redirect
+  // context-switching requests at any registered Grove.
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(statePath, 0o600);
+  } catch {
+    // Best-effort; non-POSIX filesystems and read-only mounts.
+  }
 }
 
 export function removeDaemonState(statePath: string, ownerPid?: number): void {

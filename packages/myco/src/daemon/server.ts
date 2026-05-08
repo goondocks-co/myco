@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
@@ -8,7 +9,12 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
-import { requestContextFromHttpHeaders, type MycoRequestContext } from '../tools/request-context.js';
+import {
+  REQUEST_CONTEXT_AUTH_ENV,
+  UnauthorizedRequestContextError,
+  requestContextFromHttpHeaders,
+  type MycoRequestContext,
+} from '../tools/request-context.js';
 import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -49,6 +55,13 @@ export class DaemonServer {
   private onRequest: (() => void) | null;
   private runtimeCache: GroveRuntimeCache;
   private ownsRuntimeCache: boolean;
+  /**
+   * Daemon-issued bearer token. Generated lazily on first
+   * `start()` and re-used for the daemon's lifetime; persisted into
+   * `daemon.json` so out-of-band children (manual CLI invocations
+   * that didn't inherit the env) can recover it.
+   */
+  private authToken: string;
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
@@ -60,7 +73,17 @@ export class DaemonServer {
     this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
     this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.version = getPluginVersion();
+    this.authToken = mintDaemonAuthToken();
+    // Export to env so direct children inherit the bearer without
+    // having to read daemon.json. Idempotent (mint→export is one
+    // pass per daemon process).
+    process.env[REQUEST_CONTEXT_AUTH_ENV] = this.authToken;
     this.registerDefaultRoutes();
+  }
+
+  /** The bearer token spawned children must present on context-switching headers. */
+  getAuthToken(): string {
+    return this.authToken;
   }
 
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
@@ -169,7 +192,9 @@ export class DaemonServer {
       try {
         const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
         const body = needsBody ? await readBody(req) : undefined;
-        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir);
+        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
+          expectedAuthToken: this.authToken,
+        });
         const invokeHandler = () => match.handler({
           body,
           query: match.query,
@@ -195,6 +220,13 @@ export class DaemonServer {
         if (error instanceof RequestBodyTooLarge) {
           res.writeHead(413, { 'Content-Type': 'application/json', ...versionHeader });
           res.end(JSON.stringify({ error: 'request_body_too_large', limit_bytes: MAX_REQUEST_BODY_BYTES }));
+          return;
+        }
+        if (error instanceof UnauthorizedRequestContextError) {
+          // G4: caller passed context-switching headers without the
+          // daemon-issued bearer token. Refuse before any handler runs.
+          res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: error.message }));
           return;
         }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
@@ -387,6 +419,7 @@ export class DaemonServer {
       started: new Date().toISOString(),
       sessions: [] as string[],
       version: this.version,
+      auth_token: this.authToken,
     };
     writeDaemonState(this.daemonStatePath, info);
   }
@@ -394,6 +427,23 @@ export class DaemonServer {
   private removeDaemonJson(): void {
     removeDaemonState(this.daemonStatePath, process.pid);
   }
+}
+
+/**
+ * Generate a fresh per-daemon-process bearer token. 32 random bytes
+ * encoded as hex gives 256 bits of entropy — same shape as the
+ * MCP/team-sync tokens the worker uses. Exported via env so spawned
+ * children inherit it; persisted into daemon.json so manually-invoked
+ * children can fetch it without env inheritance.
+ */
+function mintDaemonAuthToken(): string {
+  // Honor an existing env-provided token (set by tests, or by a
+  // previous daemon process this child was forked from) so the value
+  // round-trips through process restarts when MYCO_DAEMON_AUTH is
+  // explicitly carried — but only when it looks like a real token.
+  const inherited = process.env[REQUEST_CONTEXT_AUTH_ENV];
+  if (inherited && /^[0-9a-f]{32,}$/.test(inherited)) return inherited;
+  return crypto.randomBytes(32).toString('hex');
 }
 
 /**
