@@ -63,8 +63,9 @@ const PROJECT_NAV_ITEMS: readonly NavItem[] = [
 ];
 
 const GROVE_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/g/:groveSlug/operations', label: 'Operations', icon: Wrench, scope: 'grove' },
-  { to: '/g/:groveSlug/settings', label: 'Grove Settings', icon: Trees, scope: 'grove' },
+  { to: '/g/:groveSlug/dashboard', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
+  { to: '/g/:groveSlug/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
+  { to: '/g/:groveSlug/settings', label: 'Settings', icon: Trees, scope: 'grove' },
 ];
 
 // Team is its own top-level section now — Grove-scoped configuration
@@ -174,20 +175,20 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
 
 /* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
-/** Self-contained Operations nav link — owns update polling, controls link target and badge. */
-function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
+/**
+ * Self-contained Machine Settings nav link — adds an
+ * "update available" dot when an upgrade is pending. Updates live
+ * on the Machine Settings page now (the Operations page that used
+ * to host them was dissolved into Dashboard + Maintenance).
+ */
+function MachineSettingsNavLink({ collapsed }: { collapsed: boolean }) {
   const { data } = useUpdateStatus();
-  const selection = useProjectSelection();
-  const operationsPath = selection
-    ? `/g/${selection.grove.slug}/operations`
-    : '/operations';
   const hasUpdate = !!(data && !data.exempt && data.update_available);
-  const to = hasUpdate ? `${operationsPath}?tab=system` : operationsPath;
 
   return (
     <NavLink
-      to={to}
-      title={collapsed ? 'Operations' : undefined}
+      to="/machine/settings"
+      title={collapsed ? 'Settings' : undefined}
       className={({ isActive }) =>
         cn(
           'flex items-center rounded-md text-sm font-medium transition-colors',
@@ -198,8 +199,8 @@ function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
         )
       }
     >
-      <Wrench className="h-4 w-4 shrink-0" />
-      {!collapsed && 'Operations'}
+      <Settings className="h-4 w-4 shrink-0" />
+      {!collapsed && 'Settings'}
       {hasUpdate && (
         <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
       )}
@@ -274,13 +275,9 @@ function SidebarContent({
         </NavGroup>
 
         <NavGroup label="Grove" collapsed={collapsed}>
-          {GROVE_NAV_ITEMS.map((item) =>
-            item.to === '/g/:groveSlug/operations' ? (
-              <OperationsNavLink key={item.to} collapsed={collapsed} />
-            ) : (
-              <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-            ),
-          )}
+          {GROVE_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
         </NavGroup>
 
         <NavGroup label="Team" collapsed={collapsed}>
@@ -290,9 +287,13 @@ function SidebarContent({
         </NavGroup>
 
         <NavGroup label="Machine" collapsed={collapsed}>
-          {MACHINE_NAV_ITEMS.map((item) => (
-            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-          ))}
+          {MACHINE_NAV_ITEMS.map((item) =>
+            item.to === '/machine/settings' ? (
+              <MachineSettingsNavLink key={item.to} collapsed={collapsed} />
+            ) : (
+              <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+            ),
+          )}
         </NavGroup>
       </nav>
 

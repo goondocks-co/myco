@@ -20,8 +20,6 @@ import { SectionHeader } from '../components/ui/section-header';
 import { Button } from '../components/ui/button';
 import { cn } from '../lib/cn';
 import { BackupCard } from '../components/operations/BackupCard';
-import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
-import { ProjectsActivityCard } from '../components/operations/ProjectsActivityCard';
 import { LogRow } from '../components/operations/LogRow';
 import {
   OperationsScopePill,
@@ -72,15 +70,15 @@ const SPARKLINE_HISTORY_LENGTH = 20;
 
 /* ---------- Tabs ---------- */
 
-type ActiveTab = 'embedding' | 'database' | 'system';
+type ActiveTab = 'embedding' | 'database' | 'backup';
 
-const OPERATIONS_TABS: Tab[] = [
+const MAINTENANCE_TABS: Tab[] = [
   { id: 'embedding', label: 'Embedding' },
   { id: 'database', label: 'Database' },
-  { id: 'system', label: 'System' },
+  { id: 'backup', label: 'Backup' },
 ];
 
-const VALID_TABS = new Set<ActiveTab>(['embedding', 'database', 'system']);
+const VALID_TABS = new Set<ActiveTab>(['embedding', 'database', 'backup']);
 
 /**
  * Scope options on the Database tab. SQLite operations target a whole
@@ -1017,16 +1015,14 @@ function EmbeddingTab() {
   );
 }
 
-/* ---------- System Tab ---------- */
+/* ---------- Backup Tab ---------- */
 
-function SystemTab() {
-  // UpdateCard intentionally omitted here — software updates are
-  // machine-wide and live on the dedicated /system page (sidebar →
-  // Machine → System). Operations was duplicating it.
+function BackupTab() {
+  // Cross-Grove cards (Groves overview, Project activity) live on
+  // Machine Dashboard now; this tab focuses on per-Grove backup
+  // create/restore for the active Grove.
   return (
     <div className="space-y-6">
-      <GrovesOverviewCard />
-      <ProjectsActivityCard />
       <BackupCard />
     </div>
   );
@@ -1204,15 +1200,15 @@ function DatabaseTab() {
   );
 }
 
-/* ---------- Operations Page ---------- */
+/* ---------- Grove Maintenance Page ---------- */
 
 const TAB_SUBTITLES: Record<ActiveTab, string> = {
-  embedding: 'Embedding health, maintenance actions, and activity log',
-  database: 'Schema inspection, maintenance actions, and scheduled optimization',
-  system: 'Software updates and backup management',
+  embedding: 'Embedding actions and activity log',
+  database: 'Database actions and scheduled maintenance',
+  backup: 'Create and restore Grove backups',
 };
 
-export default function Operations() {
+export default function GroveMaintenance() {
   const [activeTab, setActiveTab] = useState<ActiveTab>(readTabFromUrl);
 
   const handleTabChange = useCallback((tabId: string) => {
@@ -1222,17 +1218,17 @@ export default function Operations() {
   }, []);
 
   // Each tab owns its own data fetch — Embedding fetches namespace
-  // counts (scope-driven), Database fetches schema details, System
-  // queries Grove summaries. Lifting them used to share a loading
+  // counts (scope-driven), Database fetches schema details, Backup
+  // queries the backup list. Lifting them used to share a loading
   // gate at the page level but kept the Embedding fetch tied to
   // 'project' scope no matter what the namespace pill was set to.
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6">
         <PageHeader
-          title="Operations"
+          title="Grove maintenance"
           subtitle={TAB_SUBTITLES[activeTab]}
-          tabs={OPERATIONS_TABS}
+          tabs={MAINTENANCE_TABS}
           activeTab={activeTab}
           onTabChange={handleTabChange}
         />
@@ -1242,7 +1238,7 @@ export default function Operations() {
         <div className="px-6 pb-6">
           {activeTab === 'embedding' && <EmbeddingTab />}
           {activeTab === 'database' && <DatabaseTab />}
-          {activeTab === 'system' && <SystemTab />}
+          {activeTab === 'backup' && <BackupTab />}
         </div>
       </div>
     </div>
