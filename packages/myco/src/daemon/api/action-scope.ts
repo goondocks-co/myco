@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { assertGroveProjectId, isGroveEraId, type GroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
@@ -81,10 +81,12 @@ export function resolveActionScope(options: ResolveActionScopeOptions): ActionSc
       'No scope in body and request context lacks Grove/project ids',
     );
   }
+  // ctx.projectId is already typed as GroveProjectId (branded at the
+  // request-context boundary), so no cast is needed here.
   return {
     kind: 'project',
     grove_id: ctx.groveId,
-    project_id: ctx.projectId as GroveProjectId,
+    project_id: ctx.projectId,
   };
 }
 

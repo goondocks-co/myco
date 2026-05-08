@@ -20,7 +20,7 @@
  * into the tracker.
  */
 
-import type { GroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import type { Database } from '@myco/db/client.js';
 import type { PowerState } from './power.js';
 import { getAllProjectActivitySeconds } from '@myco/db/queries/project-activity.js';
@@ -151,7 +151,7 @@ export function readProjectActivitySeed(
 ): SeedRow[] {
   return getAllProjectActivitySeconds(db).map((row) => ({
     groveId,
-    projectId: row.project_id as GroveProjectId,
+    projectId: assertGroveProjectId(row.project_id),
     lastActivityMs: row.last_seconds * 1000,
   }));
 }
