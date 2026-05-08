@@ -45,8 +45,67 @@ await spawnDaemon();
 4. **Execute migration tasks** from registry on successful startup
 5. **Update ~/.myco/daemon.json** with new PID, port, and binary path
 6. **Initialize grove coordination** - scan for existing groves and projects
+7. **Initialize Grove runtime cache** with bounded LRU management
 
 **Hub removal impact**: The global daemon now handles all coordination directly — no separate Hub package installation or management required.
+
+### Grove Runtime Cache Architecture
+
+The daemon maintains a three-layer cache system for efficient Grove operation:
+
+```typescript
+// Bounded LRU cache with pin/unpin safety
+class GroveRuntimeCache {
+  private static readonly MAX_CACHE_SIZE = 100;
+  private static readonly CACHE_TTL_MS = 300000; // 5 minutes
+  
+  // Tier 1: Pinned handles (never evicted)
+  private pinnedHandles = new Map<string, CachedHandle>();
+  
+  // Tier 2: Recently used handles (LRU eviction)
+  private lruCache = new LRU<string, CachedHandle>(this.MAX_CACHE_SIZE);
+  
+  // Tier 3: On-demand resolution
+  async getGroveHandle(groveId: string, projectId?: string): Promise<CachedHandle> {
+    // Check pinned first
+    if (this.pinnedHandles.has(groveId)) {
+      return this.pinnedHandles.get(groveId)!;
+    }
+    
+    // Check LRU cache
+    let handle = this.lruCache.get(groveId);
+    if (handle && !this.isExpired(handle)) {
+      return handle;
+    }
+    
+    // Resolve on-demand with pin safety
+    handle = await this.resolveGroveHandle(groveId, projectId);
+    this.lruCache.set(groveId, handle);
+    return handle;
+  }
+  
+  // Pin critical handles to prevent eviction
+  pinHandle(groveId: string, handle: CachedHandle): void {
+    this.pinnedHandles.set(groveId, handle);
+    this.lruCache.delete(groveId); // Remove from LRU if present
+  }
+  
+  // Unpin handle (moves to LRU tier if still valid)
+  unpinHandle(groveId: string): void {
+    const handle = this.pinnedHandles.get(groveId);
+    if (handle && !this.isExpired(handle)) {
+      this.lruCache.set(groveId, handle);
+    }
+    this.pinnedHandles.delete(groveId);
+  }
+}
+```
+
+**Cache safety mechanisms:**
+- **Bounded eviction**: LRU cache limited to 100 entries prevents memory exhaustion
+- **Pin protection**: Critical grove handles pinned to prevent eviction during active use
+- **TTL expiration**: 5-minute TTL ensures stale handles are re-resolved
+- **Re-resolution on demand**: Cache misses trigger fresh grove handle creation
 
 ### Migration Tasks Registry
 
@@ -611,6 +670,25 @@ for (const migration of pendingMigrations) {
 - Resource contention between old and new global daemon
 
 **Prevention:** Use `coordinated: true` in eviction calls and verify grove notification completion.
+
+### Grove Cache Performance
+
+**Grove runtime cache gotcha:** Always use pin/unpin mechanisms for handles that must persist across operations:
+
+```typescript
+// Wrong - critical handle may be evicted mid-operation
+const handle = await groveCache.getHandle(groveId);
+await longRunningOperation(handle); // Handle may be evicted during this
+
+// Right - pin handle for operation duration
+const handle = await groveCache.getHandle(groveId);
+groveCache.pinHandle(groveId, handle);
+try {
+  await longRunningOperation(handle);
+} finally {
+  groveCache.unpinHandle(groveId); // Moves to LRU tier
+}
+```
 
 ### Global State Synchronization
 

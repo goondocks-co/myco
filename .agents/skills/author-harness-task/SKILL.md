@@ -10,8 +10,8 @@ description: |
   registration; phase decomposition and the judgment/recipe gradient; model
   selection via the advisor pattern; turn budget calibration including
   local-model multipliers; scheduling triggers and session-gating; tool surface
-  design and readOnly enforcement; and observability via the agent_runs audit
-  table.
+  design and readOnly enforcement; Grove scope iteration patterns; per-project
+  lifecycle management; and observability via the agent_runs audit table.
 managed_by: myco
 user-invocable: true
 allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
@@ -132,6 +132,64 @@ export const myNewTask: TaskDefinition = {
 
 **Critical**: Ensure proper TaskDefinition export. Malformed exports cause silent task failures with no error logs.
 
+## Procedure 2.1: Grove Multi-Project Integration
+
+### Scope iteration patterns
+
+Grove introduces multi-project management. Tasks must handle scope iteration across registered projects:
+
+```ts
+import { forEachGrove, forEachRegisteredProject, isProjectActive } from '../../../daemon/scope-iteration';
+
+// Iterate across all groves (highest level)
+await forEachGrove(async (grove) => {
+  // Grove-level processing
+});
+
+// Iterate across registered projects in current grove
+await forEachRegisteredProject(async (projectContext) => {
+  if (!isProjectActive(projectContext)) return;
+  // Per-project task execution
+});
+```
+
+**Project lifecycle management**: Use `ProjectPowerStateTracker` to respect project sleep/wake state:
+
+```ts
+import { ProjectPowerStateTracker } from '../../../daemon/project-power-state';
+
+const powerTracker = new ProjectPowerStateTracker();
+if (!powerTracker.isProjectAwake(projectId)) {
+  // Skip or defer task for sleeping project
+}
+```
+
+### Handle safety with Grove runtime cache
+
+Use `GroveRuntimeCache` for safe cross-project state management:
+
+```ts
+import { GroveRuntimeCache } from '../../../daemon/grove-runtime-cache';
+
+const cache = new GroveRuntimeCache();
+const projectHandle = cache.getProjectHandle(projectId);
+// Use handle for thread-safe operations across grove
+```
+
+### Daemon notification integration
+
+Tasks should emit notifications for multi-project visibility:
+
+```ts
+// Emit task completion notifications
+await notificationService.emit({
+  domain: 'agent',
+  event: 'task_completed',
+  projectId,
+  data: { taskName: 'my-new-task', phase: 'completion' }
+});
+```
+
 ## Procedure 3: Select Models with the Advisor Pattern
 
 Use `advisor` field per-phase for optimal model routing:
@@ -147,7 +205,7 @@ Use `advisor` field per-phase for optimal model routing:
 ## Procedure 4: Calibrate Turn Budgets
 
 | Phase type | Cloud budget | Local budget |
-|------------|-------------|--------------|
+|------------|--------------|--------------|
 | Discovery / read-only | 8–12 | 25–40 |
 | Write / consolidation | 10–20 | 30–60 |
 | Map-phase (per item) | 2–4 | 6–12 |
@@ -284,3 +342,7 @@ Every phase execution writes to `agent_runs`:
 - **Rate limit amplification** → Map phases hit limits faster. Implement backoff and consider API quotas.
 - **Provider metadata staleness** → Implement refresh mechanisms and validate availability.
 - **State contract violations** → Strict adherence required. Violations cascade through harness system.
+- **Grove scope iteration without project state check** → Processing inactive projects. Always check `isProjectActive()`.
+- **Cross-project state corruption** → Use `GroveRuntimeCache` for thread-safe handle management.
+- **Missing daemon notifications** → Grove multi-project visibility requires notification emission.
+- **Migration path reference error** → Migrations are in single file `packages/myco/src/db/migrations.ts`, not directory.
