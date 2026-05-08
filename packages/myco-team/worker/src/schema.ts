@@ -46,6 +46,7 @@ const PROMPT_BATCHES_TABLE = `
     session_id             TEXT NOT NULL,
     parent_prompt_batch_id INTEGER,
     kind                   TEXT NOT NULL DEFAULT 'initial',
+    origin                 TEXT NOT NULL DEFAULT 'human',
     prompt_number          INTEGER,
     user_prompt            TEXT,
     response_summary       TEXT,
@@ -290,6 +291,7 @@ const BASE_SECONDARY_INDEXES = [
 const POST_MIGRATION_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created ON prompt_batches (project_id, origin, created_at)',
 ];
 
 const PROJECT_SCOPE_INDEXES = [
@@ -365,6 +367,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     'ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT',
     'ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER',
     "ALTER TABLE prompt_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'initial'",
+    "ALTER TABLE prompt_batches ADD COLUMN origin TEXT NOT NULL DEFAULT 'human'",
     'ALTER TABLE sessions ADD COLUMN project_id TEXT',
     'ALTER TABLE prompt_batches ADD COLUMN project_id TEXT',
     'ALTER TABLE spores ADD COLUMN project_id TEXT',
