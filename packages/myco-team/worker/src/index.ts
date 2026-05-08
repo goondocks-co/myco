@@ -1622,7 +1622,7 @@ export default {
 
       // Token rotation — authenticated with team API key
       if (path === '/mcp/rotate' && method === 'POST') {
-        const rotateAuthError = validateAuth(request, env);
+        const rotateAuthError = await validateAuth(request, env);
         if (rotateAuthError) return rotateAuthError;
         const newToken = await rotateMcpToken(env.MYCO_SECRETS);
         return jsonResponse({ token: newToken });
@@ -1638,7 +1638,7 @@ export default {
     }
 
     // All other routes require auth
-    const authError = validateAuth(request, env);
+    const authError = await validateAuth(request, env);
     if (authError) return authError;
 
     if (!schemaInitialized) {
