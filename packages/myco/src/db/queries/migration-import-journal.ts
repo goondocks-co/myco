@@ -253,6 +253,29 @@ export function listImportMappingsForMigration(
   return rows.map(mapRow);
 }
 
+/**
+ * Drop every journal row for a completed migration.
+ *
+ * The journal is mid-import working state: importer writes one row
+ * per (source → target) mapping so FK lookups can resolve targets
+ * before they're committed, and the activation completion check
+ * scans for `status='error'` rows. After the activation marker is
+ * written, no code path reads these rows again. Leaving them
+ * around carries 100k+ rows per migration on real-world repos
+ * and bloats the Grove DB by 100s of MB with no runtime benefit.
+ *
+ * Returns the number of rows removed for diagnostic logging.
+ */
+export function deleteImportMappingsForMigration(
+  migrationId: string,
+  db: Database = getDatabase(),
+): number {
+  const result = db.prepare(
+    `DELETE FROM migration_import_journal WHERE migration_id = ?`,
+  ).run(migrationId);
+  return Number(result.changes ?? 0);
+}
+
 export function lookupLatestImportMappingBySource(
   sourceTable: string,
   sourceId: string | number,

@@ -90,6 +90,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 34, migrate: (db) => migrateV33ToV34(db) },
   { version: 35, migrate: (db) => migrateV34ToV35(db) },
   { version: 36, migrate: (db) => migrateV35ToV36(db) },
+  { version: 37, migrate: (db) => migrateV36ToV37(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2286,5 +2287,35 @@ function migrateV35ToV36(db: Database): void {
     throw err;
   } finally {
     setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+/**
+ * Version 37: drop the migration_import_journal contents in already-
+ * activated Groves.
+ *
+ * The journal is mid-import working state — the importer writes one
+ * row per (source → target) mapping for FK lookups, and the
+ * activation completion check scans for status='error' rows. After
+ * the activation marker is written, no code reads it. Real-world
+ * projects produce 100k+ rows that previously sat in the Grove DB
+ * forever (300+ MB on the dogfood Grove). Going forward, activation
+ * cleans up its own rows post-marker; this one-shot wipe handles
+ * Groves that were activated before that change landed.
+ */
+function migrateV36ToV37(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'migration_import_journal')) {
+      db.prepare('DELETE FROM migration_import_journal').run();
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(37, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }

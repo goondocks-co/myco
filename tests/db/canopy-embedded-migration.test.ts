@@ -33,8 +33,8 @@ describe('canopy_entries.embedded migration v26', () => {
     expect(cols.filter((c) => c.name === 'embedded')).toHaveLength(1);
   });
 
-  it('SCHEMA_VERSION is 36', () => {
-    expect(SCHEMA_VERSION).toBe(36);
+  it('SCHEMA_VERSION is 37', () => {
+    expect(SCHEMA_VERSION).toBe(37);
   });
 
   it('migrateV25ToV26 is a no-op when column already exists', () => {

@@ -7,7 +7,10 @@ import {
   type ProjectManifest,
 } from '@myco/config/project-manifest.js';
 import { openDatabase, openReadonly, SQLITE_DB_FILE, vaultDbPath, type Database } from '@myco/db/client.js';
-import { listImportMappingsForMigration } from '@myco/db/queries/migration-import-journal.js';
+import {
+  listImportMappingsForMigration,
+  deleteImportMappingsForMigration,
+} from '@myco/db/queries/migration-import-journal.js';
 import { createSchema } from '@myco/db/schema.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
@@ -288,6 +291,14 @@ export function activateProjectMigration(
         team_sync_disabled: teamSyncDisabled,
         runtime_command_preserved: fs.existsSync(path.join(projectVaultDir, 'runtime.command')),
       });
+
+      // Drop the migration journal — it's mid-import working state
+      // (FK lookups + status checks during validation) and nothing
+      // reads it post-marker. Real-world projects produce 100k+
+      // rows; carrying them forever was carrying 100s of MB of
+      // vestigial data per Grove. Cleanup runs inside the same
+      // transaction as the marker write so it commits atomically.
+      deleteImportMappingsForMigration(migrationId, targetDb);
     })();
 
     // Archive legacy vault data on success. Done outside the DB
