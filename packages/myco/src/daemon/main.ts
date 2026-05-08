@@ -362,18 +362,36 @@ async function runInitialCanopyPopulateAcrossProjects(
 }
 
 export async function main(): Promise<void> {
-  // The vault always lives at `<projectRoot>/.myco/`. The daemon spawns
-  // with cwd = projectRoot; resolveVaultDir walks up (worktree-aware) to
-  // find the enclosing `.myco/`. There is no escape hatch — vaults are
-  // project-local.
-  const vaultDir = resolveVaultDir();
+  // `bootstrapVaultDir` is a *transitional* concept.
+  //
+  // In the Grove world, the daemon serves many projects and the per-request
+  // vault directory comes from `req.requestContext.projectVaultDir`. The
+  // daemon process itself, though, still has to bootstrap from somewhere on
+  // disk to load secrets, identify the machine, resolve the merged config,
+  // open the daemon log dir, and so on — all before any HTTP traffic
+  // arrives. `resolveVaultDir()` walks up from cwd (worktree-aware) to find
+  // the enclosing `.myco/` and we treat that as the bootstrap fallback.
+  //
+  // Almost every downstream callsite below either:
+  //   (a) genuinely needs the bootstrap dir (logger init, secrets load,
+  //       machine-id, daemon-service files, plan-watch, restart marker), or
+  //   (b) prefers the per-request projectVaultDir but falls back to
+  //       `bootstrapVaultDir` when no request context is bound (typically
+  //       global handlers or singleton subsystems that haven't been
+  //       Grove-aware-ified yet).
+  //
+  // Once `myco init` is universally required and every handler/subsystem
+  // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
+  // case (a) handlers move to a dedicated daemon-paths struct. Until then,
+  // do NOT use this value as a stand-in for the request-scoped vault.
+  const bootstrapVaultDir = resolveVaultDir();
 
   // Load API keys from secrets.env into process.env before any provider init
-  loadSecrets(vaultDir);
+  loadSecrets(bootstrapVaultDir);
 
   // --- Machine identity (resolved early so config load can use the Grove id) ---
-  const machineId = getMachineId(vaultDir);
-  const dataPaths = resolveDaemonDataPaths(vaultDir, {
+  const machineId = getMachineId(bootstrapVaultDir);
+  const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
   });
@@ -382,7 +400,7 @@ export async function main(): Promise<void> {
   // of this needs to see all four tiers, so the daemon loads the merged
   // view (sourced from `~/.myco/config.yaml`, `~/.myco/groves/<id>/config.yaml`,
   // `<project>/.myco/myco.yaml`, and `<project>/.myco/local.yaml`).
-  const config = loadMergedConfig(vaultDir, {
+  const config = loadMergedConfig(bootstrapVaultDir, {
     groveId: dataPaths.requestContext.groveId,
     mycoHome: undefined, // resolve from env at call time
   });
@@ -394,17 +412,17 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  const projectRoot = resolveProjectRoot(vaultDir);
+  const projectRoot = resolveProjectRoot(bootstrapVaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
-  const daemonService = resolveDaemonServiceState(vaultDir, {
+  const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
   });
-  const logger = new DaemonLogger(resolveDaemonLogDir(vaultDir, {
+  const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
   }), {
@@ -429,7 +447,7 @@ export async function main(): Promise<void> {
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
-    vault: vaultDir,
+    vault: bootstrapVaultDir,
     daemon_scope: daemonService.scope,
     daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
@@ -494,14 +512,14 @@ export async function main(): Promise<void> {
   }
 
   logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', {
-    vault: vaultDir,
+    vault: bootstrapVaultDir,
     database_path: dataPaths.databasePath,
     grove_id: dataPaths.requestContext.groveId,
   });
 
   // --- Check for restart-reason signal file (left by version sync restart script) ---
   {
-    const reasonPath = path.join(vaultDir, RESTART_REASON_FILENAME);
+    const reasonPath = path.join(bootstrapVaultDir, RESTART_REASON_FILENAME);
     try {
       if (fs.existsSync(reasonPath)) {
         const raw = JSON.parse(fs.readFileSync(reasonPath, 'utf-8')) as {
@@ -517,7 +535,7 @@ export async function main(): Promise<void> {
             ? 'Restarted and updated local project hooks.'
             : 'Restarted to pick up the latest version.';
 
-          notify(vaultDir, {
+          notify(bootstrapVaultDir, {
             domain: 'daemon',
             type: 'daemon.version_sync',
             title: `Updated to v${raw.to_version}`,
@@ -571,7 +589,7 @@ export async function main(): Promise<void> {
   // Reconcile log entries missed while daemon was down
   const lastLogTimestamp = getMaxTimestamp();
   if (lastLogTimestamp) {
-    const logDir = resolveDaemonLogDir(vaultDir, {
+    const logDir = resolveDaemonLogDir(bootstrapVaultDir, {
       requestContext: dataPaths.requestContext,
       env: process.env,
     });
@@ -591,7 +609,7 @@ export async function main(): Promise<void> {
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
   const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
     req.requestContext?.databasePath ?? dataPaths.databasePath,
-    req.requestContext?.projectVaultDir ?? vaultDir,
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
     loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
   );
   const runtimeCache = new GroveRuntimeCache();
@@ -599,7 +617,7 @@ export async function main(): Promise<void> {
     createManager: databaseManagerForRequest,
     cache: runtimeCache,
     logger,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
   });
   /**
    * Build a per-Grove embedding runtime for any DB handle the runtime
@@ -636,7 +654,7 @@ export async function main(): Promise<void> {
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
+    await registerBuiltInAgentsAndTasks(definitionsDir, bootstrapVaultDir);
     logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: errorMessage(err) });
@@ -656,7 +674,7 @@ export async function main(): Promise<void> {
         `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = 'Daemon restarted while run was in progress' WHERE status = 'running'`,
       ).run(completedAt);
       for (const row of staleRows) {
-        notify(vaultDir, {
+        notify(bootstrapVaultDir, {
           domain: 'agents',
           type: 'agent.task.failure',
           title: `Task failed: ${row.task ?? 'agent run'}`,
@@ -738,7 +756,7 @@ export async function main(): Promise<void> {
   const inflightRuns = new InflightRunRegistry();
 
   const server = new DaemonServer({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     logger,
     daemonStatePath: daemonService.statePath,
     uiDir: uiDir ?? undefined,
@@ -763,7 +781,7 @@ export async function main(): Promise<void> {
     ),
   });
 
-  const bufferDir = path.join(vaultDir, 'buffer');
+  const bufferDir = path.join(bootstrapVaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
   const reconciler = createReconciler({ bufferDir, logger, projectRoot });
@@ -782,7 +800,7 @@ export async function main(): Promise<void> {
     embeddingManager,
     logger,
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     projectId: dataPaths.requestContext.projectId,
     planTags: symbiontPlanTags,
     planWatchConfig,
@@ -793,7 +811,7 @@ export async function main(): Promise<void> {
   // runner becomes visible to SessionStart triggers.
   const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor,
-    server, powerManager, machineId, logger, liveConfig, vaultDir,
+    server, powerManager, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
     projectStateTracker,
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
@@ -809,7 +827,7 @@ export async function main(): Promise<void> {
     logger,
     machineId,
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     reconcileSession: reconciler.reconcileSession,
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
@@ -824,7 +842,7 @@ export async function main(): Promise<void> {
   // --- Context injection (cortex brief + semantic spore search) ---
   let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     embeddingManager,
     liveConfig,
     logger,
@@ -837,14 +855,14 @@ export async function main(): Promise<void> {
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     getDatabase,
   }));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
-  let configHash = computeConfigHash(vaultDir);
-  const cortexHandlers = createCortexHandlers(vaultDir, {
+  let configHash = computeConfigHash(bootstrapVaultDir);
+  const cortexHandlers = createCortexHandlers(bootstrapVaultDir, {
     liveConfig,
     embeddingManager,
     logger,
@@ -852,16 +870,16 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
-  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
+  server.registerRoute('GET', '/api/config', async () => handleGetConfig(bootstrapVaultDir));
+  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
 
   server.registerRoute('GET', '/api/config/merged', async (req) =>
-    handleGetMergedConfig(vaultDir, { groveId: req.requestContext?.groveId ?? null }));
-  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
+    handleGetMergedConfig(bootstrapVaultDir, { groveId: req.requestContext?.groveId ?? null }));
+  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(bootstrapVaultDir));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -878,7 +896,7 @@ export async function main(): Promise<void> {
   const reactions = createConfigReactionRegistry(logger);
 
   // Refresh the live-stats configHash on every write.
-  reactions.on([], () => { configHash = computeConfigHash(vaultDir); });
+  reactions.on([], () => { configHash = computeConfigHash(bootstrapVaultDir); });
 
   // Keep liveConfig pointed at the latest merged config so runtime gates
   // (agent.scheduled_tasks_enabled, agent.event_tasks_enabled) pick up
@@ -888,7 +906,7 @@ export async function main(): Promise<void> {
   // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
   // or symbiont enablement change. The reconcile has no other config inputs.
   reactions.on(['capture', 'symbionts'], (ctx) => {
-    reconcileConfiguredSymbionts(resolveProjectRoot(vaultDir), vaultDir, ctx);
+    reconcileConfiguredSymbionts(resolveProjectRoot(bootstrapVaultDir), bootstrapVaultDir, ctx);
   });
 
   // Refresh the in-memory plan-watch list on capture changes.
@@ -916,7 +934,7 @@ export async function main(): Promise<void> {
   async function syncScheduledTasks() {
     scheduledTaskKicker = await registerScheduledTasks(powerManager, {
       definitionsDir,
-      vaultDir,
+      vaultDir: bootstrapVaultDir,
       embeddingManager,
       logger,
       liveConfig,
@@ -933,11 +951,11 @@ export async function main(): Promise<void> {
   });
 
   async function applyConfigWriteReactions(touchedPaths: string[]) {
-    const reactionContext = loadReactionContext(vaultDir, logger, {
+    const reactionContext = loadReactionContext(bootstrapVaultDir, logger, {
       groveId: dataPaths.requestContext.groveId,
     });
     if (!reactionContext) {
-      configHash = computeConfigHash(vaultDir);
+      configHash = computeConfigHash(bootstrapVaultDir);
       return null;
     }
     await reactions.fire(touchedPaths, reactionContext);
@@ -945,14 +963,14 @@ export async function main(): Promise<void> {
   }
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
-    const result = await handlePutScopedConfig(vaultDir, req.body);
+    const result = await handlePutScopedConfig(bootstrapVaultDir, req.body);
     if (!result.status || result.status < 400) {
       const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
       const touchedPaths = computeTouchedPaths(body.patch, body.clear);
       const reactionContext = await applyConfigWriteReactions(touchedPaths);
       if (reactionContext) {
         const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
-        notify(vaultDir, {
+        notify(bootstrapVaultDir, {
           domain: 'settings',
           type: 'settings.saved',
           title: summary.title,
@@ -961,7 +979,7 @@ export async function main(): Promise<void> {
           metadata: summary.metadata,
         }, reactionContext);
       } else {
-        configHash = computeConfigHash(vaultDir);
+        configHash = computeConfigHash(bootstrapVaultDir);
       }
     }
     return result;
@@ -1007,7 +1025,7 @@ export async function main(): Promise<void> {
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   const configHashRef = { get: () => configHash };
   server.registerRoute('GET', '/api/stats', createLiveStatsHandler({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     registry,
     server,
     configHash: configHashRef,
@@ -1028,12 +1046,12 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/log', createLogIngestionHandler(logger));
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
-  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
+  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // --- Update routes ---
-  const updateProjectRoot = resolveProjectRoot(vaultDir);
+  const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);
   const updateHandlers = createUpdateHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     projectRoot: updateProjectRoot,
     currentVersion: server.version,
     globalPrefix,
@@ -1055,7 +1073,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, liveConfig });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -1068,7 +1086,7 @@ export async function main(): Promise<void> {
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
     resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
-    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(vaultDir),
+    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(bootstrapVaultDir),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction, fire
@@ -1098,7 +1116,7 @@ export async function main(): Promise<void> {
         return { skipped: true, reason: built.reason };
       }
 
-      const resultPromise = runAgent(vaultDir, {
+      const resultPromise = runAgent(bootstrapVaultDir, {
         task,
         instruction: built.instruction,
         runContext: built.context,
@@ -1147,7 +1165,7 @@ export async function main(): Promise<void> {
         requestContext,
       );
 
-      const resultPromise = runAgent(vaultDir, {
+      const resultPromise = runAgent(bootstrapVaultDir, {
         task,
         instruction: built?.instruction,
         runContext: built?.context,
@@ -1177,7 +1195,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
   server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
   server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
-  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir, logger }));
+  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir: bootstrapVaultDir, logger }));
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
@@ -1188,12 +1206,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
-  const attachments = createAttachmentHandler({ vaultDir });
+  const attachments = createAttachmentHandler({ vaultDir: bootstrapVaultDir });
   server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---
   const agentRunHandlers = createAgentRunHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     embeddingManager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
@@ -1207,44 +1225,44 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
   server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
 
-  const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir, logger });
+  const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir: bootstrapVaultDir, logger });
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
   server.registerRoute('POST', '/api/digest/revisions/:id/restore', digestRevisionHandlers.handleRestore);
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, bootstrapVaultDir));
   server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleUpdateTask(req, vaultDir);
+    const result = await handleUpdateTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks', async (req) => {
-    const result = await handleCreateTask(req, vaultDir);
+    const result = await handleCreateTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => {
-    const result = await handleCopyTask(req, vaultDir);
+    const result = await handleCopyTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleDeleteTask(req, vaultDir);
+    const result = await handleDeleteTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
-  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, bootstrapVaultDir));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
-    const result = await handleUpdateTaskConfig(req, vaultDir);
+    const result = await handleUpdateTaskConfig(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions([`agent.tasks.${req.params.id}`]);
     }
@@ -1254,15 +1272,15 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(vaultDir));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(vaultDir, req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(vaultDir, req));
+  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(bootstrapVaultDir));
+  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(bootstrapVaultDir, req));
+  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(bootstrapVaultDir, req));
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
   // agents (codex) connect to it directly. Tool execution happens in-process
   // via the shared tool runtime — no internal HTTP RPC layer.
-  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir, {
+  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(bootstrapVaultDir, {
     resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
       ? db
       : runtimeCache.getDatabase(databasePath),
@@ -1296,7 +1314,7 @@ export async function main(): Promise<void> {
 
   const backupHandlers = createBackupHandlers({
     bootDb: db,
-    bootVaultDir: vaultDir,
+    bootVaultDir: bootstrapVaultDir,
     bootGroveId: dataPaths.requestContext.groveId ?? null,
     cache: runtimeCache,
     machineId,
@@ -1308,7 +1326,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
   const backupConfigHandlers = createBackupConfigHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     bootGroveId: dataPaths.requestContext.groveId ?? null,
   });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
@@ -1325,7 +1343,7 @@ export async function main(): Promise<void> {
     liveConfig,
     machineId,
     logger,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     serverVersion: server.version,
     requestContext: dataPaths.requestContext,
   });
@@ -1335,7 +1353,7 @@ export async function main(): Promise<void> {
   await teamSync.reconcileClient();
 
   const teamHandlers = createTeamHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     machineId,
     logger,
     getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
@@ -1448,7 +1466,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/activity', handleGetFeed);
   server.registerRoute('GET', '/api/embedding/status', async (req) => {
     const runtime = getEmbeddingRuntime(req.requestContext);
-    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? vaultDir, {
+    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
       db: runtime.db,
       scope: projectScopeFromRequestContext(req.requestContext),
     });
@@ -1507,11 +1525,11 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query, req.requestContext));
-  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body, req.requestContext));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body, req.requestContext));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body, req.requestContext));
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(bootstrapVaultDir, req.query, req.requestContext));
+  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(bootstrapVaultDir, req.body, req.requestContext));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(bootstrapVaultDir, req.params.id, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(bootstrapVaultDir, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
   server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
 
@@ -1553,7 +1571,7 @@ export async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
+  logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
@@ -1610,7 +1628,7 @@ export async function main(): Promise<void> {
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     onCanopyMassAdd: (groveId, projectId) =>
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
-    daemonVaultDir: vaultDir,
+    daemonVaultDir: bootstrapVaultDir,
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
