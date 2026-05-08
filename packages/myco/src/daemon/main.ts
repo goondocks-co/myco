@@ -1666,7 +1666,23 @@ export async function main(): Promise<void> {
 
   // --- Shutdown ---
 
-  const shutdown = async (signal: string) => {
+  // Guard against SIGTERM + SIGINT (or repeated signals) running the
+  // shutdown body twice. Without this, the second invocation re-enters
+  // closeDatabase() / runtimeCache.closeAll() against already-closed
+  // better-sqlite3 handles, which throws inside libuv. We capture the
+  // first invocation's promise so subsequent signals just await the same
+  // settled outcome.
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) {
+      logger.info(LOG_KINDS.DAEMON_START, `${signal} received during in-progress shutdown; awaiting prior signal`);
+      return shutdownPromise;
+    }
+    shutdownPromise = runShutdown(signal);
+    return shutdownPromise;
+  };
+
+  const runShutdown = async (signal: string) => {
     logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
     powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
