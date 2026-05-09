@@ -50,6 +50,17 @@ export interface ActivationValidationSummary {
   integrity_check: string;
 }
 
+/**
+ * Sum the imported row counts in an activation result, ignoring the
+ * `skipped_*` keys that record what wasn't migrated.
+ */
+export function summarizeImportedRowCount(result: ImportProjectCoreResult | null): number {
+  if (!result) return 0;
+  return Object.entries(result)
+    .filter(([key]) => !key.startsWith('skipped_'))
+    .reduce((sum, [, value]) => sum + Number(value), 0);
+}
+
 export interface ActivateProjectMigrationResult {
   migration_id: string;
   dry_run: boolean;

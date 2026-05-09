@@ -35,7 +35,7 @@ import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHa
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
 import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
-import { resolveGlobalPrefix, detectDevBuild, setDevBuildCliEntry } from './update-checker.js';
+import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
@@ -470,26 +470,12 @@ export async function main(): Promise<void> {
     });
   }
 
-  // Auto-detect dev builds: if the running binary isn't under the global
-  // prefix, record the CLI entry via setDevBuildCliEntry() so update checks
-  // are exempted and any restart/update shell script uses the dev binary
-  // as its restart target (baked in at script-generation time — no env var
-  // propagation required).
-  //
-  // Use process.execPath, not process.argv[1]: under the bun-compiled
-  // standalone binary, argv[1] is a virtual /$bunfs/... path (the embedded
-  // entry script), not the on-disk binary path. realpath() throws on it,
-  // detectDevBuild silently returns null, and dogfood/symlink installs
-  // stop being recognised — re-introducing the "Update available" banner
-  // on every dev daemon. process.execPath always points at the real
-  // standalone binary on disk regardless of compile mode.
-  const devCliEntry = detectDevBuild(
-    globalPrefix,
-    process.execPath,
-    fs.realpathSync,
-  );
+  // Dev-build detection ran in `cli.ts` before this entry point loaded —
+  // see `activateDevBuildModeIfDetected`. If it produced a CLI entry,
+  // suppress installed-version detection (which expects a global prefix)
+  // and emit the operator-visible log line.
+  const devCliEntry = getDevBuildCliEntry();
   if (devCliEntry) {
-    setDevBuildCliEntry(devCliEntry);
     globalPrefix = null;
     logger.info(LOG_KINDS.DAEMON_START, 'Dev build detected; update checks exempted', {
       cli_entry: devCliEntry,

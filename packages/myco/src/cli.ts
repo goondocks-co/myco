@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
+import { activateDevBuildModeIfDetected } from './daemon/update-checker.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 loadEnv();
+activateDevBuildModeIfDetected();
 
 const USAGE = `Usage: myco <command> [args]
 

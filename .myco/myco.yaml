@@ -17,6 +17,7 @@ agent:
   summary_batch_interval: 5
   scheduled_tasks_enabled: true
   event_tasks_enabled: true
+  cold_project_threshold_days: 14
   provider:
     type: anthropic
     model: claude-sonnet-4-6

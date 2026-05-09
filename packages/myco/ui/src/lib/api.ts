@@ -58,6 +58,18 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   return res.json();
 }
 
+/**
+ * Daemon-issued bearer token, injected into index.html by the static
+ * handler in `daemon/server.ts:injectDashboardBootstrap`. Required by
+ * `enforceContextSwitchAuth` whenever the request carries
+ * `x-myco-grove-id` or `x-myco-project-id` headers.
+ */
+function getDaemonAuthToken(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const token = (window as unknown as { __MYCO_AUTH__?: string }).__MYCO_AUTH__;
+  return typeof token === 'string' && token.length > 0 ? token : undefined;
+}
+
 function buildHeaders(
   path: string,
   initHeaders: HeadersInit | undefined,
@@ -68,6 +80,8 @@ function buildHeaders(
     for (const [key, value] of Object.entries(requestContextHeadersFromSelection())) {
       headers.set(key, value);
     }
+    const token = getDaemonAuthToken();
+    if (token) headers.set('x-myco-auth', token);
   }
   if (needsContentType) headers.set('Content-Type', 'application/json');
   if (initHeaders) {

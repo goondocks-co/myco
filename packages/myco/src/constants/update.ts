@@ -17,6 +17,16 @@ export const UPDATE_CONFIG_PATH = path.join(MYCO_GLOBAL_DIR, 'update.yaml');
 export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json');
 
 /**
+ * Path to the cached dev-build verdict.
+ *
+ * Avoids spawning `npm prefix -g` (200-600ms cold start) on every CLI
+ * invocation. The cache is keyed by the running binary's realpath plus
+ * the package version, so any reinstall, version bump, or symlink retarget
+ * invalidates it automatically.
+ */
+export const DEV_BUILD_CACHE_PATH = path.join(MYCO_GLOBAL_DIR, 'dev-build-cache.json');
+
+/**
  * Machine-scope managed runtime directory.
  *
  * Lives under `~/.myco/` (or whatever `resolveMycoHome()` returns). When

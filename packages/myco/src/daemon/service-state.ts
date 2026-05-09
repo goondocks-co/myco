@@ -85,6 +85,15 @@ export function readDaemonState(statePath: string): DaemonState | null {
   }
 }
 
+/**
+ * Look up the running daemon's port for a given vault. Returns null when
+ * the daemon isn't reachable (no state file, malformed state, or stopped).
+ * Honors the dogfood vs production service path via `resolveDaemonServiceState`.
+ */
+export function readDaemonPort(vaultDir: string, options: ResolveDaemonServiceStateOptions = {}): number | null {
+  return readDaemonState(resolveDaemonServiceState(vaultDir, options).statePath)?.port ?? null;
+}
+
 export function writeDaemonState(statePath: string, state: DaemonState): void {
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   // 0o600 because daemon.json now carries the daemon-issued bearer

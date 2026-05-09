@@ -40,23 +40,6 @@ function NavigationComponent() {
 }
 ```
 
-### State Management Across Contexts
-
-Use local state for UI preferences, context for instance coordination:
-
-```typescript
-// Local state for user preferences
-const [appearance, setAppearance] = useState({
-  theme: 'sage',
-  fontSize: 'medium',
-  density: 'comfortable',
-  darkMode: false
-})
-
-// Context for cross-component coordination
-const AppearanceContext = createContext<AppearanceState>()
-```
-
 ### Component Composition Strategy
 
 Build reusable primitives that compose into domain-specific components:
@@ -82,28 +65,18 @@ Handle base-path routing for hub-proxied daemon UIs through `__MYCO_HUB_PREFIX__
 ```typescript
 // Detect hub context and configure router base-path
 function detectHubBasePrefix(): string {
-  // Check if running inside hub proxy iframe
   if (window !== window.top) {
-    // Extract base path from hub URL pattern: /p/<project-id>/
     const hubPrefix = (window as any).__MYCO_HUB_PREFIX__;
-    if (hubPrefix) {
-      return hubPrefix;
-    }
+    if (hubPrefix) return hubPrefix;
   }
-  
-  // Default to root for standalone daemon
-  return '/';
+  return '/'; // Default to root for standalone daemon
 }
 
 // Configure React Router with dynamic base
 <BrowserRouter basename={detectHubBasePrefix()}>
-  <Routes>
-    {/* App routes */}
-  </Routes>
+  <Routes>{/* App routes */}</Routes>
 </BrowserRouter>
 ```
-
-**Hub compatibility pattern**: Pre-#161 daemon versions lack `__MYCO_HUB_PREFIX__` detection, causing routing mismatches when served through hub proxy. Ensure daemon version compatibility or provide fallback routing.
 
 ### Grove Multi-Project UI Switcher
 
@@ -113,15 +86,13 @@ Implement Slack/Linear-style project switcher for Grove multi-tenant navigation:
 // Project switcher component with URL-driven navigation
 function ProjectSwitcher() {
   const { groveSlug, projectSlug } = useParams<{
-    groveSlug: string;
-    projectSlug: string;
+    groveSlug: string; projectSlug: string;
   }>();
   
   const { projects } = useGroveProjects(groveSlug);
   const navigate = useNavigate();
   
   function switchProject(newProjectSlug: string) {
-    // URL pattern: /g/:groveSlug/p/:projectSlug/
     navigate(`/g/${groveSlug}/p/${newProjectSlug}/`);
   }
   
@@ -149,11 +120,6 @@ function ProjectSwitcher() {
 }
 ```
 
-**Grove URL navigation pattern**:
-- Root grove: `/g/:groveSlug/`
-- Project context: `/g/:groveSlug/p/:projectSlug/`
-- Resource routes: `/g/:groveSlug/p/:projectSlug/sessions`
-
 ### Request Context Headers for Grove
 
 Inject project context into API requests for multi-tenant safety:
@@ -166,19 +132,11 @@ function useGroveApiClient() {
   const apiClient = useMemo(() => {
     const client = axios.create({
       baseURL: '/api/v1',
-      headers: {
-        'X-Grove-Slug': groveSlug,
-        'X-Project-Slug': projectSlug,
-      }
+      headers: { 'X-Grove-Slug': groveSlug, 'X-Project-Slug': projectSlug }
     });
     
-    // Inject context into all requests
     client.interceptors.request.use(config => {
-      config.headers = {
-        ...config.headers,
-        'X-Grove-Slug': groveSlug,
-        'X-Project-Slug': projectSlug,
-      };
+      config.headers = { ...config.headers, 'X-Grove-Slug': groveSlug, 'X-Project-Slug': projectSlug };
       return config;
     });
     
@@ -189,71 +147,88 @@ function useGroveApiClient() {
 }
 ```
 
-### Project-Scoped Query Cache Keys
+### Machine-Scoped Runtime Status Badges
 
-Ensure query cache isolation between projects for safety:
-
-```typescript
-// Scoped query keys prevent cross-project data leaks
-function useProjectSessions() {
-  const { groveSlug, projectSlug } = useGroveContext();
-  
-  // Cache key includes project context
-  const queryKey = ['sessions', groveSlug, projectSlug];
-  
-  return useQuery({
-    queryKey,
-    queryFn: () => fetchProjectSessions(groveSlug, projectSlug),
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
-}
-
-// Global cache invalidation for project switches
-function invalidateProjectCache(groveSlug: string, projectSlug: string) {
-  queryClient.removeQueries({
-    predicate: (query) => {
-      const [domain, grove, project] = query.queryKey as string[];
-      return grove === groveSlug && project === projectSlug;
-    }
-  });
-}
-```
-
-### Visual Identity Per Project Safety
-
-Provide visual cues to prevent cross-project confusion:
+Implement sidebar badges to display DEV/BETA runtime status for machine-scoped service coordination:
 
 ```typescript
-// Project-specific visual identity
-function ProjectIdentityProvider({ children }: { children: ReactNode }) {
-  const { project } = useGroveContext();
+// Runtime status badge component for sidebar footer
+function RuntimeStatusBadge() {
+  const { runtimeOrigin } = useDaemonStats();
   
-  // Each project gets distinct visual identity
-  const projectTheme = project.theme || 'sage';
-  const projectColor = project.accentColor || 'default';
+  if (!runtimeOrigin || runtimeOrigin === 'stable') {
+    return null; // No badge for stable/production runtime
+  }
   
-  useEffect(() => {
-    // Update CSS custom properties for project
-    document.documentElement.style.setProperty(
-      '--project-accent', 
-      projectColor
-    );
-    document.documentElement.setAttribute(
-      'data-project-theme', 
-      projectTheme
-    );
-    
-    // Update tab title with project context
-    document.title = `${project.displayName} | Myco`;
-  }, [project, projectTheme, projectColor]);
+  const badgeConfig = {
+    dev: { label: 'DEV', className: 'runtime-badge-dev', color: 'amber' },
+    beta: { label: 'BETA', className: 'runtime-badge-beta', color: 'blue' }
+  };
+  
+  const config = badgeConfig[runtimeOrigin as keyof typeof badgeConfig];
   
   return (
-    <div className={`project-context project-${project.slug}`}>
-      {children}
+    <Badge 
+      variant="outline" 
+      className={`runtime-status-badge ${config.className}`}
+    >
+      {config.label}
+    </Badge>
+  );
+}
+
+// Integration in sidebar layout
+function SidebarFooter() {
+  return (
+    <div className="sidebar-footer">
+      <div className="sidebar-footer-content">
+        <RuntimeStatusBadge />
+        {/* Other footer content */}
+      </div>
     </div>
   );
 }
 ```
+
+### Runtime Origin API Integration
+
+Connect to `/api/stats` endpoint for runtime information:
+
+```typescript
+// Hook to fetch daemon stats including runtime origin
+function useDaemonStats() {
+  return useQuery({
+    queryKey: ['daemon-stats'],
+    queryFn: async () => {
+      const response = await fetch('/api/stats');
+      if (!response.ok) throw new Error('Failed to fetch daemon stats');
+      return response.json() as {
+        runtimeOrigin: 'dev' | 'beta' | 'stable';
+        version: string; uptime: number;
+      };
+    },
+    refetchInterval: 30000, // Refresh every 30 seconds
+  });
+}
+
+// Runtime status affects UI behavior
+function useRuntimeAwareBehavior() {
+  const { runtimeOrigin } = useDaemonStats();
+  
+  return {
+    shouldShowDebugInfo: runtimeOrigin === 'dev',
+    shouldShowUpdateBanner: runtimeOrigin !== 'dev', // DEV builds skip update checks
+    shouldShowBetaFeatures: runtimeOrigin === 'beta'
+  };
+}
+```
+
+**Machine-scoped runtime coordination patterns**:
+- **Runtime status badges**: Visual indication of DEV/BETA vs stable runtime
+- **Update behavior**: DEV builds skip update checks, show runtime origin
+- **Feature toggles**: Beta features visible only in beta runtime
+- **Debug information**: Development features exposed only in DEV runtime
+- **Machine-scoped commands**: Runtime detection unified across all projects on machine
 
 ## Procedure B: Theme System Implementation and Extension
 
@@ -283,36 +258,18 @@ The 6-theme system uses CSS custom properties with color coordination:
 
 1. **Create theme definition file**:
 ```bash
-# Create new theme file
 touch packages/myco/ui/src/themes/ocean.css
-
-# Follow naming pattern: ocean.css for "ocean" theme
 ```
 
 2. **Define color palette**:
 ```css
 :root[data-theme="ocean"] {
-  /* Primary brand color family */
-  --primary: #0ea5e9;
-  --on-primary: #ffffff;
-  --primary-container: #0284c7;
-  --on-primary-container: #ffffff;
-  
-  /* Supporting colors */
-  --secondary: #64748b;
-  --on-secondary: #ffffff;
+  --primary: #0ea5e9; --on-primary: #ffffff;
+  --primary-container: #0284c7; --on-primary-container: #ffffff;
+  --secondary: #64748b; --on-secondary: #ffffff;
   --secondary-container: #475569;
-  
-  --tertiary: #06b6d4;
-  --on-tertiary: #ffffff;
+  --tertiary: #06b6d4; --on-tertiary: #ffffff;
   --tertiary-container: #0891b2;
-}
-
-:root[data-theme="ocean"].light {
-  /* Light mode variants if needed */
-  --primary: #0369a1;
-  --on-primary: #ffffff;
-  /* ... additional light mode adjustments */
 }
 ```
 
@@ -348,33 +305,11 @@ Generate distinct browser tab titles that identify both project and instance typ
 function generateDynamicTitle(projectConfig: MycoConfig): string {
   const projectName = projectConfig.project?.name || 'Myco Project'
   const instanceType = 'Daemon' // or 'Collective', 'Marketing'
-  
   return `${projectName} | Myco ${instanceType}`
 }
 
 // Update document title
 document.title = generateDynamicTitle(config)
-```
-
-### Favicon Variant System
-
-Use theme-coordinated favicons to provide visual distinction across tabs:
-
-```typescript
-// Favicon selection logic
-function selectFavicon(theme: string, instance: 'daemon' | 'collective'): string {
-  if (instance === 'collective') {
-    return '/assets/favicons/collective-ochre.ico'
-  }
-  
-  return `/assets/favicons/daemon-${theme}.ico`
-}
-
-// Update favicon dynamically
-function updateFavicon(theme: string, instance: string) {
-  const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement
-  link.href = selectFavicon(theme, instance)
-}
 ```
 
 ### Family Cohesion vs Instance Recognition
@@ -392,41 +327,6 @@ Balance unified Myco identity with practical tab distinction:
 - Instance-specific favicon variants
 - Contextual navigation differences
 
-### Team UI Credential Naming Patterns
-
-Implement consistent credential naming for team UI components:
-
-```typescript
-// Team UI credential naming pattern
-interface TeamCredential {
-  id: string;
-  type: 'api-key' | 'oauth-token' | 'webhook-secret';
-  displayName: string;
-  purpose: string;
-  scope: 'project' | 'team' | 'organization';
-}
-
-// Naming convention for display
-function formatCredentialName(credential: TeamCredential, context: string): string {
-  const prefix = credential.scope === 'project' ? 'Project' : 
-                 credential.scope === 'team' ? 'Team' : 'Org';
-  const suffix = context ? ` (${context})` : '';
-  
-  return `${prefix} ${credential.displayName}${suffix}`;
-}
-
-// Examples:
-// "Project API Key (Development)"
-// "Team OAuth Token (Slack Integration)" 
-// "Org Webhook Secret (CI/CD Pipeline)"
-```
-
-**Team UI credential patterns**:
-- Scope prefix (Project/Team/Org) for clarity
-- Descriptive display name for purpose
-- Optional context suffix for environment or integration
-- Consistent formatting across all team UI components
-
 ## Procedure D: Frontend Build Integration
 
 ### Vite Asset Pipeline Integration
@@ -437,72 +337,18 @@ Configure Vite for monorepo structure with theme asset coordination:
 // vite.config.ts pattern for UI packages
 export default defineConfig({
   build: {
-    lib: {
-      entry: 'src/index.ts',
-      formats: ['es', 'cjs']
-    },
+    lib: { entry: 'src/index.ts', formats: ['es', 'cjs'] },
     rollupOptions: {
       external: ['react', 'react-dom'],
-      output: {
-        globals: {
-          react: 'React',
-          'react-dom': 'ReactDOM'
-        }
-      }
+      output: { globals: { react: 'React', 'react-dom': 'ReactDOM' } }
     }
   },
   css: {
     preprocessorOptions: {
-      scss: {
-        // Theme variable imports
-        additionalData: `@import "src/themes/variables.scss";`
-      }
+      scss: { additionalData: `@import "src/themes/variables.scss";` }
     }
   }
 })
-```
-
-### Bundle Caching Gotchas
-
-**Development cache issues**: Hard refresh required when:
-- Theme CSS files change
-- CSS custom properties are added/modified
-- Asset imports change (favicons, fonts)
-
-```bash
-# Force cache clear during theme development
-rm -rf node_modules/.vite
-npm run dev
-```
-
-**Production bundle coordination**: Ensure theme assets are properly included:
-
-```typescript
-// Explicit asset imports to ensure bundling (in packages/myco/ui/src/index.css)
-@import './themes/_shared-accents.css';
-@import './themes/sage.css';
-@import './themes/moss.css';
-@import './themes/terracotta.css';
-@import './themes/dusk.css';
-@import './themes/plum.css';
-@import './themes/slate.css';
-```
-
-### CSS Variable Coordination
-
-Coordinate CSS custom properties across theme files and component stylesheets:
-
-```css
-/* Component CSS uses semantic variables */
-.button-primary {
-  background-color: var(--primary);
-  color: var(--on-primary);
-  border: 1px solid var(--primary-container);
-}
-
-/* Never hardcode theme colors in components */
-/* ❌ Bad: background-color: #abcfb8; */
-/* ✅ Good: background-color: var(--primary); */
 ```
 
 ### Worktree Build Environment Setup
@@ -512,8 +358,6 @@ Git worktrees require independent UI workspace installation for proper builds:
 ```bash
 # After creating a worktree, install nested UI dependencies
 cd .worktrees/feature-branch-name
-
-# Root install doesn't cover nested UI workspaces
 npm install
 
 # Install each nested UI workspace separately  
@@ -539,14 +383,9 @@ appearance:
   font_size: "large"
   dark_mode: true
   density: "compact"
-
-# .myco/myco.yaml (project, shared)
-# No appearance section - uses defaults
 ```
 
 ### Appearance Control Implementation
-
-Implement coordinated controls for theme, font size, dark mode, and density:
 
 ```typescript
 interface AppearanceConfig {
@@ -562,36 +401,13 @@ function useAppearanceConfig(): [AppearanceConfig, (config: Partial<AppearanceCo
 }
 ```
 
-### Left Nav Placement Strategy
-
-Position appearance controls for discoverability without cluttering:
-
-```tsx
-// Place in left navigation, grouped with other user preferences
-<nav className="left-sidebar">
-  <section className="user-preferences">
-    <h3>Appearance</h3>
-    <ThemePicker />
-    <FontSizeControl />
-    <DarkModeToggle />
-    <DensityControl />
-  </section>
-</nav>
-```
-
 ### Per-Session vs Persistent Preferences
 
 **Persistent** (stored in `.myco/local.yaml`):
-- Theme selection
-- Font size
-- Dark mode preference
-- UI density
+- Theme selection, Font size, Dark mode preference, UI density
 
 **Per-session** (component state only):
-- Panel open/closed states
-- Sort order for lists
-- Temporary view filters
-- Modal/dialog visibility
+- Panel open/closed states, Sort order for lists, Temporary view filters, Modal/dialog visibility
 
 ## Procedure F: Component Development Lifecycle
 
@@ -612,41 +428,12 @@ export function NewSettingControl() {
   return (
     <Card className="setting-control">
       <Label>New Setting</Label>
-      <Select 
-        value={currentValue}
-        onChange={handleChange}
-        className="theme-aware-select"
-      >
+      <Select value={currentValue} onChange={handleChange} className="theme-aware-select">
         {/* Options */}
       </Select>
     </Card>
   )
 }
-```
-
-3. **Add to settings page**:
-```typescript
-// In packages/myco/ui/src/pages/Settings.tsx
-import { NewSettingControl } from '../components/settings/NewSettingControl'
-
-// Add to appropriate settings section
-```
-
-### Hard Refresh Requirements for Cache-Busting
-
-During UI development, browser cache can persist stale assets. Force refresh when:
-
-- CSS custom properties change
-- Theme files are modified
-- New components are added
-- Asset imports change
-
-```bash
-# Clear all caches and restart dev server
-rm -rf node_modules/.vite
-rm -rf packages/*/dist
-npm run clean
-npm run dev
 ```
 
 ### DevTools Workflow for Component Development
@@ -672,8 +459,7 @@ test('theme picker updates appearance correctly', async ({ page }) => {
     
     // Verify CSS custom property is updated
     const primaryColor = await page.evaluate(() => 
-      getComputedStyle(document.documentElement)
-        .getPropertyValue('--primary')
+      getComputedStyle(document.documentElement).getPropertyValue('--primary')
     )
     
     expect(primaryColor).toMatch(EXPECTED_THEME_COLORS[theme])
@@ -701,4 +487,8 @@ test('theme picker updates appearance correctly', async ({ page }) => {
 
 **Multi-Project Navigation State**: Project switcher state can become stale if not properly synchronized with URL changes. Use URL params as source of truth, not component state.
 
-**Team UI Credential Confusion**: Without consistent naming patterns, credentials become indistinguishable in UI lists. Always include scope prefix and descriptive context.
+**Runtime Status Badge Missing**: If runtime badges don't appear, verify `/api/stats` endpoint returns `runtimeOrigin` field and hook is properly polling. DEV builds should show badges, stable should not.
+
+**Machine-Scoped Runtime Context Lost**: Runtime status detection depends on machine-scoped runtime.command files. If context is lost, check that the runtime.command resolution is working and the stats endpoint reflects the correct runtime origin.
+
+**Runtime Badge State Desync**: Runtime badges can become stale if not properly refreshed. Use polling intervals and ensure the daemon stats are being updated correctly when runtime origin changes.

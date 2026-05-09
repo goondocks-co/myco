@@ -11,6 +11,7 @@ import { assertGroveEraId } from './ids.js';
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
 export const SERVICE_DIRNAME = 'service';
+export const SERVICE_DEV_DIRNAME = 'service-dev';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_DB_FILENAME = 'myco.db';
@@ -39,8 +40,27 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, GLOBAL_CONFIG_FILENAME);
 }
 
+/**
+ * Process-level switch routing the daemon to `service-dev/` instead of
+ * `service/` so a contributor's dogfood daemon coexists with a production
+ * daemon on the same machine (different paths → different derived ports).
+ *
+ * Slaved to `setDevBuildCliEntry` in `update-checker.ts` — tests reset by
+ * calling that helper with `null`. The two flags MUST stay paired; setting
+ * this directly is reserved for the pairing in `update-checker.ts`.
+ */
+let devServiceMode = false;
+
+export function setDevServiceMode(value: boolean): void {
+  devServiceMode = value;
+}
+
+export function isDevServiceMode(): boolean {
+  return devServiceMode;
+}
+
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, SERVICE_DIRNAME);
+  return path.join(mycoHome, devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME);
 }
 
 export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {
