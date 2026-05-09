@@ -19,7 +19,7 @@ export function findPidsListeningInRange(start: number, end: number): PortOwner[
     stdout = execFileSync(
       'lsof',
       [`-iTCP:${start}-${end}`, '-sTCP:LISTEN', '-nP', '-F', 'pn'],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 },
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 },
     );
   } catch {
     if (process.platform === 'linux') return findLinuxPidsListeningInRange(start, end);
