@@ -7,8 +7,12 @@
  * a programmable fake instead of a real SDK.
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type {
   EffectiveConfig,
   PhaseDefinition,
@@ -141,6 +145,9 @@ function baseCheckpoint(): RunCheckpointState {
   };
 }
 
+let TEST_PROJECT_ROOT: string;
+let TEST_VAULT_DIR: string;
+
 function baseContext(overrides: Partial<PhaseLoopContext> = {}): PhaseLoopContext {
   return {
     config: baseConfig(),
@@ -150,8 +157,8 @@ function baseContext(overrides: Partial<PhaseLoopContext> = {}): PhaseLoopContex
     runId: 'run-123',
     instruction: undefined,
     abortController: new AbortController(),
-    projectRoot: '/tmp/project',
-    vaultDir: '/tmp/project/.myco',
+    projectRoot: TEST_PROJECT_ROOT,
+    vaultDir: TEST_VAULT_DIR,
     options: undefined,
     checkpointState: baseCheckpoint(),
     ...overrides,
@@ -185,6 +192,16 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('executePhase', () => {
+  beforeAll(() => {
+    TEST_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-loop-'));
+    TEST_VAULT_DIR = path.join(TEST_PROJECT_ROOT, '.myco');
+    fs.mkdirSync(TEST_VAULT_DIR, { recursive: true });
+    ensureProjectManifest(TEST_VAULT_DIR, { projectName: 'phase-loop' });
+  });
+  afterAll(() => {
+    fs.rmSync(TEST_PROJECT_ROOT, { recursive: true, force: true });
+  });
+
   it('routes mode: map phases to the map-phase path', async () => {
     const mapPhase: PhaseDefinition = {
       name: 'm', prompt: '', tools: [], maxTurns: 1, required: true,

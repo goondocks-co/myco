@@ -1,10 +1,8 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { loadConfig, updateConfig } from '../config/loader.js';
 import { withValue } from '../config/updates.js';
 import { getAtPath } from '../utils/dot-path.js';
-
-const DAEMON_STATE_FILENAME = 'daemon.json';
+import { resolveDaemonServiceState } from '../daemon/service-state.js';
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const [subcommand, key, ...rest] = args;
@@ -59,7 +57,7 @@ function configSet(dotPath: string, rawValue: string, vaultDir: string): void {
 
   console.log(`Set ${dotPath} = ${JSON.stringify(value)}`);
 
-  if (fs.existsSync(path.join(vaultDir, DAEMON_STATE_FILENAME))) {
+  if (fs.existsSync(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)) {
     console.log('Note: restart the daemon for changes to take effect (myco restart)');
   }
 }

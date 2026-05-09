@@ -13,6 +13,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../..
 import { insertRun } from '@myco/db/queries/runs.js';
 import { hydrateCanopyDescription, parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 const TEST_AGENT_ID = 'test-agent';
 const TEST_RUN_ID = 'run-test-canopy';
 
@@ -70,7 +71,7 @@ describe('vault_search_canopy', () => {
   });
 
   it('returns unavailable message when no embedding manager is configured', async () => {
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
     const t = findTool(tools, 'vault_search_canopy');
     const result = await t.handler({ query: 'auth' }, undefined);
     const data = parseResult(result) as { results: unknown[]; message?: string };
@@ -98,7 +99,7 @@ describe('vault_search_canopy', () => {
       ],
     } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
     const result = await t.handler({ query: 'authentication' }, undefined);
     const data = parseResult(result) as {
@@ -148,7 +149,7 @@ describe('vault_search_canopy', () => {
       },
     } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
     await t.handler({ query: 'auth', language: 'typescript' }, undefined);
 
@@ -167,7 +168,7 @@ describe('vault_search_canopy', () => {
       },
     } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
     await t.handler({ query: 'anything' }, undefined);
 
@@ -197,7 +198,7 @@ describe('vault_search_canopy', () => {
       ],
     } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+    const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
     const t = findTool(tools, 'vault_search_canopy');
     const result = await t.handler({ query: 'ghost' }, undefined);
     const data = parseResult(result) as { results: Array<{ llm_description: string | null }> };

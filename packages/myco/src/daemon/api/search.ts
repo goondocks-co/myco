@@ -7,6 +7,7 @@
  */
 
 import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
+import { openDatabase, type Database } from '@myco/db/client.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import {
   SEARCH_RESULTS_DEFAULT_LIMIT,
@@ -16,6 +17,7 @@ import {
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { normalizeSearchResults } from '@myco/search-results.js';
 import { searchCanopy } from '@myco/canopy/search.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
@@ -26,6 +28,8 @@ import type { TeamSyncClient, TeamSearchResult } from '../team-sync.js';
 
 /** Valid search modes. */
 type SearchMode = 'auto' | 'semantic' | 'fts';
+
+type SearchEmbeddingManager = Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'>;
 
 const SEARCH_NAMESPACE_RULES: Array<{ key: string; value?: string }> = [
   { key: 'all', value: undefined },
@@ -51,8 +55,9 @@ export function normalizeSearchNamespace(value?: string): string | undefined {
 
 /** Dependencies injected by the daemon when registering the route. */
 export interface SearchDeps {
-  embeddingManager: EmbeddingManager;
-  getTeamClient?: () => TeamSyncClient | null;
+  embeddingManager: SearchEmbeddingManager;
+  resolveEmbeddingManager?: (requestContext?: MycoRequestContext) => SearchEmbeddingManager;
+  getTeamClient?: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
   machineId?: string;
 }
 
@@ -70,6 +75,20 @@ export interface SearchDeps {
  */
 export function createSearchHandler(deps: SearchDeps) {
   return async function handleSearch(req: RouteRequest): Promise<RouteResponse> {
+    const requestDb = openRequestDatabase(req.requestContext);
+    try {
+      return await handleSearchWithDatabase(req, deps, requestDb);
+    } finally {
+      requestDb?.close();
+    }
+  };
+}
+
+async function handleSearchWithDatabase(
+  req: RouteRequest,
+  deps: SearchDeps,
+  db?: Database,
+): Promise<RouteResponse> {
     const query = req.query.q;
     if (!query) return { status: 400, body: { error: 'missing_query' } };
 
@@ -77,16 +96,20 @@ export function createSearchHandler(deps: SearchDeps) {
     const type = req.query.type;
     const limit = Number(req.query.limit) || SEARCH_RESULTS_DEFAULT_LIMIT;
     const namespace = req.query.namespace;
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const scope = projectScopeFromRequestContext(req.requestContext);
     const metadataFilters = {
       ...(req.query.status ? { status: req.query.status } : {}),
       ...(req.query.session_id ? { session_id: req.query.session_id } : {}),
       ...(req.query.observation_type ? { observation_type: req.query.observation_type } : {}),
+      ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       ...(req.query.since ? { created_at_gte: Number(req.query.since) } : {}),
       ...(req.query.until ? { created_at_lte: Number(req.query.until) } : {}),
     };
     const vectorFilters = hasSemanticSearchFilters(metadataFilters) ? metadataFilters : undefined;
 
     const sanitized = sanitizeFtsQuery(query);
+    const embeddingManager = deps.resolveEmbeddingManager?.(req.requestContext) ?? deps.embeddingManager;
 
     // --- Canopy branch ---
     // `type=canopy` is its own retrieval surface: a fixed namespace
@@ -95,11 +118,13 @@ export function createSearchHandler(deps: SearchDeps) {
     // the canopy_entries row instead of vector metadata. Local-only — canopy
     // is per-machine and not synced to team, so no team-client merge here.
     if (type === 'canopy') {
-      const canopyResults = await searchCanopy(deps.embeddingManager, {
+      const canopyResults = await searchCanopy(embeddingManager, {
         query,
         limit,
         threshold: SEARCH_SIMILARITY_THRESHOLD,
+        project_id: projectId,
         language: req.query.language || undefined,
+        db,
       });
       if (canopyResults === null) {
         return { body: { mode: 'semantic', results: [], provider_unavailable: true } };
@@ -110,7 +135,7 @@ export function createSearchHandler(deps: SearchDeps) {
     // --- FTS-only mode ---
     if (mode === 'fts') {
       try {
-        const results = fullTextSearch(sanitized, { type, limit });
+        const results = fullTextSearch(sanitized, { type, limit, scope, db });
         return { body: { mode: 'fts', results: normalizeSearchResults(results) } };
       } catch (err) {
         return {
@@ -130,7 +155,7 @@ export function createSearchHandler(deps: SearchDeps) {
     // network-bound and team search depends only on the query string. On the
     // rare FTS fallback path the team response is discarded; the saved
     // round-trip on every successful semantic search is the better trade.
-    const teamClient = deps.getTeamClient?.();
+    const teamClient = deps.getTeamClient?.(req.requestContext);
     const teamSearchNamespace = normalizeSearchNamespace(namespace ?? type);
     const teamPromise = teamClient
       ? teamClient.search(query, {
@@ -141,16 +166,17 @@ export function createSearchHandler(deps: SearchDeps) {
           since: req.query.since ? Number(req.query.since) : undefined,
           until: req.query.until ? Number(req.query.until) : undefined,
           session_id: req.query.session_id || undefined,
+          project_id: typeof projectId === 'string' ? projectId : undefined,
         }).catch(() => null)
       : null;
 
-    const queryVector = await deps.embeddingManager.embedQuery(query);
+    const queryVector = await embeddingManager.embedQuery(query);
 
     // If provider unavailable, auto falls back to FTS; semantic returns empty
     if (queryVector === null) {
       if (mode === 'auto') {
         try {
-          const results = fullTextSearch(sanitized, { type, limit });
+          const results = fullTextSearch(sanitized, { type, limit, scope, db });
           return { body: { mode: 'fts', results: normalizeSearchResults(results), fallback: true } };
         } catch (err) {
           return {
@@ -169,7 +195,7 @@ export function createSearchHandler(deps: SearchDeps) {
     }
 
     // Vector search with optional namespace/type filtering
-    const vectorResults = deps.embeddingManager.searchVectors(queryVector, {
+    const vectorResults = embeddingManager.searchVectors(queryVector, {
       namespace: teamSearchNamespace,
       limit,
       threshold: SEARCH_SIMILARITY_THRESHOLD,
@@ -181,7 +207,7 @@ export function createSearchHandler(deps: SearchDeps) {
       : vectorResults;
 
     // Hydrate local vector results into full SearchResults
-    const localResults = hydrateSearchResults(filteredVectorResults).map((r) => ({
+    const localResults = hydrateSearchResults(filteredVectorResults, { scope, db }).map((r) => ({
       ...r,
       source: 'local',
     }));
@@ -212,5 +238,9 @@ export function createSearchHandler(deps: SearchDeps) {
       .slice(0, limit);
 
     return { body: { mode: 'semantic', results: normalizeSearchResults(merged) } };
-  };
+}
+
+function openRequestDatabase(requestContext?: MycoRequestContext): Database | undefined {
+  if (!requestContext?.databasePath) return undefined;
+  return openDatabase(requestContext.databasePath);
 }

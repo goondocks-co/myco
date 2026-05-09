@@ -8,6 +8,10 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createStreamableMcpHttpHandler } from '@myco/mcp/http.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import { REQUEST_CONTEXT_ENV, requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
+import { resolveDaemonServiceState, writeDaemonState } from '@myco/daemon/service-state.js';
 import { vi } from '../helpers/vi-shim.js';
 
 const servers: http.Server[] = [];
@@ -20,9 +24,15 @@ afterEach(async () => {
   tmpDirs.length = 0;
 });
 
-function mockClient(): DaemonClient {
+interface CapturedGet {
+  endpoint: string;
+  options?: { headers?: Record<string, string> };
+}
+
+function mockClient(capturedGets: CapturedGet[] = []): DaemonClient {
   return {
-    get: vi.fn(async (endpoint: string) => {
+    get: vi.fn(async (endpoint: string, options?: { headers?: Record<string, string> }) => {
+      capturedGets.push({ endpoint, options });
       if (endpoint === '/api/digest') {
         return { ok: true, data: { tiers: [{ tier: 5000, content: 'transport digest', generated_at: 1 }] } };
       }
@@ -70,16 +80,18 @@ async function startDaemonStub(vaultDir: string, mcpHandler: (req: http.Incoming
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const address = server.address() as { port: number };
-  fs.writeFileSync(path.join(vaultDir, 'daemon.json'), JSON.stringify({ pid: process.pid, port: address.port }), 'utf-8');
+  const daemonService = resolveDaemonServiceState(vaultDir, { env: process.env });
+  writeDaemonState(daemonService.statePath, { pid: process.pid, port: address.port });
   return new URL(`http://127.0.0.1:${address.port}/mcp`);
 }
 
-function childEnv(): Record<string, string> {
+function childEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === 'string') env[key] = value;
   }
   env.MYCO_NO_AUTO_SPAWN = '1';
+  Object.assign(env, extra);
   return env;
 }
 
@@ -87,15 +99,38 @@ describe('MCP transport parity', () => {
   it('stdio bridge and streamable HTTP route into the same in-process tool runtime', async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stdio-mcp-'));
     tmpDirs.push(projectRoot);
+    const previousHome = process.env.MYCO_HOME;
+    const home = path.join(projectRoot, '.myco-home');
+    process.env.MYCO_HOME = home;
     const vaultDir = path.join(projectRoot, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
+      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectName: 'Project A',
+      projectRoot,
+      bindingId: 'gbind-a',
+    }, home);
 
     // Single MCP handler serves both transports. The stdio subprocess is a
     // forwarder; the HTTP client connects to the same `/mcp` URL the bridge
     // forwards to. Parity is structural: there is only one runtime.
-    const mcpHandler = createStreamableMcpHttpHandler(vaultDir, mockClient());
+    const capturedGets: CapturedGet[] = [];
+    const mcpHandler = createStreamableMcpHttpHandler(vaultDir, { client: mockClient(capturedGets) });
     const httpUrl = await startDaemonStub(vaultDir, mcpHandler);
+    const requestContext = resolveLegacyRequestContext(vaultDir, {
+      projectRoot,
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      groveId: grove.id,
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
 
     const stdioClient = new Client({ name: 'myco-stdio-test', version: '1.0.0' });
     const httpClient = new Client({ name: 'myco-http-test', version: '1.0.0' });
@@ -103,10 +138,19 @@ describe('MCP transport parity', () => {
       command: process.execPath,
       args: [path.resolve('packages/myco/src/cli.ts'), 'mcp'],
       cwd: projectRoot,
-      env: childEnv(),
+      env: childEnv({
+        [REQUEST_CONTEXT_ENV.projectRoot]: projectRoot,
+        [REQUEST_CONTEXT_ENV.projectId]: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        [REQUEST_CONTEXT_ENV.groveId]: grove.id,
+        [REQUEST_CONTEXT_ENV.machineId]: 'machine-a',
+        [REQUEST_CONTEXT_ENV.sessionId]: 'sess-a',
+        MYCO_HOME: home,
+      }),
       stderr: 'pipe',
     });
-    const httpTransport = new StreamableHTTPClientTransport(httpUrl);
+    const httpTransport = new StreamableHTTPClientTransport(httpUrl, {
+      requestInit: { headers: requestContextHeaders(requestContext) },
+    });
 
     try {
       await stdioClient.connect(stdioTransport);
@@ -124,8 +168,30 @@ describe('MCP transport parity', () => {
       expect(stdioNames).toContain('myco_spores');
       expect(stdioCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
       expect(httpCall.content[0]).toEqual({ type: 'text', text: 'transport digest' });
+      const digestHeaders = capturedGets
+        .filter((call) => call.endpoint === '/api/digest')
+        .map((call) => call.options?.headers);
+      expect(digestHeaders).toHaveLength(2);
+      expect(digestHeaders).toEqual([
+        expect.objectContaining({
+          'x-myco-project-root': projectRoot,
+          'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'x-myco-grove-id': grove.id,
+          'x-myco-machine-id': 'machine-a',
+          'x-myco-session-id': 'sess-a',
+        }),
+        expect.objectContaining({
+          'x-myco-project-root': projectRoot,
+          'x-myco-project-id': 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'x-myco-grove-id': grove.id,
+          'x-myco-machine-id': 'machine-a',
+          'x-myco-session-id': 'sess-a',
+        }),
+      ]);
     } finally {
       await Promise.allSettled([stdioClient.close(), httpClient.close()]);
+      if (previousHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousHome;
     }
   });
 });

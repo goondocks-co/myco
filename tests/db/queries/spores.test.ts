@@ -15,6 +15,7 @@ import {
   updateSporeStatus,
 } from '@myco/db/queries/spores.js';
 import type { SporeInsert } from '@myco/db/queries/spores.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -91,7 +92,7 @@ describe('spore query helpers', () => {
       expect(row.status).toBe('active');
       expect(row.importance).toBe(5);
 
-      const fetched = getSpore(data.id);
+      const fetched = getSpore(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.content).toBe('Watch out for this');
@@ -126,7 +127,7 @@ describe('spore query helpers', () => {
 
       expect(row.properties).toBe(props);
 
-      const fetched = getSpore(data.id);
+      const fetched = getSpore(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched!.properties).toBe(props);
       expect(JSON.parse(fetched!.properties!)).toEqual({ consolidated_from: ['spore-a', 'spore-b'] });
     });
@@ -145,7 +146,7 @@ describe('spore query helpers', () => {
 
   describe('getSpore', () => {
     it('returns null for non-existent id', () => {
-      const row = getSpore('does-not-exist');
+      const row = getSpore('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -161,7 +162,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-mid', created_at: now - 50 }));
       insertSpore(makeSpore(agentId, { id: 'spore-new', created_at: now }));
 
-      const rows = listSpores();
+      const rows = listSpores({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('spore-new');
       expect(rows[1].id).toBe('spore-mid');
@@ -175,9 +176,22 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-c1', created_at: now }));
       insertSpore(makeSpore(agentId2, { id: 'spore-c2', created_at: now + 1 }));
 
-      const rows = listSpores({ agent_id: agentId });
+      const rows = listSpores({ agent_id: agentId, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('spore-c1');
+    });
+
+    it('filters by explicit project scope', () => {
+      const now = epochNow();
+      insertSpore(makeSpore(agentId, { id: 'spore-legacy', created_at: now }));
+      insertSpore(makeSpore(agentId, { id: 'spore-a', project_id: 'proj_a', created_at: now + 1 }));
+      insertSpore(makeSpore(agentId, { id: 'spore-b', project_id: 'proj_b', created_at: now + 2 }));
+
+      expect(getSpore('spore-a', projectScope('proj_a' as GroveProjectId))?.project_id).toBe('proj_a');
+      expect(getSpore('spore-a', projectScope('proj_b' as GroveProjectId))).toBeNull();
+      expect(listSpores({ scope: GLOBAL_SCOPE}).map((row) => row.id)).toEqual(['spore-legacy']);
+      expect(listSpores({ scope: projectScope('proj_a' as GroveProjectId)}).map((row) => row.id)).toEqual(['spore-a']);
+      expect(countSpores({ scope: projectScope('proj_b' as GroveProjectId)})).toBe(1);
     });
 
     it('filters by observation_type', () => {
@@ -186,7 +200,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-decision', observation_type: 'decision', created_at: now + 1 }));
       insertSpore(makeSpore(agentId, { id: 'spore-gotcha2', observation_type: 'gotcha', created_at: now + 2 }));
 
-      const rows = listSpores({ observation_type: 'gotcha' });
+      const rows = listSpores({ observation_type: 'gotcha', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('spore-gotcha2');
       expect(rows[1].id).toBe('spore-gotcha');
@@ -196,9 +210,9 @@ describe('spore query helpers', () => {
       const now = epochNow();
       insertSpore(makeSpore(agentId, { id: 'spore-active', created_at: now }));
       insertSpore(makeSpore(agentId, { id: 'spore-superseded', created_at: now + 1 }));
-      updateSporeStatus('spore-superseded', 'superseded', now + 2);
+      updateSporeStatus('spore-superseded', 'superseded', now + 2, ALL_PROJECTS_SCOPE);
 
-      const rows = listSpores({ status: 'active' });
+      const rows = listSpores({ status: 'active', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('spore-active');
     });
@@ -211,7 +225,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 's2', observation_type: 'decision', created_at: now + 1 }));
       insertSpore(makeSpore(agentId2, { id: 's3', observation_type: 'gotcha', created_at: now + 2 }));
 
-      const rows = listSpores({ agent_id: agentId, observation_type: 'gotcha' });
+      const rows = listSpores({ agent_id: agentId, observation_type: 'gotcha', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s1');
     });
@@ -222,12 +236,12 @@ describe('spore query helpers', () => {
         insertSpore(makeSpore(agentId, { created_at: now + i }));
       }
 
-      const rows = listSpores({ limit: 2 });
+      const rows = listSpores({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array when no spores match', () => {
-      const rows = listSpores({ observation_type: 'nonexistent' });
+      const rows = listSpores({ observation_type: 'nonexistent', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -237,7 +251,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-beta', content: 'Unrelated note here', created_at: now + 1 }));
       insertSpore(makeSpore(agentId, { id: 'spore-gamma', content: 'WAL is also fast', created_at: now + 2 }));
 
-      const rows = listSpores({ search: 'WAL' });
+      const rows = listSpores({ search: 'WAL', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       const ids = rows.map(r => r.id);
       expect(ids).toContain('spore-alpha');
@@ -250,7 +264,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-ot2', observation_type: 'discovery', created_at: now + 1 }));
       insertSpore(makeSpore(agentId, { id: 'spore-ot3', observation_type: 'gotcha', content: 'nothing special', created_at: now + 2 }));
 
-      const rows = listSpores({ search: 'gotcha' });
+      const rows = listSpores({ search: 'gotcha', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       const ids = rows.map(r => r.id);
       expect(ids).toContain('spore-ot1');
@@ -265,12 +279,12 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'sp4', observation_type: 'decision', content: 'needle but wrong type', created_at: now + 3 }));
 
       // Should find 3 gotcha+needle, then page them
-      const page1 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 0 });
+      const page1 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
       expect(page1[0].id).toBe('sp3');
       expect(page1[1].id).toBe('sp2');
 
-      const page2 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 2 });
+      const page2 = listSpores({ search: 'needle', observation_type: 'gotcha', limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page2).toHaveLength(1);
       expect(page2[0].id).toBe('sp1');
     });
@@ -279,7 +293,7 @@ describe('spore query helpers', () => {
       it('by default includes spores from active sessions', () => {
         // beforeEach seeds `sessionId` as an active session.
         insertSpore(makeSpore(agentId, { id: 'spore-live', session_id: sessionId }));
-        const rows = listSpores({ agent_id: agentId });
+        const rows = listSpores({ agent_id: agentId, scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toContain('spore-live');
       });
 
@@ -291,7 +305,7 @@ describe('spore query helpers', () => {
         upsertSession(completed);
         insertSpore(makeSpore(agentId, { id: 'spore-settled', session_id: completed.id }));
 
-        const rows = listSpores({ agent_id: agentId, includeActive: false });
+        const rows = listSpores({ agent_id: agentId, includeActive: false, scope: ALL_PROJECTS_SCOPE });
         const ids = rows.map((r) => r.id);
         expect(ids).toContain('spore-settled');
         expect(ids).not.toContain('spore-live');
@@ -299,7 +313,7 @@ describe('spore query helpers', () => {
 
       it('includeActive:false keeps spores with no session_id (agent-authored)', () => {
         insertSpore(makeSpore(agentId, { id: 'spore-global', session_id: null }));
-        const rows = listSpores({ agent_id: agentId, includeActive: false });
+        const rows = listSpores({ agent_id: agentId, includeActive: false, scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toContain('spore-global');
       });
 
@@ -307,7 +321,7 @@ describe('spore query helpers', () => {
         // Direct session-scoped lookup is always permitted — useful for the
         // UI when the user is viewing a session's own spores live.
         insertSpore(makeSpore(agentId, { id: 'spore-live', session_id: sessionId }));
-        const rows = listSpores({ session_id: sessionId, includeActive: false });
+        const rows = listSpores({ session_id: sessionId, includeActive: false, scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toContain('spore-live');
       });
     });
@@ -323,7 +337,7 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { created_at: now }));
       insertSpore(makeSpore(agentId, { created_at: now + 1 }));
 
-      expect(countSpores()).toBe(2);
+      expect(countSpores({ scope: ALL_PROJECTS_SCOPE })).toBe(2);
     });
 
     it('counts spores matching a search filter', () => {
@@ -332,9 +346,9 @@ describe('spore query helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'c2', content: 'alpha gamma', created_at: now + 1 }));
       insertSpore(makeSpore(agentId, { id: 'c3', content: 'delta epsilon', created_at: now + 2 }));
 
-      expect(countSpores({ search: 'alpha' })).toBe(2);
-      expect(countSpores({ search: 'delta' })).toBe(1);
-      expect(countSpores({ search: 'zeta' })).toBe(0);
+      expect(countSpores({ search: 'alpha', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countSpores({ search: 'delta', scope: ALL_PROJECTS_SCOPE })).toBe(1);
+      expect(countSpores({ search: 'zeta', scope: ALL_PROJECTS_SCOPE })).toBe(0);
     });
   });
 
@@ -348,7 +362,7 @@ describe('spore query helpers', () => {
       insertSpore(data);
 
       const updatedAt = epochNow() + 10;
-      const row = updateSporeStatus(data.id, 'superseded', updatedAt);
+      const row = updateSporeStatus(data.id, 'superseded', updatedAt, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('superseded');
@@ -356,8 +370,22 @@ describe('spore query helpers', () => {
     });
 
     it('returns null for non-existent spore', () => {
-      const result = updateSporeStatus('nope', 'superseded', epochNow());
+      const result = updateSporeStatus('nope', 'superseded', epochNow(), ALL_PROJECTS_SCOPE);
       expect(result).toBeNull();
+    });
+
+    it('respects project scope when updating status', () => {
+      insertSpore(makeSpore(agentId, { id: 'spore-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertSpore(makeSpore(agentId, { id: 'spore-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
+
+      const updatedAt = epochNow() + 10;
+      const mismatch = updateSporeStatus('spore-b', 'superseded', updatedAt, projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId));
+      const match = updateSporeStatus('spore-a', 'superseded', updatedAt, projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId));
+
+      expect(mismatch).toBeNull();
+      expect(match).not.toBeNull();
+      expect(getSpore('spore-a', projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId))?.status).toBe('superseded');
+      expect(getSpore('spore-b', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))?.status).toBe('active');
     });
 
     it('is idempotent — same status update produces same result', () => {
@@ -365,8 +393,8 @@ describe('spore query helpers', () => {
       insertSpore(data);
 
       const updatedAt = epochNow() + 10;
-      updateSporeStatus(data.id, 'consolidated', updatedAt);
-      const row = updateSporeStatus(data.id, 'consolidated', updatedAt);
+      updateSporeStatus(data.id, 'consolidated', updatedAt, ALL_PROJECTS_SCOPE);
+      const row = updateSporeStatus(data.id, 'consolidated', updatedAt, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('consolidated');

@@ -8,6 +8,7 @@ import { reconcileExistingDaemon, isHealthyMycoSibling } from '@myco/daemon/main
 import { DaemonLogger } from '@myco/daemon/logger';
 import { getPluginVersion } from '@myco/version';
 import { derivePort } from '@myco/daemon/port';
+import { resolveDaemonServiceState } from '@myco/daemon/service-state';
 
 // Prevents the concurrent-spawn cascade we observed in production, where
 // every newly-spawned daemon unconditionally SIGTERM'd whatever pid was in
@@ -18,6 +19,10 @@ import { derivePort } from '@myco/daemon/port';
 
 function makeLogger(vaultDir: string): DaemonLogger {
   return new DaemonLogger(path.join(vaultDir, 'logs'), { level: 'info' });
+}
+
+function daemonService(vaultDir: string) {
+  return resolveDaemonServiceState(vaultDir, { env: process.env });
 }
 
 async function withHealthServer<T>(
@@ -63,7 +68,7 @@ describe('reconcileExistingDaemon', () => {
   });
 
   it('returns ok when daemon.json is absent', async () => {
-    const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+    const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
     expect(result).toBe('ok');
   });
 
@@ -72,7 +77,7 @@ describe('reconcileExistingDaemon', () => {
       path.join(vaultDir, 'daemon.json'),
       JSON.stringify({ pid: 0x7fffffff, port: 12345 }),
     );
-    const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+    const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
     expect(result).toBe('ok');
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
   });
@@ -85,7 +90,7 @@ describe('reconcileExistingDaemon', () => {
           path.join(vaultDir, 'daemon.json'),
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
         expect(result).toBe('step-aside');
         // daemon.json must survive — the sibling we stepped aside for owns it.
         expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
@@ -105,7 +110,7 @@ describe('reconcileExistingDaemon', () => {
           path.join(vaultDir, 'daemon.json'),
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
         expect(result).toBe('ok');
       },
       // Explicitly NOT the canonical port — let the OS pick any ephemeral port.
@@ -121,7 +126,7 @@ describe('reconcileExistingDaemon', () => {
           path.join(vaultDir, 'daemon.json'),
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
         expect(result).toBe('ok');
         expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
       },
@@ -136,7 +141,7 @@ describe('reconcileExistingDaemon', () => {
           path.join(vaultDir, 'daemon.json'),
           JSON.stringify({ pid: siblingPid, port, command: '/tmp/bun-myco' }),
         );
-        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
         expect(result).toBe('step-aside');
         expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
       },
@@ -153,7 +158,7 @@ describe('reconcileExistingDaemon', () => {
         // Backdate mtime well past DAEMON_STALE_GRACE_PERIOD_MS (60s).
         const ancient = (Date.now() - 10 * 60 * 1000) / 1000;
         fs.utimesSync(jsonPath, ancient, ancient);
-        const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
         expect(result).toBe('ok');
         expect(fs.existsSync(jsonPath)).toBe(false);
       },
@@ -167,7 +172,7 @@ describe('reconcileExistingDaemon', () => {
       path.join(vaultDir, 'daemon.json'),
       JSON.stringify({ pid: siblingPid, port: 1 }),
     );
-    const result = await reconcileExistingDaemon(vaultDir, makeLogger(vaultDir));
+    const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
     expect(result).toBe('ok');
     expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
   });

@@ -1,7 +1,8 @@
 // Read-side daemon HTTP endpoints for the Canopy UI.
 
-import type { RouteHandler, RouteResponse } from '../router.js';
+import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
@@ -39,7 +40,7 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
   const sessionId = req.params.id;
   if (!sessionId) return badRequest('missing_session_id');
 
-  const session = getSession(sessionId);
+  const session = getSession(sessionId, projectScopeFromRequestContext(req.requestContext));
   if (!session) return notFound('session');
 
   // Flat shape with column-name parity (see SessionCanopyAggregate in
@@ -311,13 +312,13 @@ function extractEntryPath(pathname: string, prefix: string): string | null {
 }
 
 /**
- * Build the route adapters that bind handlers to the daemon's current
- * project_id. Kept as a factory so the daemon can inject its vaultDir-derived
- * projectId at registration time — matching the createCanopyInjectHandler
- * pattern used elsewhere in this file's neighborhood.
+ * Build the route adapters that bind handlers to the request project_id.
+ * The daemon still supplies the resolver, but the adapters pass the current
+ * request through so Grove-aware UI/API calls do not fall back to the daemon's
+ * startup project after a project switch.
  */
 function makeEntriesRouteHandlers(deps: {
-  resolveProjectId: () => string;
+  resolveProjectId: (req: RouteRequest) => string;
   /**
    * Optional runner for per-entry `/redescribe`. Tests that don't need the
    * action route (list/get/reembed only) can omit this; the redescribe
@@ -335,7 +336,7 @@ function makeEntriesRouteHandlers(deps: {
       return badRequest(`invalid sort_dir: ${sortDirRaw}`);
     }
     const args: CanopyEntriesListArgs = {
-      project_id: deps.resolveProjectId(),
+      project_id: deps.resolveProjectId(req),
       limit:       parseIntQuery(req.query.limit),
       offset:      parseIntQuery(req.query.offset),
       language:    parseStringQuery(req.query.language),
@@ -370,7 +371,7 @@ function makeEntriesRouteHandlers(deps: {
       }
     }
     try {
-      const row = await handleCanopyEntryGet({ project_id: deps.resolveProjectId(), path });
+      const row = await handleCanopyEntryGet({ project_id: deps.resolveProjectId(req), path });
       return { body: row };
     } catch (e) {
       return notFound((e as Error).message);
@@ -387,7 +388,7 @@ function makeEntriesRouteHandlers(deps: {
       const path = raw.slice(0, -reembedSuffix.length);
       if (!path) return badRequest('missing_path');
       try {
-        return { body: await handleCanopyEntryReembed({ project_id: deps.resolveProjectId(), path }) };
+        return { body: await handleCanopyEntryReembed({ project_id: deps.resolveProjectId(req), path }) };
       } catch (e) {
         return notFound((e as Error).message);
       }
@@ -400,7 +401,7 @@ function makeEntriesRouteHandlers(deps: {
       try {
         return {
           body: await handleCanopyEntryRedescribe(
-            { project_id: deps.resolveProjectId(), path },
+            { project_id: deps.resolveProjectId(req), path },
             { runner },
           ),
         };
@@ -522,12 +523,12 @@ export async function handleCanopyMapRegenerate(
  * registrations are non-overlapping so order doesn't matter.
  */
 export interface CanopyReadRouteDeps {
-  resolveProjectId: () => string;
+  resolveProjectId: (req: RouteRequest) => string;
   /**
    * Optional resolver for the daemon's machine identity. Required by the
    * /canopy/map routes; when omitted, those routes are not registered.
    */
-  resolveMachineId?: () => string;
+  resolveMachineId?: (req: RouteRequest) => string;
   /**
    * Optional runner for /canopy/map/regenerate. The daemon supplies an
    * implementation that builds the canopy-map instruction and dispatches
@@ -580,10 +581,10 @@ export function registerCanopyReadRoutes(server: {
     const resolveProjectId = deps.resolveProjectId;
     const resolveMachineId = deps.resolveMachineId;
 
-    const getMapHandler: RouteHandler = async () => ({
+    const getMapHandler: RouteHandler = async (req) => ({
       body: await handleCanopyMapGet({
-        project_id: resolveProjectId(),
-        machine_id: resolveMachineId(),
+        project_id: resolveProjectId(req),
+        machine_id: resolveMachineId(req),
       }),
     });
     server.registerRoute('GET', '/api/canopy/map', getMapHandler);
@@ -595,8 +596,8 @@ export function registerCanopyReadRoutes(server: {
         const force_cold_start = body.force_cold_start === true;
         const result = await handleCanopyMapRegenerate(
           {
-            project_id: resolveProjectId(),
-            machine_id: resolveMachineId(),
+            project_id: resolveProjectId(req),
+            machine_id: resolveMachineId(req),
             force_cold_start,
           },
           { runner: runCanopyMapTask },

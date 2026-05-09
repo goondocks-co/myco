@@ -7,6 +7,7 @@
  */
 
 import type { CostResolution, CostSource } from '@myco/agent/cost/types.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // YAML-sourced definitions (read from src/agent/definitions/)
@@ -382,6 +383,8 @@ export interface RunOptions {
   resumeRunId?: string;
   /** Embedding manager for immediate vector operations during agent tool calls. */
   embeddingManager?: import('@myco/daemon/embedding/manager.js').EmbeddingManager;
+  /** Resolved Grove/project request context for in-process vault tool access. */
+  requestContext?: MycoRequestContext;
   /**
    * Optional logger. When provided (the daemon always provides one),
    * harness diagnostics are emitted at `debug` level — visible once

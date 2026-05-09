@@ -1,10 +1,8 @@
 import { useDaemon } from '../hooks/use-daemon';
 import { PageLoading } from '../components/ui/page-loading';
-import { StatusHero } from '../components/dashboard/StatusHero';
 import { VaultStats } from '../components/dashboard/VaultStats';
-import { SessionPodGrid } from '../components/dashboard/SessionPodGrid';
-import { AgentRunsFeed } from '../components/dashboard/AgentRunsFeed';
-import { ActivityLogFeed } from '../components/dashboard/ActivityLogFeed';
+import { ActiveSessions } from '../components/dashboard/ActiveSessions';
+import { RecentActivity } from '../components/dashboard/RecentActivity';
 import { FooterStatus } from '../components/dashboard/FooterStatus';
 
 export default function Dashboard() {
@@ -47,22 +45,9 @@ export default function Dashboard() {
 
           {/* Content */}
           <div className="relative z-10 p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
-            {/* Hero banner */}
-            <StatusHero stats={stats} />
-
-            {/* Stat row */}
             <VaultStats stats={stats} />
-
-            {/* Session pod cards */}
-            <SessionPodGrid />
-
-            {/* Visualization row: chart + logs */}
-            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <AgentRunsFeed />
-              <ActivityLogFeed />
-            </section>
-
-            {/* Footer status bar */}
+            <ActiveSessions />
+            <RecentActivity />
             <FooterStatus stats={stats} />
           </div>
         </div>

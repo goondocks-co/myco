@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-type ScopeLabel = 'Personal' | 'Project';
+type ScopeLabel = 'Personal' | 'Project' | 'Grove' | 'Machine';
 
 interface ScopePillProps {
   /** Promote local override to project scope. */
@@ -10,22 +10,31 @@ interface ScopePillProps {
 }
 
 interface ScopeBadgeProps {
-  scope: 'personal' | 'project';
+  scope: 'personal' | 'project' | 'grove' | 'all-groves' | 'machine';
 }
 
-const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel> = {
+const SCOPE_BADGE_LABELS: Record<ScopeBadgeProps['scope'], ScopeLabel | 'Grove' | 'All Groves'> = {
   personal: 'Personal',
   project: 'Project',
+  grove: 'Grove',
+  'all-groves': 'All Groves',
+  machine: 'Machine',
 };
 
 const SCOPE_BADGE_TITLES: Record<ScopeBadgeProps['scope'], string> = {
   personal: 'This setting is overridden on this machine',
   project: 'This setting is using the shared project value',
+  grove: 'This setting applies to every project in this Grove',
+  'all-groves': 'This view aggregates every Grove on this machine',
+  machine: 'This setting applies to every Grove on this machine',
 };
 
 const SCOPE_BADGE_CLASSES: Record<ScopeBadgeProps['scope'], string> = {
   personal: 'border-primary/40 bg-primary/5 text-primary',
   project: 'border-outline-variant/30 bg-surface-container-high/40 text-on-surface-variant',
+  grove: 'border-secondary/40 bg-secondary/5 text-secondary',
+  'all-groves': 'border-tertiary/40 bg-tertiary/5 text-tertiary',
+  machine: 'border-tertiary/40 bg-tertiary/5 text-tertiary',
 };
 
 export function ScopeBadge({ scope }: ScopeBadgeProps) {

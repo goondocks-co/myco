@@ -25,6 +25,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { TeamSyncClient } from '../team-sync.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -137,6 +138,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       dryRun,
       executionOverrides: rawExecutionOverrides,
     } = parsedBody.data;
+    const scope = projectScopeFromRequestContext(req.requestContext);
 
     // SSRF defense: strip caller-supplied baseUrl from any remote-provider
     // override. The daemon's bearer key cannot follow a redirected URL.
@@ -164,11 +166,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       let built;
       try {
         const taskParams = mycoConfig.agent.tasks?.[task]?.params;
-        const projectRoot = resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       } catch {
-        const projectRoot = resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient);
+        const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       }
       instruction = built?.instruction;
       runContext = built?.context;
@@ -196,6 +198,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       instruction,
       agentId,
       embeddingManager,
+      requestContext: req.requestContext,
       runContext,
       dryRun,
       executionOverrides,
@@ -206,7 +209,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // Query for the most recently created run matching this task to get
     // the correct ID — not getRunningRun which may return a different task.
     const effectiveAgentId = agentId ?? 'myco-agent';
-    const runId = getLatestRunId(effectiveAgentId, task);
+    const runId = getLatestRunId(effectiveAgentId, task, scope);
 
     resultPromise
       .then((result) => {
@@ -258,8 +261,9 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const status = req.query.status || undefined;
     const task = req.query.task || undefined;
     const search = req.query.search || undefined;
+    const scope = projectScopeFromRequestContext(req.requestContext);
 
-    const filterOpts = { agent_id: agentId, status, task, search };
+    const filterOpts = { scope, agent_id: agentId, status, task, search };
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
 
@@ -275,11 +279,12 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
    * through this endpoint.
    */
   async function handleGetRun(req: RouteRequest): Promise<RouteResponse> {
-    const run = getRun(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const run = getRun(req.params.id, scope);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
-    const byTool = countWriteIntentsByTool(run.id);
+    const byTool = countWriteIntentsByTool(run.id, scope);
     const total = Object.values(byTool).reduce((acc, n) => acc + n, 0);
     return {
       body: {
@@ -294,7 +299,8 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** POST /api/agent/runs/:id/resume — resume a failed/interrupted run. */
   async function handleResumeRun(req: RouteRequest): Promise<RouteResponse> {
-    const run = getRun(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const run = getRun(req.params.id, scope);
     if (!run) {
       return { status: 404, body: { error: 'Run not found' } };
     }
@@ -312,6 +318,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       resumeRunId: run.id,
       resumeMode: mode ?? 'manual',
       embeddingManager,
+      requestContext: req.requestContext,
       logger,
     });
 
@@ -337,13 +344,17 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
 
   /** GET /api/agent/runs/:id/reports — list reports for a run. */
   async function handleGetRunReports(req: RouteRequest): Promise<RouteResponse> {
-    const reports = listReports(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    if (!getRun(req.params.id, scope)) return { status: 404, body: { error: 'Run not found' } };
+    const reports = listReports(req.params.id, { scope });
     return { body: { reports } };
   }
 
   /** GET /api/agent/runs/:id/turns — list turns for a run. */
   async function handleGetRunTurns(req: RouteRequest): Promise<RouteResponse> {
-    const turns = listTurnsByRun(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    if (!getRun(req.params.id, scope)) return { status: 404, body: { error: 'Run not found' } };
+    const turns = listTurnsByRun(req.params.id, { scope });
     return { body: turns };
   }
 
@@ -361,8 +372,10 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const offset = Number.isFinite(rawOffset) && rawOffset !== undefined && rawOffset >= 0
       ? rawOffset
       : 0;
-    const intents = listWriteIntents(req.params.id, { limit, offset });
-    const total = countWriteIntents(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    if (!getRun(req.params.id, scope)) return { status: 404, body: { error: 'Run not found' } };
+    const intents = listWriteIntents(req.params.id, { limit, offset, scope });
+    const total = countWriteIntents(req.params.id, scope);
     return { body: { intents, count: intents.length, total } };
   }
 
@@ -374,7 +387,8 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
    * agent_run_write_intents. No writes are performed.
    */
   async function handleGetRunAudit(req: RouteRequest): Promise<RouteResponse> {
-    const audit = buildPhaseAudit(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const audit = buildPhaseAudit(req.params.id, scope);
     if (!audit) {
       return { status: 404, body: { error: 'Run not found' } };
     }

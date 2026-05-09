@@ -5,6 +5,7 @@ import { SectionHeader } from '../ui/section-header';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/cn';
+import { errorMessage as toErrorMessage } from '../../lib/error';
 import { RELEASE_CHANNELS } from '../../lib/constants';
 import { withBasePath } from '../../lib/base-path';
 import {
@@ -113,9 +114,9 @@ export function UpdateCard() {
       window.location.reload();
     } catch (err) {
       setApplyState('error');
-      const msg = (err as Error).message === 'timeout'
+      const msg = toErrorMessage(err) === 'timeout'
         ? 'Daemon did not restart within the expected time. Check the terminal.'
-        : (err as Error).message;
+        : toErrorMessage(err);
       setErrorMessage(msg);
     }
   }, [applyMutation]);
@@ -145,9 +146,9 @@ export function UpdateCard() {
   const pendingCount = pendingPackages.length;
   const latestBadge = updateBadgeLabel(pendingCount, pendingPackages[0]?.latest_version ?? undefined);
   const runtimeScope = status.runtime_scope ?? 'machine';
-  const runtimeSummary = runtimeScope === 'project'
-    ? 'This project is pinned to a project-local Myco runtime. Switching back to Stable removes the local runtime and falls back to the machine install.'
-    : 'This project is using the machine-installed Myco runtime. Switching to Beta installs a project-local Myco runtime for this vault.';
+  const runtimeSummary = runtimeScope === 'managed'
+    ? 'This machine is using a managed Myco runtime under ~/.myco/runtime/. Switching back to Stable removes the managed runtime and falls back to the global install on PATH.'
+    : 'This machine is using the global Myco install on PATH. Switching to Beta installs a managed runtime under ~/.myco/runtime/.';
 
   // State 2: exempt (dev mode)
   if (status.exempt) {

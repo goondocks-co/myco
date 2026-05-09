@@ -11,6 +11,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 // skill_usage has no synced_at column — does not participate in team sync.
 
 
@@ -25,6 +26,8 @@ export interface SkillUsageInsert {
   session_id: string;
   machine_id?: string;
   detected_at: number;
+  /** Branded Grove project id this skill use belongs to. */
+  project_id: GroveProjectId;
 }
 
 /** Row shape returned from skill usage queries (all columns). */
@@ -34,6 +37,7 @@ export interface SkillUsageRow {
   session_id: string;
   machine_id: string;
   detected_at: number;
+  project_id: string | null;
 }
 
 /** Filter options for `listUsageForSkill`. */
@@ -51,6 +55,7 @@ export const USAGE_COLUMNS = [
   'session_id',
   'machine_id',
   'detected_at',
+  'project_id',
 ] as const;
 
 const SELECT_COLUMNS = USAGE_COLUMNS.join(', ');
@@ -67,6 +72,7 @@ function toUsageRow(row: Record<string, unknown>): SkillUsageRow {
     session_id: row.session_id as string,
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     detected_at: row.detected_at as number,
+    project_id: (row.project_id as string) ?? null,
   };
 }
 
@@ -84,9 +90,9 @@ export function insertSkillUsage(data: SkillUsageInsert): SkillUsageRow {
 
   db.prepare(
     `INSERT INTO skill_usage (
-       id, skill_id, session_id, machine_id, detected_at
+       id, skill_id, session_id, machine_id, detected_at, project_id
      ) VALUES (
-       ?, ?, ?, ?, ?
+       ?, ?, ?, ?, ?, ?
      )`,
   ).run(
     data.id,
@@ -94,6 +100,7 @@ export function insertSkillUsage(data: SkillUsageInsert): SkillUsageRow {
     data.session_id,
     data.machine_id ?? getTeamMachineId(),
     data.detected_at,
+    data.project_id,
   );
 
   const row = toUsageRow(

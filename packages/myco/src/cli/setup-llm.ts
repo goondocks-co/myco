@@ -1,11 +1,9 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { loadConfig, updateConfig } from '../config/loader.js';
 import { withEmbedding } from '../config/updates.js';
 import { parseStringFlag } from './shared.js';
 import type { EmbeddingProviderConfig } from '../config/schema.js';
-
-const DAEMON_STATE_FILENAME = 'daemon.json';
+import { resolveDaemonServiceState } from '../daemon/service-state.js';
 
 const USAGE = `Usage: myco setup-llm [options]
 
@@ -68,7 +66,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     console.log('Run: myco rebuild');
   }
 
-  if (fs.existsSync(path.join(vaultDir, DAEMON_STATE_FILENAME))) {
+  if (fs.existsSync(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)) {
     console.log('\nNote: restart the daemon for changes to take effect (myco restart)');
   }
 }

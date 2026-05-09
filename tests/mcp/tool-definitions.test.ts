@@ -116,7 +116,7 @@ describe('TOOL_DEFINITIONS registration coverage', () => {
   // OpenAI's strict tool schema validator rejects schemas that carry
   // oneOf/anyOf/allOf/enum/not at the top level. Anthropic's API rejects
   // the same shapes. The xor between source_path and plan_key is enforced
-  // by the daemon handler (zod refine in mcp-proxy.ts), so no top-level
+  // by the myco_plans handler's input validation, so no top-level
   // combinator is needed — and adding one crashes provider clients such
   // as opencode + GPT-5.
   it('no tool schema has oneOf/anyOf/allOf/not at the top level', () => {
@@ -259,11 +259,20 @@ describe('cross-surface tool-name drift', () => {
     return [...source.matchAll(TOOL_NAME_PATTERNS[pattern])].map((m) => m[1]);
   }
 
-  it('Pi symbiont registers exactly the canonical tool set', () => {
+  // Operator-tier tools (myco_maintenance, myco_update) are intentionally
+  // local-only — they wrap daemon HTTP routes that don't make sense
+  // outside a Myco daemon instance. The Pi symbiont (handheld terminal
+  // agent template) does NOT need to register them, and the Team worker
+  // (cloud read surface) explicitly opts out. The cross-surface test
+  // therefore checks that Pi covers every NON-operator tool, not the
+  // full canonical set.
+  const OPERATOR_TOOL_NAMES = new Set(['myco_maintenance', 'myco_update']);
+
+  it('Pi symbiont registers every non-operator canonical tool', () => {
     const names = extractToolNames('packages/myco/src/symbionts/templates/pi/plugin.ts', 'registerTool');
     expect(names.length).toBeGreaterThan(0);
     const expected = new Set([
-      ...TOOL_DEFINITIONS.map((t) => t.name),
+      ...TOOL_DEFINITIONS.filter((t) => !OPERATOR_TOOL_NAMES.has(t.name)).map((t) => t.name),
       ...COLLECTIVE_TOOL_DEFINITIONS.map((t) => t.name),
     ]);
     expect(new Set(names)).toEqual(expected);

@@ -1,4 +1,4 @@
-.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-build dev-link dev-link-worktree dev-unlink dev-unlink-worktree ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-build dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
 build:
 	$(MAKE) check
@@ -41,7 +41,7 @@ watch:
 	npm run build:watch
 
 clean:
-	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-hub/dist packages/myco-shared/dist
+	rm -rf packages/myco/dist packages/myco-team/dist packages/myco-collective/dist packages/myco-shared/dist
 
 # Build every UI bundle (myco daemon UI + collective UI) without running the
 # rest of the quality gate or the host-target compile. Useful when iterating
@@ -114,10 +114,9 @@ process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 
 'windows-x64')")
 
 dev-build:
-	@# myco-team, myco-collective, and myco-hub stay on tsup/Node.
+	@# myco-team and myco-collective stay on tsup/Node.
 	npm run build -w @goondocks/myco-team
 	npm run build -w @goondocks/myco-collective
-	npm run build -w @goondocks/myco-hub
 	@# myco is now a Bun-compiled binary. Steps in order:
 	@#   1. codegen (hook-config.generated.ts from manifests)
 	@#   2. build libsqlite3 for the host target (cached after first run)
@@ -130,6 +129,7 @@ dev-build:
 
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
+	@mkdir -p $(HOME)/.myco
 	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
 	@# the Bun runtime, so the caller's Node version is irrelevant.
 	@ln -sf $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco $(HOME)/.local/bin/myco-dev
@@ -138,73 +138,40 @@ dev-link: dev-build
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
 	@ln -sf $(PWD)/packages/myco-collective/dist/main.js $(HOME)/.local/bin/myco-collective-dev
 	@chmod +x $(HOME)/.local/bin/myco-collective-dev
-	@ln -sf $(PWD)/packages/myco-hub/dist/main.js $(HOME)/.local/bin/myco-hub-dev
-	@chmod +x $(HOME)/.local/bin/myco-hub-dev
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
-	@mkdir -p .myco
-	@# Write the absolute path of the dev binary so the hook guard can
-	@# exec it directly without a PATH lookup. GUI-launched agents run
-	@# under launchd's minimal PATH which excludes ~/.local/bin; baking
-	@# the absolute path at link time makes hook capture robust under
-	@# both GUI and shell launches.
-	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > .myco/runtime.command
+	@# Write the absolute path of the dev binary to the machine-scope
+	@# runtime.command so every launcher (hook guard, MCP, CLI shim,
+	@# daemon respawn) dispatches to the same dev binary regardless of
+	@# which project it's invoked from. GUI-launched agents run under
+	@# launchd's minimal PATH which excludes ~/.local/bin; baking the
+	@# absolute path at link time makes hook capture robust under both
+	@# GUI and shell launches.
+	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(HOME)/.myco/runtime.command
 	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
-	@echo "✓ myco-hub-dev symlinked to $(PWD)/packages/myco-hub/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
-	@echo "✓ .myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
-	@echo "  (the hook guard at .agents/myco-run.cjs reads this file)"
-	@# Regenerate symbiont configs so any that opt into
-	@# `substituteRuntimeCommand` (opencode today) get the runtime.command
-	@# alias baked into their MCP command. Symbionts that rely on
-	@# `bin/myco-run` to read runtime.command at spawn time are unaffected
-	@# — `myco update` is a no-op for them.
+	@echo "✓ ~/.myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
+	@# Regenerate symbiont configs across every registered project so any
+	@# that opt into `substituteRuntimeCommand` (opencode today) get the
+	@# runtime.command alias baked into their MCP command. Symbionts that
+	@# rely on `bin/myco-run` to read runtime.command at spawn time are
+	@# unaffected — `myco update` is a no-op for them.
 	@if command -v myco-dev >/dev/null 2>&1; then \
-		myco-dev update --project "$(PWD)" || echo "⚠ 'myco-dev update --project $(PWD)' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
+		myco-dev update --all-projects || echo "⚠ 'myco-dev update --all-projects' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
 	else \
 		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
 	fi
-
-dev-link-worktree: dev-build
-	@mkdir -p .myco
-	@# Worktrees must not rewrite the shared ~/.local/bin/myco-dev symlink:
-	@# other agents may already be using it from the main checkout. Pin this
-	@# worktree directly to its compiled binary instead.
-	@printf '%s/packages/myco/vendor/%s/myco\n' "$(PWD)" "$(HOST_TARGET)" > .myco/runtime.command
-	@echo "✓ .myco/runtime.command set to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
-	@echo "  (worktree-local pin; global myco-dev symlink unchanged)"
-	@./packages/myco/vendor/$(HOST_TARGET)/myco update --project "$(PWD)" || echo "⚠ worktree update failed — symbiont configs may not reflect the worktree runtime.command"
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@rm -f $(HOME)/.local/bin/myco-team-dev
 	@rm -f $(HOME)/.local/bin/myco-collective-dev
-	@rm -f $(HOME)/.local/bin/myco-hub-dev
 	@rm -f $(HOME)/.local/bin/myco-run
-	@rm -f .myco/runtime.command
+	@rm -f $(HOME)/.myco/runtime.command
 	@echo "✓ myco-dev symlink removed"
 	@echo "✓ myco-team-dev symlink removed"
 	@echo "✓ myco-collective-dev symlink removed"
-	@echo "✓ myco-hub-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
-	@echo "✓ .myco/runtime.command removed — hook guard falls back to default 'myco'"
-
-dev-unlink-worktree:
-	@rm -f .myco/runtime.command
-	@echo "✓ .myco/runtime.command removed — worktree falls back to inherited/default runtime"
-	@if [ -x ./packages/myco/vendor/$(HOST_TARGET)/myco ]; then \
-		./packages/myco/vendor/$(HOST_TARGET)/myco update --project "$(PWD)" || echo "⚠ worktree update failed after removing runtime.command"; \
-	else \
-		echo "⚠ local binary missing — run make dev-link-worktree before refreshing symbiont configs"; \
-	fi
-	@# Regenerate symbiont configs using prod myco so any
-	@# `substituteRuntimeCommand` opt-ins revert their MCP command from
-	@# the dev alias back to `myco-run`. Soft-fail when prod myco isn't
-	@# installed — the user can run `myco update` manually later.
-	@if command -v myco >/dev/null 2>&1; then \
-		myco update || echo "⚠ 'myco update' failed — run it manually to restore symbiont configs"; \
-	else \
-		echo "⚠ myco not on PATH — run 'myco update' manually after installing prod myco"; \
-	fi
+	@echo "✓ ~/.myco/runtime.command removed — launchers fall back to default 'myco'"

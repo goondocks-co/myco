@@ -7,6 +7,7 @@ import {
   findDeadSessionIds,
 } from '@myco/daemon/jobs/session-maintenance.js';
 import { MS_PER_SECOND, STALE_SESSION_THRESHOLD_MS } from '@myco/constants.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / MS_PER_SECOND);
@@ -51,7 +52,7 @@ describe('completeStaleActiveSessions', () => {
     const count = completeStaleActiveSessions();
 
     expect(count).toBe(1);
-    const session = getSession('stale-1');
+    const session = getSession('stale-1', ALL_PROJECTS_SCOPE);
     expect(session?.status).toBe('completed');
   });
 
@@ -62,7 +63,7 @@ describe('completeStaleActiveSessions', () => {
     const count = completeStaleActiveSessions();
 
     expect(count).toBe(1);
-    const session = getSession('stale-2');
+    const session = getSession('stale-2', ALL_PROJECTS_SCOPE);
     expect(session?.status).toBe('completed');
   });
 
@@ -78,7 +79,7 @@ describe('completeStaleActiveSessions', () => {
     const count = completeStaleActiveSessions();
 
     expect(count).toBe(1);
-    expect(getSession('registered-but-idle')?.status).toBe('completed');
+    expect(getSession('registered-but-idle', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
   });
 
   it('skips recently active sessions', () => {
@@ -87,7 +88,7 @@ describe('completeStaleActiveSessions', () => {
     const count = completeStaleActiveSessions();
 
     expect(count).toBe(0);
-    const session = getSession('fresh-1');
+    const session = getSession('fresh-1', ALL_PROJECTS_SCOPE);
     expect(session?.status).toBe('active');
   });
 
@@ -106,10 +107,10 @@ describe('completeStaleActiveSessions', () => {
     seedSession('config-threshold', { status: 'active', batchStartedAt: tenMinAgo });
 
     expect(completeStaleActiveSessions(STALE_THRESHOLD_S)).toBe(0);
-    expect(getSession('config-threshold')?.status).toBe('active');
+    expect(getSession('config-threshold', ALL_PROJECTS_SCOPE)?.status).toBe('active');
 
     expect(completeStaleActiveSessions(5 * 60)).toBe(1);
-    expect(getSession('config-threshold')?.status).toBe('completed');
+    expect(getSession('config-threshold', ALL_PROJECTS_SCOPE)?.status).toBe('completed');
   });
 
   it('sets ended_at on the completed row', () => {
@@ -118,7 +119,7 @@ describe('completeStaleActiveSessions', () => {
 
     const before = epochNow();
     completeStaleActiveSessions();
-    const session = getSession('ended-at-check');
+    const session = getSession('ended-at-check', ALL_PROJECTS_SCOPE);
 
     expect(session?.ended_at).not.toBeNull();
     expect(session?.ended_at).toBeGreaterThanOrEqual(before);

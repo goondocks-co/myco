@@ -22,6 +22,7 @@ import { extensionForMimeType } from '@myco/symbionts/adapter.js';
 import { epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
 /** Short session-id suffix used in attachment filenames and IDs. */
 const SESSION_SHORT_LEN = 6;
@@ -40,13 +41,14 @@ export interface CaptureBatchImagesInput {
   promptNumber: number;
   images: CapturedImage[];
   logger: DaemonLogger;
+  projectId: GroveProjectId;
 }
 
 /**
  * Persist a batch of images as attachment rows linked to a specific prompt batch.
  */
 export function captureBatchImages(input: CaptureBatchImagesInput): void {
-  const { sessionId, promptBatchId, promptNumber, images, logger } = input;
+  const { sessionId, promptBatchId, promptNumber, images, logger, projectId } = input;
   if (images.length === 0) return;
 
   const sessionShort = sessionId.slice(-SESSION_SHORT_LEN);
@@ -64,6 +66,7 @@ export function captureBatchImages(input: CaptureBatchImagesInput): void {
         media_type: img.mediaType,
         data: Buffer.from(img.data, 'base64'),
         created_at: epochSeconds(),
+        project_id: projectId,
       });
       // insertAttachment returns undefined on ON CONFLICT DO NOTHING — only
       // log when a row was actually inserted, otherwise stop-event replays

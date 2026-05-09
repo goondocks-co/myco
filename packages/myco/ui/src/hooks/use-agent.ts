@@ -2,6 +2,7 @@ import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/rea
 import { usePowerQuery } from './use-power-query';
 import { fetchJson, postJson, putJson, deleteJson } from '../lib/api';
 import { POLL_INTERVALS } from '../lib/constants';
+import { projectScopedQueryKey, useProjectScopedQueryKey, useProjectSelection } from './use-project-selection';
 import type { PhaseAudit, PhaseAuditEntry } from '@myco/services/phase-audit';
 import type { WriteIntentRow } from '@myco/db/queries/write-intents';
 import type { DigestExtractRevisionRow } from '@myco/db/queries/digest-extracts';
@@ -407,8 +408,9 @@ export function useAgentRuns(filters?: {
 }
 
 export function useAgentRun(id: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['agent-run', id]);
   const result = useQuery<RunDetailResponse>({
-    queryKey: ['agent-run', id],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<RunDetailResponse>(`/agent/runs/${id}`, { signal }),
     enabled: id !== undefined,
@@ -448,16 +450,18 @@ export function useAgentTurns(runId: string | undefined, runStatus?: string) {
 }
 
 export function useAgentTasks() {
+  const queryKey = useProjectScopedQueryKey(['agent-tasks']);
   return useQuery<TasksResponse>({
-    queryKey: ['agent-tasks'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<TasksResponse>('/agent/tasks', { signal }),
     staleTime: TASKS_STALE_TIME,
   });
 }
 
 export function useTask(taskId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['agent-task', taskId]);
   return useQuery<TaskDetailResponse>({
-    queryKey: ['agent-task', taskId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<TaskDetailResponse>(`/agent/tasks/${taskId}`, { signal }),
     enabled: taskId !== undefined,
@@ -498,8 +502,9 @@ export function useDeleteTask() {
 
 /** Fetch a task's YAML representation for editing. */
 export function useTaskYaml(taskId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['agent-task-yaml', taskId]);
   return useQuery<{ yaml: string; source: string }>({
-    queryKey: ['agent-task-yaml', taskId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<{ yaml: string; source: string }>(`/agent/tasks/${taskId}/yaml`, { signal }),
     enabled: taskId !== undefined,
@@ -665,9 +670,10 @@ function serializedRunToSummary(run: SerializedRunDetail): RunCompareSummary {
  * one entry per failed query for surfacing in the UI.
  */
 export function useRunsByIds(runIds: string[]) {
+  const selection = useProjectSelection();
   const results = useQueries({
     queries: runIds.map((id) => ({
-      queryKey: ['agent-run', id] as const,
+      queryKey: projectScopedQueryKey(selection, ['agent-run', id] as const),
       queryFn: ({ signal }: { signal?: AbortSignal }) =>
         fetchJson<RunDetailResponse>(`/agent/runs/${id}`, { signal }),
       enabled: Boolean(id),

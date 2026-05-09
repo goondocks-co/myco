@@ -4,10 +4,21 @@ import {
   updateLocalConfig,
   loadMergedConfig,
   loadLocalConfig,
+  loadGroveConfig,
+  saveGroveConfig,
+  loadMachineConfig,
+  saveMachineConfig,
   deepMergeConfig,
 } from '../../config/loader.js';
 import { z } from 'zod';
-import { MycoConfigSchema, type MycoConfig } from '../../config/schema.js';
+import {
+  MycoConfigSchema,
+  GroveConfigSchema,
+  MachineConfigSchema,
+  type MycoConfig,
+  type GroveConfig,
+  type MachineConfig,
+} from '../../config/schema.js';
 import { unsetAtPath } from '../../utils/dot-path.js';
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
@@ -21,9 +32,12 @@ export async function handleGetConfig(vaultDir: string): Promise<RouteResponse> 
 // Scoped config handlers (project vs. local overlay)
 // ---------------------------------------------------------------------------
 
-/** GET /api/config/merged — project config with local overlay applied. */
-export async function handleGetMergedConfig(vaultDir: string): Promise<RouteResponse> {
-  const config = loadMergedConfig(vaultDir);
+/** GET /api/config/merged — full four-tier merge (machine + grove + project + personal). */
+export async function handleGetMergedConfig(
+  vaultDir: string,
+  options: { groveId?: string | null } = {},
+): Promise<RouteResponse> {
+  const config = loadMergedConfig(vaultDir, { groveId: options.groveId ?? null });
   return { body: config };
 }
 
@@ -141,6 +155,138 @@ export async function handlePutScopedConfig(vaultDir: string, body: unknown): Pr
     }
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Grove-tier config handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/grove-config — return the current Grove's config.
+ *
+ * Sources `groveId` from the request context (x-myco-grove-id header).
+ * Returns 404 when no Grove is bound — UI surfaces that as the
+ * "pick a project" placeholder.
+ */
+export async function handleGetGroveConfig(
+  groveId: string | null | undefined,
+): Promise<RouteResponse> {
+  if (!groveId) {
+    return { status: 404, body: { error: 'no_grove_in_context' } };
+  }
+  const config = loadGroveConfig(groveId);
+  return { body: { groveId, config } };
+}
+
+interface TierPutBody {
+  patch?: Record<string, unknown>;
+}
+
+interface TierPutOptions<TConfig> {
+  load: () => TConfig;
+  save: (validated: TConfig) => void;
+  validate: (merged: unknown) => TConfig;
+  /** Optional patch sanitizer — strip fields the user can't write to this tier. */
+  sanitizePatch?: (patch: Record<string, unknown>) => Record<string, unknown>;
+}
+
+/**
+ * Shared PUT handler for tier config files (Grove, Machine). Loads
+ * current, applies sanitized patch, validates, persists, returns the
+ * canonical post-merge value plus touched leaf paths so the caller can
+ * fire `applyConfigWriteReactions`.
+ */
+async function handlePutTierConfig<TConfig>(
+  body: unknown,
+  options: TierPutOptions<TConfig>,
+): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
+  const payload = (body ?? {}) as TierPutBody;
+  const incoming = payload.patch ?? {};
+  if (typeof incoming !== 'object' || incoming === null || Array.isArray(incoming)) {
+    return {
+      response: { status: 400, body: { error: 'patch must be an object' } },
+      touchedPaths: [],
+    };
+  }
+  const patch = options.sanitizePatch
+    ? options.sanitizePatch(incoming as Record<string, unknown>)
+    : (incoming as Record<string, unknown>);
+  const patchLeaves = enumerateLeafPaths(patch);
+  if (patchLeaves.length === 0) {
+    return {
+      response: { status: 400, body: { error: 'patch required' } },
+      touchedPaths: [],
+    };
+  }
+
+  try {
+    const current = options.load();
+    const merged = deepMergeConfig(
+      current as Record<string, unknown>,
+      patch as Record<string, unknown>,
+    );
+    const validated = options.validate(merged);
+    options.save(validated);
+    return { response: { body: validated }, touchedPaths: patchLeaves };
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return {
+        response: { status: 400, body: { error: 'validation_failed', issues: err.issues } },
+        touchedPaths: [],
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * PUT /api/grove-config — patch the current Grove's config.
+ * Request body: `{ patch: Partial<GroveConfig> }`. 404 when no Grove is bound.
+ */
+export async function handlePutGroveConfig(
+  groveId: string | null | undefined,
+  body: unknown,
+): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
+  if (!groveId) {
+    return {
+      response: { status: 404, body: { error: 'no_grove_in_context' } },
+      touchedPaths: [],
+    };
+  }
+  return handlePutTierConfig<GroveConfig>(body, {
+    load: () => loadGroveConfig(groveId),
+    save: (validated) => saveGroveConfig(groveId, validated),
+    validate: (merged) => GroveConfigSchema.parse(merged) as GroveConfig,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Machine-tier config handlers
+// ---------------------------------------------------------------------------
+
+export async function handleGetMachineConfig(): Promise<RouteResponse> {
+  const config = loadMachineConfig();
+  return { body: { config } };
+}
+
+/**
+ * PUT /api/machine-config — patch the machine-wide config.
+ * The Grove registry's `grove.default_grove_id` block is owned by the
+ * registry (separate write surface), so we strip it from incoming
+ * patches.
+ */
+export async function handlePutMachineConfig(
+  body: unknown,
+): Promise<{ response: RouteResponse; touchedPaths: string[] }> {
+  return handlePutTierConfig<MachineConfig>(body, {
+    load: () => loadMachineConfig(),
+    save: (validated) => saveMachineConfig(validated),
+    validate: (merged) => MachineConfigSchema.parse(merged) as MachineConfig,
+    sanitizePatch: (patch) => {
+      const { grove: _grove, ...rest } = patch;
+      return rest;
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,8 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds } from '@myco/constants.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { NotificationStatus, NotificationMode, NotificationLevel } from '@myco/notifications/types.js';
 
 // ---------------------------------------------------------------------------
@@ -33,11 +35,19 @@ export interface NotificationInsert {
   mode: NotificationMode;
   link: string | null;
   metadata: string | null;
+  /**
+   * Grove project id this notification belongs to, or `null` for
+   * daemon-scope notifications that aren't tied to any single
+   * project (e.g. backup failure for a Grove with no recently-active
+   * project).
+   */
+  project_id: GroveProjectId | null;
 }
 
 /** Row shape returned from notifications queries. */
 export interface NotificationRow {
   id: string;
+  project_id: string | null;
   domain: string;
   type: string;
   level: string;
@@ -58,9 +68,9 @@ export interface NotificationRow {
 export function insertNotification(n: NotificationInsert): void {
   const db = getDatabase();
   db.prepare(
-    `INSERT INTO notifications (id, domain, type, level, title, message, mode, status, link, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?)`,
-  ).run(n.id, n.domain, n.type, n.level, n.title, n.message, n.mode, n.link, n.metadata, epochSeconds());
+    `INSERT INTO notifications (id, domain, type, level, title, message, mode, status, link, metadata, project_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'unread', ?, ?, ?, ?)`,
+  ).run(n.id, n.domain, n.type, n.level, n.title, n.message, n.mode, n.link, n.metadata, n.project_id, epochSeconds());
 }
 
 /** List notifications, newest first. Optionally filter by status and/or domain. */
@@ -68,9 +78,17 @@ export function listNotifications(opts: {
   status?: NotificationStatus;
   domain?: string;
   mode?: NotificationMode;
+  scope: ProjectScope;
+  /**
+   * When `true` and `scope` is `{ kind: 'project' }`, also include
+   * daemon-scope rows (`project_id IS NULL`). Used by UI surfaces that
+   * should show daemon-level notifications alongside the current
+   * project's.
+   */
+  include_daemon_scope?: boolean;
   limit?: number;
   offset?: number;
-} = {}): NotificationRow[] {
+}): NotificationRow[] {
   const db = getDatabase();
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -87,6 +105,12 @@ export function listNotifications(opts: {
     conditions.push('mode = ?');
     params.push(opts.mode);
   }
+  if (opts.include_daemon_scope && opts.scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(opts.scope.id);
+  } else {
+    appendProjectCondition(conditions, params, opts.scope);
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -98,55 +122,93 @@ export function listNotifications(opts: {
 }
 
 /** Count notifications by status. */
-export function countNotifications(status?: NotificationStatus): number {
+export function countNotifications(
+  status: NotificationStatus | undefined,
+  scope: ProjectScope,
+  options: { includeDaemonScope?: boolean } = {},
+): number {
   const db = getDatabase();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
   if (status) {
-    const row = db.prepare('SELECT COUNT(*) as count FROM notifications WHERE status = ?').get(status) as { count: number };
-    return row.count;
+    conditions.push('status = ?');
+    params.push(status);
   }
-  const row = db.prepare('SELECT COUNT(*) as count FROM notifications').get() as { count: number };
+  if (options.includeDaemonScope && scope.kind === 'project') {
+    conditions.push('(project_id = ? OR project_id IS NULL)');
+    params.push(scope.id);
+  } else {
+    appendProjectCondition(conditions, params, scope);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const row = db.prepare(`SELECT COUNT(*) as count FROM notifications ${where}`).get(...params) as { count: number };
   return row.count;
 }
 
 /** Get a single notification by ID. */
-export function getNotification(id: string): NotificationRow | undefined {
+export function getNotification(id: string, scope: ProjectScope): NotificationRow | undefined {
   const db = getDatabase();
-  return db.prepare('SELECT * FROM notifications WHERE id = ?').get(id) as NotificationRow | undefined;
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(`SELECT * FROM notifications WHERE ${conditions.join(' AND ')}`).get(...params) as NotificationRow | null | undefined;
+  return row ?? undefined;
 }
 
 /** Update notification status (read, dismissed). */
-export function updateNotificationStatus(id: string, status: NotificationStatus): boolean {
+export function updateNotificationStatus(id: string, status: NotificationStatus, scope: ProjectScope): boolean {
   const db = getDatabase();
-  const result = db.prepare('UPDATE notifications SET status = ? WHERE id = ?').run(status, id);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const result = db.prepare(
+    `UPDATE notifications SET status = ? WHERE ${conditions.join(' AND ')}`,
+  ).run(status, ...params);
   return result.changes > 0;
 }
 
 /** Dismiss all notifications (or all within a domain). */
-export function dismissAllNotifications(domain?: string): number {
+export function dismissAllNotifications(domain: string | undefined, scope: ProjectScope): number {
   const db = getDatabase();
+  const conditions = ["status != 'dismissed'"];
+  const params: unknown[] = [];
   if (domain) {
-    const result = db.prepare("UPDATE notifications SET status = 'dismissed' WHERE domain = ? AND status != 'dismissed'").run(domain);
-    return result.changes;
+    conditions.push('domain = ?');
+    params.push(domain);
   }
-  const result = db.prepare("UPDATE notifications SET status = 'dismissed' WHERE status != 'dismissed'").run();
+  appendProjectCondition(conditions, params, scope);
+  const result = db.prepare(
+    `UPDATE notifications SET status = 'dismissed' WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   return result.changes;
 }
 
 /** Mark all unread notifications as read (or within a domain). */
-export function markAllRead(domain?: string): number {
+export function markAllRead(domain: string | undefined, scope: ProjectScope): number {
   const db = getDatabase();
+  const conditions = ["status = 'unread'"];
+  const params: unknown[] = [];
   if (domain) {
-    const result = db.prepare("UPDATE notifications SET status = 'read' WHERE domain = ? AND status = 'unread'").run(domain);
-    return result.changes;
+    conditions.push('domain = ?');
+    params.push(domain);
   }
-  const result = db.prepare("UPDATE notifications SET status = 'read' WHERE status = 'unread'").run();
+  appendProjectCondition(conditions, params, scope);
+  const result = db.prepare(
+    `UPDATE notifications SET status = 'read' WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   return result.changes;
 }
 
 /** Prune dismissed notifications older than the given threshold. */
-export function pruneOldNotifications(maxAgeSeconds: number = NOTIFICATION_PRUNE_AGE_SECONDS): number {
+export function pruneOldNotifications(
+  maxAgeSeconds: number,
+  scope: ProjectScope,
+): number {
   const db = getDatabase();
   const cutoff = epochSeconds() - maxAgeSeconds;
-  const result = db.prepare("DELETE FROM notifications WHERE status = 'dismissed' AND created_at < ?").run(cutoff);
+  const conditions = ["status = 'dismissed'", 'created_at < ?'];
+  const params: unknown[] = [cutoff];
+  appendProjectCondition(conditions, params, scope);
+  const result = db.prepare(`DELETE FROM notifications WHERE ${conditions.join(' AND ')}`).run(...params);
   return result.changes;
 }

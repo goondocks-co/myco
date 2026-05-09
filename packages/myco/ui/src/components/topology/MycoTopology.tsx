@@ -4,18 +4,18 @@ import type { StatsResponse } from '../../hooks/use-daemon';
 
 const SVG_WIDTH = 500;
 const SVG_HEIGHT = 400;
-const HUB_X = 240;
-const HUB_Y = 195;
-const HUB_RADIUS = 44;
-const HUB_HALO_INNER = 50;
-const HUB_HALO_OUTER = 62;
+const CORE_X = 240;
+const CORE_Y = 195;
+const CORE_RADIUS = 44;
+const CORE_HALO_INNER = 50;
+const CORE_HALO_OUTER = 62;
 const PULSE_DURATION = '3s';
 const SPORE_DRIFT_DURATION = '4s';
 const DETAIL_MAX_CHARS = 12;
 const LABEL_FONT_SIZE = 9;
 const DETAIL_FONT_SIZE = 7;
-const HUB_LABEL_FONT_SIZE = 14;
-const HUB_DETAIL_FONT_SIZE = 9;
+const CORE_LABEL_FONT_SIZE = 14;
+const CORE_DETAIL_FONT_SIZE = 9;
 const SPORE_RADIUS = 1.8;
 const SPORE_COUNT_PER_ACTIVE_PATH = 2;
 
@@ -137,13 +137,13 @@ function buildNodes(stats: StatsResponse): TopologyNode[] {
   return nodes;
 }
 
-/** Generate a bezier curve path between hub and a node — organic hypha shape */
+/** Generate a bezier curve path between core and a node — organic hypha shape */
 function hyphaPath(nodeId: string): string {
   const pos = NODE_POSITIONS[nodeId];
   if (!pos) return '';
 
-  const dx = pos.x - HUB_X;
-  const dy = pos.y - HUB_Y;
+  const dx = pos.x - CORE_X;
+  const dy = pos.y - CORE_Y;
 
   // Offset control points perpendicular to the line for organic curve
   const len = Math.sqrt(dx * dx + dy * dy);
@@ -161,10 +161,10 @@ function hyphaPath(nodeId: string): string {
   const curve = curvatures[nodeId] ?? 20;
 
   // Offset start/end points to circle edges (not centers)
-  const ux = dx / len; // unit vector hub→node
+  const ux = dx / len; // unit vector core to node
   const uy = dy / len;
-  const startX = HUB_X + ux * HUB_RADIUS;
-  const startY = HUB_Y + uy * HUB_RADIUS;
+  const startX = CORE_X + ux * CORE_RADIUS;
+  const startY = CORE_Y + uy * CORE_RADIUS;
   const endX = pos.x - ux * pos.radius;
   const endY = pos.y - uy * pos.radius;
 
@@ -179,7 +179,7 @@ function hyphaPath(nodeId: string): string {
   return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
 }
 
-/** IDs of nodes that branch off another node instead of the hub. */
+/** IDs of nodes that branch off another node instead of the core. */
 const BRANCH_PARENTS: Record<string, string> = {
   consolidation: 'digest',
 };
@@ -398,8 +398,8 @@ function AmbientSpores() {
 
 export function MycoTopology({ stats }: { stats: StatsResponse }) {
   const nodes = buildNodes(stats);
-  const hubHealthy = true; // daemon is reachable if we have stats
-  const hubColor = hubHealthy ? NODE_COLORS.daemon : COLOR_OFF;
+  const coreHealthy = true; // daemon is reachable if we have stats
+  const coreColor = coreHealthy ? NODE_COLORS.daemon : COLOR_OFF;
   const hasActiveSessions = stats.daemon.active_sessions.length > 0;
 
   return (
@@ -417,14 +417,14 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
       {/* Ambient spore particles */}
       <AmbientSpores />
 
-      {/* Hyphal connections from hub to nodes */}
+      {/* Hyphal connections from core to nodes */}
       {nodes.map((node) => (
         <HyphaConnection key={node.id} node={node} />
       ))}
 
-      {/* Hub halo — the fruiting body glow */}
+      {/* Core halo — the fruiting body glow */}
       {hasActiveSessions && (
-        <circle cx={HUB_X} cy={HUB_Y} r={HUB_HALO_INNER} fill={hubColor} opacity={0}>
+        <circle cx={CORE_X} cy={CORE_Y} r={CORE_HALO_INNER} fill={coreColor} opacity={0}>
           <animate
             attributeName="opacity"
             values="0;0.1;0"
@@ -433,32 +433,32 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
           />
           <animate
             attributeName="r"
-            values={`${HUB_HALO_INNER};${HUB_HALO_OUTER};${HUB_HALO_INNER}`}
+            values={`${CORE_HALO_INNER};${CORE_HALO_OUTER};${CORE_HALO_INNER}`}
             dur={PULSE_DURATION}
             repeatCount="indefinite"
           />
         </circle>
       )}
 
-      {/* Hub circle — the fruiting body */}
+      {/* Core circle — the fruiting body */}
       <circle
-        cx={HUB_X}
-        cy={HUB_Y}
-        r={HUB_RADIUS}
-        fill={hubColor}
+        cx={CORE_X}
+        cy={CORE_Y}
+        r={CORE_RADIUS}
+        fill={coreColor}
         fillOpacity={0.13}
-        stroke={hubColor}
+        stroke={coreColor}
         strokeWidth={2}
         strokeOpacity={0.75}
       />
 
-      {/* Hub label */}
+      {/* Core label */}
       <text
-        x={HUB_X}
-        y={HUB_Y - 4}
+        x={CORE_X}
+        y={CORE_Y - 4}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={HUB_LABEL_FONT_SIZE}
+        fontSize={CORE_LABEL_FONT_SIZE}
 
         fontWeight={700}
         opacity={0.9}
@@ -466,11 +466,11 @@ export function MycoTopology({ stats }: { stats: StatsResponse }) {
         myco
       </text>
       <text
-        x={HUB_X}
-        y={HUB_Y + 12}
+        x={CORE_X}
+        y={CORE_Y + 12}
         textAnchor="middle"
         fill="currentColor"
-        fontSize={HUB_DETAIL_FONT_SIZE}
+        fontSize={CORE_DETAIL_FONT_SIZE}
 
         opacity={0.45}
       >

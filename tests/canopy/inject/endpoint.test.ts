@@ -7,6 +7,7 @@ import { initDatabase, closeDatabase, getDatabase, SQLITE_DB_FILE } from '@myco/
 import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -64,12 +65,15 @@ function makeConfig(overrides: Partial<{ inject_on_pre_tool_use: boolean; min_fi
 }
 
 let tmpVault: string;
+let tmpProjectId: string;
 
 beforeEach(() => {
   closeDatabase();
   _resetPendingInjections();
   tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-inject-'));
   fs.mkdirSync(path.join(tmpVault, '.myco'), { recursive: true });
+  const manifest = ensureProjectManifest(path.join(tmpVault, '.myco'), { projectName: 'canopy-inject' });
+  tmpProjectId = manifest.project.id;
   initDatabase(path.join(tmpVault, '.myco', SQLITE_DB_FILE));
   createSchema(getDatabase(), 'local');
 });
@@ -167,7 +171,7 @@ describe('POST /canopy/inject — handler', () => {
   });
 
   it('returns small_file when entry size_bytes is below threshold', async () => {
-    const projectId = tmpVault;
+    const projectId = tmpProjectId;
     seed(projectId, [{ path: 'tiny.ts', size: 200 }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
@@ -181,7 +185,7 @@ describe('POST /canopy/inject — handler', () => {
   });
 
   it('injects when all gates pass and records pending injection tokens', async () => {
-    const projectId = tmpVault;
+    const projectId = tmpProjectId;
     seed(projectId, [
       {
         path: 'src/big.ts',
@@ -219,7 +223,7 @@ describe('POST /canopy/inject — handler', () => {
   });
 
   it('canonicalizes absolute file_path to repo-relative for lookup', async () => {
-    seed(tmpVault, [{ path: 'src/big.ts', size: 4096 }]);
+    seed(tmpProjectId, [{ path: 'src/big.ts', size: 4096 }]);
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
       vaultDir: path.join(tmpVault, '.myco'),
@@ -239,7 +243,7 @@ describe('POST /canopy/inject — handler', () => {
   });
 
   it('uses summary [meta] line when llm_description is populated', async () => {
-    seed(tmpVault, [
+    seed(tmpProjectId, [
       {
         path: 'src/big.ts',
         size: 4096,

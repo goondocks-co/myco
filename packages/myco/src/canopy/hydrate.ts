@@ -10,7 +10,7 @@
  * from the row instead of carrying it through the vector metadata.
  */
 
-import { getDatabase } from '../db/client.js';
+import { getDatabase, type Database } from '../db/client.js';
 
 /**
  * Parse the synthesized canopy record_id of the form `${project_id}:${path}`.
@@ -29,10 +29,10 @@ export function parseCanopyRecordId(id: string): { projectId: string; path: stri
  * return the row's `llm_description`. Returns null when the id is malformed
  * or the row is missing.
  */
-export function hydrateCanopyDescription(syntheticId: string): string | null {
+export function hydrateCanopyDescription(syntheticId: string, db: Database = getDatabase()): string | null {
   const parsed = parseCanopyRecordId(syntheticId);
   if (parsed === null) return null;
-  const row = getDatabase().prepare(
+  const row = db.prepare(
     `SELECT llm_description FROM canopy_entries WHERE project_id = ? AND path = ?`,
   ).get(parsed.projectId, parsed.path) as { llm_description: string | null } | undefined;
   return row?.llm_description ?? null;
@@ -48,7 +48,10 @@ export function hydrateCanopyDescription(syntheticId: string): string | null {
  * (or rows with NULL llm_description) are absent from the Map. Callers should
  * default missing keys to null.
  */
-export function hydrateCanopyDescriptionsBatch(ids: string[]): Map<string, string> {
+export function hydrateCanopyDescriptionsBatch(
+  ids: string[],
+  db: Database = getDatabase(),
+): Map<string, string> {
   if (ids.length === 0) return new Map();
   const parsed: Array<{ id: string; projectId: string; path: string }> = [];
   for (const id of ids) {
@@ -58,7 +61,7 @@ export function hydrateCanopyDescriptionsBatch(ids: string[]): Map<string, strin
   if (parsed.length === 0) return new Map();
   const placeholders = parsed.map(() => '(?, ?)').join(', ');
   const args = parsed.flatMap((p) => [p.projectId, p.path]);
-  const rows = getDatabase().prepare(
+  const rows = db.prepare(
     `SELECT project_id, path, llm_description
        FROM canopy_entries
       WHERE (project_id, path) IN (VALUES ${placeholders})`,

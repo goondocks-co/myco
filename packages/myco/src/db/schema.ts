@@ -5,7 +5,8 @@
  * for idempotency. Running `createSchema()` multiple times is always safe.
  *
  * Timestamp convention: all timestamps are INTEGER (Unix epoch seconds).
- * Content hashing: all `content_hash` columns are TEXT with UNIQUE constraint.
+ * Content hashing: all `content_hash` columns are TEXT. Project-scoped
+ * uniqueness, where required, is enforced by indexes in schema-ddl.ts.
  * Embedding dimensions: 1024 (bge-m3 default) -- used by external sqlite-vec store.
  *
  * Vector columns live in a separate sqlite-vec virtual table, not inline.
@@ -19,7 +20,7 @@ import { TABLE_DDLS, FTS_TABLES, SECONDARY_INDEXES } from './schema-ddl.js';
 import { MIGRATIONS } from './migrations.js';
 
 /** Current schema version -- fresh start for the SQLite era. */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 39;
 
 // Re-export for backwards compat (other modules import from schema.ts)
 export { DEFAULT_MACHINE_ID };

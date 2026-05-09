@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +23,8 @@ export interface AttachmentInsert {
   data?: Buffer;
   content_hash?: string;
   created_at: number;
+  /** Branded Grove project id this attachment belongs to. */
+  project_id: GroveProjectId;
 }
 
 /** Row shape returned from attachment queries (all columns, including BLOB). */
@@ -35,6 +38,7 @@ export interface AttachmentRow {
   data: Buffer | null;
   content_hash: string | null;
   created_at: number;
+  project_id: string | null;
 }
 
 /**
@@ -74,6 +78,7 @@ const ATTACHMENT_COLUMNS = [
   'data',
   'content_hash',
   'created_at',
+  'project_id',
 ] as const;
 
 /** Column list that omits the `data` BLOB — used by list queries to avoid loading megabytes of binary data. */
@@ -86,6 +91,7 @@ const ATTACHMENT_LIST_COLUMNS = [
   'description',
   'content_hash',
   'created_at',
+  'project_id',
 ] as const;
 
 const SELECT_COLUMNS = ATTACHMENT_COLUMNS.join(', ');
@@ -107,6 +113,7 @@ function toAttachmentBase(row: Record<string, unknown>): AttachmentListRow {
     description: (row.description as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
+    project_id: (row.project_id as string) ?? null,
     turn_number: extractTurnNumber(filePath),
   };
 }
@@ -127,6 +134,7 @@ function toAttachmentRow(row: Record<string, unknown>): AttachmentRow {
     description: (row.description as string) ?? null,
     content_hash: (row.content_hash as string) ?? null,
     created_at: row.created_at as number,
+    project_id: (row.project_id as string) ?? null,
     data,
   };
 }
@@ -153,7 +161,7 @@ export function insertAttachment(data: AttachmentInsert): AttachmentRow | undefi
 
   const info = db.prepare(
     `INSERT INTO attachments (${SELECT_COLUMNS})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO NOTHING`,
   ).run(
     data.id,
@@ -165,6 +173,7 @@ export function insertAttachment(data: AttachmentInsert): AttachmentRow | undefi
     data.data ?? null,
     data.content_hash ?? null,
     data.created_at,
+    data.project_id,
   );
 
   if (info.changes === 0) return undefined;

@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { ProviderType, ReasoningLevel, HarnessId } from '@myco/agent/types.js';
 import type { CostSource } from '@myco/agent/cost/types.js';
 
@@ -47,6 +48,7 @@ export const RESUME_STATUS_SESSION_EXPIRED = 'session_expired';
 
 export interface RunInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   task?: string | null;
   instruction?: string | null;
@@ -88,6 +90,7 @@ export interface RunInsert {
 
 export interface RunRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   task: string | null;
   instruction: string | null;
@@ -155,6 +158,7 @@ export interface RunUpdate {
 export interface ListRunsOptions {
   limit?: number;
   offset?: number;
+  scope: ProjectScope;
   agent_id?: string;
   status?: string;
   task?: string;
@@ -167,6 +171,7 @@ export interface ListRunsOptions {
 
 const RUN_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'task',
   'instruction',
@@ -256,6 +261,7 @@ function toReasoningLevelOrNull(value: unknown): ReasoningLevel | null {
 function toRunRow(row: Record<string, unknown>): RunRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     task: (row.task as string) ?? null,
     instruction: (row.instruction as string) ?? null,
@@ -291,6 +297,8 @@ function buildRunsWhere(
 ): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -380,7 +388,7 @@ export function insertRun(data: RunInsert): RunRow {
 
   db.prepare(
     `INSERT INTO agent_runs (
-       id, agent_id, task, instruction, status,
+       id, project_id, agent_id, task, instruction, status,
        harness, provider, model, session_ref, resumable,
        resume_status, resume_mode, resumed_at, checkpoints, usage_data,
        started_at, completed_at, tokens_used, cost_usd,
@@ -388,7 +396,7 @@ export function insertRun(data: RunInsert): RunRow {
        actions_taken, error, dry_run,
        reasoning_level, execution_overrides
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
@@ -398,6 +406,7 @@ export function insertRun(data: RunInsert): RunRow {
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.task ?? null,
     data.instruction ?? null,
@@ -427,18 +436,21 @@ export function insertRun(data: RunInsert): RunRow {
     serializeExecutionOverrides(data.executionOverrides),
   );
 
-  return getRun(data.id)!;
+  return getRun(data.id, { kind: 'all' })!;
 }
 
-export function getRun(id: string): RunRow | null {
+export function getRun(id: string, scope: ProjectScope): RunRow | null {
   const db = getDatabase();
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM agent_runs WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
 }
 
-export function listRuns(options: ListRunsOptions = {}): RunRow[] {
+export function listRuns(options: ListRunsOptions): RunRow[] {
   const db = getDatabase();
   const { where, params } = buildRunsWhere(options);
   const limit = options.limit ?? DEFAULT_LIST_LIMIT;
@@ -457,7 +469,7 @@ export function listRuns(options: ListRunsOptions = {}): RunRow[] {
 }
 
 export function countRuns(
-  options: Omit<ListRunsOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListRunsOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildRunsWhere(options);
@@ -472,111 +484,128 @@ export function countRuns(
  * changed rows. Use this in hot write paths (checkpoint persistence,
  * in-run cost updates) where the caller does not need the updated row.
  */
-export function applyRunUpdate(id: string, update: RunUpdate): number {
+export function applyRunUpdate(id: string, update: RunUpdate, scope: ProjectScope): number {
   const { setClauses, params } = buildUpdateClauses(update);
   if (setClauses.length === 0) return 0;
   params.push(id);
+  const conditions = ['id = ?'];
+  appendProjectCondition(conditions, params, scope);
   const info = getDatabase().prepare(
     `UPDATE agent_runs
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
   return info.changes;
 }
 
-export function updateRun(id: string, update: RunUpdate): RunRow | null {
+export function updateRun(id: string, update: RunUpdate, scope: ProjectScope): RunRow | null {
   const { setClauses } = buildUpdateClauses(update);
-  if (setClauses.length === 0) return getRun(id);
-  const changes = applyRunUpdate(id, update);
+  if (setClauses.length === 0) return getRun(id, scope);
+  const changes = applyRunUpdate(id, update, scope);
   if (changes === 0) return null;
-  return getRun(id);
+  return getRun(id, scope);
 }
 
 export function updateRunStatus(
   id: string,
   status: string,
-  completion?: RunUpdate,
+  completion: RunUpdate | undefined,
+  scope: ProjectScope,
 ): RunRow | null {
-  return updateRun(id, { status, ...completion });
+  return updateRun(id, { status, ...completion }, scope);
 }
 
-export function getRunningRun(agentId: string): RunRow | null {
+export function getRunningRun(agentId: string, scope: ProjectScope): RunRow | null {
   const db = getDatabase();
+  const conditions = ['agent_id = ?', 'status = ?'];
+  const params: unknown[] = [agentId, STATUS_RUNNING];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
-     WHERE agent_id = ? AND status = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY started_at DESC NULLS LAST
      LIMIT 1`,
-  ).get(agentId, STATUS_RUNNING) as Record<string, unknown> | undefined;
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
 }
 
 export function getRunningRunForTask(
   agentId: string,
   taskName: string,
+  scope: ProjectScope,
 ): string | null {
   const db = getDatabase();
+  const conditions = ['agent_id = ?', 'task = ?', 'status = ?'];
+  const params: unknown[] = [agentId, taskName, STATUS_RUNNING];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT id FROM agent_runs
-     WHERE agent_id = ? AND task = ? AND status = ?
+     WHERE ${conditions.join(' AND ')}
      LIMIT 1`,
-  ).get(agentId, taskName, STATUS_RUNNING) as { id: string } | undefined;
+  ).get(...params) as { id: string } | undefined;
   return row?.id ?? null;
 }
 
 export function getLatestRunId(
   agentId: string,
-  taskName?: string,
+  taskName: string | undefined,
+  scope: ProjectScope,
 ): string | null {
   const db = getDatabase();
-
+  const conditions = ['agent_id = ?'];
+  const params: unknown[] = [agentId];
   if (taskName) {
-    const row = db.prepare(
-      `SELECT id FROM agent_runs
-       WHERE agent_id = ? AND task = ?
-       ORDER BY started_at DESC
-       LIMIT 1`,
-    ).get(agentId, taskName) as { id: string } | undefined;
-    return row?.id ?? null;
+    conditions.push('task = ?');
+    params.push(taskName);
   }
+  appendProjectCondition(conditions, params, scope);
 
   const row = db.prepare(
     `SELECT id FROM agent_runs
-     WHERE agent_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY started_at DESC
      LIMIT 1`,
-  ).get(agentId) as { id: string } | undefined;
+  ).get(...params) as { id: string } | undefined;
   return row?.id ?? null;
 }
 
 export function getLatestResumableRunForTask(
   agentId: string,
   taskName: string,
+  scope: ProjectScope,
 ): RunRow | null {
   const db = getDatabase();
+  const conditions = [
+    'agent_id = ?',
+    'task = ?',
+    'resumable = 1',
+    'status = ?',
+  ];
+  const params: unknown[] = [agentId, taskName, STATUS_FAILED];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_runs
-     WHERE agent_id = ?
-       AND task = ?
-       AND resumable = 1
-       AND status = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY completed_at DESC NULLS LAST, started_at DESC NULLS LAST
      LIMIT 1`,
-  ).get(agentId, taskName, STATUS_FAILED) as Record<string, unknown> | undefined;
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? toRunRow(row) : null;
 }
 
-export function markRunningRunsInterrupted(message: string): number {
+export function markRunningRunsInterrupted(message: string, scope: ProjectScope): number {
   const db = getDatabase();
+  const conditions = ['status = ?'];
+  const params: unknown[] = [STATUS_RUNNING];
+  appendProjectCondition(conditions, params, scope);
   const info = db.prepare(
     `UPDATE agent_runs
      SET status = ?,
          resumable = 1,
          resume_status = ?,
          error = COALESCE(error, ?)
-     WHERE status = ?`,
-  ).run(STATUS_FAILED, RESUME_STATUS_READY, message, STATUS_RUNNING);
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(STATUS_FAILED, RESUME_STATUS_READY, message, ...params);
   return info.changes;
 }

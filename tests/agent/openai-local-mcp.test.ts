@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { createLocalVaultMcpServer } from '@myco/agent/harness/openai-local-mcp.js';
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 
 describe('createLocalVaultMcpServer', () => {
   it('exports JSON Schema for Anthropic SDK tools', async () => {
@@ -7,6 +8,7 @@ describe('createLocalVaultMcpServer', () => {
       agentId: 'agent-test',
       runId: 'run-test',
       toolNames: ['vault_create_spore'],
+      requestContext: TEST_REQUEST_CONTEXT,
     });
 
     const tools = await server.listTools();

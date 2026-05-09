@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -124,8 +125,9 @@ export function isCanopyRollupEmpty(rollup: CanopyRollup | null | undefined): bo
  * on the error path.
  */
 export function useSessionCanopy(sessionId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['session-canopy', sessionId]);
   return useQuery<SessionCanopyAggregate | null>({
-    queryKey: ['session-canopy', sessionId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJsonOrNullOn404<SessionCanopyAggregate>(`/sessions/${sessionId}/canopy`, signal),
     enabled: sessionId !== undefined,
@@ -140,8 +142,9 @@ export function useSessionCanopy(sessionId: string | undefined) {
 
 /** Fetches the lifetime Canopy rollup for the all-sessions surface. */
 export function useCanopyRollup() {
+  const queryKey = useProjectScopedQueryKey(['canopy-rollup']);
   return useQuery<CanopyRollup | null>({
-    queryKey: ['canopy-rollup'],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJsonOrNullOn404<CanopyRollup>('/canopy/rollup', signal),
     staleTime: ROLLUP_STALE_TIME,
@@ -229,19 +232,20 @@ function buildEntriesQueryString(args: CanopyEntriesQuery): string {
 
 /** Fetches the paginated list of canopy entries with optional filters. */
 export function useCanopyEntries(args: CanopyEntriesQuery) {
+  const queryKey = useProjectScopedQueryKey([
+    'canopy-entries',
+    args.limit ?? null,
+    args.offset ?? null,
+    args.language ?? null,
+    args.described ?? null,
+    args.embedded ?? null,
+    args.path_prefix ?? null,
+    args.q ?? null,
+    args.sort_by ?? null,
+    args.sort_dir ?? null,
+  ]);
   return useQuery<CanopyEntriesListResponse>({
-    queryKey: [
-      'canopy-entries',
-      args.limit ?? null,
-      args.offset ?? null,
-      args.language ?? null,
-      args.described ?? null,
-      args.embedded ?? null,
-      args.path_prefix ?? null,
-      args.q ?? null,
-      args.sort_by ?? null,
-      args.sort_dir ?? null,
-    ],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
     staleTime: ENTRIES_STALE_TIME,
@@ -254,8 +258,9 @@ export function useCanopyEntries(args: CanopyEntriesQuery) {
  * boundary.
  */
 export function useCanopyEntry(path: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['canopy-entry', path]);
   return useQuery<CanopyEntryRow | null>({
-    queryKey: ['canopy-entry', path],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJsonOrNullOn404<CanopyEntryRow>(`/canopy/entries/${encodeURIComponent(path ?? '')}`, signal),
     enabled: typeof path === 'string' && path.length > 0,
@@ -332,8 +337,9 @@ const MAP_STALE_TIME = 30_000;
 
 /** Fetches the rendered project map. */
 export function useCanopyMap() {
+  const queryKey = useProjectScopedQueryKey(['canopy-map']);
   return useQuery<CanopyMapResponse>({
-    queryKey: ['canopy-map'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<CanopyMapResponse>('/canopy/map', { signal }),
     staleTime: MAP_STALE_TIME,
   });
@@ -384,8 +390,9 @@ export function useCanopyInjectionBlob(
   sessionId: string | undefined,
   toolCallId: number | undefined,
 ) {
+  const queryKey = useProjectScopedQueryKey(['canopy-tool-call-blob', sessionId, toolCallId]);
   return useQuery<CanopyInjectionBlob | null>({
-    queryKey: ['canopy-tool-call-blob', sessionId, toolCallId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJsonOrNullOn404<CanopyInjectionBlob>(
         `/sessions/${sessionId}/canopy/tool-calls/${toolCallId}/blob`,

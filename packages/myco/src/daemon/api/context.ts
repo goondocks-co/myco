@@ -21,6 +21,7 @@ import {
 } from '@myco/context/cortex-brief.js';
 import { shouldInjectSessionStartDigest } from '@myco/context/session-start-digest.js';
 import { composeSessionStartContext } from '@myco/context/session-start-context.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getCortexInstructionsSnapshot } from '../cortex.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
@@ -86,10 +87,14 @@ export function createSessionContextHandler(deps: ContextDeps) {
         return { body: { text: '' } };
       }
 
+      const requestProjectId = req.requestContext?.projectId ?? null;
+      const requestScope: import('@myco/grove/ids.js').ProjectScope = requestProjectId
+        ? { kind: 'project', id: requestProjectId }
+        : { kind: 'global' };
       let sourceRunId: string | null = null;
       let cortexContent = '';
       if (cortexEnabled) {
-        const snapshot = getCortexInstructionsSnapshot(config);
+        const snapshot = getCortexInstructionsSnapshot(config, requestScope);
         if (snapshot.content) {
           cortexContent = snapshot.content;
           sourceRunId = snapshot.sourceRunId;
@@ -100,7 +105,7 @@ export function createSessionContextHandler(deps: ContextDeps) {
         }
       }
 
-      const composed = composeSessionStartContext(config, cortexContent);
+      const composed = composeSessionStartContext(config, cortexContent, requestScope);
       const textParts: string[] = composed.parts.map((p) => p.text);
       const sourceParts: string[] = composed.parts.map((p) =>
         p.kind === 'cortex' ? 'cortex' : `digest:${p.tier ?? config.cortex.digest.tier}`,
@@ -167,6 +172,8 @@ export function createResumeContextHandler(deps: ContextDeps) {
   return async function handleResumeContext(req: RouteRequest): Promise<RouteResponse> {
     const { session_id, parent_session_id, branch } = ResumeContextBody.parse(req.body);
     const { logger } = deps;
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const scope = projectScopeFromRequestContext(req.requestContext);
 
     logger.debug(LOG_KINDS.CONTEXT_QUERY, 'Resume context query', {
       session_id,
@@ -174,7 +181,7 @@ export function createResumeContextHandler(deps: ContextDeps) {
     });
 
     try {
-      const parentSession = parent_session_id ? getSession(parent_session_id) : null;
+      const parentSession = parent_session_id ? getSession(parent_session_id, scope) : null;
       const resolvedBranch = branch ?? parentSession?.branch ?? null;
       const parts: string[] = [];
 
@@ -245,6 +252,8 @@ export function createPromptContextHandler(deps: ContextDeps) {
     const { prompt, session_id } = PromptContextBody.parse(req.body);
     const { logger, liveConfig, embeddingManager } = deps;
     const config = liveConfig.current;
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const scope = projectScopeFromRequestContext(req.requestContext);
     if (!config.cortex.spores.inject_on_prompt_submit) {
       logger.debug(LOG_KINDS.CONTEXT_PROMPT, 'Prompt search disabled by config', { session_id });
       return { body: { text: '' } };
@@ -278,6 +287,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
       threshold: PROMPT_CONTEXT_MIN_SIMILARITY,
       filters: {
         status: 'active',
+        ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
       },
     });
 
@@ -299,7 +309,7 @@ export function createPromptContextHandler(deps: ContextDeps) {
     }
 
     const topResults = eligible.slice(0, maxSpores);
-    const hydrated = hydrateSearchResults(topResults);
+    const hydrated = hydrateSearchResults(topResults, { scope });
     const spores = hydrated.filter((r) => r.type === 'spore');
 
     if (spores.length === 0) return { body: { text: '' } };

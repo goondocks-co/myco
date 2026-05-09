@@ -149,12 +149,33 @@ export async function pullDlqMessages(
   };
   const messages: DlqMessage[] = (body.result?.messages ?? []).map((m) => ({
     msg_id: String(m.lease_id ?? ''),
-    body: (m.body ?? {}) as Record<string, unknown>,
+    // CF Queues pull-consumer returns body as a JSON string when the
+    // producer sent a JSON object — parse so the daemon UI's failed-
+    // sync rows can render `<table>/<id>` and `machine=<…>` instead of
+    // `?/?` `machine=?`.
+    body: parseBody(m.body),
     attempts: m.attempts ?? 0,
     last_failure: typeof m.metadata?.last_failure === 'string' ? m.metadata.last_failure : undefined,
     enqueued_at: typeof m.metadata?.enqueued_at === 'number' ? m.metadata.enqueued_at : undefined,
   }));
   return { messages, next_cursor: null };
+}
+
+function parseBody(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through to empty record below.
+    }
+  }
+  return {};
 }
 
 /** Re-publish DLQ messages back to the main sync queue. */

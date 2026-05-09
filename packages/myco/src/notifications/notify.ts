@@ -9,9 +9,51 @@
 import crypto from 'node:crypto';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getType } from './registry.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import type { NotificationMode, NotificationLevel, CreateNotificationPayload } from './types.js';
+
+/**
+ * Notification scope.
+ *
+ * `'project'` (default) writes a row tagged with the resolved project id —
+ * what every per-project subsystem (agent tasks, sessions, skills,
+ * mycelium) should use. `'daemon'` writes a row with `project_id = NULL`,
+ * intended for daemon-global events (auto-backup failure on a cold
+ * Grove, version-sync restart) that should appear regardless of which
+ * project the user happens to be viewing.
+ */
+export type NotifyScope = 'project' | 'daemon';
+
+/**
+ * In-memory dedup window. Daemon-global outages tend to fire the same
+ * cadence-driven notification on every PowerManager tick (e.g. an
+ * embedding provider that's been down for 20 minutes generates a
+ * notification per Grove per tick). Without a dedup window, the
+ * dashboard fills with duplicates and the user can't tell signal from
+ * repetition.
+ *
+ * Five minutes is short enough that a real recurring failure still
+ * produces fresh notifications a few times per hour, and long enough
+ * that a single tight tick burst collapses to one row.
+ *
+ * Keyed by (domain + type + project_id|'daemon'). Process-local on
+ * purpose: a daemon restart resets the window so a persistent failure
+ * surfaces once on every boot.
+ */
+const NOTIFY_DEDUP_WINDOW_MS = 5 * 60 * 1000;
+const lastNotifyAt = new Map<string, number>();
+
+function dedupKey(domain: string, type: string, projectId: string | null): string {
+  return `${domain}\x00${type}\x00${projectId ?? 'daemon'}`;
+}
+
+/** Test helper: clears the in-memory dedup window. */
+export function _clearNotifyDedupForTests(): void {
+  lastNotifyAt.clear();
+}
 
 /**
  * Emit a notification. Returns the notification ID if inserted,
@@ -19,14 +61,22 @@ import type { NotificationMode, NotificationLevel, CreateNotificationPayload } f
  *
  * Best-effort — catches and logs errors so callers don't need to handle failures.
  *
- * @param vaultDir — vault directory; pass undefined to no-op (avoids if-guards at call sites).
+ * @param vaultDir — vault directory used to load the merged config and
+ *   (for project scope) resolve a fallback project id; pass undefined to
+ *   no-op so call sites don't need if-guards.
  * @param payload — notification content.
  * @param config — pre-loaded merged config to avoid redundant disk reads.
+ * @param options — explicit `projectId` to skip context resolution, or
+ *   `scope: 'daemon'` to write a daemon-scope row (`project_id = NULL`).
  */
 export function notify(
   vaultDir: string | undefined,
   payload: CreateNotificationPayload,
   config?: MycoConfig,
+  options: {
+    projectId?: GroveProjectId;
+    scope?: NotifyScope;
+  } = {},
 ): string | null {
   if (!vaultDir) return null;
 
@@ -50,6 +100,26 @@ export function notify(
       ?? registeredType?.type.defaultLevel
       ?? 'info';
 
+    // Daemon scope writes project_id = NULL; project scope (default)
+    // uses the explicit override or falls back to the request context
+    // resolved from the vault dir.
+    const projectId: GroveProjectId | null = options.scope === 'daemon'
+      ? null
+      : options.projectId ?? resolveRequestContextForVault(vaultDir).projectId;
+
+    // Dedup-window suppress: the same (domain, type, project) within
+    // NOTIFY_DEDUP_WINDOW_MS is treated as a single event. Prevents
+    // cadence-driven failure notifications from spamming the dashboard
+    // on every tick. Cleanup happens lazily — entries older than the
+    // window are dropped when their key is touched again.
+    const key = dedupKey(payload.domain, payload.type, projectId);
+    const now = Date.now();
+    const last = lastNotifyAt.get(key);
+    if (last !== undefined && now - last < NOTIFY_DEDUP_WINDOW_MS) {
+      return null;
+    }
+    lastNotifyAt.set(key, now);
+
     const id = crypto.randomUUID();
 
     insertNotification({
@@ -62,6 +132,7 @@ export function notify(
       mode,
       link: payload.link ?? null,
       metadata: payload.metadata ? JSON.stringify(payload.metadata) : null,
+      project_id: projectId,
     });
 
     return id;

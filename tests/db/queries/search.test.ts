@@ -19,6 +19,7 @@ import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import type { BatchInsert } from '@myco/db/queries/batches.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,7 +90,7 @@ describe('fullTextSearch', () => {
       prompt_number: 2,
     }));
 
-    const results = fullTextSearch('pgvector');
+    const results = fullTextSearch('pgvector', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     const batchResult = results.find((r) => r.type === 'prompt_batch');
@@ -103,7 +104,7 @@ describe('fullTextSearch', () => {
       prompt_number: 1,
     }));
 
-    const results = fullTextSearch('zzznomatchzzzxxx');
+    const results = fullTextSearch('zzznomatchzzzxxx', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results).toEqual([]);
   });
@@ -118,7 +119,7 @@ describe('fullTextSearch', () => {
       tool_input: 'some file content',
     }));
 
-    const results = fullTextSearch('WebSearch');
+    const results = fullTextSearch('WebSearch', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     const activityResult = results.find((r) => r.type === 'activity');
@@ -132,7 +133,7 @@ describe('fullTextSearch', () => {
       tool_input: 'npx vitest run tests/search',
     }));
 
-    const results = fullTextSearch('vitest');
+    const results = fullTextSearch('vitest', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].type).toBe('activity');
@@ -144,7 +145,7 @@ describe('fullTextSearch', () => {
       file_path: 'searchbar',
     }));
 
-    const results = fullTextSearch('searchbar');
+    const results = fullTextSearch('searchbar', { scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].type).toBe('activity');
@@ -159,14 +160,30 @@ describe('fullTextSearch', () => {
       }));
     }
 
-    const results = fullTextSearch('refactor', { limit: 2 });
+    const results = fullTextSearch('refactor', { limit: 2, scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeLessThanOrEqual(2);
   });
 
+  it('filters FTS results by project_id across batches and activities', () => {
+    const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
+    const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
+    upsertSession(sessionA);
+    upsertSession(sessionB);
+    insertBatch(makeBatch(sessionA.id, { user_prompt: 'shared needle from batch a' }));
+    insertBatch(makeBatch(sessionB.id, { user_prompt: 'shared needle from batch b' }));
+    insertActivity(makeActivity(sessionA.id, { tool_name: 'Read', tool_input: 'shared needle from activity a' }));
+    insertActivity(makeActivity(sessionB.id, { tool_name: 'Read', tool_input: 'shared needle from activity b' }));
+
+    const results = fullTextSearch('needle',{ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)});
+
+    expect(results).toHaveLength(2);
+    expect(results.every((result) => result.preview.includes('activity a') || result.preview.includes('batch a'))).toBe(true);
+  });
+
   it('returns empty array when tables have no FTS data', () => {
     // Insert session but no batches or activities
-    const results = fullTextSearch('anything');
+    const results = fullTextSearch('anything', { scope: ALL_PROJECTS_SCOPE });
     expect(results).toEqual([]);
   });
 });
@@ -206,7 +223,7 @@ describe('hydrateSearchResults', () => {
 
   it('hydrates canopy_entries vector hits using the synthesized id', () => {
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'packages/myco/src/canopy/scanner/index.ts',
       llm_description: 'Walks the project tree to harvest canopy entries.',
       language: 'typescript',
@@ -214,24 +231,24 @@ describe('hydrateSearchResults', () => {
 
     const vectorResults: VectorSearchResult[] = [
       {
-        id: 'proj-1:packages/myco/src/canopy/scanner/index.ts',
+        id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:packages/myco/src/canopy/scanner/index.ts',
         namespace: 'canopy_entries',
         similarity: 0.91,
         metadata: {},
       },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
 
     expect(hydrated).toHaveLength(1);
     const hit = hydrated[0];
     expect(hit.type).toBe('canopy');
-    expect(hit.id).toBe('proj-1:packages/myco/src/canopy/scanner/index.ts');
+    expect(hit.id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:packages/myco/src/canopy/scanner/index.ts');
     expect(hit.title).toBe('packages/myco/src/canopy/scanner/index.ts');
     expect(hit.preview).toBe('Walks the project tree to harvest canopy entries.');
     expect(hit.score).toBeCloseTo(0.91, 5);
     expect(hit.path).toBe('packages/myco/src/canopy/scanner/index.ts');
-    expect(hit.project_id).toBe('proj-1');
+    expect(hit.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect(hit.language).toBe('typescript');
     expect(hit.llm_description).toBe('Walks the project tree to harvest canopy entries.');
   });
@@ -241,7 +258,7 @@ describe('hydrateSearchResults', () => {
     upsertSession(session);
 
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'src/foo.ts',
       llm_description: 'Foo module description.',
       language: 'typescript',
@@ -255,14 +272,14 @@ describe('hydrateSearchResults', () => {
         metadata: {},
       },
       {
-        id: 'proj-1:src/foo.ts',
+        id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/foo.ts',
         namespace: 'canopy_entries',
         similarity: 0.72,
         metadata: {},
       },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
 
     expect(hydrated).toHaveLength(2);
     const types = hydrated.map((r) => r.type).sort();
@@ -275,7 +292,7 @@ describe('hydrateSearchResults', () => {
 
   it('drops malformed canopy ids without throwing', () => {
     insertCanopyEntry({
-      project_id: 'proj-1',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       path: 'src/foo.ts',
       llm_description: 'Real row.',
       language: 'typescript',
@@ -285,11 +302,56 @@ describe('hydrateSearchResults', () => {
       // Missing colon — malformed
       { id: 'no-colon-here', namespace: 'canopy_entries', similarity: 0.9, metadata: {} },
       // Real id
-      { id: 'proj-1:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
+      { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/foo.ts', namespace: 'canopy_entries', similarity: 0.8, metadata: {} },
     ];
 
-    const hydrated = hydrateSearchResults(vectorResults);
+    const hydrated = hydrateSearchResults(vectorResults, { scope: ALL_PROJECTS_SCOPE });
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0].path).toBe('src/foo.ts');
+  });
+
+  it('filters hydrated vector hits by project_id', () => {
+    const sessionA = makeSession({ id: 'sess-vector-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', title: 'A session' });
+    const sessionB = makeSession({ id: 'sess-vector-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', title: 'B session' });
+    upsertSession(sessionA);
+    upsertSession(sessionB);
+    insertCanopyEntry({
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      path: 'src/a.ts',
+      llm_description: 'Project A file.',
+    });
+    insertCanopyEntry({
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      path: 'src/b.ts',
+      llm_description: 'Project B file.',
+    });
+
+    const hydrated = hydrateSearchResults([
+      { id: sessionA.id, namespace: 'sessions', similarity: 0.9, metadata: {} },
+      { id: sessionB.id, namespace: 'sessions', similarity: 0.8, metadata: {} },
+      { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts', namespace: 'canopy_entries', similarity: 0.7, metadata: {} },
+      { id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:src/b.ts', namespace: 'canopy_entries', similarity: 0.6, metadata: {} },
+    ],{ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)});
+
+    expect(hydrated.map((result) => result.id)).toEqual([sessionA.id, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:src/a.ts']);
+  });
+
+  it('keeps canopy vector hits broad for legacy null project scope', () => {
+    insertCanopyEntry({
+      project_id: 'legacy-canopy-project',
+      path: 'src/legacy.ts',
+      llm_description: 'Legacy-context canopy file.',
+    });
+
+    const hydrated = hydrateSearchResults([
+      {
+        id: 'legacy-canopy-project:src/legacy.ts',
+        namespace: 'canopy_entries',
+        similarity: 0.9,
+        metadata: {},
+      },
+    ],{ scope: ALL_PROJECTS_SCOPE});
+
+    expect(hydrated.map((result) => result.id)).toEqual(['legacy-canopy-project:src/legacy.ts']);
   });
 });

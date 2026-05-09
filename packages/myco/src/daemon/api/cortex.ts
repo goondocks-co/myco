@@ -30,8 +30,11 @@ const PromptBuilderStatusParams = z.object({
 });
 
 export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
-  async function handleGetInstructions(): Promise<RouteResponse> {
-    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current);
+  async function handleGetInstructions(req: RouteRequest): Promise<RouteResponse> {
+    const scope: import('@myco/grove/ids.js').ProjectScope = req.requestContext?.projectId
+      ? { kind: 'project', id: req.requestContext.projectId }
+      : { kind: 'global' };
+    const snapshot = getCortexInstructionsSnapshot(deps.liveConfig.current, scope);
     return { body: snapshot };
   }
 
@@ -81,7 +84,10 @@ export function createCortexHandlers(vaultDir: string, deps: CortexDeps) {
 
   async function handleGetPromptResult(req: RouteRequest): Promise<RouteResponse> {
     const { runId } = PromptBuilderStatusParams.parse(req.params);
-    const result = getCortexPromptResult(runId);
+    const promptScope: import('@myco/grove/ids.js').ProjectScope = req.requestContext?.projectId
+      ? { kind: 'project', id: req.requestContext.projectId }
+      : { kind: 'global' };
+    const result = getCortexPromptResult(runId, promptScope);
     if (!result) {
       return { status: 404, body: errorBody('run-not-found', 'Run not found') };
     }

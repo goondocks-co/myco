@@ -10,6 +10,7 @@ import { epochSeconds } from '@myco/constants.js';
 import { getTeamMachineId, isTeamSyncEnabled } from '@myco/daemon/team-context.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,6 +34,7 @@ export interface PlanInsert {
   id: string;
   logical_key: string;
   created_at: number;
+  project_id?: string | null;
   status?: string;
   author?: string | null;
   title?: string | null;
@@ -50,6 +52,7 @@ export interface PlanInsert {
 /** Row shape returned from plan queries. */
 export interface PlanRow {
   id: string;
+  project_id: string | null;
   logical_key: string;
   status: string;
   author: string | null;
@@ -70,6 +73,7 @@ export interface PlanRow {
 
 /** Filter options for `listPlans`. */
 export interface ListPlansOptions {
+  scope: ProjectScope;
   status?: string;
   limit?: number;
 }
@@ -80,6 +84,7 @@ export interface ListPlansOptions {
 
 const PLAN_COLUMNS = [
   'id',
+  'project_id',
   'logical_key',
   'status',
   'author',
@@ -108,6 +113,7 @@ const SELECT_COLUMNS = PLAN_COLUMNS.join(', ');
 function toPlanRow(row: Record<string, unknown>): PlanRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     logical_key: row.logical_key as string,
     status: row.status as string,
     author: (row.author as string) ?? null,
@@ -138,36 +144,67 @@ function toPlanRow(row: Record<string, unknown>): PlanRow {
  */
 export function upsertPlan(data: PlanInsert): PlanRow {
   const db = getDatabase();
+  const scope: ProjectScope = data.project_id == null
+    ? { kind: 'global' }
+    : { kind: 'project', id: data.project_id as import('@myco/grove/ids.js').GroveProjectId };
+  const existing = getPlanByLogicalKey(data.logical_key, scope);
+
+  if (existing) {
+    db.prepare(
+      `UPDATE plans
+          SET id              = ?,
+              status          = ?,
+              author          = ?,
+              title           = ?,
+              content         = ?,
+              source_path     = ?,
+              tags            = ?,
+              session_id      = ?,
+              prompt_batch_id = ?,
+              content_hash    = ?,
+              processed       = ?,
+              updated_at      = ?,
+              embedded        = CASE
+                WHEN ? != content_hash THEN 0
+                ELSE embedded
+              END
+        WHERE id = ?`,
+    ).run(
+      data.id,
+      data.status ?? DEFAULT_STATUS,
+      data.author ?? null,
+      data.title ?? null,
+      data.content ?? null,
+      data.source_path ?? null,
+      data.tags ?? null,
+      data.session_id ?? null,
+      data.prompt_batch_id ?? null,
+      data.content_hash ?? null,
+      data.processed ?? DEFAULT_PROCESSED,
+      data.updated_at ?? null,
+      data.content_hash ?? null,
+      existing.id,
+    );
+
+    const row = getPlan(data.id, scope);
+    if (!row) throw new Error(`Plan upsert failed for logical key: ${data.logical_key}`);
+    syncRow('plans', row);
+    return row;
+  }
 
   db.prepare(
     `INSERT INTO plans (
-       id, logical_key, status, author, title, content,
+       id, project_id, logical_key, status, author, title, content,
        source_path, tags, session_id, prompt_batch_id, content_hash,
        processed, created_at, updated_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?, ?
-     )
-     ON CONFLICT (logical_key) DO UPDATE SET
-       id              = EXCLUDED.id,
-       status          = EXCLUDED.status,
-       author          = EXCLUDED.author,
-       title           = EXCLUDED.title,
-       content         = EXCLUDED.content,
-       source_path     = EXCLUDED.source_path,
-       tags            = EXCLUDED.tags,
-       session_id      = EXCLUDED.session_id,
-       prompt_batch_id = EXCLUDED.prompt_batch_id,
-       content_hash    = EXCLUDED.content_hash,
-       processed       = EXCLUDED.processed,
-       updated_at      = EXCLUDED.updated_at,
-       embedded        = CASE
-         WHEN EXCLUDED.content_hash != plans.content_hash THEN 0
-         ELSE plans.embedded
-       END`,
+     )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.logical_key,
     data.status ?? DEFAULT_STATUS,
     data.author ?? null,
@@ -185,7 +222,7 @@ export function upsertPlan(data: PlanInsert): PlanRow {
   );
 
   const row = toPlanRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`).get(data.logical_key) as Record<string, unknown>,
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`).get(data.id) as Record<string, unknown>,
   );
 
   syncRow('plans', row);
@@ -198,13 +235,14 @@ export function upsertPlan(data: PlanInsert): PlanRow {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlan(id: string): PlanRow | null {
+export function getPlan(id: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM plans WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
-
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toPlanRow(row);
 }
@@ -214,13 +252,14 @@ export function getPlan(id: string): PlanRow | null {
  *
  * @returns the plan row, or null if not found.
  */
-export function getPlanByLogicalKey(logicalKey: string): PlanRow | null {
+export function getPlanByLogicalKey(logicalKey: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-
+  const conditions = ['logical_key = ?'];
+  const params: unknown[] = [logicalKey];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM plans WHERE logical_key = ?`,
-  ).get(logicalKey) as Record<string, unknown> | undefined;
-
+    `SELECT ${SELECT_COLUMNS} FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toPlanRow(row);
 }
@@ -230,12 +269,17 @@ export function getPlanByLogicalKey(logicalKey: string): PlanRow | null {
  *
  * @returns the deleted plan row, or null if not found.
  */
-export function deletePlan(id: string): PlanRow | null {
+export function deletePlan(id: string, scope: ProjectScope): PlanRow | null {
   const db = getDatabase();
-  const row = getPlan(id);
+  const row = getPlan(id, scope);
   if (!row) return null;
 
-  const info = db.prepare(`DELETE FROM plans WHERE id = ?`).run(id);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(
+    `DELETE FROM plans WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
   if (info.changes === 0) return null;
 
   if (isTeamSyncEnabled()) {
@@ -245,6 +289,7 @@ export function deletePlan(id: string): PlanRow | null {
       operation: 'delete',
       payload: JSON.stringify({
         id: row.id,
+        project_id: row.project_id,
         logical_key: row.logical_key,
         title: row.title,
       }),
@@ -260,12 +305,14 @@ export function deletePlan(id: string): PlanRow | null {
  * List plans with optional filters, ordered by created_at DESC.
  */
 export function listPlans(
-  options: ListPlansOptions = {},
+  options: ListPlansOptions,
 ): PlanRow[] {
   const db = getDatabase();
 
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.status !== undefined) {
     conditions.push(`status = ?`);
@@ -291,15 +338,18 @@ export function listPlans(
 /**
  * List all plans associated with a specific session, ordered by created_at DESC.
  */
-export function listPlansBySession(sessionId: string): PlanRow[] {
+export function listPlansBySession(sessionId: string, scope: ProjectScope): PlanRow[] {
   const db = getDatabase();
+  const conditions = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM plans
-     WHERE session_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY created_at DESC`,
-  ).all(sessionId) as Record<string, unknown>[];
+  ).all(...params) as Record<string, unknown>[];
 
   return rows.map(toPlanRow);
 }

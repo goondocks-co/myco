@@ -8,6 +8,7 @@ import { getDatabase } from '@myco/db/client.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 describe('TranscriptMiner.reconcileBatchKinds', () => {
   let tmpDir: string;
@@ -39,7 +40,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const { batchId: secondId } = handleUserPrompt('s-reconcile', 'steering nudge', { kind: 'initial' });
 
     // Verify the starting state: both batches are kind='initial'
-    const before = listBatchesBySession('s-reconcile');
+    const before = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(before).toHaveLength(2);
     expect(before[0].kind).toBe('initial');
     expect(before[1].kind).toBe('initial');
@@ -64,7 +65,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     expect(result.reclassified).toBeGreaterThanOrEqual(1);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     const first = after.find((b) => b.id === firstId)!;
     const second = after.find((b) => b.id === secondId)!;
 
@@ -96,7 +97,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     });
 
     expect(result.reclassified).toBe(0);
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     // The steering batch should still have the correct parent
     const steering = after.find((b) => b.kind === 'steering')!;
     expect(steering.parent_prompt_batch_id).toBe(parentId);
@@ -150,7 +151,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     // listBatchesBySession orders by prompt_number; reconciliation must
     // renumber so recovered prompts land in transcript order, not MAX+1.
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(4);
     expect(after.map((b) => b.user_prompt)).toEqual([
       'captured prompt',
@@ -190,7 +191,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(second.inserted).toBe(0);
     expect(second.reclassified).toBe(0);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(2);
     expect(after.map((b) => b.user_prompt)).toEqual(['captured', 'missed steering']);
   });
@@ -221,7 +222,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     const second = miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
     expect(second.inserted).toBe(1);
-    const batches = listBatchesBySession('s-reconcile');
+    const batches = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(batches.map((b) => b.user_prompt)).toEqual(['first', 'second']);
   });
 
@@ -241,7 +242,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     const result = miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
     // The walker saw exactly one prompt ("post-rotation"); the original
     // "pre-rotation" batch becomes a stranded DB row (reported in errors).
-    const batches = listBatchesBySession('s-reconcile');
+    const batches = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     const prompts = batches.map((b) => b.user_prompt);
     expect(prompts).toContain('pre-rotation');
     expect(prompts).toContain('post-rotation');
@@ -295,7 +296,7 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
     expect(result.inserted).toBe(0);
     expect(result.errors).toEqual([]);
 
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after).toHaveLength(1);
     expect(after[0].user_prompt).toContain('/simplify Okay.');
     expect(after[0].user_prompt).not.toContain('<command-message>');
@@ -319,7 +320,77 @@ describe('TranscriptMiner.reconcileBatchKinds', () => {
 
     expect(result.inserted).toBe(2);
     expect(result.reclassified).toBe(0);
-    const after = listBatchesBySession('s-reconcile');
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
     expect(after.map((b) => b.user_prompt)).toEqual(['first', 'second']);
+  });
+
+  // K6 — renumber must preserve prompt_numbers of stranded batches.
+  // A "stranded" batch is one whose transcript peer was suppressed by a
+  // capture.rules `drop` decision (e.g. Claude Code <command-message>
+  // slash-command dispatch envelope, where the live UserPromptSubmit hook
+  // captured the raw `/name args` text upstream). The reconciler walks
+  // post-drop transcript records, which DON'T include the dropped peer,
+  // so the stranded batch must keep its existing prompt_number and the
+  // walker must skip that slot when assigning new numbers.
+  it('renumber: stranded batch retains its prompt_number; walker skips that slot', () => {
+    // Live hook captures the slash-command BEFORE Claude Code wraps it.
+    // This batch will be "stranded" because its transcript peer (the
+    // <command-message> envelope) is dropped by the manifest rule.
+    const { batchId: strandedId } = handleUserPrompt(
+      's-reconcile',
+      '/compound-engineering:ce-review review the diff',
+      { kind: 'initial' },
+    );
+    const db = getDatabase();
+    db.prepare(`UPDATE prompt_batches SET ended_at = ? WHERE id = ?`).run(nowSec(), strandedId);
+
+    // Transcript contains the dispatch envelope (will be dropped) and a
+    // following <task-notification> (passes through, classified system).
+    const events = [
+      // The dispatch envelope: user-role with content as a STRING starting
+      // with <command-message> — dropped by manifest rule.
+      {
+        type: 'user',
+        promptId: 'dispatch',
+        message: {
+          role: 'user',
+          content:
+            '<command-message>compound-engineering:ce-review</command-message>\n'
+            + '<command-name>/compound-engineering:ce-review</command-name>\n'
+            + '<command-args>review the diff</command-args>',
+        },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+      // System-injected <task-notification> — passes through, gets origin=system.
+      {
+        type: 'user',
+        promptId: 'tn1',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n</task-notification>' }],
+        },
+      },
+      { type: 'assistant', message: { stop_reason: 'end_turn' } },
+    ];
+    fs.writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    const miner = new TranscriptMiner();
+    miner.reconcileBatchKinds('s-reconcile', { agent: 'claude-code', transcriptPath });
+
+    const after = listBatchesBySession('s-reconcile', { scope: ALL_PROJECTS_SCOPE });
+    expect(after).toHaveLength(2);
+    const stranded = after.find((b) => b.id === strandedId)!;
+    const taskNotif = after.find((b) => b.id !== strandedId)!;
+
+    // Stranded batch keeps its original prompt_number=1.
+    expect(stranded.prompt_number).toBe(1);
+    expect(stranded.user_prompt).toContain('/compound-engineering:ce-review');
+    // Task-notification batch must NOT collide with prompt_number=1; it
+    // gets the next available slot.
+    expect(taskNotif.prompt_number).toBe(2);
+    expect(taskNotif.user_prompt).toContain('<task-notification>');
+    // Sanity: no two batches share a prompt_number.
+    const numbers = after.map((b) => b.prompt_number).sort();
+    expect(new Set(numbers).size).toBe(numbers.length);
   });
 });

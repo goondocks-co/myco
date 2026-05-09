@@ -29,6 +29,7 @@ import {
 } from '@myco/daemon/plan-capture.js';
 import { buildPathPlanLogicalKey } from '@myco/plans/identity.js';
 import type { Logger } from '@myco/daemon/logger.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -311,7 +312,7 @@ describe('capturePlan', () => {
       sessionId,
     });
 
-    const stored = getPlan(result.id);
+    const stored = getPlan(result.id, ALL_PROJECTS_SCOPE);
     expect(stored).not.toBeNull();
     expect(stored!.id).toBe(result.id);
     expect(stored!.title).toBe('Q1 Plan');
@@ -329,7 +330,7 @@ describe('capturePlan', () => {
       sessionId,
     });
 
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans.length).toBe(1);
     expect(plans[0].session_id).toBe(sessionId);
   });
@@ -358,7 +359,7 @@ describe('capturePlan', () => {
     expect(second.id).toBe(first.id);
 
     // Content is updated
-    const stored = getPlan(first.id);
+    const stored = getPlan(first.id, ALL_PROJECTS_SCOPE);
     expect(stored!.content).toBe('# Sprint\n\nUpdated content.');
   });
 
@@ -456,6 +457,38 @@ describe('capturePlan', () => {
     });
 
     expect(result.prompt_batch_id).toBe(batch.id);
+  });
+
+  it('stores Grove project scope for captured file plans and transcript tags', () => {
+    const sessionId = 'test-capture-plan-project';
+    const now = epochNow();
+    const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId;
+
+    upsertSession({
+      id: sessionId,
+      project_id: projectId,
+      agent: 'claude-code',
+      started_at: now,
+      created_at: now,
+    });
+
+    const filePlan = capturePlan({
+      sourcePath: '/home/user/myproject/docs/plans/scoped.md',
+      content: '# Scoped Plan\n\nContent.',
+      sessionId,
+      projectId,
+    });
+    const taggedPlan = captureTaggedPlan({
+      tag: 'proposed_plan',
+      content: 'Tag content.',
+      sessionId,
+      projectId,
+    });
+
+    expect(filePlan.project_id).toBe(projectId);
+    expect(taggedPlan.project_id).toBe(projectId);
+    expect(getPlan(filePlan.id, projectScope(projectId))?.project_id).toBe(projectId);
+    expect(getPlan(taggedPlan.id, projectScope(projectId))?.project_id).toBe(projectId);
   });
 
   it('falls back to filename as title when no heading present', () => {

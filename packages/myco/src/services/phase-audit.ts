@@ -46,6 +46,7 @@ import { getRun } from '@myco/db/queries/runs.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listWriteIntentTools } from '@myco/db/queries/write-intents.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 import { parseCheckpointState } from '@myco/agent/executor-state.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
 import { tryParseJson } from '@myco/utils/json.js';
@@ -247,8 +248,8 @@ function serializeReports(reports: ReportRow[]) {
  *
  * Returns null if the run does not exist.
  */
-export function buildPhaseAudit(runId: string): PhaseAudit | null {
-  const run = getRun(runId);
+export function buildPhaseAudit(runId: string, scope: ProjectScope): PhaseAudit | null {
+  const run = getRun(runId, scope);
   if (!run) return null;
 
   // `toRunRow` coerces dry_run to a real boolean (see db/queries/runs.ts)
@@ -287,15 +288,15 @@ export function buildPhaseAudit(runId: string): PhaseAudit | null {
   }
 
   // --- Load supporting tables ---
-  const reports = listReports(runId);
-  const turns = listTurnsByRun(runId);
+  const reports = listReports(runId, { scope });
+  const turns = listTurnsByRun(runId, { scope });
   const [toolCalls, toolErrors] = aggregateTurnCounts(turns);
   const serializedReports = serializeReports(reports);
 
   // Write intents (only loaded for dry runs)
   let intentSummary: WriteIntentSummary | null = null;
   if (dryRun) {
-    const intents = listWriteIntentTools(runId);
+    const intents = listWriteIntentTools(runId, scope);
     intentSummary = aggregateWriteIntents(intents);
   }
 

@@ -1,4 +1,4 @@
-import { DaemonClient, isIgnoredEventResponse } from './client.js';
+import { createHookDaemonClient, isIgnoredEventResponse } from './client.js';
 import { readHookInput } from './input.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
@@ -27,7 +27,7 @@ export async function main() {
       transcriptMeta: transcriptMeta ?? undefined,
     });
 
-    const client = new DaemonClient(VAULT_DIR);
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
     // Await health so context injection on the first prompt after a reboot
     // actually gets a response; falls back to the buffer path on timeout.
     await client.ensureRunning();

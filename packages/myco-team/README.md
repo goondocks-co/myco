@@ -1,6 +1,11 @@
 # @goondocks/myco-team
 
 `@goondocks/myco-team` manages a Myco Team Sync deployment from the terminal.
+Installs require a Grove-bound Myco project, and the deployment is attached to
+the current Grove rather than one project-local vault. New installs name
+Cloudflare resources from the Grove slug, for example
+`myco-team-myco-dogfood-1a2b3c4d`, so the worker, D1 database, Vectorize index,
+KV namespace, and queues are recognizable in Cloudflare.
 
 Install it to provision or administer a team worker:
 
@@ -20,7 +25,7 @@ Team operators need this package; teammates who only *connect* to an existing te
 ## Common commands
 
 ```bash
-myco-team install /path/to/project/.myco
+myco-team install /path/to/grove-bound-project
 myco-team status
 myco-team rotate-tokens api
 myco-team rotate-tokens mcp

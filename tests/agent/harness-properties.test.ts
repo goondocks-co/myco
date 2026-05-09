@@ -20,6 +20,7 @@ import { resolveDefinitionsDir } from '@myco/agent/loader.js';
 import { computeWaves } from '@myco/agent/wave-computation.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 const TEST_AGENT_ID = 'test-agent-props';
 const TEST_RUN_ID = 'run-props-001';
 
@@ -37,7 +38,7 @@ describe('harness properties', () => {
   );
 
   // Create tools once — reused across annotation and YAML validation tests
-  const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+  const tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
   const toolNameSet = new Set(tools.map(t => t.name));
 
   // ---------------------------------------------------------------------------

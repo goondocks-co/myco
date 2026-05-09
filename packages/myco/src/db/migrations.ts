@@ -10,8 +10,14 @@ import type { Database } from 'bun:sqlite';
 import { epochSeconds, DEFAULT_MACHINE_ID } from '@myco/constants.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import {
+  SESSIONS_TABLE,
+  PROMPT_BATCHES_TABLE,
+  ACTIVITIES_TABLE,
   LOG_ENTRIES_TABLE,
   TEAM_OUTBOX_TABLE,
+  SPORES_TABLE,
+  ENTITIES_TABLE,
+  DIGEST_EXTRACTS_TABLE,
   SKILL_CANDIDATES_TABLE,
   SKILL_RECORDS_TABLE,
   SKILL_LINEAGE_TABLE,
@@ -26,6 +32,13 @@ import {
   CANOPY_SESSION_COLUMNS,
   CANOPY_ACTIVITY_COLUMN,
   CANOPY_INDEX_DDLS,
+  MIGRATION_IMPORT_JOURNAL_TABLE,
+  MIGRATION_IMPORT_JOURNAL_INDEX_DDLS,
+  GROVE_PROJECT_SCOPED_TABLES,
+  PLAN_LOGICAL_KEY_INDEX_DDLS,
+  TABLE_DDLS,
+  FTS_TABLES,
+  SECONDARY_INDEXES,
 } from './schema-ddl.js';
 import {
   buildPlanId,
@@ -71,6 +84,15 @@ export const MIGRATIONS: Migration[] = [
   { version: 28, migrate: (db) => migrateV27ToV28(db) },
   { version: 29, migrate: (db) => migrateV28ToV29(db) },
   { version: 30, migrate: (db) => migrateV29ToV30(db) },
+  { version: 31, migrate: (db) => migrateV30ToV31(db) },
+  { version: 32, migrate: (db) => migrateV31ToV32(db) },
+  { version: 33, migrate: (db) => migrateV32ToV33(db) },
+  { version: 34, migrate: (db) => migrateV33ToV34(db) },
+  { version: 35, migrate: (db) => migrateV34ToV35(db) },
+  { version: 36, migrate: (db) => migrateV35ToV36(db) },
+  { version: 37, migrate: (db) => migrateV36ToV37(db) },
+  { version: 38, migrate: (db) => migrateV37ToV38(db) },
+  { version: 39, migrate: (db) => migrateV38ToV39(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1721,6 +1743,667 @@ function migrateV29ToV30(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(30, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 31 adds the Grove import mapping journal used by the schema-reset
+ * importer to rekey legacy project-local rows into Grove-era rows while
+ * preserving an auditable old-id -> new-id mapping.
+ */
+function migrateV30ToV31(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(MIGRATION_IMPORT_JOURNAL_TABLE).run();
+    for (const ddl of MIGRATION_IMPORT_JOURNAL_INDEX_DDLS) {
+      db.prepare(ddl).run();
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(31, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 32 adds explicit project_id scope columns to active project-scoped
+ * Grove-era tables. The columns are nullable during the migration runway so
+ * existing project-local runtime writes keep working until request-context
+ * routing and importer activation start populating them.
+ */
+function migrateV31ToV32(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+      if (!tableExists(db, table)) continue;
+      const cols = getTableColumnSet(db, table);
+      if (!cols.has('project_id')) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`).run();
+      }
+    }
+
+    for (const table of GROVE_PROJECT_SCOPED_TABLES) {
+      if (!tableExists(db, table)) continue;
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_${table}_project_id ON ${table} (project_id)`).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(32, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 33 replaces the pre-Grove global plan logical-key uniqueness with
+ * project-aware uniqueness. Legacy project-local rows still have NULL
+ * project_id during the migration runway, so they keep a separate null-project
+ * unique index to preserve current upsert semantics.
+ */
+function migrateV32ToV33(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'plans')) {
+      const cols = getTableColumnSet(db, 'plans');
+      if (!cols.has('project_id')) {
+        db.prepare('ALTER TABLE plans ADD COLUMN project_id TEXT').run();
+      }
+      db.prepare('DROP INDEX IF EXISTS idx_plans_logical_key').run();
+      for (const ddl of PLAN_LOGICAL_KEY_INDEX_DDLS) {
+        db.prepare(ddl).run();
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(33, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+interface V34TableRebuild {
+  table: string;
+  ddl: string;
+  columns: readonly string[];
+}
+
+const V34_PROJECT_UNIQUE_REBUILDS: readonly V34TableRebuild[] = [
+  {
+    table: 'sessions',
+    ddl: SESSIONS_TABLE,
+    columns: [
+      'id',
+      'agent',
+      '"user"',
+      'project_root',
+      'project_id',
+      'branch',
+      'started_at',
+      'ended_at',
+      'status',
+      'prompt_count',
+      'tool_count',
+      'title',
+      'summary',
+      'transcript_path',
+      'parent_session_id',
+      'parent_session_reason',
+      'processed',
+      'content_hash',
+      'created_at',
+      'embedded',
+      'machine_id',
+      'synced_at',
+      'canopy_injections_offered',
+      'canopy_injection_total_tokens',
+      'canopy_skips_after_injection',
+      'canopy_reads_after_injection',
+      'canopy_tokens_saved',
+      'canopy_redundant_reads',
+      'canopy_map_tool_calls',
+    ],
+  },
+  {
+    table: 'prompt_batches',
+    ddl: PROMPT_BATCHES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'session_id',
+      'parent_prompt_batch_id',
+      'kind',
+      'prompt_number',
+      'user_prompt',
+      'response_summary',
+      'classification',
+      'started_at',
+      'ended_at',
+      'status',
+      'activity_count',
+      'processed',
+      'content_hash',
+      'created_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'activities',
+    ddl: ACTIVITIES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'session_id',
+      'prompt_batch_id',
+      'tool_name',
+      'tool_input',
+      'tool_output_summary',
+      'file_path',
+      'files_affected',
+      'duration_ms',
+      'success',
+      'error_message',
+      'timestamp',
+      'processed',
+      'content_hash',
+      'created_at',
+      'canopy_injection_tokens',
+    ],
+  },
+  {
+    table: 'spores',
+    ddl: SPORES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'session_id',
+      'prompt_batch_id',
+      'observation_type',
+      'status',
+      'content',
+      'context',
+      'importance',
+      'file_path',
+      'tags',
+      'content_hash',
+      'properties',
+      'created_at',
+      'updated_at',
+      'embedded',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'entities',
+    ddl: ENTITIES_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'type',
+      'name',
+      'properties',
+      'first_seen',
+      'last_seen',
+      'status',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'digest_extracts',
+    ddl: DIGEST_EXTRACTS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'tier',
+      'content',
+      'substrate_hash',
+      'generated_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'skill_records',
+    ddl: SKILL_RECORDS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'machine_id',
+      'name',
+      'display_name',
+      'description',
+      'status',
+      'embedded',
+      'generation',
+      'candidate_id',
+      'source_ids',
+      'path',
+      'usage_count',
+      'last_used_at',
+      'created_at',
+      'updated_at',
+      'properties',
+      'synced_at',
+    ],
+  },
+  {
+    table: 'cortex_instructions',
+    ddl: CORTEX_INSTRUCTIONS_TABLE,
+    columns: [
+      'id',
+      'project_id',
+      'agent_id',
+      'content',
+      'input_hash',
+      'source_run_id',
+      'generated_at',
+      'machine_id',
+      'synced_at',
+    ],
+  },
+];
+
+const V34_FTS_REBUILD_TABLES = [
+  'sessions_fts',
+  'prompt_batches_fts',
+  'activities_fts',
+  'spores_fts',
+] as const;
+
+function readPragmaNumber(db: Database, name: string): number {
+  const row = db.prepare(`PRAGMA ${name}`).get() as Record<string, number | undefined>;
+  return Number(row[name] ?? 0);
+}
+
+function setPragmaBoolean(db: Database, name: string, value: number): void {
+  db.prepare(`PRAGMA ${name} = ${value ? 'ON' : 'OFF'}`).run();
+}
+
+function rebuildTableForV34(db: Database, rebuild: V34TableRebuild): void {
+  if (!tableExists(db, rebuild.table)) return;
+
+  const oldTable = `__myco_v34_${rebuild.table}`;
+
+  db.prepare(`DROP TABLE IF EXISTS ${oldTable}`).run();
+  db.prepare(`ALTER TABLE ${rebuild.table} RENAME TO ${oldTable}`).run();
+  db.exec(rebuild.ddl);
+
+  const oldColumns = getTableColumnSet(db, oldTable);
+  const columns = rebuild.columns
+    .filter((column) => oldColumns.has(column.replace(/"/g, '')))
+    .join(', ');
+  if (columns.length === 0) {
+    db.prepare(`DROP TABLE ${oldTable}`).run();
+    return;
+  }
+
+  db.prepare(
+    `INSERT INTO ${rebuild.table} (${columns})
+     SELECT ${columns} FROM ${oldTable}`,
+  ).run();
+  db.prepare(`DROP TABLE ${oldTable}`).run();
+}
+
+/**
+ * Version 34 removes global uniqueness from project-scoped tables and replaces
+ * it with partial unique indexes: one legacy NULL-project index that preserves
+ * current local writes, and one project_id-aware index for Grove imports.
+ */
+function migrateV33ToV34(db: Database): void {
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  const legacyAlterTable = readPragmaNumber(db, 'legacy_alter_table');
+
+  setPragmaBoolean(db, 'foreign_keys', 0);
+  setPragmaBoolean(db, 'legacy_alter_table', 1);
+
+  db.prepare('BEGIN').run();
+  try {
+    for (const rebuild of V34_PROJECT_UNIQUE_REBUILDS) {
+      rebuildTableForV34(db, rebuild);
+    }
+
+    for (const ddl of TABLE_DDLS) {
+      db.exec(ddl);
+    }
+    for (const ddl of FTS_TABLES) {
+      db.exec(ddl);
+    }
+    for (const ddl of SECONDARY_INDEXES) {
+      db.exec(ddl);
+    }
+
+    for (const ftsTable of V34_FTS_REBUILD_TABLES) {
+      if (tableExists(db, ftsTable)) {
+        db.prepare(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`).run();
+      }
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(34, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'legacy_alter_table', legacyAlterTable);
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+const V35_MIGRATION_IMPORT_JOURNAL_COLUMNS = [
+  'id',
+  'migration_id',
+  'source_project_root',
+  'source_db_path',
+  'target_grove_id',
+  'target_project_id',
+  'source_table',
+  'source_id',
+  'target_table',
+  'target_id',
+  'source_machine_id',
+  'target_machine_id',
+  'import_origin',
+  'status',
+  'notes',
+  'error',
+  'created_at',
+  'updated_at',
+] as const;
+
+/**
+ * Version 35 scopes migration_import_journal uniqueness by source DB and
+ * target Grove/project so one migration can safely import multiple legacy
+ * project vaults with overlapping source row ids.
+ */
+function migrateV34ToV35(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'migration_import_journal')) {
+      const oldTable = '__myco_v35_migration_import_journal';
+      db.prepare(`DROP TABLE IF EXISTS ${oldTable}`).run();
+      db.prepare(`ALTER TABLE migration_import_journal RENAME TO ${oldTable}`).run();
+      db.exec(MIGRATION_IMPORT_JOURNAL_TABLE);
+
+      const oldColumns = getTableColumnSet(db, oldTable);
+      const columns = V35_MIGRATION_IMPORT_JOURNAL_COLUMNS
+        .filter((column) => oldColumns.has(column))
+        .join(', ');
+      if (columns.length > 0) {
+        db.prepare(
+          `INSERT INTO migration_import_journal (${columns})
+           SELECT ${columns} FROM ${oldTable}`,
+        ).run();
+      }
+      db.prepare(`DROP TABLE ${oldTable}`).run();
+    } else {
+      db.exec(MIGRATION_IMPORT_JOURNAL_TABLE);
+    }
+
+    for (const ddl of MIGRATION_IMPORT_JOURNAL_INDEX_DDLS) {
+      db.exec(ddl);
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(35, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Tables where orphan rows are TRUE orphans — a path-string
+ * `project_id` in `canopy_entries` points at a project that doesn't
+ * exist anymore (the canonical bug this migration cleans up). DELETE
+ * is correct for these.
+ */
+const V36_DELETE_ONLY_TABLES: readonly string[] = ['canopy_entries', 'canopy_maps'];
+
+/**
+ * Tables where orphan rows are AUDIT TRAIL — agent_runs/turns/reports,
+ * log_entries, etc. are runtime telemetry the daemon emitted under the
+ * pre-fix writer-context bug. The rows belong to the same project the
+ * rest of the table belongs to; they were just missing the id stamp.
+ *
+ * For these tables: when exactly one Grove-era `project_id` is present
+ * in the table, backfill orphans to that id (preserving the audit data),
+ * then DELETE any remaining orphans (multiple Grove ids → can't infer).
+ */
+const V36_BACKFILL_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
+
+function migrateV35ToV36(db: Database): void {
+  // Suspend FK enforcement for the duration of the sweep. Several FK
+  // children (agent_turns → agent_runs, attachments → sessions, …) can
+  // hold orphan project_id rows that reference parents we're also
+  // about to delete; without this, the order of DELETEs would have to
+  // mirror the FK graph exactly. Restored in `finally` below.
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  setPragmaBoolean(db, 'foreign_keys', 0);
+
+  db.prepare('BEGIN').run();
+  try {
+    // Backfill-then-delete for audit-trail tables: NULL/non-grove rows
+    // belong to the single Grove project (when one exists in the table)
+    // and represent runtime audit data the daemon emitted before the
+    // writer-context fix. Preserve them.
+    for (const table of V36_BACKFILL_TABLES) {
+      if (!tableExists(db, table)) continue;
+      const groveIds = db.prepare(
+        `SELECT DISTINCT project_id FROM ${table}
+          WHERE project_id LIKE 'proj_%'`,
+      ).all() as Array<{ project_id: string }>;
+      if (groveIds.length === 1) {
+        db.prepare(
+          `UPDATE ${table}
+              SET project_id = ?
+            WHERE project_id IS NULL
+               OR project_id = ''
+               OR project_id NOT LIKE 'proj_%'`,
+        ).run(groveIds[0].project_id);
+      } else if (groveIds.length > 1) {
+        // Multi-project Grove DB: can't infer the right id for orphans,
+        // so drop them. Safe because callers always supply the id post-fix.
+        db.prepare(
+          `DELETE FROM ${table}
+            WHERE project_id IS NULL
+               OR project_id = ''
+               OR project_id NOT LIKE 'proj_%'`,
+        ).run();
+      }
+      // groveIds.length === 0 → pre-Grove snapshot, leave alone.
+    }
+
+    // Delete-only for tables where orphans truly are stale (e.g.
+    // `canopy_entries` rows under a path-string project_id reference
+    // files that no longer exist).
+    for (const table of V36_DELETE_ONLY_TABLES) {
+      if (!tableExists(db, table)) continue;
+      const hasGroveRow = (db.prepare(
+        `SELECT 1 FROM ${table} WHERE project_id LIKE 'proj_%' LIMIT 1`,
+      ).get() ?? null) !== null;
+      if (!hasGroveRow) continue;
+      db.prepare(
+        `DELETE FROM ${table}
+          WHERE project_id IS NULL
+             OR project_id = ''
+             OR project_id NOT LIKE 'proj_%'`,
+      ).run();
+    }
+
+    if (tableExists(db, 'team_outbox')) {
+      db.prepare(
+        `DELETE FROM team_outbox
+          WHERE sent_at IS NULL
+            AND (
+              json_extract(payload, '$.project_id') IS NULL
+              OR json_extract(payload, '$.project_id') = ''
+              OR json_extract(payload, '$.project_id') NOT LIKE 'proj_%'
+            )`,
+      ).run();
+    }
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(36, epochSeconds());
+
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+/**
+ * Version 37: drop the migration_import_journal contents in already-
+ * activated Groves.
+ *
+ * The journal is mid-import working state — the importer writes one
+ * row per (source → target) mapping for FK lookups, and the
+ * activation completion check scans for status='error' rows. After
+ * the activation marker is written, no code reads it. Real-world
+ * projects produce 100k+ rows that previously sat in the Grove DB
+ * forever (300+ MB on the dogfood Grove). Going forward, activation
+ * cleans up its own rows post-marker; this one-shot wipe handles
+ * Groves that were activated before that change landed.
+ */
+function migrateV36ToV37(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    if (tableExists(db, 'migration_import_journal')) {
+      db.prepare('DELETE FROM migration_import_journal').run();
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(37, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v38 — Add `origin` column to prompt_batches.
+ *
+ * `kind` (initial/steering/interrupt) records WHERE the batch sits in the
+ * conversation flow. `origin` records WHO issued the prompt:
+ *   - 'human'         — user-typed in their CLI/IDE (the default)
+ *   - 'system'        — transcript-synthesized continuation event
+ *                       (e.g. <task-notification>, <environment_context>,
+ *                       <skill> envelope expansions)
+ *   - 'agent_dispatch'— prompts emitted by sub-agents (e.g. Codex
+ *                       <subagent_notification>)
+ *   - 'hook_injected' — reserved; UserPromptSubmit hook output is currently
+ *                       appended to a real human prompt and stays 'human'.
+ *
+ * The two are orthogonal — every batch has both a `kind` and an `origin`.
+ * Existing rows backfill to 'human' (the captures we have today were all
+ * assumed to be user prompts, even though some were actually misclassified
+ * system events; UI default-filtering will hide those once the classifier
+ * starts emitting 'system' for new captures).
+ *
+ * Index `(project_id, origin, created_at)` supports the common Sessions-page
+ * query: list human-origin batches in a project, newest first.
+ */
+function migrateV37ToV38(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'prompt_batches');
+    if (!cols.has('origin')) {
+      db.prepare(
+        "ALTER TABLE prompt_batches ADD COLUMN origin TEXT NOT NULL DEFAULT 'human'",
+      ).run();
+    }
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created
+         ON prompt_batches (project_id, origin, created_at)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(38, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * v39 — Composite (project_id, created_at) indexes on `sessions` and
+ * `prompt_batches`.
+ *
+ * The `getProjectActivitySeconds` /
+ * `getProjectActivityWithBacklog` queries scan
+ * `MAX(created_at) WHERE project_id = ?` per project, called both per
+ * scheduler tick (project-power-state) and per `/api/projects/activity`
+ * request. v38 added `idx_prompt_batches_project_origin_created` whose
+ * `(project_id, origin, created_at)` shape can serve a `project_id = ?`
+ * predicate via prefix scan, but only when the planner picks that
+ * index — and `sessions` had nothing better than the per-column
+ * `idx_sessions_created_at`, forcing a full-table scan for any project
+ * with a small share of the rows.
+ *
+ * Adding the dedicated `(project_id, created_at)` composites lets SQLite
+ * resolve `MAX(created_at)` as an index range-max in O(log n) per project.
+ * Both indexes are additive — existing data and existing v38 indexes are
+ * untouched. CREATE INDEX IF NOT EXISTS makes the migration idempotent.
+ */
+function migrateV38ToV39(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_project_created
+         ON sessions (project_id, created_at)`,
+    ).run();
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created
+         ON prompt_batches (project_id, created_at)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(39, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

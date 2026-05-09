@@ -7,13 +7,14 @@
 
 import type { V2Stats } from '../services/stats.js';
 import { gatherStats } from '../services/stats.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { initVaultDb } from './shared.js';
 
 export async function run(_args: string[], vaultDir: string): Promise<void> {
-  const cleanup = initVaultDb(vaultDir);
+  const cleanup = await initVaultDb(vaultDir);
   let stats: V2Stats;
   try {
-    stats = gatherStats(vaultDir);
+    stats = gatherStats(vaultDir, { scope: ALL_PROJECTS_SCOPE });
   } catch (err) {
     cleanup();
     console.error('Failed to read vault database:', (err as Error).message);

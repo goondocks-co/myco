@@ -1,8 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type { Database } from '@myco/db/client.js';
 import { ToolError } from './error.js';
 import { isCollectiveEnabled } from './shared.js';
+import {
+  resolveRequestContextForVault,
+  type MycoRequestContext,
+} from './request-context.js';
+import {
+  readPivot,
+  resolveCallContext,
+  stripPivotFields,
+} from './call-context.js';
+import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import {
   COLLECTIVE_TOOL_DEFINITIONS,
   TOOL_AGENT,
@@ -12,11 +23,13 @@ import {
   TOOL_COLLECTIVE_SETTINGS,
   TOOL_CORTEX,
   TOOL_DEFINITIONS,
+  TOOL_MAINTENANCE,
   TOOL_PLANS,
   TOOL_SEARCH,
   TOOL_SESSIONS,
   TOOL_SKILLS,
   TOOL_SPORES,
+  TOOL_UPDATE,
   type ToolDefinition,
 } from './definitions.js';
 
@@ -28,6 +41,15 @@ export interface MycoTools {
 
 export interface MycoToolsOptions {
   collectiveEnabled?: () => Promise<boolean>;
+  requestContext?: MycoRequestContext;
+  /**
+   * Optional resolver for the per-request DB handle. When provided, tool
+   * calls reuse the resolved (and cached) connection inside withDatabase
+   * instead of opening a fresh one per call. CLI/standalone callers can
+   * omit it — runWithRequestDatabase will fall back to opening + closing
+   * a private handle, preserving existing behavior outside the daemon.
+   */
+  resolveDatabase?: (databasePath: string) => Database;
 }
 
 const COLLECTIVE_TOOL_NAMES = new Set(COLLECTIVE_TOOL_DEFINITIONS.map((tool) => tool.name));
@@ -41,8 +63,14 @@ interface JsonSchemaProperty {
 type ToolInput = Record<string, unknown>;
 
 interface ToolEntry {
-  handle: (input: ToolInput, client: DaemonClient, vaultDir: string) => Promise<unknown>;
+  handle: (input: ToolInput, client: DaemonClient, context: MycoRequestContext) => Promise<unknown>;
   summarize?: (input: ToolInput, result: unknown) => Record<string, unknown>;
+  /**
+   * When true, dispatch the tool without opening a local DB connection.
+   * Used by HTTP-proxy operator tools (`myco_maintenance`, `myco_update`)
+   * that talk to the daemon over HTTP and never touch the local vault DB.
+   */
+  skipDatabase?: boolean;
 }
 
 type ToolLoader = () => Promise<ToolEntry>;
@@ -53,14 +81,14 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SEARCH, async () => {
     const { handleMycoSearch } = await import('./search.js');
     return {
-      handle: (input, client) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client),
+      handle: (input, client, context) => handleMycoSearch(input as unknown as Parameters<typeof handleMycoSearch>[0], client, context),
       summarize: (input, result) => ({ query: input.query, matches: (result as unknown[]).length }),
     };
   }],
   [TOOL_PLANS, async () => {
     const { handleMycoPlans } = await import('./plans.js');
     return {
-      handle: (input, client, vaultDir) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client, vaultDir),
+      handle: (input, client, context) => handleMycoPlans(input as unknown as Parameters<typeof handleMycoPlans>[0], client, context),
       summarize: (input, result) => ({
         op: input.op ?? 'list',
         id: input.id,
@@ -72,21 +100,21 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_SESSIONS, async () => {
     const { handleMycoSessions } = await import('./sessions.js');
     return {
-      handle: (input, client) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client),
+      handle: (input, client, context) => handleMycoSessions(input as unknown as Parameters<typeof handleMycoSessions>[0], client, context),
       summarize: (input, result) => ({ op: input.op ?? 'list', id: input.id, count: Array.isArray(result) ? result.length : undefined }),
     };
   }],
   [TOOL_SKILLS, async () => {
     const { handleMycoSkills } = await import('./skills.js');
     return {
-      handle: (input, client) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client),
+      handle: (input, client, context) => handleMycoSkills(input as unknown as Parameters<typeof handleMycoSkills>[0], client, context),
       summarize: (input) => ({ op: input.op ?? 'list', id: input.id, status: input.status }),
     };
   }],
   [TOOL_SPORES, async () => {
     const { handleMycoSpores } = await import('./spores.js');
     return {
-      handle: (input, client) => handleMycoSpores(input as unknown as Parameters<typeof handleMycoSpores>[0], client),
+      handle: (input, client, context) => handleMycoSpores(input as unknown as Parameters<typeof handleMycoSpores>[0], client, context),
       summarize: (input, result) => {
         const r = result as { id?: unknown; observation_type?: unknown; spores?: unknown[]; status?: unknown };
         return {
@@ -128,30 +156,82 @@ const HANDLERS = new Map<string, ToolLoader>([
   [TOOL_AGENT, async () => {
     const { handleMycoAgent } = await import('./agent.js');
     return {
-      handle: (input, client) => handleMycoAgent(input as unknown as Parameters<typeof handleMycoAgent>[0], client),
+      handle: (input, client, context) => handleMycoAgent(input as unknown as Parameters<typeof handleMycoAgent>[0], client, context),
       summarize: (input, result) => {
         const r = result as { ok: unknown };
         return { op: input.op ?? 'runs', id: input.id, ok: r.ok };
       },
     };
   }],
+  [TOOL_MAINTENANCE, async () => {
+    const { handleMycoMaintenance } = await import('./maintenance.js');
+    return {
+      handle: (input, client, context) => handleMycoMaintenance(input as unknown as Parameters<typeof handleMycoMaintenance>[0], client, context),
+      summarize: (input, result) => {
+        const r = result as { ok?: boolean; summary?: { ok?: number; failed?: number } };
+        const scope = (input.scope as { kind?: string } | undefined)?.kind;
+        return {
+          op: input.op,
+          scope: scope,
+          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
+          summary: r.summary,
+        };
+      },
+      // HTTP-only proxy. The local DB stays untouched; restore_preview
+      // in particular runs even when the local DB is locked.
+      skipDatabase: true,
+    };
+  }],
+  [TOOL_UPDATE, async () => {
+    const { handleMycoUpdate } = await import('./update.js');
+    return {
+      handle: (input, client, context) => handleMycoUpdate(input as unknown as Parameters<typeof handleMycoUpdate>[0], client, context),
+      summarize: (input, result) => {
+        const r = result as { ok?: boolean; status?: string; running_version?: string };
+        return {
+          op: input.op ?? 'status',
+          status: r.status,
+          running_version: r.running_version,
+          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
+        };
+      },
+      // myco_update is a pure HTTP proxy onto the daemon's
+      // /api/update/* routes — no local DB access required.
+      skipDatabase: true,
+    };
+  }],
 ]);
 
 export function createMycoTools(vaultDir: string, client: DaemonClient, options: MycoToolsOptions = {}): MycoTools {
-  let dbReady = false;
   let logDirReady = false;
-  const logDir = path.join(vaultDir, 'logs');
   let collectiveProbe: Promise<boolean> | null = null;
+  const requestContext = options.requestContext ?? resolveRequestContextForVault(vaultDir);
+  const logDir = resolveDaemonLogDir(vaultDir, { requestContext, env: process.env });
 
-  async function ensureDb(): Promise<boolean> {
-    if (dbReady) return true;
+  async function runWithRequestDatabase<T>(
+    context: MycoRequestContext,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const { openDatabase, withDatabase } = await import('@myco/db/client.js');
+    if (options.resolveDatabase) {
+      let db: Database;
+      try {
+        db = options.resolveDatabase(context.databasePath);
+      } catch {
+        throw new ToolError('tool_call_failed', 'Vault database is not available');
+      }
+      return withDatabase(db, fn);
+    }
+    let db: Database;
     try {
-      const { initDatabase, vaultDbPath } = await import('@myco/db/client.js');
-      initDatabase(vaultDbPath(vaultDir));
-      dbReady = true;
-      return true;
+      db = openDatabase(context.databasePath);
     } catch {
-      return false;
+      throw new ToolError('tool_call_failed', 'Vault database is not available');
+    }
+    try {
+      return await withDatabase(db, fn);
+    } finally {
+      db.close();
     }
   }
 
@@ -261,79 +341,116 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     void client.post('/api/log', { level: 'info', component: 'mcp', message: `Tool call: ${tool}`, data: { tool, ...detail } }).catch(() => { /* non-fatal */ });
   }
 
-  async function dispatchCortex(input: ToolInput, start: number): Promise<unknown> {
+  async function dispatchCortex(
+    input: ToolInput,
+    context: MycoRequestContext,
+    start: number,
+  ): Promise<unknown> {
     const op = input.op ?? 'digest';
     const cortex = await import('./cortex.js');
 
     switch (op) {
       case 'digest': {
-        const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client);
+        const result = await cortex.handleCortexDigest(input as unknown as Parameters<typeof cortex.handleCortexDigest>[0], client, context);
         logActivity(TOOL_CORTEX, { op, tier: result.tier, fallback: result.fallback, duration_ms: Date.now() - start });
         return result;
       }
       case 'instructions': {
-        const result = await cortex.handleCortexInstructions(client);
+        const result = await cortex.handleCortexInstructions(client, context);
         logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
         return result;
       }
       case 'canopy_entry':
-        return await dispatchCanopyEntry(input, start, cortex.handleCortexCanopyEntry);
+        return await dispatchCanopyEntry(input, context, start, cortex.handleCortexCanopyEntry);
       case 'canopy_map':
-        return await dispatchCanopyMap(input, start, cortex.handleCortexCanopyMap);
+        return await dispatchCanopyMap(input, context, start, cortex.handleCortexCanopyMap);
+      case 'notifications': {
+        const result = await cortex.handleCortexNotifications(input as unknown as Parameters<typeof cortex.handleCortexNotifications>[0], client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'maintenance_summary': {
+        const result = await cortex.handleCortexMaintenanceSummary(client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
+      case 'projects_activity': {
+        const result = await cortex.handleCortexProjectsActivity(client, context);
+        logActivity(TOOL_CORTEX, { op, duration_ms: Date.now() - start });
+        return result;
+      }
       default:
         throw new ToolError('invalid_input', `Unknown op '${String(op)}' for tool ${TOOL_CORTEX}`);
     }
   }
 
-  /**
-   * Both Canopy ops need vault DB init before reading. When the DB isn't
-   * available we return the empty-map sentinel so callers see a typed
-   * "no data yet" payload rather than a hard error.
-   */
-  async function ensureCanopyDb(): Promise<{ ready: true } | { ready: false; emptyResult: unknown }> {
-    if (await ensureDb()) return { ready: true };
-    const { emptyCanopyMap } = await import('./canopy-map.js');
-    return { ready: false, emptyResult: emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.') };
-  }
-
   async function dispatchCanopyEntry(
     input: ToolInput,
+    context: MycoRequestContext,
     start: number,
     handleCortexCanopyEntry: typeof import('./cortex.js')['handleCortexCanopyEntry'],
   ): Promise<unknown> {
-    const guard = await ensureCanopyDb();
-    if (!guard.ready) return guard.emptyResult;
-    const result = await handleCortexCanopyEntry(input as unknown as Parameters<typeof handleCortexCanopyEntry>[0]);
-    logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: input.project_id, path: input.path, duration_ms: Date.now() - start });
-    return result;
+    try {
+      return await runWithRequestDatabase(context, async () => {
+        const result = await handleCortexCanopyEntry(
+          input as unknown as Parameters<typeof handleCortexCanopyEntry>[0],
+          context,
+        );
+        logActivity(TOOL_CORTEX, { op: 'canopy_entry', id: input.id, project_id: context.projectId, path: input.path, duration_ms: Date.now() - start });
+        return result;
+      });
+    } catch (err) {
+      if (!(err instanceof ToolError) || err.code !== 'tool_call_failed') throw err;
+      const { emptyCanopyMap } = await import('./canopy-map.js');
+      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
+    }
   }
 
   async function dispatchCanopyMap(
     input: ToolInput,
+    context: MycoRequestContext,
     start: number,
     handleCortexCanopyMap: typeof import('./cortex.js')['handleCortexCanopyMap'],
   ): Promise<unknown> {
-    const guard = await ensureCanopyDb();
-    if (!guard.ready) return guard.emptyResult;
-
-    const { resolveCanopyProjectId } = await import('@myco/canopy/identity.js');
-    const { getMachineId } = await import('@myco/daemon/machine-id.js');
-    const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
-    const projectId = typeof input.project_id === 'string' ? input.project_id : resolveCanopyProjectId(vaultDir);
-    const machineId = process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir);
-    const sessionId = process.env.MYCO_SESSION_ID ?? null;
-    const result = await handleCortexCanopyMap({ projectId, machineId });
-    if (sessionId) {
-      try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+    try {
+      return await runWithRequestDatabase(context, async () => {
+        const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
+        const projectId = context.projectId;
+        const machineId = context.machineId;
+        const sessionId = context.sessionId;
+        const result = await handleCortexCanopyMap({ projectId, machineId });
+        if (sessionId) {
+          try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
+        }
+        logActivity(TOOL_CORTEX, {
+          op: 'canopy_map',
+          is_empty: (result as { is_empty?: boolean }).is_empty === true,
+          token_estimate: (result as { token_estimate?: number }).token_estimate,
+          session_id: sessionId,
+          duration_ms: Date.now() - start,
+        });
+        return result;
+      });
+    } catch (err) {
+      if (!(err instanceof ToolError) || err.code !== 'tool_call_failed') throw err;
+      const { emptyCanopyMap } = await import('./canopy-map.js');
+      return emptyCanopyMap('Vault database is not available; Canopy data cannot be read right now.');
     }
-    logActivity(TOOL_CORTEX, {
-      op: 'canopy_map',
-      is_empty: (result as { is_empty?: boolean }).is_empty === true,
-      token_estimate: (result as { token_estimate?: number }).token_estimate,
-      session_id: sessionId,
-      duration_ms: Date.now() - start,
-    });
-    return result;
+  }
+
+  /**
+   * Resolve the effective request context for one tool call. When the
+   * input carries `grove_id` and/or `project_id` (J3), pivot scope per
+   * the call-context resolver. Otherwise return the closed-over base
+   * context unchanged.
+   *
+   * Tools that don't accept scope-pivot fields (`collective_*`) skip
+   * resolution — those fields aren't in their schemas, so they were
+   * already rejected by `validateInput`.
+   */
+  function effectiveContextFor(name: string, input: ToolInput): MycoRequestContext {
+    if (name.startsWith('collective_')) return requestContext;
+    return resolveCallContext(requestContext, readPivot(input));
   }
 
   return {
@@ -350,26 +467,28 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       const definition = await getAvailableDefinition(name);
       validateInput(definition, input);
       const start = Date.now();
+      const context = effectiveContextFor(name, input);
+      // Pivot fields are dispatcher-only; strip them so handlers can't
+      // accidentally forward them as URL query params or row filters.
+      const handlerInput = stripPivotFields(input);
 
       if (name === TOOL_CORTEX) {
-        return dispatchCortex(input, start);
+        return dispatchCortex(handlerInput, context, start);
       }
 
       const loader = HANDLERS.get(name);
       if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
-      // Tools that call services in-process (myco_plans save/list/get,
-      // myco_sessions list, myco_spores write ops) reach getDatabase()
-      // directly and would throw on a fresh CLI subprocess where the vault
-      // DB hasn't been opened yet. Ensure init for every dispatch — the
-      // first call opens the connection, subsequent calls are no-ops via
-      // the singleton in db/client.ts.
-      if (!await ensureDb()) {
-        throw new ToolError('tool_call_failed', 'Vault database is not available');
-      }
       const entry = await loader();
-      const result = await entry.handle(input, client, vaultDir);
+      // Operator tools (`myco_maintenance`, `myco_update`) are HTTP-only
+      // proxies — they don't read or write the local DB and don't need
+      // `runWithRequestDatabase` to open one. Skipping the DB open here
+      // avoids surfacing "Vault database is not available" errors when
+      // the local DB is locked or absent (e.g. during restore_preview).
+      const result = entry.skipDatabase
+        ? await entry.handle(handlerInput, client, context)
+        : await runWithRequestDatabase(context, () => entry.handle(handlerInput, client, context));
       logActivity(name, {
-        ...(entry.summarize?.(input, result) ?? {}),
+        ...(entry.summarize?.(handlerInput, result) ?? {}),
         duration_ms: Date.now() - start,
       });
       return result;

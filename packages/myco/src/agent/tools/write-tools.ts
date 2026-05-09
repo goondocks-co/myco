@@ -9,14 +9,15 @@ import crypto from 'node:crypto';
 import { z } from 'zod/v4';
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds, DIGEST_TIERS } from '@myco/constants.js';
-import { insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
+import { getSpore, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
-import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
+import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -24,6 +25,8 @@ import { textResult, dryRunResult, type VaultToolDeps } from './types.js';
 
 export function createWriteTools(deps: VaultToolDeps) {
   const { agentId, embeddingManager, machineId } = deps;
+  const projectId = rowProjectIdFromVaultToolDeps(deps);
+  const scope = projectScopeFromVaultToolDeps(deps);
 
   const vaultCreateSpore = tool(
     'vault_create_spore',
@@ -45,6 +48,7 @@ export function createWriteTools(deps: VaultToolDeps) {
 
       const spore = insertSpore({
         id,
+        project_id: projectId,
         agent_id: agentId,
         machine_id: machineId,
         observation_type: args.observation_type,
@@ -59,13 +63,19 @@ export function createWriteTools(deps: VaultToolDeps) {
         created_at: now,
       });
 
-      // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
-      try { createSporeLineage(spore); } catch { /* lineage best-effort */ }
+      // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM).
+      // SporeRow.project_id is `string | null` from the DB; brand it via the
+      // single mint site before threading into the writer.
+      try {
+        const lineageProjectId = spore.project_id ? assertGroveProjectId(spore.project_id) : null;
+        createSporeLineage({ ...spore, project_id: lineageProjectId });
+      } catch { /* lineage best-effort */ }
 
       embeddingManager?.onContentWritten('spores', spore.id, args.content, {
         status: 'active',
         observation_type: args.observation_type,
         session_id: args.session_id,
+        ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
         created_at: now,
       }).catch(() => {});
 
@@ -96,12 +106,24 @@ export function createWriteTools(deps: VaultToolDeps) {
         consolidate: 'consolidated',
       };
       const newStatus = statusMap[args.action] ?? args.action;
-      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now);
+      const existingSpore = getSpore(args.spore_id, scope);
+      if (!existingSpore) {
+        return textResult({ error: `Spore not found: ${args.spore_id}` });
+      }
+      if (args.new_spore_id && !getSpore(args.new_spore_id, scope)) {
+        return textResult({ error: `Replacement spore not found: ${args.new_spore_id}` });
+      }
+
+      const updatedSpore = updateSporeStatus(args.spore_id, newStatus, now, scope);
+      if (!updatedSpore) {
+        return textResult({ error: `Spore not found: ${args.spore_id}` });
+      }
 
       // Record resolution event
       const eventId = crypto.randomUUID();
       insertResolutionEvent({
         id: eventId,
+        project_id: projectId,
         agent_id: agentId,
         machine_id: machineId,
         spore_id: args.spore_id,
@@ -134,15 +156,18 @@ export function createWriteTools(deps: VaultToolDeps) {
       if (args.title !== undefined) updates.title = args.title;
       if (args.summary !== undefined) updates.summary = args.summary;
 
-      const session = updateSession(args.session_id, updates);
-
-      if (args.summary) {
-        embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {}).catch(() => {});
-      }
+      const session = updateSession(args.session_id, updates, scope);
 
       if (!session) {
         return textResult({ error: `Session not found: ${args.session_id}` });
       }
+
+      if (args.summary) {
+        embeddingManager?.onContentWritten('sessions', args.session_id, args.summary, {
+          ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
+        }).catch(() => {});
+      }
+
       return textResult(session);
     },
     { annotations: { idempotentHint: true } },
@@ -173,7 +198,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       min_staleness_seconds: z.number().optional().describe('Used with pick="rotate_oldest". If every tier\'s generated_at is newer than (now - min_staleness_seconds), the tool returns {skip: true, reason, all_tiers} instead of selecting a tier. Defaults to 0 (never skip).'),
     },
     async (args) => {
-      const extracts = listDigestExtracts(agentId);
+      const extracts = listDigestExtracts(agentId, scope);
 
       if (args.pick === 'rotate_oldest') {
         const now = epochSeconds();
@@ -255,6 +280,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       // would serialize as the string "null" and lie to the agent about
       // whether the digest was written.
       const extract = upsertDigestExtract({
+        project_id: projectId,
         agent_id: agentId,
         tier: args.tier,
         content: args.content,
@@ -279,7 +305,7 @@ export function createWriteTools(deps: VaultToolDeps) {
       batch_id: z.number().describe('ID of the prompt batch to mark as processed'),
     },
     async (args) => {
-      const batch = markBatchProcessed(args.batch_id);
+      const batch = markBatchProcessed(args.batch_id, scope);
 
       if (!batch) {
         return textResult({ error: `Prompt batch not found: ${args.batch_id}` });

@@ -8,6 +8,7 @@
  */
 
 import type { VectorStore } from '../daemon/embedding/types.js';
+import type { Database } from '../db/client.js';
 import { CANOPY_ENTRIES_NAMESPACE } from '../db/queries/embeddings.js';
 import { hydrateCanopyDescriptionsBatch } from './hydrate.js';
 
@@ -15,7 +16,9 @@ export interface CanopySearchOptions {
   query: string;
   limit: number;
   threshold: number;
+  project_id?: string | null;
   language?: string;
+  db?: Database;
 }
 
 export interface CanopySearchRow {
@@ -43,16 +46,19 @@ export async function searchCanopy(
   const queryVector = await embeddingManager.embedQuery(options.query);
   if (!queryVector) return null;
 
-  const filters = options.language !== undefined ? { language: options.language } : undefined;
+  const filters = {
+    ...(options.language !== undefined ? { language: options.language } : {}),
+    ...(options.project_id !== undefined && options.project_id !== null ? { project_id: options.project_id } : {}),
+  };
   const raw = embeddingManager.searchVectors(queryVector, {
     namespace: CANOPY_ENTRIES_NAMESPACE,
     limit: options.limit,
     threshold: options.threshold,
-    filters,
+    filters: Object.keys(filters).length > 0 ? filters : undefined,
   });
 
   const ids = raw.map((r) => r.id);
-  const descriptions = hydrateCanopyDescriptionsBatch(ids);
+  const descriptions = hydrateCanopyDescriptionsBatch(ids, options.db);
 
   return raw.map((r) => {
     const meta = (r.metadata ?? {}) as Record<string, unknown>;

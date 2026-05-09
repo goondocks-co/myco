@@ -9,6 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 
 /** Default confidence score for new candidates. */
@@ -24,6 +25,7 @@ const DEFAULT_STATUS = 'identified';
 /** Fields required (or optional) when inserting a skill candidate. */
 export interface CandidateInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   machine_id?: string;
   topic: string;
@@ -60,6 +62,7 @@ export interface CandidateUpdate {
 /** Row shape returned from skill candidate queries (all columns). */
 export interface CandidateRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   machine_id: string;
   topic: string;
@@ -77,6 +80,7 @@ export interface CandidateRow {
 
 /** Filter options for `listCandidates`. */
 export interface ListCandidatesOptions {
+  scope: ProjectScope;
   agent_id?: string;
   /** Exact-match status filter. Ignored when `statuses` is provided. */
   status?: string;
@@ -97,6 +101,7 @@ export interface ListCandidatesOptions {
 
 export const CANDIDATE_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'machine_id',
   'topic',
@@ -122,6 +127,7 @@ const SELECT_COLUMNS = CANDIDATE_COLUMNS.join(', ');
 function toCandidateRow(row: Record<string, unknown>): CandidateRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     topic: row.topic as string,
@@ -149,6 +155,8 @@ function buildWhere(
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
+
+  appendProjectCondition(conditions, params, options.scope);
 
   // Multi-status wins over single-status when both are provided. Empty
   // array is treated as "no status filter" so REST handlers can forward
@@ -182,16 +190,17 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
 
   db.prepare(
     `INSERT INTO skill_candidates (
-       id, agent_id, machine_id, topic, rationale,
+       id, project_id, agent_id, machine_id, topic, rationale,
        confidence, status, source_ids, skill_id, supersedes, approved_at,
        created_at, updated_at
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?, ?,
        ?, ?
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.machine_id ?? getTeamMachineId(),
     data.topic,
@@ -220,12 +229,16 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
  *
  * @returns the candidate row, or null if not found.
  */
-export function getCandidate(id: string): CandidateRow | null {
+export function getCandidate(id: string, scope: ProjectScope): CandidateRow | null {
   const db = getDatabase();
 
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_candidates WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM skill_candidates WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toCandidateRow(row);
@@ -236,7 +249,7 @@ export function getCandidate(id: string): CandidateRow | null {
  * created_at DESC.
  */
 export function listCandidates(
-  options: ListCandidatesOptions = {},
+  options: ListCandidatesOptions,
 ): CandidateRow[] {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -263,6 +276,7 @@ export function listCandidates(
 export function updateCandidate(
   id: string,
   updates: CandidateUpdate,
+  scope: ProjectScope,
 ): CandidateRow | null {
   const db = getDatabase();
 
@@ -279,7 +293,7 @@ export function updateCandidate(
     updates.status === 'approved' &&
     updates.approved_at === undefined
   ) {
-    const existing = getCandidate(id);
+    const existing = getCandidate(id, scope);
     if (existing && existing.approved_at === null) {
       autoApprovedAt = updates.updated_at;
     }
@@ -311,17 +325,19 @@ export function updateCandidate(
     }
   }
 
-  if (setClauses.length === 0) return getCandidate(id);
+  if (setClauses.length === 0) return getCandidate(id, scope);
 
   params.push(id);
+  const conditions = ['id = ?'];
+  appendProjectCondition(conditions, params, scope);
 
   db.prepare(
     `UPDATE skill_candidates
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
 
-  const updated = getCandidate(id);
+  const updated = getCandidate(id, scope);
 
   if (updated) syncRow('skill_candidates', updated);
 
@@ -340,7 +356,7 @@ export function updateCandidate(
  * a fast index lookup and happens only on empty pages.
  */
 export function listCandidatesWithCount(
-  options: ListCandidatesOptions = {},
+  options: ListCandidatesOptions,
 ): { items: CandidateRow[]; total: number } {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -376,7 +392,7 @@ export function listCandidatesWithCount(
  * Count skill candidates matching optional filters (for pagination totals).
  */
 export function countCandidates(
-  options: Omit<ListCandidatesOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListCandidatesOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -393,8 +409,11 @@ export function countCandidates(
  *
  * @returns true if a row was deleted, false if not found.
  */
-export function deleteCandidate(id: string): boolean {
+export function deleteCandidate(id: string, scope: ProjectScope): boolean {
   const db = getDatabase();
-  const info = db.prepare('DELETE FROM skill_candidates WHERE id = ?').run(id);
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const info = db.prepare(`DELETE FROM skill_candidates WHERE ${conditions.join(' AND ')}`).run(...params);
   return info.changes > 0;
 }

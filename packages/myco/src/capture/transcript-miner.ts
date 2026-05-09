@@ -14,6 +14,7 @@ import {
 import { extractUserPromptRecordsWithDrops, type UserPromptRecord } from './prompt-kind.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { createBatchLineage } from '../db/queries/lineage.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { getTeamMachineId } from '../daemon/team-context.js';
 
 function promptPrefix(text: string | null | undefined): string {
@@ -169,7 +170,7 @@ export class TranscriptMiner {
       this.parseAllEvents(input.transcriptPath),
       input.transcriptPath,
     );
-    const batches = listBatchesBySession(sessionId).sort((a, b) => a.id - b.id);
+    const batches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
 
     let reclassified = 0;
     let inserted = 0;
@@ -212,10 +213,14 @@ export class TranscriptMiner {
         created_at: now,
         machine_id: getTeamMachineId(),
         kind: effectiveKind,
+        origin: record.origin,
         parent_prompt_batch_id: effectiveKind === BATCH_KIND.INITIAL ? null : parentForNew,
       });
       inserted++;
-      try { createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now); } catch { /* lineage best-effort */ }
+      try {
+        const lineageProjectId = created.project_id ? assertGroveProjectId(created.project_id) : null;
+        createBatchLineage(DEFAULT_AGENT_ID, sessionId, created.id, now, lineageProjectId);
+      } catch { /* lineage best-effort */ }
       if (effectiveKind === BATCH_KIND.INITIAL) currentParentId = created.id;
     }
 
@@ -233,15 +238,53 @@ export class TranscriptMiner {
     }
 
     // Stateless insert assigns MAX+1; renumber in transcript order for the UI.
+    //
+    // Stranded batches — batches whose transcript peer was suppressed by a
+    // capture.rules `drop` decision (e.g. Claude Code's <command-message>
+    // slash-command dispatch envelope, when the live hook captured the
+    // raw `/name args` text upstream) — keep their existing prompt_number
+    // and the renumber walker MUST step around those slots. Otherwise the
+    // walk restarts at 1 and assigns prompt_number=1 to the first matched
+    // batch, colliding with the stranded batch that's still at 1.
+    //
+    // Concretely: in a Claude Code session that begins with /ce-review,
+    // batch 3501 (live hook capture, prompt_number=1) has no transcript peer.
+    // Without this guard, when the first <task-notification> arrives and
+    // produces batch 3502, the renumber walks the post-drop records, matches
+    // 3502, and assigns prompt_number=1 — duplicating 3501's number and
+    // breaking getLatestBatch's prompt_number-DESC ordering.
     if (inserted > 0) {
-      const renumber = buildPrefixBuckets(listBatchesBySession(sessionId).sort((a, b) => a.id - b.id));
+      const allBatches = listBatchesBySession(sessionId, { scope: { kind: 'all' } }).sort((a, b) => a.id - b.id);
+      const renumber = buildPrefixBuckets(allBatches);
+      const reservedNumbers = new Set<number>();
+      // First pass: walk records to identify which batches WILL be matched,
+      // and reserve every other batch's existing prompt_number as off-limits.
+      const matchableIds = new Set<number>();
+      const previewBuckets = buildPrefixBuckets(allBatches);
+      for (const record of records) {
+        const match = previewBuckets.consume(record.text);
+        if (match) matchableIds.add(match.id);
+      }
+      for (const b of allBatches) {
+        if (!matchableIds.has(b.id) && b.prompt_number != null) {
+          reservedNumbers.add(b.prompt_number);
+        }
+      }
+      // Second pass: assign sequential prompt_numbers to matched batches,
+      // skipping reserved slots so stranded batches retain their numbers
+      // without collision.
       let nextNumber = 1;
+      const advance = () => {
+        nextNumber++;
+        while (reservedNumbers.has(nextNumber)) nextNumber++;
+      };
+      while (reservedNumbers.has(nextNumber)) nextNumber++;
       for (const record of records) {
         const match = renumber.consume(record.text);
         if (match && match.prompt_number !== nextNumber) {
           setBatchPromptNumber(match.id, nextNumber);
         }
-        if (match) nextNumber++;
+        if (match) advance();
       }
     }
 

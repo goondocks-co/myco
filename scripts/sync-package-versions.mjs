@@ -42,13 +42,6 @@ const PACKAGE_TARGETS = [
       'packages/myco-shared/package.json',
     ],
   },
-  {
-    envKey: 'MYCO_HUB_VERSION',
-    tagPrefix: 'myco-hub',
-    files: [
-      'packages/myco-hub/package.json',
-    ],
-  },
 ];
 
 function usage() {

@@ -10,11 +10,13 @@ interface RecordedBatch {
   sqls: string[];
 }
 
-function createFakeD1(options: { markerPresent?: boolean } = {}) {
+function createFakeD1(options: { markerPresent?: boolean; projectIdMarkerPresent?: boolean; unsafeNodeCount?: number } = {}) {
   const runs: RecordedRun[] = [];
   const batchedSql: string[] = [];
   const batches: RecordedBatch[] = [];
   const markerPresent = options.markerPresent ?? false;
+  const projectIdMarkerPresent = options.projectIdMarkerPresent ?? false;
+  const unsafeNodeCount = options.unsafeNodeCount ?? 0;
 
   return {
     runs,
@@ -34,10 +36,22 @@ function createFakeD1(options: { markerPresent?: boolean } = {}) {
             return { success: true };
           },
           async first<T = unknown>(): Promise<T | null> {
-            const marker = /SELECT value FROM team_config WHERE key = \?/.test(sql)
+            const semGraphMarker = /SELECT value FROM team_config WHERE key = \?/.test(sql)
               && state.values[0] === 'semantic_graph_pruned';
-            if (marker && markerPresent) {
+            if (semGraphMarker && markerPresent) {
               return { value: '1' } as T;
+            }
+            const projectIdMarker = /SELECT value FROM team_config WHERE key = \?/.test(sql)
+              && state.values[0] === 'project_id_orphans_pruned_v36';
+            if (projectIdMarker && projectIdMarkerPresent) {
+              return { value: '1' } as T;
+            }
+            // Active-node query for the v36 prune gate. The schema
+            // helper sums rows where last_seen >= cutoff and
+            // sync_protocol_version < minClientVersion. We answer
+            // with the test-supplied `unsafeNodeCount`.
+            if (/SELECT COUNT\(\*\) AS unsafe\s+FROM nodes/.test(sql)) {
+              return { unsafe: unsafeNodeCount } as T;
             }
             return null;
           },
@@ -129,5 +143,96 @@ describe('initD1Schema', () => {
 
     expect(migrationIndex).toBeGreaterThanOrEqual(0);
     expect(postMigrationIndex).toBeGreaterThan(migrationIndex);
+  });
+
+  it('adds project_id columns and indexes for Grove-scoped sync rows', async () => {
+    const fake = createFakeD1();
+
+    await initD1Schema(fake.db as never);
+
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE sessions ADD COLUMN project_id TEXT',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_records ADD COLUMN project_id TEXT',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions (project_id)',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_skill_records_project_id ON skill_records (project_id)',
+      values: [],
+    });
+  });
+});
+
+describe('initD1Schema v36 project_id orphan-row prune (cross-machine compat gate)', () => {
+  it('runs the prune when no minClientVersion is supplied (legacy callers)', async () => {
+    const fake = createFakeD1();
+
+    // Calling with no options preserves historical behavior — the
+    // prune runs unconditionally. This is what existing long-deployed
+    // workers do today; we must not regress them.
+    await initD1Schema(fake.db as never);
+
+    const pruneRan = fake.runs.some(
+      (run) => run.sql.includes('DELETE FROM sessions') && run.sql.includes('project_id IS NULL'),
+    );
+    expect(pruneRan).toBe(true);
+    expect(fake.runs).toContainEqual({
+      sql: 'INSERT INTO team_config (key, value) VALUES (?, ?)',
+      values: ['project_id_orphans_pruned_v36', '1'],
+    });
+  });
+
+  it('runs the prune when minClientVersion is supplied and every active node meets the floor', async () => {
+    const fake = createFakeD1({ unsafeNodeCount: 0 });
+
+    await initD1Schema(fake.db as never, { minClientVersion: 1 });
+
+    const pruneRan = fake.runs.some(
+      (run) => run.sql.includes('DELETE FROM sessions') && run.sql.includes('project_id IS NULL'),
+    );
+    expect(pruneRan).toBe(true);
+    expect(fake.runs).toContainEqual({
+      sql: 'INSERT INTO team_config (key, value) VALUES (?, ?)',
+      values: ['project_id_orphans_pruned_v36', '1'],
+    });
+  });
+
+  it('defers the prune when an active node is below the minClientVersion floor', async () => {
+    const fake = createFakeD1({ unsafeNodeCount: 1 });
+
+    // A single teammate on a pre-window protocol blocks the destructive
+    // prune so we don't silently delete that teammate's pre-Grove rows
+    // on first boot of the upgraded worker. The marker is NOT written,
+    // so the worker re-evaluates on its next boot — the prune lands
+    // automatically once the teammate ships the upgrade.
+    await initD1Schema(fake.db as never, { minClientVersion: 2 });
+
+    const pruneRan = fake.runs.some(
+      (run) => run.sql.includes('DELETE FROM sessions') && run.sql.includes('project_id IS NULL'),
+    );
+    expect(pruneRan).toBe(false);
+
+    const markerWritten = fake.runs.some(
+      (run) => run.sql === 'INSERT INTO team_config (key, value) VALUES (?, ?)'
+        && run.values[0] === 'project_id_orphans_pruned_v36',
+    );
+    expect(markerWritten).toBe(false);
+  });
+
+  it('skips the gate query and prune entirely when the marker is already present', async () => {
+    const fake = createFakeD1({ projectIdMarkerPresent: true, unsafeNodeCount: 99 });
+
+    await initD1Schema(fake.db as never, { minClientVersion: 2 });
+
+    const pruneRan = fake.runs.some(
+      (run) => run.sql.includes('DELETE FROM sessions') && run.sql.includes('project_id IS NULL'),
+    );
+    expect(pruneRan).toBe(false);
   });
 });

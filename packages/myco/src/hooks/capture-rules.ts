@@ -44,10 +44,21 @@ export interface SessionStartRuleContext {
   transcriptMeta?: Record<string, unknown>;
 }
 
-/** Outcome of evaluating user_prompt rules. */
+/**
+ * Outcome of evaluating user_prompt rules.
+ *
+ * `origin` is optional on pass/rewrite decisions — when set, the prompt is
+ * captured but tagged with a non-default origin. The walker copies it onto
+ * the resulting UserPromptRecord so the writer persists it on the batch.
+ *
+ * Origin values mirror PROMPT_BATCH_ORIGIN in db/queries/batches.ts:
+ *   'human' (default), 'system', 'agent_dispatch', 'hook_injected'.
+ */
+export type PromptOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
+
 export type UserPromptDecision =
-  | { action: 'pass'; prompt: string }
-  | { action: 'rewrite'; prompt: string; reason?: string }
+  | { action: 'pass'; prompt: string; origin?: PromptOrigin }
+  | { action: 'rewrite'; prompt: string; reason?: string; origin?: PromptOrigin }
   | { action: 'drop'; reason?: string };
 
 /** Outcome of evaluating session capture rules. No rewrite — there's no prompt text yet. */
@@ -295,15 +306,22 @@ function applyAction(rule: CaptureRule, ctx: UserPromptRuleContext): UserPromptD
   if (rule.action === 'drop') {
     return { action: 'drop', reason: rule.reason };
   }
+  if (rule.action === 'classify') {
+    // Capture the prompt as-is but tag it with a non-default origin. A rule
+    // that uses `classify` without `set_origin` is a no-op (defaults to
+    // 'human'), so the schema makes set_origin optional but practically
+    // pointless to omit.
+    return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
+  }
   // rewrite_prompt — keep only the substring after the extract_after marker.
   // If the marker isn't in the prompt, fall through to `pass` so we don't
   // accidentally blank out a prompt that turned out not to match after all.
   const marker = rule.extract_after;
-  if (!marker) return { action: 'pass', prompt: ctx.prompt };
+  if (!marker) return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
   const idx = ctx.prompt.indexOf(marker);
-  if (idx === -1) return { action: 'pass', prompt: ctx.prompt };
+  if (idx === -1) return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
   const after = ctx.prompt.slice(idx + marker.length);
   const next = rule.trim ? after.trim() : after;
-  if (!next) return { action: 'pass', prompt: ctx.prompt };
-  return { action: 'rewrite', prompt: next, reason: rule.reason };
+  if (!next) return { action: 'pass', prompt: ctx.prompt, origin: rule.set_origin };
+  return { action: 'rewrite', prompt: next, reason: rule.reason, origin: rule.set_origin };
 }

@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { derivePort } from '@myco/daemon/port.js';
+import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -198,6 +201,7 @@ const MCP_TEMPLATE = {
 
 let projectRoot: string;
 let packageRoot: string;
+const originalMycoHome = process.env.MYCO_HOME;
 
 function writeJson(filePath: string, data: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -246,7 +250,7 @@ function setupPackageRoot(): void {
     myco: { url: 'http://127.0.0.1:{{daemonPort}}/mcp' },
   });
   writeJson(path.join(codexTemplateDir, 'settings.json'), {
-    features: { codex_hooks: true },
+    features: { hooks: true },
   });
   writeJson(path.join(vscodeTemplateDir, 'hooks.json'), {
     SessionStart: [{ hooks: [{ type: 'command', command: 'cd "${CLAUDE_PROJECT_DIR:-.}" && node .agents/myco-run.cjs hook session-start --symbiont vscode-copilot', timeout: 10 }] }],
@@ -316,6 +320,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalMycoHome === undefined) delete process.env.MYCO_HOME;
+  else process.env.MYCO_HOME = originalMycoHome;
   fs.rmSync(projectRoot, { recursive: true, force: true });
   fs.rmSync(packageRoot, { recursive: true, force: true });
 });
@@ -1026,6 +1032,10 @@ describe('installMcp (TOML)', () => {
   });
 
   it('writes MCP server entry to TOML config', () => {
+    // Sandbox MYCO_HOME so the per-process sandbox can't carry a
+    // daemon.port value from earlier tests' machine-config writes.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     const result = installer.installMcp();
@@ -1040,13 +1050,21 @@ describe('installMcp (TOML)', () => {
     expect(content).not.toContain('[mcp_servers.myco.env]');
   });
 
-  it('uses daemon.port from myco.yaml when installing Codex MCP URL', () => {
+  it('uses daemon.port from machine config when installing Codex MCP URL', () => {
+    // Daemon port is machine-tier (one daemon per machine); seed
+    // ~/.myco/config.yaml rather than the project's myco.yaml.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
+    fs.writeFileSync(path.join(mycoHome, 'config.yaml'), [
+      'daemon:',
+      '  port: 21039',
+      '',
+    ].join('\n'));
+
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
       'version: 3',
-      'daemon:',
-      '  port: 21039',
       'embedding:',
       '  provider: ollama',
       '  model: bge-m3',
@@ -1060,7 +1078,12 @@ describe('installMcp (TOML)', () => {
     expect(content).toContain('url = "http://127.0.0.1:21039/mcp"');
   });
 
-  it('persists a stable daemon.port before installing Codex MCP URL when config omits it', () => {
+  it('persists a stable daemon.port to machine config before installing Codex MCP URL when omitted', () => {
+    // Sandbox MYCO_HOME so we don't pollute the user's real
+    // ~/.myco/config.yaml when the installer persists the derived port.
+    const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = mycoHome;
+
     fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
@@ -1070,9 +1093,40 @@ describe('installMcp (TOML)', () => {
 
     const expectedPort = derivePort(path.join(projectRoot, '.myco'));
     const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    const mycoConfig = fs.readFileSync(path.join(projectRoot, '.myco/myco.yaml'), 'utf-8');
+    const machineConfig = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
     expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-    expect(mycoConfig).toContain(`port: ${expectedPort}`);
+    expect(machineConfig).toContain(`port: ${expectedPort}`);
+  });
+
+  it('uses the global daemon port for Grove-bound project MCP URLs', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
+    process.env.MYCO_HOME = home;
+    fs.mkdirSync(path.join(projectRoot, '.codex'), { recursive: true });
+    const vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nconfig_version: 0\n', 'utf-8');
+
+    const grove = createGrove('Work', home);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'Project A' },
+      grove: { binding_id: 'gbind-a', slug: grove.slug, mode: 'local' },
+    });
+    registerProjectInGrove(grove.id, {
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      projectName: 'Project A',
+      projectRoot,
+      bindingId: 'gbind-a',
+    }, home);
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.installMcp();
+
+    const expectedPort = resolveGlobalDaemonPort(home);
+    const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
+    const mycoConfig = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
+    expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
+    expect(mycoConfig).not.toContain('port:');
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('preserves existing TOML content', () => {
@@ -1166,7 +1220,7 @@ describe('installSettings (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[features]');
-    expect(content).toContain('codex_hooks = true');
+    expect(content).toContain('hooks = true');
   });
 
   it('preserves unrelated sections when adding [features]', () => {
@@ -1188,7 +1242,7 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('MYCO_CMD = "myco-dev"');
     expect(content).toContain('command = "myco-run"');
     expect(content).toContain('[features]');
-    expect(content).toContain('codex_hooks = true');
+    expect(content).toContain('hooks = true');
   });
 
   it('is idempotent on repeated install', () => {
@@ -1206,14 +1260,14 @@ describe('installSettings (TOML)', () => {
   it('replaces stale value on update', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\ncodex_hooks = false\n');
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = false\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     installer.installSettings();
 
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
-    expect(content).toContain('codex_hooks = true');
-    expect(content).not.toContain('codex_hooks = false');
+    expect(content).toContain('hooks = true');
+    expect(content).not.toContain('hooks = false');
   });
 
   it('install() composes MCP + settings into one TOML file', () => {
@@ -1228,7 +1282,30 @@ describe('installSettings (TOML)', () => {
     expect(content).toContain('[mcp_servers.myco]');
     expect(content).toContain('url = "http://127.0.0.1:');
     expect(content).toContain('[features]');
-    expect(content).toContain('codex_hooks = true');
+    expect(content).toContain('hooks = true');
+  });
+
+  it('reconciles dropped template keys out of a Myco-managed section', () => {
+    // Regression: install must replace the body of each Myco-managed TOML
+    // section with the template's current keys. A previous template wrote
+    // `codex_hooks = true` to `[features]`; the new template writes
+    // `hooks = true`. Reconciling drops the stale key without requiring a
+    // separate migration.
+    const codexDir = path.join(projectRoot, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, 'config.toml'),
+      '[mcp_servers.myco]\nurl = "http://127.0.0.1:20915/mcp"\n\n[features]\ncodex_hooks = true\n',
+    );
+
+    const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+
+    const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
+    expect(content).not.toContain('codex_hooks');
+    expect(content).toContain('[features]');
+    expect(content).toContain('hooks = true');
+    expect(content).toContain('[mcp_servers.myco]');
   });
 });
 
@@ -1237,12 +1314,12 @@ describe('installSettings (TOML)', () => {
 // =====================
 
 describe('uninstallSettings (TOML)', () => {
-  it('removes codex_hooks key and drops empty [features] section', () => {
+  it('removes hooks key and drops empty [features] section', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n\n[features]\ncodex_hooks = true\n',
+      '[mcp_servers.myco]\ncommand = "myco-run"\nargs = ["mcp"]\n\n[features]\nhooks = true\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
@@ -1251,7 +1328,7 @@ describe('uninstallSettings (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).not.toContain('[features]');
-    expect(content).not.toContain('codex_hooks');
+    expect(content).not.toContain('hooks');
     expect(content).toContain('[mcp_servers.myco]');
   });
 
@@ -1260,7 +1337,7 @@ describe('uninstallSettings (TOML)', () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(
       path.join(codexDir, 'config.toml'),
-      '[features]\nsome_other_flag = true\ncodex_hooks = true\n',
+      '[features]\nsome_other_flag = true\nhooks = true\n',
     );
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
@@ -1269,13 +1346,13 @@ describe('uninstallSettings (TOML)', () => {
     const content = fs.readFileSync(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(content).toContain('[features]');
     expect(content).toContain('some_other_flag = true');
-    expect(content).not.toContain('codex_hooks');
+    expect(content).not.toContain('hooks = true');
   });
 
   it('deletes file when no TOML content remains', () => {
     const codexDir = path.join(projectRoot, '.codex');
     fs.mkdirSync(codexDir, { recursive: true });
-    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\ncodex_hooks = true\n');
+    fs.writeFileSync(path.join(codexDir, 'config.toml'), '[features]\nhooks = true\n');
 
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     installer.uninstallSettings();

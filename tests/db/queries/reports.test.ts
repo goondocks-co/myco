@@ -15,6 +15,7 @@ import {
   listReportsByAgent,
 } from '@myco/db/queries/reports.js';
 import type { ReportInsert } from '@myco/db/queries/reports.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -91,7 +92,7 @@ describe('report query helpers', () => {
       insertReport(makeReport({ summary: 'Second', created_at: now - 10 }));
       insertReport(makeReport({ summary: 'Third', created_at: now }));
 
-      const rows = listReports(TEST_RUN_ID);
+      const rows = listReports(TEST_RUN_ID, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].summary).toBe('First');
       expect(rows[1].summary).toBe('Second');
@@ -99,7 +100,7 @@ describe('report query helpers', () => {
     });
 
     it('returns empty array for run with no reports', async () => {
-      const rows = listReports('no-such-run');
+      const rows = listReports('no-such-run', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });
@@ -114,7 +115,7 @@ describe('report query helpers', () => {
       insertReport(makeReport({ summary: 'Old', created_at: now - 100 }));
       insertReport(makeReport({ summary: 'New', created_at: now }));
 
-      const rows = listReportsByAgent(TEST_AGENT_ID);
+      const rows = listReportsByAgent(TEST_AGENT_ID, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].summary).toBe('New');
       expect(rows[1].summary).toBe('Old');
@@ -126,12 +127,12 @@ describe('report query helpers', () => {
       insertReport(makeReport({ created_at: now - 1 }));
       insertReport(makeReport({ created_at: now }));
 
-      const rows = listReportsByAgent(TEST_AGENT_ID, { limit: 2 });
+      const rows = listReportsByAgent(TEST_AGENT_ID, { limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array for agent with no reports', async () => {
-      const rows = listReportsByAgent('no-such-agent');
+      const rows = listReportsByAgent('no-such-agent', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });

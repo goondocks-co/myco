@@ -11,6 +11,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertTurn, listTurns, updateTurn } from '@myco/db/queries/turns.js';
 import type { TurnInsert } from '@myco/db/queries/turns.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -95,7 +96,7 @@ describe('turn query helpers', () => {
       insertTurn(makeTurn({ turn_number: 1, tool_name: 'vault_search' }));
       insertTurn(makeTurn({ turn_number: 2, tool_name: 'vault_read' }));
 
-      const rows = listTurns(TEST_RUN_ID);
+      const rows = listTurns(TEST_RUN_ID, { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].turn_number).toBe(1);
       expect(rows[0].tool_name).toBe('vault_search');
@@ -106,7 +107,7 @@ describe('turn query helpers', () => {
     });
 
     it('returns empty array for run with no turns', async () => {
-      const rows = listTurns('no-such-run');
+      const rows = listTurns('no-such-run', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
   });

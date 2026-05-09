@@ -30,6 +30,7 @@ import path from 'node:path';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
@@ -37,7 +38,9 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants / helpers
 // ---------------------------------------------------------------------------
@@ -113,9 +116,10 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dry-run-test-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'tools-dry-run-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: true,
@@ -284,7 +288,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
         created_at: now,
         updated_at: now,
       });
-      updateCandidate(candidate.id, { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
+      updateCandidate(candidate.id, { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
       const t = findTool(tools, 'vault_stage_skill');
       const result = await t.handler({
@@ -351,7 +355,7 @@ describe('vault tools regression (dryRun: false)', () => {
     sessionId = `sess-${Math.random().toString(36).slice(2, 8)}`;
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
   });
 
   it('vault_create_spore inserts a real spore row and records no intent', async () => {
@@ -402,14 +406,15 @@ describe('vault tools wrapper JSON.stringify dedupe', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stringify-dedupe-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'stringify-dedupe-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
-    dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: true,
     });
-    liveTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    liveTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: false,

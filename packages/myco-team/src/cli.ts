@@ -15,10 +15,20 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CONFIG_FILENAME, loadConfig, updateTeamConfig } from '@myco/config/loader.js';
-import { writeSecret, readSecrets } from '@myco/config/secrets.js';
 import { WRANGLER_COMMAND_TIMEOUT_MS, TEAM_API_KEY_SECRET, TEAM_MCP_TOKEN_SECRET } from '@myco/constants.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
+import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { findRegisteredProject, loadGroveRecord } from '@myco/grove/registry.js';
+import { assertGroveProjectId, slugifyGroveName } from '@myco/grove/ids.js';
+import {
+  loadTeamConnectionConfig,
+  readTeamConnectionSecrets,
+  resolveTeamConnectionStore,
+  updateTeamConnectionConfig,
+  writeTeamConnectionSecret,
+} from '@myco/grove/team-connection.js';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import {
   extractJsonArray,
   installDeploymentDeps,
@@ -40,7 +50,7 @@ declare const __MYCO_TEAM_VERSION__: string;
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Number of random bytes for API key generation. */
+/** Number of random bytes for Team key generation. */
 const API_KEY_BYTES = 32;
 
 /** Vectorize index dimensions (must match the embedding model). */
@@ -54,6 +64,9 @@ const TEAM_RESOURCE_PREFIX = 'myco-team';
 
 /** Length of the project hash suffix for unique resource naming. */
 const PROJECT_HASH_LENGTH = 8;
+
+/** Max base length leaves room for suffixes like "-sync-dlq" within 63 chars. */
+const RESOURCE_NAME_MAX_LENGTH = 54;
 
 
 /** Source directory for worker files (relative to package root). */
@@ -70,9 +83,17 @@ const TEAM_MCP_ROTATION_RETRY_ATTEMPTS = 10;
 const TEAM_MCP_ROTATION_RETRY_DELAY_MS = 1500;
 const TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS = 10;
 const TEAM_VECTOR_REINDEX_RETRY_DELAY_MS = 1500;
-const TEAM_VECTOR_REINDEX_BATCH_SIZE = 20;
+// Reindex now returns immediately after enqueueing, but the producer
+// still scans every embeddable table in D1. Keep a generous timeout
+// for the listing phase on large datasets.
 const TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS = WRANGLER_COMMAND_TIMEOUT_MS * 6;
-const TEAM_VECTOR_REINDEX_TABLES = ['spores', 'sessions', 'plans', 'artifacts', 'skill_records'] as const;
+const REQUEST_CONTEXT_ENV = {
+  projectRoot: 'MYCO_PROJECT_ROOT',
+  projectId: 'MYCO_PROJECT_ID',
+  groveId: 'MYCO_GROVE_ID',
+  machineId: 'MYCO_MACHINE_ID',
+  sessionId: 'MYCO_SESSION_ID',
+} as const;
 
 /** Regex to match wrangler.toml name field. */
 const TOML_NAME_REGEX = /^name\s*=\s*"[^"]*"/m;
@@ -107,6 +128,42 @@ const TOML_SYNC_QUEUE_PLACEHOLDER_REGEX = /<YOUR_SYNC_QUEUE_NAME>/g;
 /** Regex to match wrangler.toml sync DLQ placeholder. */
 const TOML_SYNC_DLQ_PLACEHOLDER_REGEX = /<YOUR_SYNC_DLQ_NAME>/g;
 
+/** Regex matching the observability placeholder line in the template. */
+const TOML_OBSERVABILITY_PLACEHOLDER_REGEX = /^# <MYCO_OBSERVABILITY_BLOCK>$/m;
+
+/** Regex matching a previously-rendered observability block (for re-runs). */
+const TOML_OBSERVABILITY_BLOCK_REGEX = /\n?\[observability\][\s\S]*?(?=\n\[|\n*$)/g;
+
+const OBSERVABILITY_TOML_BLOCK = `[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+`;
+
+/**
+ * Render the wrangler.toml observability section. Defaults to a
+ * commented placeholder so deploys don't quietly enable Cloudflare's
+ * persistent log stream (it costs extra). Pass `enabled: true` from
+ * `--observability` on `upgrade` to opt in for a single deploy.
+ */
+function renderObservabilitySection(enabled: boolean): string {
+  return enabled
+    ? OBSERVABILITY_TOML_BLOCK
+    : '# Observability disabled. Pass `--observability` to `myco-team-dev upgrade` to enable.';
+}
+
+/**
+ * Reset the toml's observability block — strips any existing
+ * `[observability]` block (from a prior `--observability` deploy) and
+ * restores the placeholder line. Lets the patch transform run idempotently
+ * regardless of which state the previous deploy left behind.
+ */
+function resetObservabilityBlock(toml: string): string {
+  if (TOML_OBSERVABILITY_PLACEHOLDER_REGEX.test(toml)) return toml;
+  const stripped = toml.replace(TOML_OBSERVABILITY_BLOCK_REGEX, '');
+  return `${stripped.trimEnd()}\n# <MYCO_OBSERVABILITY_BLOCK>\n`;
+}
+
 /** Regex to extract the bound sync queue name from an existing wrangler.toml producer block. */
 const TOML_SYNC_QUEUE_NAME_REGEX = /\[\[queues\.producers\]\][\s\S]*?queue\s*=\s*"([^"]+)"/;
 
@@ -114,15 +171,25 @@ const TOML_SYNC_QUEUE_NAME_REGEX = /\[\[queues\.producers\]\][\s\S]*?queue\s*=\s
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Generate a project hash from vault dir for unique resource naming. */
-function projectHash(vaultDir: string): string {
-  const hash = crypto.createHash('sha256').update(vaultDir).digest('hex');
+/** Generate a stable hash for unique resource naming. */
+function resourceHash(scope: TeamCliScope): string {
+  const hash = crypto.createHash('sha256').update(scope.resourceSeed).digest('hex');
   return hash.slice(0, PROJECT_HASH_LENGTH);
 }
 
-/** Build the unique resource name for this project's team infrastructure. */
-function resourceName(vaultDir: string): string {
-  return `${TEAM_RESOURCE_PREFIX}-${projectHash(vaultDir)}`;
+/** Build the unique resource name for this Grove. */
+function resourceName(scope: GroveTeamCliScope): string {
+  const hash = resourceHash(scope);
+  const maxSlugLength =
+    RESOURCE_NAME_MAX_LENGTH
+    - TEAM_RESOURCE_PREFIX.length
+    - hash.length
+    - 2;
+  const slug = scope.resourceSlug
+    .slice(0, Math.max(1, maxSlugLength))
+    .replace(/-+$/g, '')
+    || 'grove';
+  return `${TEAM_RESOURCE_PREFIX}-${slug}-${hash}`;
 }
 
 function resolvePackageRoot(): string {
@@ -170,45 +237,200 @@ interface LegacyTeamLocalConfig extends TeamLocalConfig {
   vault_dir?: string;
 }
 
-function resolveLocalConfigPath(vaultDir: string): string {
-  return resolveVaultConfigPath(vaultDir, TEAM_STATE_DIR, TEAM_CONFIG_FILE);
+interface TeamCliScope {
+  vaultDir: string;
+  requestContext: MycoRequestContext;
+  stateDir: string;
+  resourceSeed: string;
+  resourceSlug: string | null;
+  label: string;
+}
+
+type GroveTeamCliScope = TeamCliScope & {
+  requestContext: MycoRequestContext & { groveId: string };
+  resourceSlug: string;
+};
+
+function hasGroveTeamScope(scope: TeamCliScope): scope is GroveTeamCliScope {
+  return Boolean(scope.requestContext.groveId && scope.resourceSlug);
+}
+
+/**
+ * Gate that asserts the resolved CLI scope is bound to a Grove. Pre-Grove
+ * vaults (no project.toml, no Grove binding) hit the friendly migration
+ * prompt below. Operators can override with `--legacy` when they're
+ * intentionally provisioning sync against a legacy vault — that flag is
+ * read from `process.argv` here because the CLI parser hasn't yet split
+ * arguments at this point in `teamInit`. Exits with code 2
+ * (configuration error) rather than the historical generic 1, so caller
+ * scripts can branch on the migration prompt vs. an unrelated failure.
+ */
+function requireGroveInstallScope(scope: TeamCliScope): asserts scope is GroveTeamCliScope {
+  if (hasGroveTeamScope(scope)) return;
+
+  if (process.argv.includes('--legacy')) {
+    // Operator-acknowledged legacy install path — preserved for
+    // intentional re-provisioning of pre-Grove vaults. The cast is
+    // safe at runtime because resolveTeamCliScope already filled in
+    // the resourceSlug fallback from the vault dir; `groveId` is the
+    // only field still null, and the historical legacy code path
+    // never read it.
+    return;
+  }
+
+  console.error('');
+  console.error('myco-team install requires a Grove-bound project.');
+  console.error('');
+  console.error('To activate Grove for this project:');
+  console.error('  1. Run `myco init` from your project root.');
+  console.error('  2. Re-run `myco-team install` to provision team sync.');
+  console.error('');
+  console.error('If you are intentionally provisioning team sync against a legacy');
+  console.error('project-local vault, re-run with `--legacy` to bypass this gate.');
+  console.error('');
+  process.exit(2);
+}
+
+function resolveTeamCliScope(vaultDir: string): TeamCliScope {
+  const requestContext = resolveTeamRequestContext(vaultDir);
+  const store = resolveTeamConnectionStore(vaultDir, requestContext);
+  const grove = store.groveId ? loadGroveRecord(store.groveId) : null;
+  return {
+    vaultDir,
+    requestContext,
+    stateDir: store.configDir,
+    resourceSeed: store.groveId ?? vaultDir,
+    resourceSlug: grove ? slugifyGroveName(grove.name) : null,
+    label: store.groveId
+      ? `Grove ${grove?.name ?? requestContext.groveId}`
+      : `project vault ${vaultDir}`,
+  };
+}
+
+function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
+  const machineId = readEnv(REQUEST_CONTEXT_ENV.machineId) ?? 'team-cli';
+  const sessionId = readEnv(REQUEST_CONTEXT_ENV.sessionId) ?? null;
+  const fallbackProjectRoot = path.dirname(vaultDir);
+  const envProjectRoot = readEnv(REQUEST_CONTEXT_ENV.projectRoot);
+  const envProjectId = readEnv(REQUEST_CONTEXT_ENV.projectId);
+  const envGroveId = readEnv(REQUEST_CONTEXT_ENV.groveId);
+
+  if (envGroveId) {
+    const projectRoot = path.resolve(envProjectRoot ?? fallbackProjectRoot);
+    const manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot)) ?? loadProjectManifest(vaultDir);
+    const projectId = envProjectId ?? manifest?.project.id;
+    if (!projectId) throw new Error('Incomplete Myco request context: missing project id');
+    const registered = findRegisteredProject({
+      projectId,
+      groveId: envGroveId,
+      bindingId: manifest?.grove?.binding_id ?? null,
+      projectRoot,
+    });
+    if (!registered) throw new Error(`Project ${projectId} is not registered in Grove ${envGroveId}`);
+    const registeredRoot = path.resolve(registered.project.root);
+    return {
+      projectRoot: registeredRoot,
+      projectId: assertGroveProjectId(projectId),
+      groveId: registered.grove.id,
+      machineId,
+      sessionId,
+      projectVaultDir: resolveProjectVaultDir(registeredRoot),
+      databasePath: resolveGroveDbPath(registered.grove.id),
+      source: 'explicit',
+    };
+  }
+
+  const manifest = loadProjectManifest(vaultDir);
+  if (manifest?.grove?.binding_id) {
+    const registered = findRegisteredProject({
+      projectId: manifest.project.id,
+      bindingId: manifest.grove.binding_id,
+      projectRoot: fallbackProjectRoot,
+    });
+    if (registered) {
+      const registeredRoot = path.resolve(registered.project.root);
+      return {
+        projectRoot: registeredRoot,
+        projectId: assertGroveProjectId(registered.project.project_id),
+        groveId: registered.grove.id,
+        machineId,
+        sessionId,
+        projectVaultDir: resolveProjectVaultDir(registeredRoot),
+        databasePath: resolveGroveDbPath(registered.grove.id),
+        source: 'explicit',
+      };
+    }
+  }
+
+  // Fall back to a non-Grove context with a branded project id from
+  // env or manifest. `requireGroveInstallScope` (called downstream)
+  // rejects this for ops that need an actual Grove binding; ops that
+  // only need a local project id (e.g. token rotation against a local
+  // worker config) can still proceed.
+  const fallbackProjectId = envProjectId ?? manifest?.project.id;
+  if (!fallbackProjectId) {
+    throw new Error('No Grove project id available. Run `myco init` to activate a Grove for this project.');
+  }
+  return {
+    projectRoot: fallbackProjectRoot,
+    projectId: assertGroveProjectId(fallbackProjectId),
+    groveId: null,
+    machineId,
+    sessionId,
+    projectVaultDir: vaultDir,
+    databasePath: path.join(vaultDir, 'myco.db'),
+    source: 'legacy-vault',
+  };
+}
+
+function readEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value ? value : undefined;
+}
+
+function resolveLocalConfigPath(scope: TeamCliScope): string {
+  return resolveVaultConfigPath(scope.stateDir, TEAM_STATE_DIR, TEAM_CONFIG_FILE);
 }
 
 function resolveLegacyLocalConfigPath(): string {
   return resolveHomeConfigPath(LEGACY_TEAM_CONFIG_DIR, TEAM_CONFIG_FILE);
 }
 
-function resolveDeployDir(vaultDir: string): string {
-  return path.join(vaultDir, TEAM_STATE_DIR, TEAM_DEPLOY_DIR);
+function resolveDeployDir(scope: TeamCliScope): string {
+  return path.join(scope.stateDir, TEAM_STATE_DIR, TEAM_DEPLOY_DIR);
 }
 
 function resolveLegacyDeployDir(vaultDir: string): string {
   return path.join(vaultDir, LEGACY_TEAM_DEPLOY_DIR);
 }
 
-function writeLocalConfig(vaultDir: string, config: TeamLocalConfig): void {
-  writeJsonConfig(resolveLocalConfigPath(vaultDir), config);
+function writeLocalConfig(scope: TeamCliScope, config: TeamLocalConfig): void {
+  writeJsonConfig(resolveLocalConfigPath(scope), config);
 }
 
-function migrateLegacyDeployDir(vaultDir: string): void {
-  const legacyDeployDir = resolveLegacyDeployDir(vaultDir);
-  const nextDeployDir = resolveDeployDir(vaultDir);
+function migrateLegacyDeployDir(scope: TeamCliScope): void {
+  const legacyDeployDir = resolveLegacyDeployDir(scope.vaultDir);
+  const nextDeployDir = resolveDeployDir(scope);
   if (!fs.existsSync(legacyDeployDir) || fs.existsSync(nextDeployDir)) return;
 
   fs.mkdirSync(path.dirname(nextDeployDir), { recursive: true });
   fs.renameSync(legacyDeployDir, nextDeployDir);
 }
 
-function readLocalConfig(vaultDir: string): TeamLocalConfig | null {
-  const config = readJsonConfig<TeamLocalConfig>(resolveLocalConfigPath(vaultDir));
+function readLocalConfig(scope: TeamCliScope): TeamLocalConfig | null {
+  const config = readJsonConfig<TeamLocalConfig>(resolveLocalConfigPath(scope));
   if (config) {
-    migrateLegacyDeployDir(vaultDir);
+    migrateLegacyDeployDir(scope);
     return config;
   }
 
   const legacyConfig = readJsonConfig<LegacyTeamLocalConfig>(resolveLegacyLocalConfigPath());
   if (!legacyConfig) return null;
-  if (legacyConfig.vault_dir && legacyConfig.vault_dir !== vaultDir) return null;
+  if (
+    legacyConfig.vault_dir
+    && legacyConfig.vault_dir !== scope.vaultDir
+    && legacyConfig.vault_dir !== scope.stateDir
+  ) return null;
 
   const migrated: TeamLocalConfig = {
     worker_name: legacyConfig.worker_name,
@@ -218,18 +440,18 @@ function readLocalConfig(vaultDir: string): TeamLocalConfig | null {
     last_upgraded: legacyConfig.last_upgraded,
     config_version: legacyConfig.config_version ?? TEAM_CONFIG_VERSION,
   };
-  writeLocalConfig(vaultDir, migrated);
-  if (legacyConfig.api_key) writeSecret(vaultDir, TEAM_API_KEY_SECRET, legacyConfig.api_key);
-  if (legacyConfig.mcp_token) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, legacyConfig.mcp_token);
-  migrateLegacyDeployDir(vaultDir);
+  writeLocalConfig(scope, migrated);
+  if (legacyConfig.api_key) writeTeamConnectionSecret(scope.vaultDir, scope.requestContext, TEAM_API_KEY_SECRET, legacyConfig.api_key);
+  if (legacyConfig.mcp_token) writeTeamConnectionSecret(scope.vaultDir, scope.requestContext, TEAM_MCP_TOKEN_SECRET, legacyConfig.mcp_token);
+  migrateLegacyDeployDir(scope);
   return migrated;
 }
 
-function requireLocalConfig(vaultDir: string): TeamLocalConfig {
-  const config = readLocalConfig(vaultDir);
+function requireLocalConfig(scope: TeamCliScope): TeamLocalConfig {
+  const config = readLocalConfig(scope);
   if (config) return config;
 
-  console.error(`No local myco-team config found at ${resolveLocalConfigPath(vaultDir)}`);
+  console.error(`No local myco-team config found at ${resolveLocalConfigPath(scope)}`);
   process.exit(1);
 }
 
@@ -247,7 +469,7 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
       lastError = error as Error;
       const isRetryable =
         lastError.message.includes('401') &&
-        lastError.message.includes('Invalid API key') &&
+        lastError.message.includes('Invalid Team key') &&
         attempt < TEAM_MCP_ROTATION_RETRY_ATTEMPTS;
       if (!isRetryable) {
         throw lastError;
@@ -259,84 +481,58 @@ async function rotateMcpTokenWithRetry(workerUrl: string, apiKey: string): Promi
   throw lastError ?? new Error('MCP token rotation failed');
 }
 
-export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<void> {
-  const config = workerUrlOverride ? null : requireLocalConfig(vaultDir);
-  const secrets = readSecrets(vaultDir);
+/**
+ * Trigger a remote reindex by asking the worker to enqueue per-row
+ * `embed` jobs onto its sync queue. Returns immediately with the
+ * count — actual embedding happens asynchronously as the queue
+ * consumer drains. Watch progress on the Sync page (vector_count
+ * climbing) rather than blocking on this call.
+ */
+export async function reindexWorkerVectors(vaultDir: string, workerUrlOverride?: string): Promise<{ enqueued: number; by_table: Record<string, number> }> {
+  const scope = resolveTeamCliScope(vaultDir);
+  const config = workerUrlOverride ? null : requireLocalConfig(scope);
+  const secrets = readTeamConnectionSecrets(vaultDir, scope.requestContext);
   const apiKey = secrets[TEAM_API_KEY_SECRET];
   if (!apiKey) {
-    throw new Error(`Missing ${TEAM_API_KEY_SECRET} secret in ${vaultDir}`);
+    throw new Error(`Missing ${TEAM_API_KEY_SECRET} secret for ${scope.label}`);
   }
   const workerUrl = workerUrlOverride ?? config?.worker_url;
   if (!workerUrl) {
     throw new Error('No team worker URL configured');
   }
 
-  for (const table of TEAM_VECTOR_REINDEX_TABLES) {
-    let cursor: string | null = null;
-    let processed = 0;
-    let reindexed = 0;
-    let deleted = 0;
-
-    while (true) {
-      let response: Response | null = null;
-      let retryableError: Error | null = null;
-
-      for (let attempt = 1; attempt <= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS; attempt += 1) {
-        try {
-          response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({ table, limit: TEAM_VECTOR_REINDEX_BATCH_SIZE, cursor }),
-            signal: AbortSignal.timeout(TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS),
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const isTimeout = message.includes('timeout');
-          if (!isTimeout || attempt >= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS) {
-            throw error;
-          }
-          retryableError = new Error(`Worker vector reindex timed out for ${table} (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
-          await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
-          continue;
-        }
-
-        if (response.ok) {
-          retryableError = null;
-          break;
-        }
-
-        const body = await response.text();
-        const isRetryable = response.status === 404 && body.includes('Not found') && attempt < TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS;
-        if (!isRetryable) {
-          throw new Error(`Worker vector reindex failed for ${table}: ${response.status} ${body}`);
-        }
-
-        retryableError = new Error(`Worker vector reindex route not ready for ${table} yet (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
-        await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
-      }
-
-      if (!response?.ok) {
-        throw retryableError ?? new Error(`Worker vector reindex failed for ${table}`);
-      }
-
-      const body = await response.json() as {
-        processed: number;
-        reindexed: number;
-        deleted: number;
-        next_cursor: string | null;
-      };
-      processed += body.processed;
-      reindexed += body.reindexed;
-      deleted += body.deleted;
-      cursor = body.next_cursor;
-      if (!cursor) break;
+  let response: Response | null = null;
+  let retryableError: Error | null = null;
+  for (let attempt = 1; attempt <= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      response = await fetch(`${workerUrl.replace(/\/+$/, '')}/vectors/reindex`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: '{}',
+        signal: AbortSignal.timeout(TEAM_VECTOR_REINDEX_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = message.includes('timeout');
+      if (!isTimeout || attempt >= TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS) throw error;
+      retryableError = new Error(`Worker vector reindex timed out (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+      await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
+      continue;
     }
 
-    console.log(`  ✓ Reindexed ${table}: ${reindexed} upserted, ${deleted} deleted (${processed} processed)`);
+    if (response.ok) { retryableError = null; break; }
+    const body = await response.text();
+    const isRetryable = response.status === 404 && body.includes('Not found') && attempt < TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS;
+    if (!isRetryable) throw new Error(`Worker vector reindex failed: ${response.status} ${body}`);
+    retryableError = new Error(`Worker vector reindex route not ready yet (attempt ${attempt}/${TEAM_VECTOR_REINDEX_RETRY_ATTEMPTS})`);
+    await delay(TEAM_VECTOR_REINDEX_RETRY_DELAY_MS);
   }
+
+  if (!response?.ok) {
+    throw retryableError ?? new Error('Worker vector reindex failed');
+  }
+
+  return await response.json() as { enqueued: number; by_table: Record<string, number> };
 }
 
 /** Run a wrangler command and return stdout. Throws on failure, surfacing stderr. */
@@ -368,10 +564,10 @@ function syncDlqName(name: string): string {
  * Copy worker source to the vault deployment directory and patch wrangler.toml
  * with actual D1 database ID and resource names.
  */
-function prepareDeployDir(vaultDir: string, d1Id: string, kvId: string): string {
+function prepareDeployDir(scope: GroveTeamCliScope, d1Id: string, kvId: string): string {
   const srcDir = locateWorkerSource();
-  const deployDir = resolveDeployDir(vaultDir);
-  const name = resourceName(vaultDir);
+  const deployDir = resolveDeployDir(scope);
+  const name = resourceName(scope);
   return stageDeploymentDir({
     sourceDir: srcDir,
     deployDir,
@@ -418,6 +614,45 @@ function ensureQueue(queueName: string): void {
       return;
     }
     throw err;
+  }
+}
+
+function isMissingQueueConsumerError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('not found')
+    || normalized.includes('does not exist')
+    || normalized.includes('no worker consumer')
+    || normalized.includes('no consumer')
+    || normalized.includes('not configured')
+    || normalized.includes('10003')
+  );
+}
+
+function isExistingQueueConsumerError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('already exists')
+    || normalized.includes('already configured')
+    || normalized.includes('already has a consumer')
+    || normalized.includes('is already taken')
+    || normalized.includes('duplicate')
+  );
+}
+
+function ensureDlqPullConsumer(dlqName: string, workerName: string): void {
+  try {
+    wrangler(['queues', 'consumer', 'worker', 'remove', dlqName, workerName]);
+  } catch (err) {
+    const errMsg = (err as Error).message;
+    if (!isMissingQueueConsumerError(errMsg)) throw err;
+  }
+
+  try {
+    wrangler(['queues', 'consumer', 'http', 'add', dlqName]);
+  } catch (err) {
+    const errMsg = (err as Error).message;
+    if (!isExistingQueueConsumerError(errMsg)) throw err;
   }
 }
 
@@ -471,7 +706,11 @@ async function rotateMcpTokenForWorker(workerUrl: string, apiKey: string): Promi
 // ---------------------------------------------------------------------------
 
 export async function teamInit(vaultDir: string): Promise<void> {
+  const scope = resolveTeamCliScope(vaultDir);
+  requireGroveInstallScope(scope);
+
   console.log('Provisioning team sync infrastructure...\n');
+  console.log(`Scope: ${scope.label}\n`);
 
   // 1. Check for wrangler
   try {
@@ -491,7 +730,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  const name = resourceName(vaultDir);
+  const name = resourceName(scope);
   console.log(`Resource name: ${name}\n`);
 
   // 3. Create D1 database (or reuse existing)
@@ -557,15 +796,15 @@ export async function teamInit(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  // 7. Generate API key
+  // 7. Generate team key
   const apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
 
   // 8. Prepare deployment directory
   console.log('Preparing worker deployment...');
-  const deployDir = prepareDeployDir(vaultDir, d1Id, kvId);
+  const deployDir = prepareDeployDir(scope, d1Id, kvId);
 
-  // 7. Set API key secret via wrangler
-  console.log('Setting API key secret...');
+  // 7. Set team key secret via wrangler
+  console.log('Setting Team key secret...');
   try {
     runWrangler(['secret', 'put', TEAM_API_KEY_SECRET, '--name', name], {
       cwd: deployDir,
@@ -574,7 +813,7 @@ export async function teamInit(vaultDir: string): Promise<void> {
     });
     console.log('Secret set\n');
   } catch (err) {
-    console.error(`Failed to set API key secret: ${(err as Error).message}`);
+    console.error(`Failed to set Team key secret: ${(err as Error).message}`);
     process.exit(1);
   }
 
@@ -590,7 +829,17 @@ export async function teamInit(vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  // 9. Seed team config in the Worker
+  // 9. Configure the DLQ for HTTP pull so the daemon UI can inspect,
+  // retry, or discard failed deliveries without a separate Worker consumer
+  // draining those messages.
+  try {
+    ensureDlqPullConsumer(syncDlqName(name), name);
+  } catch (err) {
+    console.error(`Failed to configure failed-sync queue: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  // 10. Seed team config in the Worker
   console.log('Setting team configuration...');
   try {
     const { getMachineId } = await import('@myco/daemon/machine-id.js');
@@ -618,14 +867,14 @@ export async function teamInit(vaultDir: string): Promise<void> {
     // Non-fatal. The daemon can also fetch the token later through /connect.
   }
 
-  // 10. Save config and API key locally
-  updateTeamConfig(vaultDir, {
+  // 11. Save config and team key locally
+  updateTeamConnectionConfig(vaultDir, scope.requestContext, {
     enabled: true,
     worker_url: workerUrl,
   });
-  writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
-  if (mcpToken) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, mcpToken);
-  writeLocalConfig(vaultDir, {
+  writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_API_KEY_SECRET, apiKey);
+  if (mcpToken) writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_MCP_TOKEN_SECRET, mcpToken);
+  writeLocalConfig(scope, {
     worker_name: name,
     worker_url: workerUrl,
     package_version: getTeamPackageVersion(),
@@ -636,11 +885,11 @@ export async function teamInit(vaultDir: string): Promise<void> {
 
   console.log('Team sync configured!\n');
   console.log(`  URL:     ${workerUrl}`);
-  console.log(`  API Key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}`);
+  console.log(`  Team key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}`);
   if (mcpToken) {
     console.log(`  MCP:     ${mcpToken.slice(0, 8)}...${mcpToken.slice(-4)}`);
   }
-  console.log('\nShare the URL and API key with teammates so they can connect.');
+  console.log('\nShare the URL and Team key with teammates so they can connect.');
 }
 
 // ---------------------------------------------------------------------------
@@ -658,14 +907,15 @@ export interface UpgradeResult {
  * Upgrade the team sync worker: re-copy source, patch config, redeploy.
  * Returns a result instead of calling process.exit — safe for both CLI and daemon.
  */
-export function upgradeWorker(vaultDir: string): UpgradeResult {
-  const config = loadConfig(vaultDir);
-  if (!config.team.worker_url) {
+export function upgradeWorker(vaultDir: string, options: { observability?: boolean } = {}): UpgradeResult {
+  const scope = resolveTeamCliScope(vaultDir);
+  const config = loadTeamConnectionConfig(vaultDir, scope.requestContext);
+  if (!config.worker_url) {
     return { success: false, error: 'No team sync configured. Run: myco-team install' };
   }
 
-  migrateLegacyDeployDir(vaultDir);
-  const deployDir = resolveDeployDir(vaultDir);
+  migrateLegacyDeployDir(scope);
+  const deployDir = resolveDeployDir(scope);
   const tomlPath = path.join(deployDir, 'wrangler.toml');
 
   if (!fs.existsSync(tomlPath)) {
@@ -683,7 +933,15 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
   const nameMatch = existingToml.match(/^name\s*=\s*"([^"]*)"/m);
   const dbNameMatch = existingToml.match(/database_name\s*=\s*"([^"]*)"/);
   const indexNameMatch = existingToml.match(/index_name\s*=\s*"([^"]*)"/);
-  const workerName = nameMatch?.[1] ?? resourceName(vaultDir);
+  let workerName: string;
+  if (nameMatch) {
+    workerName = nameMatch[1];
+  } else {
+    if (!hasGroveTeamScope(scope)) {
+      return { success: false, error: 'Cannot determine worker name from existing deployment. Run: myco-team install from a Grove-bound project' };
+    }
+    workerName = resourceName(scope);
+  }
 
   // KV namespace may not exist on older deployments — create or reuse.
   const kvMatch = existingToml.match(TOML_KV_ID_REGEX);
@@ -723,6 +981,10 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
           (toml) => toml.replace(TOML_SYNC_DLQ_PLACEHOLDER_REGEX, syncDlqName(workerName)),
           (toml) => toml.replace(TOML_TEAM_PACKAGE_VERSION_REGEX, `MYCO_TEAM_PACKAGE_VERSION = "${getTeamPackageVersion()}"`),
           (toml) => toml.replace(TOML_MYCO_SCHEMA_VERSION_REGEX, `MYCO_SCHEMA_VERSION = "${getMycoSchemaVersion()}"`),
+          (toml) => resetObservabilityBlock(toml).replace(
+            TOML_OBSERVABILITY_PLACEHOLDER_REGEX,
+            renderObservabilitySection(options.observability ?? false),
+          ),
         ],
       }],
       installDepsTimeoutMs: WRANGLER_COMMAND_TIMEOUT_MS * 3,
@@ -731,8 +993,8 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
     return { success: false, error: `Failed to install worker dependencies: ${(err as Error).message}` };
   }
 
-  // Re-set API key secret before deploy (deploy can wipe secrets)
-  const secrets = readSecrets(vaultDir);
+  // Re-set Team key secret before deploy (deploy can wipe secrets)
+  const secrets = readTeamConnectionSecrets(vaultDir, scope.requestContext);
   const apiKey = secrets[TEAM_API_KEY_SECRET];
   if (apiKey) {
     try {
@@ -752,12 +1014,18 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
     const workerUrl = parseWorkerUrl(deployOutput);
     const version = getTeamPackageVersion();
 
-    updateTeamConfig(vaultDir, {
+    try {
+      ensureDlqPullConsumer(syncDlqName(workerName), workerName);
+    } catch (err) {
+      return { success: false, error: `Failed to configure failed-sync queue: ${(err as Error).message}` };
+    }
+
+    updateTeamConnectionConfig(vaultDir, scope.requestContext, {
       worker_url: workerUrl,
     });
-    const localConfig = readLocalConfig(vaultDir);
+    const localConfig = readLocalConfig(scope);
     if (localConfig) {
-      writeLocalConfig(vaultDir, {
+      writeLocalConfig(scope, {
         ...localConfig,
         worker_name: workerName,
         worker_url: workerUrl,
@@ -776,9 +1044,12 @@ export function upgradeWorker(vaultDir: string): UpgradeResult {
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
-export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: boolean } = {}): Promise<void> {
+export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: boolean; observability?: boolean } = {}): Promise<void> {
   console.log('Upgrading team sync worker...\n');
-  const result = upgradeWorker(vaultDir);
+  if (options.observability) {
+    console.log('Observability: enabled (Cloudflare logs persist for this deploy)');
+  }
+  const result = upgradeWorker(vaultDir, { observability: options.observability });
   if (!result.success) {
     console.error(result.error);
     process.exit(1);
@@ -786,25 +1057,34 @@ export async function teamUpgrade(vaultDir: string, options: { reindexVectors?: 
   console.log(`Worker deployed: ${result.worker_url}`);
   console.log(`Version: ${result.version}`);
   if (options.reindexVectors) {
-    console.log('Refreshing remote Vectorize metadata...');
-    await reindexWorkerVectors(vaultDir, result.worker_url);
+    console.log('Enqueueing remote vector reindex...');
+    const { enqueued, by_table } = await reindexWorkerVectors(vaultDir, result.worker_url);
+    console.log(`  Queued ${enqueued} vectors (${formatTableCounts(by_table)})`);
+    console.log('  Watch progress on the Sync page; the queue consumer drains in the background.');
   }
   console.log('\nUpgrade complete.');
 }
 
 export async function teamReindexVectors(vaultDir: string): Promise<void> {
-  console.log('Reindexing remote team vectors...\n');
-  await reindexWorkerVectors(vaultDir);
-  console.log('\nRemote vector reindex complete.');
+  const { enqueued, by_table } = await reindexWorkerVectors(vaultDir);
+  console.log(`Queued ${enqueued} vectors for reindex (${formatTableCounts(by_table)}).`);
+  console.log('Watch progress on the Sync page; the queue consumer drains in the background.');
+}
+
+function formatTableCounts(counts: Record<string, number>): string {
+  const parts = Object.entries(counts).map(([table, count]) => `${table}: ${count}`);
+  return parts.length > 0 ? parts.join(', ') : 'no rows';
 }
 
 export async function teamStatus(vaultDir: string): Promise<void> {
-  const config = requireLocalConfig(vaultDir);
-  const secrets = readSecrets(vaultDir);
+  const scope = resolveTeamCliScope(vaultDir);
+  const config = requireLocalConfig(scope);
+  const secrets = readTeamConnectionSecrets(vaultDir, scope.requestContext);
 
+  console.log(`Scope:       ${scope.label}`);
   console.log(`Worker:      ${config.worker_name}`);
   console.log(`URL:         ${config.worker_url}`);
-  console.log(`API Key:     ${maskSecret(secrets[TEAM_API_KEY_SECRET] ?? null)}`);
+  console.log(`Team key:    ${maskSecret(secrets[TEAM_API_KEY_SECRET] ?? null)}`);
   console.log(`MCP Token:   ${maskSecret(secrets[TEAM_MCP_TOKEN_SECRET] ?? null)}`);
   console.log(`Package v:   ${config.package_version}`);
   console.log(`Created:     ${config.created_at}`);
@@ -813,8 +1093,9 @@ export async function teamStatus(vaultDir: string): Promise<void> {
 }
 
 export async function teamRotateTokens(vaultDir: string, which: 'api' | 'mcp' | 'all' = 'all'): Promise<void> {
-  const config = requireLocalConfig(vaultDir);
-  const secrets = readSecrets(vaultDir);
+  const scope = resolveTeamCliScope(vaultDir);
+  const config = requireLocalConfig(scope);
+  const secrets = readTeamConnectionSecrets(vaultDir, scope.requestContext);
   let currentApiKey = secrets[TEAM_API_KEY_SECRET] ?? '';
   let currentMcpToken = secrets[TEAM_MCP_TOKEN_SECRET] ?? null;
 
@@ -823,46 +1104,47 @@ export async function teamRotateTokens(vaultDir: string, which: 'api' | 'mcp' | 
   if (which === 'api' || which === 'all') {
     const apiKey = crypto.randomBytes(API_KEY_BYTES).toString('hex');
     runWrangler(['secret', 'put', TEAM_API_KEY_SECRET, '--name', config.worker_name], {
-      cwd: resolveDeployDir(vaultDir),
+      cwd: resolveDeployDir(scope),
       input: apiKey,
       timeoutMs: WRANGLER_COMMAND_TIMEOUT_MS,
     });
-    writeSecret(vaultDir, TEAM_API_KEY_SECRET, apiKey);
+    writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_API_KEY_SECRET, apiKey);
     currentApiKey = apiKey;
     nextConfig = {
       ...nextConfig,
       package_version: getTeamPackageVersion(),
       last_upgraded: new Date().toISOString(),
     };
-    writeLocalConfig(vaultDir, nextConfig);
+    writeLocalConfig(scope, nextConfig);
   }
 
   if (which === 'mcp' || which === 'all') {
     try {
       currentMcpToken = await rotateMcpTokenWithRetry(config.worker_url, currentApiKey);
-      if (currentMcpToken) writeSecret(vaultDir, TEAM_MCP_TOKEN_SECRET, currentMcpToken);
+      if (currentMcpToken) writeTeamConnectionSecret(vaultDir, scope.requestContext, TEAM_MCP_TOKEN_SECRET, currentMcpToken);
     } catch (error) {
-      writeLocalConfig(vaultDir, {
+      writeLocalConfig(scope, {
         ...nextConfig,
         last_upgraded: new Date().toISOString(),
       });
       throw new Error(
-        `API key rotation completed, but MCP token rotation failed. Local config was updated to the new API key.\n${(error as Error).message}`,
+        `Team key rotation completed, but MCP token rotation failed. Local config was updated to the new Team key.\n${(error as Error).message}`,
       );
     }
   }
 
   nextConfig.last_upgraded = new Date().toISOString();
-  writeLocalConfig(vaultDir, nextConfig);
+  writeLocalConfig(scope, nextConfig);
 
-  console.log(`API Key:   ${maskSecret(currentApiKey)}`);
+  console.log(`Team key:  ${maskSecret(currentApiKey)}`);
   console.log(`MCP Token: ${maskSecret(currentMcpToken)}`);
 }
 
 export async function teamDestroy(vaultDir: string): Promise<void> {
-  const config = requireLocalConfig(vaultDir);
+  const scope = resolveTeamCliScope(vaultDir);
+  const config = requireLocalConfig(scope);
   const errors: string[] = [];
-  const deployDir = resolveDeployDir(vaultDir);
+  const deployDir = resolveDeployDir(scope);
 
   try {
     wrangler(['delete', config.worker_name], { cwd: deployDir });
@@ -912,6 +1194,6 @@ export async function teamDestroy(vaultDir: string): Promise<void> {
     throw new Error(`Team destroy incomplete. Local state preserved for retry.\n${errors.join('\n')}`);
   }
 
-  fs.rmSync(path.join(vaultDir, TEAM_STATE_DIR), { recursive: true, force: true });
+  fs.rmSync(path.join(scope.stateDir, TEAM_STATE_DIR), { recursive: true, force: true });
   console.log(`Destroyed local myco-team state for ${config.worker_name}.`);
 }

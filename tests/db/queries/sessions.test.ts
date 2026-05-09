@@ -20,6 +20,7 @@ import {
   reactivateSessionIfCompleted,
 } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -50,7 +51,7 @@ describe('session query helpers', () => {
       const data = makeSession({ title: 'First session' });
       upsertSession(data);
 
-      const row = getSession(data.id);
+      const row = getSession(data.id, ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.id).toBe(data.id);
       expect(row!.agent).toBe('claude-code');
@@ -65,7 +66,7 @@ describe('session query helpers', () => {
       upsertSession(data);
       upsertSession({ ...data, title: 'Updated' });
 
-      const row = getSession(data.id);
+      const row = getSession(data.id, ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.title).toBe('Updated');
     });
@@ -82,7 +83,7 @@ describe('session query helpers', () => {
       // Upsert with only agent changed — title and summary should persist
       upsertSession({ ...data, agent: 'cursor' });
 
-      const row = getSession(data.id);
+      const row = getSession(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.agent).toBe('cursor');
       expect(row!.title).toBe('Keep me');
       expect(row!.summary).toBe('A detailed summary');
@@ -95,7 +96,7 @@ describe('session query helpers', () => {
 
   describe('getSession', () => {
     it('returns null for non-existent id', async () => {
-      const row = getSession('does-not-exist');
+      const row = getSession('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -113,16 +114,16 @@ describe('session query helpers', () => {
         title: 'New title',
         prompt_count: 5,
         tool_count: 12,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
-      const row = getSession(data.id);
+      const row = getSession(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.title).toBe('New title');
       expect(row!.prompt_count).toBe(5);
       expect(row!.tool_count).toBe(12);
     });
 
     it('returns null when updating non-existent session', async () => {
-      const result = updateSession('nope', { title: 'x' });
+      const result = updateSession('nope', { title: 'x' }, ALL_PROJECTS_SCOPE);
       expect(result).toBeNull();
     });
   });
@@ -166,7 +167,7 @@ describe('session query helpers', () => {
       upsertSession(s1);
       upsertSession(s3);
 
-      const rows = listSessions();
+      const rows = listSessions({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('sess-new');
       expect(rows[1].id).toBe('sess-mid');
@@ -179,7 +180,7 @@ describe('session query helpers', () => {
         upsertSession(makeSession({ created_at: now + i, started_at: now + i }));
       }
 
-      const rows = listSessions({ limit: 2 });
+      const rows = listSessions({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
@@ -192,7 +193,7 @@ describe('session query helpers', () => {
       upsertSession(done);
       closeSession(done.id, now + 2);
 
-      const rows = listSessions({ status: 'completed' });
+      const rows = listSessions({ status: 'completed', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('sess-done');
     });
@@ -202,13 +203,26 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 'sess-cc', agent: 'claude-code', created_at: now, started_at: now }));
       upsertSession(makeSession({ id: 'sess-cu', agent: 'cursor', created_at: now + 1, started_at: now + 1 }));
 
-      const rows = listSessions({ agent: 'cursor' });
+      const rows = listSessions({ agent: 'cursor', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('sess-cu');
     });
 
+    it('filters by explicit project scope', async () => {
+      const now = epochNow();
+      upsertSession(makeSession({ id: 'sess-legacy', created_at: now, started_at: now }));
+      upsertSession(makeSession({ id: 'sess-a', project_id: 'proj_a', created_at: now + 1, started_at: now + 1 }));
+      upsertSession(makeSession({ id: 'sess-b', project_id: 'proj_b', created_at: now + 2, started_at: now + 2 }));
+
+      expect(getSession('sess-a', projectScope('proj_a' as GroveProjectId))?.project_id).toBe('proj_a');
+      expect(getSession('sess-a', projectScope('proj_b' as GroveProjectId))).toBeNull();
+      expect(listSessions({ scope: GLOBAL_SCOPE}).map((row) => row.id)).toEqual(['sess-legacy']);
+      expect(listSessions({ scope: projectScope('proj_a' as GroveProjectId)}).map((row) => row.id)).toEqual(['sess-a']);
+      expect(countSessions({ scope: projectScope('proj_b' as GroveProjectId)})).toBe(1);
+    });
+
     it('returns empty array when no sessions match', async () => {
-      const rows = listSessions({ status: 'completed' });
+      const rows = listSessions({ status: 'completed', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -219,7 +233,7 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 's3', agent: 'cursor', created_at: now + 2, started_at: now + 2 }));
       closeSession('s3', now + 3);
 
-      const rows = listSessions({ agent: 'cursor', status: 'completed' });
+      const rows = listSessions({ agent: 'cursor', status: 'completed', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('s3');
     });
@@ -230,7 +244,7 @@ describe('session query helpers', () => {
         // intelligence-task callers explicitly opt in.
         const now = epochNow();
         upsertSession(makeSession({ id: 'live', created_at: now, started_at: now }));
-        const rows = listSessions();
+        const rows = listSessions({ scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toContain('live');
       });
 
@@ -241,7 +255,7 @@ describe('session query helpers', () => {
         upsertSession(done);
         closeSession('done', now + 2);
 
-        const rows = listSessions({ includeActive: false });
+        const rows = listSessions({ includeActive: false, scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toEqual(['done']);
       });
 
@@ -251,7 +265,7 @@ describe('session query helpers', () => {
 
         // Explicit status='active' takes precedence — caller is asking for
         // in-flight sessions and shouldn't be silently filtered.
-        const rows = listSessions({ includeActive: false, status: 'active' });
+        const rows = listSessions({ includeActive: false, status: 'active', scope: ALL_PROJECTS_SCOPE });
         expect(rows.map((r) => r.id)).toEqual(['live']);
       });
     });
@@ -262,8 +276,8 @@ describe('session query helpers', () => {
         upsertSession(makeSession({ id: `sess-pg-${i}`, created_at: now + i, started_at: now + i }));
       }
 
-      const page1 = listSessions({ limit: 2, offset: 0 });
-      const page2 = listSessions({ limit: 2, offset: 2 });
+      const page1 = listSessions({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
+      const page2 = listSessions({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
       expect(page2).toHaveLength(2);
       // Pages should be distinct
@@ -278,8 +292,8 @@ describe('session query helpers', () => {
       }
       upsertSession(makeSession({ id: 'sess-cc', agent: 'claude-code', created_at: now + 5, started_at: now + 5 }));
 
-      const page1 = listSessions({ agent: 'cursor', limit: 2, offset: 0 });
-      const page2 = listSessions({ agent: 'cursor', limit: 2, offset: 2 });
+      const page1 = listSessions({ agent: 'cursor', limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
+      const page2 = listSessions({ agent: 'cursor', limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
       expect(page2).toHaveLength(2);
       // All returned sessions must be cursor agent
@@ -292,7 +306,7 @@ describe('session query helpers', () => {
       const now = epochNow();
       upsertSession(makeSession({ created_at: now, started_at: now }));
 
-      const rows = listSessions({ offset: 100 });
+      const rows = listSessions({ offset: 100, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -301,7 +315,7 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 'sess-match', title: 'Fix the nasty bug', created_at: now, started_at: now }));
       upsertSession(makeSession({ id: 'sess-no', title: 'Refactor auth', created_at: now + 1, started_at: now + 1 }));
 
-      const rows = listSessions({ search: 'nasty' });
+      const rows = listSessions({ search: 'nasty', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('sess-match');
     });
@@ -311,7 +325,7 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 'unique-abc123', created_at: now, started_at: now }));
       upsertSession(makeSession({ id: 'other-xyz999', created_at: now + 1, started_at: now + 1 }));
 
-      const rows = listSessions({ search: 'abc123' });
+      const rows = listSessions({ search: 'abc123', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('unique-abc123');
     });
@@ -329,7 +343,7 @@ describe('session query helpers', () => {
       }
       upsertSession(makeSession({ id: 'sess-other', agent: 'cursor', title: 'Unrelated', created_at: now + 10, started_at: now + 10 }));
 
-      const rows = listSessions({ agent: 'cursor', search: 'Feature', limit: 2, offset: 0 });
+      const rows = listSessions({ agent: 'cursor', search: 'Feature', limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       for (const row of rows) {
         expect(row.agent).toBe('cursor');
@@ -349,7 +363,7 @@ describe('session query helpers', () => {
         upsertSession(makeSession({ created_at: now + i, started_at: now + i }));
       }
 
-      expect(countSessions()).toBe(4);
+      expect(countSessions({ scope: ALL_PROJECTS_SCOPE })).toBe(4);
     });
 
     it('counts sessions matching status filter', async () => {
@@ -360,8 +374,8 @@ describe('session query helpers', () => {
       upsertSession(s2);
       closeSession(s2.id, now + 2);
 
-      expect(countSessions({ status: 'completed' })).toBe(1);
-      expect(countSessions({ status: 'active' })).toBe(1);
+      expect(countSessions({ status: 'completed', scope: ALL_PROJECTS_SCOPE })).toBe(1);
+      expect(countSessions({ status: 'active', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('counts sessions matching agent filter', async () => {
@@ -370,8 +384,8 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 'cnt-cu1', agent: 'cursor', created_at: now + 1, started_at: now + 1 }));
       upsertSession(makeSession({ id: 'cnt-cu2', agent: 'cursor', created_at: now + 2, started_at: now + 2 }));
 
-      expect(countSessions({ agent: 'cursor' })).toBe(2);
-      expect(countSessions({ agent: 'claude-code' })).toBe(1);
+      expect(countSessions({ agent: 'cursor', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countSessions({ agent: 'claude-code', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('counts sessions matching search term', async () => {
@@ -380,12 +394,12 @@ describe('session query helpers', () => {
       upsertSession(makeSession({ id: 'cnt-s2', title: 'Search bug fix', created_at: now + 1, started_at: now + 1 }));
       upsertSession(makeSession({ id: 'cnt-s3', title: 'Unrelated work', created_at: now + 2, started_at: now + 2 }));
 
-      expect(countSessions({ search: 'Search' })).toBe(2);
-      expect(countSessions({ search: 'Unrelated' })).toBe(1);
+      expect(countSessions({ search: 'Search', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countSessions({ search: 'Unrelated', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('returns 0 when no sessions match', async () => {
-      expect(countSessions({ status: 'completed' })).toBe(0);
+      expect(countSessions({ status: 'completed', scope: ALL_PROJECTS_SCOPE })).toBe(0);
     });
   });
 
@@ -578,7 +592,7 @@ describe('session query helpers', () => {
       expect(result.deletedAttachmentPaths).toContain('/path/file2.png');
 
       // Session should no longer exist
-      expect(getSession(session.id)).toBeNull();
+      expect(getSession(session.id, ALL_PROJECTS_SCOPE)).toBeNull();
     });
 
     it('deletes plans, skill_usage, and batch-linked spores without FK errors', () => {
@@ -658,7 +672,7 @@ describe('session query helpers', () => {
       deleteSessionCascade(sess1.id);
 
       // sess2 data should be untouched
-      expect(getSession(sess2.id)).not.toBeNull();
+      expect(getSession(sess2.id, ALL_PROJECTS_SCOPE)).not.toBeNull();
       const db = getDatabase();
       const remaining = db.prepare(`SELECT COUNT(*) as count FROM spores WHERE session_id = ?`).get(sess2.id) as { count: number };
       expect(remaining.count).toBe(1);
@@ -682,24 +696,24 @@ describe('session query helpers', () => {
       const session = makeSession({ id: 'sess-completed', status: 'completed', created_at: now, started_at: now });
       upsertSession(session);
 
-      const flipped = reactivateSessionIfCompleted('sess-completed');
+      const flipped = reactivateSessionIfCompleted('sess-completed', ALL_PROJECTS_SCOPE);
 
       expect(flipped).toBe(true);
-      expect(getSession('sess-completed')?.status).toBe('active');
+      expect(getSession('sess-completed', ALL_PROJECTS_SCOPE)?.status).toBe('active');
     });
 
     it('is a no-op for an already-active session and returns false', () => {
       const session = makeSession({ id: 'sess-active', status: 'active' });
       upsertSession(session);
 
-      const flipped = reactivateSessionIfCompleted('sess-active');
+      const flipped = reactivateSessionIfCompleted('sess-active', ALL_PROJECTS_SCOPE);
 
       expect(flipped).toBe(false);
-      expect(getSession('sess-active')?.status).toBe('active');
+      expect(getSession('sess-active', ALL_PROJECTS_SCOPE)?.status).toBe('active');
     });
 
     it('returns false for a missing session', () => {
-      expect(reactivateSessionIfCompleted('nope')).toBe(false);
+      expect(reactivateSessionIfCompleted('nope', ALL_PROJECTS_SCOPE)).toBe(false);
     });
 
     it('preserves ended_at when reactivating — the next completion overwrites it', () => {
@@ -709,9 +723,9 @@ describe('session query helpers', () => {
         ended_at: now + 100,
       });
 
-      reactivateSessionIfCompleted('sess-keep-end');
+      reactivateSessionIfCompleted('sess-keep-end', ALL_PROJECTS_SCOPE);
 
-      expect(getSession('sess-keep-end')?.ended_at).toBe(now + 100);
+      expect(getSession('sess-keep-end', ALL_PROJECTS_SCOPE)?.ended_at).toBe(now + 100);
     });
   });
 });

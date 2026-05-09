@@ -31,6 +31,7 @@ import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports, type ReportRow } from '@myco/db/queries/reports.js';
 import { getLatestRunId, getRun } from '@myco/db/queries/runs.js';
 import { tryParseJson } from '@myco/utils/json.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { listSymbiontInfos, type SymbiontInfo } from './api/symbionts.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
@@ -126,8 +127,8 @@ function isCortexPromptBuilderDetails(value: unknown): value is CortexPromptBuil
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function getLatestReportForAction(runId: string, action: string): ReportRow | undefined {
-  const reports = listReports(runId);
+function getLatestReportForAction(runId: string, action: string, scope: import('@myco/grove/ids.js').ProjectScope): ReportRow | undefined {
+  const reports = listReports(runId, { scope });
   for (let i = reports.length - 1; i >= 0; i -= 1) {
     if (reports[i]?.action === action) return reports[i];
   }
@@ -140,8 +141,9 @@ function getLatestReportForAction(runId: string, action: string): ReportRow | un
 
 export function getCortexInstructionsSnapshot(
   config: Pick<MycoConfig, 'cortex'>,
+  scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
 ): CortexInstructionsSnapshot {
-  const row = getCortexInstructions(DEFAULT_AGENT_ID);
+  const row = getCortexInstructions(DEFAULT_AGENT_ID, scope);
 
   return {
     content: row?.content ?? '',
@@ -171,8 +173,12 @@ export async function buildCortexPrompt(
 ): Promise<CortexPromptBuilderStartResult> {
   const targetSymbiont = resolvePromptBuilderSymbiont(vaultDir, requestedSymbiont);
   const delivery = resolveInstructionDelivery(deps.config.cortex, targetSymbiont);
+  const requestContext = resolveRequestContextForVault(vaultDir);
+  const scope: import('@myco/grove/ids.js').ProjectScope = requestContext?.projectId
+    ? { kind: 'project', id: requestContext.projectId }
+    : { kind: 'global' };
   const instructions = delivery.inlineInstructions
-    ? getCortexInstructions(DEFAULT_AGENT_ID)
+    ? getCortexInstructions(DEFAULT_AGENT_ID, scope)
     : null;
 
   const builderInstruction = [
@@ -217,8 +223,9 @@ export async function buildCortexPrompt(
     instruction: builderInstruction,
     embeddingManager: deps.embeddingManager,
     logger: deps.logger,
+    requestContext,
   });
-  const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK);
+  const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_PROMPT_BUILDER_TASK, scope);
   const tracked = resultPromise.catch((err) => {
     deps.logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-prompt-builder task failed', {
       run_id: runId ?? undefined,
@@ -235,12 +242,15 @@ export async function buildCortexPrompt(
   };
 }
 
-export function getCortexPromptResult(runId: string): CortexPromptBuilderResult | null {
-  const run = getRun(runId);
+export function getCortexPromptResult(
+  runId: string,
+  scope: import('@myco/grove/ids.js').ProjectScope = { kind: 'global' },
+): CortexPromptBuilderResult | null {
+  const run = getRun(runId, scope);
   if (!run) return null;
 
-  const reports = listReports(runId);
-  const promptReport = getLatestReportForAction(runId, 'cortex_prompt_builder');
+  const reports = listReports(runId, { scope });
+  const promptReport = getLatestReportForAction(runId, 'cortex_prompt_builder', scope);
   const details = tryParseJson(promptReport?.details, isCortexPromptBuilderDetails);
 
   return {
@@ -297,15 +307,17 @@ export async function triggerCortexInstructions(
   }
 
   try {
-    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient);
+    const requestContext = resolveRequestContextForVault(vaultDir);
+    const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
     const resultPromise = runAgentFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       instruction: built.instruction,
       runContext: { cortex_instruction_input_hash: built.inputHash },
       embeddingManager,
+      requestContext,
     });
-    const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK);
+    const runId = getLatestRunId(DEFAULT_AGENT_ID, CORTEX_INSTRUCTIONS_TASK, { kind: 'project', id: requestContext.projectId });
 
     const tracked = resultPromise.catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Cortex instructions task failed', {

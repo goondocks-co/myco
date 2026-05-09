@@ -13,6 +13,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { QUERY_DEFAULT_LIST_LIMIT, GRAPH_EDGE_DEFAULT_CONFIDENCE } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,6 +47,7 @@ export type GraphEdgeType = LineageEdgeType;
 /** Fields required (or optional) when inserting a graph edge. */
 export interface GraphEdgeInsert {
   agent_id: string;
+  project_id?: string | null;
   source_id: string;
   source_type: GraphNodeType;
   target_id: string;
@@ -62,6 +64,7 @@ export interface GraphEdgeInsert {
 export interface GraphEdgeRow {
   id: string;
   agent_id: string;
+  project_id: string | null;
   source_id: string;
   source_type: string;
   target_id: string;
@@ -81,6 +84,7 @@ export interface ListGraphEdgesOptions {
   targetId?: string;
   type?: string;
   agentId?: string;
+  scope: ProjectScope;
   limit?: number;
 }
 
@@ -91,6 +95,7 @@ export interface ListGraphEdgesOptions {
 const GRAPH_EDGE_COLUMNS = [
   'id',
   'agent_id',
+  'project_id',
   'source_id',
   'source_type',
   'target_id',
@@ -115,6 +120,7 @@ function toGraphEdgeRow(row: Record<string, unknown>): GraphEdgeRow {
   return {
     id: row.id as string,
     agent_id: row.agent_id as string,
+    project_id: (row.project_id as string) ?? null,
     source_id: row.source_id as string,
     source_type: row.source_type as string,
     target_id: row.target_id as string,
@@ -144,12 +150,13 @@ export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
 
   db.prepare(
     `INSERT INTO graph_edges (
-       id, agent_id, source_id, source_type, target_id, target_type,
+       id, agent_id, project_id, source_id, source_type, target_id, target_type,
        type, session_id, confidence, properties, created_at, machine_id
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     data.agent_id,
+    data.project_id ?? null,
     data.source_id,
     data.source_type,
     data.target_id,
@@ -175,7 +182,7 @@ export function insertGraphEdge(data: GraphEdgeInsert): GraphEdgeRow {
  * List graph edges with optional filters, ordered by created_at DESC.
  */
 export function listGraphEdges(
-  options: ListGraphEdgesOptions = {},
+  options: ListGraphEdgesOptions,
 ): GraphEdgeRow[] {
   const db = getDatabase();
 
@@ -201,6 +208,8 @@ export function listGraphEdges(
     conditions.push(`agent_id = ?`);
     params.push(options.agentId);
   }
+
+  appendProjectCondition(conditions, params, options.scope);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = options.limit ?? QUERY_DEFAULT_LIST_LIMIT;
@@ -230,10 +239,10 @@ export function listGraphEdges(
 export function getGraphForNode(
   nodeId: string,
   nodeType: GraphNodeType,
-  options?: { depth?: number },
+  options: { depth?: number; scope: ProjectScope },
 ): { edges: GraphEdgeRow[] } {
   const db = getDatabase();
-  const depth = Math.min(Math.max(options?.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
+  const depth = Math.min(Math.max(options.depth ?? DEFAULT_BFS_DEPTH, 1), MAX_BFS_DEPTH);
 
   const seenEdgeIds = new Set<string>();
   const collectedEdges: GraphEdgeRow[] = [];
@@ -246,11 +255,17 @@ export function getGraphForNode(
     const frontierArray = Array.from(frontier);
     const placeholders = frontierArray.map(() => `?`).join(', ');
 
+    const conditions = [
+      `(source_id IN (${placeholders}) OR target_id IN (${placeholders}))`,
+    ];
+    const params: unknown[] = [...frontierArray, ...frontierArray];
+    appendProjectCondition(conditions, params, options.scope);
+
     const rows = db.prepare(
       `SELECT ${SELECT_COLUMNS}
        FROM graph_edges
-       WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`,
-    ).all(...frontierArray, ...frontierArray) as Record<string, unknown>[];
+       WHERE ${conditions.join(' AND ')}`,
+    ).all(...params) as Record<string, unknown>[];
 
     const nextFrontier = new Set<string>();
 

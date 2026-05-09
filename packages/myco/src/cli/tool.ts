@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { COLLECTIVE_TOOL_DEFINITIONS, TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
 import { isToolError } from '@myco/tools/error.js';
+import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
 import { isCollectiveEnabled } from '@myco/tools/shared.js';
 
 interface ToolCliError {
@@ -54,7 +55,8 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     try {
       const input = parseInput(parsed.input ?? '{}');
       const { createMycoTools } = await import('@myco/tools/index.js');
-      const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir));
+      const requestContext = requestContextFromEnvironment(process.env, vaultDir);
+      const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir), { requestContext });
       const result = await tools.callTool(tool, input);
       await writeEnvelope({ ok: true, tool, result });
     } catch (error) {

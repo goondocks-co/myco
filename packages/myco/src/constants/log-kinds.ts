@@ -110,6 +110,7 @@ export const LOG_KINDS = {
 
   // Team sync
   TEAM_SYNC_START: 'team-sync.start',
+  TEAM_SYNC_HANDOFF: 'team-sync.handoff',
   TEAM_SYNC_COMPLETE: 'team-sync.complete',
   TEAM_SYNC_ERROR: 'team-sync.error',
   TEAM_SYNC_REJECTED: 'team-sync.rejected',

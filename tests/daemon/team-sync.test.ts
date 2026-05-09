@@ -191,6 +191,34 @@ describe('TeamSyncClient', () => {
     });
   });
 
+  describe('getSyncSummary', () => {
+    it('GETs /sync-summary with remote store counts', async () => {
+      const mockFetch = createMockFetch({
+        '/sync-summary': {
+          status: 200,
+          body: {
+            generated_at: 1778060000,
+            total_records: 3,
+            tables: { spores: 2, sessions: 1 },
+            schema_version: 35,
+            package_version: '0.1.7',
+            sync_protocol_version: 1,
+          },
+        },
+      });
+
+      const client = new TeamSyncClient({ ...baseOptions, fetch: mockFetch });
+      const result = await client.getSyncSummary();
+
+      expect(result.total_records).toBe(3);
+      expect(result.tables.spores).toBe(2);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://myco-team.example.workers.dev/sync-summary',
+        expect.objectContaining({ method: 'GET' }),
+      );
+    });
+  });
+
   describe('search', () => {
     it('GETs /search with query params', async () => {
       const mockFetch = createMockFetch({
@@ -241,6 +269,7 @@ describe('TeamSyncClient', () => {
         since: 10,
         until: 20,
         session_id: 'sess-1',
+        project_id: 'proj-1',
       });
 
       const calledUrl = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
@@ -249,6 +278,7 @@ describe('TeamSyncClient', () => {
       expect(calledUrl).toContain('since=10');
       expect(calledUrl).toContain('until=20');
       expect(calledUrl).toContain('session_id=sess-1');
+      expect(calledUrl).toContain('project_id=proj-1');
     });
 
     it('throws on non-ok response', async () => {
@@ -380,7 +410,11 @@ describe('team context', () => {
   });
 
   it('returns sync protocol version', () => {
-    expect(getTeamSyncProtocolVersion()).toBe(1);
+    // Bumped to 2 in the C1 protocol bump (queue-driven `embed`
+    // SyncRecord operation + additive `/vectors/reindex` shape).
+    // Older daemons still in v1 are accepted by the worker via
+    // the MIN_COMPAT_CLIENT_VERSION window — see C2/C3.
+    expect(getTeamSyncProtocolVersion()).toBe(2);
   });
 
   it('resets to defaults', () => {

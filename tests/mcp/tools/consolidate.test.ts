@@ -12,7 +12,9 @@ import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function mockClient(): DaemonClient {
   return {
     get: vi.fn(),
@@ -27,12 +29,22 @@ function seedAgent(id = 'user'): void {
   ).run(id, 'User', 1700000000);
 }
 
-function seedSpore(id: string, agentId = 'user'): void {
+function seedSpore(id: string, agentId = 'user', projectId: string | null = null): void {
   const db = getDatabase();
   db.prepare(`
-    INSERT INTO spores (id, agent_id, observation_type, status, content, created_at, machine_id)
-    VALUES (?, ?, 'gotcha', 'active', 'seed', ?, 'local')
-  `).run(id, agentId, 1700000000);
+    INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at, machine_id)
+    VALUES (?, ?, ?, 'gotcha', 'active', 'seed', ?, 'local')
+  `).run(id, projectId, agentId, 1700000000);
+}
+
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-spore-consolidate-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
 }
 
 interface ConsolidateResult {
@@ -60,7 +72,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       observation_type: 'gotcha',
       tags: ['sqlite'],
       reason: 'Three SQLite gotchas',
-    }, mockClient()) as ConsolidateResult;
+    }, mockClient(), TEST_REQUEST_CONTEXT) as ConsolidateResult;
 
     expect(result.status).toBe('consolidated');
     expect(result.new_spore_id).toMatch(/^gotcha-[0-9a-f]+$/);
@@ -88,7 +100,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       source_spore_ids: ['d-1', 'd-2'],
       consolidated_content: 'merged',
       observation_type: 'decision',
-    }, mockClient()) as ConsolidateResult;
+    }, mockClient(), TEST_REQUEST_CONTEXT) as ConsolidateResult;
 
     const db = getDatabase();
     const events = db.prepare(`
@@ -100,13 +112,37 @@ describe('myco_spores op: consolidate (in-process)', () => {
     expect(events.map((e) => e.spore_id)).toEqual(['d-1', 'd-2']);
   });
 
+  it('does not consolidate a source spore from another project context', async () => {
+    seedAgent();
+    seedSpore('g-1', 'user', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    seedSpore('g-2', 'user', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+    const result = await handleMycoSpores({
+      op: 'consolidate',
+      source_spore_ids: ['g-1', 'g-2'],
+      consolidated_content: '# Merged gotchas',
+      observation_type: 'gotcha',
+      reason: 'mixed projects',
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'));
+
+    expect(result).toEqual({ ok: false, error: 'source_spore_id not found: g-2' });
+
+    const db = getDatabase();
+    const statuses = db.prepare("SELECT id, status FROM spores WHERE id IN ('g-1', 'g-2') ORDER BY id").all() as Array<{ id: string; status: string }>;
+    const wisdomCount = db.prepare("SELECT COUNT(*) AS count FROM spores WHERE content = '# Merged gotchas'").get() as { count: number };
+    const eventCount = db.prepare('SELECT COUNT(*) AS count FROM resolution_events').get() as { count: number };
+    expect(statuses.map((row) => row.status)).toEqual(['active', 'active']);
+    expect(wisdomCount.count).toBe(0);
+    expect(eventCount.count).toBe(0);
+  });
+
   it('rejects op:consolidate when source_spore_ids is empty', async () => {
     const result = await handleMycoSpores({
       op: 'consolidate',
       source_spore_ids: [],
       consolidated_content: 'x',
       observation_type: 'gotcha',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'source_spore_ids is required for op: consolidate' });
   });
 
@@ -115,7 +151,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       observation_type: 'gotcha',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'consolidated_content is required for op: consolidate' });
   });
 
@@ -124,7 +160,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       consolidated_content: 'x',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'observation_type is required for op: consolidate' });
   });
 });

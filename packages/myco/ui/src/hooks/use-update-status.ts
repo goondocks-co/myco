@@ -28,7 +28,7 @@ export interface UpdateStatus {
   latest_beta?: string | null;
   channel?: string;
   channel_scope?: 'project';
-  runtime_scope?: 'project' | 'machine';
+  runtime_scope?: 'managed' | 'machine';
   check_interval_hours?: number;
   last_check?: string;
   error?: string | null;
@@ -53,6 +53,7 @@ export function useUpdateStatus() {
     queryFn: ({ signal }) => fetchJson<UpdateStatus>('/update/status', { signal }),
     refetchInterval: POLL_INTERVALS.UPDATE,
     pollCategory: 'standard',
+    contextFree: true,
   });
 }
 

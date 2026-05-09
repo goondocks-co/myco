@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import { AlertCircle } from 'lucide-react';
 import { getAtPath } from '@myco/utils/dot-path';
 import { configFieldId } from '@myco/config/focus';
 import { useScopedConfig, type Scope } from '../../hooks/use-scoped-config';
 import { useMarkRestartDirty } from './restart-gate';
-import { ScopeBadge, ScopePill } from './ScopePill';
+import { ScopePill } from './ScopePill';
+import { FieldShell } from './FieldShell';
 import type { ConfigPath, ConfigValueAt } from '../../lib/config-paths';
 
 interface ScopedFieldRenderArgs<T> {
@@ -32,6 +32,12 @@ interface ScopedFieldProps<P extends ConfigPath, T = ConfigValueAt<P>> {
   commitOn?: 'change' | 'blur';
   /** Optional transform applied before writing (e.g. string-to-number for text inputs). */
   parse?: (v: T) => T;
+  /**
+   * Override the inactive-state scope badge. Use 'grove' for settings
+   * stored at project scope but applied across every project in the
+   * Grove (e.g. log retention, embedded against the shared Grove DB).
+   */
+  scopeBadgeOverride?: 'personal' | 'project' | 'grove';
   children: (args: ScopedFieldRenderArgs<T>) => ReactNode;
 }
 
@@ -44,6 +50,7 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
   requiresRestart,
   commitOn = 'change',
   parse,
+  scopeBadgeOverride,
   children,
 }: ScopedFieldProps<P, T>) {
   const { effective: effectiveConfig, local, setField, resetField, promoteField } = useScopedConfig();
@@ -106,29 +113,24 @@ export function ScopedField<P extends ConfigPath, T = ConfigValueAt<P>>({
     editingRef.current = false;
   }, [commit, commitOn, draft]);
 
+  const indicator = hasLocalOverride ? (
+    <ScopePill
+      onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
+      onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
+    />
+  ) : undefined;
+
   return (
-    <div id={configFieldId(path)} data-config-field={path} className="space-y-1.5 rounded-md transition-all duration-300">
-      <div className="flex items-center gap-2">
-        <label className="font-sans text-sm font-medium text-on-surface">{label}</label>
-        {hint && (
-          <span className="font-sans text-xs text-on-surface-variant font-normal">({hint})</span>
-        )}
-        {hasLocalOverride ? (
-          <ScopePill
-            onPromote={() => promoteField(path).catch((err) => console.error('[scoped-field] promote failed', err))}
-            onReset={() => resetField(path).catch((err) => console.error('[scoped-field] reset failed', err))}
-          />
-        ) : (
-          <ScopeBadge scope={lockScope === 'local' ? 'personal' : 'project'} />
-        )}
-      </div>
-      {children({ value: draft, onChange: handleChange, onBlur: handleBlur })}
-      {error && (
-        <p className="flex items-center gap-1 font-sans text-xs text-tertiary">
-          <AlertCircle className="h-3 w-3" />
-          Save failed: {error}
-        </p>
-      )}
+    <div id={configFieldId(path)} data-config-field={path} className="rounded-md transition-all duration-300">
+      <FieldShell
+        label={label}
+        hint={hint}
+        scope={scopeBadgeOverride ?? (lockScope === 'local' ? 'personal' : 'project')}
+        scopeIndicator={indicator}
+        error={error ?? undefined}
+      >
+        {children({ value: draft, onChange: handleChange, onBlur: handleBlur })}
+      </FieldShell>
     </div>
   );
 }

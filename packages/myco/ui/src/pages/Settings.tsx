@@ -1,16 +1,13 @@
 import { useState, useCallback, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2 } from 'lucide-react';
-import { useDaemon } from '../hooks/use-daemon';
 import {
   CONFIG_SECTION_IDS,
-  configFieldId,
 } from '@myco/config/focus';
 import {
   defaultBaseUrlForProvider,
   useProviders,
   useTestProvider,
   maybeInferHarnessFromProviderType,
-  resolveReasoningModel,
 } from '../hooks/use-providers';
 import type { ProviderDraft } from '../hooks/use-providers';
 import {
@@ -38,7 +35,6 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { SearchableSelect } from '../components/ui/searchable-select';
-import { Switch } from '../components/ui/switch';
 import { PlanCaptureCard } from '../components/config/PlanCaptureCard';
 import { ScopedField } from '../components/config/ScopedField';
 import { ScopeBadge, ScopePill } from '../components/config/ScopePill';
@@ -48,10 +44,8 @@ import { NotificationSettings } from '../components/notifications/NotificationSe
 import { ProviderModelSelector } from '../components/providers/ProviderModelSelector';
 import { ReasoningProfiles } from '../components/providers/ReasoningProfiles';
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type Provider = 'ollama' | 'openai-compatible';
 
-const LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: 'ollama', label: 'Ollama' },
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
@@ -63,7 +57,6 @@ type TestState = 'idle' | 'testing' | 'success' | 'error';
 
 export default function Settings() {
   const { effective, isLoading } = useScopedConfig();
-  const { data: stats } = useDaemon();
 
   if (isLoading || !effective) {
     return (
@@ -74,12 +67,18 @@ export default function Settings() {
     );
   }
 
-  const vaultName = stats?.vault.name ?? effective.embedding.provider;
-
   return (
     <RestartGateProvider>
     <div className="p-6">
-      <PageHeader title="Settings" subtitle="Vault configuration and daemon settings" />
+      <PageHeader
+        title="Settings"
+        subtitle="Project-scoped configuration. Personal overrides land in your local.yaml."
+      />
+      <p className="font-sans text-sm text-on-surface-variant mt-2 mb-4">
+        Daemon and machine-wide settings live under <strong className="font-medium text-on-surface">System</strong>.
+        Grove-wide settings (backups, maintenance, team) live under{' '}
+        <strong className="font-medium text-on-surface">Grove Settings</strong>.
+      </p>
       <RestartBanner />
 
       <div className="space-y-6">
@@ -97,9 +96,6 @@ export default function Settings() {
 
         {/* ---- Plan Capture section ---- */}
         <PlanCaptureCard />
-
-        {/* ---- Project section (scoped-field POC) ---- */}
-        <ProjectCard vaultName={vaultName} />
       </div>
     </div>
     </RestartGateProvider>
@@ -570,90 +566,3 @@ function EmbeddingCard() {
   );
 }
 
-/** Project card rebuilt on the scoped-field pattern — writes immediately to
- *  the chosen scope, surfaces a page-level "Restart required" banner, and
- *  lets any field be promoted/reset between personal and project scope. */
-function ProjectCard({ vaultName }: { vaultName: string }) {
-  return (
-    <Surface
-      id={CONFIG_SECTION_IDS.settingsProject}
-      level="low"
-      className="rounded-lg p-6 space-y-5 border-t-2 border-t-sage transition-all duration-300"
-    >
-      <SectionHeader>Project</SectionHeader>
-
-      <div className="space-y-4">
-        {/* Vault name -- read-only */}
-        <div
-          id={configFieldId('vault.name')}
-          data-config-field="vault.name"
-          className="space-y-1.5 rounded-md transition-all duration-300"
-        >
-          <label className="font-sans text-sm font-medium text-on-surface">Vault Name</label>
-          <Input value={vaultName} readOnly disabled className="text-on-surface-variant bg-surface-container-lowest" />
-        </div>
-
-        <ScopedField
-          path="daemon.port"
-          label="Daemon Port"
-          defaultScope="local"
-          requiresRestart
-          commitOn="blur"
-        >
-          {({ value, onChange, onBlur }) => (
-            <>
-              <Input
-                type="number"
-                placeholder="Auto"
-                value={value ?? ''}
-                onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-                onBlur={onBlur}
-              />
-              <p className="font-sans text-xs text-on-surface-variant">Leave blank to use a random available port.</p>
-            </>
-          )}
-        </ScopedField>
-
-        <ScopedField
-          path="daemon.log_level"
-          label="Log Level"
-          defaultScope="local"
-        >
-          {({ value, onChange }) => (
-            <Select value={value ?? 'info'} onValueChange={(v) => onChange(v as LogLevel)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LOG_LEVELS.map((level) => (
-                  <SelectItem key={level} value={level}>
-                    {level}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </ScopedField>
-
-        <ScopedField
-          path="daemon.log_retention_days"
-          label="Log Retention (days)"
-          defaultScope="local"
-          commitOn="blur"
-        >
-          {({ value, onChange, onBlur }) => (
-            <Input
-              type="number"
-              min={1}
-              max={365}
-              className="w-24"
-              value={value ?? ''}
-              onChange={(e) => onChange(Number(e.target.value))}
-              onBlur={onBlur}
-            />
-          )}
-        </ScopedField>
-      </div>
-    </Surface>
-  );
-}

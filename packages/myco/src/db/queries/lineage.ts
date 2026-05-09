@@ -12,6 +12,7 @@
  */
 
 import { insertGraphEdge } from './graph-edges.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import {
   EDGE_TYPE_FROM_SESSION,
   EDGE_TYPE_EXTRACTED_FROM,
@@ -27,6 +28,7 @@ import {
 export function createSporeLineage(spore: {
   id: string;
   agent_id: string;
+  project_id?: GroveProjectId | null;
   session_id?: string | null;
   prompt_batch_id?: number | null;
   observation_type?: string;
@@ -36,6 +38,7 @@ export function createSporeLineage(spore: {
   if (spore.session_id) {
     insertGraphEdge({
       agent_id: spore.agent_id,
+      project_id: spore.project_id,
       source_id: spore.id,
       source_type: 'spore',
       target_id: spore.session_id,
@@ -48,6 +51,7 @@ export function createSporeLineage(spore: {
   if (spore.prompt_batch_id != null) {
     insertGraphEdge({
       agent_id: spore.agent_id,
+      project_id: spore.project_id,
       source_id: spore.id,
       source_type: 'spore',
       target_id: String(spore.prompt_batch_id),
@@ -65,6 +69,7 @@ export function createSporeLineage(spore: {
         for (const sourceId of props.consolidated_from) {
           insertGraphEdge({
             agent_id: spore.agent_id,
+            project_id: spore.project_id,
             source_id: spore.id,
             source_type: 'spore',
             target_id: sourceId,
@@ -88,9 +93,11 @@ export function createBatchLineage(
   sessionId: string,
   batchId: number,
   createdAt: number,
+  projectId: GroveProjectId | null,
 ): void {
   insertGraphEdge({
     agent_id: agentId,
+    project_id: projectId,
     source_id: sessionId,
     source_type: 'session',
     target_id: String(batchId),

@@ -8,6 +8,7 @@
 
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { listSessionsForMcp, type SessionSummary } from '@myco/sessions/list-for-mcp.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import type { ToolFailure } from './error.js';
 
 interface SessionsInput {
@@ -24,11 +25,15 @@ interface SessionsInput {
 export async function handleMycoSessions(
   input: SessionsInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<SessionSummary[] | unknown | ToolFailure> {
   const op = input.op ?? 'list';
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
-    const result = await client.get(`/api/sessions/${encodeURIComponent(input.id)}`);
+    const endpoint = `/api/sessions/${encodeURIComponent(input.id)}`;
+    const result = requestContext
+      ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+      : await client.get(endpoint);
     if (!result.ok || !result.data) return { ok: false, error: 'Session not found' };
     return result.data;
   }
@@ -40,5 +45,6 @@ export async function handleMycoSessions(
     since: input.since,
     status: input.status,
     limit: input.limit,
+    requestContext,
   });
 }

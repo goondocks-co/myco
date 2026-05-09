@@ -6,6 +6,7 @@
  */
 
 import { listSessions, getSession } from '@myco/db/queries/sessions.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { initVaultDb } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -15,9 +16,9 @@ import { initVaultDb } from './shared.js';
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const idOrLatest = args[0];
 
-  const cleanup = initVaultDb(vaultDir);
+  const cleanup = await initVaultDb(vaultDir);
   try {
-    const sessions = listSessions({ limit: 100 });
+    const sessions = listSessions({ scope: ALL_PROJECTS_SCOPE, limit: 100 });
     if (sessions.length === 0) {
       console.log('No sessions found');
       return;
@@ -38,7 +39,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     }
 
     // Fetch full session detail
-    const target = getSession(targetId);
+    const target = getSession(targetId, ALL_PROJECTS_SCOPE);
     if (!target) {
       console.error(`Failed to fetch session: ${targetId}`);
       return;

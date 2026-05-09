@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createMycoTools } from '@myco/tools/index';
 import { DaemonClient } from '@myco/hooks/client';
+import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -18,6 +19,7 @@ describe('MCP tool surface (createMycoTools)', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mcp-'));
+    ensureProjectManifest(tmpDir, { projectName: 'mcp-server-test' });
     client = new DaemonClient(tmpDir);
   });
 
@@ -25,7 +27,7 @@ describe('MCP tool surface (createMycoTools)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated 7-tool core surface', () => {
+  it('registers the consolidated core tool surface (7 retrieval/entity tools + 2 operator tools)', () => {
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
@@ -34,7 +36,10 @@ describe('MCP tool surface (createMycoTools)', () => {
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_spores');
     expect(tools).toContain('myco_agent');
-    expect(tools).toHaveLength(7);
+    // Stream J — agent-native parity (operator action tools).
+    expect(tools).toContain('myco_maintenance');
+    expect(tools).toContain('myco_update');
+    expect(tools).toHaveLength(9);
   });
 
   it('no longer registers the retired MCP surfaces', () => {

@@ -14,6 +14,7 @@ import {
   listWriteIntents,
   countWriteIntentsByTool,
 } from '@myco/db/queries/write-intents.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 const TEST_AGENT_ID = 'agent-write-intents-test';
@@ -58,7 +59,7 @@ describe('write intents query helpers', () => {
         toolInput: '{}',
         syntheticOutput: '{}',
       });
-      const rows = listWriteIntents('run-2');
+      const rows = listWriteIntents('run-2', { scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe(id);
       expect(rows[0].phase_id).toBeNull();
@@ -73,7 +74,7 @@ describe('write intents query helpers', () => {
         toolInput: JSON.stringify({ content: 'hi', importance: 7 }),
         syntheticOutput: JSON.stringify({ id: 'stub-1', ok: true }),
       });
-      const [row] = listWriteIntents('run-json');
+      const [row] = listWriteIntents('run-json', { scope: ALL_PROJECTS_SCOPE });
       expect(row.tool_input).toEqual({ content: 'hi', importance: 7 });
       expect(row.synthetic_output).toEqual({ id: 'stub-1', ok: true });
     });
@@ -94,7 +95,7 @@ describe('write intents query helpers', () => {
         syntheticOutput: '{}',
         recordedAt: 1234,
       });
-      const rows = listWriteIntents('run-3');
+      const rows = listWriteIntents('run-3', { scope: ALL_PROJECTS_SCOPE });
       expect(rows[0].recorded_at).toBeGreaterThanOrEqual(before);
       expect(rows[1].recorded_at).toBe(1234);
     });
@@ -107,7 +108,7 @@ describe('write intents query helpers', () => {
       insertWriteIntent({ runId: 'run-list', toolName: 'b', toolInput: '2', syntheticOutput: '2' });
       insertWriteIntent({ runId: 'run-list', toolName: 'c', toolInput: '3', syntheticOutput: '3' });
 
-      const rows = listWriteIntents('run-list');
+      const rows = listWriteIntents('run-list', { scope: ALL_PROJECTS_SCOPE });
       expect(rows.map((r) => r.tool_name)).toEqual(['a', 'b', 'c']);
     });
 
@@ -117,13 +118,13 @@ describe('write intents query helpers', () => {
       insertWriteIntent({ runId: 'run-x', toolName: 'a', toolInput: '{}', syntheticOutput: '{}' });
       insertWriteIntent({ runId: 'run-y', toolName: 'b', toolInput: '{}', syntheticOutput: '{}' });
 
-      expect(listWriteIntents('run-x').map((r) => r.tool_name)).toEqual(['a']);
-      expect(listWriteIntents('run-y').map((r) => r.tool_name)).toEqual(['b']);
+      expect(listWriteIntents('run-x', { scope: ALL_PROJECTS_SCOPE }).map((r) => r.tool_name)).toEqual(['a']);
+      expect(listWriteIntents('run-y', { scope: ALL_PROJECTS_SCOPE }).map((r) => r.tool_name)).toEqual(['b']);
     });
 
     it('returns empty array when run has no intents', () => {
       seedRun('run-empty');
-      expect(listWriteIntents('run-empty')).toEqual([]);
+      expect(listWriteIntents('run-empty', { scope: ALL_PROJECTS_SCOPE })).toEqual([]);
     });
   });
 
@@ -135,7 +136,7 @@ describe('write intents query helpers', () => {
       insertWriteIntent({ runId: 'run-count', toolName: 'vault_create_spore', toolInput: '{}', syntheticOutput: '{}' });
       insertWriteIntent({ runId: 'run-count', toolName: 'vault_write_digest', toolInput: '{}', syntheticOutput: '{}' });
 
-      const counts = countWriteIntentsByTool('run-count');
+      const counts = countWriteIntentsByTool('run-count', ALL_PROJECTS_SCOPE);
       expect(counts).toEqual({
         vault_create_spore: 3,
         vault_write_digest: 1,
@@ -144,7 +145,7 @@ describe('write intents query helpers', () => {
 
     it('returns an empty object when there are no intents', () => {
       seedRun('run-zero');
-      expect(countWriteIntentsByTool('run-zero')).toEqual({});
+      expect(countWriteIntentsByTool('run-zero', ALL_PROJECTS_SCOPE)).toEqual({});
     });
   });
 
@@ -169,12 +170,12 @@ describe('write intents query helpers', () => {
       seedRun('run-cascade');
       insertWriteIntent({ runId: 'run-cascade', toolName: 'a', toolInput: '{}', syntheticOutput: '{}' });
       insertWriteIntent({ runId: 'run-cascade', toolName: 'b', toolInput: '{}', syntheticOutput: '{}' });
-      expect(listWriteIntents('run-cascade')).toHaveLength(2);
+      expect(listWriteIntents('run-cascade', { scope: ALL_PROJECTS_SCOPE })).toHaveLength(2);
 
       const { getDatabase } = await import('@myco/db/client.js');
       getDatabase().prepare('DELETE FROM agent_runs WHERE id = ?').run('run-cascade');
 
-      expect(listWriteIntents('run-cascade')).toEqual([]);
+      expect(listWriteIntents('run-cascade', { scope: ALL_PROJECTS_SCOPE })).toEqual([]);
     });
   });
 });

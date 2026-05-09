@@ -16,21 +16,27 @@ export const UPDATE_CONFIG_PATH = path.join(MYCO_GLOBAL_DIR, 'update.yaml');
 /** Path to the update error file (written by update script on failure). */
 export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json');
 
-/** Project-local managed runtime directory under the vault. */
-export const PROJECT_RUNTIME_DIRNAME = 'runtime';
+/**
+ * Machine-scope managed runtime directory.
+ *
+ * Lives under `~/.myco/` (or whatever `resolveMycoHome()` returns). When
+ * the user opts into the beta channel, `update-installer.ts` does
+ * `npm install --prefix ~/.myco/runtime/` and writes the resolved binary
+ * path into {@link MACHINE_RUNTIME_COMMAND_FILENAME} so the daemon, hooks,
+ * and MCP launchers all dispatch to the same managed binary regardless of
+ * which project they're invoked from.
+ */
+export const MACHINE_RUNTIME_DIRNAME = 'runtime';
 
 /**
- * Staging directory used during atomic swap on update.
- *
- * `npm install --prefix <runtime.tmp>` runs first; on success the staging
- * dir is `mv`d into place over the old `runtime/`. Derived from
- * {@link PROJECT_RUNTIME_DIRNAME} so a rename of the runtime dir can't
- * silently drift from the gitignore or the installer script.
+ * Staging directory used during atomic swap on update. Same machine-scope
+ * sibling as {@link MACHINE_RUNTIME_DIRNAME}: install into `runtime.tmp/`,
+ * then `mv` it into place.
  */
-export const PROJECT_RUNTIME_TMP_DIRNAME = `${PROJECT_RUNTIME_DIRNAME}.tmp`;
+export const MACHINE_RUNTIME_TMP_DIRNAME = `${MACHINE_RUNTIME_DIRNAME}.tmp`;
 
-/** Filename for the per-project runtime command alias (lives inside vault .myco/). */
-export const PROJECT_RUNTIME_COMMAND_FILENAME = 'runtime.command';
+/** Filename for the machine-scope runtime command alias (lives in `~/.myco/`). */
+export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
 
 /** Filename for the version stamp written by `myco update` (lives inside vault .myco/). */
 export const UPDATE_STAMP_FILENAME = 'last-update-version';
@@ -53,15 +59,11 @@ export const TEAM_PACKAGE_NAME = '@goondocks/myco-team';
 /** Optional standalone Myco Collective package name. */
 export const COLLECTIVE_PACKAGE_NAME = '@goondocks/myco-collective';
 
-/** Optional standalone Myco Hub package name. */
-export const HUB_PACKAGE_NAME = '@goondocks/myco-hub';
-
 /** Global-package update targets shown in the Operations UI. */
 export const UPDATE_PACKAGES = [
   { id: 'myco', packageName: NPM_PACKAGE_NAME, displayName: 'Myco' },
   { id: 'myco-team', packageName: TEAM_PACKAGE_NAME, displayName: 'Myco Team' },
   { id: 'myco-collective', packageName: COLLECTIVE_PACKAGE_NAME, displayName: 'Myco Collective' },
-  { id: 'myco-hub', packageName: HUB_PACKAGE_NAME, displayName: 'Myco Hub' },
 ] as const;
 export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 

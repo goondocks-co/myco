@@ -6,6 +6,7 @@
  */
 
 import { getDatabase } from '@myco/db/client.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,6 +15,7 @@ import { getDatabase } from '@myco/db/client.js';
 /** Fields required (or optional) when inserting a turn. */
 export interface TurnInsert {
   run_id: string;
+  project_id?: string | null;
   agent_id: string;
   turn_number: number;
   tool_name: string;
@@ -32,6 +34,7 @@ export interface TurnCompletion {
 /** Row shape returned from agent_turns queries (all columns). */
 export interface TurnRow {
   id: number;
+  project_id: string | null;
   run_id: string;
   agent_id: string;
   turn_number: number;
@@ -48,6 +51,7 @@ export interface TurnRow {
 
 const TURN_COLUMNS = [
   'id',
+  'project_id',
   'run_id',
   'agent_id',
   'turn_number',
@@ -68,6 +72,7 @@ const SELECT_COLUMNS = TURN_COLUMNS.join(', ');
 function toTurnRow(row: Record<string, unknown>): TurnRow {
   return {
     id: row.id as number,
+    project_id: (row.project_id as string) ?? null,
     run_id: row.run_id as string,
     agent_id: row.agent_id as string,
     turn_number: row.turn_number as number,
@@ -77,6 +82,10 @@ function toTurnRow(row: Record<string, unknown>): TurnRow {
     started_at: (row.started_at as number) ?? null,
     completed_at: (row.completed_at as number) ?? null,
   };
+}
+
+export interface ListTurnsOptions {
+  scope: ProjectScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,13 +102,15 @@ export function insertTurn(data: TurnInsert): TurnRow {
 
   const info = db.prepare(
     `INSERT INTO agent_turns (
-       run_id, agent_id, turn_number, tool_name,
+       project_id, run_id, agent_id, turn_number, tool_name,
        tool_input, tool_output_summary, started_at, completed_at
      ) VALUES (
-       ?, ?, ?, ?,
+       COALESCE(?, (SELECT project_id FROM agent_runs WHERE id = ?)), ?, ?, ?, ?,
        ?, ?, ?, ?
      )`,
   ).run(
+    data.project_id ?? null,
+    data.run_id,
     data.run_id,
     data.agent_id,
     data.turn_number,
@@ -145,15 +156,18 @@ export function updateTurn(id: number, completion: TurnCompletion): TurnRow | nu
 /**
  * List all turns for a specific run, ordered by turn_number ASC.
  */
-export function listTurns(runId: string): TurnRow[] {
+export function listTurns(runId: string, options: ListTurnsOptions): TurnRow[] {
   const db = getDatabase();
+  const conditions = ['run_id = ?'];
+  const params: unknown[] = [runId];
+  appendProjectCondition(conditions, params, options.scope);
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM agent_turns
-     WHERE run_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY turn_number ASC`,
-  ).all(runId) as Record<string, unknown>[];
+  ).all(...params) as Record<string, unknown>[];
 
   return rows.map(toTurnRow);
 }
@@ -164,8 +178,8 @@ export function listTurns(runId: string): TurnRow[] {
  * Alias for `listTurns` with an explicit "by run" naming convention used
  * by the dashboard API layer.
  */
-export function listTurnsByRun(runId: string): TurnRow[] {
-  return listTurns(runId);
+export function listTurnsByRun(runId: string, options: ListTurnsOptions): TurnRow[] {
+  return listTurns(runId, options);
 }
 
 /** Count tool calls by name for a specific run. */
@@ -189,4 +203,3 @@ export function countToolCallsByRun(
   }
   return result;
 }
-

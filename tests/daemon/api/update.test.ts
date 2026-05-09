@@ -30,7 +30,7 @@ mock.module('@myco/daemon/update-checker.js', () => ({
   getInstalledVersion: vi.fn(() => null),
   resolveMycoBinary: vi.fn(() => 'myco'),
   resolveRuntimeCommand: vi.fn(() => null),
-  isManagedProjectRuntime: vi.fn(() => false),
+  isManagedMachineRuntime: vi.fn(() => false),
 }));
 
 mock.module('@myco/daemon/update-installer.js', () => ({
@@ -50,12 +50,13 @@ import {
   isCacheStale,
   getInstalledVersion,
   resolveRuntimeCommand,
-  isManagedProjectRuntime,
+  isManagedMachineRuntime,
 } from '@myco/daemon/update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -64,6 +65,7 @@ import type { RouteRequest } from '@myco/daemon/router.js';
 function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: {},
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '/api/update/status',
@@ -180,7 +182,7 @@ describe('handleUpdateStatus', () => {
     // Response returned immediately (does not await checkForUpdate)
     expect(result.body).toMatchObject({ exempt: false });
     // Background check was triggered
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable', '/vault');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
   });
 
   it('returns exempt:false in body when not exempt', async () => {
@@ -237,7 +239,7 @@ describe('handleUpdateCheck', () => {
 
     const result = await handleUpdateCheck(makeReq());
 
-    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable', '/vault');
+    expect(checkForUpdate).toHaveBeenCalledWith('1.0.0', undefined, null, 'stable');
     expect(result.body).toMatchObject({ exempt: false, update_available: true });
   });
 
@@ -263,7 +265,7 @@ describe('handleUpdateApply', () => {
     vi.mocked(spawnUpdateScript).mockReset();
     vi.mocked(spawnUpdateScript).mockReturnValue('/tmp/myco-update-123.sh');
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
   });
 
   it('returns 400 when exempt', async () => {
@@ -373,8 +375,8 @@ describe('handleUpdateApply', () => {
         },
       ],
     });
-    vi.mocked(resolveRuntimeCommand).mockReturnValue('/project/.myco/runtime/node_modules/.bin/myco');
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(true);
+    vi.mocked(resolveRuntimeCommand).mockReturnValue('/mock-home/.myco/runtime/node_modules/.bin/myco');
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(true);
 
     const { handleUpdateApply } = createUpdateHandlers(makeDeps());
 
@@ -386,14 +388,14 @@ describe('handleUpdateApply', () => {
       removeLocalRuntime: true,
       projectRoot: '/project',
       vaultDir: '/vault',
-      mycoBinary: '/project/.myco/runtime/node_modules/.bin/myco',
+      mycoBinary: '/mock-home/.myco/runtime/node_modules/.bin/myco',
     });
   });
 
-  it('installs a project-local beta runtime even when the machine install matches the target', async () => {
-    // User is on stable, opts into beta for this project. Global myco is already
-    // at the version beta channel resolves to — update_available is false but
-    // we still need to create the project-local runtime.
+  it('installs a managed beta runtime even when the global install matches the target', async () => {
+    // User is on stable, opts into beta. Global myco is already at the
+    // version the beta channel resolves to — update_available is false but
+    // we still need to create the managed runtime under ~/.myco/runtime/.
     vi.mocked(statusFromCache).mockReturnValue({
       ...UPDATE_AVAILABLE_STATUS,
       channel: 'beta',
@@ -412,7 +414,7 @@ describe('handleUpdateApply', () => {
       ],
     });
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
 
     const { handleUpdateApply } = createUpdateHandlers(makeDeps());
 
@@ -441,7 +443,7 @@ describe('handleUpdateChannel', () => {
     vi.mocked(readProjectReleaseChannel).mockReturnValue('stable');
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     vi.mocked(writeProjectReleaseChannel).mockImplementation(() => {});
     vi.mocked(clearCachedCheck).mockImplementation(() => {});
   });
@@ -617,7 +619,7 @@ describe('handleUpdateStatus — restart_required', () => {
     vi.mocked(resolveRuntimeCommand).mockReturnValue(
       '/vault/runtime/node_modules/.bin/myco',
     );
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(true);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(true);
     const scheduleShutdown = vi.fn();
     const { handleUpdateStatus } = createUpdateHandlers(
       makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
@@ -634,11 +636,11 @@ describe('handleUpdateStatus — restart_required', () => {
   it('does not trigger auto-restart when runtime.command pins a dogfood binary outside .myco/runtime/', async () => {
     vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
     // Dogfood layout: ~/.local/bin/myco-dev symlinked to the repo's built
-    // vendor binary. `isManagedProjectRuntime` returns false (not under
+    // vendor binary. `isManagedMachineRuntime` returns false (not under
     // `.myco/runtime/node_modules/`), but the daemon is still pinned —
     // restart would respawn the same binary and loop.
     vi.mocked(resolveRuntimeCommand).mockReturnValue('/Users/x/.local/bin/myco-dev');
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     const scheduleShutdown = vi.fn();
     const { handleUpdateStatus } = createUpdateHandlers(
       makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }),
@@ -679,7 +681,7 @@ describe('handleUpdateStatus — runLocalUpdate stamp gating', () => {
     vi.mocked(statusFromCache).mockReturnValue(NO_UPDATE_STATUS);
     vi.mocked(getInstalledVersion).mockReset();
     vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
-    vi.mocked(isManagedProjectRuntime).mockReturnValue(false);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
     vi.mocked(spawnRestartScript).mockReset();
     vi.mocked(spawnRestartScript).mockReturnValue('/tmp/myco-restart-stamp.sh');
   });

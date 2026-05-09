@@ -11,6 +11,7 @@ import {
   getGraphForNode,
 } from '@myco/db/queries/graph-edges.js';
 import type { GraphEdgeInsert } from '@myco/db/queries/graph-edges.js';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -80,7 +81,7 @@ describe('graph edge query helpers', () => {
       insertGraphEdge(makeEdge({ source_id: 'old', created_at: now - 100 }));
       insertGraphEdge(makeEdge({ source_id: 'new', created_at: now }));
 
-      const edges = listGraphEdges();
+      const edges = listGraphEdges({ scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(2);
       expect(edges[0].source_id).toBe('new');
       expect(edges[1].source_id).toBe('old');
@@ -90,7 +91,7 @@ describe('graph edge query helpers', () => {
       insertGraphEdge(makeEdge({ source_id: 'spore-a' }));
       insertGraphEdge(makeEdge({ source_id: 'spore-b' }));
 
-      const edges = listGraphEdges({ sourceId: 'spore-a' });
+      const edges = listGraphEdges({ sourceId: 'spore-a', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].source_id).toBe('spore-a');
     });
@@ -99,7 +100,7 @@ describe('graph edge query helpers', () => {
       insertGraphEdge(makeEdge({ target_id: 'session-x' }));
       insertGraphEdge(makeEdge({ target_id: 'session-y' }));
 
-      const edges = listGraphEdges({ targetId: 'session-x' });
+      const edges = listGraphEdges({ targetId: 'session-x', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].target_id).toBe('session-x');
     });
@@ -108,7 +109,7 @@ describe('graph edge query helpers', () => {
       insertGraphEdge(makeEdge({ type: 'FROM_SESSION' }));
       insertGraphEdge(makeEdge({ type: 'EXTRACTED_FROM' }));
 
-      const edges = listGraphEdges({ type: 'FROM_SESSION' });
+      const edges = listGraphEdges({ type: 'FROM_SESSION', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
     });
@@ -118,8 +119,18 @@ describe('graph edge query helpers', () => {
         insertGraphEdge(makeEdge({ source_id: `s-${i}`, created_at: epochNow() + i }));
       }
 
-      const edges = listGraphEdges({ limit: 2 });
+      const edges = listGraphEdges({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(2);
+    });
+
+    it('filters by projectId', () => {
+      insertGraphEdge(makeEdge({ project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', source_id: 'spore-a' }));
+      insertGraphEdge(makeEdge({ project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', source_id: 'spore-b' }));
+
+      const edges = listGraphEdges({ scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId) });
+
+      expect(edges).toHaveLength(1);
+      expect(edges[0].source_id).toBe('spore-a');
     });
   });
 
@@ -136,7 +147,7 @@ describe('graph edge query helpers', () => {
         type: 'EXTRACTED_FROM',
       }));
 
-      const result = getGraphForNode('spore-1', 'spore', { depth: 1 });
+      const result = getGraphForNode('spore-1', 'spore', { depth: 1, scope: ALL_PROJECTS_SCOPE });
       expect(result.edges).toHaveLength(2);
     });
 
@@ -154,11 +165,11 @@ describe('graph edge query helpers', () => {
       }));
 
       // Depth 1 should find only the first edge
-      const shallow = getGraphForNode('spore-1', 'spore', { depth: 1 });
+      const shallow = getGraphForNode('spore-1', 'spore', { depth: 1, scope: ALL_PROJECTS_SCOPE });
       expect(shallow.edges).toHaveLength(1);
 
       // Depth 2 should find both
-      const deep = getGraphForNode('spore-1', 'spore', { depth: 2 });
+      const deep = getGraphForNode('spore-1', 'spore', { depth: 2, scope: ALL_PROJECTS_SCOPE });
       expect(deep.edges).toHaveLength(2);
     });
 
@@ -175,12 +186,34 @@ describe('graph edge query helpers', () => {
         type: 'DERIVED_FROM',
       }));
 
-      const result = getGraphForNode('A', 'spore', { depth: 3 });
+      const result = getGraphForNode('A', 'spore', { depth: 3, scope: ALL_PROJECTS_SCOPE });
       expect(result.edges).toHaveLength(2);
     });
 
+    it('traverses only edges inside the requested project scope', () => {
+      insertGraphEdge(makeEdge({
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        source_id: 'spore-1',
+        source_type: 'spore',
+        target_id: 'session-a',
+        target_type: 'session',
+      }));
+      insertGraphEdge(makeEdge({
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        source_id: 'spore-1',
+        source_type: 'spore',
+        target_id: 'session-b',
+        target_type: 'session',
+      }));
+
+      const result = getGraphForNode('spore-1', 'spore',{ depth: 1, scope: projectScope('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as GroveProjectId)});
+
+      expect(result.edges).toHaveLength(1);
+      expect(result.edges[0].target_id).toBe('session-a');
+    });
+
     it('returns empty edges for isolated node', () => {
-      const result = getGraphForNode('isolated', 'entity');
+      const result = getGraphForNode('isolated', 'entity', { scope: ALL_PROJECTS_SCOPE });
       expect(result.edges).toEqual([]);
     });
   });

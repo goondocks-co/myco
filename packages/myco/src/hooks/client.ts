@@ -3,6 +3,21 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { getPluginVersion } from '../version.js';
+import {
+  REQUEST_CONTEXT_AUTH_ENV,
+  REQUEST_CONTEXT_AUTH_HEADER,
+  REQUEST_CONTEXT_ENV,
+  requestContextFromEnvironment,
+  requestContextHeaders,
+  type MycoRequestContext,
+} from '../tools/request-context.js';
+import {
+  daemonStateMtimeMs,
+  readDaemonState,
+  removeDaemonState,
+  resolveDaemonServiceState,
+  type DaemonServiceState,
+} from '../daemon/service-state.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -44,6 +59,20 @@ interface ClientResult {
   data?: any;
 }
 
+interface ClientOptions {
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+}
+
+interface DaemonClientOptions {
+  requestContext?: MycoRequestContext;
+  headers?: Record<string, string>;
+}
+
+interface HookRequestContextInput {
+  sessionId?: string | null;
+}
+
 /**
  * Attempt to parse a non-ok response body as JSON so callers can surface
  * the daemon's structured error envelope (e.g. `{error: {code, message}}`).
@@ -76,12 +105,24 @@ export function isIgnoredEventResponse(data: unknown): boolean {
 
 export class DaemonClient {
   private vaultDir: string;
+  private defaultHeaders: Record<string, string>;
+  private daemonService: DaemonServiceState;
+  private legacyProjectDaemonCleaned = false;
 
-  constructor(vaultDir: string) {
+  constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
+    this.daemonService = resolveDaemonServiceState(vaultDir, {
+      requestContext: options.requestContext,
+      env: process.env,
+    });
+    this.defaultHeaders = {
+      ...(options.requestContext ? requestContextHeaders(options.requestContext) : {}),
+      ...resolveDaemonAuthHeader(this.daemonService.statePath),
+      ...(options.headers ?? {}),
+    };
   }
 
-  async post(endpoint: string, body: unknown, options?: { timeoutMs?: number }): Promise<ClientResult> {
+  async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -90,7 +131,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(options?.timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -104,7 +145,7 @@ export class DaemonClient {
     }
   }
 
-  async put(endpoint: string, body: unknown): Promise<ClientResult> {
+  async put(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -113,7 +154,7 @@ export class DaemonClient {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
@@ -127,7 +168,7 @@ export class DaemonClient {
     }
   }
 
-  async get(endpoint: string): Promise<ClientResult> {
+  async get(endpoint: string, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -135,6 +176,7 @@ export class DaemonClient {
     }
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+        headers: this.requestHeaders(options?.headers),
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
 
@@ -147,7 +189,7 @@ export class DaemonClient {
     }
   }
 
-  async delete(endpoint: string, body?: unknown): Promise<ClientResult> {
+  async delete(endpoint: string, body?: unknown, options?: ClientOptions): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -159,8 +201,11 @@ export class DaemonClient {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       };
       if (body !== undefined) {
-        init.headers = { 'Content-Type': 'application/json' };
+        init.headers = { 'Content-Type': 'application/json', ...this.requestHeaders(options?.headers) };
         init.body = JSON.stringify(body);
+      } else {
+        const headers = this.requestHeaders(options?.headers);
+        if (headers) init.headers = headers;
       }
 
       const res = await fetch(`http://127.0.0.1:${info.port}${endpoint}`, init);
@@ -198,9 +243,8 @@ export class DaemonClient {
    */
   private async isStale(info: DaemonInfo): Promise<boolean> {
     try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const stat = fs.statSync(jsonPath);
-      if (Date.now() - stat.mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
+      const mtimeMs = daemonStateMtimeMs(this.daemonService.statePath);
+      if (mtimeMs !== null && Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS) {
         return false;
       }
 
@@ -228,9 +272,7 @@ export class DaemonClient {
       if (!info) return;
       process.kill(info.pid, 'SIGTERM');
     } catch { /* already dead */ }
-    try {
-      fs.unlinkSync(path.join(this.vaultDir, 'daemon.json'));
-    } catch { /* already gone */ }
+    removeDaemonState(this.daemonService.statePath);
   }
 
   /**
@@ -241,6 +283,7 @@ export class DaemonClient {
    * version-driven restarts.
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
+    this.cleanLegacyProjectDaemon();
     const checkStale = opts?.checkStale ?? true;
     const info = this.readDaemonJson();
 
@@ -270,7 +313,13 @@ export class DaemonClient {
     return this.readDaemonJson();
   }
 
+  private requestHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
+    if (Object.keys(this.defaultHeaders).length === 0) return headers;
+    return { ...this.defaultHeaders, ...(headers ?? {}) };
+  }
+
   async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
+    this.cleanLegacyProjectDaemon();
     this.killDaemon(this.readDaemonJson());
     await new Promise((r) => setTimeout(r, 200));
     return this.ensureRunning(opts);
@@ -280,7 +329,7 @@ export class DaemonClient {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.
     if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
-    // Coalesce concurrent spawns: if daemon.json was written within the
+    // Coalesce concurrent spawns: if daemon state was written within the
     // coalesce window AND its pid is still alive, another spawn is already in
     // flight — defer to it instead of forking another process. Safe to call
     // from every failed request path (post/get/put/delete all invoke it), so
@@ -299,9 +348,8 @@ export class DaemonClient {
 
   private spawnIsInFlight(): boolean {
     try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const stat = fs.statSync(jsonPath);
-      if (Date.now() - stat.mtimeMs >= DAEMON_SPAWN_COALESCE_MS) return false;
+      const mtimeMs = daemonStateMtimeMs(this.daemonService.statePath);
+      if (mtimeMs === null || Date.now() - mtimeMs >= DAEMON_SPAWN_COALESCE_MS) return false;
       const info = this.readDaemonJson();
       if (!info?.pid) return false;
       try { process.kill(info.pid, 0); return true; }
@@ -312,14 +360,68 @@ export class DaemonClient {
   }
 
   private readDaemonJson(): DaemonInfo | null {
-    try {
-      const jsonPath = path.join(this.vaultDir, 'daemon.json');
-      const content = fs.readFileSync(jsonPath, 'utf-8');
-      const info = JSON.parse(content);
-      if (typeof info.port !== 'number') return null;
-      return info as DaemonInfo;
-    } catch {
-      return null;
-    }
+    this.cleanLegacyProjectDaemon();
+    return readDaemonState(this.daemonService.statePath);
   }
+
+  private cleanLegacyProjectDaemon(): void {
+    if (this.daemonService.scope !== 'global') return;
+    if (this.legacyProjectDaemonCleaned) return;
+    this.legacyProjectDaemonCleaned = true;
+
+    const legacyPath = path.join(this.vaultDir, 'daemon.json');
+    if (path.resolve(legacyPath) === path.resolve(this.daemonService.statePath)) return;
+
+    const legacyInfo = readDaemonState(legacyPath);
+    if (!legacyInfo) {
+      removeDaemonState(legacyPath);
+      return;
+    }
+
+    const globalInfo = readDaemonState(this.daemonService.statePath);
+    if (globalInfo?.pid === legacyInfo.pid) {
+      removeDaemonState(legacyPath, legacyInfo.pid);
+      return;
+    }
+
+    if (legacyInfo.pid !== process.pid) {
+      try {
+        process.kill(legacyInfo.pid, 'SIGTERM');
+      } catch {
+        // Already dead or inaccessible.
+      }
+    }
+    removeDaemonState(legacyPath, legacyInfo.pid);
+  }
+}
+
+export function requestContextForHook(
+  vaultDir: string,
+  input: HookRequestContextInput = {},
+): MycoRequestContext {
+  const env: Record<string, string | undefined> = { ...process.env };
+  if (input.sessionId) env[REQUEST_CONTEXT_ENV.sessionId] = input.sessionId;
+  return requestContextFromEnvironment(env, vaultDir);
+}
+
+export function createHookDaemonClient(
+  vaultDir: string,
+  input: HookRequestContextInput = {},
+): DaemonClient {
+  return new DaemonClient(vaultDir, { requestContext: requestContextForHook(vaultDir, input) });
+}
+
+/**
+ * Resolve the daemon-issued bearer token (G4). Spawned children
+ * inherit it via env; out-of-band invocations recover it from
+ * `daemon.json`. Returns the headers ready to merge into a fetch
+ * request — empty when no token is available, so the gate stays a
+ * no-op for callers the daemon did not produce.
+ */
+function resolveDaemonAuthHeader(daemonStatePath: string): Record<string, string> {
+  const fromEnv = process.env[REQUEST_CONTEXT_AUTH_ENV];
+  if (fromEnv) return { [REQUEST_CONTEXT_AUTH_HEADER]: fromEnv };
+  const state = readDaemonState(daemonStatePath);
+  if (state?.auth_token) return { [REQUEST_CONTEXT_AUTH_HEADER]: state.auth_token };
+  return {};
 }

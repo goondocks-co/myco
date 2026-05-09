@@ -16,7 +16,7 @@ import {
   STALE_SESSION_THRESHOLD_MS,
   DEAD_SESSION_MAX_PROMPTS,
 } from '../../constants.js';
-import type { DaemonLogger } from '../logger.js';
+import type { Logger } from '../logger.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import { cleanupAfterSessionCascade } from './session-cleanup.js';
 import { LOG_KINDS } from '../../constants/log-kinds.js';
@@ -88,10 +88,20 @@ export function findDeadSessionIds(registeredSessionIds: string[]): string[] {
 }
 
 export interface SessionMaintenanceDeps {
-  logger: DaemonLogger;
+  logger: Logger;
   registeredSessionIds: () => string[];
   embeddingManager: EmbeddingManager;
-  vaultDir: string;
+  /**
+   * Resolve the on-disk vault dir for a session's project so per-project
+   * markdown and attachment cleanup targets the right tree. The argument
+   * is the deleted session's `project_id`. Returning `null` skips the
+   * filesystem cleanup pass for that session — DB rows are still removed.
+   *
+   * In multi-Grove fan-out the resolver is built per Grove from the
+   * Grove's registered projects; in legacy single-vault mode it returns
+   * the boot vaultDir for any project id.
+   */
+  resolveProjectVaultDir: (projectId: string | null) => string | null;
   /**
    * Inactivity window (ms) after which an active session is marked completed.
    * When omitted, falls back to `STALE_SESSION_THRESHOLD_MS`.
@@ -105,7 +115,7 @@ export interface SessionMaintenanceDeps {
  * 2. Delete dead sessions (cascade)
  */
 export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promise<void> {
-  const { logger, registeredSessionIds, embeddingManager, vaultDir, staleThresholdMs } = deps;
+  const { logger, registeredSessionIds, embeddingManager, resolveProjectVaultDir, staleThresholdMs } = deps;
   const registered = registeredSessionIds();
 
   // Task 1: Complete stale sessions
@@ -124,11 +134,23 @@ export async function runSessionMaintenance(deps: SessionMaintenanceDeps): Promi
     const result = deleteSessionCascade(sessionId);
     if (!result.deleted) continue;
 
-    await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir);
+    const vaultDir = resolveProjectVaultDir(result.projectId);
+    if (vaultDir) {
+      await cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir);
+    } else {
+      // No registered project — vector cleanup still runs; vault files
+      // (if any) are unreachable without a project root, so skip the
+      // filesystem pass rather than guess.
+      for (const sporeId of result.deletedSporeIds) {
+        try { embeddingManager.onRemoved('spores', sporeId); } catch { /* best-effort */ }
+      }
+      try { embeddingManager.onRemoved('sessions', sessionId); } catch { /* best-effort */ }
+    }
 
     deletedCount++;
     logger.info(LOG_KINDS.MAINTENANCE_SESSION, 'Deleted dead session', {
       session_id: sessionId,
+      project_id: result.projectId,
       counts: result.counts,
     });
   }
