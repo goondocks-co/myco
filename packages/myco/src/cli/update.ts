@@ -5,6 +5,8 @@ import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
+import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,18 +17,33 @@ import path from 'node:path';
 // vault regardless of update invocations.
 
 export async function run(args: string[]): Promise<void> {
+  if (args.includes('--all-projects')) {
+    await runAllProjects();
+    return;
+  }
+
   let projectRoot: string | undefined;
   const projectIdx = args.indexOf('--project');
   if (projectIdx !== -1 && args[projectIdx + 1]) {
     projectRoot = args[projectIdx + 1];
   }
 
+  try {
+    await runForProject(projectRoot);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+async function runForProject(projectRoot: string | undefined): Promise<void> {
   const vaultDir = projectRoot
     ? path.join(projectRoot, '.myco')
     : resolveVaultDir();
   if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
-    process.exit(1);
+    // Surface as an error rather than process.exit so --all-projects can
+    // continue past a broken project and aggregate failures at the end.
+    throw new Error(`No myco.yaml found in ${vaultDir}. Run 'myco init' first.`);
   }
 
   console.log(`Updating Myco vault at ${vaultDir}\n`);
@@ -130,6 +147,56 @@ export async function run(args: string[]): Promise<void> {
   console.log('Run `myco doctor` to verify setup health.');
 }
 
+/**
+ * Iterate every (Grove, project) pair in the registry and run the
+ * per-project sync for each. Used by the post-binary-install update
+ * script (machine-level binary install kicks one of these per Grove
+ * project) and by `make dev-link` to refresh symbiont configs across
+ * the whole machine.
+ *
+ * Per-project failures don't abort the loop — log and continue, then
+ * exit non-zero if any project failed so callers can see the rollup.
+ */
+async function runAllProjects(): Promise<void> {
+  const groves = listGroves();
+  const targets: { groveSlug: string; projectName: string; root: string }[] = [];
+  for (const grove of groves) {
+    for (const project of listRegisteredProjects(grove.id)) {
+      targets.push({ groveSlug: grove.slug, projectName: project.name, root: project.root });
+    }
+  }
+
+  if (targets.length === 0) {
+    console.log('No registered projects across any Grove. Nothing to update.');
+    return;
+  }
+
+  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'}.\n`);
+
+  const failures: { target: typeof targets[number]; error: unknown }[] = [];
+  for (const target of targets) {
+    console.log(`\n=== ${target.groveSlug}/${target.projectName} (${target.root}) ===`);
+    try {
+      await runForProject(target.root);
+    } catch (error) {
+      failures.push({ target, error });
+      console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  console.log('');
+  if (failures.length === 0) {
+    console.log(`✓ Updated all ${targets.length} project${targets.length === 1 ? '' : 's'}.`);
+    return;
+  }
+
+  console.error(`⚠ ${failures.length} of ${targets.length} project${targets.length === 1 ? '' : 's'} failed:`);
+  for (const { target, error } of failures) {
+    console.error(`  - ${target.groveSlug}/${target.projectName}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  process.exit(1);
+}
+
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
   const port = readDaemonPort(vaultDir);
   if (port === null) return false;
@@ -147,11 +214,5 @@ async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
 }
 
 function readDaemonPort(vaultDir: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(vaultDir, 'daemon.json'), 'utf-8');
-    const port = (JSON.parse(raw) as { port?: unknown }).port;
-    return typeof port === 'number' ? port : null;
-  } catch {
-    return null;
-  }
+  return readDaemonState(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)?.port ?? null;
 }

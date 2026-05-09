@@ -13,6 +13,7 @@ import {
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { detectSkillUsage } from '@myco/daemon/skill-usage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 const AGENT_ID = 'myco-agent';
@@ -72,7 +73,7 @@ describe('skill lifecycle integration', () => {
     detectSkillUsage(sessionId, 'loaded skills/adding-a-symbiont/SKILL.md into context');
     expect(countUsageForSkill(record.id)).toBe(0);
 
-    const refreshed = getSkillRecordByName('adding-a-symbiont');
+    const refreshed = getSkillRecordByName('adding-a-symbiont', ALL_PROJECTS_SCOPE);
     expect(refreshed!.usage_count).toBe(0); // Detection disabled
     expect(refreshed!.last_used_at).toBeNull();
 
@@ -84,7 +85,7 @@ describe('skill lifecycle integration', () => {
         { id: 'spore-new', type: 'spore' },
       ]),
       updated_at: now + 3600,
-    });
+    }, ALL_PROJECTS_SCOPE);
 
     insertLineage({
       id: 'lin-2', skill_id: record.id, generation: 2,
@@ -94,7 +95,7 @@ describe('skill lifecycle integration', () => {
       created_at: now + 3600,
     });
 
-    const lineage = listLineageForSkill(record.id);
+    const lineage = listLineageForSkill(record.id, ALL_PROJECTS_SCOPE);
     expect(lineage).toHaveLength(2);
     expect(lineage[0].generation).toBe(2);
     expect(lineage[0].action).toBe('updated');
@@ -118,15 +119,15 @@ describe('skill lifecycle integration', () => {
       status: 'retired', created_at: now, updated_at: now,
     });
 
-    const active = listSkillRecords({ status: 'active' });
+    const active = listSkillRecords({ status: 'active', scope: ALL_PROJECTS_SCOPE });
     expect(active).toHaveLength(1);
     expect(active[0].name).toBe('active-skill');
 
-    const retired = listSkillRecords({ status: 'retired' });
+    const retired = listSkillRecords({ status: 'retired', scope: ALL_PROJECTS_SCOPE });
     expect(retired).toHaveLength(1);
     expect(retired[0].name).toBe('retired-skill');
 
-    const all = listSkillRecords();
+    const all = listSkillRecords({ scope: ALL_PROJECTS_SCOPE });
     expect(all).toHaveLength(2);
   });
 

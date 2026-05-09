@@ -7,12 +7,15 @@ import { initDatabase, closeDatabase, getDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { DatabaseMaintenanceManager } from '@myco/daemon/database/manager';
 import {
+  createDatabaseMaintenanceHandlers,
   handleDatabaseDetails,
   handleDatabaseOptimize,
   handleDatabaseVacuum,
   handleDatabaseReindex,
   handleDatabaseIntegrityCheck,
 } from '@myco/daemon/api/database';
+import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache';
+import type { RouteRequest } from '@myco/daemon/router';
 
 function makeLogger() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -80,5 +83,33 @@ describe('database API handlers', () => {
   it('handleDatabaseIntegrityCheck returns 200 with status=ok', async () => {
     const res = await handleDatabaseIntegrityCheck(manager);
     expect((res.body as { status: string }).status).toBe('ok');
+  });
+
+  it('route handlers create a maintenance manager from the current request context', async () => {
+    const seen: RouteRequest[] = [];
+    const fakeManager = {
+      getDetails: async () => ({ file: { path: 'request-db' } }),
+    } as unknown as DatabaseMaintenanceManager;
+    const handlers = createDatabaseMaintenanceHandlers({
+      createManager(req) {
+        seen.push(req);
+        return fakeManager;
+      },
+      cache: new GroveRuntimeCache(),
+      logger: makeLogger() as never,
+      vaultDir: tmpDir,
+    });
+    const req = {
+      body: undefined,
+      query: {},
+      params: {},
+      pathname: '/api/database/details',
+      requestContext: { projectId: 'proj_request' },
+    } as RouteRequest;
+
+    const res = await handlers.handleDetails(req);
+
+    expect(seen).toEqual([req]);
+    expect((res.body as { file: { path: string } }).file.path).toBe('request-db');
   });
 });

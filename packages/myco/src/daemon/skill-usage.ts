@@ -9,6 +9,7 @@
 import { listSkillRecords, incrementSkillUsageCount } from '@myco/db/queries/skill-records.js';
 import { insertSkillUsage, hasUsageForSkillAndSession } from '@myco/db/queries/skill-usage.js';
 import { epochSeconds } from '@myco/constants.js';
+import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import crypto from 'node:crypto';
 
 /** Set to true to enable automatic skill usage detection from transcripts. */
@@ -21,7 +22,11 @@ const MAX_ACTIVE_SKILLS_CHECK = 1000;
  * Scan a session transcript for Myco-managed skill activations.
  * Idempotent — skips skills already recorded for this session.
  */
-export function detectSkillUsage(sessionId: string, transcriptContent: string): void {
+export function detectSkillUsage(
+  sessionId: string,
+  transcriptContent: string,
+  projectId: GroveProjectId,
+): void {
   // Skip transcripts that contain vault_write_skill calls — these are
   // agent sessions generating/evolving skills, not developer sessions using them.
   if (transcriptContent.includes('vault_write_skill')) return;
@@ -32,7 +37,7 @@ export function detectSkillUsage(sessionId: string, transcriptContent: string): 
   // specific tag that Claude Code emits when loading a skill file).
   if (!SKILL_USAGE_DETECTION_ENABLED) return;
 
-  const activeSkills = listSkillRecords({ status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
+  const activeSkills = listSkillRecords({ scope: projectScope(projectId), status: 'active', limit: MAX_ACTIVE_SKILLS_CHECK });
   if (activeSkills.length === 0) return;
 
   // Pre-compile patterns for all skills outside the loop
@@ -59,6 +64,7 @@ export function detectSkillUsage(sessionId: string, transcriptContent: string): 
         skill_id: skill.id,
         session_id: sessionId,
         detected_at: now,
+        project_id: projectId,
       });
 
       // Atomically increment usage_count

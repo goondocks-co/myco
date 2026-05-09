@@ -243,4 +243,102 @@ describe('myco update', () => {
 
     expect(ensureRunningMock).toHaveBeenCalledTimes(1);
   });
+
+  describe('--all-projects', () => {
+    let mycoHome: string;
+    let projectA: string;
+    let projectB: string;
+
+    beforeEach(() => {
+      mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-allprojects-'));
+      process.env.MYCO_HOME = mycoHome;
+
+      projectA = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-projA-'));
+      projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-projB-'));
+
+      const writeProjectVault = (root: string) => {
+        const v = path.join(root, '.myco');
+        fs.mkdirSync(v, { recursive: true });
+        fs.writeFileSync(
+          path.join(v, 'myco.yaml'),
+          YAML.stringify({ version: 3, config_version: 0, symbionts: { 'claude-code': { enabled: true } } }),
+        );
+        fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+      };
+      writeProjectVault(projectA);
+      writeProjectVault(projectB);
+    });
+
+    afterEach(() => {
+      fs.rmSync(mycoHome, { recursive: true, force: true });
+      fs.rmSync(projectA, { recursive: true, force: true });
+      fs.rmSync(projectB, { recursive: true, force: true });
+      delete process.env.MYCO_HOME;
+    });
+
+    it('iterates every (Grove, project) pair when --all-projects is passed', async () => {
+      const { listGroves, listRegisteredProjects } = await import('@myco/grove/registry.js');
+      const groveSpy = vi.spyOn({ listGroves }, 'listGroves');
+      // Direct mock the registry helpers instead of fixturing the on-disk
+      // YAML — quicker to express and isolates this test from registry IO.
+      const groveRecord = {
+        id: 'grove_test',
+        name: 'Test',
+        slug: 'test',
+        mode: 'local' as const,
+        created_at: new Date().toISOString(),
+      };
+      const projects = [
+        { project_id: 'proj_a', name: 'a', root: projectA, created_at: '', updated_at: '' },
+        { project_id: 'proj_b', name: 'b', root: projectB, created_at: '', updated_at: '' },
+      ];
+
+      mock.module('@myco/grove/registry.js', () => ({
+        listGroves: () => [groveRecord],
+        listRegisteredProjects: () => projects,
+      }));
+
+      const { run } = await import('@myco/cli/update.js');
+      await run(['--all-projects']);
+
+      // Each project gets its update stamp written.
+      expect(fs.existsSync(path.join(projectA, '.myco', 'last-update-version'))).toBe(true);
+      expect(fs.existsSync(path.join(projectB, '.myco', 'last-update-version'))).toBe(true);
+
+      groveSpy.mockRestore();
+    });
+
+    it('handles a missing myco.yaml in one project without aborting the rest', async () => {
+      // Project A has a vault, project B does not.
+      fs.rmSync(path.join(projectB, '.myco'), { recursive: true, force: true });
+
+      const groveRecord = {
+        id: 'grove_test',
+        name: 'Test',
+        slug: 'test',
+        mode: 'local' as const,
+        created_at: new Date().toISOString(),
+      };
+      mock.module('@myco/grove/registry.js', () => ({
+        listGroves: () => [groveRecord],
+        listRegisteredProjects: () => [
+          { project_id: 'proj_a', name: 'a', root: projectA, created_at: '', updated_at: '' },
+          { project_id: 'proj_b', name: 'b', root: projectB, created_at: '', updated_at: '' },
+        ],
+      }));
+
+      // The runner exits non-zero when any project fails — capture that.
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code ?? 0})`);
+      }) as never);
+
+      const { run } = await import('@myco/cli/update.js');
+      await expect(run(['--all-projects'])).rejects.toThrow(/process\.exit\(1\)/);
+
+      // Project A still got its stamp despite project B failing.
+      expect(fs.existsSync(path.join(projectA, '.myco', 'last-update-version'))).toBe(true);
+
+      exitSpy.mockRestore();
+    });
+  });
 });

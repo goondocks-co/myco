@@ -56,6 +56,14 @@ describe('plugin shared-helpers snippet', () => {
       const inline = extractInlineBlock(source);
       expect(inline).toBe(snippet);
     });
+
+    it(`${name} plugin sends Grove request context headers on daemon HTTP calls`, () => {
+      const source = fs.readFileSync(pluginPath, 'utf-8');
+      expect(source).toContain('x-myco-project-root');
+      expect(source).toContain('x-myco-project-id');
+      expect(source).toContain('withRequestContextHeaders(directory, init)');
+      expect(source).toContain('readTomlString(raw, "project", "id")');
+    });
   }
 
   it('snippet defines BATCH_KIND with the same values as src/db/queries/batches.ts', () => {

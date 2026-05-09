@@ -118,6 +118,44 @@ capture:
       action: drop
       reason: agents-md-context-injection
 
+    # Codex sub-agent completion notifications.
+    #
+    # Codex's analog to Claude Code's <task-notification>: when a parallel
+    # sub-agent invoked via the Agent tool finishes, the runtime injects a
+    # <subagent_notification> envelope into the parent transcript as a
+    # synthetic user-type entry. Capture but tag origin='agent_dispatch' —
+    # these are agent-to-agent communications, distinct from the model's
+    # own system-injected continuations.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<subagent_notification>"
+      action: classify
+      set_origin: agent_dispatch
+      reason: codex-subagent-notification
+
+    # Codex environment_context headers.
+    #
+    # Codex prepends `<environment_context>` blocks (shell, current_date,
+    # timezone, cwd) to user-type entries when the runtime wants the model
+    # to refresh its environmental awareness. Not user input.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<environment_context>"
+      action: classify
+      set_origin: system
+      reason: codex-environment-context
+
+    # Slash-skill envelope expansions (Codex).
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<skill>"
+      action: classify
+      set_origin: system
+      reason: codex-skill-envelope
+
     # Codex Desktop wraps user prompts with a file-mention preamble when
     # screenshots or files are attached:
     #   "# Files mentioned by the user:\n## <filename>: <path>\n## My request for Codex:\n<actual prompt>"

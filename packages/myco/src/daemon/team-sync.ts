@@ -36,6 +36,7 @@ export interface TeamSearchOptions {
   session_id?: string;
   source_path?: string;
   name?: string;
+  project_id?: string;
   timeoutMs?: number;
 }
 
@@ -59,10 +60,40 @@ export interface TeamSearchResponse {
   machine_ids: string[];
 }
 
+/**
+ * SyncRecord operations supported on the wire. The `embed` value
+ * was added in protocol v2 (queue-driven vector reindex). DlqEntry
+ * payloads echo this enum, so any consumer that types DLQ rows
+ * needs to handle all three values.
+ */
+export type SyncRecordOperation = 'upsert' | 'delete' | 'embed';
+
+/**
+ * Shape of a SyncRecord payload as it appears in the worker DLQ
+ * (after JSON deserialization). Mirrors the `SyncRecord` interface
+ * in `packages/myco-team/worker/src/index.ts` — kept here as the
+ * daemon-side public type so `DlqMessage.body` can be narrowed.
+ */
+export interface DlqSyncRecordPayload {
+  table: string;
+  operation: SyncRecordOperation;
+  id: string;
+  machine_id: string;
+  content_hash?: string | null;
+  data?: Record<string, unknown>;
+}
+
 export interface TeamHealthResponse {
   status: string;
   node_count: number;
   sync_protocol_version: number;
+  /**
+   * Oldest sync protocol the worker still accepts. Optional for
+   * back-compat with workers deployed before the field was added —
+   * absence means the worker enforces strict-equality on the
+   * server's protocol version.
+   */
+  min_compat_client_version?: number;
   package_version?: string;
   schema_version?: number | null;
   mcp_token_hash?: string;
@@ -78,6 +109,11 @@ export interface TeamConnectInfo {
 export interface TeamConfigResponse {
   config: Record<string, unknown>;
   sync_protocol_version: number;
+  /**
+   * Oldest sync protocol the worker still accepts. Optional for
+   * back-compat with workers deployed before the field was added.
+   */
+  min_compat_client_version?: number;
   mcp_token?: string;
   mcp_endpoint?: string;
 }
@@ -112,7 +148,7 @@ export interface EnqueueBatchResponse {
 }
 
 export interface QueueStats {
-  depth: number;
+  depth: number | null;
   oldest_msg_age_s: number | null;
 }
 
@@ -121,13 +157,39 @@ export interface QueueStatsResponse {
   dlq: QueueStats;
 }
 
+export interface TeamRemoteSyncSummaryResponse {
+  generated_at: number;
+  total_records: number;
+  tables: Record<string, number>;
+  vector_count: number | null;
+  vector_index_healthy: boolean;
+  vector_index_error: string | null;
+  /** Rows in remote D1 the consumer would embed (active-spore + non-empty text filter). */
+  embeddable_count: number | null;
+  schema_version: number | null;
+  package_version: string;
+  sync_protocol_version: number;
+}
+
+/**
+ * Single DLQ message returned by the worker's `/api/team/dlq` and
+ * the daemon's local CF DLQ proxy. `body` typically holds a
+ * `DlqSyncRecordPayload`, but stays loose so non-record DLQ entries
+ * (e.g. malformed-JSON poison messages) still parse.
+ *
+ * `DlqEntry` is exported as an alias so consumers that prefer the
+ * shorter name don't have to deconflict with the @myco-team/worker
+ * type name. Both alias to the same shape.
+ */
 export interface DlqMessage {
   msg_id: string;
-  body: Record<string, unknown>;
+  body: Record<string, unknown> | DlqSyncRecordPayload;
   attempts: number;
   last_failure?: string;
   enqueued_at?: number;
 }
+
+export type DlqEntry = DlqMessage;
 
 export interface DlqListResponse {
   messages: DlqMessage[];
@@ -234,6 +296,7 @@ export class TeamSyncClient {
       if (options.session_id) params.set('session_id', options.session_id);
       if (options.source_path) params.set('source_path', options.source_path);
       if (options.name) params.set('name', options.name);
+      if (options.project_id) params.set('project_id', options.project_id);
 
       const res = await this.fetchFn(`${this.workerUrl}/search?${params}`, {
         method: 'GET',
@@ -317,13 +380,30 @@ export class TeamSyncClient {
   /**
    * Fetch queue + DLQ depth/age stats. Returns the
    * `cf_api_token_not_configured` discriminator when the worker has no CF
-   * API token yet — the UI uses that to surface the token-config form.
+   * API token yet — the UI uses that to surface an unavailable state.
    * Pass-through 412 keeps the body accessible instead of throwing.
    */
   async getQueueStats(): Promise<QueueStatsResponse | { error: 'cf_api_token_not_configured' }> {
     return await this.request('GET', '/queue-stats', undefined, {
       passthroughStatuses: [412],
     }) as QueueStatsResponse | { error: 'cf_api_token_not_configured' };
+  }
+
+  async getSyncSummary(): Promise<TeamRemoteSyncSummaryResponse> {
+    return await this.request('GET', '/sync-summary') as TeamRemoteSyncSummaryResponse;
+  }
+
+  /**
+   * Ask the worker to enqueue per-row `embed` jobs for every embeddable
+   * row in D1. The worker returns immediately with the queued count;
+   * the queue consumer drains in the background and the Vectorize
+   * count climbs as rows are embedded.
+   */
+  async enqueueVectorReindex(): Promise<{ enqueued: number; by_table: Record<string, number> }> {
+    return await this.request('POST', '/vectors/reindex', {}) as {
+      enqueued: number;
+      by_table: Record<string, number>;
+    };
   }
 
   /** List a page of DLQ messages. */

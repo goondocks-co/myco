@@ -20,6 +20,28 @@ function createProjectDir(): string {
   return directory;
 }
 
+function createGroveProjectDir(home: string): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-grove-plugin-'));
+  fs.mkdirSync(path.join(directory, '.myco'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'service'), { recursive: true });
+  fs.writeFileSync(
+    path.join(directory, '.myco', 'project.toml'),
+    '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n\n[grove]\nbinding_id = "gbind-a"\nslug = "work"\nmode = "local"\n',
+    'utf-8',
+  );
+  fs.writeFileSync(
+    path.join(directory, '.myco', 'daemon.json'),
+    JSON.stringify({ port: 11111 }),
+    'utf-8',
+  );
+  fs.writeFileSync(
+    path.join(home, 'service', 'daemon.json'),
+    JSON.stringify({ port: 32124 }),
+    'utf-8',
+  );
+  return directory;
+}
+
 describe('opencode plugin helpers', () => {
   it('normalizes high-signal tool metadata aliases', () => {
     expect(
@@ -60,9 +82,12 @@ describe('opencode plugin helpers', () => {
 
 describe('opencode plugin runtime hooks', () => {
   const originalFetch = globalThis.fetch;
+  const originalHome = process.env.MYCO_HOME;
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = originalHome;
     vi.restoreAllMocks();
   });
 
@@ -97,6 +122,34 @@ describe('opencode plugin runtime hooks', () => {
       agent: 'opencode',
       last_assistant_message: 'first chunk\nsecond chunk',
     });
+  });
+
+  it('reads global daemon state when project.toml has a Grove binding', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-home-'));
+    process.env.MYCO_HOME = home;
+    const directory = createGroveProjectDir(home);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const client = {
+      app: { log: vi.fn().mockResolvedValue(undefined) },
+      session: {
+        messages: vi.fn().mockResolvedValue({
+          data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'done' }] }],
+        }),
+      },
+    };
+
+    const plugin = await MycoPlugin({ client, directory, worktree: directory });
+    await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'ses-opencode-grove' } } });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:32124/events/stop');
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-myco-project-root')).toBe(path.resolve(directory));
+    expect(headers.get('x-myco-project-id')).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true });
   });
 
   it('normalizes tool metadata before posting tool_use events', async () => {

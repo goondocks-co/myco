@@ -18,13 +18,27 @@ const CaptureRuleSchema = z.object({
       value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
     }).optional(),
   }),
-  action: z.enum(['drop', 'rewrite_prompt']),
+  action: z.enum(['drop', 'rewrite_prompt', 'classify']),
   /** Audit string logged when the rule matches. */
   reason: z.string().optional(),
   /** For rewrite_prompt: keep the substring after this marker. */
   extract_after: z.string().optional(),
   /** For rewrite_prompt: trim whitespace from the extracted substring. */
   trim: z.boolean().default(true),
+  /**
+   * For `action: 'classify'` (and optionally rewrite_prompt): mark the
+   * resulting batch with a non-default `origin`. Records WHO issued the
+   * prompt — orthogonal to `kind` (initial/steering/interrupt), which
+   * records WHERE the batch sits in conversation flow.
+   *
+   *   human         — user-typed (default; rules don't need to set this)
+   *   system        — transcript-synthesized continuation event
+   *                   (e.g. <task-notification>, <environment_context>,
+   *                   <skill> envelope expansion)
+   *   agent_dispatch— prompts emitted by sub-agents back to the parent
+   *   hook_injected — reserved
+   */
+  set_origin: z.enum(['human', 'system', 'agent_dispatch', 'hook_injected']).optional(),
 });
 
 export type CaptureRule = z.infer<typeof CaptureRuleSchema>;

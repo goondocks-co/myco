@@ -18,6 +18,7 @@ import {
   getRunningRun,
 } from '@myco/db/queries/runs.js';
 import type { RunInsert } from '@myco/db/queries/runs.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -69,7 +70,7 @@ describe('run query helpers', () => {
       expect(row.actions_taken).toBeNull();
       expect(row.error).toBeNull();
 
-      const fetched = getRun(data.id);
+      const fetched = getRun(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.instruction).toBe('analyze recent sessions');
@@ -104,7 +105,7 @@ describe('run query helpers', () => {
 
   describe('getRun', () => {
     it('returns null for non-existent id', async () => {
-      const row = getRun('does-not-exist');
+      const row = getRun('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -120,7 +121,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-mid', started_at: now - 100 }));
       insertRun(makeRun({ id: 'run-new', started_at: now }));
 
-      const rows = listRuns();
+      const rows = listRuns({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('run-new');
       expect(rows[1].id).toBe('run-mid');
@@ -138,7 +139,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-a', started_at: epochNow() }));
       insertRun(makeRun({ id: 'run-b', agent_id: 'agent-other', started_at: epochNow() }));
 
-      const rows = listRuns({ agent_id: TEST_AGENT_ID });
+      const rows = listRuns({ agent_id: TEST_AGENT_ID, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('run-a');
     });
@@ -147,7 +148,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-pending', status: 'pending', started_at: epochNow() }));
       insertRun(makeRun({ id: 'run-running', status: 'running', started_at: epochNow() }));
 
-      const rows = listRuns({ status: 'running' });
+      const rows = listRuns({ status: 'running', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('run-running');
     });
@@ -158,12 +159,12 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-2', started_at: now - 1 }));
       insertRun(makeRun({ id: 'run-3', started_at: now }));
 
-      const rows = listRuns({ limit: 2 });
+      const rows = listRuns({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
     it('returns empty array when no runs exist', async () => {
-      const rows = listRuns();
+      const rows = listRuns({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
@@ -174,13 +175,13 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-3', started_at: now }));
 
       // Page 1: first 2 rows
-      const page1 = listRuns({ limit: 2, offset: 0 });
+      const page1 = listRuns({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
       expect(page1[0].id).toBe('run-3');
       expect(page1[1].id).toBe('run-2');
 
       // Page 2: remaining row
-      const page2 = listRuns({ limit: 2, offset: 2 });
+      const page2 = listRuns({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page2).toHaveLength(1);
       expect(page2[0].id).toBe('run-1');
     });
@@ -192,7 +193,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-done-3', status: 'completed', started_at: now - 1 }));
       insertRun(makeRun({ id: 'run-pending', status: 'pending', started_at: now }));
 
-      const rows = listRuns({ status: 'completed', limit: 2, offset: 1 });
+      const rows = listRuns({ status: 'completed', limit: 2, offset: 1, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('run-done-2');
       expect(rows[1].id).toBe('run-done-1');
@@ -204,7 +205,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-curate', task: 'curate', started_at: now - 1 }));
       insertRun(makeRun({ id: 'run-digest-full', task: 'full-digest', started_at: now }));
 
-      const rows = listRuns({ search: 'digest' });
+      const rows = listRuns({ search: 'digest', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       const ids = rows.map((r) => r.id);
       expect(ids).toContain('run-digest');
@@ -218,7 +219,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-c', task: 'digest', status: 'completed', started_at: now - 1 }));
       insertRun(makeRun({ id: 'run-d', task: 'curate', status: 'completed', started_at: now }));
 
-      const rows = listRuns({ search: 'digest', status: 'completed', limit: 2, offset: 1 });
+      const rows = listRuns({ search: 'digest', status: 'completed', limit: 2, offset: 1, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('run-b');
       expect(rows[1].id).toBe('run-a');
@@ -229,7 +230,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-digest', task: 'digest', started_at: now - 1 }));
       insertRun(makeRun({ id: 'run-full-digest', task: 'full-digest', started_at: now }));
 
-      const rows = listRuns({ task: 'digest' });
+      const rows = listRuns({ task: 'digest', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('run-digest');
     });
@@ -245,11 +246,11 @@ describe('run query helpers', () => {
       insertRun(makeRun({ started_at: epochNow() }));
       insertRun(makeRun({ started_at: epochNow() }));
 
-      expect(countRuns()).toBe(3);
+      expect(countRuns({ scope: ALL_PROJECTS_SCOPE })).toBe(3);
     });
 
     it('counts zero when no runs exist', async () => {
-      expect(countRuns()).toBe(0);
+      expect(countRuns({ scope: ALL_PROJECTS_SCOPE })).toBe(0);
     });
 
     it('counts with status filter', async () => {
@@ -257,8 +258,8 @@ describe('run query helpers', () => {
       insertRun(makeRun({ status: 'completed', started_at: epochNow() }));
       insertRun(makeRun({ status: 'pending', started_at: epochNow() }));
 
-      expect(countRuns({ status: 'completed' })).toBe(2);
-      expect(countRuns({ status: 'pending' })).toBe(1);
+      expect(countRuns({ status: 'completed', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countRuns({ status: 'pending', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('counts with search filter', async () => {
@@ -266,15 +267,15 @@ describe('run query helpers', () => {
       insertRun(makeRun({ task: 'full-digest', started_at: epochNow() }));
       insertRun(makeRun({ task: 'curate', started_at: epochNow() }));
 
-      expect(countRuns({ search: 'digest' })).toBe(2);
-      expect(countRuns({ search: 'curate' })).toBe(1);
+      expect(countRuns({ search: 'digest', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countRuns({ search: 'curate', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('counts with exact task filter', async () => {
       insertRun(makeRun({ task: 'digest', started_at: epochNow() }));
       insertRun(makeRun({ task: 'full-digest', started_at: epochNow() }));
 
-      expect(countRuns({ task: 'digest' })).toBe(1);
+      expect(countRuns({ task: 'digest', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
 
     it('counts with combined filters', async () => {
@@ -282,7 +283,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ task: 'digest', status: 'pending', started_at: epochNow() }));
       insertRun(makeRun({ task: 'curate', status: 'completed', started_at: epochNow() }));
 
-      expect(countRuns({ search: 'digest', status: 'completed' })).toBe(1);
+      expect(countRuns({ search: 'digest', status: 'completed', scope: ALL_PROJECTS_SCOPE })).toBe(1);
     });
   });
 
@@ -295,7 +296,7 @@ describe('run query helpers', () => {
       const data = makeRun({ started_at: epochNow() });
       insertRun(data);
 
-      const updated = updateRunStatus(data.id, 'running');
+      const updated = updateRunStatus(data.id, 'running', undefined, ALL_PROJECTS_SCOPE);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('running');
     });
@@ -310,7 +311,7 @@ describe('run query helpers', () => {
         tokens_used: 1200,
         cost_usd: 0.02,
         actions_taken: '["write_spore","report"]',
-      });
+      }, ALL_PROJECTS_SCOPE);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('completed');
       expect(updated!.completed_at).toBe(now);
@@ -326,14 +327,14 @@ describe('run query helpers', () => {
       const updated = updateRunStatus(data.id, 'failed', {
         error: 'LLM timeout',
         completed_at: epochNow(),
-      });
+      }, ALL_PROJECTS_SCOPE);
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('failed');
       expect(updated!.error).toBe('LLM timeout');
     });
 
     it('returns null for non-existent id', async () => {
-      const updated = updateRunStatus('does-not-exist', 'running');
+      const updated = updateRunStatus('does-not-exist', 'running', undefined, ALL_PROJECTS_SCOPE);
       expect(updated).toBeNull();
     });
   });
@@ -347,7 +348,7 @@ describe('run query helpers', () => {
       const data = makeRun({ status: 'running', started_at: epochNow() });
       insertRun(data);
 
-      const running = getRunningRun(TEST_AGENT_ID);
+      const running = getRunningRun(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(running).not.toBeNull();
       expect(running!.id).toBe(data.id);
       expect(running!.status).toBe('running');
@@ -356,7 +357,7 @@ describe('run query helpers', () => {
     it('returns null when no run is running', async () => {
       insertRun(makeRun({ status: 'completed', started_at: epochNow() }));
 
-      const running = getRunningRun(TEST_AGENT_ID);
+      const running = getRunningRun(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(running).toBeNull();
     });
 
@@ -365,7 +366,7 @@ describe('run query helpers', () => {
       insertRun(makeRun({ id: 'run-old', status: 'running', started_at: now - 100 }));
       insertRun(makeRun({ id: 'run-new', status: 'running', started_at: now }));
 
-      const running = getRunningRun(TEST_AGENT_ID);
+      const running = getRunningRun(TEST_AGENT_ID, ALL_PROJECTS_SCOPE);
       expect(running).not.toBeNull();
       expect(running!.id).toBe('run-new');
     });
@@ -381,7 +382,7 @@ describe('run query helpers', () => {
       const row = insertRun(makeRun({ id: 'run-default' }));
       expect(row.dry_run).toBe(false);
 
-      const fetched = getRun('run-default')!;
+      const fetched = getRun('run-default', ALL_PROJECTS_SCOPE)!;
       expect(fetched.dry_run).toBe(false);
     });
 
@@ -389,13 +390,13 @@ describe('run query helpers', () => {
       const row = insertRun(makeRun({ id: 'run-dry', dryRun: true }));
       expect(row.dry_run).toBe(true);
 
-      const fetched = getRun('run-dry')!;
+      const fetched = getRun('run-dry', ALL_PROJECTS_SCOPE)!;
       expect(fetched.dry_run).toBe(true);
     });
 
     it('allows updating dryRun via updateRun', () => {
       insertRun(makeRun({ id: 'run-u' }));
-      const updated = updateRun('run-u', { dryRun: true });
+      const updated = updateRun('run-u', { dryRun: true }, ALL_PROJECTS_SCOPE);
       expect(updated!.dry_run).toBe(true);
     });
   });
@@ -410,7 +411,7 @@ describe('run query helpers', () => {
       expect(row.reasoning_level).toBeNull();
       expect(row.execution_overrides).toBeNull();
 
-      const fetched = getRun('run-default-reasoning')!;
+      const fetched = getRun('run-default-reasoning', ALL_PROJECTS_SCOPE)!;
       expect(fetched.reasoning_level).toBeNull();
       expect(fetched.execution_overrides).toBeNull();
     });
@@ -428,21 +429,21 @@ describe('run query helpers', () => {
       expect(row.reasoning_level).toBe('high');
       expect(row.execution_overrides).toEqual(overrides);
 
-      const fetched = getRun('run-high')!;
+      const fetched = getRun('run-high', ALL_PROJECTS_SCOPE)!;
       expect(fetched.reasoning_level).toBe('high');
       expect(fetched.execution_overrides).toEqual(overrides);
     });
 
     it('allows updating reasoningLevel via updateRun', () => {
       insertRun(makeRun({ id: 'run-update-reasoning', reasoningLevel: 'low' }));
-      const updated = updateRun('run-update-reasoning', { reasoningLevel: 'high' });
+      const updated = updateRun('run-update-reasoning', { reasoningLevel: 'high' }, ALL_PROJECTS_SCOPE);
       expect(updated!.reasoning_level).toBe('high');
     });
 
     it('allows updating executionOverrides via updateRun', () => {
       insertRun(makeRun({ id: 'run-update-overrides' }));
       const nextOverrides = { harness: 'claude-sdk', reasoningLevel: 'default' };
-      const updated = updateRun('run-update-overrides', { executionOverrides: nextOverrides });
+      const updated = updateRun('run-update-overrides', { executionOverrides: nextOverrides }, ALL_PROJECTS_SCOPE);
       expect(updated!.execution_overrides).toEqual(nextOverrides);
     });
 
@@ -455,7 +456,7 @@ describe('run query helpers', () => {
       const cleared = updateRun('run-clear-v16', {
         reasoningLevel: null,
         executionOverrides: null,
-      });
+      }, ALL_PROJECTS_SCOPE);
       expect(cleared!.reasoning_level).toBeNull();
       expect(cleared!.execution_overrides).toBeNull();
     });
@@ -468,7 +469,7 @@ describe('run query helpers', () => {
         `UPDATE agent_runs SET execution_overrides = ? WHERE id = ?`,
       ).run('not-valid-json{', 'run-corrupt');
 
-      const fetched = getRun('run-corrupt');
+      const fetched = getRun('run-corrupt', ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.execution_overrides).toBeNull();
     });
@@ -478,7 +479,7 @@ describe('run query helpers', () => {
       // NOT NULL DEFAULT 0 column). The hydrator uses `Boolean(Number(row.dry_run ?? 0))`
       // to also normalize legacy rows with nullable dry_run columns to false.
       insertRun(makeRun({ id: 'run-dry-default' }));
-      const row = getRun('run-dry-default');
+      const row = getRun('run-dry-default', ALL_PROJECTS_SCOPE);
       expect(row!.dry_run).toBe(false);
     });
   });

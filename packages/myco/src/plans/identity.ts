@@ -89,6 +89,12 @@ export function buildPlanId(logicalKey: string): string {
   return createHash('md5').update(logicalKey).digest('hex').slice(0, PLAN_ID_HASH_LENGTH);
 }
 
+export function buildScopedPlanId(logicalKey: string, projectId?: string | null): string {
+  return projectId
+    ? createHash('md5').update(`${projectId}\0${logicalKey}`).digest('hex').slice(0, PLAN_ID_HASH_LENGTH)
+    : buildPlanId(logicalKey);
+}
+
 export function humanizePlanToken(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -96,4 +102,3 @@ export function humanizePlanToken(value: string): string {
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
-

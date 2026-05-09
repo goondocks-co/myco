@@ -6,7 +6,7 @@
  * used for spore status filtering, metadata enrichment, and content retrieval.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
 import {
   markEmbedded as dbMarkEmbedded,
   clearEmbedded as dbClearEmbedded,
@@ -29,6 +29,7 @@ const ACTIVE_STATUS = 'active';
 /** Build metadata for a session row. */
 function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.project_root != null ? { project_root: row.project_root as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
   };
@@ -37,6 +38,7 @@ function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
 /** Build metadata for a spore row. */
 function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.observation_type != null ? { observation_type: row.observation_type as string } : {}),
@@ -44,14 +46,18 @@ function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
   };
 }
 
-/** Build metadata for an artifact row — empty. */
-function emptyMetadata(): DomainMetadata {
-  return {};
+/** Build metadata for an artifact row. */
+function artifactMetadata(row: Record<string, unknown>): DomainMetadata {
+  return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
+    ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+  };
 }
 
 /** Build metadata for a plan row. */
 function planMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.source_path != null ? { source_path: row.source_path as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
@@ -61,6 +67,7 @@ function planMetadata(row: Record<string, unknown>): DomainMetadata {
 /** Build metadata for a skill_records row. */
 function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
+    ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.name != null ? { name: row.name as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
@@ -87,7 +94,7 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
     case 'plans':
       return planMetadata(row);
     case 'artifacts':
-      return emptyMetadata();
+      return artifactMetadata(row);
     case 'skill_records':
       return skillRecordMetadata(row);
     case 'canopy_entries':
@@ -100,6 +107,12 @@ function metadataFor(namespace: EmbeddableTable, row: Record<string, unknown>): 
 // ---------------------------------------------------------------------------
 
 export class SqliteRecordSource implements EmbeddableRecordSource {
+  constructor(private dbOverride?: Database) {}
+
+  private db(): Database {
+    return this.dbOverride ?? getDatabase();
+  }
+
   /**
    * Get rows that need embedding (embedded=0, content non-null).
    *
@@ -126,8 +139,8 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     }
 
     // For sessions/plans/artifacts: delegate to getUnembedded, then enrich with metadata
-    const rows = getUnembedded(namespace, limit);
-    const db = getDatabase();
+    const db = this.db();
+    const rows = getUnembedded(namespace, limit, db);
     return rows.map((row) => {
       const fullRow = db.prepare(`SELECT * FROM ${namespace} WHERE id = ?`).get(row.id) as Record<string, unknown>;
       return {
@@ -147,7 +160,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
    */
   getActiveRecordIds(namespace: string): string[] {
     assertValidNamespace(namespace);
-    const db = getDatabase();
+    const db = this.db();
 
     switch (namespace) {
       case 'sessions': {
@@ -206,7 +219,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
 
     if (ids.length === 0) return [];
 
-    const db = getDatabase();
+    const db = this.db();
     const textCol = EMBEDDABLE_TEXT_COLUMNS[namespace as EmbeddableTable];
 
     if (namespace === 'canopy_entries') {
@@ -246,12 +259,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     if (namespace === 'canopy_entries') {
       const parsed = parseCanopyRecordId(id);
       if (parsed === null) return;
-      getDatabase().prepare(
+      this.db().prepare(
         `UPDATE canopy_entries SET embedded = 1 WHERE project_id = ? AND path = ?`,
       ).run(parsed.projectId, parsed.path);
       return;
     }
-    dbMarkEmbedded(namespace, id);
+    dbMarkEmbedded(namespace, id, this.db());
   }
 
   /** Clear the embedded flag on a record. Delegates to existing helper. */
@@ -259,12 +272,12 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     if (namespace === 'canopy_entries') {
       const parsed = parseCanopyRecordId(id);
       if (parsed === null) return;
-      getDatabase().prepare(
+      this.db().prepare(
         `UPDATE canopy_entries SET embedded = 0 WHERE project_id = ? AND path = ?`,
       ).run(parsed.projectId, parsed.path);
       return;
     }
-    dbClearEmbedded(namespace, id);
+    dbClearEmbedded(namespace, id, this.db());
   }
 
   /**
@@ -275,7 +288,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
   clearAllEmbedded(namespace?: string): void {
     // canopy_entries is intentionally handled by the generic loop below — it has no
     // composite-key concerns at this layer because the UPDATE applies to all rows.
-    const db = getDatabase();
+    const db = this.db();
 
     if (namespace !== undefined) {
       assertValidNamespace(namespace);
@@ -293,7 +306,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
    */
   getPendingCount(namespace: string): number {
     assertValidNamespace(namespace);
-    const db = getDatabase();
+    const db = this.db();
 
     if (namespace === 'canopy_entries') {
       const row = db.prepare(
@@ -322,9 +335,10 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
       `SELECT id, content AS text, status, session_id, observation_type
+              , project_id, created_at
        FROM spores
        WHERE embedded = 0 AND status = ?
        ORDER BY created_at ASC
@@ -344,9 +358,9 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
-      `SELECT id, description AS text, status, name
+      `SELECT id, description AS text, status, name, project_id, created_at
        FROM skill_records
        WHERE embedded = 0 AND status = ?
        ORDER BY created_at ASC
@@ -366,7 +380,7 @@ export class SqliteRecordSource implements EmbeddableRecordSource {
     text: string;
     metadata: DomainMetadata;
   }> {
-    const db = getDatabase();
+    const db = this.db();
     const rows = db.prepare(
       `SELECT (project_id || ':' || path) AS id,
               project_id, path, language, llm_updated_at,

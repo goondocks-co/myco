@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
@@ -8,15 +9,31 @@ import { Router, type RouteHandler } from './router.js';
 import { resolveStaticFile } from './static.js';
 import { evictDaemonsForVault } from './eviction.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import {
+  REQUEST_CONTEXT_AUTH_ENV,
+  UnauthorizedRequestContextError,
+  requestContextFromHttpHeaders,
+  type MycoRequestContext,
+} from '../tools/request-context.js';
+import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
+import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
+import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
 const DEFAULT_STATUS = 200;
 
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
+  daemonStatePath?: string;
   uiDir?: string;
   uiDevProxyTarget?: string;
   onRequest?: () => void;
+  /**
+   * Shared bounded LRU for per-Grove DB handles + embedding runtime.
+   * If omitted, the server creates a private cache; pass an externally
+   * owned one when other subsystems need to share entries.
+   */
+  runtimeCache?: GroveRuntimeCache;
 }
 
 export type RawRouteHandler = (
@@ -31,19 +48,42 @@ export class DaemonServer {
   uiDevProxyTarget: string | null;
   private server: http.Server | null = null;
   private vaultDir: string;
+  private daemonStatePath: string;
   private logger: DaemonLogger;
   private router = new Router();
   private rawRoutes = new Map<string, RawRouteHandler>();
   private onRequest: (() => void) | null;
+  private runtimeCache: GroveRuntimeCache;
+  private ownsRuntimeCache: boolean;
+  /**
+   * Daemon-issued bearer token. Generated lazily on first
+   * `start()` and re-used for the daemon's lifetime; persisted into
+   * `daemon.json` so out-of-band children (manual CLI invocations
+   * that didn't inherit the env) can recover it.
+   */
+  private authToken: string;
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
+    this.daemonStatePath = config.daemonStatePath ?? path.join(config.vaultDir, 'daemon.json');
     this.logger = config.logger;
     this.uiDir = config.uiDir ?? null;
     this.uiDevProxyTarget = config.uiDevProxyTarget ?? null;
     this.onRequest = config.onRequest ?? null;
+    this.runtimeCache = config.runtimeCache ?? new GroveRuntimeCache();
+    this.ownsRuntimeCache = config.runtimeCache === undefined;
     this.version = getPluginVersion();
+    this.authToken = mintDaemonAuthToken();
+    // Export to env so direct children inherit the bearer without
+    // having to read daemon.json. Idempotent (mint→export is one
+    // pass per daemon process).
+    process.env[REQUEST_CONTEXT_AUTH_ENV] = this.authToken;
     this.registerDefaultRoutes();
+  }
+
+  /** The bearer token spawned children must present on context-switching headers. */
+  getAuthToken(): string {
+    return this.authToken;
   }
 
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
@@ -77,10 +117,12 @@ export class DaemonServer {
       this.removeDaemonJson();
       if (this.server) {
         this.server.close(() => {
+          this.closeRequestDatabases();
           this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
           resolve();
         });
       } else {
+        this.closeRequestDatabases();
         resolve();
       }
     });
@@ -150,12 +192,21 @@ export class DaemonServer {
       try {
         const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
         const body = needsBody ? await readBody(req) : undefined;
-        const result = await match.handler({
+        const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
+          expectedAuthToken: this.authToken,
+        });
+        const invokeHandler = () => match.handler({
           body,
           query: match.query,
           params: match.params,
           pathname: match.pathname,
+          headers: req.headers,
+          requestContext,
         });
+        const requestDb = this.databaseForRequestContext(requestContext);
+        const result = requestDb
+          ? await withDatabase(requestDb, invokeHandler)
+          : await invokeHandler();
         const status = result.status ?? DEFAULT_STATUS;
         if (Buffer.isBuffer(result.body)) {
           res.writeHead(status, { ...versionHeader, ...result.headers });
@@ -171,6 +222,13 @@ export class DaemonServer {
           res.end(JSON.stringify({ error: 'request_body_too_large', limit_bytes: MAX_REQUEST_BODY_BYTES }));
           return;
         }
+        if (error instanceof UnauthorizedRequestContextError) {
+          // G4: caller passed context-switching headers without the
+          // daemon-issued bearer token. Refuse before any handler runs.
+          res.writeHead(401, { 'Content-Type': 'application/json', ...versionHeader });
+          res.end(JSON.stringify({ error: 'unauthorized_context_switch', message: error.message }));
+          return;
+        }
         this.logger.error(LOG_KINDS.SERVER_ERROR, 'Request handler error', {
           path: req.url,
           error: (error as Error).message,
@@ -178,6 +236,12 @@ export class DaemonServer {
         res.writeHead(500, { 'Content-Type': 'application/json', ...versionHeader });
         res.end(JSON.stringify({ error: (error as Error).message }));
       }
+      return;
+    }
+
+    if (pathname.startsWith('/api/') || pathname === '/health') {
+      res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
+      res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
@@ -256,6 +320,20 @@ export class DaemonServer {
     }
   }
 
+  private databaseForRequestContext(context: MycoRequestContext): Database | null {
+    if (
+      !context.groveId
+      && path.resolve(context.databasePath) === path.resolve(vaultDbPath(this.vaultDir))
+    ) {
+      return null;
+    }
+    return this.runtimeCache.getDatabase(context.databasePath);
+  }
+
+  private closeRequestDatabases(): void {
+    if (this.ownsRuntimeCache) this.runtimeCache.closeAll();
+  }
+
   private async handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): Promise<void> {
     if (!this.uiDevProxyTarget || !req.url) {
       socket.destroy();
@@ -312,12 +390,12 @@ export class DaemonServer {
   }
 
   updateDaemonJsonSessions(sessions: string[]): void {
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
     try {
-      const info = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      const info = readDaemonState(this.daemonStatePath);
+      if (!info) return;
       info.sessions = sessions;
-      fs.writeFileSync(jsonPath, JSON.stringify(info, null, 2));
-    } catch { /* daemon.json may not exist during shutdown */ }
+      writeDaemonState(this.daemonStatePath, info);
+    } catch { /* daemon state may not exist during shutdown */ }
   }
 
   /**
@@ -340,21 +418,32 @@ export class DaemonServer {
       command: process.execPath,
       started: new Date().toISOString(),
       sessions: [] as string[],
+      version: this.version,
+      auth_token: this.authToken,
     };
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    fs.writeFileSync(jsonPath, JSON.stringify(info, null, 2));
+    writeDaemonState(this.daemonStatePath, info);
   }
 
   private removeDaemonJson(): void {
-    const jsonPath = path.join(this.vaultDir, 'daemon.json');
-    try {
-      const content = fs.readFileSync(jsonPath, 'utf-8');
-      const info = JSON.parse(content);
-      // Only delete if we still own the file — a successor daemon may have taken over.
-      if (info.pid !== process.pid) return;
-      fs.unlinkSync(jsonPath);
-    } catch { /* already gone or unreadable */ }
+    removeDaemonState(this.daemonStatePath, process.pid);
   }
+}
+
+/**
+ * Generate a fresh per-daemon-process bearer token. 32 random bytes
+ * encoded as hex gives 256 bits of entropy — same shape as the
+ * MCP/team-sync tokens the worker uses. Exported via env so spawned
+ * children inherit it; persisted into daemon.json so manually-invoked
+ * children can fetch it without env inheritance.
+ */
+function mintDaemonAuthToken(): string {
+  // Honor an existing env-provided token (set by tests, or by a
+  // previous daemon process this child was forked from) so the value
+  // round-trips through process restarts when MYCO_DAEMON_AUTH is
+  // explicitly carried — but only when it looks like a real token.
+  const inherited = process.env[REQUEST_CONTEXT_AUTH_ENV];
+  if (inherited && /^[0-9a-f]{32,}$/.test(inherited)) return inherited;
+  return crypto.randomBytes(32).toString('hex');
 }
 
 /**

@@ -23,36 +23,64 @@ import {
   Sparkles,
   Bell,
   Brain,
-  Waypoints,
+  Trees,
+  Cpu,
 } from 'lucide-react';
 import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
-import { useHubStatus } from '../hooks/use-hub-status';
-import { Button, buttonVariants } from '../components/ui/button';
+import { useProjectPath, useProjectSelection } from '../hooks/use-project-selection';
+import { Button } from '../components/ui/button';
 import { GlobalSearch } from '../components/search/GlobalSearch';
+import { ProjectSwitcher } from '../components/ProjectSwitcher';
 import { NotificationBanner } from '../components/notifications/NotificationBanner';
 import { NotificationPanel } from '../components/notifications/NotificationPanel';
 import { SystemNotifications } from '../components/notifications/SystemNotifications';
 import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
+import { monogramFor } from '../lib/selection';
 import { AppearanceSection } from './AppearanceSection';
-import { DEFAULT_HUB_URL } from '@myco/constants/hub';
 
 /* ---------- Constants ---------- */
 
-const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/sessions', label: 'Sessions', icon: MessageSquare },
-  { to: '/cortex', label: 'Cortex', icon: Brain },
-  { to: '/mycelium', label: 'Mycelium', icon: Network },
-  { to: '/skills', label: 'Skills', icon: Sparkles },
-  { to: '/agent', label: 'Agent', icon: Bot },
-  { to: '/settings', label: 'Settings', icon: Settings },
-  { to: '/operations', label: 'Operations', icon: Wrench },
-  { to: '/team', label: 'Team', icon: Users },
-  { to: '/logs', label: 'Logs', icon: ScrollText },
-] as const;
+type NavScope = 'project' | 'grove' | 'machine';
+
+interface NavItem {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  scope: NavScope;
+}
+
+const PROJECT_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project' },
+  { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project' },
+  { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project' },
+  { to: '/mycelium', label: 'Mycelium', icon: Network, scope: 'project' },
+  { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project' },
+  { to: '/agent', label: 'Agent', icon: Bot, scope: 'project' },
+  { to: '/settings', label: 'Settings', icon: Settings, scope: 'project' },
+];
+
+const GROVE_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/g/:groveSlug/dashboard', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
+  { to: '/g/:groveSlug/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
+  { to: '/g/:groveSlug/settings', label: 'Settings', icon: Trees, scope: 'grove' },
+];
+
+// Team is its own top-level section now — Grove-scoped configuration
+// lives in the Grove section, while Team has its own Dashboard +
+// Maintenance feature pages.
+const TEAM_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/g/:groveSlug/team', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
+  { to: '/g/:groveSlug/team/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
+];
+
+const MACHINE_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/machine', label: 'Dashboard', icon: Cpu, scope: 'machine' },
+  { to: '/machine/settings', label: 'Settings', icon: Settings, scope: 'machine' },
+  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine' },
+];
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
 
@@ -145,68 +173,73 @@ function RestartButton({ collapsed = false }: { collapsed?: boolean }) {
   );
 }
 
-function HubLinkButton({ collapsed = false }: { collapsed?: boolean }) {
-  const { data, isFetching, isError } = useHubStatus();
-  const url = data?.url ?? DEFAULT_HUB_URL;
-  const running = data?.running === true;
-  const unavailableTitle = isFetching && !data
-    ? `Checking Myco Hub at ${url}`
-    : `Myco Hub is not connected at ${url}`;
-  const title = running ? `Open Myco Hub at ${url}` : unavailableTitle;
-  const iconClassName = cn('h-4 w-4 shrink-0', isFetching && !running && 'animate-pulse');
-  const controlClassName = cn(
-    'text-on-surface-variant hover:text-on-surface',
-    collapsed ? 'w-8 p-0 justify-center' : 'w-full justify-start gap-2',
-  );
+/* ---------- Sidebar content (shared between mobile and desktop) ---------- */
 
-  if (running) {
+/**
+ * Visual indicator that the daemon is running off a non-stable runtime
+ * — a dev binary (`make dev-link`, `npm link`, etc.) or the managed
+ * beta runtime under `~/.myco/runtime/`. Always visible while non-
+ * stable; nothing rendered for stable installs.
+ *
+ * Lives in the sidebar so it's persistent across pages — there's no
+ * good reason to hunt for it on a settings tab when the question is
+ * "am I on the dogfood daemon right now?"
+ */
+function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
+  const { data } = useDaemon();
+  const runtime = data?.daemon.runtime;
+  if (!runtime || runtime.source === 'stable') return null;
+
+  const isDev = runtime.source === 'dev';
+  const label = isDev ? 'DEV' : 'BETA';
+  const tooltip = isDev
+    ? 'Daemon is running from a dev binary (make dev-link / npm link).'
+    : 'Daemon is running from the managed beta runtime under ~/.myco/runtime/.';
+  const colorClasses = isDev
+    ? 'bg-tertiary/20 text-tertiary border-tertiary/40'
+    : 'bg-secondary/20 text-secondary border-secondary/40';
+
+  if (collapsed) {
     return (
-      <a
-        href={url}
-        target="_top"
-        title={title}
+      <div
         className={cn(
-          buttonVariants({ variant: 'ghost', size: 'sm' }),
-          controlClassName,
+          'mx-auto flex h-5 w-8 items-center justify-center rounded border text-[10px] font-bold tracking-wider',
+          colorClasses,
         )}
+        title={tooltip}
       >
-        <Waypoints className={iconClassName} />
-        {!collapsed && <span>Open Hub</span>}
-      </a>
+        {label}
+      </div>
     );
   }
 
   return (
-    <span
-      title={title}
-      className={cn(collapsed ? 'inline-flex' : 'block w-full')}
+    <div
+      className={cn(
+        'mx-2 flex items-center justify-center rounded border px-2 py-1 text-[11px] font-semibold tracking-wider',
+        colorClasses,
+      )}
+      title={tooltip}
     >
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled
-        aria-label={isError ? 'Myco Hub status unavailable' : 'Myco Hub offline'}
-        className={controlClassName}
-      >
-        <Waypoints className={iconClassName} />
-        {!collapsed && <span>{isFetching && !data ? 'Checking Hub' : 'Hub Offline'}</span>}
-      </Button>
-    </span>
+      {label} runtime
+    </div>
   );
 }
 
-/* ---------- Sidebar content (shared between mobile and desktop) ---------- */
-
-/** Self-contained Operations nav link — owns update polling, controls link target and badge. */
-function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
+/**
+ * Self-contained Machine Settings nav link — adds an
+ * "update available" dot when an upgrade is pending. Updates live
+ * on the Machine Settings page now (the Operations page that used
+ * to host them was dissolved into Dashboard + Maintenance).
+ */
+function MachineSettingsNavLink({ collapsed }: { collapsed: boolean }) {
   const { data } = useUpdateStatus();
   const hasUpdate = !!(data && !data.exempt && data.update_available);
-  const to = hasUpdate ? '/operations?tab=system' : '/operations';
 
   return (
     <NavLink
-      to={to}
-      title={collapsed ? 'Operations' : undefined}
+      to="/machine/settings"
+      title={collapsed ? 'Settings' : undefined}
       className={({ isActive }) =>
         cn(
           'flex items-center rounded-md text-sm font-medium transition-colors',
@@ -217,8 +250,8 @@ function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
         )
       }
     >
-      <Wrench className="h-4 w-4 shrink-0" />
-      {!collapsed && 'Operations'}
+      <Settings className="h-4 w-4 shrink-0" />
+      {!collapsed && 'Settings'}
       {hasUpdate && (
         <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
       )}
@@ -228,7 +261,6 @@ function OperationsNavLink({ collapsed }: { collapsed: boolean }) {
 
 function SidebarContent({
   collapsed,
-  vaultName,
   onSearchOpen,
   onNotificationsOpen,
   unreadCount,
@@ -236,7 +268,6 @@ function SidebarContent({
   showCollapseToggle,
 }: {
   collapsed: boolean;
-  vaultName: string | undefined;
   onSearchOpen: () => void;
   onNotificationsOpen: () => void;
   unreadCount: number;
@@ -245,29 +276,7 @@ function SidebarContent({
 }) {
   return (
     <>
-      {/* Brand + vault name */}
-      <div className={cn('px-4 py-5', collapsed && 'px-2 py-4 flex justify-center')}>
-        {collapsed ? (
-          <div className="relative flex items-center">
-            <span className="font-serif text-base text-primary">m</span>
-            <span className="ml-1 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-          </div>
-        ) : (
-          <div>
-            <div className="flex items-center">
-              <span className="font-serif text-base text-primary tracking-wider">
-                myco
-              </span>
-              <span className="ml-2 h-2 w-2 rounded-full bg-on-surface-variant/40" />
-            </div>
-            {vaultName && (
-              <span className="font-mono text-xs text-outline uppercase tracking-widest mt-0.5">
-                {vaultName}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+      <ProjectSwitcher collapsed={collapsed} />
 
       {/* Search + Notifications triggers */}
       <div className="px-2 pt-2 pb-1 space-y-0.5">
@@ -310,36 +319,39 @@ function SidebarContent({
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) =>
-          item.to === '/operations' ? (
-            <OperationsNavLink key={item.to} collapsed={collapsed} />
-          ) : (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              title={collapsed ? item.label : undefined}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center rounded-md text-sm font-medium transition-colors',
-                  collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-                  isActive
-                    ? 'bg-primary/10 text-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-                )
-              }
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {!collapsed && item.label}
-            </NavLink>
-          ),
-        )}
+        <NavGroup label="Project" collapsed={collapsed}>
+          {PROJECT_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
+        </NavGroup>
+
+        <NavGroup label="Grove" collapsed={collapsed}>
+          {GROVE_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
+        </NavGroup>
+
+        <NavGroup label="Team" collapsed={collapsed}>
+          {TEAM_NAV_ITEMS.map((item) => (
+            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+          ))}
+        </NavGroup>
+
+        <NavGroup label="Machine" collapsed={collapsed}>
+          {MACHINE_NAV_ITEMS.map((item) =>
+            item.to === '/machine/settings' ? (
+              <MachineSettingsNavLink key={item.to} collapsed={collapsed} />
+            ) : (
+              <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+            ),
+          )}
+        </NavGroup>
       </nav>
 
       {/* Footer */}
       <div className={cn('py-3 space-y-2 mt-auto', collapsed ? 'px-1 flex flex-col items-center' : 'px-2')}>
+        <RuntimeBadge collapsed={collapsed} />
         {!collapsed && <AppearanceSection collapsed={collapsed} />}
-        <HubLinkButton collapsed={collapsed} />
         <RestartButton collapsed={collapsed} />
       </div>
 
@@ -365,12 +377,97 @@ function SidebarContent({
   );
 }
 
+function NavGroup({
+  label,
+  collapsed,
+  children,
+}: {
+  label: string;
+  collapsed: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {!collapsed && (
+        <div className="px-3 pt-4 pb-1 text-[10px] uppercase tracking-wider text-on-surface-variant">
+          {label}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function SidebarNavLink({
+  item,
+  collapsed,
+}: {
+  item: NavItem;
+  collapsed: boolean;
+}) {
+  const selection = useProjectSelection();
+  const projectScopedTo = useProjectPath(item.to);
+
+  let to: string;
+  if (item.scope === 'project') {
+    to = projectScopedTo;
+  } else if (item.scope === 'grove') {
+    // Grove-scoped: replace :groveSlug template if present, otherwise the
+    // path is project-relative for now (Operations, Team) and stays under
+    // /g/<grove>/p/<project>/<page> until P8 lifts them.
+    if (item.to.includes(':groveSlug')) {
+      to = selection ? item.to.replace(':groveSlug', selection.grove.slug) : '/';
+    } else {
+      to = projectScopedTo;
+    }
+  } else {
+    to = item.to;
+  }
+  return (
+    <NavLink
+      to={to}
+      end={item.to === '/'}
+      title={collapsed ? item.label : undefined}
+      className={({ isActive }) =>
+        cn(
+          'flex items-center rounded-md text-sm font-medium transition-colors',
+          collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
+          isActive
+            ? 'bg-primary/10 text-primary'
+            : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
+        )
+      }
+    >
+      <item.icon className="h-4 w-4 shrink-0" />
+      {!collapsed && item.label}
+    </NavLink>
+  );
+}
+
+function useDocumentIdentity(vaultName: string | undefined) {
+  const selection = useProjectSelection();
+  useEffect(() => {
+    const projectName = selection?.project.name ?? vaultName ?? null;
+    document.title = projectName
+      ? `${selection ? `${monogramFor(selection.project.name)} ` : ''}${projectName} - Myco`
+      : 'Myco';
+    // Favicon stays as the static /favicon-<theme>.svg owned by
+    // appearance-apply.ts. The previous per-project monogram canvas
+    // favicon stomped on the theme favicon and bled the project
+    // switcher's branding into the OS tab UI; both are fine inside the
+    // app chrome (sidebar) but the favicon is global and should stay
+    // stable.
+  }, [selection, vaultName]);
+}
+
 /* ---------- Layout ---------- */
 
 export default function Layout() {
   const { collapsed, toggle } = useSidebarCollapse();
   const { data: stats } = useDaemon();
-  const vaultName = stats?.vault.name;
+  const selection = useProjectSelection();
+  const vaultName = selection?.project.name ?? stats?.context.project.name ?? stats?.vault.name;
+  useDocumentIdentity(vaultName);
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const { data: unreadData } = useUnreadCount();
@@ -493,7 +590,6 @@ export default function Layout() {
         >
           <SidebarContent
             collapsed={false}
-            vaultName={vaultName}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}
@@ -512,7 +608,6 @@ export default function Layout() {
         >
           <SidebarContent
             collapsed={collapsed}
-            vaultName={vaultName}
             onSearchOpen={openSearch}
             onNotificationsOpen={openNotifPanel}
             unreadCount={unreadCount}

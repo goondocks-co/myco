@@ -64,8 +64,7 @@ import {
   getDevBuildCliEntry,
   resolveMycoBinary,
   resolveRuntimeCommand,
-  isManagedProjectRuntime,
-  getHarnessScope,
+  isManagedMachineRuntime,
   readProjectReleaseChannel,
   writeProjectReleaseChannel,
   readUpdateConfig,
@@ -152,6 +151,10 @@ function mockFetchFailure(message = 'network error'): void {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.unstubAllEnvs();
+  // Pin MYCO_HOME for the test runner so `resolveMycoHome()` returns the
+  // mocked path without depending on the (unmocked) transitive os.homedir()
+  // import inside grove/paths.ts.
+  vi.stubEnv('MYCO_HOME', '/mock-home/.myco');
   // The dev-build CLI entry is module state — reset between tests so
   // a prior test's "set to dev" doesn't bleed into the next test's
   // "expect prod" assertion.
@@ -165,6 +168,10 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   setDevBuildCliEntry(null);
+  // Belt-and-suspenders: bun:test --isolate doesn't actually fork between
+  // test files, so a stubbed MYCO_HOME persisting after this file finishes
+  // would leak into other tests' module loads. Force-clear it.
+  delete process.env.MYCO_HOME;
 });
 
 // ---------------------------------------------------------------------------
@@ -212,59 +219,38 @@ describe('resolveMycoBinary()', () => {
 });
 
 describe('resolveRuntimeCommand()', () => {
-  it('returns the trimmed runtime.command value when present', () => {
-    mockFileContent('/vault/.myco/runtime.command', '  /vault/.myco/runtime/node_modules/.bin/myco \n');
-    expect(resolveRuntimeCommand('/vault/.myco')).toBe('/vault/.myco/runtime/node_modules/.bin/myco');
+  it('returns the trimmed runtime.command value when present at ~/.myco/', () => {
+    mockFileContent('/mock-home/.myco/runtime.command', '  /mock-home/.myco/runtime/node_modules/.bin/myco \n');
+    expect(resolveRuntimeCommand()).toBe('/mock-home/.myco/runtime/node_modules/.bin/myco');
   });
 
   it('returns null when runtime.command is missing', () => {
     mockNoFiles();
-    expect(resolveRuntimeCommand('/vault/.myco')).toBeNull();
+    expect(resolveRuntimeCommand()).toBeNull();
   });
 });
 
-describe('isManagedProjectRuntime()', () => {
-  it('matches a managed runtime path inside a standard .myco vault', () => {
+describe('isManagedMachineRuntime()', () => {
+  it('matches a managed runtime path under ~/.myco/runtime/', () => {
     expect(
-      isManagedProjectRuntime('/Users/me/proj/.myco/runtime/node_modules/.bin/myco'),
+      isManagedMachineRuntime('/mock-home/.myco/runtime/node_modules/.bin/myco'),
     ).toBe(true);
   });
 
-  it('returns false for a machine-installed myco binary', () => {
-    expect(isManagedProjectRuntime('/opt/homebrew/bin/myco')).toBe(false);
+  it('returns false for a global myco install', () => {
+    expect(isManagedMachineRuntime('/opt/homebrew/bin/myco')).toBe(false);
   });
 
-  it('uses startsWith against the vaultDir when supplied', () => {
-    const vaultDir = '/tmp/relocated-vault';
-    const entry = `${vaultDir}/runtime/node_modules/.bin/myco`;
-    expect(isManagedProjectRuntime(entry, vaultDir)).toBe(true);
+  it('returns false for a dev binary outside the managed runtime', () => {
+    expect(isManagedMachineRuntime('/Users/dev/.local/bin/myco-dev')).toBe(false);
   });
 
-  it('rejects entries outside the supplied vaultDir even when the substring appears', () => {
-    // Without vaultDir, a misleading path could falsely match the substring
-    // form. With vaultDir, we anchor to the real prefix.
-    const entry = '/other/.myco/runtime/node_modules/.bin/myco';
-    expect(isManagedProjectRuntime(entry, '/my/.myco')).toBe(false);
-  });
-});
-
-describe('getHarnessScope()', () => {
-  it('returns `machine` when no runtime.command exists', () => {
-    mockNoFiles();
-    expect(getHarnessScope('/vault/.myco')).toBe('machine');
-  });
-
-  it('returns `project` when runtime.command points at the managed runtime', () => {
-    mockFileContent(
-      '/vault/.myco/runtime.command',
-      '/vault/.myco/runtime/node_modules/.bin/myco\n',
-    );
-    expect(getHarnessScope('/vault/.myco')).toBe('project');
-  });
-
-  it('returns `machine` when runtime.command points outside the managed runtime', () => {
-    mockFileContent('/vault/.myco/runtime.command', 'myco-dev\n');
-    expect(getHarnessScope('/vault/.myco')).toBe('machine');
+  it('returns false for a project-local path that happens to share the suffix', () => {
+    // Pre-rescope, this used to match via substring. Post-rescope, only
+    // ~/.myco/runtime/ counts as managed.
+    expect(
+      isManagedMachineRuntime('/Users/me/proj/.myco/runtime/node_modules/.bin/myco'),
+    ).toBe(false);
   });
 });
 
@@ -661,7 +647,7 @@ describe('statusFromCache()', () => {
     expect(result!.latest_version).toBe('1.1.0-beta.1');
   });
 
-  it('offers a stable-channel revert when running from a managed project runtime', () => {
+  it('offers a stable-channel revert when running from the managed machine runtime', () => {
     const cache = makeCachedCheck({
       channel: 'stable',
       packages: {
@@ -687,7 +673,7 @@ describe('statusFromCache()', () => {
       undefined,
       undefined,
       '/opt/homebrew',
-      '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco',
+      '/mock-home/.myco/runtime/node_modules/.bin/myco',
     );
     // Revert to a lower stable version is a revert, not an update.
     expect(result!.update_available).toBe(false);
@@ -817,13 +803,13 @@ describe('detectDevBuild()', () => {
     expect(result).toBeNull();
   });
 
-  it('treats project-local managed runtimes as prod, not dev builds', () => {
+  it('treats the managed machine runtime as prod, not a dev build', () => {
     const result = detectDevBuild(
       '/opt/homebrew',
-      '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco',
+      '/mock-home/.myco/runtime/node_modules/.bin/myco',
       (p: string) => {
-        if (p === '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/.bin/myco') {
-          return '/Users/chris/Repos/unifi-mcp/.myco/runtime/node_modules/@goondocks/myco/bin/myco.cjs';
+        if (p === '/mock-home/.myco/runtime/node_modules/.bin/myco') {
+          return '/mock-home/.myco/runtime/node_modules/@goondocks/myco/bin/myco.cjs';
         }
         return p;
       },

@@ -17,6 +17,7 @@ mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => 
 
 import { initDatabase, closeDatabase, getDatabase, SQLITE_DB_FILE } from '@myco/db/client.js';
 import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { getSkillRecordByName, listSkillRecords } from '@myco/db/queries/skill-records.js';
@@ -24,7 +25,9 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { cleanupStagedSkill, stagingPath } from '@myco/agent/tools/skill-staging.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Test harness constants
 // ---------------------------------------------------------------------------
@@ -73,6 +76,7 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     tmpDir = fs.realpathSync(raw);
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'skill-staging-smoke' });
     dbPath = path.join(vaultDir, SQLITE_DB_FILE);
 
     // Fresh v10 install via the app's normal initDatabase + createSchema
@@ -136,11 +140,11 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate(candidateId, { status: 'approved', updated_at: now });
-    const approvedAtBefore = getCandidate(candidateId)!.approved_at;
+    updateCandidate(candidateId, { status: 'approved', updated_at: now }, ALL_PROJECTS_SCOPE);
+    const approvedAtBefore = getCandidate(candidateId, ALL_PROJECTS_SCOPE)!.approved_at;
     expect(approvedAtBefore).toBeGreaterThan(0);
 
-    const tools = createVaultTools(AGENT_ID, RUN_ID, {
+    const tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
     });
@@ -177,8 +181,8 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     expect(
       fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'smoke-happy', 'SKILL.md')),
     ).toBe(false);
-    expect(getSkillRecordByName('smoke-happy')).toBeNull();
-    expect(getCandidate(candidateId)!.status).toBe('approved');
+    expect(getSkillRecordByName('smoke-happy', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(getCandidate(candidateId, ALL_PROJECTS_SCOPE)!.status).toBe('approved');
 
     // -------- Finalize --------
     const finalizeTool = findTool(tools, 'vault_finalize_skill');
@@ -194,18 +198,18 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     expect(fs.existsSync(liveFile)).toBe(true);
     expect(fs.readFileSync(liveFile, 'utf-8')).toContain('Smoke test skill smoke-happy');
 
-    const record = getSkillRecordByName('smoke-happy');
+    const record = getSkillRecordByName('smoke-happy', ALL_PROJECTS_SCOPE);
     expect(record).not.toBeNull();
     expect(record!.description).toContain('End-to-end smoke test');
 
-    const afterFinalize = getCandidate(candidateId)!;
+    const afterFinalize = getCandidate(candidateId, ALL_PROJECTS_SCOPE)!;
     expect(afterFinalize.status).toBe('generated');
     expect(afterFinalize.approved_at).toBe(approvedAtBefore);
     expect(afterFinalize.skill_id).toBe(record!.id);
 
     // Staging cleaned; exactly one live skill now registered
     expect(fs.existsSync(stagedFile)).toBe(false);
-    const records = listSkillRecords({ agent_id: AGENT_ID });
+    const records = listSkillRecords({ agent_id: AGENT_ID, scope: ALL_PROJECTS_SCOPE });
     expect(records).toHaveLength(1);
     expect(records[0].name).toBe('smoke-happy');
   });
@@ -226,12 +230,12 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate(candidateId, { status: 'approved', updated_at: now });
-    const approvedAtBeforeFailure = getCandidate(candidateId)!.approved_at!;
+    updateCandidate(candidateId, { status: 'approved', updated_at: now }, ALL_PROJECTS_SCOPE);
+    const approvedAtBeforeFailure = getCandidate(candidateId, ALL_PROJECTS_SCOPE)!.approved_at!;
     expect(approvedAtBeforeFailure).toBeGreaterThan(0);
 
     // Stage (draft phase)
-    const tools = createVaultTools(AGENT_ID, RUN_ID, {
+    const tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
     });
@@ -260,14 +264,14 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
 
     // No orphan anywhere
     expect(fs.existsSync(stagingPath(vaultDir, candidateId))).toBe(false);
-    expect(getSkillRecordByName('smoke-orphan')).toBeNull();
+    expect(getSkillRecordByName('smoke-orphan', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(
       fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'smoke-orphan', 'SKILL.md')),
     ).toBe(false);
 
     // Candidate still approved, audit trail intact — ready for the
     // next generate cycle to retry.
-    const afterFailure = getCandidate(candidateId)!;
+    const afterFailure = getCandidate(candidateId, ALL_PROJECTS_SCOPE)!;
     expect(afterFailure.status).toBe('approved');
     expect(afterFailure.approved_at).toBe(approvedAtBeforeFailure);
     expect(afterFailure.skill_id).toBeNull();

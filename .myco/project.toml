@@ -1,0 +1,8 @@
+[project]
+id = "proj_ecfd2c27e50729848003a856c1c3747e"
+name = "myco"
+
+[grove]
+mode = "local"
+binding_id = "gbind_9b7505054189d740fe66e1d7522fa5d5"
+slug = "myco-dogfood"

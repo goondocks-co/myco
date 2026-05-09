@@ -13,14 +13,16 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-7 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
+9 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
+
+Every vault-scoped tool accepts optional `grove_id` / `project_id` body fields that pivot the call to a different (Grove, project) than the harness launched under — mirroring the daemon UI's project switcher.
 
 ### Search & Cortex
 
 | Tool | Purpose |
 |------|---------|
 | `myco_search` | Semantic + keyword search across sessions, spores, plans, skills, and Canopy file summaries. Results include stable IDs and `retrieve` hints pointing to the owning entity tool. |
-| `myco_cortex` | Cortex project intelligence: digest (`op=digest`), generated instructions, Canopy map (`op=canopy_map`), and Canopy entries returned by search (`op=canopy_entry`). |
+| `myco_cortex` | Cortex project intelligence: digest (`op=digest`), generated instructions, Canopy map (`op=canopy_map`), Canopy entries (`op=canopy_entry`), pending notifications (`op=notifications`), per-Grove maintenance summary (`op=maintenance_summary`), and cross-Grove project activity (`op=projects_activity`). |
 
 ### Entity tools
 
@@ -31,6 +33,13 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
 | `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
 | `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
+
+### Operator tools
+
+| Tool | Purpose |
+|------|---------|
+| `myco_maintenance` | Drive operator actions: database `optimize`/`vacuum`/`reindex`/`integrity-check`, embedding `rebuild`/`reconcile`, `backup_now`/`backup_list`, and `restore_preview`/`restore`. Body accepts an optional `scope` envelope (`{kind:"project"|"grove"|"all-groves"}`) so a single call can fan out across every Grove the same way the daemon UI's "All Groves" pill does. |
+| `myco_update` | Manage Myco self-update: read installed/latest versions and channel (`op=status`), force a registry check (`op=check`), apply pending updates (`op=apply`), and switch release channel (`op=set_channel`). Cross-Grove fan-out on apply is handled by the daemon installer post-install. |
 
 ## Cloud MCP tools
 

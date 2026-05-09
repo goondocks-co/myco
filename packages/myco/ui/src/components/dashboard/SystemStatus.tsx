@@ -13,12 +13,20 @@ function StatusRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function groveLabel(stats: StatsResponse): string {
+  const groveName = stats.context.grove.name ?? stats.context.grove.slug;
+  if (groveName) return groveName;
+  return stats.context.grove.connection_state === 'pending' ? 'pending Grove' : 'legacy vault';
+}
+
 /* ---------- Component ---------- */
 
 export function SystemStatus({ stats }: { stats: StatsResponse }) {
   return (
     <Surface level="low" className="p-4 space-y-1">
       <h3 className="font-serif text-sm text-on-surface mb-2">System Status</h3>
+      <StatusRow label="Project" value={stats.context.project.name || stats.vault.name} />
+      <StatusRow label="Grove" value={groveLabel(stats)} />
       <StatusRow label="Daemon uptime" value={formatUptime(stats.daemon.uptime_seconds)} />
       <StatusRow label="Version" value={`v${stats.daemon.version}`} />
       <StatusRow

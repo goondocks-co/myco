@@ -39,19 +39,16 @@ export const BACKUP_TABLES = [
 const BACKUP_EXTENSION = '.sql';
 
 /**
- * Pattern matching a valid backup filename: `<machine_id>.sql`.
+ * Backup filename forms accepted on disk:
+ * - Legacy: `<machine_id>.sql` (overwrite-in-place; one per machine)
+ * - Current: `<machine_id>__<epochSeconds>.sql` (timestamped; pruneable history)
  *
- * Machine IDs follow `{github_user}_{machine_hash}` (see machine-id.ts)
- * which uses alphanumerics, underscore, and hyphen — but never dots.
- * The stem is constrained to `[A-Za-z0-9_-]` so a single literal `.sql`
- * extension is the only dot in the filename.
- *
- * Constraining the stem rejects conflict markers introduced by cloud
- * sync services when the backup directory lives inside a synced folder.
- * These typically insert spaces, parentheses, quotes, or extra dots
- * into filenames — none of which match a valid machine ID.
+ * Machine IDs follow `{github_user}_{machine_hash}` (see machine-id.ts) —
+ * alphanumerics, underscore, hyphen. The literal `__` separator is reserved
+ * for the timestamp. Constraining the stem rejects conflict markers
+ * introduced by cloud sync services in shared backup folders.
  */
-const BACKUP_FILENAME_PATTERN = /^[A-Za-z0-9_-]+\.sql$/;
+const BACKUP_FILENAME_PATTERN = /^([A-Za-z0-9_-]+?)(?:__([0-9]+))?\.sql$/;
 
 /** Header comment template for backup files. */
 const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
@@ -116,9 +113,10 @@ function toSqlLiteral(value: unknown): string {
 /**
  * Create a SQL dump backup of all synced tables.
  *
- * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES
- * to `{backupDir}/{machineId}.sql`. Idempotent — overwrites any existing
- * backup for the same machine.
+ * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES to
+ * `{backupDir}/{machineId}__{epochSeconds}.sql`. Each invocation produces
+ * a new file; old ones are reclaimed by `pruneBackups` per the configured
+ * retention policy.
  *
  * @returns the absolute path of the created backup file.
  */
@@ -155,7 +153,7 @@ export function createBackup(
     lines.push('');
   }
 
-  const filePath = path.join(backupDir, `${machineId}${BACKUP_EXTENSION}`);
+  const filePath = path.join(backupDir, `${machineId}__${timestamp}${BACKUP_EXTENSION}`);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
   return filePath;
@@ -165,12 +163,15 @@ export function createBackup(
 // List
 // ---------------------------------------------------------------------------
 
-/**
- * Scan the backup directory for `.sql` files and return metadata.
- *
- * Machine ID is derived from the filename (stripping the extension).
- */
-export function listBackups(backupDir: string): BackupMeta[] {
+interface RawBackupEntry {
+  machine_id: string;
+  file_name: string;
+  size_bytes: number;
+  /** Epoch ms — from filename timestamp when present, else file mtime. */
+  modified_ms: number;
+}
+
+function listAllBackupEntries(backupDir: string): RawBackupEntry[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(backupDir);
@@ -178,23 +179,170 @@ export function listBackups(backupDir: string): BackupMeta[] {
     return [];
   }
 
-  const backups: BackupMeta[] = [];
-
+  const out: RawBackupEntry[] = [];
   for (const entry of entries) {
-    if (!BACKUP_FILENAME_PATTERN.test(entry)) continue;
+    const match = BACKUP_FILENAME_PATTERN.exec(entry);
+    if (!match) continue;
+    const machineId = match[1];
+    const stampSeconds = match[2] ? Number(match[2]) : null;
+    if (!machineId) continue;
 
     const filePath = path.join(backupDir, entry);
     const stat = fs.statSync(filePath);
+    const modifiedMs = stampSeconds !== null && Number.isFinite(stampSeconds)
+      ? stampSeconds * 1000
+      : stat.mtime.getTime();
 
-    backups.push({
-      machine_id: entry.slice(0, -BACKUP_EXTENSION.length),
+    out.push({
+      machine_id: machineId,
       file_name: entry,
       size_bytes: stat.size,
-      modified_at: stat.mtime.toISOString(),
+      modified_ms: modifiedMs,
     });
   }
+  return out;
+}
 
-  return backups.sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+/**
+ * Full backup history for `backupDir`, sorted newest-first. Includes
+ * every timestamped file plus any legacy untimestamped one-per-machine
+ * file. The retention engine (`pruneBackups`) caps how many entries
+ * survive on disk; this function returns whatever's currently there
+ * so the UI can render point-in-time restore choices.
+ */
+export function listBackups(backupDir: string): BackupMeta[] {
+  const all = listAllBackupEntries(backupDir);
+  return all
+    .sort((a, b) => b.modified_ms - a.modified_ms)
+    .map((e) => ({
+      machine_id: e.machine_id,
+      file_name: e.file_name,
+      size_bytes: e.size_bytes,
+      modified_at: new Date(e.modified_ms).toISOString(),
+    }));
+}
+
+export interface PruneRetentionPolicy {
+  keep_daily: number;
+  keep_weekly: number;
+}
+
+export interface PruneResult {
+  removed: string[];
+  kept: number;
+}
+
+const TIMESTAMPED_PATTERN = /__[0-9]+\.sql$/;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Reclaim old backup files per `retention`. For each machine_id, retain
+ * the `keep_daily` most recent timestamped files plus one file per week
+ * for `keep_weekly` weeks beyond that window. Legacy untimestamped files
+ * (one-per-machine, overwrite-in-place) are always preserved.
+ */
+export function pruneBackups(
+  backupDir: string,
+  retention: PruneRetentionPolicy,
+  now = Date.now(),
+): PruneResult {
+  const all = listAllBackupEntries(backupDir);
+  const grouped = new Map<string, RawBackupEntry[]>();
+  for (const entry of all) {
+    const arr = grouped.get(entry.machine_id) ?? [];
+    arr.push(entry);
+    grouped.set(entry.machine_id, arr);
+  }
+
+  const removed: string[] = [];
+  let kept = 0;
+
+  for (const [, files] of grouped) {
+    files.sort((a, b) => b.modified_ms - a.modified_ms);
+    const legacy = files.filter((f) => !TIMESTAMPED_PATTERN.test(f.file_name));
+    const timestamped = files.filter((f) => TIMESTAMPED_PATTERN.test(f.file_name));
+
+    kept += legacy.length;
+    const dailyKept = timestamped.slice(0, retention.keep_daily);
+    const olderThanDaily = timestamped.slice(retention.keep_daily);
+    kept += dailyKept.length;
+
+    const weeklyKept = new Map<number, RawBackupEntry>();
+    for (const file of olderThanDaily) {
+      const weeksOld = Math.floor((now - file.modified_ms) / WEEK_MS);
+      if (weeksOld >= retention.keep_weekly) break;
+      if (!weeklyKept.has(weeksOld)) {
+        weeklyKept.set(weeksOld, file);
+      }
+    }
+    kept += weeklyKept.size;
+
+    const keepNames = new Set<string>([
+      ...legacy.map((f) => f.file_name),
+      ...dailyKept.map((f) => f.file_name),
+      ...Array.from(weeklyKept.values()).map((f) => f.file_name),
+    ]);
+    for (const file of files) {
+      if (keepNames.has(file.file_name)) continue;
+      const fullPath = path.join(backupDir, file.file_name);
+      try {
+        fs.unlinkSync(fullPath);
+        removed.push(file.file_name);
+      } catch {
+        // Best effort — pruning failure must not break the backup job.
+      }
+    }
+  }
+
+  return { removed, kept };
+}
+
+/**
+ * One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
+ * files at the top of the user's backup root into a sibling
+ * `.legacy/` folder. Pre-Grove backups wrote directly to
+ * `~/myco_backups/<vault>/`; the per-Grove split moved active
+ * backups into `<vault>/<groveSlug>/` subdirs, leaving the old
+ * top-level files orphaned (still on disk, but unreachable through
+ * any Grove's backup directory). Sweeping them aside keeps the
+ * data on disk while removing the visual noise from the user's
+ * Finder/`ls` view.
+ *
+ * `rootDir` is the user-configured `backup.dir` (already expanded
+ * + absolute). Subdirectories are skipped; only loose `.sql` files
+ * at the top get moved. Idempotent.
+ */
+export interface LegacySweepResult {
+  moved: string[];
+  legacyDir: string | null;
+}
+
+export function sweepLegacyBackupRoot(rootDir: string): LegacySweepResult {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  } catch {
+    return { moved: [], legacyDir: null };
+  }
+  const orphans = entries.filter(
+    (e) => e.isFile() && e.name.endsWith(BACKUP_EXTENSION),
+  );
+  if (orphans.length === 0) return { moved: [], legacyDir: null };
+
+  const legacyDir = path.join(rootDir, '.legacy');
+  fs.mkdirSync(legacyDir, { recursive: true });
+  const moved: string[] = [];
+  for (const entry of orphans) {
+    const src = path.join(rootDir, entry.name);
+    const dest = path.join(legacyDir, entry.name);
+    try {
+      fs.renameSync(src, dest);
+      moved.push(entry.name);
+    } catch {
+      // Best effort. Don't block boot on a single failed rename.
+    }
+  }
+  return { moved, legacyDir };
 }
 
 // ---------------------------------------------------------------------------

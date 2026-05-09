@@ -5,18 +5,15 @@ import path from 'node:path';
 import os from 'node:os';
 
 /**
- * The hook guard resolves which myco binary to invoke via
- * `.myco/runtime.command` — a per-project alias file. The guard locates
- * that file *relative to its own __dirname* so cwd is irrelevant. To
- * exercise that behavior we copy the guard into a temp project layout:
+ * The hook guard resolves which myco binary to invoke via the machine-
+ * scope `~/.myco/runtime.command` file. Tests pin `MYCO_HOME` to a temp
+ * directory so the guard reads the test's runtime.command without
+ * touching the developer's actual home directory.
  *
  *     tmpDir/
- *       .agents/myco-run.cjs
- *       .myco/runtime.command   (optional — absent means default)
- *
- * and invoke the copy from `tmpDir/.agents/myco-run.cjs`. The guard's
- * __dirname resolves to `tmpDir/.agents/`, and `../.myco/runtime.command`
- * resolves correctly regardless of what directory Node was launched from.
+ *       .agents/myco-run.cjs        (copy of the template)
+ *       myco-home/runtime.command   (optional — absent means default)
+ *       bin/<fake binaries>
  */
 
 const guardSource = path.resolve('packages/myco/src/symbionts/templates/myco-run.cjs');
@@ -26,56 +23,26 @@ interface Fixture {
   guardCopy: string;
   cliCopy: string;
   binDir: string;
+  mycoHome: string;
 }
 
 function makeFixture(): Fixture {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-guard-test-'));
   const agentsDir = path.join(tmpDir, '.agents');
-  const vaultDir = path.join(tmpDir, '.myco');
+  const mycoHome = path.join(tmpDir, 'myco-home');
   const binDir = path.join(tmpDir, 'bin');
   fs.mkdirSync(agentsDir);
-  fs.mkdirSync(vaultDir);
+  fs.mkdirSync(mycoHome);
   fs.mkdirSync(binDir);
   const guardCopy = path.join(agentsDir, 'myco-run.cjs');
   const cliCopy = path.join(agentsDir, 'myco-cli.cjs');
   fs.copyFileSync(guardSource, guardCopy);
   fs.copyFileSync(guardSource, cliCopy);
-  return { tmpDir, guardCopy, cliCopy, binDir };
-}
-
-function makeWorktreeFixture(): Fixture {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-guard-worktree-test-'));
-  const mainRepo = path.join(tmpDir, 'main-repo');
-  const worktree = path.join(tmpDir, 'feature-worktree');
-  const agentsDir = path.join(worktree, '.agents');
-  const worktreeVaultDir = path.join(worktree, '.myco');
-  const mainVaultDir = path.join(mainRepo, '.myco');
-  const binDir = path.join(tmpDir, 'bin');
-  fs.mkdirSync(path.join(mainRepo, '.git', 'worktrees', 'feature'), { recursive: true });
-  fs.mkdirSync(mainVaultDir, { recursive: true });
-  fs.mkdirSync(agentsDir, { recursive: true });
-  fs.mkdirSync(worktreeVaultDir, { recursive: true });
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(worktree, '.git'),
-    `gitdir: ${path.join(mainRepo, '.git', 'worktrees', 'feature')}\n`,
-    'utf-8',
-  );
-  fs.writeFileSync(path.join(mainVaultDir, 'runtime.command'), 'myco-dev\n', 'utf-8');
-  const guardCopy = path.join(agentsDir, 'myco-run.cjs');
-  const cliCopy = path.join(agentsDir, 'myco-cli.cjs');
-  fs.copyFileSync(guardSource, guardCopy);
-  fs.copyFileSync(guardSource, cliCopy);
-  return { tmpDir, guardCopy, cliCopy, binDir };
+  return { tmpDir, guardCopy, cliCopy, binDir, mycoHome };
 }
 
 function writeAlias(fixture: Fixture, alias: string): void {
-  fs.writeFileSync(path.join(fixture.tmpDir, '.myco', 'runtime.command'), alias, 'utf-8');
-}
-
-function writeProjectAlias(fixture: Fixture, alias: string): void {
-  const projectRoot = path.resolve(path.dirname(fixture.guardCopy), '..');
-  fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), alias, 'utf-8');
+  fs.writeFileSync(path.join(fixture.mycoHome, 'runtime.command'), alias, 'utf-8');
 }
 
 function createFakeBin(fixture: Fixture, name: string, script: string): string {
@@ -85,6 +52,10 @@ function createFakeBin(fixture: Fixture, name: string, script: string): string {
 }
 
 const { MYCO_CMD: _stripMycoCmd, ...BASE_ENV } = process.env;
+
+function envForFixture(fixture: Fixture, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...BASE_ENV, MYCO_HOME: fixture.mycoHome, PATH: fixture.binDir, ...extra };
+}
 
 describe('myco-run.cjs', () => {
   let fixture: Fixture;
@@ -101,7 +72,7 @@ describe('myco-run.cjs', () => {
     it('exits 0 when default `myco` is not on PATH', () => {
       // No runtime.command file, default to `myco`, PATH has no myco → ENOENT → silent exit.
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -111,7 +82,7 @@ describe('myco-run.cjs', () => {
     it('returns a JSON runtime error for tool calls when default `myco` is not on PATH', () => {
       try {
         execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'call', 'canopy_map', '--json', '--input', '{}'], {
-          env: { ...BASE_ENV, PATH: fixture.binDir },
+          env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
@@ -124,7 +95,7 @@ describe('myco-run.cjs', () => {
           tool: 'canopy_map',
           error: {
             code: 'runtime_unavailable',
-            message: "Myco runtime command 'myco' could not be found. Check .myco/runtime.command or run Myco update from a shell where Myco is installed.",
+            message: "Myco runtime command 'myco' could not be found. Check ~/.myco/runtime.command or run Myco update from a shell where Myco is installed.",
           },
         });
       }
@@ -132,7 +103,7 @@ describe('myco-run.cjs', () => {
 
     it('exits 0 with no arguments and no binary available', () => {
       const result = execFileSync(process.execPath, [fixture.guardCopy], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -142,7 +113,7 @@ describe('myco-run.cjs', () => {
     it('invokes default `myco` when it is on PATH', () => {
       createFakeBin(fixture, 'myco', '#!/bin/sh\necho "DEFAULT:$*"');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -153,7 +124,7 @@ describe('myco-run.cjs', () => {
       writeAlias(fixture, '');
       createFakeBin(fixture, 'myco', '#!/bin/sh\necho "DEFAULT:$*"');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'stop'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -162,11 +133,11 @@ describe('myco-run.cjs', () => {
   });
 
   describe('runtime.command alias', () => {
-    it('invokes the alias recorded in .myco/runtime.command', () => {
+    it('invokes the alias recorded in ~/.myco/runtime.command', () => {
       writeAlias(fixture, 'myco-dev');
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "ALIASED:$*"');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'user-prompt-submit', '--symbiont', 'codex'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -177,7 +148,7 @@ describe('myco-run.cjs', () => {
       writeAlias(fixture, '  myco-dev\n');
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "ALIASED:$*"');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'stop'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -188,7 +159,7 @@ describe('myco-run.cjs', () => {
       writeAlias(fixture, 'myco-dev');
       // myco-dev is NOT on PATH — ENOENT → silent exit.
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
+        env: envForFixture(fixture),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -199,7 +170,7 @@ describe('myco-run.cjs', () => {
       writeAlias(fixture, 'myco-dev');
       try {
         execFileSync(process.execPath, [fixture.guardCopy, 'tool', 'list', '--json'], {
-          env: { ...BASE_ENV, PATH: fixture.binDir },
+          env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
@@ -227,57 +198,11 @@ describe('myco-run.cjs', () => {
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'stop'], {
         // PATH deliberately excludes outBin's directory — only the absolute
         // path in runtime.command should resolve the binary.
-        env: { ...BASE_ENV, PATH: '/nonexistent-dir' },
+        env: envForFixture(fixture, { PATH: '/nonexistent-dir' }),
         stdio: 'pipe',
         timeout: 5000,
       });
       expect(result.toString().trim()).toBe('ABS:hook stop');
-    });
-
-    it('finds runtime.command from the main repo when installed in a git worktree', () => {
-      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
-      fixture = makeWorktreeFixture();
-      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "WORKTREE:$*"');
-
-      const result = execFileSync(process.execPath, [fixture.cliCopy, 'tool', 'list', '--json'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
-        stdio: 'pipe',
-        timeout: 5000,
-      });
-
-      expect(result.toString().trim()).toBe('WORKTREE:tool list --json');
-    });
-
-    it('uses a worktree-local runtime.command for the project CLI launcher', () => {
-      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
-      fixture = makeWorktreeFixture();
-      writeProjectAlias(fixture, 'myco-worktree');
-      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "MAIN:$*"');
-      createFakeBin(fixture, 'myco-worktree', '#!/bin/sh\necho "LOCAL:$*"');
-
-      const result = execFileSync(process.execPath, [fixture.cliCopy, 'tool', 'list', '--json'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
-        stdio: 'pipe',
-        timeout: 5000,
-      });
-
-      expect(result.toString().trim()).toBe('LOCAL:tool list --json');
-    });
-
-    it('uses the main repo runtime.command for the capture launcher from a git worktree', () => {
-      fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
-      fixture = makeWorktreeFixture();
-      writeProjectAlias(fixture, 'myco-worktree');
-      createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "MAIN:$*"');
-      createFakeBin(fixture, 'myco-worktree', '#!/bin/sh\necho "LOCAL:$*"');
-
-      const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-        env: { ...BASE_ENV, PATH: fixture.binDir },
-        stdio: 'pipe',
-        timeout: 5000,
-      });
-
-      expect(result.toString().trim()).toBe('MAIN:hook session-start');
     });
 
     it('ignores MYCO_CMD — runtime.command is the only source', () => {
@@ -288,11 +213,7 @@ describe('myco-run.cjs', () => {
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "DEV:$*"');
       createFakeBin(fixture, 'some-other-binary', '#!/bin/sh\necho "SHOULD-NOT-RUN:$*"');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'stop'], {
-        env: {
-          ...BASE_ENV,
-          PATH: fixture.binDir,
-          MYCO_CMD: path.join(fixture.binDir, 'some-other-binary'),
-        },
+        env: envForFixture(fixture, { MYCO_CMD: path.join(fixture.binDir, 'some-other-binary') }),
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -306,7 +227,7 @@ describe('myco-run.cjs', () => {
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "vault not initialized" >&2\nexit 1');
       try {
         execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-          env: { ...BASE_ENV, PATH: fixture.binDir },
+          env: envForFixture(fixture),
           stdio: 'pipe',
           timeout: 5000,
         });
@@ -325,11 +246,7 @@ describe('myco-run.cjs', () => {
       writeAlias(fixture, 'myco-dev');
       createFakeBin(fixture, 'myco-dev', '#!/bin/sh\necho "SHOULD-NOT-RUN"\nexit 1');
       const result = execFileSync(process.execPath, [fixture.guardCopy, 'hook', 'session-start'], {
-        env: {
-          ...BASE_ENV,
-          PATH: fixture.binDir,
-          MYCO_AGENT_SESSION: '1',
-        },
+        env: envForFixture(fixture, { MYCO_AGENT_SESSION: '1' }),
         stdio: 'pipe',
         timeout: 5000,
       });

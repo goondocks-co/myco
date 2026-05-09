@@ -168,6 +168,7 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
         turnOffset: toolSurface.turnOffset,
         projectRoot: toolSurface.projectRoot,
         vaultDir: toolSurface.vaultDir,
+        requestContext: toolSurface.requestContext,
         embeddingManager: toolSurface.embeddingManager,
         readOnly: toolSurface.readOnly,
         dryRun: toolSurface.dryRun,
@@ -177,7 +178,9 @@ function buildToolServer(input: { toolSurface: HarnessExecuteInput['toolSurface'
 
   return createVaultToolServer(toolSurface.agentId, toolSurface.runId, {
     embeddingManager: toolSurface.embeddingManager,
+    projectRoot: toolSurface.projectRoot,
     vaultDir: toolSurface.vaultDir,
+    requestContext: toolSurface.requestContext,
     dryRun: toolSurface.dryRun,
   });
 }

@@ -19,10 +19,13 @@ import { DaemonLogger } from '@myco/daemon/logger.js';
 import { createSessionMutationHandlers } from '@myco/daemon/api/sessions.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans.js';
+import { recordImportMapping } from '@myco/db/queries/migration-import-journal.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { getDatabase } from '@myco/db/client.js';
 import { initTeamContext } from '@myco/daemon/team-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
@@ -33,6 +36,8 @@ function mockClient(getData: unknown = null, ok = true): DaemonClient {
 }
 
 const VAULT_DIR_FOR_TESTS = path.join(os.tmpdir(), 'myco-plans-test-stub');
+fs.mkdirSync(VAULT_DIR_FOR_TESTS, { recursive: true });
+ensureProjectManifest(VAULT_DIR_FOR_TESTS, { projectName: 'plans-test-stub' });
 
 function seedSession(id: string): void {
   const db = getDatabase();
@@ -50,11 +55,13 @@ function seedPlan(input: {
   content?: string;
   tags?: string;
   session_id?: string;
+  project_id?: string | null;
   created_at?: number;
 }): void {
   upsertPlan({
     id: input.id,
     logical_key: input.logical_key,
+    project_id: input.project_id,
     title: input.title ?? null,
     content: input.content ?? null,
     tags: input.tags ?? null,
@@ -112,6 +119,45 @@ describe('myco_plans op: list / get (in-process)', () => {
     expect(result.content).toBe(content);
   });
 
+  it('op:get resolves pre-migration plan ids through the import journal in Grove scope', async () => {
+    const projectId = 'proj_current';
+    const groveId = 'grove_current';
+    const content = '# Migrated Plan\n\nPreserved after rekey.';
+    seedPlan({
+      id: 'plan_new',
+      logical_key: 'legacy:old-plan',
+      project_id: projectId,
+      title: 'Migrated',
+      content,
+    });
+    recordImportMapping({
+      migration_id: 'mig_current',
+      source_project_root: '/legacy/project',
+      source_db_path: '/legacy/project/.myco/myco.db',
+      target_grove_id: groveId,
+      target_project_id: projectId,
+      source_table: 'plans',
+      source_id: 'old-plan',
+      target_table: 'plans',
+      target_id: 'plan_new',
+      status: 'imported',
+    });
+
+    const result = await handleMycoPlans({ op: 'get', id: 'old-plan' }, mockClient(), {
+      projectRoot: '/legacy/project',
+      projectId,
+      groveId,
+      machineId: 'machine',
+      sessionId: null,
+      projectVaultDir: '/legacy/project/.myco',
+      databasePath: ':memory:',
+      source: 'explicit',
+    }) as { id: string; content: string };
+
+    expect(result.id).toBe('plan_new');
+    expect(result.content).toBe(content);
+  });
+
   it('op:get returns Plan-not-found when the id is unknown', async () => {
     const result = await handleMycoPlans({ op: 'get', id: 'nope' }, mockClient(), VAULT_DIR_FOR_TESTS);
     expect(result).toEqual({ ok: false, error: 'Plan not found' });
@@ -157,6 +203,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
 
   beforeAll(async () => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plans-delete-'));
+    ensureProjectManifest(vaultDir, { projectName: 'plans-delete-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     setupTestDb();
@@ -223,7 +270,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     const result = await handleMycoPlans({ op: 'delete', id: 'plan-local' }, client, vaultDir);
 
     expect(result).toMatchObject({ ok: true, id: 'plan-local', session_id: 'sess-1' });
-    expect(getPlan('plan-local')).toBeNull();
+    expect(getPlan('plan-local', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('forwards force_remote to the daemon when set', async () => {
@@ -244,7 +291,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
     );
 
     expect(result).toMatchObject({ ok: true, id: 'plan-remote-force' });
-    expect(getPlan('plan-remote-force')).toBeNull();
+    expect(getPlan('plan-remote-force', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('surfaces the daemon-side rejection when force_remote is omitted for a remote plan', async () => {
@@ -268,6 +315,6 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
       ok: false,
       error: expect.stringContaining('force_remote'),
     });
-    expect(getPlan('plan-remote-naked')).not.toBeNull();
+    expect(getPlan('plan-remote-naked', ALL_PROJECTS_SCOPE)).not.toBeNull();
   });
 });

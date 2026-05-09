@@ -32,6 +32,9 @@ export function NotificationBanner({ panelOpen = false }: { panelOpen?: boolean 
     limit: BANNER_MAX_VISIBLE,
     pollCategory: 'realtime',
     refetchInterval: POLL_INTERVALS.LOGS,
+    // Daemon-scope failures (backup/integrity/optimize) need to surface
+    // even when no specific project is in focus.
+    includeDaemon: true,
   });
   const updateNotification = useUpdateNotification();
   const navigate = useNavigate();

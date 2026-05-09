@@ -16,146 +16,281 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Daemon Process Lifecycle and Eviction Management
 
-Myco daemon processes require careful lifecycle management to ensure reliable operation across restarts, updates, and multi-instance scenarios. This skill covers operational procedures for daemon startup, eviction, restart, and coordination workflows that prevent race conditions, port conflicts, and resource leaks.
+Myco daemon processes require careful lifecycle management to ensure reliable operation across restarts, updates, and multi-instance scenarios. With Grove architecture, the daemon operates as a global system service managing multiple groves and projects through centralized coordination patterns.
 
 ## Prerequisites
 
-- Myco project with daemon functionality configured
+- Myco Grove installation with global daemon (`~/.myco/groves/` architecture)
 - Understanding of process signals (SIGTERM, SIGKILL) and port management
-- Access to `.myco/daemon.json` and daemon control files
+- Access to global daemon state in `~/.myco/daemon.json`
 - Basic knowledge of process discovery and PID validation concepts
+- Understanding of grove-scoped resource management
+- **Hub package no longer required** — global daemon replaces Hub functionality
 
 ## Procedure A: Daemon Startup and Robustness
 
-### Auto-Spawn Patterns via DaemonClient
+### Global Daemon Auto-Spawn via DaemonClient
 
-All hooks automatically spawn the daemon through centralized `DaemonClient`:
+Grove architecture uses a global daemon that manages all projects through centralized `DaemonClient`:
 
 ```typescript
-// When daemon.json missing or daemon unhealthy
+// Global daemon spawn - manages all groves
 await spawnDaemon();
 ```
 
-**Startup sequence:**
-1. **Check daemon health** via `/health` endpoint ping
-2. **Validate daemon.json** - ensure PID exists and matches running process
-3. **Spawn if needed** - 3-second coalesce window deduplicates spawn attempts
+**Global startup sequence:**
+1. **Check global daemon health** via `/health` endpoint on global port
+2. **Validate ~/.myco/daemon.json** - ensure PID exists and matches running process
+3. **Spawn if needed** - 3-second coalesce window deduplicates spawn attempts across projects
 4. **Execute migration tasks** from registry on successful startup
-5. **Update daemon.json** with new PID, port, and binary path
+5. **Update ~/.myco/daemon.json** with new PID, port, and binary path
+6. **Initialize grove coordination** - scan for existing groves and projects
+7. **Initialize Grove runtime cache** with bounded LRU management
 
-### Migration Tasks Registry
+**Hub removal impact**: The global daemon now handles all coordination directly — no separate Hub package installation or management required.
 
-The daemon maintains a `migration_tasks` table as a ledger for one-time operations:
+### Grove Runtime Cache Architecture
 
-```sql
--- Check completed migrations
-SELECT task_name, completed_at FROM migration_tasks;
-```
-
-**Migration execution pattern:**
-- Tasks run automatically on daemon startup
-- Each task executes once and records completion
-- Failed tasks can be retried by removing the completion record
-- Critical for schema updates and configuration migrations
-
-### Runtime Command File Management
-
-Runtime dispatch is pinned by `.myco/runtime.command` when a project needs
-something other than the machine-global `myco` lookup:
+The daemon maintains a three-layer cache system for efficient Grove operation:
 
 ```typescript
-// Constants for runtime command handling
-import { PROJECT_RUNTIME_COMMAND_FILENAME } from '../constants';
-
-// Reading runtime command
-const runtimeCommandPath = path.join(vaultDir, PROJECT_RUNTIME_COMMAND_FILENAME);
-const runtimeCommand = fs.readFileSync(runtimeCommandPath, 'utf-8').trim();
-
-// Missing file means "fall back to the installed myco binary".
-```
-
-**Runtime command file patterns:**
-- **Location**: `.myco/runtime.command` (via `PROJECT_RUNTIME_COMMAND_FILENAME`)
-- **Content**: PATH command name or absolute path to a replayable Myco launcher
-- **Purpose**: Lets project-local, dogfood, and managed runtimes be relaunched consistently
-- **Lifecycle**: Written by install/update/dev-link flows, read by daemon/hub/update operations
-- **Guardrail**: Absence is valid; never replace a missing file with `process.execPath` (`node`/`bun` is not a replayable `myco daemon` command)
-
-### Cross-Runtime Takeover Guard
-
-When binary paths change but daemon remains healthy, implement graceful handoff:
-
-```bash
-# Current daemon binary
-CURRENT_BIN=$(jq -r '.binaryPath' .myco/daemon.json)
-
-# Runtime command from file
-RUNTIME_CMD=$(cat .myco/runtime.command 2>/dev/null || echo "")
-
-# New binary path
-NEW_BIN=$(which myco)
-
-if [ "$CURRENT_BIN" != "$NEW_BIN" ] && [ "$RUNTIME_CMD" != "$NEW_BIN" ] && daemon_healthy; then
-  echo "Different runtime detected - stepping aside for takeover"
-  # Let new binary handle the transition
-fi
-```
-
-This prevents conflicts between Node and Bun runtimes or different Myco installations.
-
-### Version-Sync Loop Prevention
-
-Guard against restart loops caused by runtime command dispatch mismatches:
-
-```typescript
-// Version-sync must validate dispatch contract invariant
-if (currentVersion !== runningVersion) {
-  // Check if runtime.command is either absent or matches the expected binary
-  const expectedBinary = resolveRuntimeCommand(currentVersion);
-  const runningBinary = daemonState.binaryPath;
-  const runtimeCommandBinary = readRuntimeCommand(vaultDir);
-
-  if (expectedBinary !== runningBinary || (runtimeCommandBinary && expectedBinary !== runtimeCommandBinary)) {
-    // Step aside - different binary should handle this version
-    return { action: 'step_aside', reason: 'dispatch_contract_mismatch' };
+// Bounded LRU cache with pin/unpin safety
+class GroveRuntimeCache {
+  private static readonly MAX_CACHE_SIZE = 100;
+  private static readonly CACHE_TTL_MS = 300000; // 5 minutes
+  
+  // Tier 1: Pinned handles (never evicted)
+  private pinnedHandles = new Map<string, CachedHandle>();
+  
+  // Tier 2: Recently used handles (LRU eviction)
+  private lruCache = new LRU<string, CachedHandle>(this.MAX_CACHE_SIZE);
+  
+  // Tier 3: On-demand resolution
+  async getGroveHandle(groveId: string, projectId?: string): Promise<CachedHandle> {
+    // Check pinned first
+    if (this.pinnedHandles.has(groveId)) {
+      return this.pinnedHandles.get(groveId)!;
+    }
+    
+    // Check LRU cache
+    let handle = this.lruCache.get(groveId);
+    if (handle && !this.isExpired(handle)) {
+      return handle;
+    }
+    
+    // Resolve on-demand with pin safety
+    handle = await this.resolveGroveHandle(groveId, projectId);
+    this.lruCache.set(groveId, handle);
+    return handle;
   }
-
-  // Safe to restart for version sync
-  await gracefulRestart();
+  
+  // Pin critical handles to prevent eviction
+  pinHandle(groveId: string, handle: CachedHandle): void {
+    this.pinnedHandles.set(groveId, handle);
+    this.lruCache.delete(groveId); // Remove from LRU if present
+  }
+  
+  // Unpin handle (moves to LRU tier if still valid)
+  unpinHandle(groveId: string): void {
+    const handle = this.pinnedHandles.get(groveId);
+    if (handle && !this.isExpired(handle)) {
+      this.lruCache.set(groveId, handle);
+    }
+    this.pinnedHandles.delete(groveId);
+  }
 }
 ```
 
-**Critical invariant**: When present, the runtime command file must point at the same replayable Myco runtime family as the binary performing version-sync operations. A missing runtime command is valid and should fall back to machine install discovery; a generic JS runtime is not valid.
+**Cache safety mechanisms:**
+- **Bounded eviction**: LRU cache limited to 100 entries prevents memory exhaustion
+- **Pin protection**: Critical grove handles pinned to prevent eviction during active use
+- **TTL expiration**: 5-minute TTL ensures stale handles are re-resolved
+- **Re-resolution on demand**: Cache misses trigger fresh grove handle creation
 
-## Procedure B: Unified Eviction and Restart
+### Migration Tasks Registry
 
-### Centralized Eviction Management
+The global daemon maintains a unified `migration_tasks` table across all groves:
 
-All restart paths use consistent eviction patterns through daemon management functions:
+```sql
+-- Check completed migrations globally
+SELECT task_name, grove_id, completed_at FROM migration_tasks;
+```
+
+**Global migration execution pattern:**
+- Tasks run automatically on global daemon startup
+- Each task executes once per grove where applicable
+- Failed tasks can be retried by removing the completion record
+- Critical for schema updates and grove-wide configuration migrations
+
+### Machine-Scoped Runtime Command Architecture
+
+Machine-scoped architecture centralizes runtime dispatch through a single machine-level command:
 
 ```typescript
-// Standard eviction through daemon client
-await daemonClient.stopDaemon({
-  gracePeriodMs: 5000,
-  waitForExit: true,
-  verifyPortRelease: true
+// Machine-scoped runtime command handling
+const MACHINE_RUNTIME_COMMAND_PATH = path.join(os.homedir(), '.myco', 'runtime.command');
+
+// Reading machine runtime command
+const runtimeCommand = fs.readFileSync(MACHINE_RUNTIME_COMMAND_PATH, 'utf-8').trim();
+
+// Global daemon uses machine-scoped runtime for all operations
+```
+
+**Machine runtime patterns:**
+- **Location**: `~/.myco/runtime.command` (single machine-level file)
+- **Content**: PATH command name or absolute path to replayable Myco launcher
+- **Purpose**: Provides consistent runtime across all groves and projects on the machine
+- **Lifecycle**: Written by machine-level init/update flows, read by global daemon for all operations
+- **Simplification**: Eliminates grove-specific and project-specific runtime complexity
+
+### Machine Runtime Command Coordination
+
+Global daemon manages runtime through a single machine-scoped command:
+
+```bash
+# Machine-scoped daemon binary coordination
+GLOBAL_DAEMON_BIN=$(jq -r '.binaryPath' ~/.myco/daemon.json)
+MACHINE_RUNTIME_CMD=$(cat ~/.myco/runtime.command 2>/dev/null || echo "")
+
+# Validate machine runtime consistency
+if [ -n "$MACHINE_RUNTIME_CMD" ] && [ "$MACHINE_RUNTIME_CMD" != "$GLOBAL_DAEMON_BIN" ]; then
+  echo "Machine runtime preference detected: $MACHINE_RUNTIME_CMD"
+  # Global daemon respects machine-level runtime command
+fi
+```
+
+This simplifies coordination by removing grove-specific and project-specific runtime complexity.
+
+### Version-Sync Loop Prevention
+
+Guard against restart loops in machine-aware global daemon:
+
+```typescript
+// Global daemon version-sync with machine runtime awareness
+if (currentVersion !== runningVersion) {
+  // Check machine-level runtime preference
+  const machineRuntime = readMachineRuntimeCommand();
+  const expectedBinary = resolveExpectedRuntimeCommand(currentVersion);
+
+  if (machineRuntime && expectedBinary !== machineRuntime) {
+    // Respect machine-level runtime preference
+    return { action: 'step_aside', reason: 'machine_runtime_preference', runtime: machineRuntime };
+  }
+
+  // Safe to restart for global version sync
+  await gracefulGlobalRestart();
+}
+```
+
+**Critical invariant**: Global daemon respects machine-level runtime.command when present, eliminating grove-specific coordination complexity.
+
+### Global Daemon Configuration Performance Optimization
+
+**Critical performance issue**: Avoid TOML re-parsing on every HTTP request in grove coordination:
+
+```typescript
+// WRONG: Parse TOML on every request (grove coordination race)
+app.use((req, res, next) => {
+  const config = parseMycoToml(projectRoot); // Heavy operation on every request
+  req.groveConfig = config;
+  next();
+});
+
+// RIGHT: Cache parsed TOML with invalidation (grove performance pattern)
+const configCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+
+app.use((req, res, next) => {
+  const projectRoot = getProjectRoot(req);
+  const cacheKey = `${projectRoot}:myco.yaml`;
+  const cached = configCache.get(cacheKey);
+
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+    req.groveConfig = cached.config;
+    return next();
+  }
+
+  // Parse and cache with timestamp
+  const config = parseMycoToml(projectRoot);
+  configCache.set(cacheKey, { config, timestamp: Date.now() });
+  req.groveConfig = config;
+  next();
 });
 ```
 
-**Eviction coordination pattern**: Centralizes all daemon termination logic to ensure consistent SIGTERM/SIGKILL sequences, port cleanup, and daemon.json management across restart triggers.
+**Performance gotcha**: Re-parsing TOML on every HTTP request causes grove coordination races and degrades daemon responsiveness. Cache parsed configs with TTL invalidation.
+
+### Request-Context Grove Handling
+
+Handle grove request context efficiently in global daemon:
+
+```typescript
+// Grove request context extraction with error handling
+function extractGroveContext(req: Request): GroveContext {
+  const groveId = req.headers['x-grove-id'];
+  const projectId = req.headers['x-project-id'];
+
+  if (!groveId) {
+    // Default to primary grove for backward compatibility
+    return { groveId: 'user_primary', projectId: null };
+  }
+
+  // Validate grove exists and is accessible
+  const grove = getAuthorizedGrove(groveId, req.auth);
+  if (!grove) {
+    throw new GroveAccessError(`Grove ${groveId} not accessible`);
+  }
+
+  return { groveId, projectId, grove };
+}
+
+// Use grove context efficiently
+app.use('/api', (req, res, next) => {
+  try {
+    req.groveContext = extractGroveContext(req);
+    next();
+  } catch (error) {
+    if (error instanceof GroveAccessError) {
+      return res.status(403).json({ error: error.message });
+    }
+    throw error;
+  }
+});
+```
+
+**Grove context gotcha**: Always validate grove access permissions and provide fallback to primary grove for requests without grove headers.
+
+## Procedure B: Unified Eviction and Restart
+
+### Centralized Global Daemon Eviction
+
+All restart paths use global daemon eviction through centralized management:
+
+```typescript
+// Standard global daemon eviction
+await daemonClient.stopGlobalDaemon({
+  gracePeriodMs: 5000,
+  waitForExit: true,
+  verifyPortRelease: true,
+  coordinated: true // Notify all connected groves
+});
+```
+
+**Global eviction coordination pattern**: Centralizes daemon termination with grove notification, ensuring graceful shutdown of grove-specific resources and connections.
 
 ### SIGTERM → SIGKILL Sequence
 
-**Standard eviction flow:**
-1. **Send SIGTERM** to daemon process for graceful shutdown
-2. **Wait grace period** (default 5 seconds) for process to exit
-3. **Send SIGKILL** if process still running after grace period
-4. **Verify port release** to prevent port collision on restart
-5. **Clean up daemon.json** once process confirmed terminated
+**Global daemon eviction flow:**
+1. **Send grove notifications** - inform all connected projects of pending shutdown
+2. **Send SIGTERM** to global daemon process for graceful shutdown
+3. **Wait grace period** (default 5 seconds) for grove coordination completion
+4. **Send SIGKILL** if process still running after grace period
+5. **Verify global port release** to prevent port collision on restart
+6. **Clean up ~/.myco/daemon.json** once process confirmed terminated
 
 ```bash
-# Manual eviction example
-DAEMON_PID=$(jq -r '.pid' .myco/daemon.json)
+# Manual global daemon eviction
+DAEMON_PID=$(jq -r '.pid' ~/.myco/daemon.json)
 kill -TERM $DAEMON_PID
 sleep 5
 if kill -0 $DAEMON_PID 2>/dev/null; then
@@ -163,22 +298,45 @@ if kill -0 $DAEMON_PID 2>/dev/null; then
 fi
 ```
 
-### Restart Path Integration
+### Grove-Coordinated Restart Paths
 
-**Common restart triggers:**
-- `myco restart` CLI command
-- Daemon startup reconciliation (when unhealthy daemon detected)
-- Update application with daemon respawn
-- Health-check fallback recovery
-- Version-sync operations (with loop prevention)
+**Common global restart triggers:**
+- `myco restart` CLI command (affects all groves)
+- Global daemon health reconciliation
+- System update application with grove coordination
+- Cross-grove health-check fallback recovery
+- Global version-sync operations
+- **Hub removal cleanup** (migrate Hub state to global daemon)
 
-All use the same eviction → spawn cycle to ensure consistency.
+All use the same grove-aware eviction → spawn cycle for consistency.
+
+### Hub Package Cleanup During Restart
+
+**Hub removal procedure** during daemon restart:
+
+```bash
+# Check for legacy Hub installation during restart
+if [ -d "$HOME/.myco/hub" ]; then
+  echo "Migrating Hub state to global daemon..."
+  
+  # Migrate Hub configuration to global daemon
+  if [ -f "$HOME/.myco/hub/config.json" ]; then
+    myco daemon migrate-hub-config --source "$HOME/.myco/hub/config.json"
+  fi
+  
+  # Clean up Hub artifacts after migration
+  rm -rf "$HOME/.myco/hub"
+  echo "Hub cleanup complete - global daemon now handles all coordination"
+fi
+```
+
+**Hub replacement impact**: Global daemon now provides all Hub functionality directly — no separate Hub process or package management required.
 
 ## Procedure C: Process Identity and State Management
 
-### daemon.json as Authoritative Record
+### ~/.myco/daemon.json as Global Authority
 
-The `.myco/daemon.json` file serves as the single source of truth for daemon state:
+The `~/.myco/daemon.json` file serves as the authoritative record for global daemon state:
 
 ```json
 {
@@ -186,296 +344,432 @@ The `.myco/daemon.json` file serves as the single source of truth for daemon sta
   "port": 3721,
   "binaryPath": "/usr/local/bin/myco",
   "startedAt": "2026-04-27T10:30:00.000Z",
-  "version": "0.15.0"
+  "version": "0.15.0",
+  "groves": ["user_primary", "work_grove"],
+  "groveCoordination": true,
+  "hubMigrated": true
 }
 ```
 
-### PID Validation Patterns
+**New fields after Hub removal**:
+- `hubMigrated`: Boolean indicating Hub state was successfully migrated to global daemon
+- `groveCoordination`: Indicates grove-aware coordination is active
 
-Before interacting with a daemon, validate the PID:
+### Global PID Validation Patterns
+
+Before interacting with global daemon, validate the global PID:
 
 ```bash
-# Check if PID from daemon.json is actually running
-DAEMON_PID=$(jq -r '.pid' .myco/daemon.json)
+# Check if global daemon PID is running
+DAEMON_PID=$(jq -r '.pid' ~/.myco/daemon.json)
 if ! kill -0 $DAEMON_PID 2>/dev/null; then
-  echo "Stale daemon.json - PID $DAEMON_PID not running"
-  rm .myco/daemon.json
+  echo "Stale global daemon.json - PID $DAEMON_PID not running"
+  rm ~/.myco/daemon.json
 fi
 ```
 
-### Port Binding Verification
+### Global Port Binding Verification
 
-Confirm the daemon is actually listening on the expected port:
+Confirm global daemon is listening on the expected port:
 
 ```bash
-DAEMON_PORT=$(jq -r '.port' .myco/daemon.json)
+DAEMON_PORT=$(jq -r '.port' ~/.myco/daemon.json)
 if ! lsof -i :$DAEMON_PORT >/dev/null 2>&1; then
-  echo "Daemon not listening on port $DAEMON_PORT"
-  # Trigger restart or cleanup
+  echo "Global daemon not listening on port $DAEMON_PORT"
+  # Trigger global restart or cleanup
 fi
 ```
 
-### Binary Path Tracking
+### Binary Path and Machine Runtime Coordination
 
-Track binary path changes for runtime migration detection:
+Track global daemon binary with machine runtime compatibility:
 
 ```typescript
-const currentBinary = await getCurrentBinaryPath();
-const daemonBinary = daemonState.binaryPath;
+const globalBinary = await getGlobalDaemonBinaryPath();
+const daemonBinary = globalDaemonState.binaryPath;
 
-if (currentBinary !== daemonBinary && daemonHealthy) {
-  // Runtime change detected - coordinate handoff
-  await coordinateRuntimeTransition();
+if (globalBinary !== daemonBinary && globalDaemonHealthy) {
+  // Global runtime change detected - coordinate machine runtime transition
+  await coordinateMachineRuntimeTransition();
 }
 ```
 
-### Runtime Command Coordination
+### Hub Migration Status Tracking
 
-Coordinate between daemon.json binaryPath and runtime.command file without manufacturing pins:
+Track Hub-to-global-daemon migration status:
 
 ```typescript
-// Validate runtime command consistency
-const daemonBinary = daemonState.binaryPath;
-const runtimeCommand = readRuntimeCommand(vaultDir);
+// Check if Hub migration completed
+const daemonState = JSON.parse(fs.readFileSync('~/.myco/daemon.json', 'utf-8'));
+if (!daemonState.hubMigrated) {
+  // Trigger Hub state migration
+  await migrateHubToGlobalDaemon();
+  
+  // Update daemon state
+  daemonState.hubMigrated = true;
+  fs.writeFileSync('~/.myco/daemon.json', JSON.stringify(daemonState, null, 2));
+}
+```
 
-if (daemonBinary !== runtimeCommand) {
-  console.warn('Runtime command mismatch detected', {
-    daemon: daemonBinary,
-    runtime: runtimeCommand
+### Machine Runtime Coordination Patterns
+
+Coordinate global daemon with machine-level runtime preference:
+
+```typescript
+// Validate machine runtime consistency with global daemon
+const globalDaemonBinary = globalDaemonState.binaryPath;
+const machineRuntime = readMachineRuntimeCommand();
+
+if (machineRuntime && machineRuntime !== globalDaemonBinary) {
+  console.warn('Machine runtime preference detected', {
+    machineRuntime: machineRuntime,
+    globalDaemon: globalDaemonBinary
   });
 
-  // Do not auto-write process.execPath here. Missing runtime.command is valid,
-  // and generic runtimes such as node/bun are not replayable Myco commands.
-  return { action: 'step_aside', reason: 'runtime_command_mismatch' };
+  // Respect machine preference in global coordination
+  await coordinateMachineRuntime(machineRuntime);
 }
 ```
 
 ## Procedure D: Multi-Instance Coordination
 
-### Process Discovery
+### Global Process Discovery
 
-Use `findPidsListeningOn()` to discover daemon processes:
+Use `findPidsListeningOn()` for global daemon discovery:
 
 ```typescript
-// Find all processes listening on specific ports
-const listeningPids = findPidsListeningOn([3720, 3721, 3722]);
+// Find global daemon processes
+const globalPorts = [3720, 3721, 3722]; // Global daemon port range
+const listeningPids = findPidsListeningOn(globalPorts);
 
-// Cross-reference with known daemon states
-const activeDaemons = listeningPids.map(pid =>
-  findDaemonStateByPid(pid)
+// Cross-reference with global daemon state
+const activeGlobalDaemons = listeningPids.map(pid =>
+  findGlobalDaemonStateByPid(pid)
 ).filter(Boolean);
 ```
 
-### Daemon Conflict Resolution
+### Global Daemon Conflict Resolution
 
-When multiple daemons detected for same vault:
+When multiple global daemons detected:
 
-1. **Identify conflicting processes** via port scanning and daemon.json comparison
-2. **Determine primary daemon** (newest, healthiest, or user-specified)
-3. **Gracefully evict secondary daemons** using standard eviction sequence
-4. **Update daemon.json** to reflect resolved state
+1. **Identify conflicting global processes** via port scanning and ~/.myco/daemon.json comparison
+2. **Determine primary global daemon** (newest, healthiest, or machine-preferred)
+3. **Check for Hub processes** and migrate state to global daemon if needed
+4. **Gracefully evict secondary global daemons** with grove coordination
+5. **Update ~/.myco/daemon.json** to reflect resolved global state
 
-### Port Allocation Strategies
+### Global Port Allocation
 
-**Sequential port allocation:**
+**Global daemon port allocation:**
 ```typescript
-async function allocatePort(basePort: number = 3720): Promise<number> {
+async function allocateGlobalPort(basePort: number = 3720): Promise<number> {
   for (let port = basePort; port < basePort + 10; port++) {
     if (await isPortFree(port)) {
       return port;
     }
   }
-  throw new Error('No free ports in range');
+  throw new Error('No free ports for global daemon');
 }
 ```
 
-**Graceful handoff pattern:**
-- New daemon starts on different port
-- Validates startup and health
-- Old daemon gracefully shuts down
-- New daemon can optionally move to standard port
+### Grove Registration with Global Daemon
 
-### Hub Registration and Coordination
-
-Coordinate daemon registration with hub instances for multi-project scenarios:
+Coordinate grove registration with global daemon:
 
 ```typescript
-// Register daemon with hub on startup
-async function registerWithHub(daemonState: DaemonState) {
-  if (hubDetected()) {
-    await hubClient.registerDaemon({
-      projectId: projectConfig.id,
-      port: daemonState.port,
-      version: daemonState.version,
-      capabilities: ['ui', 'mcp', 'agents']
-    });
-  }
+// Register grove with global daemon on initialization
+async function registerGroveWithGlobalDaemon(groveState: GroveState) {
+  await globalDaemonClient.registerGrove({
+    groveId: groveState.id,
+    projectPaths: groveState.projects,
+    capabilities: ['ui', 'mcp', 'agents']
+  });
 }
 
-// Deregister on shutdown
+// Deregister grove on removal
 process.on('SIGTERM', async () => {
-  if (hubDetected()) {
-    await hubClient.deregisterDaemon(projectConfig.id);
+  for (const grove of managedGroves) {
+    await globalDaemonClient.deregisterGrove(grove.id);
   }
 });
 ```
 
-## Procedure E: Health Checking and Recovery
+### Legacy Hub Process Detection and Migration
 
-### Health Validation via /health Endpoint
-
-Standard health check pattern:
-
-```bash
-# HTTP health check
-DAEMON_PORT=$(jq -r '.port' .myco/daemon.json)
-if curl -f -s "http://localhost:$DAEMON_PORT/health" >/dev/null; then
-  echo "Daemon healthy"
-else
-  echo "Daemon unhealthy - triggering recovery"
-fi
-```
-
-### Unhealthy Daemon Recovery
-
-**Recovery workflow:**
-1. **Attempt health ping** with reasonable timeout (2-3 seconds)
-2. **Check process existence** if health ping fails
-3. **Validate port binding** if process exists
-4. **Evict and restart** if daemon unresponsive but process running
-5. **Clean spawn** if no process found
-
-### Automatic Restart Triggers
-
-**Health monitoring integration:**
-- Periodic health checks during high-activity periods
-- Health validation before critical operations
-- Automatic recovery on consecutive health failures
-- Exponential backoff for restart attempts to prevent tight loops
-
-### Responsiveness Monitoring
-
-Beyond basic health checks, monitor daemon responsiveness:
+Detect and migrate legacy Hub processes:
 
 ```typescript
-const startTime = Date.now();
-const response = await fetch(`http://localhost:${port}/health`);
-const responseTime = Date.now() - startTime;
-
-if (responseTime > SLOW_RESPONSE_THRESHOLD) {
-  // Consider daemon degraded - may need restart
+// Check for running Hub processes during global daemon startup
+const hubPids = findPidsListeningOn([3700, 3701]); // Legacy Hub ports
+if (hubPids.length > 0) {
+  console.log('Legacy Hub processes detected - migrating to global daemon');
+  
+  for (const hubPid of hubPids) {
+    // Migrate Hub state before termination
+    await migrateHubState(hubPid);
+    
+    // Gracefully terminate Hub process
+    process.kill(hubPid, 'SIGTERM');
+    setTimeout(() => {
+      if (processExists(hubPid)) {
+        process.kill(hubPid, 'SIGKILL');
+      }
+    }, 5000);
+  }
 }
 ```
 
-## Procedure F: Update Application Workflow
+## Procedure E: Health Checking and Recovery
 
-### Safe Daemon Replacement During Updates
+### Global Daemon Health Validation
 
-**Update coordination sequence:**
-1. **Download and validate** new daemon binary
-2. **Coordinate with running sessions** - warn of pending restart
-3. **Graceful eviction** of current daemon
-4. **Apply update** and install new binary
-5. **Spawn updated daemon** with preserved configuration
-6. **Execute migration tasks** for new version
-7. **Validate successful startup** before completing update
-
-### State Preservation Across Updates
-
-**Critical state to preserve:**
-- Active session connections and state
-- In-progress operations and their context
-- Configuration and preferences
-- Database state and transaction integrity
+Standard global daemon health check:
 
 ```bash
-# Pre-update state capture
-myco daemon snapshot --output .myco/pre-update-snapshot.json
-
-# Post-update state restoration
-myco daemon restore --input .myco/pre-update-snapshot.json
+# Global daemon HTTP health check
+DAEMON_PORT=$(jq -r '.port' ~/.myco/daemon.json)
+if curl -f -s "http://localhost:$DAEMON_PORT/health" >/dev/null; then
+  echo "Global daemon healthy"
+else
+  echo "Global daemon unhealthy - triggering recovery"
+fi
 ```
 
-### Migration Task Execution
+### Grove-Aware Recovery Workflows
 
-New versions may require data migrations or configuration updates:
+**Global daemon recovery workflow:**
+1. **Attempt global health ping** with reasonable timeout
+2. **Check global process existence** if health ping fails
+3. **Validate global port binding** if process exists
+4. **Check for Hub process interference** and migrate if needed
+5. **Coordinate grove notification** before eviction
+6. **Evict and restart global daemon** if unresponsive
+7. **Re-establish grove connections** after restart
+
+### Global Health Monitoring
+
+**Grove-coordinated health monitoring:**
+- Periodic global health checks with grove status aggregation
+- Grove-specific health validation before critical operations
+- Automatic recovery with grove re-coordination
+- Grove-aware exponential backoff for restart attempts
+- **Hub-free health validation** (no Hub process dependency)
+
+### Grove Responsiveness Monitoring
+
+Monitor global daemon responsiveness across groves:
 
 ```typescript
-// Migration tasks run automatically on daemon startup
-const pendingMigrations = await getPendingMigrations();
+const startTime = Date.now();
+const response = await fetch(`http://localhost:${globalPort}/health`);
+const responseTime = Date.now() - startTime;
+
+if (responseTime > GLOBAL_SLOW_RESPONSE_THRESHOLD) {
+  // Global daemon degraded - may need restart with grove coordination
+  
+  // Check if TOML parsing is causing slowdown
+  if (responseTime > TOML_PARSING_THRESHOLD) {
+    console.warn('Possible TOML re-parsing performance issue detected');
+    await optimizeConfigCaching();
+  }
+}
+```
+
+**Performance monitoring**: Track request response times to detect TOML re-parsing performance issues.
+
+## Procedure F: Update Application Workflow
+
+### Global Daemon Replacement During Updates
+
+**Grove-coordinated update sequence:**
+1. **Download and validate** new global daemon binary
+2. **Check for Hub dependency removal** in new version
+3. **Coordinate with all groves** - notify of pending global restart
+4. **Graceful eviction** of global daemon with grove coordination
+5. **Migrate Hub state** if upgrading from Hub-dependent version
+6. **Apply update** and install new binary
+7. **Spawn updated global daemon** with preserved grove configuration
+8. **Execute migration tasks** for new version across groves
+9. **Re-establish grove connections** and validate successful startup
+10. **Clean up Hub artifacts** after successful migration
+
+### Grove State Preservation
+
+**Critical state to preserve across global updates:**
+- Active grove connections and coordination state
+- Per-grove configuration and preferences
+- Cross-grove shared resources and locks
+- Global daemon coordination metadata
+- **Hub migration status** and migrated configuration
+
+```bash
+# Pre-update global state capture
+myco daemon snapshot --output ~/.myco/pre-update-snapshot.json --include-groves --include-hub-migration
+
+# Post-update state restoration with grove coordination
+myco daemon restore --input ~/.myco/pre-update-snapshot.json --coordinate-groves --verify-hub-migration
+```
+
+### Hub Removal Migration During Updates
+
+Handle Hub package removal during version updates:
+
+```bash
+# Update workflow with Hub cleanup
+if myco daemon check-hub-dependency --version-target "$NEW_VERSION"; then
+  echo "New version removes Hub dependency - preparing migration"
+  
+  # Capture Hub state before update
+  myco daemon export-hub-state --output ~/.myco/hub-migration.json
+  
+  # Update with Hub migration
+  myco daemon update --migrate-hub --hub-state ~/.myco/hub-migration.json
+  
+  # Verify Hub removal
+  myco daemon verify-hub-removal
+fi
+```
+
+### Grove-Wide Migration Execution
+
+Global updates may require grove-wide migrations:
+
+```typescript
+// Grove-aware migration tasks in global daemon startup
+const pendingMigrations = await getGlobalPendingMigrations();
 for (const migration of pendingMigrations) {
-  await executeMigration(migration);
-  await markMigrationComplete(migration);
+  // Check if migration includes Hub cleanup
+  if (migration.type === 'hub_removal') {
+    await executeHubRemovalMigration();
+  }
+  
+  for (const grove of managedGroves) {
+    await executeGroveMigration(migration, grove);
+    await markGroveMigrationComplete(migration, grove);
+  }
 }
 ```
 
 ## Cross-Cutting Gotchas
 
-### Race Conditions and Port Conflicts
+### Global Daemon Race Conditions
 
-**Double-daemon restart gotcha:** When restarting a daemon, always wait for the old process to fully exit before starting the new one. Starting immediately can cause:
-- Port binding conflicts (new daemon can't bind to old port)
-- Orphaned PID files pointing to wrong process
-- Resource contention between old and new processes
+**Grove coordination race gotcha:** When restarting global daemon, always coordinate grove shutdown before eviction. Starting immediately without grove coordination can cause:
+- Grove connection interruption and data loss
+- Orphaned grove processes waiting for global daemon
+- Resource contention between old and new global daemon
 
-**Prevention:** Use `waitForExit: true` in eviction calls and verify port release.
+**Prevention:** Use `coordinated: true` in eviction calls and verify grove notification completion.
 
-### Orphaned PID Issues
+### Grove Cache Performance
 
-**Stale daemon.json detection:** Always validate that the PID in daemon.json corresponds to an actual running daemon process:
+**Grove runtime cache gotcha:** Always use pin/unpin mechanisms for handles that must persist across operations:
 
-```bash
-# Wrong - trusting daemon.json blindly
-kill $(jq -r '.pid' .myco/daemon.json)
+```typescript
+// Wrong - critical handle may be evicted mid-operation
+const handle = await groveCache.getHandle(groveId);
+await longRunningOperation(handle); // Handle may be evicted during this
 
-# Correct - validate PID first
-DAEMON_PID=$(jq -r '.pid' .myco/daemon.json)
-if kill -0 $DAEMON_PID 2>/dev/null; then
-  kill -TERM $DAEMON_PID
-else
-  echo "Stale PID - cleaning up daemon.json"
-  rm .myco/daemon.json
-fi
+// Right - pin handle for operation duration
+const handle = await groveCache.getHandle(groveId);
+groveCache.pinHandle(groveId, handle);
+try {
+  await longRunningOperation(handle);
+} finally {
+  groveCache.unpinHandle(groveId); // Moves to LRU tier
+}
 ```
 
-### Resource Cleanup Patterns
+### Global State Synchronization
 
-**Database connection management:** Ensure database connections are properly closed during daemon shutdown to prevent connection pool exhaustion:
+**Grove state drift detection:** Always validate grove state consistency with global daemon:
+
+```bash
+# Wrong - trusting global daemon state blindly
+kill $(jq -r '.pid' ~/.myco/daemon.json)
+
+# Correct - validate grove coordination first
+DAEMON_PID=$(jq -r '.pid' ~/.myco/daemon.json)
+if [ "$(jq -r '.groveCoordination' ~/.myco/daemon.json)" = "true" ]; then
+  # Coordinate grove shutdown first
+  myco daemon coordinate-shutdown
+fi
+kill -TERM $DAEMON_PID
+```
+
+### Grove Resource Cleanup
+
+**Global resource management:** Ensure grove resources are properly cleaned during global daemon shutdown:
 
 ```typescript
 process.on('SIGTERM', async () => {
+  // Clean up grove-specific resources
+  for (const grove of managedGroves) {
+    await grove.cleanup();
+  }
+  
+  // Clean up Hub migration artifacts if present
+  if (await hasHubArtifacts()) {
+    await cleanupHubArtifacts();
+  }
+  
   await database.close();
   await server.close();
   process.exit(0);
 });
 ```
 
-**Temporary file cleanup:** Clean up temporary files and resources on abnormal termination:
+### TOML Configuration Performance
+
+**TOML re-parsing gotcha:** Avoid parsing TOML files on every HTTP request in grove coordination:
 
 ```typescript
-// Register cleanup handlers
-process.on('exit', cleanupResources);
-process.on('SIGINT', cleanupResources);
-process.on('SIGTERM', cleanupResources);
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
-  cleanupResources();
-  process.exit(1);
-});
+// Wrong - causes grove coordination races
+const config = parseMycoToml(projectRoot); // Every request
+
+// Right - cache with TTL invalidation
+const cachedConfig = await getConfigWithCache(projectRoot, 30000);
 ```
 
-### Multi-Instance Coordination Pitfalls
+**Performance impact**: TOML re-parsing on every request degrades daemon responsiveness and causes grove coordination timing issues.
 
-**Runtime detection accuracy:** When detecting runtime changes (Node vs Bun), ensure binary path comparison accounts for symlinks and PATH resolution:
+### Machine Runtime Coordination
+
+**Runtime compatibility pitfalls:** When detecting global runtime changes, account for machine-level preference:
 
 ```bash
-# Resolve symlinks for accurate comparison
-CURRENT_BIN=$(readlink -f $(jq -r '.binaryPath' .myco/daemon.json))
-NEW_BIN=$(readlink -f $(which myco))
+# Resolve machine runtime preference for global coordination
+GLOBAL_BIN=$(readlink -f $(jq -r '.binaryPath' ~/.myco/daemon.json))
+MACHINE_RUNTIME=$(cat ~/.myco/runtime.command 2>/dev/null || echo "")
+
+if [ -n "$MACHINE_RUNTIME" ]; then
+  MACHINE_BIN=$(readlink -f "$MACHINE_RUNTIME")
+  if [ "$GLOBAL_BIN" != "$MACHINE_BIN" ]; then
+    echo "Machine runtime preference detected: $MACHINE_RUNTIME"
+  fi
+fi
 ```
 
-**Port scanning scope:** When scanning for daemon processes, use appropriate port ranges and timeouts to avoid false positives from other applications using nearby ports.
+### Hub Migration State Tracking
 
-**Version-Sync Loop Hazard:** Prevent infinite restart loops by ensuring `runtime.command` in configuration matches the binary performing version-sync operations. Mismatches cause each restart to hand control to a different binary, creating an endless cycle.
+**Hub removal gotcha:** Always verify Hub migration completion before removing Hub artifacts:
 
-**Runtime Command File Synchronization:** The runtime command file (`.myco/runtime.command`) must stay synchronized with daemon.json binaryPath. Drift between these two sources can cause update coordination failures and version-sync instability. Always validate consistency and repair mismatches during daemon health checks.
+```bash
+# Wrong - remove Hub without verification
+rm -rf ~/.myco/hub
+
+# Right - verify migration first
+if [ "$(jq -r '.hubMigrated' ~/.myco/daemon.json)" = "true" ]; then
+  rm -rf ~/.myco/hub
+else
+  echo "Hub migration not complete - preserving Hub artifacts"
+fi
+```
+
+**Grove coordination scope:** Global daemon port scanning must account for grove-specific coordination requirements and avoid interfering with grove-local processes.
+
+**Global Version-Sync Hazard:** Prevent infinite restart loops by ensuring machine runtime preference is compatible with global daemon version-sync operations. Machine-global mismatches cause coordination failures and version-sync instability.
+
+**Grove State Synchronization:** The global daemon state (`.myco/daemon.json`) must stay synchronized with grove-specific configuration. Drift between global and grove state can cause coordination failures and health check inconsistencies.
+
+**Hub Dependency Removal:** Global daemon now handles all Hub functionality directly. Legacy Hub processes must be detected, migrated, and cleaned up during daemon lifecycle management to prevent port conflicts and state inconsistencies.

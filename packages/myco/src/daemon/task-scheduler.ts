@@ -1,12 +1,18 @@
 /**
  * Dynamic PowerManager job registration from task schedule definitions.
  *
- * Reads all task definitions, overlays user config overrides, and builds
- * PowerJob entries for tasks with enabled schedules.
+ * Builds ONE PowerJob whose tick visits each (grove, project) tuple a
+ * single time and applies every schedulable task inside that loop. Each
+ * task still keeps its own `runIn`, interval, accelerator, preCondition,
+ * running flag, and last-run clock — the collapse is purely about not
+ * re-iterating the (grove, project) registry once per task per tick.
  */
 
 import type { AgentTask, AcceleratorConfig, TaskSchedule } from '@myco/agent/types.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
+import type { RegisteredProjectScope } from './scope-iteration.js';
 import type { PowerJob } from './power.js';
+import type { PowerState } from './power.js';
 
 /** Resolve effective schedule: YAML defaults + myco.yaml overrides. */
 function resolveSchedule(
@@ -19,21 +25,14 @@ function resolveSchedule(
     intervalSeconds: configOverride.schedule.intervalSeconds ?? yamlSchedule.intervalSeconds,
     runIn: configOverride.schedule.runIn ?? yamlSchedule.runIn,
     preCondition: configOverride.schedule.preCondition ?? yamlSchedule.preCondition,
-    // Accelerator is a single nested object — overrides replace it
-    // wholesale. Partial overrides on thresholds/floor would let users
-    // accidentally pair a name from YAML with a thresholds shape from a
-    // different work unit; safer to require the whole object together
-    // when a project wants to deviate.
+    // Accelerator overrides replace the whole nested object — partial
+    // overrides on thresholds/floor would let users pair a name from
+    // YAML with a thresholds shape from a different work unit.
     accelerator: configOverride.schedule.accelerator ?? yamlSchedule.accelerator,
   };
 }
 
-/**
- * Tier divisors (1× / 4× / 12×) applied to intervalSeconds based on
- * backlog size. See AcceleratorConfig in agent/schemas.ts for the
- * contract; PowerManager's tick rate is the real lower bound on
- * actual fire rate.
- */
+// Tier divisors (1× / 4× / 12×) applied to intervalSeconds based on backlog size.
 export function computeEffectiveInterval(
   intervalSeconds: number,
   count: number,
@@ -45,47 +44,57 @@ export function computeEffectiveInterval(
 }
 
 export interface ScheduledJobContext {
-  /** Check if a specific task is currently running. */
-  isTaskRunning: (taskName: string) => boolean;
-  /** Mark a task as running/not running. */
-  setTaskRunning: (taskName: string, running: boolean) => void;
-  /** Called to run the task. */
-  runTask: (taskName: string) => Promise<void>;
-  /** Pre-condition checkers keyed by preCondition name. */
-  preConditions: Record<string, () => boolean>;
   /**
-   * Count functions keyed by accelerator name. Each function returns the
-   * current backlog size for that work unit. Empty in tests that don't
-   * exercise adaptive cadence — tasks without an accelerator are
-   * unaffected. The thresholds and floor come from the task's YAML
-   * config, not from here.
+   * Iterate every project the scheduler should consider on this tick.
+   * Implementations typically wrap `forEachRegisteredProject` so DB
+   * pinning + per-Grove `withDatabase` scoping work the same way as
+   * the rest of the daemon's housekeeping fan-outs.
    */
-  accelerators?: Record<string, (limit?: number) => number>;
+  forEachProject: (visit: (scope: RegisteredProjectScope) => Promise<void> | void) => Promise<void>;
+  /** Per-(grove, project, task) running flag. */
+  isTaskRunning: (groveId: string, projectId: GroveProjectId, taskName: string) => boolean;
+  setTaskRunning: (
+    groveId: string,
+    projectId: GroveProjectId,
+    taskName: string,
+    running: boolean,
+  ) => void;
   /**
-   * Optional error sink for detached task runs. Because scheduled tasks are
-   * kicked off without awaiting (so the PowerManager tick loop stays
-   * responsive), unhandled rejections from `runTask` land here instead of
-   * propagating through the tick.
+   * Resolve the project's current power state for `runIn` matching.
+   * `holdDeepSleep=true` pins the project at `sleep` instead of dropping
+   * to `deep_sleep` so accelerator-bound work drains while idle.
    */
-  onTaskError?: (taskName: string, err: unknown) => void;
+  getProjectPowerState: (scope: RegisteredProjectScope, holdDeepSleep: boolean) => PowerState;
+  /** Per-project task dispatcher. */
+  runTask: (scope: RegisteredProjectScope, taskName: string) => Promise<void>;
+  /** Pre-condition checks scoped to a project. */
+  preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
+  /** Backlog count functions keyed by accelerator name. */
+  accelerators?: Record<string, (scope: RegisteredProjectScope, limit?: number) => number>;
+  /** Detached-run error sink so the PowerManager tick stays responsive. */
+  onTaskError?: (taskName: string, groveId: string, projectId: GroveProjectId, err: unknown) => void;
+  /**
+   * Lazy-seed lastRun for a (grove, project) tuple that wasn't present
+   * in the boot-time seed. Called on first visit — guards against new
+   * projects that appear after boot double-firing tasks they recently
+   * completed before the daemon came up.
+   */
+  seedMissingLastRuns?: (scope: RegisteredProjectScope) => Map<string, number>;
 }
 
 /**
- * Imperative one-shot trigger for a scheduled task. Call from a known
- * reset event (initial populate, mass re-add) when waiting up to one
- * full interval before the next tick is too long. The kick is stored as
- * a per-task flag and consumed on the next compatible tick — the
- * existing PowerManager `runIn` and in-flight overlap guards still
- * apply, so a kick during an active session correctly defers to the
- * next idle/sleep tick instead of competing with the foreground agent.
+ * Imperative one-shot trigger for a scheduled task. Use from a known reset
+ * event (initial populate, mass re-add) when the next tick is too late.
+ *
+ * `kick(name)` — broadcast: every project on the next tick consumes the bypass.
+ * `kick(name, { groveId, projectId })` — single (grove, project) bypass.
+ *
+ * Per-(grove, project, task) kicks are stored as flags and consumed on the
+ * next compatible tick. Existing PowerManager `runIn` and in-flight overlap
+ * guards still apply.
  */
 export interface ScheduledJobKicker {
-  /**
-   * Request that the named task run on the next compatible tick,
-   * bypassing the interval gate. Idempotent — multiple kicks before the
-   * tick fires collapse to a single run.
-   */
-  kick(taskName: string): void;
+  kick(taskName: string, target?: { groveId: string; projectId: GroveProjectId }): void;
 }
 
 export interface ScheduledJobBuildResult {
@@ -94,120 +103,175 @@ export interface ScheduledJobBuildResult {
 }
 
 /**
+ * `initialLastRuns` is keyed by `${groveId}:${projectId}:${taskName}`.
+ * Daemon restart can seed each tuple from the most recent agent_runs row
+ * for that triple so warm projects don't double-fire on boot.
+ */
+export type ProjectTaskLastRunMap = Record<string, number>;
+
+export function lastRunKey(
+  groveId: string,
+  projectId: GroveProjectId,
+  taskName: string,
+): string {
+  return `${groveId}:${projectId}:${taskName}`;
+}
+
+const COLLAPSED_JOB_NAME = 'scheduled:tasks';
+
+interface CompiledTask {
+  task: AgentTask;
+  effective: TaskSchedule;
+}
+
+/**
  * Build PowerManager jobs from task definitions + config overrides.
- * Returns only jobs for tasks with schedule.enabled = true (after
- * override merge), plus a kicker handle for imperative triggers.
- *
- * @param tasks — All loaded agent tasks (built-in + user).
- * @param configOverrides — Per-task config from myco.yaml `agent.tasks`.
- * @param context — Runtime context for agent execution. Optional for testing.
- * @param initialLastRuns — Map of task name → epoch ms of last completed run (for restart seeding).
+ * Returns one collapsed PowerJob plus a kicker.
  */
 export function buildScheduledJobs(
   tasks: AgentTask[],
   configOverrides: Record<string, unknown>,
   context?: ScheduledJobContext,
-  initialLastRuns?: Record<string, number>,
+  initialLastRuns?: ProjectTaskLastRunMap,
 ): ScheduledJobBuildResult {
-  const jobs: PowerJob[] = [];
+  // Per-(grove, project, task) bypass + history state.
+  const projectTaskKicks = new Set<string>();
+  const broadcastKicks = new Set<string>();
+  const projectLastRun = new Map<string, number>(
+    initialLastRuns ? Object.entries(initialLastRuns) : [],
+  );
 
-  // Per-task "run on next compatible tick" flags. Consumed inside the
-  // tick handler; setting the flag bypasses the interval gate but not
-  // the in-flight or precondition guards.
-  const kickRequested = new Set<string>();
+  // (grove, project) tuples whose lastRun has been lazily re-seeded.
+  // Bounded by registered project count.
+  const seededProjects = new Set<string>();
+
   const kicker: ScheduledJobKicker = {
-    kick(taskName: string) {
-      kickRequested.add(taskName);
+    kick(taskName, target) {
+      if (target === undefined) {
+        broadcastKicks.add(taskName);
+      } else {
+        projectTaskKicks.add(lastRunKey(target.groveId, target.projectId, taskName));
+      }
     },
   };
 
+  // Pre-resolve schedules once at registration; they don't depend on
+  // per-tick state and re-resolving per task per tick is wasteful.
+  const compiled: CompiledTask[] = [];
   for (const task of tasks) {
     if (!task.schedule) continue;
-
     const override = configOverrides[task.name] as { schedule?: Partial<TaskSchedule> } | undefined;
     const effective = resolveSchedule(task.schedule, override);
-
     if (!effective.enabled) continue;
-
-    let lastRun = initialLastRuns?.[task.name] ?? 0;
-
-    // Hold deep_sleep open while the accelerator reports pending work.
-    // Without the hold, the daemon drifts into deep_sleep, the timer
-    // stops, and the queue stalls until the user wakes the machine.
-    // Same shape as the embedding reconciler hold in power-jobs.ts.
-    const preventsDeepSleep: (() => boolean) | undefined =
-      effective.accelerator
-        ? () => {
-            if (!context?.accelerators) return false;
-            const countFn = context.accelerators[effective.accelerator!.name];
-            if (!countFn) return false;
-            try {
-              return countFn(1) > 0;
-            } catch {
-              return false;
-            }
-          }
-        : undefined;
-
-    jobs.push({
-      name: `scheduled:${task.name}`,
-      runIn: effective.runIn,
-      preventsDeepSleep,
-      fn: async () => {
-        if (!context) return;
-        if (context.isTaskRunning(task.name)) return;
-
-        // Imperative kick bypasses the interval gate. Consume the flag
-        // here regardless of whether the run proceeds (the precondition
-        // can still skip the run; we don't want a stuck kick perpetually
-        // firing at every tick).
-        const wasKicked = kickRequested.delete(task.name);
-
-        if (!wasKicked) {
-          let effectiveIntervalSeconds = effective.intervalSeconds;
-          if (effective.accelerator && context.accelerators) {
-            const countFn = context.accelerators[effective.accelerator.name];
-            if (countFn) {
-              const countLimit = effective.accelerator.thresholds.accelerated + 1;
-              effectiveIntervalSeconds = computeEffectiveInterval(
-                effective.intervalSeconds,
-                countFn(countLimit),
-                effective.accelerator.thresholds,
-              );
-            }
-          }
-          const intervalMs = effectiveIntervalSeconds * 1000;
-          if (Date.now() - lastRun < intervalMs) return;
-        }
-
-        // Check pre-condition if defined
-        if (effective.preCondition) {
-          const check = context.preConditions[effective.preCondition];
-          if (!check) return; // Unknown pre-condition — don't run
-          if (!check()) return;
-        }
-
-        // Kick off the task detached from the PowerManager tick loop.
-        // Scheduled agent runs can take 20+ minutes; awaiting them inside
-        // the tick would starve every other power job (team-sync-flush,
-        // embedding-reconcile, session-maintenance) for the duration.
-        // Re-entry is prevented by the isTaskRunning check above, and
-        // lastRun is stamped before dispatch so interval throttling stays
-        // correct even if the task is still in flight on the next tick.
-        const ctx = context;
-        ctx.setTaskRunning(task.name, true);
-        lastRun = Date.now();
-
-        void ctx.runTask(task.name)
-          .catch((err) => {
-            ctx.onTaskError?.(task.name, err);
-          })
-          .finally(() => {
-            ctx.setTaskRunning(task.name, false);
-          });
-      },
-    });
+    compiled.push({ task, effective });
   }
 
-  return { jobs, kicker };
+  // No enabled tasks → no PowerJob to register. Lets PowerManager skip
+  // the tick entirely until a task is enabled via config reload.
+  if (compiled.length === 0) {
+    return { jobs: [], kicker };
+  }
+
+  // The collapsed job runs in every schedulable state because individual
+  // tasks filter on their own `effective.runIn` against the per-project
+  // power state inside the loop.
+  const allRunIn: PowerState[] = ['active', 'idle', 'sleep'];
+
+  const job: PowerJob = {
+    name: COLLAPSED_JOB_NAME,
+    runIn: allRunIn,
+    fn: async () => {
+      if (!context) return;
+      // Snapshot broadcasts at tick entry so a kick mid-tick lands on the next pass.
+      const broadcastSnapshot = new Set(broadcastKicks);
+
+      await context.forEachProject(async (projectScope) => {
+        const groveId = projectScope.grove.id;
+        const projectId = projectScope.projectId;
+
+        // Lazy-seed once per (grove, project) so projects that appear
+        // post-boot don't double-fire on their first warm tick.
+        const seedKey = `${groveId}:${projectId}`;
+        if (context.seedMissingLastRuns && !seededProjects.has(seedKey)) {
+          seededProjects.add(seedKey);
+          const seeded = context.seedMissingLastRuns(projectScope);
+          for (const [taskName, ms] of seeded) {
+            const k = lastRunKey(groveId, projectId, taskName);
+            if (!projectLastRun.has(k)) projectLastRun.set(k, ms);
+          }
+        }
+
+        for (const { task, effective } of compiled) {
+          if (context.isTaskRunning(groveId, projectId, task.name)) continue;
+
+          const taskKey = lastRunKey(groveId, projectId, task.name);
+          const projectKicked = projectTaskKicks.delete(taskKey);
+          const bypassInterval = projectKicked || broadcastSnapshot.has(task.name);
+
+          // Single accelerator-count read reused by both the interval
+          // tier calculation and the deep-sleep hold.
+          const acceleratorFn =
+            effective.accelerator && context.accelerators
+              ? context.accelerators[effective.accelerator.name]
+              : undefined;
+          let acceleratorCount: number | null = null;
+          if (effective.accelerator && acceleratorFn) {
+            try {
+              acceleratorCount = acceleratorFn(
+                projectScope,
+                effective.accelerator.thresholds.accelerated + 1,
+              );
+            } catch {
+              acceleratorCount = null;
+            }
+          }
+
+          if (!bypassInterval) {
+            const effectiveIntervalSeconds =
+              effective.accelerator && acceleratorCount !== null
+                ? computeEffectiveInterval(
+                    effective.intervalSeconds,
+                    acceleratorCount,
+                    effective.accelerator.thresholds,
+                  )
+                : effective.intervalSeconds;
+            const intervalMs = effectiveIntervalSeconds * 1000;
+            const last = projectLastRun.get(taskKey) ?? 0;
+            if (Date.now() - last < intervalMs) continue;
+          }
+
+          const holdDeepSleep = acceleratorCount !== null && acceleratorCount > 0;
+          const projectState = context.getProjectPowerState(projectScope, holdDeepSleep);
+          if (!(effective.runIn as readonly PowerState[]).includes(projectState)) continue;
+
+          if (effective.preCondition) {
+            const check = context.preConditions[effective.preCondition];
+            if (!check) continue;
+            if (!check(projectScope)) continue;
+          }
+
+          // Detach the agent run so PowerManager tick stays responsive.
+          // isTaskRunning above guards re-entry; lastRun is stamped before
+          // dispatch so interval throttling stays correct even if the task
+          // is still in flight on the next tick.
+          context.setTaskRunning(groveId, projectId, task.name, true);
+          projectLastRun.set(taskKey, Date.now());
+          const ctx = context;
+          void ctx
+            .runTask(projectScope, task.name)
+            .catch((err) => {
+              ctx.onTaskError?.(task.name, groveId, projectId, err);
+            })
+            .finally(() => {
+              ctx.setTaskRunning(groveId, projectId, task.name, false);
+            });
+        }
+      });
+
+      // Broadcast kicks are one-shot.
+      for (const name of broadcastSnapshot) broadcastKicks.delete(name);
+    },
+  };
+
+  return { jobs: [job], kicker };
 }

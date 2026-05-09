@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { MODELS_STALE_TIME } from '../lib/constants';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 interface ModelsResponse {
   provider: string;
@@ -21,9 +22,10 @@ export function useModels(
   // Don't fetch if provider needs a base_url and none is provided
   const needsUrl = provider ? REQUIRES_BASE_URL.has(provider) : false;
   const canFetch = !!provider && (!needsUrl || !!baseUrl);
+  const queryKey = useProjectScopedQueryKey(['models', provider, baseUrl, type, localBackend]);
 
   return useQuery<ModelsResponse>({
-    queryKey: ['models', provider, baseUrl, type, localBackend],
+    queryKey,
     queryFn: ({ signal }) => {
       const params = new URLSearchParams({ provider: provider! });
       if (baseUrl) params.set('base_url', baseUrl);

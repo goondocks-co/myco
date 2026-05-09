@@ -70,6 +70,7 @@ export function useLogFeed(category: string): UseLogFeedResult {
     },
     refetchInterval: POLL_INTERVALS.LOGS,
     pollCategory: 'standard',
+    contextFree: true,
   });
 
   useEffect(() => {

@@ -9,6 +9,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { epochSeconds } from '@myco/constants.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { textResult, type VaultToolDeps } from './types.js';
+import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -16,6 +17,7 @@ import { textResult, type VaultToolDeps } from './types.js';
 
 export function createObservabilityTools(deps: VaultToolDeps) {
   const { runId, agentId } = deps;
+  const projectId = rowProjectIdFromRequestContext(deps.requestContext);
 
   const vaultReport = tool(
     'vault_report',
@@ -30,6 +32,7 @@ export function createObservabilityTools(deps: VaultToolDeps) {
 
       const report = insertReport({
         run_id: runId,
+        project_id: projectId,
         agent_id: agentId,
         action: args.action,
         summary: args.summary,

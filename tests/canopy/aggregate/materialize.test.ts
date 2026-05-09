@@ -8,6 +8,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const PROJECT_ID = '/repo/myco';
 
@@ -69,7 +70,7 @@ describe('materializeCanopyAggregates', () => {
     expect(result!.skips_after_injection).toBe(1);
     expect(result!.tokens_saved).toBe(920);
 
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session).toBeDefined();
     expect(session!.canopy_injections_offered).toBe(1);
     expect(session!.canopy_injection_total_tokens).toBe(80);
@@ -87,13 +88,13 @@ describe('materializeCanopyAggregates', () => {
     seedRead(sessionId, 'a.ts', 50, t);
 
     materializeCanopyAggregates(sessionId);
-    let session = getSession(sessionId);
+    let session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session!.canopy_skips_after_injection).toBe(1);
 
     // Add a later same-path Read → previous skip becomes a read-after-injection.
     seedRead(sessionId, 'a.ts', null, t + 10);
     materializeCanopyAggregates(sessionId);
-    session = getSession(sessionId);
+    session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session!.canopy_skips_after_injection).toBe(0);
     expect(session!.canopy_reads_after_injection).toBe(1);
     expect(session!.canopy_tokens_saved).toBe(-50);
@@ -107,7 +108,7 @@ describe('materializeCanopyAggregates', () => {
     const result = materializeCanopyAggregates(sessionId);
     expect(result).toBeNull();
 
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session!.canopy_injections_offered).toBeNull();
     expect(session!.canopy_tokens_saved).toBeNull();
   });

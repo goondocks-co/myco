@@ -1,5 +1,6 @@
 import { useQuery, type UseQueryOptions, type UseQueryResult } from '@tanstack/react-query';
 import { usePowerState, POWER_MULTIPLIERS, type PowerState } from '../providers/power';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 export type PollCategory = 'heartbeat' | 'standard' | 'realtime';
 
@@ -11,6 +12,7 @@ const HEARTBEAT_DEEP_SLEEP_CAP_MS = 30_000;
 export interface UsePowerQueryOptions<T> extends Omit<UseQueryOptions<T>, 'refetchInterval'> {
   pollCategory: PollCategory;
   refetchInterval: number | false;
+  contextFree?: boolean;
 }
 
 /**
@@ -45,7 +47,8 @@ export function computePollInterval(
 
 export function usePowerQuery<T>(options: UsePowerQueryOptions<T>): UseQueryResult<T> {
   const powerState = usePowerState();
-  const { pollCategory, refetchInterval: baseInterval, ...queryOptions } = options;
+  const { pollCategory, refetchInterval: baseInterval, contextFree = false, ...queryOptions } = options;
+  const scopedQueryKey = useProjectScopedQueryKey(queryOptions.queryKey ?? []);
 
   const effectiveInterval = baseInterval === false
     ? false
@@ -53,6 +56,7 @@ export function usePowerQuery<T>(options: UsePowerQueryOptions<T>): UseQueryResu
 
   return useQuery({
     ...queryOptions,
+    queryKey: contextFree ? queryOptions.queryKey : scopedQueryKey,
     refetchInterval: effectiveInterval,
   } as UseQueryOptions<T>);
 }

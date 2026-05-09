@@ -53,6 +53,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Session maintenance** | Active sessions vanish mid-run; sessions deleted with no explicit error; real sessions treated as dead |
 | **Executor (phased tasks)** | Task status transitions to `complete` or `failed` silently; no error thrown; output is empty |
 | **Timeout cascade failure** | Task shows *"Claude Code process aborted by user"* or similar abort messages when no user action occurred; executor timeout in one phase affects subsequent phases |
+| **Grove import/migration** | FK violations during Grove data import; database initialization errors during Grove setup; validation failures during Grove activation; tiered migration failures across Grove data layers |
 
 Map your log output to one of these categories. If you're unsure, search the daemon source for the log prefix:
 
@@ -105,6 +106,57 @@ await db.transaction(async (tx) => {
 ```
 
 **Pitfall:** If there are multiple levels of FK nesting (grandchild → child → parent), delete from the leaf up. Draw the dependency tree before writing the delete sequence.
+
+### Grove Import/Migration FK Violations
+
+Grove import operations commonly trigger FK constraint violations when importing data with cross-references. The patterns above apply, but Grove import has additional considerations:
+
+**Grove-specific trace:** Check if the FK violation occurs during batch import operations where related records are inserted in separate phases. Grove import may insert parent records first, then attempt to reference them before the transaction commits, or vice versa.
+
+**Grove import fix pattern:**
+```typescript
+// Import in dependency order, within transactions
+await db.transaction(async (tx) => {
+  // 1. Import all parent entities first
+  await importProjects(tx, groveData.projects);
+  // 2. Import child entities that reference parents
+  await importSessions(tx, groveData.sessions);
+  // 3. Import leaf entities last
+  await importSpores(tx, groveData.spores);
+});
+```
+
+### Grove Migration Tiered Testing Strategy
+
+Grove migration introduces tiered testing patterns that can expose daemon subsystem issues at different migration phases:
+
+**Tiered smoke testing pattern for Grove migration:**
+
+1. **Phase 1: Local validation** - Test migration logic against local Grove data without affecting live systems
+2. **Phase 2: Staging Grove import** - Test full Grove data import against staging environment 
+3. **Phase 3: Production Grove activation** - Test Grove activation procedures against production data
+
+**Grove migration debugging checklist:**
+- Database schema compatibility between Grove versions
+- FK constraint violations during tiered data import
+- Validation failures at each migration phase
+- Cross-Grove resource conflicts during activation
+- Performance degradation during large Grove data imports
+
+**Grove migration error patterns:**
+```bash
+# Check for Grove-specific migration errors
+grep -rn "Grove.*migration\|tiered.*test\|Grove.*activation" ~/.myco/daemon.log
+
+# Validate Grove data consistency after import
+sqlite3 .myco/myco.db "
+SELECT 'projects' as table_name, COUNT(*) as count FROM projects
+UNION ALL
+SELECT 'sessions' as table_name, COUNT(*) as count FROM sessions  
+UNION ALL
+SELECT 'spores' as table_name, COUNT(*) as count FROM spores;
+"
+```
 
 ---
 
@@ -380,6 +432,41 @@ try {
 
 ---
 
+### Grove Import/Migration — Database Initialization Patterns
+
+**When:** Grove import or activation fails during database initialization, typically manifesting as FK violations, schema mismatches, or validation errors during Grove setup.
+
+**Common Grove DB scenarios:**
+1. **Import validation failures**: Grove data doesn't match expected schema during import
+2. **Cross-Grove ID conflicts**: Importing a Grove with IDs that conflict with existing local data
+3. **Partial import state**: Import operation interrupted mid-transaction, leaving Grove in inconsistent state
+
+**Grove diagnostic pattern:**
+```bash
+# Check Grove import/activation logs
+grep -rn "Grove\|grove\|import\|activation" ~/.myco/daemon.log
+
+# Validate Grove registry state
+myco grove list
+cat .myco/project.toml  # Check binding_id
+
+# Check for partial import artifacts
+sqlite3 .myco/myco.db "
+SELECT COUNT(*) as total_sessions, 
+       COUNT(DISTINCT machine_id) as machine_count,
+       MIN(created_at) as earliest_session,
+       MAX(created_at) as latest_session
+FROM sessions;"
+```
+
+**Grove import fix patterns:**
+- Always run Grove import within a transaction that can roll back on failure
+- Validate Grove data schema before attempting import
+- Use proper ID mapping for cross-Grove imports to avoid conflicts
+- Implement idempotent import operations that can safely retry
+
+---
+
 ## Step 4 — Write the Regression Test First
 
 Before applying the fix, write a test that fails with the current code. This confirms you've correctly identified the root cause and gives you a green signal to trust after the fix.
@@ -642,3 +729,5 @@ export async function performStartupRecovery() {
 | Database locked after restart | SQLite locks from interrupted transactions | Force close connections, wait for locks to clear, reinitialize |
 | Sessions stuck in `active` status after restart | Daemon shutdown during session processing | Cleanup stale active sessions: transition to `complete` or `abandoned` based on content |
 | Outbox entries stuck in `processing` status | Daemon shutdown during outbox drain | Reset processing entries to `pending` with incremented retry count |
+| Grove import FK violations during activation | Wrong import order or cross-Grove ID conflicts | Import in dependency order within transactions; validate schema; implement idempotent operations |
+| Grove migration fails at tiered testing phases | Phase-specific validation or data import failures | Use tiered testing strategy: local validation → staging import → production activation; validate at each tier |

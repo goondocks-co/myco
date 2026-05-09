@@ -1,5 +1,5 @@
 import { getSession, listSessions, countSessions, deleteSessionCascade, getSessionImpact, updateSession } from '@myco/db/queries/sessions.js';
-import { listBatchesBySession, countBatchesBySession } from '@myco/db/queries/batches.js';
+import { listBatchesBySession, countBatchesBySession, getBatchById, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
@@ -12,6 +12,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 import { errorBody } from './error-envelope.js';
 
@@ -24,8 +25,9 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
   const status = req.query.status || undefined;
   const agent = req.query.agent || undefined;
   const search = req.query.search || undefined;
+  const scope = projectScopeFromRequestContext(req.requestContext);
 
-  const filterOpts = { status, agent, search };
+  const filterOpts = { scope, status, agent, search };
 
   const sessions = listSessions({ ...filterOpts, limit, offset }).map((s) => ({
     id: s.id,
@@ -51,7 +53,8 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
  */
 export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
   return async function handleGetSession(req: RouteRequest): Promise<RouteResponse> {
-    const session = getSession(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const session = getSession(req.params.id, scope);
     if (session) {
       // Derive counts from rows, not the cached prompt_count/tool_count.
       const promptCount = countBatchesBySession(session.id);
@@ -85,25 +88,47 @@ export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
 /** Back-compat: no-team-fallback handler for existing call sites. */
 export const handleGetSession = createGetSessionHandler();
 
+/**
+ * Parse a comma-separated `origins` query parameter into a typed origin list.
+ * Returns undefined when the param is omitted (callers default to "all
+ * origins" — preserves legacy behavior). Unknown values are silently
+ * dropped so a misbehaving client can't break the query.
+ */
+function parseOriginsQuery(raw: unknown): readonly PromptBatchOrigin[] | undefined {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  const known = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
+  const parsed = raw.split(',').map((s) => s.trim()).filter((s) => known.has(s)) as PromptBatchOrigin[];
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteResponse> {
-  const batches = listBatchesBySession(req.params.id);
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
+  const origins = parseOriginsQuery(req.query.origins);
+  const batches = listBatchesBySession(req.params.id, { scope, origins });
   return { body: batches };
 }
 
 export async function handleGetBatchActivities(req: RouteRequest): Promise<RouteResponse> {
   const batchId = Number(req.params.id);
   if (isNaN(batchId)) return { status: 400, body: { error: 'invalid_batch_id' } };
-  const activities = listActivitiesByBatch(batchId);
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  if (!getBatchById(batchId, scope)) return { status: 404, body: { error: 'not_found' } };
+  const activities = listActivitiesByBatch(batchId, { scope });
   return { body: activities };
 }
 
 export async function handleGetSessionAttachments(req: RouteRequest): Promise<RouteResponse> {
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
   const attachments = listAttachmentsBySession(req.params.id);
   return { body: attachments };
 }
 
 export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteResponse> {
-  const plans = listPlansBySession(req.params.id);
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
+  const plans = listPlansBySession(req.params.id, scope);
   return { body: { plans } };
 }
 
@@ -124,6 +149,8 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    if (!getSession(sessionId, scope)) return { status: 404, body: { error: 'Session not found' } };
     const result = deleteSessionCascade(sessionId);
     if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
 
@@ -151,7 +178,8 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
    */
   async function handleCompleteSession(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
-    const session = getSession(sessionId);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const session = getSession(sessionId, scope);
     if (!session) return { status: 404, body: { error: 'Session not found' } };
 
     const wasActive = session.status === 'active';
@@ -159,7 +187,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       updateSession(sessionId, {
         status: 'completed',
         ended_at: session.ended_at ?? epochSeconds(),
-      });
+      }, scope);
     }
 
     await triggerTitleSummary(sessionId, { vaultDir, embeddingManager, liveConfig, logger });
@@ -175,7 +203,8 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
   /** GET /api/sessions/:id/impact — get session impact data. */
   async function handleGetSessionImpact(req: RouteRequest): Promise<RouteResponse> {
     const sessionId = req.params.id;
-    const session = getSession(sessionId);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const session = getSession(sessionId, scope);
     if (!session) return { status: 404, body: { error: 'Session not found' } };
     const impact = getSessionImpact(sessionId);
     return { body: impact };
@@ -187,7 +216,8 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
    *  propagates a tombstone across the team. Require an explicit
    *  `{force_remote: true}` opt-in before deleting someone else's row. */
   async function handleDeletePlan(req: RouteRequest): Promise<RouteResponse> {
-    const existing = getPlan(req.params.id);
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const existing = getPlan(req.params.id, scope);
     if (!existing) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 
     const localMachineId = getTeamMachineId();
@@ -215,7 +245,7 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
       });
     }
 
-    const deleted = deletePlan(req.params.id);
+    const deleted = deletePlan(req.params.id, scope);
     if (!deleted) return { status: 404, body: errorBody('plan-not-found', 'Plan not found') };
 
     embeddingManager.onRemoved('plans', deleted.id);

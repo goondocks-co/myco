@@ -29,6 +29,7 @@ import path from 'node:path';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { listSkillRecords, getSkillRecordByName } from '@myco/db/queries/skill-records.js';
@@ -36,7 +37,9 @@ import { insertRun } from '@myco/db/queries/runs.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { cleanupStagedSkill, stagingPath, stagingManifestPath } from '@myco/agent/tools/skill-staging.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 const AGENT_ID = 'agent-int';
 const RUN_ID = 'run-int-001';
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -66,6 +69,7 @@ describe('skill staging → finalize pipeline', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stage-finalize-'));
     vaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'stage-finalize-test' });
   });
 
   afterAll(() => {
@@ -87,7 +91,7 @@ describe('skill staging → finalize pipeline', () => {
     // Wipe staging between tests to prevent candidate_id collisions
     fs.rmSync(path.join(vaultDir, 'staging'), { recursive: true, force: true });
 
-    tools = createVaultTools(AGENT_ID, RUN_ID, { projectRoot: tmpDir, vaultDir });
+    tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, projectRoot: tmpDir, vaultDir });
   });
 
   // --------------------------------------------------------------------------
@@ -108,8 +112,8 @@ describe('skill staging → finalize pipeline', () => {
     expect(candidate.approved_at).toBeNull();
 
     const approvedAt = now - 50;
-    updateCandidate('cand-happy', { status: 'approved', updated_at: approvedAt });
-    expect(getCandidate('cand-happy')!.approved_at).toBe(approvedAt);
+    updateCandidate('cand-happy', { status: 'approved', updated_at: approvedAt }, ALL_PROJECTS_SCOPE);
+    expect(getCandidate('cand-happy', ALL_PROJECTS_SCOPE)!.approved_at).toBe(approvedAt);
 
     // Stage
     const stageTool = findTool(tools, 'vault_stage_skill');
@@ -129,9 +133,9 @@ describe('skill staging → finalize pipeline', () => {
     expect(stageResult.status).toBe('staged');
 
     // After stage: live file/row MUST NOT exist
-    expect(getSkillRecordByName('happy-skill')).toBeNull();
+    expect(getSkillRecordByName('happy-skill', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'happy-skill', 'SKILL.md'))).toBe(false);
-    expect(getCandidate('cand-happy')!.status).toBe('approved');
+    expect(getCandidate('cand-happy', ALL_PROJECTS_SCOPE)!.status).toBe('approved');
 
     // Finalize
     const finalizeTool = findTool(tools, 'vault_finalize_skill');
@@ -143,10 +147,10 @@ describe('skill staging → finalize pipeline', () => {
 
     // Live file and row exist now
     expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'happy-skill', 'SKILL.md'))).toBe(true);
-    expect(getSkillRecordByName('happy-skill')).not.toBeNull();
+    expect(getSkillRecordByName('happy-skill', ALL_PROJECTS_SCOPE)).not.toBeNull();
 
     // Candidate flipped, approved_at preserved
-    const finalCandidate = getCandidate('cand-happy')!;
+    const finalCandidate = getCandidate('cand-happy', ALL_PROJECTS_SCOPE)!;
     expect(finalCandidate.status).toBe('generated');
     expect(finalCandidate.approved_at).toBe(approvedAt);
     expect(finalCandidate.skill_id).not.toBeNull();
@@ -171,7 +175,7 @@ describe('skill staging → finalize pipeline', () => {
       updated_at: now - 100,
     });
     const approvedAt = now - 50;
-    updateCandidate('cand-orphan', { status: 'approved', updated_at: approvedAt });
+    updateCandidate('cand-orphan', { status: 'approved', updated_at: approvedAt }, ALL_PROJECTS_SCOPE);
 
     // Stage (draft phase succeeds)
     const stageTool = findTool(tools, 'vault_stage_skill');
@@ -196,14 +200,14 @@ describe('skill staging → finalize pipeline', () => {
     cleanupStagedSkill(vaultDir, 'cand-orphan');
 
     // Assert no orphan skill anywhere
-    expect(getSkillRecordByName('orphan-skill')).toBeNull();
-    expect(listSkillRecords({ agent_id: AGENT_ID })).toEqual([]);
+    expect(getSkillRecordByName('orphan-skill', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(listSkillRecords({ agent_id: AGENT_ID, scope: ALL_PROJECTS_SCOPE })).toEqual([]);
     expect(fs.existsSync(path.join(tmpDir, '.agents', 'skills', 'orphan-skill', 'SKILL.md'))).toBe(false);
     expect(fs.existsSync(stagingPath(vaultDir, 'cand-orphan'))).toBe(false);
 
     // Candidate is still approved and still carries its audit timestamp —
     // ready for the next generate cycle.
-    const stillApproved = getCandidate('cand-orphan')!;
+    const stillApproved = getCandidate('cand-orphan', ALL_PROJECTS_SCOPE)!;
     expect(stillApproved.status).toBe('approved');
     expect(stillApproved.approved_at).toBe(approvedAt);
     expect(stillApproved.skill_id).toBeNull();
@@ -223,7 +227,7 @@ describe('skill staging → finalize pipeline', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate('cand-iter', { status: 'approved', updated_at: now });
+    updateCandidate('cand-iter', { status: 'approved', updated_at: now }, ALL_PROJECTS_SCOPE);
 
     const stageTool = findTool(tools, 'vault_stage_skill');
     await stageTool.handler(
@@ -273,7 +277,7 @@ describe('skill staging → finalize pipeline', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate('cand-race', { status: 'approved', updated_at: now });
+    updateCandidate('cand-race', { status: 'approved', updated_at: now }, ALL_PROJECTS_SCOPE);
 
     // Stage
     const stageTool = findTool(tools, 'vault_stage_skill');

@@ -28,7 +28,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../..
 import { getDatabase } from '@myco/db/client.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { writeCanopyMap, readCanopyMap } from '@myco/canopy/map/store.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { computeInputsHash, MAP_TASK_PROMPT_VERSION } from '@myco/canopy/map/inputs-hash.js';
 import {
@@ -44,6 +44,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { epochSeconds } from '@myco/constants.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
   return MycoConfigSchema.parse({
@@ -66,7 +67,7 @@ function setupProject(): void {
   // Pin a deterministic machine id by pre-writing the cache file. Avoids
   // hitting `git config` / network during the test.
   writeFileSync(join(vaultDir, 'machine_id'), 'test_machine_pin', 'utf-8');
-  projectId = resolveCanopyProjectId(vaultDir);
+  projectId = ensureProjectManifest(vaultDir, { projectName: 'canopy-map-test' }).project.id;
   machineId = getMachineId(vaultDir);
 }
 
@@ -356,6 +357,16 @@ describe('canopy-map task', () => {
         runId,
         runContext: { canopy_map_inputs_hash: inputsHash },
         vaultDir,
+        requestContext: {
+          projectId: projectId as never,
+          projectRoot,
+          groveId: null,
+          machineId,
+          sessionId: null,
+          projectVaultDir: vaultDir,
+          databasePath: '',
+          source: 'explicit',
+        },
       });
 
       const stored = readCanopyMap(projectId, machineId);
@@ -389,6 +400,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,
           runId,
@@ -412,6 +424,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,
           runId,

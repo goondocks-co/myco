@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +10,23 @@ mock.module('@myco/services/stats.js', () => ({
 }));
 
 import { gatherStats } from '@myco/services/stats.js';
-import { computeConfigHash, createLiveStatsHandler } from '@myco/daemon/api/stats.js';
+import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGrove } from '@myco/grove/registry.js';
+import { computeConfigHash, createLiveStatsHandler, resolveStatsContext } from '@myco/daemon/api/stats.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
+import type { RouteRequest } from '@myco/daemon/router.js';
+
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
+  return {
+    body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
+    query: {},
+    params: {},
+    pathname: '/api/stats',
+    ...overrides,
+  };
+}
 
 describe('computeConfigHash', () => {
   afterEach(() => {
@@ -95,7 +111,19 @@ describe('createLiveStatsHandler', () => {
       configHash: { get: () => 'abc123' },
     });
 
-    const result = await handler();
+    const requestContext = resolveLegacyRequestContext('/tmp/live-vault', {
+      projectRoot: '/tmp/live-project',
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      groveId: 'grove-a',
+      machineId: 'machine-a',
+      sessionId: 'sess-a',
+      source: 'explicit',
+    });
+    requestContext.databasePath = '/tmp/grove-a/myco.db';
+
+    const result = await handler(makeReq({
+      requestContext,
+    }));
     const body = result.body as {
       daemon: {
         pid: number;
@@ -103,16 +131,85 @@ describe('createLiveStatsHandler', () => {
         version: string;
         uptime_seconds: number;
       };
+      context: {
+        project: { id: string; name: string; root: string };
+        grove: { id: string | null; connection_state: string };
+        request: { source: string; project_id: string; grove_id: string | null };
+      };
       config_hash: string;
     };
 
     expect(gatherStats).toHaveBeenCalledWith('/tmp/live-vault', {
       active_sessions: ['sess-1', 'sess-2'],
+      scope: { kind: 'project', id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
     });
     expect(body.daemon.pid).toBe(process.pid);
     expect(body.daemon.port).toBe(18765);
     expect(body.daemon.version).toBe('1.2.3');
     expect(body.daemon.uptime_seconds).toBe(42);
+    expect(body.context.project.id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(body.context.project.root).toBe('/tmp/live-project');
+    expect(body.context.grove.id).toBe('grove-a');
+    expect(body.context.grove.connection_state).toBe('pending');
+    expect(body.context.request.source).toBe('explicit');
+    expect(body.context.request.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(body.context.request.grove_id).toBe('grove-a');
     expect(body.config_hash).toBe('abc123');
+  });
+
+});
+
+describe('resolveStatsContext', () => {
+  let testDir: string;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stats-context-'));
+    previousHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(testDir, 'home');
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousHome;
+    }
+    fs.rmSync(testDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('resolves registered Grove and project manifest context for status visibility', () => {
+    const vaultDir = path.join(testDir, 'project', '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const grove = createGrove('Work', process.env.MYCO_HOME!);
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'status-project' },
+      grove: { binding_id: 'gbind_status', slug: grove.slug, mode: 'local' },
+    });
+
+    const context = resolveStatsContext(vaultDir, resolveLegacyRequestContext(vaultDir, {
+      projectRoot: path.dirname(vaultDir),
+      projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      groveId: grove.id,
+      machineId: 'machine-a',
+      source: 'explicit',
+    }));
+
+    expect(context.project).toEqual({
+      id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      name: 'status-project',
+      root: path.dirname(vaultDir),
+      manifest_state: 'present',
+    });
+    expect(context.grove).toMatchObject({
+      id: grove.id,
+      name: 'Work',
+      slug: 'work',
+      binding_id: 'gbind_status',
+      connection_state: 'local-only',
+    });
+    expect(context.request.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(context.request.grove_id).toBe(grove.id);
   });
 });

@@ -7,6 +7,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,11 +27,14 @@ interface SkillsInput {
 export async function handleMycoSkills(
   input: SkillsInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<unknown> {
   const op = input.op ?? 'list';
+  const options = requestContext ? { headers: requestContextHeaders(requestContext) } : undefined;
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
-    const result = await client.get(`/api/skill-records/${encodeURIComponent(input.id)}`);
+    const endpoint = `/api/skill-records/${encodeURIComponent(input.id)}`;
+    const result = options ? await client.get(endpoint, options) : await client.get(endpoint);
     if (!result.ok || !result.data) {
       return { ok: false, error: extractErrorMessage(result.data, 'Skill not found') };
     }
@@ -41,7 +45,7 @@ export async function handleMycoSkills(
     status: input.status,
     limit: input.limit,
   });
-  const result = await client.get(endpoint);
+  const result = options ? await client.get(endpoint, options) : await client.get(endpoint);
 
   if (!result.ok || !result.data?.records) return [];
 

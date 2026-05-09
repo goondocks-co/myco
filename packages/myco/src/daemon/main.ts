@@ -8,10 +8,10 @@
  */
 
 import { DaemonServer } from './server.js';
+import type { RouteRequest } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
-import { DaemonLogger } from './logger.js';
+import { DaemonLogger, type Logger } from './logger.js';
 import { loadMergedConfig } from '../config/loader.js';
-import { derivePort } from './port.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
@@ -25,6 +25,10 @@ import {
   handleGetMergedConfig,
   handleGetLocalConfig,
   handlePutScopedConfig,
+  handleGetGroveConfig,
+  handlePutGroveConfig,
+  handleGetMachineConfig,
+  handlePutMachineConfig,
   createPlanDirHandlers,
 } from './api/config.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
@@ -34,6 +38,7 @@ import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, detectDevBuild, setDevBuildCliEntry } from './update-checker.js';
 import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
+import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
@@ -51,7 +56,7 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
-import { createHubStatusHandler, resolveHubUrl } from './api/hub.js';
+import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from './api/groves.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -74,25 +79,18 @@ import { createSearchHandler } from './api/search.js';
 import { createSessionContextHandler, createPromptContextHandler, createResumeContextHandler } from './api/context.js';
 import { createCortexHandlers } from './api/cortex.js';
 import { createCanopyInjectHandler } from './api/canopy-inject.js';
-import { resolveCanopyProjectId } from '../canopy/identity.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
-  handleEmbeddingRebuild,
-  handleEmbeddingReconcile,
-  handleEmbeddingCleanOrphans,
-  handleEmbeddingReembedStale,
+  createEmbeddingActionHandlers,
 } from './api/embedding.js';
-import {
-  handleDatabaseDetails,
-  handleDatabaseOptimize,
-  handleDatabaseVacuum,
-  handleDatabaseReindex,
-  handleDatabaseIntegrityCheck,
-} from './api/database.js';
+import { createDatabaseMaintenanceHandlers } from './api/database.js';
+import { createMaintenanceHandlers } from './api/maintenance.js';
+import { createProjectsActivityHandler } from './api/projects-activity.js';
+import { errorMessage } from '@myco/utils/error-message.js';
 import { EmbeddingManager, SqliteVecVectorStore, EmbeddingProviderAdapter, SqliteRecordSource } from './embedding/index.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { registerBuiltinDomains } from '../notifications/domains.js';
@@ -124,7 +122,15 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, vaultDbPath, closeDatabase, getDatabase } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, type Database } from '../db/client.js';
+import { GroveRuntimeCache } from './grove-runtime-cache.js';
+import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
+import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
+import {
+  ProjectPowerStateTracker,
+  readProjectActivitySeed,
+} from './project-power-state.js';
+import { resolveMycoHome } from '../grove/paths.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -159,7 +165,17 @@ import { createStopProcessor } from './stop-processing.js';
 import { createEventDispatcher } from './event-dispatch.js';
 import { createConfigReactionRegistry, computeTouchedPaths, loadReactionContext } from './config-reactions/index.js';
 import { createPlanWatchReaction } from './plan-watch-reaction.js';
-import { buildHubProjectMetadata, registerWithHub } from './hub-registration.js';
+import { resolveDaemonDataPaths, resolveVectorsPathForRequestContext } from './data-paths.js';
+import { assertGroveProjectId, type GroveProjectId } from '../grove/ids.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext, type MycoRequestContext } from '../tools/request-context.js';
+import {
+  daemonStateMtimeMs,
+  readDaemonState,
+  removeDaemonState,
+  resolveDaemonLogDir,
+  resolveDaemonServiceState,
+  type DaemonServiceState,
+} from './service-state.js';
 export {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -167,6 +183,8 @@ export {
 } from './event-handlers.js';
 import { loadSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
+import { MS_PER_DAY } from '../constants.js';
+import type { MycoConfig } from '@myco/config/schema.js';
 import {
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_STALE_GRACE_PERIOD_MS,
@@ -214,18 +232,19 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
  *   daemon, unlink daemon.json, return 'ok' to proceed.
  */
 export async function reconcileExistingDaemon(
-  vaultDir: string,
+  daemonService: DaemonServiceState,
   logger: DaemonLogger,
 ): Promise<'ok' | 'step-aside'> {
-  const daemonJsonPath = path.join(vaultDir, 'daemon.json');
+  const daemonJsonPath = daemonService.statePath;
   let info: { pid?: number; port?: number; command?: string | null };
   let mtimeMs: number;
   try {
-    if (!fs.existsSync(daemonJsonPath)) return 'ok';
-    mtimeMs = fs.statSync(daemonJsonPath).mtimeMs;
-    info = JSON.parse(fs.readFileSync(daemonJsonPath, 'utf-8')) as { pid?: number; port?: number };
+    const current = readDaemonState(daemonJsonPath);
+    if (!current) return 'ok';
+    mtimeMs = daemonStateMtimeMs(daemonJsonPath) ?? 0;
+    info = current;
   } catch {
-    // Unreadable daemon.json — treat as absent.
+    // Unreadable daemon state — treat as absent.
     return 'ok';
   }
 
@@ -237,7 +256,7 @@ export async function reconcileExistingDaemon(
     process.kill(info.pid, 0);
   } catch {
     // Dead — clean up and take over.
-    try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+    removeDaemonState(daemonJsonPath);
     return 'ok';
   }
 
@@ -251,7 +270,7 @@ export async function reconcileExistingDaemon(
   // must NOT step aside — we need to proceed through eviction, kill the
   // orphan, and bind the canonical port ourselves.
   const recent = Date.now() - mtimeMs < DAEMON_STALE_GRACE_PERIOD_MS;
-  const canonicalPort = derivePort(vaultDir);
+  const canonicalPort = daemonService.canonicalPort;
   if (recent && typeof info.port === 'number' && info.port === canonicalPort) {
     try {
       const res = await fetch(`http://127.0.0.1:${info.port}/health`, {
@@ -284,7 +303,7 @@ export async function reconcileExistingDaemon(
     process.kill(info.pid, 'SIGTERM');
     logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
   } catch { /* already dead */ }
-  try { fs.unlinkSync(daemonJsonPath); } catch { /* already gone */ }
+  removeDaemonState(daemonJsonPath);
   return 'ok';
 }
 
@@ -292,20 +311,99 @@ export async function reconcileExistingDaemon(
 // Main
 // ---------------------------------------------------------------------------
 
+function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
+  const addProject = (data?: Record<string, unknown>) => ({
+    ...data,
+    project_id: typeof data?.project_id === 'string' ? data.project_id : projectId,
+  });
+  return {
+    debug: (kind, message, data) => logger.debug(kind, message, addProject(data)),
+    info: (kind, message, data) => logger.info(kind, message, addProject(data)),
+    warn: (kind, message, data) => logger.warn(kind, message, addProject(data)),
+    error: (kind, message, data) => logger.error(kind, message, addProject(data)),
+  };
+}
+
+/**
+ * Fan out canopy initial-populate across every registered project on
+ * boot. Cold projects (no recent activity) defer to their next
+ * SessionStart's delta scan so idle Groves don't pay a full-scan cost
+ * for projects nobody has used in weeks. Errors per project are isolated.
+ */
+async function runInitialCanopyPopulateAcrossProjects(
+  cache: GroveRuntimeCache,
+  logger: DaemonLogger,
+  machineId: string,
+  registry: CanopyJobsRegistry,
+  liveConfig: { current: MycoConfig },
+): Promise<void> {
+  try {
+    const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
+    const cutoffSeconds = thresholdDays > 0
+      ? Math.floor((Date.now() - thresholdDays * MS_PER_DAY) / 1000)
+      : 0;
+    await forEachRegisteredProject(
+      cache,
+      logger,
+      async ({ databasePath, projectId, projectRoot, grove, db }) => {
+        if (cutoffSeconds > 0 && !isProjectActive(db, projectId, cutoffSeconds)) {
+          // Cold project — let SessionStart trigger when the user returns.
+          return;
+        }
+        await registry.initialPopulate({ databasePath, projectId, projectRoot, groveId: grove.id });
+      },
+      { machineId },
+    );
+  } catch (err) {
+    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate fan-out failed', {
+      error: errorMessage(err),
+    });
+  }
+}
+
 export async function main(): Promise<void> {
-  // The vault always lives at `<projectRoot>/.myco/`. The daemon spawns
-  // with cwd = projectRoot; resolveVaultDir walks up (worktree-aware) to
-  // find the enclosing `.myco/`. There is no escape hatch — vaults are
-  // project-local.
-  const vaultDir = resolveVaultDir();
+  // `bootstrapVaultDir` is a *transitional* concept.
+  //
+  // In the Grove world, the daemon serves many projects and the per-request
+  // vault directory comes from `req.requestContext.projectVaultDir`. The
+  // daemon process itself, though, still has to bootstrap from somewhere on
+  // disk to load secrets, identify the machine, resolve the merged config,
+  // open the daemon log dir, and so on — all before any HTTP traffic
+  // arrives. `resolveVaultDir()` walks up from cwd (worktree-aware) to find
+  // the enclosing `.myco/` and we treat that as the bootstrap fallback.
+  //
+  // Almost every downstream callsite below either:
+  //   (a) genuinely needs the bootstrap dir (logger init, secrets load,
+  //       machine-id, daemon-service files, plan-watch, restart marker), or
+  //   (b) prefers the per-request projectVaultDir but falls back to
+  //       `bootstrapVaultDir` when no request context is bound (typically
+  //       global handlers or singleton subsystems that haven't been
+  //       Grove-aware-ified yet).
+  //
+  // Once `myco init` is universally required and every handler/subsystem
+  // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
+  // case (a) handlers move to a dedicated daemon-paths struct. Until then,
+  // do NOT use this value as a stand-in for the request-scoped vault.
+  const bootstrapVaultDir = resolveVaultDir();
 
   // Load API keys from secrets.env into process.env before any provider init
-  loadSecrets(vaultDir);
+  loadSecrets(bootstrapVaultDir);
 
-  // Merged = project (myco.yaml) + personal overlay (local.yaml). Any gate
-  // downstream of this needs to see personal overrides, so the daemon loads
-  // the merged view and never the raw project config.
-  const config = loadMergedConfig(vaultDir);
+  // --- Machine identity (resolved early so config load can use the Grove id) ---
+  const machineId = getMachineId(bootstrapVaultDir);
+  const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
+    ...process.env,
+    MYCO_MACHINE_ID: machineId,
+  });
+
+  // Merged = machine + grove + project + personal. Any gate downstream
+  // of this needs to see all four tiers, so the daemon loads the merged
+  // view (sourced from `~/.myco/config.yaml`, `~/.myco/groves/<id>/config.yaml`,
+  // `<project>/.myco/myco.yaml`, and `<project>/.myco/local.yaml`).
+  const config = loadMergedConfig(bootstrapVaultDir, {
+    groveId: dataPaths.requestContext.groveId,
+    mycoHome: undefined, // resolve from env at call time
+  });
   // Mutable holder that reactions update after each scoped-config write, so
   // runtime gates (scheduled-task registration, event triggers) observe the
   // flipped value without a daemon restart.
@@ -314,16 +412,23 @@ export async function main(): Promise<void> {
   const manifests = loadManifests();
   const symbiontPlanDirs = manifests.flatMap((m) => m.capture?.planDirs ?? []);
   const symbiontPlanTags = [...new Set(manifests.flatMap((m) => m.capture?.planTags ?? []))];
-  const projectRoot = resolveProjectRoot(vaultDir);
+  const projectRoot = resolveProjectRoot(bootstrapVaultDir);
   const planWatchConfig: PlanWatchConfig = {
     watchDirs: [...new Set([...symbiontPlanDirs, ...(config.capture.plan_dirs ?? [])])],
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
-
-  const logger = new DaemonLogger(path.join(vaultDir, 'logs'), {
+  const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  });
+  const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  }), {
     level: config.daemon.log_level,
   });
+  logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
 
   // When debug logging is on, surface per-turn tool_use / tool_result detail
   // from the agent executor. The executor reads this env var directly because
@@ -333,27 +438,24 @@ export async function main(): Promise<void> {
     process.env.MYCO_AGENT_DEBUG = '1';
   }
 
-  // Reconcile with any existing daemon for this vault. If a recent sibling is
-  // already healthy on the same version, step aside — prevents the cascade
-  // where concurrent spawns (hooks, MCPs, user-prompt-submit) SIGTERM each
-  // other in sequence.
-  const reconcileResult = await reconcileExistingDaemon(vaultDir, logger);
+  // Reconcile with any existing daemon for the resolved service. Grove-bound
+  // projects use the per-user global daemon state; legacy projects keep the
+  // historical project-local state file.
+  const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
   if (reconcileResult === 'step-aside') {
     process.exit(0);
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
-    vault: vaultDir,
+    vault: bootstrapVaultDir,
+    daemon_scope: daemonService.scope,
+    daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
   });
   logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan watch directories', { dirs: planWatchConfig.watchDirs });
   if (symbiontPlanTags.length > 0) {
     logger.info(LOG_KINDS.CAPTURE_PLAN, 'Plan transcript tags', { tags: symbiontPlanTags });
   }
-
-  // --- Machine identity ---
-  const machineId = getMachineId(vaultDir);
-  logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
 
   // --- Resolve npm global prefix + detect dev build ---
   // globalPrefix is used both for installed-version detection (in the status
@@ -364,7 +466,7 @@ export async function main(): Promise<void> {
     logger.debug(LOG_KINDS.DAEMON_START, 'npm global prefix resolved', { prefix: globalPrefix });
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Failed to resolve npm global prefix', {
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   }
 
@@ -395,21 +497,29 @@ export async function main(): Promise<void> {
   }
 
   // --- SQLite initialization ---
-  const db = initDatabase(vaultDbPath(vaultDir));
+  const db = initDatabase(dataPaths.databasePath);
   createSchema(db, machineId);
   registerBuiltinDomains();
-  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed');
+  // Boot-DB sweep only — the Grove fan-out for any other registered
+  // Groves runs after `runtimeCache` is built (see "interrupt stale runs
+  // across registered Groves" below).
+  const interruptedRuns = markRunningRunsInterrupted('Daemon restarted before the run completed', { kind: 'all' });
   if (interruptedRuns > 0) {
     logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
       count: interruptedRuns,
+      grove_id: dataPaths.requestContext.groveId,
     });
   }
 
-  logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', { vault: vaultDir });
+  logger.info(LOG_KINDS.DAEMON_START, 'SQLite initialized', {
+    vault: bootstrapVaultDir,
+    database_path: dataPaths.databasePath,
+    grove_id: dataPaths.requestContext.groveId,
+  });
 
   // --- Check for restart-reason signal file (left by version sync restart script) ---
   {
-    const reasonPath = path.join(vaultDir, RESTART_REASON_FILENAME);
+    const reasonPath = path.join(bootstrapVaultDir, RESTART_REASON_FILENAME);
     try {
       if (fs.existsSync(reasonPath)) {
         const raw = JSON.parse(fs.readFileSync(reasonPath, 'utf-8')) as {
@@ -425,7 +535,7 @@ export async function main(): Promise<void> {
             ? 'Restarted and updated local project hooks.'
             : 'Restarted to pick up the latest version.';
 
-          notify(vaultDir, {
+          notify(bootstrapVaultDir, {
             domain: 'daemon',
             type: 'daemon.version_sync',
             title: `Updated to v${raw.to_version}`,
@@ -435,7 +545,7 @@ export async function main(): Promise<void> {
               to_version: raw.to_version,
               local_update_ran: raw.local_update_ran ?? false,
             },
-          });
+          }, undefined, { scope: 'daemon' });
 
           logger.info(LOG_KINDS.DAEMON_START, 'Version sync restart detected', {
             from: raw.from_version,
@@ -446,7 +556,7 @@ export async function main(): Promise<void> {
       }
     } catch (err) {
       logger.warn(LOG_KINDS.DAEMON_START, 'Failed to read restart-reason file', {
-        error: (err as Error).message,
+        error: errorMessage(err),
       });
     }
   }
@@ -454,49 +564,100 @@ export async function main(): Promise<void> {
   // --- Team context ---
   initTeamContext(config.team.enabled, machineId);
 
-  // Wire logger to SQLite persistence
+  // Wire logger to SQLite persistence. Every log row is scoped to the
+  // daemon's resolved Grove project id — there is no NULL fallback.
+  const daemonProjectId = dataPaths.requestContext.projectId;
   logger.setPersistFn((entry) => {
     const { timestamp, level, kind, component, message, ...rest } = entry;
+    const {
+      project_id: entryProjectId,
+      session_id: entrySessionId,
+      ...data
+    } = rest;
     insertLogEntry({
       timestamp,
       level,
       kind,
       component,
       message,
-      data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
-      session_id: (rest.session_id as string) ?? null,
+      data: Object.keys(data).length > 0 ? JSON.stringify(data) : null,
+      session_id: (entrySessionId as string | undefined) ?? null,
+      project_id: typeof entryProjectId === 'string' ? assertGroveProjectId(entryProjectId) : daemonProjectId,
     });
   });
 
   // Reconcile log entries missed while daemon was down
   const lastLogTimestamp = getMaxTimestamp();
   if (lastLogTimestamp) {
-    const logDir = path.join(vaultDir, 'logs');
-    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp);
+    const logDir = resolveDaemonLogDir(bootstrapVaultDir, {
+      requestContext: dataPaths.requestContext,
+      env: process.env,
+    });
+    const replayedCount = reconcileLogBuffer(logDir, lastLogTimestamp, daemonProjectId);
     if (replayedCount > 0) {
       logger.info(LOG_KINDS.DAEMON_RECONCILE, `Replayed ${replayedCount} log entries from buffer`, { replayed: replayedCount });
     }
   }
 
   // --- Embedding lifecycle manager ---
-  const vectorsDbPath = path.join(vaultDir, 'vectors.db');
+  const vectorsDbPath = dataPaths.vectorsPath;
   const vectorStore = new SqliteVecVectorStore(vectorsDbPath);
   const llmProvider = createEmbeddingProvider(config.embedding);
   const embeddingProvider = new EmbeddingProviderAdapter(llmProvider, config.embedding);
   const recordSource = new SqliteRecordSource();
   const embeddingManager = new EmbeddingManager(vectorStore, embeddingProvider, recordSource, logger);
   logger.info(LOG_KINDS.EMBEDDING_EMBED, 'EmbeddingManager initialized', { vectors_db: vectorsDbPath });
-  const databaseManager = new DatabaseMaintenanceManager(vaultDbPath(vaultDir), vaultDir, logger);
+  const databaseManagerForRequest = (req: RouteRequest) => new DatabaseMaintenanceManager(
+    req.requestContext?.databasePath ?? dataPaths.databasePath,
+    req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+    loggerForProject(logger, req.requestContext?.projectId ?? dataPaths.requestContext.projectId),
+  );
+  const runtimeCache = new GroveRuntimeCache();
+  const databaseHandlers = createDatabaseMaintenanceHandlers({
+    createManager: databaseManagerForRequest,
+    cache: runtimeCache,
+    logger,
+    vaultDir: bootstrapVaultDir,
+  });
+  /**
+   * Build a per-Grove embedding runtime for any DB handle the runtime
+   * cache opens. Used both by Phase-1 power-job fan-out (one tick body
+   * per Grove) and by per-request HTTP handlers below. The vectors file
+   * is co-located with the DB (both Grove home and legacy vault layouts
+   * follow that convention).
+   */
+  const buildGroveEmbeddingRuntime = (db: Database, databasePath: string) => {
+    const scopedVectorsPath = path.join(path.dirname(databasePath), 'vectors.db');
+    const scopedVectorStore = new SqliteVecVectorStore(scopedVectorsPath);
+    return {
+      vectorStore: scopedVectorStore,
+      embeddingManager: new EmbeddingManager(
+        scopedVectorStore,
+        embeddingProvider,
+        new SqliteRecordSource(db),
+        logger,
+      ),
+    };
+  };
+  const getEmbeddingRuntime = (requestContext?: MycoRequestContext): { manager: EmbeddingManager; db?: Database } => {
+    if (!requestContext) return { manager: embeddingManager };
+    const scopedVectorsPath = resolveVectorsPathForRequestContext(requestContext);
+    if (requestContext.databasePath === dataPaths.databasePath && scopedVectorsPath === dataPaths.vectorsPath) {
+      return { manager: embeddingManager };
+    }
+    const entry = runtimeCache.getEmbeddingRuntime(requestContext.databasePath, buildGroveEmbeddingRuntime);
+    return { manager: entry.embeddingManager!, db: entry.db };
+  };
 
   // --- Register built-in agents and tasks ---
   let definitionsDir: string | undefined;
   try {
     const { registerBuiltInAgentsAndTasks, resolveDefinitionsDir } = await import('../agent/loader.js');
     definitionsDir = resolveDefinitionsDir();
-    await registerBuiltInAgentsAndTasks(definitionsDir, vaultDir);
+    await registerBuiltInAgentsAndTasks(definitionsDir, bootstrapVaultDir);
     logger.info(LOG_KINDS.AGENT_TASK, 'Built-in agents and tasks registered');
   } catch (err) {
-    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to register built-in agents/tasks', { error: errorMessage(err) });
   }
 
   // Clean up stale "running" agent runs from previous daemon — they'll never complete
@@ -513,7 +674,7 @@ export async function main(): Promise<void> {
         `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = 'Daemon restarted while run was in progress' WHERE status = 'running'`,
       ).run(completedAt);
       for (const row of staleRows) {
-        notify(vaultDir, {
+        notify(bootstrapVaultDir, {
           domain: 'agents',
           type: 'agent.task.failure',
           title: `Task failed: ${row.task ?? 'agent run'}`,
@@ -528,7 +689,7 @@ export async function main(): Promise<void> {
       });
     }
   } catch (err) {
-    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: (err as Error).message });
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: errorMessage(err) });
   }
 
   // Resolve dist/ui/ from the package root. Two candidate origins:
@@ -573,6 +734,21 @@ export async function main(): Promise<void> {
     logger,
   });
 
+  // Per-project power state. Pre-Grove, each project ran in its own
+  // daemon with its own PowerManager. With one global daemon hosting
+  // many projects, each project still needs its own active/idle/sleep/
+  // deep_sleep machine — the user expects symbionts on project B to
+  // keep running while they view project A. The global PowerManager
+  // above still drives Grove-level housekeeping (embedding-reconcile,
+  // backup, …); per-project state is consulted by scheduled-task
+  // dispatch.
+  const mycoHome = resolveMycoHome();
+  const projectStateTracker = new ProjectPowerStateTracker({
+    idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
+    sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
+    deepSleepThresholdMs: POWER_DEEP_SLEEP_THRESHOLD_MS,
+  });
+
   // Tracks fire-and-forget Cortex runs so daemon shutdown can await them
   // before exiting. Without this, SIGTERM orphans in-flight runs — leaving
   // non-terminal agent_runs rows and costing real money on reasoning-heavy
@@ -580,10 +756,12 @@ export async function main(): Promise<void> {
   const inflightRuns = new InflightRunRegistry();
 
   const server = new DaemonServer({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     logger,
+    daemonStatePath: daemonService.statePath,
     uiDir: uiDir ?? undefined,
     uiDevProxyTarget: uiDevProxyTarget ?? undefined,
+    runtimeCache,
     // Don't record activity on every HTTP request — UI polling (every 3-10s)
     // would prevent the PowerManager from ever reaching 'idle' state, blocking
     // all idle-only scheduled tasks (skill-survey, skill-generate, skill-evolve).
@@ -603,7 +781,7 @@ export async function main(): Promise<void> {
     ),
   });
 
-  const bufferDir = path.join(vaultDir, 'buffer');
+  const bufferDir = path.join(bootstrapVaultDir, 'buffer');
   const sessionBuffers = new Map<string, EventBuffer>();
 
   const reconciler = createReconciler({ bufferDir, logger, projectRoot });
@@ -622,7 +800,8 @@ export async function main(): Promise<void> {
     embeddingManager,
     logger,
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
+    projectId: dataPaths.requestContext.projectId,
     planTags: symbiontPlanTags,
     planWatchConfig,
   });
@@ -632,7 +811,8 @@ export async function main(): Promise<void> {
   // runner becomes visible to SessionStart triggers.
   const sessionLifecycleDeps = {
     registry, sessionBuffers, reconciler, stopProcessor,
-    server, powerManager, machineId, logger, liveConfig, vaultDir,
+    server, powerManager, machineId, logger, liveConfig, vaultDir: bootstrapVaultDir,
+    projectStateTracker,
   };
   const sessionLifecycle = createSessionLifecycleHandlers(sessionLifecycleDeps);
   server.registerRoute('POST', '/sessions/register', sessionLifecycle.handleRegister);
@@ -647,10 +827,11 @@ export async function main(): Promise<void> {
     logger,
     machineId,
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     reconcileSession: reconciler.reconcileSession,
     planWatchConfig,
     triggerTitleSummary: stopProcessor.triggerTitleSummary,
+    projectStateTracker,
   });
   server.registerRoute('POST', '/events', eventDispatcher);
 
@@ -661,7 +842,7 @@ export async function main(): Promise<void> {
   // --- Context injection (cortex brief + semantic spore search) ---
   let teamSync!: ReturnType<typeof initTeamSync>;
   const contextDeps = {
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     embeddingManager,
     liveConfig,
     logger,
@@ -674,14 +855,14 @@ export async function main(): Promise<void> {
   // --- Canopy injection (PreToolUse/Read hook-bridge endpoint) ---
   server.registerRoute('POST', '/canopy/inject', createCanopyInjectHandler({
     liveConfig,
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     getDatabase,
   }));
 
   // --- Dashboard API routes ---
   const progressTracker = new ProgressTracker();
-  let configHash = computeConfigHash(vaultDir);
-  const cortexHandlers = createCortexHandlers(vaultDir, {
+  let configHash = computeConfigHash(bootstrapVaultDir);
+  const cortexHandlers = createCortexHandlers(bootstrapVaultDir, {
     liveConfig,
     embeddingManager,
     logger,
@@ -689,16 +870,16 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/config', async () => handleGetConfig(vaultDir));
-  server.registerRoute('GET', '/api/hub/status', createHubStatusHandler({ liveConfig }));
-  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(vaultDir));
+  server.registerRoute('GET', '/api/config', async () => handleGetConfig(bootstrapVaultDir));
+  server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
 
-  server.registerRoute('GET', '/api/config/merged', async () => handleGetMergedConfig(vaultDir));
-  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(vaultDir));
+  server.registerRoute('GET', '/api/config/merged', async (req) =>
+    handleGetMergedConfig(bootstrapVaultDir, { groveId: req.requestContext?.groveId ?? null }));
+  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(bootstrapVaultDir));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -715,7 +896,7 @@ export async function main(): Promise<void> {
   const reactions = createConfigReactionRegistry(logger);
 
   // Refresh the live-stats configHash on every write.
-  reactions.on([], () => { configHash = computeConfigHash(vaultDir); });
+  reactions.on([], () => { configHash = computeConfigHash(bootstrapVaultDir); });
 
   // Keep liveConfig pointed at the latest merged config so runtime gates
   // (agent.scheduled_tasks_enabled, agent.event_tasks_enabled) pick up
@@ -725,7 +906,7 @@ export async function main(): Promise<void> {
   // Reinstall symbiont artefacts (agent hooks, .gitignore) when capture dirs
   // or symbiont enablement change. The reconcile has no other config inputs.
   reactions.on(['capture', 'symbionts'], (ctx) => {
-    reconcileConfiguredSymbionts(resolveProjectRoot(vaultDir), vaultDir, ctx);
+    reconcileConfiguredSymbionts(resolveProjectRoot(bootstrapVaultDir), bootstrapVaultDir, ctx);
   });
 
   // Refresh the in-memory plan-watch list on capture changes.
@@ -744,16 +925,24 @@ export async function main(): Promise<void> {
     }
   });
 
-  let scheduledTaskKicker: { kick: (taskName: string) => void } = { kick: () => {} };
+  let scheduledTaskKicker: {
+    kick: (taskName: string, target?: { groveId: string; projectId: GroveProjectId }) => void;
+  } = {
+    kick: () => {},
+  };
 
   async function syncScheduledTasks() {
     scheduledTaskKicker = await registerScheduledTasks(powerManager, {
       definitionsDir,
-      vaultDir,
+      vaultDir: bootstrapVaultDir,
       embeddingManager,
       logger,
       liveConfig,
       getTeamClient: () => teamSync.getTeamClient(),
+      cache: runtimeCache,
+      mycoHome,
+      machineId,
+      projectStateTracker,
     });
   }
 
@@ -762,9 +951,11 @@ export async function main(): Promise<void> {
   });
 
   async function applyConfigWriteReactions(touchedPaths: string[]) {
-    const reactionContext = loadReactionContext(vaultDir, logger);
+    const reactionContext = loadReactionContext(bootstrapVaultDir, logger, {
+      groveId: dataPaths.requestContext.groveId,
+    });
     if (!reactionContext) {
-      configHash = computeConfigHash(vaultDir);
+      configHash = computeConfigHash(bootstrapVaultDir);
       return null;
     }
     await reactions.fire(touchedPaths, reactionContext);
@@ -772,14 +963,14 @@ export async function main(): Promise<void> {
   }
 
   server.registerRoute('PUT', '/api/config/scoped', async (req) => {
-    const result = await handlePutScopedConfig(vaultDir, req.body);
+    const result = await handlePutScopedConfig(bootstrapVaultDir, req.body);
     if (!result.status || result.status < 400) {
       const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
       const touchedPaths = computeTouchedPaths(body.patch, body.clear);
       const reactionContext = await applyConfigWriteReactions(touchedPaths);
       if (reactionContext) {
         const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
-        notify(vaultDir, {
+        notify(bootstrapVaultDir, {
           domain: 'settings',
           type: 'settings.saved',
           title: summary.title,
@@ -788,10 +979,42 @@ export async function main(): Promise<void> {
           metadata: summary.metadata,
         }, reactionContext);
       } else {
-        configHash = computeConfigHash(vaultDir);
+        configHash = computeConfigHash(bootstrapVaultDir);
       }
     }
     return result;
+  });
+
+  // Grove-tier config (~/.myco/groves/<id>/grove.yaml) — separate tier
+  // from project/local. The handler reads groveId from the request
+  // context (x-myco-grove-id header).
+  server.registerRoute('GET', '/api/grove-config', async (req) =>
+    handleGetGroveConfig(req.requestContext?.groveId ?? null));
+
+  server.registerRoute('PUT', '/api/grove-config', async (req) => {
+    const { response, touchedPaths } = await handlePutGroveConfig(
+      req.requestContext?.groveId ?? null,
+      req.body,
+    );
+    if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
+      await applyConfigWriteReactions(touchedPaths);
+    }
+    return response;
+  });
+
+  // Machine-tier config (~/.myco/config.yaml) — port, log policy, update
+  // channel. One daemon per machine, so the route is global (no scope
+  // header required). Reactions fire so liveConfig and dependent runtime
+  // surfaces (logger level, configHash) refresh on write.
+  server.registerRoute('GET', '/api/machine-config', async () =>
+    handleGetMachineConfig());
+
+  server.registerRoute('PUT', '/api/machine-config', async (req) => {
+    const { response, touchedPaths } = await handlePutMachineConfig(req.body);
+    if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
+      await applyConfigWriteReactions(touchedPaths);
+    }
+    return response;
   });
 
   const planDirHandlers = createPlanDirHandlers({
@@ -802,11 +1025,17 @@ export async function main(): Promise<void> {
   // V2 stats — vault counts, embedding coverage, agent status, digest freshness
   const configHashRef = { get: () => configHash };
   server.registerRoute('GET', '/api/stats', createLiveStatsHandler({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     registry,
     server,
     configHash: configHashRef,
   }));
+  const groveScope = servedGroveScopeForDaemon({
+    daemonScope: daemonService.scope,
+    startupGroveId: dataPaths.requestContext.groveId,
+  });
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
@@ -817,12 +1046,12 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/log', createLogIngestionHandler(logger));
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
-  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir, progressTracker }, req.body));
+  server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // --- Update routes ---
-  const updateProjectRoot = resolveProjectRoot(vaultDir);
+  const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);
   const updateHandlers = createUpdateHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     projectRoot: updateProjectRoot,
     currentVersion: server.version,
     globalPrefix,
@@ -844,7 +1073,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir, logger, liveConfig });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
@@ -856,8 +1085,8 @@ export async function main(): Promise<void> {
 
   // --- Canopy read-side API routes ---
   registerCanopyReadRoutes(server, {
-    resolveProjectId: () => resolveCanopyProjectId(vaultDir),
-    resolveMachineId: () => getMachineId(vaultDir),
+    resolveProjectId: (req) => req.requestContext?.projectId ?? dataPaths.requestContext.projectId,
+    resolveMachineId: (req) => req.requestContext?.machineId ?? getMachineId(bootstrapVaultDir),
     runCanopyMapTask: async ({ task, params }) => {
       // Mirror the dispatch shape used by /api/agent/run (see
       // createAgentRunHandlers.handleRun): build the instruction, fire
@@ -879,33 +1108,35 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = resolveProjectRoot(vaultDir);
+      const projectRoot = dataPaths.requestContext.projectRoot;
+      const requestContext = dataPaths.requestContext;
       const built = await buildCanopyMapInstructionDetailed(params, projectRoot, mycoConfig);
 
       if (built.kind === 'skip') {
         return { skipped: true, reason: built.reason };
       }
 
-      const resultPromise = runAgent(vaultDir, {
+      const resultPromise = runAgent(bootstrapVaultDir, {
         task,
         instruction: built.instruction,
         runContext: built.context,
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
+        requestContext,
         logger,
       });
 
       // runAgent inserts the agent_runs row synchronously before its first
       // await. Capture the id before letting the promise run unsupervised.
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
 
       // Fire-and-forget — caller already has the run id; we don't block
       // the HTTP response on the LLM round-trip. Errors are logged so
       // they don't vanish.
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-map regenerate threw', {
-          error: (err as Error).message ?? String(err),
+          error: errorMessage(err),
         });
       });
 
@@ -921,7 +1152,8 @@ export async function main(): Promise<void> {
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
       const mycoConfig = liveConfig.current;
-      const projectRoot = resolveProjectRoot(vaultDir);
+      const projectRoot = dataPaths.requestContext.projectRoot;
+      const requestContext = dataPaths.requestContext;
       const built = await buildTaskInstruction(
         task,
         params,
@@ -930,23 +1162,25 @@ export async function main(): Promise<void> {
         embeddingManager,
         mycoConfig,
         () => teamSync.getTeamClient(),
+        requestContext,
       );
 
-      const resultPromise = runAgent(vaultDir, {
+      const resultPromise = runAgent(bootstrapVaultDir, {
         task,
         instruction: built?.instruction,
         runContext: built?.context,
         taskParams: params,
         agentId: DEFAULT_AGENT_ID,
         embeddingManager,
+        requestContext,
         logger,
       });
 
-      const runId = getLatestRunId(DEFAULT_AGENT_ID, task);
+      const runId = getLatestRunId(DEFAULT_AGENT_ID, task, { kind: 'project', id: requestContext.projectId });
 
       resultPromise.catch((err) => {
         logger.error(LOG_KINDS.AGENT_ERROR, 'canopy-describe redescribe threw', {
-          error: (err as Error).message ?? String(err),
+          error: errorMessage(err),
         });
       });
 
@@ -961,7 +1195,7 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/skill-records', handleListSkillRecords);
   server.registerRoute('GET', '/api/skill-records/:id', handleGetSkillRecord);
   server.registerRoute('DELETE', '/api/skill-candidates/:id', handleDeleteCandidate);
-  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir, logger }));
+  server.registerRoute('DELETE', '/api/skill-records/:id', createSkillRecordDeleteHandler({ vaultDir: bootstrapVaultDir, logger }));
 
   // --- Mycelium API routes ---
   server.registerRoute('GET', '/api/spores', handleListSpores);
@@ -972,12 +1206,12 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/graph/:id', handleGetGraph);
   server.registerRoute('GET', '/api/digest', handleGetDigest);
 
-  const attachments = createAttachmentHandler({ vaultDir });
+  const attachments = createAttachmentHandler({ vaultDir: bootstrapVaultDir });
   server.registerRoute('GET', '/api/attachments/:filename', attachments.handleGetAttachment);
 
   // --- Agent API routes ---
   const agentRunHandlers = createAgentRunHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     embeddingManager,
     logger,
     getTeamClient: () => teamSync.getTeamClient(),
@@ -991,44 +1225,44 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/agent/runs/:id/write-intents', agentRunHandlers.handleGetRunWriteIntents);
   server.registerRoute('GET', '/api/agent/runs/:id/audit', agentRunHandlers.handleGetRunAudit);
 
-  const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir, logger });
+  const digestRevisionHandlers = createDigestRevisionHandlers({ vaultDir: bootstrapVaultDir, logger });
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
   server.registerRoute('POST', '/api/digest/revisions/:id/restore', digestRevisionHandlers.handleRestore);
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, vaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, vaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, bootstrapVaultDir));
   server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleUpdateTask(req, vaultDir);
+    const result = await handleUpdateTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks', async (req) => {
-    const result = await handleCreateTask(req, vaultDir);
+    const result = await handleCreateTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => {
-    const result = await handleCopyTask(req, vaultDir);
+    const result = await handleCopyTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleDeleteTask(req, vaultDir);
+    const result = await handleDeleteTask(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
-  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, vaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, bootstrapVaultDir));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
-    const result = await handleUpdateTaskConfig(req, vaultDir);
+    const result = await handleUpdateTaskConfig(req, bootstrapVaultDir);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions([`agent.tasks.${req.params.id}`]);
     }
@@ -1038,24 +1272,63 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(vaultDir));
-  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(vaultDir, req));
-  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(vaultDir, req));
+  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(bootstrapVaultDir));
+  server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(bootstrapVaultDir, req));
+  server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(bootstrapVaultDir, req));
 
   // --- In-process MCP server (streamable HTTP) ---
   // Stdio agents are bridged to this endpoint by `myco-run mcp`; HTTP-native
   // agents (codex) connect to it directly. Tool execution happens in-process
   // via the shared tool runtime — no internal HTTP RPC layer.
-  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(vaultDir));
+  server.registerRawRoute('/mcp', createStreamableMcpHttpHandler(bootstrapVaultDir, {
+    resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
+      ? db
+      : runtimeCache.getDatabase(databasePath),
+  }));
 
   // --- Backup routes ---
-  const backupHandlers = createBackupHandlers({ db, machineId, vaultDir, liveConfig });
+  // One-shot housekeeping: move pre-Grove orphan `<machine_id>.sql`
+  // files out of the configured backup root into `.legacy/`. Per-
+  // Grove backups now live under `<root>/<groveSlug>/`; the top-
+  // level files are leftovers from the pre-Grove era.
+  try {
+    const configuredDir = liveConfig.current.backup.dir;
+    if (configuredDir) {
+      const expanded = path.resolve(
+        configuredDir.startsWith('~/')
+          ? path.join(os.homedir(), configuredDir.slice(2))
+          : configuredDir,
+      );
+      const sweepResult = sweepLegacyBackupRoot(expanded);
+      if (sweepResult.moved.length > 0) {
+        logger.info(
+          'backup.legacy.sweep',
+          `Moved ${sweepResult.moved.length} pre-Grove orphan(s) into .legacy/`,
+          { moved: sweepResult.moved, legacy_dir: sweepResult.legacyDir },
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn('backup.legacy.sweep_failed', errorMessage(err));
+  }
+
+  const backupHandlers = createBackupHandlers({
+    bootDb: db,
+    bootVaultDir: bootstrapVaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+    cache: runtimeCache,
+    machineId,
+    liveConfig,
+  });
   server.registerRoute('POST', '/api/backup', backupHandlers.handleCreateBackup);
   server.registerRoute('GET', '/api/backups', backupHandlers.handleListBackups);
   server.registerRoute('POST', '/api/restore/preview', backupHandlers.handleRestorePreview);
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
-  const backupConfigHandlers = createBackupConfigHandlers({ vaultDir });
+  const backupConfigHandlers = createBackupConfigHandlers({
+    vaultDir: bootstrapVaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+  });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
   server.registerRoute('PUT', '/api/backup/config', async (req) => {
     const result = await backupConfigHandlers.handlePutBackupConfig(req);
@@ -1066,24 +1339,35 @@ export async function main(): Promise<void> {
   });
 
   // --- Team sync ---
-  teamSync = initTeamSync({ liveConfig, machineId, logger, vaultDir, serverVersion: server.version });
+  teamSync = initTeamSync({
+    liveConfig,
+    machineId,
+    logger,
+    vaultDir: bootstrapVaultDir,
+    serverVersion: server.version,
+    requestContext: dataPaths.requestContext,
+  });
   reactions.on(['team'], async () => {
     await teamSync.reconcileClient();
   });
   await teamSync.reconcileClient();
 
   const teamHandlers = createTeamHandlers({
-    vaultDir,
+    vaultDir: bootstrapVaultDir,
     machineId,
     logger,
-    getTeamClient: () => teamSync.getTeamClient(),
+    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
     setTeamClient: teamSync.setTeamClient,
     globalPrefix,
   });
+  async function reconcileTeamRoute(req: RouteRequest): Promise<void> {
+    await teamSync.reconcileClient(req.requestContext);
+  }
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await teamSync.reconcileClient(req.requestContext);
     }
     return result;
   });
@@ -1091,19 +1375,76 @@ export async function main(): Promise<void> {
     const result = await teamHandlers.handleDisconnect(req);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await teamSync.reconcileClient(req.requestContext);
     }
     return result;
   });
-  server.registerRoute('GET', '/api/team/status', teamHandlers.handleStatus);
-  server.registerRoute('POST', '/api/team/backfill', teamHandlers.handleBackfill);
+  server.registerRoute('GET', '/api/team/status', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleStatus(req);
+  });
+  server.registerRoute('POST', '/api/team/backfill', async (req) => {
+    const startedAt = Date.now();
+    await reconcileTeamRoute(req);
+    const result = await teamHandlers.handleBackfill(req);
+    if (result.status && result.status >= 400) return result;
+    const flush = await teamSync.flushPending(req.requestContext);
+    const durationMs = Date.now() - startedAt;
+    const resultBody = result.body as Record<string, unknown>;
+    logger.info(LOG_KINDS.TEAM_SYNC_HANDOFF, 'Team sync handoff complete', {
+      mode: typeof resultBody.mode === 'string' ? resultBody.mode : null,
+      enqueued: typeof resultBody.enqueued === 'number' ? resultBody.enqueued : null,
+      flushed: flush.handedOff,
+      rejected: flush.rejected,
+      batches: flush.batches,
+      duration_ms: durationMs,
+      error: flush.error ?? null,
+    });
+    return {
+      ...result,
+      body: {
+        ...resultBody,
+        flushed: flush.handedOff,
+        rejected: flush.rejected,
+        batches: flush.batches,
+        duration_ms: durationMs,
+        flush_error: flush.error ?? null,
+      },
+    };
+  });
   server.registerRoute('POST', '/api/team/upgrade-worker', teamHandlers.handleUpgradeWorker);
-  server.registerRoute('POST', '/api/team/rotate-mcp-token', teamHandlers.handleRotateMcpToken);
-  server.registerRoute('GET', '/api/team/queue-stats', teamHandlers.handleQueueStats);
-  server.registerRoute('GET', '/api/team/dlq', teamHandlers.handleDlqList);
-  server.registerRoute('POST', '/api/team/dlq/retry', teamHandlers.handleDlqRetry);
-  server.registerRoute('POST', '/api/team/dlq/discard', teamHandlers.handleDlqDiscard);
-  server.registerRoute('POST', '/api/team/cf-api-token', teamHandlers.handleSetCfApiToken);
-  server.registerRoute('DELETE', '/api/team/cf-api-token', teamHandlers.handleClearCfApiToken);
+  server.registerRoute('POST', '/api/team/rotate-mcp-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleRotateMcpToken(req);
+  });
+  server.registerRoute('GET', '/api/team/queue-stats', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleQueueStats(req);
+  });
+  server.registerRoute('GET', '/api/team/sync-summary', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleSyncSummary(req);
+  });
+  server.registerRoute('GET', '/api/team/dlq', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqList(req);
+  });
+  server.registerRoute('POST', '/api/team/dlq/retry', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqRetry(req);
+  });
+  server.registerRoute('POST', '/api/team/dlq/discard', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleDlqDiscard(req);
+  });
+  server.registerRoute('POST', '/api/team/cf-api-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleSetCfApiToken(req);
+  });
+  server.registerRoute('DELETE', '/api/team/cf-api-token', async (req) => {
+    await reconcileTeamRoute(req);
+    return teamHandlers.handleClearCfApiToken(req);
+  });
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),
@@ -1116,40 +1457,96 @@ export async function main(): Promise<void> {
 
   // --- Search, activity feed, and embedding status ---
 
-  server.registerRoute('GET', '/api/search', createSearchHandler({ embeddingManager, getTeamClient: () => teamSync.getTeamClient(), machineId }));
+  server.registerRoute('GET', '/api/search', createSearchHandler({
+    embeddingManager,
+    resolveEmbeddingManager: (requestContext) => getEmbeddingRuntime(requestContext).manager,
+    getTeamClient: (requestContext) => teamSync.getTeamClient(requestContext),
+    machineId,
+  }));
   server.registerRoute('GET', '/api/activity', handleGetFeed);
-  server.registerRoute('GET', '/api/embedding/status', async () => handleGetEmbeddingStatus(vaultDir));
-  server.registerRoute('GET', '/api/embedding/details', async () => handleEmbeddingDetails(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/rebuild', async (req) => handleEmbeddingRebuild(embeddingManager, { async: req.query.async === 'true' }));
-  server.registerRoute('POST', '/api/embedding/reconcile', async () => handleEmbeddingReconcile(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/clean-orphans', async () => handleEmbeddingCleanOrphans(embeddingManager));
-  server.registerRoute('POST', '/api/embedding/reembed-stale', async () => handleEmbeddingReembedStale(embeddingManager));
-  server.registerRoute('GET', '/api/database/details', async () => handleDatabaseDetails(databaseManager));
-  server.registerRoute('POST', '/api/database/optimize', async () => handleDatabaseOptimize(databaseManager));
-  server.registerRoute('POST', '/api/database/vacuum', async () => handleDatabaseVacuum(databaseManager));
-  server.registerRoute('POST', '/api/database/reindex', async () => handleDatabaseReindex(databaseManager));
-  server.registerRoute('POST', '/api/database/integrity-check', async () => handleDatabaseIntegrityCheck(databaseManager));
+  server.registerRoute('GET', '/api/embedding/status', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    return handleGetEmbeddingStatus(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
+      db: runtime.db,
+      scope: projectScopeFromRequestContext(req.requestContext),
+    });
+  });
+  server.registerRoute('GET', '/api/embedding/details', async (req) => {
+    const runtime = getEmbeddingRuntime(req.requestContext);
+    // ?scope=project narrows counts to the request context's project_id.
+    // ?scope=grove returns Grove-wide totals (no project filter).
+    // Default = project for back-compat with existing callers.
+    const scope = typeof req.query.scope === 'string' ? req.query.scope : 'project';
+    const projectId = scope === 'grove'
+      ? null
+      : (req.requestContext?.projectId ?? null);
+    return handleEmbeddingDetails(runtime.manager, { projectId });
+  });
+  const embeddingActionHandlers = createEmbeddingActionHandlers({
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    logger,
+    resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
+  });
+  server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);
+  server.registerRoute('POST', '/api/embedding/reconcile', embeddingActionHandlers.handleReconcile);
+  server.registerRoute('POST', '/api/embedding/clean-orphans', embeddingActionHandlers.handleCleanOrphans);
+  server.registerRoute('POST', '/api/embedding/reembed-stale', embeddingActionHandlers.handleReembedStale);
+  server.registerRoute('GET', '/api/database/details', databaseHandlers.handleDetails);
+  server.registerRoute('POST', '/api/database/optimize', databaseHandlers.handleOptimize);
+  server.registerRoute('POST', '/api/database/vacuum', databaseHandlers.handleVacuum);
+  server.registerRoute('POST', '/api/database/reindex', databaseHandlers.handleReindex);
+  server.registerRoute('POST', '/api/database/integrity-check', databaseHandlers.handleIntegrityCheck);
+
+  // --- Multi-Grove operator surface ---
+  //
+  // /api/maintenance/summary aggregates per-Grove backup, optimize,
+  // integrity, and embedding-pending status into a single payload so
+  // the Operations dashboard renders a multi-Grove overview without
+  // fanning out per-Grove HTTP calls itself.
+  // /api/groves/:id/maintenance returns one Grove's full status with
+  // 404 on unknown id (UI distinguishes "Grove gone" from "Grove broken").
+  // /api/projects/activity returns daemon-global active vs cold project
+  // status backed by the same window the scheduler uses.
+  const maintenanceHandlers = createMaintenanceHandlers({
+    logger,
+    liveConfig,
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+  });
+  server.registerRoute('GET', '/api/maintenance/summary', maintenanceHandlers.handleSummary);
+  server.registerRoute('GET', '/api/groves/:id/maintenance', maintenanceHandlers.handleGroveMaintenance);
+
+  const projectsActivityHandler = createProjectsActivityHandler({
+    logger,
+    liveConfig,
+    cache: runtimeCache,
+  });
+  server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
   // --- Notification API routes ---
-  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(vaultDir, req.query));
-  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(vaultDir, req.body));
-  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(vaultDir, req.params.id, req.body));
-  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(vaultDir, req.body));
-  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(vaultDir, req.body));
+  server.registerRoute('GET', '/api/notifications', async (req) => handleListNotifications(bootstrapVaultDir, req.query, req.requestContext));
+  server.registerRoute('POST', '/api/notifications', async (req) => handleCreateNotification(bootstrapVaultDir, req.body, req.requestContext));
+  server.registerRoute('PATCH', '/api/notifications/:id', async (req) => handleUpdateNotification(bootstrapVaultDir, req.params.id, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/dismiss-all', async (req) => handleDismissAll(bootstrapVaultDir, req.body, req.requestContext));
+  server.registerRoute('POST', '/api/notifications/mark-all-read', async (req) => handleMarkAllRead(bootstrapVaultDir, req.body, req.requestContext));
   server.registerRoute('GET', '/api/notifications/registry', async () => handleGetRegistry());
-  server.registerRoute('GET', '/api/notifications/unread-count', async () => handleUnreadCount());
+  server.registerRoute('GET', '/api/notifications/unread-count', async (req) => handleUnreadCount(req.requestContext, req.query));
 
   // --- Start server ---
   //
-  // The port is authoritative: either the explicit `daemon.port` override in
-  // myco.yaml or the deterministic hash of the vault path via `derivePort`.
+  // The port is authoritative: Grove-bound projects use the per-user global
+  // service port; legacy projects keep the explicit `daemon.port` override in
+  // myco.yaml or the deterministic hash of the vault path.
   // No silent fallback — if the port is unavailable after eviction, either a
   // concurrent sibling won the race (step aside) or something unrelated is
   // squatting (fail loudly). Ghost daemons on surprise ports come from
   // silent fallback, so we don't do that.
 
   await server.evictExistingDaemon();
-  const canonicalPort = config.daemon.port ?? derivePort(vaultDir);
+  const canonicalPort = dataPaths.usingGrove
+    ? daemonService.canonicalPort
+    : config.daemon.port ?? daemonService.canonicalPort;
 
   try {
     await server.start(canonicalPort);
@@ -1174,24 +1571,7 @@ export async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: vaultDir, port: server.port });
-
-  const hubMetadata = buildHubProjectMetadata({
-    projectRoot,
-    vaultDir,
-    machineId,
-    port: server.port,
-    version: server.version,
-  });
-  server.registerRoute('GET', '/api/hub/project', async () => ({ body: hubMetadata }));
-  const hubUrl = resolveHubUrl(liveConfig.current);
-  registerWithHub(hubMetadata, hubUrl)
-    .then((registered) => {
-      if (registered) {
-        logger.info(LOG_KINDS.DAEMON_READY, 'Registered with Myco Hub', { port: server.port, hubUrl });
-      }
-    })
-    .catch(() => {});
+  logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
 
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
@@ -1210,11 +1590,27 @@ export async function main(): Promise<void> {
     import('../symbionts/installer.js'),
   ]).catch((err) => {
     logger.warn(LOG_KINDS.DAEMON_START, 'Pre-warm of dynamic imports failed', {
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   });
 
   // -- Dynamic task scheduling --
+  // Seed the per-project power state tracker from durable state across
+  // every Grove. Without this, a daemon restart collapses every project
+  // to `deep_sleep` for 90 minutes after boot — dropping warm projects
+  // out of `runIn: ['active', 'idle', 'sleep']` task lists until a fresh
+  // session or prompt arrives. Best-effort: an empty seed is fine on
+  // first launch; recordActivity hooks below will populate live.
+  try {
+    await forEachGrove(runtimeCache, logger, ({ grove, db }) => {
+      projectStateTracker.seed(readProjectActivitySeed(db, grove.id));
+    });
+  } catch (err) {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Project power-state seed failed', {
+      error: errorMessage(err),
+    });
+  }
+
   // Registered first so its kicker is available as a normal dep when
   // power jobs register below.
   await syncScheduledTasks();
@@ -1224,38 +1620,87 @@ export async function main(): Promise<void> {
   // populate or recovery scan drains immediately on the next compatible
   // tick instead of waiting one full canopy-describe interval.
   const powerJobs = registerPowerJobs(powerManager, {
-    embeddingManager,
     registry,
     logger,
     liveConfig,
-    db,
     machineId,
-    vaultDir,
-    projectRoot,
-    databaseManager,
-    onCanopyMassAdd: () => scheduledTaskKicker.kick('canopy-describe'),
+    cache: runtimeCache,
+    embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    onCanopyMassAdd: (groveId, projectId) =>
+      scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
+    daemonVaultDir: bootstrapVaultDir,
   });
-  teamSync.registerFlushJob(powerManager);
+  teamSync.registerFlushJob(powerManager, runtimeCache);
 
-  // Wire the canopy delta runner into the session-register path so each
-  // SessionStart triggers a fire-and-forget refresh. The runner debounces.
-  (sessionLifecycleDeps as { canopyDelta?: { run: () => Promise<void> } }).canopyDelta = powerJobs.canopy.delta;
+  // Wire the project-keyed canopy registry into the session-register path.
+  // Each SessionStart looks up (or materializes) the right project's runner
+  // and triggers a fire-and-forget delta refresh; the runner debounces.
+  (sessionLifecycleDeps as {
+    canopyRegistry?: typeof powerJobs.canopy.registry;
+  }).canopyRegistry = powerJobs.canopy.registry;
 
-  // Initial canopy populate runs in the background only when the table is
-  // empty. On a fresh vault the scan adds every file (well above the
-  // mass-add threshold), so onCanopyMassAdd kicks canopy-describe and
-  // descriptions start draining on the next tick.
-  powerJobs.canopy.runInitialPopulate().catch((err) => {
-    logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate failed', {
-      error: (err as Error).message,
-    });
-  });
+  // Initial canopy populate fans out across every registered project. The
+  // populate is a no-op for projects that already have canopy rows; on a
+  // fresh vault the first scan adds every file (well above the mass-add
+  // threshold), so onCanopyMassAdd kicks canopy-describe and descriptions
+  // start draining on the next tick.
+  void runInitialCanopyPopulateAcrossProjects(
+    runtimeCache,
+    logger,
+    machineId,
+    powerJobs.canopy.registry,
+    liveConfig,
+  );
+
+  // Fan markRunningRunsInterrupted across every registered Grove so a
+  // crash on Grove A doesn't leave Grove B's runs hanging in `running`.
+  // Boot-DB sweep already ran above; this catches the rest.
+  void (async () => {
+    try {
+      const { markRunningRunsInterrupted: markStale } = await import('../db/queries/runs.js');
+      await forEachGrove(
+        runtimeCache,
+        logger,
+        ({ grove }) => {
+          if (grove.id === dataPaths.requestContext.groveId) return;
+          const count = markStale('Daemon restarted before the run completed', { kind: 'all' });
+          if (count > 0) {
+            logger.warn(LOG_KINDS.AGENT_RUN, 'Marked stale running runs as resumable after daemon restart', {
+              count,
+              grove_id: grove.id,
+            });
+          }
+        },
+        { jobName: 'mark-stale-running-runs' },
+      );
+    } catch (err) {
+      logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to fan stale-run sweep across Groves', {
+        error: errorMessage(err),
+      });
+    }
+  })();
 
   powerManager.start();
 
   // --- Shutdown ---
 
-  const shutdown = async (signal: string) => {
+  // Guard against SIGTERM + SIGINT (or repeated signals) running the
+  // shutdown body twice. Without this, the second invocation re-enters
+  // closeDatabase() / runtimeCache.closeAll() against already-closed
+  // better-sqlite3 handles, which throws inside libuv. We capture the
+  // first invocation's promise so subsequent signals just await the same
+  // settled outcome.
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) {
+      logger.info(LOG_KINDS.DAEMON_START, `${signal} received during in-progress shutdown; awaiting prior signal`);
+      return shutdownPromise;
+    }
+    shutdownPromise = runShutdown(signal);
+    return shutdownPromise;
+  };
+
+  const runShutdown = async (signal: string) => {
     logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
     powerManager.stop();
     // Wait for any active stop processing to finish before shutting down
@@ -1278,8 +1723,29 @@ export async function main(): Promise<void> {
         });
       }
     }
+    // Drain pending team-sync outbox rows across every Grove before
+    // closing DBs. Without this, SIGTERM/suspend leaves rows queued
+    // locally with no trigger to retry until the next daemon boot. The
+    // PowerJob fans out the same way (see team-sync-init.ts:registerFlushJob).
+    try {
+      const aggregate = await teamSync.flushAllGroves(runtimeCache);
+      if (aggregate.flushed > 0 || aggregate.rejected > 0 || aggregate.errors > 0) {
+        logger.info(LOG_KINDS.TEAM_SYNC_COMPLETE, 'Team-sync drain at shutdown', {
+          groves: aggregate.groves,
+          flushed: aggregate.flushed,
+          rejected: aggregate.rejected,
+          batches: aggregate.batches,
+          errors: aggregate.errors,
+        });
+      }
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Team-sync drain at shutdown failed', {
+        error: errorMessage(err),
+      });
+    }
     registry.destroy();
     await server.stop();
+    runtimeCache.closeAll();
     vectorStore.close();
     closeDatabase();
     logger.close();

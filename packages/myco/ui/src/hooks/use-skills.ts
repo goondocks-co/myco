@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, putJson, postJson, deleteJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Types ---------- */
 
@@ -80,9 +81,10 @@ export function useSkillCandidates(filters?: {
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const path = qs ? `/skill-candidates?${qs}` : '/skill-candidates';
+  const queryKey = useProjectScopedQueryKey(['skill-candidates', filters]);
 
   return useQuery<CandidateListResponse>({
-    queryKey: ['skill-candidates', filters],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<CandidateListResponse>(path, { signal }),
   });
 }
@@ -109,16 +111,18 @@ export function useSkillRecords(filters?: {
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const path = qs ? `/skill-records?${qs}` : '/skill-records';
+  const queryKey = useProjectScopedQueryKey(['skill-records', filters]);
 
   return useQuery<SkillRecordListResponse>({
-    queryKey: ['skill-records', filters],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SkillRecordListResponse>(path, { signal }),
   });
 }
 
 export function useSkillRecord(idOrName: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['skill-record', idOrName]);
   return useQuery<SkillRecordDetail>({
-    queryKey: ['skill-record', idOrName],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<SkillRecordDetail>(`/skill-records/${idOrName}`, { signal }),
     enabled: !!idOrName,

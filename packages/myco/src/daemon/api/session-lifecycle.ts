@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import type { RouteResponse } from '../router.js';
+import type { RouteRequest, RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';
 import type { DaemonServer } from '../server.js';
@@ -23,6 +23,11 @@ import { upsertSession, closeSession, updateSession } from '@myco/db/queries/ses
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { errorMessage } from '@myco/utils/error-message.js';
+import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
+import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
+import type { ProjectPowerStateTracker } from '../project-power-state.js';
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -56,12 +61,21 @@ export interface SessionLifecycleDeps {
   liveConfig: { current: MycoConfig };
   vaultDir: string;
   /**
-   * Holder for the canopy delta runner. Populated after register-power-jobs
-   * has run; the register handler triggers a fire-and-forget delta scan on
-   * each SessionStart so the index stays current with on-disk changes that
-   * happened between sessions.
+   * Holder for the project-keyed canopy registry. Populated after
+   * `registerPowerJobs` has run. The register handler looks up (or
+   * materializes) the runner for the request's project and triggers a
+   * fire-and-forget delta refresh so the index stays current with on-disk
+   * changes that happened between sessions.
    */
-  canopyDelta?: { run: () => Promise<void> };
+  canopyRegistry?: CanopyJobsRegistry;
+  /**
+   * Per-project power state. SessionStart counts as activity for the
+   * request's project, lifting it back to `active` if it had drifted
+   * to `idle`/`sleep`/`deep_sleep`. The global PowerManager still
+   * receives `recordActivity()` so Grove-level housekeeping ticks
+   * stay responsive too.
+   */
+  projectStateTracker?: ProjectPowerStateTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,11 +97,30 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
   } = deps;
   // Read through `deps` on every register call so the holder set after
   // registerPowerJobs becomes visible to subsequent SessionStart events.
-  const canopyDeltaHolder = (): { run: () => Promise<void> } | undefined => deps.canopyDelta;
+  const canopyRegistryHolder = (): CanopyJobsRegistry | undefined => deps.canopyRegistry;
 
   /** POST /sessions/register */
-  async function handleRegister(req: { body: unknown }): Promise<RouteResponse> {
+  async function handleRegister(req: RouteRequest): Promise<RouteResponse> {
     powerManager.recordActivity();
+    // Per-project activity: SessionStart counts as foreground attention
+    // on this project. The global recordActivity above keeps the
+    // PowerManager's tick loop responsive; the per-project tracker keeps
+    // *this* project's state machine warm so its scheduled tasks fire.
+    {
+      const ctxProjectId = req.requestContext?.projectId;
+      const ctxGroveId = req.requestContext?.groveId;
+      if (
+        deps.projectStateTracker &&
+        ctxProjectId &&
+        isGroveEraId(ctxProjectId, 'project') &&
+        ctxGroveId
+      ) {
+        deps.projectStateTracker.recordActivity(
+          ctxGroveId,
+          assertGroveProjectId(ctxProjectId),
+        );
+      }
+    }
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
     registry.register(session_id, { started_at: resolvedStartedAt, branch });
@@ -96,19 +129,23 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     // Upsert session in SQLite — always reset to active on register
     const now = epochSeconds();
     const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
+    const projectId = rowProjectIdFromRequestContext(req.requestContext);
+    const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+    const requestMachineId = req.requestContext?.machineId ?? machineId;
     upsertSession({
       id: session_id,
+      project_id: projectId,
       agent: agent ?? 'claude-code',
       user: null,
-      project_root: resolveProjectRoot(vaultDir),
+      project_root: projectRoot,
       branch: branch ?? null,
       started_at: startedEpoch,
       created_at: now,
       status: 'active',
-      machine_id: machineId,
+      machine_id: requestMachineId,
     });
     // Clear ended_at if session was previously completed (reload scenario)
-    updateSession(session_id, { ended_at: null, status: 'active' });
+    updateSession(session_id, { ended_at: null, status: 'active' }, projectScopeFromRequestContext(req.requestContext));
 
     // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
     reconciler.reconcileSession(session_id);
@@ -124,15 +161,36 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       metadata: { sessionId: session_id, agent: agent ?? 'claude-code', branch },
     }, liveConfig.current);
 
-    // Fire-and-forget canopy delta refresh. The runner debounces internally,
-    // so multiple registers (re-attaches, fast switches) collapse cleanly.
-    const delta = canopyDeltaHolder();
-    if (delta) {
-      delta.run().catch((err) => {
-        logger.warn(LOG_KINDS.LIFECYCLE_REGISTER, 'Canopy delta scan failed on register', {
-          error: (err as Error).message,
+    // Fire-and-forget canopy delta refresh for the project this session
+    // belongs to. The runner debounces internally, so multiple registers
+    // (re-attaches, fast switches) collapse cleanly. Only triggers when
+    // the request context carries a fully-resolved Grove project; the
+    // legacy `LOCAL_PROJECT_ID` boot path keeps quiet because its runner
+    // identity isn't tied to a registered project entry.
+    const canopyRegistry = canopyRegistryHolder();
+    const requestProjectId = req.requestContext?.projectId ?? null;
+    const requestDatabasePath = req.requestContext?.databasePath ?? null;
+    const requestGroveId = req.requestContext?.groveId ?? null;
+    if (canopyRegistry && requestProjectId && requestDatabasePath && requestGroveId) {
+      try {
+        const groveProjectId = assertGroveProjectId(requestProjectId);
+        const runner = canopyRegistry.ensureRunner({
+          databasePath: requestDatabasePath,
+          projectId: groveProjectId,
+          projectRoot,
+          groveId: requestGroveId,
         });
-      });
+        runner.run().catch((err) => {
+          logger.warn(LOG_KINDS.LIFECYCLE_REGISTER, 'Canopy delta scan failed on register', {
+            error: errorMessage(err),
+            project_id: groveProjectId,
+          });
+        });
+      } catch {
+        // Boot/legacy contexts use a non-Grove project id (e.g.
+        // LOCAL_PROJECT_ID); skip silently rather than re-thrread an
+        // identity check the boot path is intentionally lax about.
+      }
     }
 
     return { body: { ok: true, sessions: registry.sessions } };

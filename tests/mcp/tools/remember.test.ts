@@ -12,6 +12,7 @@ import { handleMycoSpores } from '@myco/tools/spores.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
@@ -25,6 +26,16 @@ interface SporeSaveResult {
   observation_type: string;
   status: string;
   created_at: number;
+}
+
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-spore-save-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
 }
 
 describe('myco_spores op: save (in-process)', () => {
@@ -75,6 +86,18 @@ describe('myco_spores op: save (in-process)', () => {
     const db = getDatabase();
     const agent = db.prepare("SELECT id FROM agents WHERE id = 'user'").get();
     expect(agent).toBeTruthy();
+  });
+
+  it('persists the request-context project id on Grove-scoped writes', async () => {
+    const result = await handleMycoSpores({
+      op: 'save',
+      content: 'Scope this spore to project A',
+      type: 'decision',
+    }, mockClient(), requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')) as SporeSaveResult;
+
+    const db = getDatabase();
+    const row = db.prepare('SELECT project_id FROM spores WHERE id = ?').get(result.id) as { project_id: string };
+    expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   });
 
   it('rejects op:save without content', async () => {

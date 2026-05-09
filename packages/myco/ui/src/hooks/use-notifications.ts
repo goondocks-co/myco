@@ -59,6 +59,13 @@ interface NotificationQueryOptions {
   enabled?: boolean;
   pollCategory?: PollCategory;
   refetchInterval?: number | false;
+  /**
+   * When true, daemon-scope notifications (project_id IS NULL) are
+   * merged in with the current project's. Used by the system banner
+   * and Operations dashboard so daemon-global events surface
+   * regardless of which project is open.
+   */
+  includeDaemon?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,10 +79,13 @@ const UNREAD_COUNT_POLL_MS = POLL_INTERVALS.LOGS;
 // ---------------------------------------------------------------------------
 
 /** Poll for unread notification count (lightweight endpoint). */
-export function useUnreadCount() {
+export function useUnreadCount(opts?: { includeDaemon?: boolean }) {
+  const path = opts?.includeDaemon
+    ? '/notifications/unread-count?include_daemon=1'
+    : '/notifications/unread-count';
   return usePowerQuery<UnreadCountResponse>({
-    queryKey: ['notifications', 'unread-count'],
-    queryFn: ({ signal }) => fetchJson<UnreadCountResponse>('/notifications/unread-count', { signal }),
+    queryKey: ['notifications', 'unread-count', { includeDaemon: !!opts?.includeDaemon }],
+    queryFn: ({ signal }) => fetchJson<UnreadCountResponse>(path, { signal }),
     refetchInterval: UNREAD_COUNT_POLL_MS,
     pollCategory: 'standard',
   });
@@ -88,6 +98,7 @@ export function useNotifications(opts?: NotificationQueryOptions) {
   if (opts?.domain) params.set('domain', opts.domain);
   if (opts?.mode) params.set('mode', opts.mode);
   if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.includeDaemon) params.set('include_daemon', '1');
   const qs = params.toString();
   const path = qs ? `/notifications?${qs}` : '/notifications';
 

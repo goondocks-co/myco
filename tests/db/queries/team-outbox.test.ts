@@ -12,8 +12,11 @@ import {
   pruneOld,
   countPending,
   discardRows,
+  backfillAll,
+  backfillUnsynced,
   sanitizeSyncPayload,
 } from '@myco/db/queries/team-outbox.js';
+import { getDatabase } from '@myco/db/client.js';
 import type { OutboxInsert } from '@myco/db/queries/team-outbox.js';
 
 /** Epoch seconds helper. */
@@ -153,6 +156,16 @@ describe('team outbox query helpers', () => {
       expect(rows).toHaveLength(3);
     });
 
+    it('defaults to the Cloudflare Queues sendBatch limit', () => {
+      for (let i = 0; i < 105; i++) {
+        enqueueOutbox(makeOutbox({ created_at: epochNow() + i, row_id: `row-${i}` }));
+      }
+
+      const rows = listPending();
+
+      expect(rows).toHaveLength(100);
+    });
+
     it('uses default batch size when backlog is small', () => {
       // Insert fewer than burst threshold
       for (let i = 0; i < 10; i++) {
@@ -287,6 +300,27 @@ describe('team outbox query helpers', () => {
 
       enqueueOutbox(makeOutbox());
       expect(countPending()).toBe(2);
+    });
+  });
+
+  describe('backfillAll', () => {
+    it('re-enqueues previously synced Grove rows while avoiding pending duplicates', () => {
+      const db = getDatabase();
+      const now = epochNow();
+      db.prepare(
+        `INSERT INTO sessions (
+          id, agent, started_at, created_at, machine_id, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('session-synced', 'codex', now, now, 'machine-a', now - 10);
+
+      expect(backfillUnsynced('machine-a')).toBe(0);
+
+      const first = backfillAll('machine-a');
+      const second = backfillAll('machine-a');
+
+      expect(first).toBe(1);
+      expect(second).toBe(0);
+      expect(listPending()).toHaveLength(1);
     });
   });
 });

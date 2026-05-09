@@ -11,8 +11,10 @@ import {
   listCandidates,
   updateCandidate,
   countCandidates,
+  deleteCandidate,
 } from '@myco/db/queries/skill-candidates.js';
 import type { CandidateInsert } from '@myco/db/queries/skill-candidates.js';
+import { ALL_PROJECTS_SCOPE, projectScope, assertGroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -63,7 +65,7 @@ describe('skill candidate query helpers', () => {
       expect(row.source_ids).toBe('[]');
       expect(row.skill_id).toBeNull();
 
-      const fetched = getCandidate(data.id);
+      const fetched = getCandidate(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.topic).toBe('Extract reusable DB helpers');
@@ -101,7 +103,7 @@ describe('skill candidate query helpers', () => {
 
   describe('getCandidate', () => {
     it('returns null for non-existent id', () => {
-      const row = getCandidate('does-not-exist');
+      const row = getCandidate('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -117,7 +119,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ id: 'cand-hi', confidence: 0.9, created_at: now + 1 }));
       insertCandidate(makeCandidate({ id: 'cand-mid', confidence: 0.6, created_at: now + 2 }));
 
-      const rows = listCandidates();
+      const rows = listCandidates({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('cand-hi');
       expect(rows[1].id).toBe('cand-mid');
@@ -130,7 +132,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ id: 'cand-promoted', status: 'promoted', created_at: now + 1 }));
       insertCandidate(makeCandidate({ id: 'cand-rejected', status: 'rejected', created_at: now + 2 }));
 
-      const rows = listCandidates({ status: 'identified' });
+      const rows = listCandidates({ status: 'identified', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('cand-identified');
     });
@@ -143,7 +145,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ id: 'cand-a1', agent_id: 'agent-test', created_at: now }));
       insertCandidate(makeCandidate({ id: 'cand-a2', agent_id: 'agent-other', created_at: now + 1 }));
 
-      const rows = listCandidates({ agent_id: 'agent-test' });
+      const rows = listCandidates({ agent_id: 'agent-test', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('cand-a1');
     });
@@ -156,7 +158,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ id: 'c2', agent_id: 'agent-test', status: 'promoted', created_at: now + 1 }));
       insertCandidate(makeCandidate({ id: 'c3', agent_id: 'agent-combo', status: 'identified', created_at: now + 2 }));
 
-      const rows = listCandidates({ agent_id: 'agent-test', status: 'identified' });
+      const rows = listCandidates({ agent_id: 'agent-test', status: 'identified', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('c1');
     });
@@ -167,19 +169,29 @@ describe('skill candidate query helpers', () => {
         insertCandidate(makeCandidate({ confidence: i * 0.1, created_at: now + i }));
       }
 
-      const page1 = listCandidates({ limit: 2, offset: 0 });
+      const page1 = listCandidates({ limit: 2, offset: 0, scope: ALL_PROJECTS_SCOPE });
       expect(page1).toHaveLength(2);
 
-      const page2 = listCandidates({ limit: 2, offset: 2 });
+      const page2 = listCandidates({ limit: 2, offset: 2, scope: ALL_PROJECTS_SCOPE });
       expect(page2).toHaveLength(2);
 
-      const page3 = listCandidates({ limit: 2, offset: 4 });
+      const page3 = listCandidates({ limit: 2, offset: 4, scope: ALL_PROJECTS_SCOPE });
       expect(page3).toHaveLength(1);
     });
 
     it('returns empty array when no candidates match', () => {
-      const rows = listCandidates({ status: 'nonexistent' });
+      const rows = listCandidates({ status: 'nonexistent', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
+    });
+
+    it('filters by project_id when requested', () => {
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
+
+      const rows = listCandidates({ scope: projectScope(assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')) });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('cand-project-a');
     });
   });
 
@@ -197,7 +209,7 @@ describe('skill candidate query helpers', () => {
         topic: 'Updated topic',
         rationale: 'New rationale after more evidence',
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.topic).toBe('Updated topic');
@@ -214,7 +226,7 @@ describe('skill candidate query helpers', () => {
         status: 'promoted',
         confidence: 0.92,
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.status).toBe('promoted');
@@ -230,7 +242,7 @@ describe('skill candidate query helpers', () => {
         skill_id: 'skill-abc',
         source_ids: '["sess-1","sess-2"]',
         updated_at: now,
-      });
+      }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.skill_id).toBe('skill-abc');
@@ -238,8 +250,18 @@ describe('skill candidate query helpers', () => {
     });
 
     it('returns null for non-existent candidate', () => {
-      const result = updateCandidate('nope', { updated_at: epochNow() });
+      const result = updateCandidate('nope', { updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
       expect(result).toBeNull();
+    });
+
+    it('does not update candidates outside the requested project scope', () => {
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+
+      const miss = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, projectScope(assertGroveProjectId('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')));
+      const hit = updateCandidate('cand-project-a', { status: 'approved', updated_at: epochNow() }, projectScope(assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')));
+
+      expect(miss).toBeNull();
+      expect(hit!.status).toBe('approved');
     });
 
     it('preserves unmodified fields', () => {
@@ -247,7 +269,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(data);
 
       const now = epochNow() + 10;
-      const row = updateCandidate(data.id, { status: 'rejected', updated_at: now });
+      const row = updateCandidate(data.id, { status: 'rejected', updated_at: now }, ALL_PROJECTS_SCOPE);
 
       expect(row).not.toBeNull();
       expect(row!.topic).toBe('Original topic');
@@ -261,7 +283,7 @@ describe('skill candidate query helpers', () => {
       expect(inserted.approved_at).toBeNull();
 
       const t1 = epochNow() + 100;
-      const row = updateCandidate(data.id, { status: 'approved', updated_at: t1 });
+      const row = updateCandidate(data.id, { status: 'approved', updated_at: t1 }, ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.status).toBe('approved');
       expect(row!.approved_at).toBe(t1);
@@ -272,25 +294,25 @@ describe('skill candidate query helpers', () => {
       insertCandidate(data);
 
       const t1 = epochNow() + 100;
-      updateCandidate(data.id, { status: 'approved', updated_at: t1 });
+      updateCandidate(data.id, { status: 'approved', updated_at: t1 }, ALL_PROJECTS_SCOPE);
 
       // Unrelated update — should not touch approved_at
       const t2 = t1 + 50;
-      updateCandidate(data.id, { topic: 'Renamed', updated_at: t2 });
-      expect(getCandidate(data.id)!.approved_at).toBe(t1);
+      updateCandidate(data.id, { topic: 'Renamed', updated_at: t2 }, ALL_PROJECTS_SCOPE);
+      expect(getCandidate(data.id, ALL_PROJECTS_SCOPE)!.approved_at).toBe(t1);
 
       // Re-setting status to approved (no-op in practice) — must not overwrite
       const t3 = t1 + 100;
-      updateCandidate(data.id, { status: 'approved', updated_at: t3 });
-      expect(getCandidate(data.id)!.approved_at).toBe(t1);
+      updateCandidate(data.id, { status: 'approved', updated_at: t3 }, ALL_PROJECTS_SCOPE);
+      expect(getCandidate(data.id, ALL_PROJECTS_SCOPE)!.approved_at).toBe(t1);
     });
 
     it('leaves approved_at null for candidates never approved', () => {
       const data = makeCandidate();
       insertCandidate(data);
 
-      updateCandidate(data.id, { status: 'dismissed', updated_at: epochNow() + 10 });
-      expect(getCandidate(data.id)!.approved_at).toBeNull();
+      updateCandidate(data.id, { status: 'dismissed', updated_at: epochNow() + 10 }, ALL_PROJECTS_SCOPE);
+      expect(getCandidate(data.id, ALL_PROJECTS_SCOPE)!.approved_at).toBeNull();
     });
   });
 
@@ -305,7 +327,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ created_at: now + 1 }));
       insertCandidate(makeCandidate({ created_at: now + 2 }));
 
-      expect(countCandidates()).toBe(3);
+      expect(countCandidates({ scope: ALL_PROJECTS_SCOPE })).toBe(3);
     });
 
     it('counts candidates matching a status filter', () => {
@@ -314,9 +336,9 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ status: 'identified', created_at: now + 1 }));
       insertCandidate(makeCandidate({ status: 'promoted', created_at: now + 2 }));
 
-      expect(countCandidates({ status: 'identified' })).toBe(2);
-      expect(countCandidates({ status: 'promoted' })).toBe(1);
-      expect(countCandidates({ status: 'rejected' })).toBe(0);
+      expect(countCandidates({ status: 'identified', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countCandidates({ status: 'promoted', scope: ALL_PROJECTS_SCOPE })).toBe(1);
+      expect(countCandidates({ status: 'rejected', scope: ALL_PROJECTS_SCOPE })).toBe(0);
     });
 
     it('counts candidates matching a multi-status filter', () => {
@@ -326,10 +348,10 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ status: 'generated', created_at: now + 2 }));
       insertCandidate(makeCandidate({ status: 'dismissed', created_at: now + 3 }));
 
-      expect(countCandidates({ statuses: ['approved', 'generated'] })).toBe(2);
-      expect(countCandidates({ statuses: ['identified', 'dismissed'] })).toBe(2);
-      expect(countCandidates({ statuses: ['approved'] })).toBe(1);
-      expect(countCandidates({ statuses: [] })).toBe(4); // empty list = no filter
+      expect(countCandidates({ statuses: ['approved', 'generated'], scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countCandidates({ statuses: ['identified', 'dismissed'], scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countCandidates({ statuses: ['approved'], scope: ALL_PROJECTS_SCOPE })).toBe(1);
+      expect(countCandidates({ statuses: [], scope: ALL_PROJECTS_SCOPE })).toBe(4); // empty list = no filter
     });
 
     it('lists candidates matching a multi-status filter', () => {
@@ -338,7 +360,7 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ id: 'cand-q-ap', status: 'approved', created_at: now + 1 }));
       insertCandidate(makeCandidate({ id: 'cand-q-gn', status: 'generated', created_at: now + 2 }));
 
-      const rows = listCandidates({ statuses: ['approved', 'generated'] });
+      const rows = listCandidates({ statuses: ['approved', 'generated'], scope: ALL_PROJECTS_SCOPE });
       expect(rows.map((r) => r.id).sort()).toEqual(['cand-q-ap', 'cand-q-gn']);
     });
 
@@ -350,8 +372,25 @@ describe('skill candidate query helpers', () => {
       insertCandidate(makeCandidate({ agent_id: 'agent-test', created_at: now + 1 }));
       insertCandidate(makeCandidate({ agent_id: 'agent-count', created_at: now + 2 }));
 
-      expect(countCandidates({ agent_id: 'agent-test' })).toBe(2);
-      expect(countCandidates({ agent_id: 'agent-count' })).toBe(1);
+      expect(countCandidates({ agent_id: 'agent-test', scope: ALL_PROJECTS_SCOPE })).toBe(2);
+      expect(countCandidates({ agent_id: 'agent-count', scope: ALL_PROJECTS_SCOPE })).toBe(1);
+    });
+
+    it('counts candidates matching a project_id filter', () => {
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+      insertCandidate(makeCandidate({ id: 'cand-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }));
+
+      expect(countCandidates({ scope: projectScope(assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')) })).toBe(1);
+    });
+  });
+
+  describe('deleteCandidate', () => {
+    it('does not delete candidates outside the requested project scope', () => {
+      insertCandidate(makeCandidate({ id: 'cand-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }));
+
+      expect(deleteCandidate('cand-project-a', projectScope(assertGroveProjectId('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')))).toBe(false);
+      expect(getCandidate('cand-project-a', projectScope(assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')))).not.toBeNull();
+      expect(deleteCandidate('cand-project-a', projectScope(assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')))).toBe(true);
     });
   });
 });

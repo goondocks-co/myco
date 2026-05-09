@@ -7,6 +7,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { createSporeLineage, createBatchLineage } from '@myco/db/queries/lineage.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const TEST_AGENT_ID = 'test-agent';
 
@@ -39,7 +40,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = listGraphEdges({ sourceId: 'spore-1' });
+      const edges = listGraphEdges({ sourceId: 'spore-1', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(2);
 
       const types = edges.map(e => e.type).sort();
@@ -54,7 +55,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = listGraphEdges({ sourceId: 'spore-2' });
+      const edges = listGraphEdges({ sourceId: 'spore-2', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
     });
@@ -66,7 +67,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = listGraphEdges({ sourceId: 'spore-3' });
+      const edges = listGraphEdges({ sourceId: 'spore-3', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(0);
     });
 
@@ -80,7 +81,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = listGraphEdges({ sourceId: 'wisdom-1' });
+      const edges = listGraphEdges({ sourceId: 'wisdom-1', scope: ALL_PROJECTS_SCOPE });
       // 1 FROM_SESSION + 3 DERIVED_FROM = 4
       expect(edges).toHaveLength(4);
 
@@ -100,7 +101,7 @@ describe('lineage helpers', () => {
         created_at: epochNow(),
       });
 
-      const edges = listGraphEdges({ sourceId: 'spore-bad' });
+      const edges = listGraphEdges({ sourceId: 'spore-bad', scope: ALL_PROJECTS_SCOPE });
       // Only FROM_SESSION, no DERIVED_FROM because JSON parse failed
       expect(edges).toHaveLength(1);
       expect(edges[0].type).toBe('FROM_SESSION');
@@ -112,7 +113,7 @@ describe('lineage helpers', () => {
       const now = epochNow();
       createBatchLineage(TEST_AGENT_ID, 'session-1', 42, now);
 
-      const edges = listGraphEdges({ sourceId: 'session-1', type: 'HAS_BATCH' });
+      const edges = listGraphEdges({ sourceId: 'session-1', type: 'HAS_BATCH', scope: ALL_PROJECTS_SCOPE });
       expect(edges).toHaveLength(1);
       expect(edges[0].source_type).toBe('session');
       expect(edges[0].target_id).toBe('42');

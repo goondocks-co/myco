@@ -1,4 +1,4 @@
-import { DaemonClient } from './client.js';
+import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
@@ -15,7 +15,7 @@ export async function main() {
     symbiont = input.agent;
     if (!input.sessionId) return;
 
-    const client = new DaemonClient(VAULT_DIR);
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId: input.sessionId });
 
     await client.ensureRunning({ checkStale: false });
 

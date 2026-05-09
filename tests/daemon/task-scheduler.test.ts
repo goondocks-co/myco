@@ -1,8 +1,34 @@
 import { describe, it, expect } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { buildScheduledJobs, computeEffectiveInterval } from '@myco/daemon/task-scheduler.js';
+import {
+  buildScheduledJobs,
+  computeEffectiveInterval,
+  type ScheduledJobContext,
+} from '@myco/daemon/task-scheduler.js';
+import type { ProjectScope } from '@myco/daemon/scope-iteration.js';
 import type { AcceleratorConfig, AgentTask } from '@myco/agent/types.js';
-import type { ScheduledJobContext } from '@myco/daemon/task-scheduler.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
+
+const PROJECT_A = assertGroveProjectId('proj_' + 'a'.repeat(32));
+const PROJECT_B = assertGroveProjectId('proj_' + 'b'.repeat(32));
+const GROVE_X = 'grv_' + 'c'.repeat(32);
+
+function fakeScope(projectId: GroveProjectId, groveId: string = GROVE_X): ProjectScope {
+  // Tests don't exercise the inner ProjectScope shape; the scheduler reads
+  // grove.id, projectId, and (for some pre-conditions) requestContext.
+  return {
+    grove: { id: groveId, slug: groveId } as unknown as ProjectScope['grove'],
+    groveHome: '',
+    databasePath: '',
+    db: {} as ProjectScope['db'],
+    project: {} as ProjectScope['project'],
+    projectId,
+    projectRoot: '',
+    projectVaultDir: '',
+    requestContext: {} as ProjectScope['requestContext'],
+  };
+}
 
 function makeTask(name: string, schedule: AgentTask['schedule']): AgentTask {
   return {
@@ -16,214 +42,581 @@ function makeTask(name: string, schedule: AgentTask['schedule']): AgentTask {
   };
 }
 
-function makeContext(overrides: Partial<ScheduledJobContext> = {}): ScheduledJobContext {
+interface FakeContextOptions {
+  projects?: ProjectScope[];
+  isTaskRunning?: ScheduledJobContext['isTaskRunning'];
+  setTaskRunning?: ScheduledJobContext['setTaskRunning'];
+  runTask?: ScheduledJobContext['runTask'];
+  preConditions?: ScheduledJobContext['preConditions'];
+  accelerators?: ScheduledJobContext['accelerators'];
+  onTaskError?: ScheduledJobContext['onTaskError'];
+  /** Override per-project state lookup. Defaults to always 'idle'. */
+  getProjectPowerState?: ScheduledJobContext['getProjectPowerState'];
+}
+
+function makeContext(opts: FakeContextOptions = {}): ScheduledJobContext {
+  const projects = opts.projects ?? [fakeScope(PROJECT_A)];
   return {
-    isTaskRunning: () => false,
-    setTaskRunning: vi.fn(),
-    runTask: vi.fn().mockResolvedValue(undefined),
-    preConditions: {},
-    ...overrides,
+    forEachProject: async (visit) => {
+      for (const p of projects) {
+        await visit(p);
+      }
+    },
+    isTaskRunning: opts.isTaskRunning ?? (() => false),
+    setTaskRunning: opts.setTaskRunning ?? vi.fn(),
+    runTask: opts.runTask ?? vi.fn().mockResolvedValue(undefined),
+    preConditions: opts.preConditions ?? {},
+    accelerators: opts.accelerators,
+    onTaskError: opts.onTaskError,
+    getProjectPowerState: opts.getProjectPowerState ?? (() => 'idle'),
   };
 }
 
-describe('buildScheduledJobs', () => {
-  it('creates a PowerJob for each task with schedule.enabled', () => {
+function key(groveId: string, projectId: GroveProjectId, taskName: string): string {
+  return `${groveId}:${projectId}:${taskName}`;
+}
+
+describe('buildScheduledJobs (collapsed fan-out)', () => {
+  it('emits exactly one collapsed PowerJob regardless of enabled task count', () => {
     const tasks = [
       makeTask('task-a', { enabled: true, intervalSeconds: 300, runIn: ['active', 'idle'] }),
-      makeTask('task-b', { enabled: false, intervalSeconds: 600, runIn: ['idle'] }),
+      makeTask('task-b', { enabled: true, intervalSeconds: 600, runIn: ['idle'] }),
       makeTask('task-c', undefined),
     ];
 
     const { jobs } = buildScheduledJobs(tasks, {});
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toBe('scheduled:task-a');
-    expect(jobs[0].runIn).toEqual(['active', 'idle']);
+    expect(jobs[0].name).toBe('scheduled:tasks');
+    // The collapsed job runs in every schedulable state; per-task runIn
+    // is enforced inside the loop against the per-project power state.
+    expect(jobs[0].runIn).toEqual(['active', 'idle', 'sleep']);
   });
 
-  it('respects config override to enable a disabled task', () => {
+  it('respects config override to enable a disabled task', async () => {
     const tasks = [
       makeTask('skill-survey', { enabled: false, intervalSeconds: 600, runIn: ['idle'] }),
     ];
-    const overrides = {
-      'skill-survey': { schedule: { enabled: true } },
-    };
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      runTask: async (s) => { calls.push(s.projectId); },
+    });
+    const { jobs } = buildScheduledJobs(
+      tasks,
+      { 'skill-survey': { schedule: { enabled: true } } },
+      ctx,
+    );
 
-    const { jobs } = buildScheduledJobs(tasks, overrides);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].name).toBe('scheduled:skill-survey');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
   });
 
   it('respects config override to disable an enabled task', () => {
     const tasks = [
       makeTask('vault-evolve', { enabled: true, intervalSeconds: 300, runIn: ['active', 'idle'] }),
     ];
-    const overrides = {
-      'vault-evolve': { schedule: { enabled: false } },
-    };
-
-    const { jobs } = buildScheduledJobs(tasks, overrides);
+    const ctx = makeContext({ projects: [fakeScope(PROJECT_A)] });
+    const { jobs } = buildScheduledJobs(
+      tasks,
+      { 'vault-evolve': { schedule: { enabled: false } } },
+      ctx,
+    );
+    // No enabled tasks → no PowerJob is registered.
     expect(jobs).toHaveLength(0);
   });
 
-  it('merges intervalSeconds from config override', async () => {
+  it('dispatches a task once per project on a single tick', async () => {
     const tasks = [
-      makeTask('task-a', { enabled: true, intervalSeconds: 300, runIn: ['idle'] }),
+      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
-    const overrides = {
-      'task-a': { schedule: { intervalSeconds: 900 } },
+    const seen: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        seen.push(s.projectId);
+      },
+    });
+
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(seen.sort()).toEqual([PROJECT_A, PROJECT_B].sort());
+  });
+
+  it('throttles per project — a fast follow-up tick on the same project is gated', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 900, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toEqual([PROJECT_A]);
+  });
+
+  it("each project's interval is independent — A throttled doesn't block B", async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 900, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    let projects = [fakeScope(PROJECT_A)];
+    const ctx: ScheduledJobContext = {
+      forEachProject: async (visit) => {
+        for (const p of projects) await visit(p);
+      },
+      isTaskRunning: () => false,
+      setTaskRunning: vi.fn(),
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+      preConditions: {},
+      getProjectPowerState: () => 'idle',
     };
-    const ctx = makeContext();
-
-    const { jobs } = buildScheduledJobs(tasks, overrides, ctx);
-    expect(jobs).toHaveLength(1);
-
-    // Run once — should execute
-    await jobs[0].fn();
-    expect(ctx.runTask).toHaveBeenCalledWith('task-a');
-
-    // Run again immediately — should be throttled (900s interval)
-    vi.mocked(ctx.runTask).mockClear();
-    await jobs[0].fn();
-    expect(ctx.runTask).not.toHaveBeenCalled();
-  });
-
-  it('checks pre-condition before running', async () => {
-    const tasks = [
-      makeTask('fi', { enabled: true, intervalSeconds: 1, runIn: ['active'], preCondition: 'has-unprocessed-batches' }),
-    ];
-    const preCheck = vi.fn().mockReturnValue(false);
-    const ctx = makeContext({ preConditions: { 'has-unprocessed-batches': preCheck } });
-
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    await jobs[0].fn();
 
-    expect(preCheck).toHaveBeenCalled();
-    expect(ctx.runTask).not.toHaveBeenCalled();
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+
+    projects = [fakeScope(PROJECT_A), fakeScope(PROJECT_B)];
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A, PROJECT_B]);
   });
 
-  it('runs task when pre-condition passes', async () => {
+  it('skips a project whose runIn does not match its current power state', async () => {
     const tasks = [
-      makeTask('fi', { enabled: true, intervalSeconds: 1, runIn: ['active'], preCondition: 'has-unprocessed-batches' }),
+      makeTask('idle-only', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
-    const preCheck = vi.fn().mockReturnValue(true);
-    const ctx = makeContext({ preConditions: { 'has-unprocessed-batches': preCheck } });
-
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+      getProjectPowerState: (s) => (s.projectId === PROJECT_A ? 'active' : 'idle'),
+    });
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    await jobs[0].fn();
 
-    expect(ctx.runTask).toHaveBeenCalledWith('fi');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_B]);
   });
 
-  it('skips when same task is already running', async () => {
+  it('skips a project whose pre-condition returns false', async () => {
     const tasks = [
-      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+      makeTask('with-pre', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        preCondition: 'has-pending-canopy-rows',
+      }),
     ];
-    const ctx = makeContext({ isTaskRunning: (name) => name === 'task-a' });
-
+    const preCheck = vi.fn((s: ProjectScope) => s.projectId === PROJECT_A);
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+      preConditions: { 'has-pending-canopy-rows': preCheck },
+    });
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    await jobs[0].fn();
 
-    expect(ctx.runTask).not.toHaveBeenCalled();
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+    expect(preCheck).toHaveBeenCalledTimes(2);
   });
 
-  it('uses initialLastRuns to seed interval', async () => {
+  it('skips a project that has the same task already running', async () => {
     const tasks = [
-      makeTask('task-a', { enabled: true, intervalSeconds: 3600, runIn: ['active'] }),
+      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
-    const ctx = makeContext();
-    const now = Date.now();
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      isTaskRunning: (_groveId, projectId) => projectId === PROJECT_A,
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
-    // Seed with a recent run — should be throttled
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx, { 'task-a': now - 1000 });
     await jobs[0].fn();
-    expect(ctx.runTask).not.toHaveBeenCalled();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_B]);
   });
 
-  it('sets task running state during execution', async () => {
+  it('initialLastRuns seed is keyed by `${groveId}:${projectId}:${taskName}`', async () => {
     const tasks = [
-      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+      makeTask('task-a', { enabled: true, intervalSeconds: 3600, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({ projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)] });
+    const recent = Date.now() - 1_000;
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx, {
+      [key(GROVE_X, PROJECT_A, 'task-a')]: recent,
+    });
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    // A is throttled by the seed; B has no seed → fires.
+    expect(ctx.runTask).toHaveBeenCalledTimes(1);
+    expect((ctx.runTask as ReturnType<typeof vi.fn>).mock.calls[0][0].projectId).toBe(PROJECT_B);
+  });
+
+  it('flags running per-project: setTaskRunning is called with grove + project + task name', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
     const setRunning = vi.fn();
-    const ctx = makeContext({ setTaskRunning: setRunning });
-
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    await jobs[0].fn();
-
-    // `true` fires synchronously before dispatch.
-    expect(setRunning).toHaveBeenCalledWith('task-a', true);
-
-    // `false` fires in the detached finally — flush microtasks to observe it.
-    await new Promise((r) => setImmediate(r));
-    expect(setRunning).toHaveBeenCalledWith('task-a', false);
-  });
-
-  it('returns immediately without awaiting the task (fire-and-forget)', async () => {
-    const tasks = [
-      makeTask('long-task', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
-    ];
-    let resolveTask: () => void = () => {};
-    const taskPromise = new Promise<void>((resolve) => {
-      resolveTask = resolve;
-    });
     const ctx = makeContext({
-      runTask: vi.fn().mockReturnValue(taskPromise),
+      projects: [fakeScope(PROJECT_A)],
+      setTaskRunning: setRunning,
     });
-
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
-    // Job fn must resolve even while runTask is still pending —
-    // otherwise a multi-minute agent task would block the PowerManager
-    // tick loop and starve other jobs like team-sync-flush.
     await jobs[0].fn();
+    expect(setRunning).toHaveBeenCalledWith(GROVE_X, PROJECT_A, 'task-a', true);
 
-    expect(ctx.runTask).toHaveBeenCalledWith('long-task');
-    // Task is still in flight; resolve it to let the finally clean up.
-    resolveTask();
     await new Promise((r) => setImmediate(r));
+    expect(setRunning).toHaveBeenCalledWith(GROVE_X, PROJECT_A, 'task-a', false);
   });
 
-  it('routes detached task errors to onTaskError', async () => {
+  it('routes detached task errors to onTaskError with task name + grove + projectId', async () => {
     const tasks = [
-      makeTask('failing', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+      makeTask('failing', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
     const onTaskError = vi.fn();
     const boom = new Error('task exploded');
     const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
       runTask: vi.fn().mockRejectedValue(boom),
       onTaskError,
     });
-
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
-    expect(onTaskError).toHaveBeenCalledWith('failing', boom);
+    expect(onTaskError).toHaveBeenCalledWith('failing', GROVE_X, PROJECT_A, boom);
   });
 
-  it('clears running flag even when task throws', async () => {
+  it('returns immediately without awaiting the task body (fire-and-forget)', async () => {
     const tasks = [
-      makeTask('failing', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
+      makeTask('long-task', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
     ];
-    const setRunning = vi.fn();
-    const ctx = makeContext({
-      runTask: vi.fn().mockRejectedValue(new Error('boom')),
-      setTaskRunning: setRunning,
-      onTaskError: () => {},
+    let resolveTask: () => void = () => {};
+    const taskPromise = new Promise<void>((r) => {
+      resolveTask = r;
     });
-
+    const runTask = vi.fn().mockReturnValue(taskPromise);
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      runTask,
+    });
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    expect(runTask).toHaveBeenCalledTimes(1);
+    resolveTask();
+    await new Promise((r) => setImmediate(r));
+  });
+
+  it('reads accelerator count once per (project, task) per tick', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        accelerator: { name: 'canopy-pending-describe', thresholds: { steady: 5, accelerated: 10 } },
+      }),
+    ];
+    const countFn = vi.fn(() => 0);
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      accelerators: { 'canopy-pending-describe': countFn },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
     await jobs[0].fn();
     await new Promise((r) => setImmediate(r));
 
-    expect(setRunning).toHaveBeenCalledWith('failing', true);
-    expect(setRunning).toHaveBeenCalledWith('failing', false);
+    // Single read used for both the interval tier and the deep-sleep hold.
+    expect(countFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('lazy-seeds lastRun via seedMissingLastRuns on first visit', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 999_999, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const seedMissingLastRuns = vi.fn(() => new Map([['task-a', Date.now() - 1_000]]));
+    const ctx: ScheduledJobContext = {
+      forEachProject: async (visit) => {
+        await visit(fakeScope(PROJECT_A));
+      },
+      isTaskRunning: () => false,
+      setTaskRunning: vi.fn(),
+      runTask: async (s) => { calls.push(s.projectId); },
+      preConditions: {},
+      getProjectPowerState: () => 'idle',
+      seedMissingLastRuns,
+    };
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    // Recently-seeded tuple suppresses the dispatch.
+    expect(calls).toEqual([]);
+    expect(seedMissingLastRuns).toHaveBeenCalledTimes(1);
+
+    // Second tick on the same project does not re-seed.
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(seedMissingLastRuns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('kicker', () => {
+  it('kick(taskName, target) bypasses the interval gate for that (grove, project) only', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 999_999, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls.sort()).toEqual([PROJECT_A, PROJECT_B].sort());
+    calls.length = 0;
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([]);
+
+    kicker.kick('task-a', { groveId: GROVE_X, projectId: PROJECT_A });
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+  });
+
+  it('kick(taskName) without a target broadcasts to every project once', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 999_999, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    calls.length = 0;
+
+    kicker.kick('task-a');
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls.sort()).toEqual([PROJECT_A, PROJECT_B].sort());
+    calls.length = 0;
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([]);
+  });
+
+  it('multiple kicks for the same target before a tick collapse to one', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 999_999, runIn: ['idle'] }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    calls.length = 0;
+
+    const target = { groveId: GROVE_X, projectId: PROJECT_A };
+    kicker.kick('task-a', target);
+    kicker.kick('task-a', target);
+    kicker.kick('task-a', target);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual([PROJECT_A]);
+  });
+
+  it('kick still respects in-flight overlap', async () => {
+    const tasks = [
+      makeTask('task-a', { enabled: true, intervalSeconds: 1, runIn: ['idle'] }),
+    ];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      isTaskRunning: () => true,
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    kicker.kick('task-a', { groveId: GROVE_X, projectId: PROJECT_A });
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(ctx.runTask).not.toHaveBeenCalled();
+  });
+
+  it('kick still respects pre-condition gate', async () => {
+    const tasks = [
+      makeTask('task-a', {
+        enabled: true,
+        intervalSeconds: 1,
+        runIn: ['idle'],
+        preCondition: 'has-pending-canopy-rows',
+      }),
+    ];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      preConditions: { 'has-pending-canopy-rows': () => false },
+    });
+    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
+
+    kicker.kick('task-a', { groveId: GROVE_X, projectId: PROJECT_A });
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(ctx.runTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('accelerator-driven cadence (per project)', () => {
+  const acc: AcceleratorConfig = {
+    name: 'canopy-pending-describe',
+    thresholds: { steady: 50, accelerated: 500 },
+  };
+
+  it('shrinks the effective interval per project based on each project\'s backlog', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle'],
+        accelerator: acc,
+      }),
+    ];
+    const calls: GroveProjectId[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A), fakeScope(PROJECT_B)],
+      runTask: async (s) => {
+        calls.push(s.projectId);
+      },
+      accelerators: {
+        'canopy-pending-describe': (s) => (s.projectId === PROJECT_A ? 1000 : 0),
+      },
+    });
+    const { jobs } = buildScheduledJobs(
+      tasks,
+      {},
+      ctx,
+      {
+        [key(GROVE_X, PROJECT_A, 'canopy-describe')]: Date.now() - 11_000,
+        [key(GROVE_X, PROJECT_B, 'canopy-describe')]: Date.now() - 11_000,
+      },
+    );
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toEqual([PROJECT_A]);
+  });
+
+  it('per-project deep-sleep hold is consulted via getProjectPowerState', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle', 'sleep'],
+        accelerator: acc,
+      }),
+    ];
+    const seen: Array<{ projectId: GroveProjectId; hold: boolean }> = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      accelerators: { 'canopy-pending-describe': () => 25 },
+      getProjectPowerState: (s, hold) => {
+        seen.push({ projectId: s.projectId, hold });
+        return 'sleep';
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(seen.some((entry) => entry.hold === true)).toBe(true);
+  });
+
+  it('omits accelerator hold when the count function throws', async () => {
+    const tasks = [
+      makeTask('canopy-describe', {
+        enabled: true,
+        intervalSeconds: 120,
+        runIn: ['idle'],
+        accelerator: acc,
+      }),
+    ];
+    const seen: boolean[] = [];
+    const ctx = makeContext({
+      projects: [fakeScope(PROJECT_A)],
+      accelerators: {
+        'canopy-pending-describe': () => {
+          throw new Error('db unavailable');
+        },
+      },
+      getProjectPowerState: (_, hold) => {
+        seen.push(hold);
+        return 'idle';
+      },
+    });
+    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
+
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+
+    expect(seen).toEqual([false]);
   });
 });
 
 describe('computeEffectiveInterval (adaptive cadence tier function)', () => {
-  // canopy-describe shape: thresholds declared in YAML. PowerManager's
-  // tick rate is the real lower bound on actual fire rate; the tier
-  // function only computes the gate value.
   const canopyCfg: AcceleratorConfig = {
     name: 'canopy-pending-describe',
     thresholds: { steady: 50, accelerated: 500 },
@@ -245,325 +638,13 @@ describe('computeEffectiveInterval (adaptive cadence tier function)', () => {
   });
 
   it('twelfths the interval in the burst tier (no artificial floor)', () => {
-    // 120 / 12 = 10. PowerManager's tick is the real bound — anything
-    // below the tick just means "fire every tick."
     expect(computeEffectiveInterval(120, 501, canopyCfg.thresholds)).toBe(10);
     expect(computeEffectiveInterval(120, 2000, canopyCfg.thresholds)).toBe(10);
   });
 
-  it('honors a longer YAML interval proportionally (cost-conscious user)', () => {
+  it('honors a longer YAML interval proportionally', () => {
     expect(computeEffectiveInterval(600, 0, canopyCfg.thresholds)).toBe(600);
     expect(computeEffectiveInterval(600, 250, canopyCfg.thresholds)).toBe(150);
     expect(computeEffectiveInterval(600, 1000, canopyCfg.thresholds)).toBe(50);
-  });
-
-  // vault-evolve shape: lower thresholds.
-  const vaultCfg: AcceleratorConfig = {
-    name: 'unprocessed-settled-batches',
-    thresholds: { steady: 5, accelerated: 25 },
-  };
-
-  it('applies the same divisors with task-specific thresholds', () => {
-    expect(computeEffectiveInterval(21600, 3, vaultCfg.thresholds)).toBe(21600);   // steady
-    expect(computeEffectiveInterval(21600, 10, vaultCfg.thresholds)).toBe(5400);   // accelerated
-    expect(computeEffectiveInterval(21600, 50, vaultCfg.thresholds)).toBe(1800);   // burst (21600/12)
-    expect(computeEffectiveInterval(3600, 50, vaultCfg.thresholds)).toBe(300);     // burst (3600/12)
-  });
-});
-
-describe('buildScheduledJobs adaptive cadence', () => {
-  it('uses YAML interval verbatim when no accelerator is declared (regression)', async () => {
-    const tasks = [
-      makeTask('plain', { enabled: true, intervalSeconds: 1000, runIn: ['active'] }),
-    ];
-    let calls = 0;
-    const ctx = makeContext({
-      runTask: vi.fn().mockImplementation(async () => { calls++; }),
-      // count fns registered but the task doesn't reference them.
-      accelerators: {
-        'canopy-pending-describe': () => 999,
-      },
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-
-    await jobs[0].fn();         // first call seeds lastRun
-    await new Promise((r) => setImmediate(r));
-    await jobs[0].fn();         // 100ms later — still within YAML interval (1000s)
-    await new Promise((r) => setImmediate(r));
-
-    expect(calls).toBe(1);      // accelerator did not affect this task
-  });
-
-  it('shrinks the effective interval when the count crosses the burst threshold', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['idle'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    const ctx = makeContext({
-      accelerators: { 'canopy-pending-describe': () => 1000 },  // burst tier
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    expect(jobs).toHaveLength(1);
-
-    // Pure-function check on the YAML config — the scheduler reads
-    // exactly the same config when computing effective interval.
-    expect(
-      computeEffectiveInterval(120, 1000, tasks[0].schedule!.accelerator!.thresholds),
-    ).toBe(10);
-  });
-
-  it('kick(taskName) bypasses the interval gate on the next tick', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 999_999,    // huge interval — would never fire normally
-        runIn: ['idle'],
-      }),
-    ];
-    const runTask = vi.fn().mockResolvedValue(undefined);
-    const ctx = makeContext({ runTask });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
-
-    // First tick — interval gate blocks (lastRun=0, but the gate test is
-    // `Date.now() - lastRun < intervalMs`, and lastRun starts at 0 so the
-    // gate passes the first time).  The first call always seeds lastRun
-    // and dispatches once, so to exercise the kick we tick twice.
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(1);
-
-    // Second tick — without the kick, the interval gate would block.
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(1);   // gate still blocks
-
-    // Kick + tick — runs immediately.
-    kicker.kick('canopy-describe');
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(2);
-
-    // Kick is one-shot: the next tick is gated again.
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(2);
-  });
-
-  it('multiple kicks before the next tick collapse to a single run (idempotent)', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 999_999,
-        runIn: ['idle'],
-      }),
-    ];
-    const runTask = vi.fn().mockResolvedValue(undefined);
-    const ctx = makeContext({ runTask });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
-
-    // Seed lastRun so the interval gate would block subsequent ticks.
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(1);
-
-    // Multiple kicks before the next tick.
-    kicker.kick('canopy-describe');
-    kicker.kick('canopy-describe');
-    kicker.kick('canopy-describe');
-
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(2);   // one extra run, not three
-
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).toHaveBeenCalledTimes(2);   // kick consumed
-  });
-
-  it('kick still respects the in-flight overlap guard', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 100,
-        runIn: ['idle'],
-      }),
-    ];
-    const runTask = vi.fn().mockResolvedValue(undefined);
-    const ctx = makeContext({
-      isTaskRunning: () => true,    // already in flight
-      runTask,
-    });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
-
-    kicker.kick('canopy-describe');
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).not.toHaveBeenCalled();
-  });
-
-  it('kick still respects the precondition gate', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 100,
-        runIn: ['idle'],
-        preCondition: 'has-pending-canopy-rows',
-      }),
-    ];
-    const runTask = vi.fn().mockResolvedValue(undefined);
-    const ctx = makeContext({
-      runTask,
-      preConditions: { 'has-pending-canopy-rows': () => false },   // no work
-    });
-    const { jobs, kicker } = buildScheduledJobs(tasks, {}, ctx);
-
-    kicker.kick('canopy-describe');
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).not.toHaveBeenCalled();
-    // The kick was consumed even though it didn't fire — otherwise it'd
-    // re-fire forever once the precondition flips back. Verify by ticking
-    // again with the precondition still false: should still not fire.
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(runTask).not.toHaveBeenCalled();
-  });
-
-  it('declares preventsDeepSleep when accelerator count > 0', () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['active', 'idle', 'sleep'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    const ctx = makeContext({
-      accelerators: { 'canopy-pending-describe': () => 25 },  // pending work
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    expect(jobs[0].preventsDeepSleep).toBeDefined();
-    expect(jobs[0].preventsDeepSleep!()).toBe(true);
-  });
-
-  it('passes bounded count limits to accelerator checks', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['active', 'idle', 'sleep'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    const limits: Array<number | undefined> = [];
-    const ctx = makeContext({
-      accelerators: {
-        'canopy-pending-describe': (limit) => {
-          limits.push(limit);
-          return 1000;
-        },
-      },
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-
-    expect(jobs[0].preventsDeepSleep!()).toBe(true);
-    await jobs[0].fn();
-
-    expect(limits).toEqual([1, 501]);
-  });
-
-  it('releases the hold once the accelerator count drains to zero', () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['active', 'idle', 'sleep'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    let count = 25;
-    const ctx = makeContext({
-      accelerators: { 'canopy-pending-describe': () => count },
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-
-    expect(jobs[0].preventsDeepSleep!()).toBe(true);
-    count = 0;
-    expect(jobs[0].preventsDeepSleep!()).toBe(false);
-  });
-
-  it('omits preventsDeepSleep when no accelerator is declared', () => {
-    const tasks = [
-      makeTask('plain', { enabled: true, intervalSeconds: 600, runIn: ['idle'] }),
-    ];
-    const ctx = makeContext();
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    expect(jobs[0].preventsDeepSleep).toBeUndefined();
-  });
-
-  it('preventsDeepSleep returns false when the count function throws', () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['idle'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    const ctx = makeContext({
-      accelerators: {
-        'canopy-pending-describe': () => { throw new Error('db unavailable'); },
-      },
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-    // A failing count must not prevent deep sleep — defensive default
-    // matching the embedding reconciler's hold pattern.
-    expect(jobs[0].preventsDeepSleep!()).toBe(false);
-  });
-
-  it('skips the run when the in-flight overlap guard is active, even at burst rate', async () => {
-    const tasks = [
-      makeTask('canopy-describe', {
-        enabled: true,
-        intervalSeconds: 120,
-        runIn: ['idle'],
-        accelerator: {
-          name: 'canopy-pending-describe',
-          thresholds: { steady: 50, accelerated: 500 },
-        },
-      }),
-    ];
-    const runTask = vi.fn().mockResolvedValue(undefined);
-    const ctx = makeContext({
-      isTaskRunning: () => true,    // already in flight
-      runTask,
-      accelerators: { 'canopy-pending-describe': () => 9999 },
-    });
-    const { jobs } = buildScheduledJobs(tasks, {}, ctx);
-
-    await jobs[0].fn();
-    await jobs[0].fn();
-    await new Promise((r) => setImmediate(r));
-
-    expect(runTask).not.toHaveBeenCalled();
   });
 });

@@ -1,19 +1,13 @@
-/**
- * Dynamic task scheduling registration.
- *
- * Extracted from main.ts — loads task definitions, seeds last-run times
- * from the database, builds the ScheduledJobContext (pre-conditions,
- * runTask with notifications), and registers scheduled jobs with the
- * PowerManager.
- */
-
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from './power.js';
-import type { EmbeddingManager } from './embedding/manager.js';
-import type { ScheduledJobContext, ScheduledJobKicker } from './task-scheduler.js';
-import { buildScheduledJobs } from './task-scheduler.js';
+import type {
+  ProjectTaskLastRunMap,
+  ScheduledJobContext,
+  ScheduledJobKicker,
+} from './task-scheduler.js';
+import { buildScheduledJobs, lastRunKey } from './task-scheduler.js';
+import type { RegisteredProjectScope } from './scope-iteration.js';
 import {
   buildTaskInstruction,
   getSkillSurveyEligibility,
@@ -24,26 +18,69 @@ import { countSkillRecords } from '@myco/db/queries/skill-records.js';
 import { countCandidates } from '@myco/db/queries/skill-candidates.js';
 import { countPendingCanopyDescribe } from '@myco/db/queries/canopy.js';
 import { countUnprocessedSettledBatches } from '@myco/db/queries/batches.js';
-import { getDatabase } from '@myco/db/client.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { getLastCompletedRunsForProject } from '@myco/db/queries/project-activity.js';
+import { withDatabase } from '@myco/db/client.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
+import { countToolCallsByRun } from '@myco/db/queries/turns.js';
+import { runAgent } from '@myco/agent/executor.js';
+import { loadAllTasks } from '@myco/agent/registry.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { DEFAULT_AGENT_ID } from '@myco/constants.js';
+import { DEFAULT_AGENT_ID, MS_PER_DAY } from '@myco/constants.js';
+import { errorMessage } from '@myco/utils/error-message.js';
+import {
+  forEachGrove,
+  forEachRegisteredProject,
+  isProjectActive,
+} from './scope-iteration.js';
+import type { GroveRuntimeCache } from './grove-runtime-cache.js';
+import type { ProjectPowerStateTracker } from './project-power-state.js';
+import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
+import type { EmbeddingManager } from './embedding/manager.js';
 
 const SCHEDULED_JOB_PREFIX = 'scheduled:';
 
-// Tasks whose pending queue is fully derivable from durable state — for
-// these, "resume the failed run" is not a useful concept: a fresh run
-// would do the same work as a resumed one, and the resume path collapses
-// every scheduled tick onto a single agent_runs row (executor.ts:264
-// skips insertRun when resuming), erasing failure history and making the
-// task impossible to tune. Opt them out of getLatestResumableRunForTask
-// so each scheduled fire inserts a new row.
-// canopy-map: each scheduled fire reuses the inputs_hash short-circuit in
-// buildCanopyMapInstruction. Resuming a failed run would replay the LLM phase
-// against potentially stale inputs and erase the failure history we use to
-// tune turn budgets. Re-fire with a fresh agent_runs row instead.
+// ---------------------------------------------------------------------------
+// Cold-project gate
+// ---------------------------------------------------------------------------
+
+export interface ColdProjectGateDecision {
+  should_run: boolean;
+  state: 'warm' | 'cold' | null;
+}
+
+export interface ColdProjectGateInput {
+  /** Open Grove DB handle for the project's home Grove. */
+  db: import('bun:sqlite').Database;
+  /** Project id from the daemon's request context (any string is accepted). */
+  projectId: string | null;
+  /**
+   * Threshold in days; values <= 0 disable the gate so a vault can opt
+   * out without flipping `scheduled_tasks_enabled`.
+   */
+  thresholdDays: number;
+  /** Optional clock injection for tests. Defaults to `Date.now()`. */
+  now?: number;
+}
+
+// Lenient by default: any input that makes activity undeterminable
+// (zero threshold, null id, non-Grove id) returns should_run=true so a
+// misconfigured boot path never starves the scheduler.
+export function decideColdProjectGate(input: ColdProjectGateInput): ColdProjectGateDecision {
+  if (input.thresholdDays <= 0) return { should_run: true, state: null };
+  if (!input.projectId || !isGroveEraId(input.projectId, 'project')) {
+    return { should_run: true, state: null };
+  }
+  const branded = assertGroveProjectId(input.projectId);
+  const now = input.now ?? Date.now();
+  const cutoffSeconds = Math.floor((now - input.thresholdDays * MS_PER_DAY) / 1000);
+  const active = isProjectActive(input.db, branded, cutoffSeconds);
+  return active ? { should_run: true, state: 'warm' } : { should_run: false, state: 'cold' };
+}
+
+// These tasks derive their work queue from durable state, so resuming
+// a failed run would collapse history onto a single agent_runs row and
+// erase the failure signal we use to tune turn budgets. Always start fresh.
 const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canopy-map']);
 
 // ---------------------------------------------------------------------------
@@ -52,13 +89,52 @@ const NON_RESUMABLE_SCHEDULED_TASKS = new Set<string>(['canopy-describe', 'canop
 
 export interface TaskSchedulingDeps {
   definitionsDir: string | undefined;
-  vaultDir: string;
+  /** Boot vault dir for user-defined tasks under `<vaultDir>/agents/tasks/`. */
+  vaultDir?: string;
   embeddingManager: EmbeddingManager;
   logger: DaemonLogger;
-  // Holder so the run-time gate below sees toggle flips
-  // (agent.scheduled_tasks_enabled) without a daemon restart.
+  // Holder so toggle flips (agent.scheduled_tasks_enabled) take effect without restart.
   liveConfig: { current: MycoConfig };
   getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
+  cache: GroveRuntimeCache;
+  mycoHome: string;
+  machineId: string;
+  projectStateTracker: ProjectPowerStateTracker;
+}
+
+// ---------------------------------------------------------------------------
+// Boot-time seeding
+// ---------------------------------------------------------------------------
+
+// Cap the seed scan at the most recent SEED_FLOOR_DAYS of agent_runs so
+// daemons with months of history don't pay a full-table GROUP at boot.
+// Older rows are uninformative for the interval gate.
+const SEED_FLOOR_DAYS = 30;
+
+async function seedInitialLastRuns(
+  cache: GroveRuntimeCache,
+  logger: DaemonLogger,
+  mycoHome: string,
+): Promise<ProjectTaskLastRunMap> {
+  const seed: ProjectTaskLastRunMap = {};
+  const floorSeconds = Math.floor((Date.now() - SEED_FLOOR_DAYS * MS_PER_DAY) / 1000);
+  await forEachGrove(cache, logger, ({ db, grove }) => {
+    const rows = db.prepare(
+      `SELECT project_id, task, MAX(completed_at) AS last_completed
+       FROM agent_runs
+       WHERE status IN ('completed', 'failed')
+         AND completed_at IS NOT NULL
+         AND completed_at >= ?
+         AND task IS NOT NULL
+         AND project_id IS NOT NULL
+       GROUP BY project_id, task`,
+    ).all(floorSeconds) as Array<{ project_id: string; task: string; last_completed: number }>;
+    for (const row of rows) {
+      const projectId = assertGroveProjectId(row.project_id);
+      seed[lastRunKey(grove.id, projectId, row.task)] = row.last_completed * 1000;
+    }
+  }, { mycoHome, jobName: 'seed-last-runs' });
+  return seed;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,60 +145,175 @@ export async function registerScheduledTasks(
   powerManager: PowerManager,
   deps: TaskSchedulingDeps,
 ): Promise<ScheduledJobKicker> {
-  const { definitionsDir, vaultDir, embeddingManager, logger, liveConfig, getTeamClient } = deps;
-  const runningTasks = new Set<string>();
+  const {
+    definitionsDir,
+    vaultDir,
+    embeddingManager,
+    logger,
+    liveConfig,
+    getTeamClient,
+    cache,
+    mycoHome,
+    machineId,
+    projectStateTracker,
+  } = deps;
 
   if (!definitionsDir) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Skipping dynamic task scheduling — definitions directory unavailable');
-    // Return a no-op kicker so callers can wire the same shape regardless
-    // of whether scheduling actually started.
     return { kick: () => {} };
   }
 
+  // Per-(grove, project, task) running flags so one project's 20-minute
+  // run never blocks another's tick.
+  const runningTasks = new Set<string>();
+
   // Jobs always register. The scheduled_tasks_enabled gate lives inside
-  // runTask so flipping the toggle in Settings takes effect immediately —
-  // registration-time gating would lock the scheduler to its startup value.
+  // forEachProject so flipping the toggle in Settings takes effect
+  // immediately — registration-time gating would lock the scheduler to
+  // its startup value.
   let lastEnabled = liveConfig.current.agent.scheduled_tasks_enabled !== false;
   if (!lastEnabled) {
     logger.info(LOG_KINDS.AGENT_RUN, 'Scheduled agent tasks disabled (agent.scheduled_tasks_enabled: false) — jobs registered but will no-op until enabled');
   }
 
-  const { loadAllTasks } = await import('@myco/agent/registry.js');
+  // Per-(grove, project) cold-state log latch — emit warm/cold transition once.
+  const lastColdState = new Map<string, 'warm' | 'cold' | null>();
+
+  // Single canonical task list — tasks are project-agnostic, only their queries differ.
   const allTasks = Array.from(loadAllTasks(definitionsDir, vaultDir).values());
 
-  // Map task name → agent id for instruction builders that need it
   const taskAgentMap = new Map<string, string>();
   for (const task of allTasks) {
     taskAgentMap.set(task.name, task.agent);
   }
 
-  // Seed lastRun from DB: find the most recent completed/failed run per task
-  const initialLastRuns: Record<string, number> = {};
-  try {
-    const recentRuns = getDatabase().prepare(
-      `SELECT task, MAX(completed_at) as last_completed
-       FROM agent_runs
-       WHERE status IN ('completed', 'failed') AND completed_at IS NOT NULL
-       GROUP BY task`
-    ).all() as Array<{ task: string; last_completed: number }>;
-    for (const row of recentRuns) {
-      initialLastRuns[row.task] = row.last_completed * 1000; // epoch seconds → ms
+  // Boot-time seed across all registered Groves, keyed by
+  // `${projectId}:${taskName}` so warm projects don't double-fire on
+  // restart. Failures are best-effort; an empty seed is fine.
+  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome).catch((err) => {
+    logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to seed scheduled-task lastRun map', {
+      error: errorMessage(err),
+    });
+    return {} as ProjectTaskLastRunMap;
+  });
+
+  async function dispatchScheduledTask(
+    scope: RegisteredProjectScope,
+    taskName: string,
+  ): Promise<void> {
+    const config = liveConfig.current;
+    const { requestContext, projectRoot, projectVaultDir, projectId } = scope;
+    const readScope: ProjectScope = toProjectScope(projectId);
+    const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
+      ? null
+      : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, readScope);
+
+    if (resumableRun) {
+      const resumed = await runAgent(projectVaultDir, {
+        agentId: DEFAULT_AGENT_ID,
+        task: taskName,
+        resumeRunId: resumableRun.id,
+        resumeMode: 'scheduled',
+        embeddingManager,
+        requestContext,
+        logger,
+      });
+      logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
+        project_id: projectId,
+        status: resumed.status,
+        runId: resumed.runId,
+      });
+      return;
     }
-  } catch {
-    // Best-effort seeding
+
+    const taskConfig = config.agent.tasks?.[taskName];
+    const built = await buildTaskInstruction(
+      taskName,
+      taskConfig?.params,
+      taskAgentMap.get(taskName),
+      projectRoot,
+      embeddingManager,
+      config,
+      getTeamClient,
+      requestContext,
+    );
+
+    // Without this guard, instruction-required tasks (e.g. skill-generate)
+    // dispatch with no approved candidates and the agent picks arbitrary work.
+    if (isInstructionRequiredTask(taskName) && !built) {
+      logger.info(
+        LOG_KINDS.AGENT_RUN,
+        `Scheduled task ${taskName} skipped — no work to do`,
+        { project_id: projectId, task: taskName, reason: 'no-work' },
+      );
+      return;
+    }
+
+    const result = await runAgent(projectVaultDir, {
+      task: taskName,
+      instruction: built?.instruction,
+      runContext: built?.context,
+      embeddingManager,
+      requestContext,
+      logger,
+    });
+    logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
+      project_id: projectId,
+      status: result.status,
+      runId: result.runId,
+    });
+
+    if (result.status === 'failed') {
+      notify(projectVaultDir, {
+        domain: 'agents',
+        type: 'agent.task.failure',
+        title: `Task failed: ${taskName}`,
+        message: result.error ?? 'Unknown error',
+        link: `/agent?run=${result.runId}`,
+        metadata: { taskName, runId: result.runId },
+      }, config, { projectId });
+    } else if (result.status === 'completed') {
+      notify(projectVaultDir, {
+        domain: 'agents',
+        type: 'agent.task.success',
+        title: `Task completed: ${taskName}`,
+        link: `/agent?run=${result.runId}`,
+        metadata: { taskName, runId: result.runId },
+      }, config, { projectId });
+
+      const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
+      const sporeCount = counts['vault_create_spore'] ?? 0;
+      const digestCount = counts['vault_write_digest'] ?? 0;
+
+      if (sporeCount > 0) {
+        notify(projectVaultDir, {
+          domain: 'mycelium',
+          type: 'mycelium.spore.created',
+          title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
+          message: `From ${taskName} run`,
+          link: '/mycelium?tab=spores',
+          metadata: { count: sporeCount, taskName, runId: result.runId },
+        }, config, { projectId });
+      }
+      if (digestCount > 0) {
+        notify(projectVaultDir, {
+          domain: 'mycelium',
+          type: 'mycelium.digest.completed',
+          title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
+          link: '/mycelium?tab=digest',
+          metadata: { tierCount: digestCount, taskName, runId: result.runId },
+        }, config, { projectId });
+      }
+    }
   }
 
-  const scheduledContext: ScheduledJobContext = {
-    isTaskRunning: (name) => runningTasks.has(name),
-    setTaskRunning: (name, running) => {
-      if (running) runningTasks.add(name);
-      else runningTasks.delete(name);
-    },
-    runTask: async (taskName) => {
-      const config = liveConfig.current;
+  const coldStateKey = (groveId: string, projectId: GroveProjectId) => `${groveId}:${projectId}`;
+  const runningKey = (groveId: string, projectId: GroveProjectId, name: string) =>
+    lastRunKey(groveId, projectId, name);
 
-      // Runtime gate — honors the toggle flipped since startup. We log once
-      // per transition so the log doesn't repeat on every scheduler tick.
+  const scheduledContext: ScheduledJobContext = {
+    forEachProject: async (visit) => {
+      const config = liveConfig.current;
       const enabled = config.agent.scheduled_tasks_enabled !== false;
       if (enabled !== lastEnabled) {
         logger.info(
@@ -135,133 +326,96 @@ export async function registerScheduledTasks(
       }
       if (!enabled) return;
 
-      const { runAgent } = await import('@myco/agent/executor.js');
-      const resumableRun = NON_RESUMABLE_SCHEDULED_TASKS.has(taskName)
-        ? null
-        : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName);
-      if (resumableRun) {
-        const resumed = await runAgent(vaultDir, {
-          agentId: DEFAULT_AGENT_ID,
-          task: taskName,
-          resumeRunId: resumableRun.id,
-          resumeMode: 'scheduled',
-          embeddingManager,
-          logger,
-        });
-        logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} resumed`, {
-          status: resumed.status,
-          runId: resumed.runId,
-        });
-        return;
-      }
+      const thresholdDays = config.agent.cold_project_threshold_days ?? 14;
 
-      const taskConfig = config.agent.tasks?.[taskName];
-      const projectRoot = resolveProjectRoot(vaultDir);
-      const built = await buildTaskInstruction(
-        taskName,
-        taskConfig?.params,
-        taskAgentMap.get(taskName),
-        projectRoot,
-        embeddingManager,
-        config,
-        getTeamClient,
-      );
-
-      // Short-circuit: instruction-required tasks must not dispatch
-      // the agent when there's no work. For skill-generate this means
-      // no approved candidates — without the guard the agent falls
-      // back to its default prompt and picks whatever it finds.
-      if (isInstructionRequiredTask(taskName) && !built) {
-        logger.info(
-          LOG_KINDS.AGENT_RUN,
-          `Scheduled task ${taskName} skipped — no work to do`,
-          { task: taskName, reason: 'no-work' },
-        );
-        return;
-      }
-
-      const result = await runAgent(vaultDir, {
-        task: taskName,
-        instruction: built?.instruction,
-        runContext: built?.context,
-        embeddingManager,
+      await forEachRegisteredProject(
+        cache,
         logger,
-      });
-      logger.info(LOG_KINDS.AGENT_RUN, `Scheduled task ${taskName} completed`, {
-        status: result.status,
-        runId: result.runId,
-      });
-
-      if (result.status === 'failed') {
-        notify(vaultDir, {
-          domain: 'agents',
-          type: 'agent.task.failure',
-          title: `Task failed: ${taskName}`,
-          message: result.error ?? 'Unknown error',
-          link: `/agent?run=${result.runId}`,
-          metadata: { taskName, runId: result.runId },
-        }, config);
-      } else if (result.status === 'completed') {
-        notify(vaultDir, {
-          domain: 'agents',
-          type: 'agent.task.success',
-          title: `Task completed: ${taskName}`,
-          link: `/agent?run=${result.runId}`,
-          metadata: { taskName, runId: result.runId },
-        }, config);
-
-        // Batched mycelium notifications — emit summaries instead of per-tool-call
-        const { countToolCallsByRun } = await import('@myco/db/queries/turns.js');
-        const counts = countToolCallsByRun(result.runId, ['vault_create_spore', 'vault_write_digest']);
-        const sporeCount = counts['vault_create_spore'] ?? 0;
-        const digestCount = counts['vault_write_digest'] ?? 0;
-
-        if (sporeCount > 0) {
-          notify(vaultDir, {
-            domain: 'mycelium',
-            type: 'mycelium.spore.created',
-            title: sporeCount === 1 ? 'Extracted 1 observation' : `Extracted ${sporeCount} observations`,
-            message: `From ${taskName} run`,
-            link: '/mycelium?tab=spores',
-            metadata: { count: sporeCount, taskName, runId: result.runId },
-          }, config);
-        }
-        if (digestCount > 0) {
-          notify(vaultDir, {
-            domain: 'mycelium',
-            type: 'mycelium.digest.completed',
-            title: `Digest updated (${digestCount} ${digestCount === 1 ? 'tier' : 'tiers'})`,
-            link: '/mycelium?tab=digest',
-            metadata: { tierCount: digestCount, taskName, runId: result.runId },
-          }, config);
-        }
-      }
+        async (scope) => {
+          await visit(scope);
+        },
+        {
+          mycoHome,
+          machineId,
+          shouldVisit: (scope) => {
+            // Long-term cost backstop, separate from the per-project sleep
+            // timer — keeps cold projects registered without burning tokens.
+            const decision = decideColdProjectGate({
+              db: scope.db,
+              projectId: scope.projectId,
+              thresholdDays,
+            });
+            const key = coldStateKey(scope.grove.id, scope.projectId);
+            const previous = lastColdState.get(key) ?? null;
+            if (decision.state && decision.state !== previous) {
+              logger.info(
+                LOG_KINDS.AGENT_RUN,
+                decision.state === 'cold'
+                  ? `Project cold (${thresholdDays}d inactive) — pausing scheduled tasks`
+                  : 'Project warm — resuming scheduled tasks',
+                {
+                  grove_id: scope.grove.id,
+                  project_id: scope.projectId,
+                  threshold_days: thresholdDays,
+                },
+              );
+              lastColdState.set(key, decision.state);
+            }
+            return decision.should_run;
+          },
+        },
+      );
+    },
+    isTaskRunning: (groveId, projectId, name) =>
+      runningTasks.has(runningKey(groveId, projectId, name)),
+    setTaskRunning: (groveId, projectId, name, running) => {
+      const key = runningKey(groveId, projectId, name);
+      if (running) runningTasks.add(key);
+      else runningTasks.delete(key);
+    },
+    getProjectPowerState: (scope, hold) =>
+      projectStateTracker.getStateWithHold(scope.grove.id, scope.projectId, hold),
+    runTask: async (scope, taskName) => {
+      // Pin across the detached run so cache eviction can't invalidate
+      // the handle that runTask's continuations read via getDatabase().
+      await cache.withPinned(scope.databasePath, () =>
+        withDatabase(scope.db, () => dispatchScheduledTask(scope, taskName)),
+      );
     },
     preConditions: {
-      // Boolean preconditions delegate to the same domain-owned count
-      // helpers as the accelerator dispatch, so there's a single
-      // source of truth for "is there work pending?" per work unit.
-      'has-unprocessed-batches': () => countUnprocessedSettledBatches() > 0,
-      'has-pending-canopy-rows': () => countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir)) > 0,
-      'has-active-skills': () => countSkillRecords({ status: 'active' }) > 0,
-      'has-approved-candidates': () => countCandidates({ status: 'approved' }) > 0,
-      'has-skill-survey-evidence': () => getSkillSurveyEligibility(taskAgentMap.get(SKILL_SURVEY_TASK)).eligible,
+      'has-unprocessed-batches': (scope) =>
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId)) > 0,
+      'has-pending-canopy-rows': (scope) =>
+        countPendingCanopyDescribe(null, scope.projectId) > 0,
+      'has-active-skills': (scope) =>
+        countSkillRecords({ status: 'active', scope: toProjectScope(scope.projectId) }) > 0,
+      'has-approved-candidates': (scope) =>
+        countCandidates({ status: 'approved', scope: toProjectScope(scope.projectId) }) > 0,
+      'has-skill-survey-evidence': (scope) =>
+        getSkillSurveyEligibility(
+          taskAgentMap.get(SKILL_SURVEY_TASK),
+          scope.requestContext,
+        ).eligible,
     },
-    // Dispatch table mapping accelerator names declared in YAML to the
-    // domain-owned count functions. Each domain (canopy, batches, …)
-    // owns its own SQL — this map is purely the scheduler-side seam, with
-    // no schema knowledge. Adding a new accelerator is three small steps
-    // in three different files: add a count fn to its domain package,
-    // add the name to AcceleratorNameSchema, and add one line here.
     accelerators: {
-      'canopy-pending-describe': (limit) =>
-        countPendingCanopyDescribe(null, resolveCanopyProjectId(vaultDir), limit),
-      'unprocessed-settled-batches': (limit) => countUnprocessedSettledBatches(limit),
+      'canopy-pending-describe': (scope, limit) =>
+        countPendingCanopyDescribe(null, scope.projectId, limit),
+      'unprocessed-settled-batches': (scope, limit) =>
+        countUnprocessedSettledBatches(toProjectScope(scope.projectId), limit),
     },
-    onTaskError: (taskName, err) => {
+    onTaskError: (taskName, groveId, projectId, err) => {
       logger.error(LOG_KINDS.AGENT_ERROR, `Detached task "${taskName}" threw`, {
-        error: err instanceof Error ? err.message : String(err),
+        grove_id: groveId,
+        project_id: projectId,
+        error: errorMessage(err),
       });
+    },
+    seedMissingLastRuns: (scope) => {
+      const floor = Math.floor((Date.now() - SEED_FLOOR_DAYS * MS_PER_DAY) / 1000);
+      const rows = getLastCompletedRunsForProject(scope.db, scope.projectId, floor);
+      const out = new Map<string, number>();
+      for (const row of rows) out.set(row.task, row.last_completed_seconds * 1000);
+      return out;
     },
   };
 

@@ -5,9 +5,10 @@
  * Queries use positional `?` placeholders throughout (better-sqlite3).
  */
 
-import { getDatabase, changesSince } from '@myco/db/client.js';
+import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,6 +39,7 @@ const DEFAULT_PROCESSED = 0;
 /** Fields required (or optional) when inserting/upserting a session. */
 export interface SessionInsert {
   id: string;
+  project_id?: string | null;
   agent: string;
   started_at: number;
   created_at: number;
@@ -61,6 +63,7 @@ export interface SessionInsert {
 /** Row shape returned from session queries (all columns). */
 export interface SessionRow {
   id: string;
+  project_id: string | null;
   agent: string;
   user: string | null;
   project_root: string | null;
@@ -111,6 +114,7 @@ export interface SessionUpdate {
 
 /** Filter options for `listSessions`. */
 export interface ListSessionsOptions {
+  scope: ProjectScope;
   limit?: number;
   offset?: number;
   status?: string;
@@ -138,6 +142,7 @@ export interface ListSessionsOptions {
 
 const SESSION_COLUMNS = [
   'id',
+  'project_id',
   'agent',
   '"user"',
   'project_root',
@@ -181,6 +186,7 @@ const SELECT_COLUMNS = SESSION_COLUMNS.join(', ');
 function toSessionRow(row: Record<string, unknown>): SessionRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent: row.agent as string,
     user: (row.user as string) ?? null,
     project_root: (row.project_root as string) ?? null,
@@ -226,19 +232,20 @@ export function upsertSession(data: SessionInsert): SessionRow {
 
   db.prepare(
     `INSERT INTO sessions (
-       id, agent, "user", project_root, branch,
+       id, project_id, agent, "user", project_root, branch,
        started_at, ended_at, status, prompt_count, tool_count,
        title, summary, transcript_path,
        parent_session_id, parent_session_reason,
        processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
        ?, ?, ?,
        ?, ?,
        ?, ?, ?, ?
      )
      ON CONFLICT (id) DO UPDATE SET
+       project_id            = COALESCE(EXCLUDED.project_id, sessions.project_id),
        agent                 = EXCLUDED.agent,
        "user"                = EXCLUDED."user",
        project_root          = EXCLUDED.project_root,
@@ -257,6 +264,7 @@ export function upsertSession(data: SessionInsert): SessionRow {
        content_hash          = EXCLUDED.content_hash`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent,
     data.user ?? null,
     data.project_root ?? null,
@@ -293,12 +301,12 @@ export function upsertSession(data: SessionInsert): SessionRow {
  *
  * @returns the session row, or null if not found.
  */
-export function getSession(id: string): SessionRow | null {
+export function getSession(id: string, scopeArg: ProjectScope): SessionRow | null {
   const db = getDatabase();
-
+  const scope = projectScopeClause(scopeArg);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?${scope.sql}`,
+  ).get(id, ...scope.params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSessionRow(row);
@@ -315,6 +323,8 @@ function buildSessionsWhere(
     conditions.push(`status = ?`);
     params.push(options.status);
   }
+
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent !== undefined) {
     conditions.push(`agent = ?`);
@@ -363,7 +373,7 @@ function buildSessionsWhere(
  * List sessions with optional filters, ordered by created_at DESC.
  */
 export function listSessions(
-  options: ListSessionsOptions = {},
+  options: ListSessionsOptions,
 ): SessionRow[] {
   const db = getDatabase();
   const { where, params } = buildSessionsWhere(options);
@@ -386,7 +396,7 @@ export function listSessions(
  * Count sessions matching optional filters (for pagination totals).
  */
 export function countSessions(
-  options: Omit<ListSessionsOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSessionsOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildSessionsWhere(options);
@@ -406,11 +416,16 @@ export function countSessions(
  * results in-memory against this set instead. Bounded by the number of
  * concurrent in-flight sessions — typically small.
  */
-export function getActiveSessionIds(): Set<string> {
-  const db = getDatabase();
+export function getActiveSessionIds(scope: ProjectScope): Set<string>;
+export function getActiveSessionIds(scope: ProjectScope, db: Database): Set<string>;
+export function getActiveSessionIds(
+  scopeArg: ProjectScope,
+  db: Database = getDatabase(),
+): Set<string> {
+  const scope = projectScopeClause(scopeArg);
   const rows = db.prepare(
-    `SELECT id FROM sessions WHERE status = 'active'`,
-  ).all() as Array<{ id: string }>;
+    `SELECT id FROM sessions WHERE status = 'active'${scope.sql}`,
+  ).all(...scope.params) as Array<{ id: string }>;
   return new Set(rows.map((r) => r.id));
 }
 
@@ -427,16 +442,17 @@ export function getActiveSessionIds(): Set<string> {
  *
  * @returns true if a row was updated (session was completed and is now active)
  */
-export function reactivateSessionIfCompleted(id: string): boolean {
+export function reactivateSessionIfCompleted(id: string, scopeArg: ProjectScope): boolean {
   const db = getDatabase();
+  const scope = projectScopeClause(scopeArg);
   const info = db.prepare(
-    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'`,
-  ).run(id);
+    `UPDATE sessions SET status = 'active' WHERE id = ? AND status = 'completed'${scope.sql}`,
+  ).run(id, ...scope.params);
   if (info.changes === 0) return false;
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM sessions WHERE id = ?${scope.sql}`,
+  ).get(id, ...scope.params) as Record<string, unknown> | undefined;
   if (row) syncRow('sessions', toSessionRow(row));
 
   return true;
@@ -450,6 +466,7 @@ export function reactivateSessionIfCompleted(id: string): boolean {
 export function updateSession(
   id: string,
   updates: SessionUpdate,
+  scopeArg: ProjectScope,
 ): SessionRow | null {
   const db = getDatabase();
 
@@ -481,17 +498,19 @@ export function updateSession(
     }
   }
 
-  if (setClauses.length === 0) return getSession(id);
+  if (setClauses.length === 0) return getSession(id, scopeArg);
 
   params.push(id);
+  const scope = projectScopeClause(scopeArg);
+  params.push(...scope.params);
 
   db.prepare(
     `UPDATE sessions
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE id = ?${scope.sql}`,
   ).run(...params);
 
-  const updated = getSession(id);
+  const updated = getSession(id, scopeArg);
 
   if (updated) syncRow('sessions', updated);
 
@@ -541,7 +560,7 @@ export function closeSession(
      WHERE id = ?`,
   ).run(STATUS_COMPLETED, endedAt, id);
 
-  const closed = getSession(id);
+  const closed = getSession(id, { kind: 'all' });
 
   if (closed) syncRow('sessions', closed);
 
@@ -591,6 +610,13 @@ export interface DeleteCascadeResult {
   deletedSporeIds: string[];
   /** Attachment file paths that were deleted from DB (needed for disk cleanup). */
   deletedAttachmentPaths: string[];
+  /**
+   * Project id of the deleted session, captured before the row was removed.
+   * Multi-Grove session-maintenance uses this to look up the registered
+   * project's vault dir and clean up the right project's session/spore
+   * markdown files; null when the session row was not found.
+   */
+  projectId: string | null;
 }
 
 /**
@@ -624,11 +650,16 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     counts: { prompts: 0, spores: 0, attachments: 0, graphEdges: 0, resolutionEvents: 0 },
     deletedSporeIds: [],
     deletedAttachmentPaths: [],
+    projectId: null,
   };
 
-  // Check session exists first
-  const exists = db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
-  if (!exists) return zeroCounts;
+  // Capture project_id and existence in one round-trip; we need it for
+  // post-transaction vault cleanup since the row will be gone by then.
+  const sessionRow = db.prepare(
+    `SELECT project_id FROM sessions WHERE id = ?`,
+  ).get(sessionId) as { project_id: string | null } | undefined;
+  if (!sessionRow) return zeroCounts;
+  const projectId = sessionRow.project_id;
 
   // Collect IDs/paths needed for post-transaction cleanup before deleting.
   // Spores can reference prompt_batches from a different session (cross-session
@@ -707,5 +738,6 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     ...result,
     deletedSporeIds: sporeIds,
     deletedAttachmentPaths: attachmentPaths,
+    projectId,
   };
 }

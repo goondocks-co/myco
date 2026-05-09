@@ -82,6 +82,8 @@ export interface PhaseLoopContext {
   readonly projectRoot?: string;
   /** Absolute path to the vault directory. */
   readonly vaultDir?: string;
+  /** Resolved Grove/project request context for in-process vault tool access. */
+  readonly requestContext?: RunOptions['requestContext'];
   /** Raw RunOptions — exposed to honor executionOverrides.phases per-phase. */
   readonly options?: RunOptions;
 
@@ -255,6 +257,7 @@ async function runMapPhaseAdapter(input: ExecutePhaseInput): Promise<PhaseResult
     embeddingManager: ctx.embeddingManager,
     projectRoot: ctx.projectRoot,
     vaultDir: ctx.vaultDir,
+    requestContext: ctx.requestContext,
     dryRun: ctx.options?.dryRun ?? false,
   });
 
@@ -348,7 +351,9 @@ export async function executeSingleQuery(
   const toolSurface = {
     agentId: ctx.agentId,
     runId: ctx.runId,
+    projectRoot: ctx.projectRoot,
     vaultDir: ctx.vaultDir,
+    requestContext: ctx.requestContext,
     embeddingManager: ctx.embeddingManager,
     dryRun: ctx.config.dryRun ?? false,
   };
@@ -455,7 +460,7 @@ export async function executePhasedQuery(
       ? Object.values(config.contextQueries).flat()
       : [];
     const contextResults: ContextQueryResult[] = contextQueries.length > 0
-      ? await executeContextQueries(agentId, contextQueries)
+      ? await executeContextQueries(agentId, contextQueries, ctx.requestContext)
       : [];
 
     const orchestratorPrompt = composeOrchestratorPrompt(vaultContext, phases, contextResults);
@@ -477,6 +482,7 @@ export async function executePhasedQuery(
         runId,
         toolNames: [],
         vaultDir: ctx.vaultDir,
+        requestContext: ctx.requestContext,
         dryRun: config.dryRun ?? false,
       },
       abortController: ctx.abortController,
@@ -579,6 +585,7 @@ export async function executePhasedQuery(
           turnOffset: runningTurnCount + (indexInWave * effectiveMaxTurns),
           projectRoot: ctx.projectRoot,
           vaultDir: ctx.vaultDir,
+          requestContext: ctx.requestContext,
           readOnly: phase.readOnly,
           embeddingManager: ctx.embeddingManager,
           dryRun: config.dryRun ?? false,

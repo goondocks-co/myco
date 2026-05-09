@@ -10,6 +10,7 @@ const USAGE = `Usage: myco <command> [args]
 
 Commands:
   init [options]           Initialize a new vault
+  grove <subcommand>       Manage local Groves
   update                   Update vault files and agent registration
   remove [--remove-vault]    Remove Myco from this project (vault preserved by default)
   remove --symbiont <name>   Unregister a single agent and remove from config
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
   }
 
   if (cmd === 'init') return (await import('./cli/init.js')).run(args);
+  if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
   if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     const { getPluginVersion } = await import('./version.js');

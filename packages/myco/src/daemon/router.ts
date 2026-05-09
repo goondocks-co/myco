@@ -1,8 +1,13 @@
+import type { IncomingHttpHeaders } from 'node:http';
+import type { MycoRequestContext } from '@myco/tools/request-context.js';
+
 export interface RouteRequest {
   body: unknown;
   query: Record<string, string>;
   params: Record<string, string>;
   pathname: string;
+  headers?: IncomingHttpHeaders;
+  requestContext?: MycoRequestContext;
 }
 
 export interface RouteResponse {

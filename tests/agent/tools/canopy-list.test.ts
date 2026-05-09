@@ -4,17 +4,35 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { createCanopyTools } from '@myco/agent/tools/canopy-tools.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { setupTestDb, cleanTestDb, teardownTestDb, seedCanopyEntry } from '../../helpers/db.js';
 
 describe('canopy_list harness tool', () => {
-  beforeAll(() => { setupTestDb(); });
-  afterAll(() => { teardownTestDb(); });
+  let projectRoot: string;
+  let vaultDir: string;
+  let projectId: string;
+
+  beforeAll(() => {
+    setupTestDb();
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-list-test-'));
+    vaultDir = path.join(projectRoot, '.myco');
+    fs.mkdirSync(vaultDir, { recursive: true });
+    projectId = ensureProjectManifest(vaultDir, { projectName: 'canopy-list-test' }).project.id;
+  });
+  afterAll(() => {
+    teardownTestDb();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
   beforeEach(() => {
     cleanTestDb();
     const db = getDatabase();
     seedCanopyEntry(db, {
+      project_id: projectId,
       path: 'a.ts',
       language: 'typescript',
       exports_json: '["foo"]',
@@ -24,6 +42,7 @@ describe('canopy_list harness tool', () => {
       llm_description: 'desc a',
     });
     seedCanopyEntry(db, {
+      project_id: projectId,
       path: 'b.ts',
       language: 'typescript',
       exports_json: '[]',
@@ -44,8 +63,7 @@ describe('canopy_list harness tool', () => {
   };
 
   it('returns described rows by default', async () => {
-    // Use projectRoot='p' to match the default project_id from seedCanopyEntry
-    const tool = findTool({ projectRoot: 'p' });
+    const tool = findTool({ projectRoot, vaultDir });
     expect(tool).toBeDefined();
     const result = await tool!.handler({});
     const parsed = parseResult(result) as any;
@@ -61,14 +79,14 @@ describe('canopy_list harness tool', () => {
   });
 
   it('include_undescribed=true returns all rows', async () => {
-    const tool = findTool({ projectRoot: 'p' });
+    const tool = findTool({ projectRoot, vaultDir });
     const result = await tool!.handler({ include_undescribed: true });
     const parsed = parseResult(result) as any;
     expect(parsed.rows).toHaveLength(2);
   });
 
   it('respects limit', async () => {
-    const tool = findTool({ projectRoot: 'p' });
+    const tool = findTool({ projectRoot, vaultDir });
     const result = await tool!.handler({ include_undescribed: true, limit: 1 });
     const parsed = parseResult(result) as any;
     expect(parsed.rows).toHaveLength(1);

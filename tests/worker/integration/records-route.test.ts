@@ -64,7 +64,8 @@ function createWorkerEnv(rows: Record<string, FakeD1Entry[]>): Record<string, un
     MYCO_TEAM_VECTORS: { query: async () => ({ matches: [], count: 0 }) },
     AI: { run: async () => ({ data: [[]] }) },
     MYCO_TEAM_API_KEY: 'test-api-key',
-    SYNC_PROTOCOL_VERSION: '1',
+    SYNC_PROTOCOL_VERSION: '2',
+    MIN_COMPAT_CLIENT_VERSION: '1',
     MYCO_SECRETS: {
       get: async () => null,
       put: async () => {},

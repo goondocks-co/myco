@@ -33,6 +33,20 @@ describe('teamRotateTokens', () => {
     originalExistsSync = fs.existsSync.bind(fs);
 
     fs.mkdirSync(vaultDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(vaultDir, 'project.toml'),
+      [
+        '[project]',
+        'id = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+        'name = "test"',
+        '',
+        '[grove]',
+        'binding_id = "gbind_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+        'slug = "rotate-test"',
+        'mode = "local"',
+      ].join('\n') + '\n',
+      'utf-8',
+    );
     fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), [
       'version: 3',
       'config_version: 0',
@@ -61,7 +75,7 @@ describe('teamRotateTokens', () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       fetchCalls += 1;
       if (fetchCalls < 3) {
-        return new Response('{"error":"Invalid API key"}', {
+        return new Response('{"error":"Invalid Team key"}', {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -81,7 +95,7 @@ describe('teamRotateTokens', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('persists the new API key before retrying MCP rotation', async () => {
+  it('persists the new Team key before retrying MCP rotation', async () => {
     execHandlers.push(() => '');
 
     const { teamRotateTokens } = await import('../../packages/myco-team/src/cli.js');

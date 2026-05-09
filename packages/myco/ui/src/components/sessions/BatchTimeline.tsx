@@ -3,7 +3,13 @@ import { ChevronDown, ChevronRight, MessageSquare, Bot } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { Lightbox } from '../ui/lightbox';
-import { useSessionBatches, useSessionAttachments, type BatchRow, type AttachmentRow } from '../../hooks/use-sessions';
+import {
+  useSessionBatches,
+  useSessionAttachments,
+  type BatchRow,
+  type AttachmentRow,
+  type PromptBatchOrigin,
+} from '../../hooks/use-sessions';
 import { ActivityList } from './ActivityList';
 import { cn } from '../../lib/cn';
 import { withBasePath } from '../../lib/base-path';
@@ -247,8 +253,19 @@ export interface BatchTimelineProps {
   sessionId: string;
 }
 
+/** Default origin filter for the Sessions view: human-typed prompts only. */
+const DEFAULT_ORIGINS: readonly PromptBatchOrigin[] = ['human'];
+/** "Show everything" filter, including system-injected and agent-dispatched batches. */
+const ALL_ORIGINS: readonly PromptBatchOrigin[] = ['human', 'system', 'agent_dispatch', 'hook_injected'];
+
 export function BatchTimeline({ sessionId }: BatchTimelineProps) {
-  const { data: batches, isLoading: batchesLoading } = useSessionBatches(sessionId);
+  // Default to human-only prompts so async <task-notification> /
+  // <subagent_notification> / <skill> envelope batches don't swamp the
+  // visible timeline. The toggle exposes the full set for operator views
+  // and debugging.
+  const [showAllOrigins, setShowAllOrigins] = useState(false);
+  const origins = showAllOrigins ? ALL_ORIGINS : DEFAULT_ORIGINS;
+  const { data: batches, isLoading: batchesLoading } = useSessionBatches(sessionId, origins);
   const { data: attachments } = useSessionAttachments(sessionId);
 
   const allAttachments = attachments ?? [];
@@ -298,6 +315,17 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
 
   return (
     <div>
+      <div className="mb-3 flex items-center justify-end pl-11 text-xs text-on-surface-variant">
+        <label className="inline-flex cursor-pointer items-center gap-2 select-none">
+          <input
+            type="checkbox"
+            className="h-3 w-3 cursor-pointer accent-primary"
+            checked={showAllOrigins}
+            onChange={(e) => setShowAllOrigins(e.target.checked)}
+          />
+          <span>Show system &amp; sub-agent prompts</span>
+        </label>
+      </div>
       {groups.map(({ parent, children }, idx) => {
         const resolved = byBatchId.get(parent.id)
           ?? (parent.prompt_number !== null ? byTurnNumber.get(parent.prompt_number) ?? [] : []);

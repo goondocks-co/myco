@@ -13,13 +13,26 @@ import os from 'node:os';
 
 describe('Config Loader', () => {
   let tmpDir: string;
+  let mycoHomeDir: string;
+  let previousMycoHome: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-'));
+    // Sandbox the machine + grove config writes during tier-strip migration
+    // — without this, loadConfig would clobber the developer's real ~/.myco/config.yaml.
+    mycoHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHomeDir;
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(mycoHomeDir, { recursive: true, force: true });
+    if (previousMycoHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousMycoHome;
+    }
   });
 
   it('loads valid v3 config', () => {
@@ -81,14 +94,16 @@ digest:
   enabled: true
 `;
     fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), yaml);
-    const config = loadConfig(tmpDir);
-    expect(config.version).toBe(3);
-    expect(config.embedding.provider).toBe('ollama');
-    expect(config.embedding.model).toBe('bge-m3');
-    expect(config.daemon.port).toBe(7432);
-    expect(config.daemon.log_level).toBe('debug');
-    // Removed fields should not be present (team is now a new section, not the v2 one)
-    const raw = config as Record<string, unknown>;
+    // Opt into the three-tier strip so we can assert the moved Machine fields.
+    loadConfig(tmpDir, { migrateTiers: true });
+    const machineYaml = fs.readFileSync(path.join(mycoHomeDir, 'config.yaml'), 'utf-8');
+    expect(machineYaml).toContain('port: 7432');
+    expect(machineYaml).toContain('log_level: debug');
+    const reloaded = loadConfig(tmpDir);
+    expect(reloaded.version).toBe(3);
+    expect(reloaded.embedding.provider).toBe('ollama');
+    expect(reloaded.embedding.model).toBe('bge-m3');
+    const raw = reloaded as Record<string, unknown>;
     expect(raw.intelligence).toBeUndefined();
     expect(raw.digest).toBeUndefined();
   });

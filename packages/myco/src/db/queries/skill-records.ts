@@ -9,6 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 
 /** Default status for new skill records. */
@@ -24,6 +25,7 @@ const DEFAULT_GENERATION = 1;
 /** Fields required (or optional) when inserting a skill record. */
 export interface SkillRecordInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   machine_id?: string;
   name: string;
@@ -56,6 +58,7 @@ export interface SkillRecordUpdate {
 /** Row shape returned from skill record queries (all columns). */
 export interface SkillRecordRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   machine_id: string;
   name: string;
@@ -76,6 +79,7 @@ export interface SkillRecordRow {
 
 /** Filter options for `listSkillRecords`. */
 export interface ListSkillRecordsOptions {
+  scope: ProjectScope;
   agent_id?: string;
   status?: string;
   limit?: number;
@@ -88,6 +92,7 @@ export interface ListSkillRecordsOptions {
 
 export const RECORD_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'machine_id',
   'name',
@@ -116,6 +121,7 @@ const SELECT_COLUMNS = RECORD_COLUMNS.join(', ');
 function toSkillRecordRow(row: Record<string, unknown>): SkillRecordRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     machine_id: (row.machine_id as string) ?? getTeamMachineId(),
     name: row.name as string,
@@ -141,6 +147,8 @@ function buildWhere(
 ): { where: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
+
+  appendProjectCondition(conditions, params, options.scope);
 
   if (options.agent_id !== undefined) {
     conditions.push(`agent_id = ?`);
@@ -172,16 +180,17 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
 
   db.prepare(
     `INSERT INTO skill_records (
-       id, agent_id, machine_id, name, display_name,
+       id, project_id, agent_id, machine_id, name, display_name,
        description, status, generation, candidate_id,
        source_ids, path, created_at, updated_at, properties
      ) VALUES (
-       ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.machine_id ?? getTeamMachineId(),
     data.name,
@@ -211,12 +220,15 @@ export function insertSkillRecord(data: SkillRecordInsert): SkillRecordRow {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecord(id: string): SkillRecordRow | null {
+export function getSkillRecord(id: string, scope: ProjectScope): SkillRecordRow | null {
   const db = getDatabase();
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSkillRecordRow(row);
@@ -227,12 +239,15 @@ export function getSkillRecord(id: string): SkillRecordRow | null {
  *
  * @returns the skill record row, or null if not found.
  */
-export function getSkillRecordByName(name: string): SkillRecordRow | null {
+export function getSkillRecordByName(name: string, scope: ProjectScope): SkillRecordRow | null {
   const db = getDatabase();
 
+  const conditions = ['name = ?'];
+  const params: unknown[] = [name];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE name = ?`,
-  ).get(name) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toSkillRecordRow(row);
@@ -242,7 +257,7 @@ export function getSkillRecordByName(name: string): SkillRecordRow | null {
  * List skill records with optional filters, ordered by updated_at DESC.
  */
 export function listSkillRecords(
-  options: ListSkillRecordsOptions = {},
+  options: ListSkillRecordsOptions,
 ): SkillRecordRow[] {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -269,6 +284,7 @@ export function listSkillRecords(
 export function updateSkillRecord(
   id: string,
   updates: SkillRecordUpdate,
+  scope: ProjectScope,
 ): SkillRecordRow | null {
   const db = getDatabase();
 
@@ -295,17 +311,19 @@ export function updateSkillRecord(
     }
   }
 
-  if (setClauses.length === 0) return getSkillRecord(id);
+  if (setClauses.length === 0) return getSkillRecord(id, scope);
 
   params.push(id);
+  const conditions = ['id = ?'];
+  appendProjectCondition(conditions, params, scope);
 
   db.prepare(
     `UPDATE skill_records
      SET ${setClauses.join(', ')}
-     WHERE id = ?`,
+     WHERE ${conditions.join(' AND ')}`,
   ).run(...params);
 
-  const updated = getSkillRecord(id);
+  const updated = getSkillRecord(id, scope);
 
   if (updated) syncRow('skill_records', updated);
 
@@ -333,7 +351,7 @@ export function incrementSkillUsageCount(id: string, now: number): void {
  * Saves callers from issuing two separate function calls.
  */
 export function listSkillRecordsWithCount(
-  options: ListSkillRecordsOptions = {},
+  options: ListSkillRecordsOptions,
 ): { items: SkillRecordRow[]; total: number } {
   const items = listSkillRecords(options);
   const total = countSkillRecords(options);
@@ -344,7 +362,7 @@ export function listSkillRecordsWithCount(
  * Count skill records matching optional filters (for pagination totals).
  */
 export function countSkillRecords(
-  options: Omit<ListSkillRecordsOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSkillRecordsOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildWhere(options);
@@ -363,10 +381,14 @@ export function countSkillRecords(
  *
  * @returns the deleted record's name (for disk cleanup) or null if not found.
  */
-export function deleteSkillRecordCascade(idOrName: string): { id: string; name: string } | null {
+export function deleteSkillRecordCascade(
+  idOrName: string,
+  scope: ProjectScope,
+): { id: string; project_id: string | null; name: string } | null {
   const db = getDatabase();
-  const record = getSkillRecord(idOrName) ?? getSkillRecordByName(idOrName);
+  const record = getSkillRecord(idOrName, scope) ?? getSkillRecordByName(idOrName, scope);
   if (!record) return null;
+  const candidateScope = projectScopeClause(scope);
 
   db.transaction(() => {
     db.prepare('DELETE FROM skill_lineage WHERE skill_id = ?').run(record.id);
@@ -374,14 +396,14 @@ export function deleteSkillRecordCascade(idOrName: string): { id: string; name: 
     // Dismiss linked candidates so they don't regenerate
     if (record.candidate_id) {
       db.prepare(
-        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?`,
-      ).run(Math.floor(Date.now() / 1000), record.candidate_id);
+        `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE id = ?${candidateScope.sql}`,
+      ).run(Math.floor(Date.now() / 1000), record.candidate_id, ...candidateScope.params);
     }
     db.prepare(
-      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?`,
-    ).run(Math.floor(Date.now() / 1000), record.id);
+      `UPDATE skill_candidates SET status = 'dismissed', skill_id = NULL, updated_at = ? WHERE skill_id = ?${candidateScope.sql}`,
+    ).run(Math.floor(Date.now() / 1000), record.id, ...candidateScope.params);
     db.prepare('DELETE FROM skill_records WHERE id = ?').run(record.id);
   })();
 
-  return { id: record.id, name: record.name };
+  return { id: record.id, project_id: record.project_id, name: record.name };
 }

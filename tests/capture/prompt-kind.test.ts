@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { classifyNextPromptKind, extractUserPromptKinds } from '@myco/capture/prompt-kind.js';
+import {
+  classifyNextPromptKind,
+  classifyNextPromptOrigin,
+  extractUserPromptKinds,
+  extractUserPromptRecords,
+} from '@myco/capture/prompt-kind.js';
 
 // Regression: Claude Code writes real user prompts with `message.content` as a
 // plain string, and tool_result entries with content as an array. The walker
@@ -416,6 +421,101 @@ describe('walker applies manifest capture.rules (Codex system-injection case)', 
     ];
     const records = extractUserPromptKinds('codex', events);
     expect(records).toEqual(['initial']);
+  });
+});
+
+describe('walker tags origin per capture rule (K3 classify action)', () => {
+  // K1 quantified: 175+ rows in 30 days of dogfood usage were
+  // <task-notification> / <subagent_notification> / <skill> envelopes
+  // misclassified as user-typed. The classify action keeps the prompt
+  // in the captured set but tags it with origin='system' or
+  // 'agent_dispatch' so UI default filters can hide it.
+
+  it('Claude Code: tags <task-notification> as origin=system', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'tnp1',
+        message: {
+          role: 'user',
+          content:
+            '<task-notification>\n<task-id>tid-1</task-id>\n<status>completed</status>\n<result>ok</result>\n</task-notification>',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('system');
+    expect(records[0]?.kind).toBe('initial');
+  });
+
+  it('Claude Code: tags <skill> envelopes as origin=system', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'sp1',
+        message: {
+          role: 'user',
+          content: '<skill>\n<name>ce:review</name>\n<path>/some/SKILL.md</path>\n...',
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('system');
+  });
+
+  it('Claude Code: real user prompts retain origin=human', () => {
+    const events = [
+      {
+        type: 'user',
+        promptId: 'real',
+        message: { role: 'user', content: 'fix the bug in foo.ts' },
+      },
+    ];
+    const records = extractUserPromptRecords('claude-code', events);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('human');
+    expect(records[0]?.kind).toBe('initial');
+  });
+
+  it('Codex: tags <subagent_notification> as origin=agent_dispatch', () => {
+    const events = [
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '<subagent_notification>\n{"agent_path":"x","status":{"completed":"ok"}}\n</subagent_notification>' }],
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('codex', events, '/tmp/codex-rollout.jsonl');
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('agent_dispatch');
+  });
+
+  it('Codex: tags <environment_context> as origin=system', () => {
+    const events = [
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '<environment_context>\n  <shell>zsh</shell>\n  <cwd>/tmp</cwd>\n</environment_context>' }],
+        },
+      },
+    ];
+    const records = extractUserPromptRecords('codex', events, '/tmp/codex-rollout.jsonl');
+    expect(records).toHaveLength(1);
+    expect(records[0]?.origin).toBe('system');
+  });
+
+  it('classifyNextPromptOrigin returns the rule-tagged origin', () => {
+    expect(classifyNextPromptOrigin('claude-code', '<task-notification>foo')).toBe('system');
+    expect(classifyNextPromptOrigin('claude-code', 'plain user typing')).toBe('human');
+    expect(classifyNextPromptOrigin('codex', '<subagent_notification>x')).toBe('agent_dispatch');
+    expect(classifyNextPromptOrigin(undefined, 'anything')).toBe('human');
   });
 });
 

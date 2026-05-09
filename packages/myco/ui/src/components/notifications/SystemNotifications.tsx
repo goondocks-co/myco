@@ -19,6 +19,9 @@ export function SystemNotifications() {
     enabled,
     pollCategory: 'heartbeat',
     refetchInterval: POLL_INTERVALS.PROGRESS,
+    // Daemon-scope events (backup failed, integrity issues) need to
+    // surface even when no project is in focus; the API merges them in.
+    includeDaemon: true,
   });
   const seenRef = useRef<Set<string>>(new Set());
 

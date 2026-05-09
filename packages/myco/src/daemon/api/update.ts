@@ -24,7 +24,7 @@ import {
   getInstalledVersion,
   resolveMycoBinary,
   resolveRuntimeCommand,
-  isManagedProjectRuntime,
+  isManagedMachineRuntime,
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
@@ -77,11 +77,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
    * snapshot into all downstream helpers instead of re-reading.
    */
   function readVaultSnapshot() {
-    const runtimeCommand = resolveRuntimeCommand(vaultDir);
+    const runtimeCommand = resolveRuntimeCommand();
     const desiredChannel = readProjectReleaseChannel(vaultDir);
-    const runtimeScope: 'project' | 'machine' =
-      runtimeCommand !== null && isManagedProjectRuntime(runtimeCommand, vaultDir)
-        ? 'project'
+    const runtimeScope: 'managed' | 'machine' =
+      runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
+        ? 'managed'
         : 'machine';
     const mycoBinary = runtimeCommand ?? resolveMycoBinary();
     return { runtimeCommand, desiredChannel, runtimeScope, mycoBinary };
@@ -170,7 +170,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
         globalPrefix,
         snapshot.runtimeCommand,
         snapshot.desiredChannel,
-        vaultDir,
       ).catch(() => {});
     }
 
@@ -182,7 +181,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       globalPrefix,
       snapshot.runtimeCommand,
       snapshot.desiredChannel,
-      vaultDir,
     );
     if (!status) {
       // No cache yet — return minimal response; background check will populate it.
@@ -227,7 +225,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       globalPrefix,
       snapshot.runtimeCommand,
       snapshot.desiredChannel,
-      vaultDir,
     );
     return { body: { exempt: false, ...result } };
   }
@@ -250,7 +247,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       globalPrefix,
       snapshot.runtimeCommand,
       snapshot.desiredChannel,
-      vaultDir,
     );
     if (!status) {
       return { status: 400, body: { error: 'no_update_available' } };
@@ -271,13 +267,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       )
       .map((pkg) => `${pkg.package_name}@${pkg.latest_version}`);
 
-    // Reverting a project-local beta back to the machine-wide stable install.
+    // Reverting a managed beta runtime back to the global stable install.
     const removeLocalRuntime =
-      status.channel === 'stable' && snapshot.runtimeScope === 'project';
+      status.channel === 'stable' && snapshot.runtimeScope === 'managed';
 
-    // Entering beta on a project that's still on the machine runtime means we
-    // need to install a project-local myco — even when the machine install is
-    // already at the beta target version and `update_available` is false.
+    // Entering beta on a machine still on the global runtime means we need
+    // to install a managed runtime — even when the global install is already
+    // at the beta target version and `update_available` is false.
     const enteringBetaLocalRuntime =
       status.channel === 'beta' && snapshot.runtimeScope === 'machine';
 
@@ -345,7 +341,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       globalPrefix,
       snapshot.runtimeCommand,
       channel,
-      vaultDir,
     );
     if (!channelStatus) {
       return {

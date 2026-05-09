@@ -54,6 +54,28 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "action": "drop",
           "reason": "claude-code-builtin-command-dispatch",
           "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<task-notification>"
+          },
+          "action": "classify",
+          "reason": "claude-code-task-notification",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<skill>"
+          },
+          "action": "classify",
+          "reason": "claude-code-skill-envelope",
+          "trim": true,
+          "set_origin": "system"
         }
       ],
       "prompts": {
@@ -209,6 +231,39 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "action": "drop",
           "reason": "agents-md-context-injection",
           "trim": true
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<subagent_notification>"
+          },
+          "action": "classify",
+          "reason": "codex-subagent-notification",
+          "trim": true,
+          "set_origin": "agent_dispatch"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<environment_context>"
+          },
+          "action": "classify",
+          "reason": "codex-environment-context",
+          "trim": true,
+          "set_origin": "system"
+        },
+        {
+          "event": "user_prompt",
+          "scope": "this_agent",
+          "when": {
+            "prompt_starts_with": "<skill>"
+          },
+          "action": "classify",
+          "reason": "codex-skill-envelope",
+          "trim": true,
+          "set_origin": "system"
         },
         {
           "event": "user_prompt",

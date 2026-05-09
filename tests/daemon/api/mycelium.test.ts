@@ -8,10 +8,11 @@ import { handleGetGraph, handleGetGraphSeeds } from '@myco/daemon/api/mycelium';
 import type { RouteRequest } from '@myco/daemon/router';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 const NOW = Math.floor(Date.now() / 1000);
 
 function makeReq(pathname: string, params: Record<string, string> = {}, query: Record<string, string> = {}): RouteRequest {
-  return { pathname, params, query, body: undefined };
+  return { pathname, params, query, body: undefined, requestContext: TEST_REQUEST_CONTEXT };
 }
 
 describe('mycelium API handlers', () => {

@@ -12,6 +12,7 @@ import { createVaultTools } from '@myco/agent/tools.js';
 import type { CanopyEntry } from '@myco/db/schema';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 
 const TEST_AGENT_ID = 'canopy-tools-agent';
 const TEST_RUN_ID = 'canopy-tools-run';
@@ -61,10 +62,13 @@ function createTools() {
 beforeAll(() => {
   setupTestDb();
   projectRoot = mkdtempSync(path.join(tmpdir(), 'canopy-tools-'));
-  // resolveCanopyProjectId returns dirname(vaultDir); construct projectId so
-  // upsert and tool-resolved project_id agree.
-  projectId = projectRoot;
-  mkdirSync(path.join(projectRoot, VAULT_DIR_NAME), { recursive: true });
+  const vaultDir = path.join(projectRoot, VAULT_DIR_NAME);
+  mkdirSync(vaultDir, { recursive: true });
+  // The canopy tool runtime resolves project_id from the project manifest;
+  // mint a fresh proj_<32hex> id for the fixture so upserts and tool-side
+  // lookups agree.
+  const manifest = ensureProjectManifest(vaultDir, { projectName: 'canopy-tools-test' });
+  projectId = manifest.project.id;
   mkdirSync(path.join(projectRoot, 'src'), { recursive: true });
   writeFileSync(
     path.join(projectRoot, 'src/foo.ts'),

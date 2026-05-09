@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,6 +55,43 @@ export const BATCH_KIND = {
 
 export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
+/**
+ * Discriminated vocabulary for `prompt_batches.origin`. Orthogonal to `kind`
+ * — every batch has both. `kind` records WHERE the batch sits in conversation
+ * flow; `origin` records WHO issued the prompt.
+ *
+ *   human         — user-typed in their CLI/IDE (default)
+ *   system        — transcript-synthesized continuation event injected by
+ *                   the agent itself (e.g. <task-notification>,
+ *                   <environment_context>, <skill> envelope expansions)
+ *   agent_dispatch— prompts emitted by sub-agents back to the parent
+ *                   (e.g. Codex <subagent_notification>)
+ *   hook_injected — reserved; UserPromptSubmit hook output is currently
+ *                   appended to a real human prompt and stays 'human'
+ */
+export const PROMPT_BATCH_ORIGIN = {
+  HUMAN: 'human',
+  SYSTEM: 'system',
+  AGENT_DISPATCH: 'agent_dispatch',
+  HOOK_INJECTED: 'hook_injected',
+} as const;
+
+export type PromptBatchOrigin = typeof PROMPT_BATCH_ORIGIN[keyof typeof PROMPT_BATCH_ORIGIN];
+
+const VALID_ORIGINS = new Set<string>(Object.values(PROMPT_BATCH_ORIGIN));
+
+/**
+ * Coerce an unknown row column into a valid `PromptBatchOrigin`. Any value
+ * outside the union — including a NULL leaked through a misconfigured
+ * COALESCE — collapses to 'human' so legacy rows remain queryable.
+ */
+function toPromptBatchOrigin(value: unknown): PromptBatchOrigin {
+  if (typeof value === 'string' && VALID_ORIGINS.has(value)) {
+    return value as PromptBatchOrigin;
+  }
+  return PROMPT_BATCH_ORIGIN.HUMAN;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -62,12 +100,22 @@ export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 export interface ListBatchesBySessionOptions {
   limit?: number;
   offset?: number;
+  scope: ProjectScope;
+  /**
+   * If provided, only batches whose `origin` is in this set are returned.
+   * Default (omitted) returns ALL origins, preserving legacy behavior for
+   * intelligence tasks and reconcile callers that need to see every batch
+   * regardless of provenance.
+   */
+  origins?: readonly PromptBatchOrigin[];
 }
 
 /** Fields required (or optional) when inserting a prompt batch. */
 export interface BatchInsert {
   session_id: string;
+  project_id?: string | null;
   created_at: number;
+  origin?: PromptBatchOrigin;
   prompt_number?: number | null;
   user_prompt?: string | null;
   response_summary?: string | null;
@@ -85,8 +133,10 @@ export interface BatchInsert {
 export interface BatchRow {
   id: number;
   session_id: string;
+  project_id: string | null;
   parent_prompt_batch_id: number | null;
   kind: string;
+  origin: PromptBatchOrigin;
   prompt_number: number | null;
   user_prompt: string | null;
   response_summary: string | null;
@@ -109,8 +159,10 @@ export interface BatchRow {
 const BATCH_COLUMNS = [
   'id',
   'session_id',
+  'project_id',
   'parent_prompt_batch_id',
   'kind',
+  'origin',
   'prompt_number',
   'user_prompt',
   'response_summary',
@@ -137,8 +189,10 @@ function toBatchRow(row: Record<string, unknown>): BatchRow {
   return {
     id: row.id as number,
     session_id: row.session_id as string,
+    project_id: (row.project_id as string) ?? null,
     parent_prompt_batch_id: row.parent_prompt_batch_id as number | null,
     kind: (row.kind as string) ?? 'initial',
+    origin: toPromptBatchOrigin(row.origin),
     prompt_number: (row.prompt_number as number) ?? null,
     user_prompt: (row.user_prompt as string) ?? null,
     response_summary: (row.response_summary as string) ?? null,
@@ -170,16 +224,19 @@ export function insertBatch(data: BatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, prompt_number, user_prompt, response_summary,
+       session_id, project_id, origin, prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
   ).run(
     data.session_id,
+    data.project_id ?? null,
+    data.session_id,
+    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
     data.prompt_number ?? null,
     data.user_prompt ?? null,
     data.response_summary ?? null,
@@ -280,7 +337,7 @@ export function populateBatchResponses(
  * preserve behavior for tests and any non-agent caller.
  */
 export function getUnprocessedBatches(
-  options: { after_id?: number; limit?: number; includeActive?: boolean } = {},
+  options: { after_id?: number; limit?: number; includeActive?: boolean; scope: ProjectScope },
 ): BatchRow[] {
   const db = getDatabase();
 
@@ -297,6 +354,8 @@ export function getUnprocessedBatches(
       `EXISTS (SELECT 1 FROM sessions s WHERE s.id = prompt_batches.session_id AND s.status != 'active')`,
     );
   }
+
+  appendProjectCondition(conditions, params, options.scope);
 
   const limit = options.limit ?? DEFAULT_UNPROCESSED_LIMIT;
   params.push(limit);
@@ -321,30 +380,42 @@ export function getUnprocessedBatches(
  * the batches/sessions domain so the scheduler doesn't have to reason
  * about prompt_batches schema.
  */
-export function countUnprocessedSettledBatches(limit?: number): number {
+export function countUnprocessedSettledBatches(
+  scope: ProjectScope,
+  limit?: number,
+): number {
+  const projectConditions: string[] = [];
+  const projectParams: unknown[] = [];
+  appendProjectCondition(projectConditions, projectParams, scope, 'pb');
+  const projectWhere = projectConditions.length > 0
+    ? ` AND ${projectConditions.join(' AND ')}`
+    : '';
+
   if (limit !== undefined) {
     const boundedLimit = Math.max(1, Math.floor(limit));
     const row = getDatabase().prepare(
       `SELECT COUNT(*) AS n FROM (
         SELECT 1 FROM prompt_batches pb
         WHERE pb.processed = 0
+          ${projectWhere}
           AND EXISTS (
             SELECT 1 FROM sessions s
             WHERE s.id = pb.session_id AND s.status != 'active'
           )
         LIMIT ?
       )`,
-    ).get(boundedLimit) as { n: number } | undefined;
+    ).get(...projectParams, boundedLimit) as { n: number } | undefined;
     return row?.n ?? 0;
   }
   const row = getDatabase().prepare(
     `SELECT COUNT(*) AS n FROM prompt_batches pb
      WHERE pb.processed = 0
+       ${projectWhere}
        AND EXISTS (
          SELECT 1 FROM sessions s
          WHERE s.id = pb.session_id AND s.status != 'active'
        )`,
-  ).get() as { n: number } | undefined;
+  ).get(...projectParams) as { n: number } | undefined;
   return row?.n ?? 0;
 }
 
@@ -378,28 +449,38 @@ export function incrementActivityCount(
  */
 export function markBatchProcessed(
   id: number,
+  scope: ProjectScope,
 ): BatchRow | null {
   const db = getDatabase();
+
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
 
   const info = db.prepare(
     `UPDATE prompt_batches
      SET processed = ?
-     WHERE id = ?`,
-  ).run(PROCESSED_FLAG, id);
+     WHERE ${conditions.join(' AND ')}`,
+  ).run(PROCESSED_FLAG, ...params);
 
   if (info.changes === 0) return null;
 
   return toBatchRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown>,
+    db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE ${conditions.join(' AND ')}`).get(...params) as Record<string, unknown>,
   );
 }
 
 /**
  * Fetch a single batch by id. Returns null if not found.
  */
-export function getBatchById(id: number): BatchRow | null {
+export function getBatchById(id: number, scope: ProjectScope): BatchRow | null {
   const db = getDatabase();
-  const row = db.prepare(`SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
+  const row = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM prompt_batches WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;
 }
 
@@ -443,12 +524,14 @@ export function findBatchByPromptPrefix(
 /** Fields required when inserting a batch statelessly (prompt_number derived from DB). */
 export interface StatelessBatchInsert {
   session_id: string;
+  project_id?: string | null;
   created_at: number;
   user_prompt?: string | null;
   started_at?: number | null;
   status?: string;
   machine_id?: string;
   kind?: string;                            // defaults to 'initial'
+  origin?: PromptBatchOrigin;               // defaults to 'human'
   parent_prompt_batch_id?: number | null;   // defaults to null
 }
 
@@ -466,12 +549,12 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
 
   const info = db.prepare(
     `INSERT INTO prompt_batches (
-       session_id, parent_prompt_batch_id, kind,
+       session_id, project_id, parent_prompt_batch_id, kind, origin,
        prompt_number, user_prompt, response_summary,
        classification, started_at, ended_at, status,
        activity_count, processed, content_hash, created_at, machine_id
      ) VALUES (
-       ?, ?, ?,
+       ?, COALESCE(?, (SELECT project_id FROM sessions WHERE id = ?)), ?, ?, ?,
        (SELECT COALESCE(MAX(prompt_number), 0) + 1 FROM prompt_batches WHERE session_id = ?),
        ?, NULL,
        NULL, ?, NULL, ?,
@@ -479,8 +562,11 @@ export function insertBatchStateless(data: StatelessBatchInsert): BatchRow {
      )`,
   ).run(
     data.session_id,
+    data.project_id ?? null,
+    data.session_id,
     data.parent_prompt_batch_id ?? null,
     data.kind ?? 'initial',
+    data.origin ?? PROMPT_BATCH_ORIGIN.HUMAN,
     data.session_id,
     data.user_prompt ?? null,
     data.started_at ?? null,
@@ -523,6 +609,22 @@ export function closeOpenBatches(
  * Set response_summary on a batch if it doesn't already have one.
  *
  * Idempotent — only updates NULL response_summary.
+ *
+ * Cross-batch dedupe: refuses to write a summary that already appears
+ * verbatim on another batch in the same session. This guards against a
+ * known race between live UserPromptSubmit hook capture and the Stop hook:
+ * if a system-injected user prompt (e.g. a Claude Code <task-notification>
+ * arriving from a backgrounded Agent) lands in the transcript while the AI
+ * is still emitting its response, the Stop hook can fire BEFORE the live
+ * hook inserts the new batch, causing setResponseSummary to back-stamp the
+ * latest assistant text onto the previous (human) batch. By the time the
+ * new batch is inserted, populateBatchResponses (or another setResponseSummary
+ * call) writes the same text onto it, producing duplicate summaries
+ * across two batches with different user_prompts. The dedupe gate breaks
+ * that cycle: only the first batch to claim a given summary keeps it; the
+ * second write is silently skipped, and a follow-up populateBatchResponses
+ * pass fills the racing batch via prefix-keyed alignment with the correct
+ * (later-emitted) assistant text.
  */
 export function setResponseSummary(
   batchId: number,
@@ -530,8 +632,17 @@ export function setResponseSummary(
 ): void {
   const db = getDatabase();
   db.prepare(
-    `UPDATE prompt_batches SET response_summary = ? WHERE id = ? AND response_summary IS NULL`,
-  ).run(summary, batchId);
+    `UPDATE prompt_batches
+       SET response_summary = ?
+       WHERE id = ?
+         AND response_summary IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM prompt_batches sib
+           WHERE sib.session_id = (SELECT session_id FROM prompt_batches WHERE id = ?)
+             AND sib.id != ?
+             AND sib.response_summary = ?
+         )`,
+  ).run(summary, batchId, batchId, batchId, summary);
 }
 
 /**
@@ -577,21 +688,30 @@ export function getLatestOpenBatch(
 
 export function listBatchesBySession(
   sessionId: string,
-  options: ListBatchesBySessionOptions = {},
+  options: ListBatchesBySessionOptions,
 ): BatchRow[] {
   const db = getDatabase();
 
   const limit = options.limit ?? BATCHES_DEFAULT_LIMIT;
   const offset = options.offset ?? 0;
+  const conditions = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+  appendProjectCondition(conditions, params, options.scope);
+
+  if (options.origins && options.origins.length > 0) {
+    const placeholders = options.origins.map(() => '?').join(', ');
+    conditions.push(`origin IN (${placeholders})`);
+    params.push(...options.origins);
+  }
 
   const rows = db.prepare(
     `SELECT ${SELECT_COLUMNS}
      FROM prompt_batches
-     WHERE session_id = ?
+     WHERE ${conditions.join(' AND ')}
      ORDER BY prompt_number ASC
      LIMIT ?
      OFFSET ?`,
-  ).all(sessionId, limit, offset) as Record<string, unknown>[];
+  ).all(...params, limit, offset) as Record<string, unknown>[];
 
   return rows.map(toBatchRow);
 }

@@ -35,6 +35,7 @@ class LocalVaultMcpServer implements MCPServer {
       turnOffset: toolSurface.turnOffset,
       projectRoot: toolSurface.projectRoot,
       vaultDir: toolSurface.vaultDir,
+      requestContext: toolSurface.requestContext,
       embeddingManager: toolSurface.embeddingManager,
       dryRun: toolSurface.dryRun,
     }).filter((tool) => !toolSurface.readOnly || tool.annotations?.readOnlyHint === true);

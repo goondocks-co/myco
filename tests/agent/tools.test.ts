@@ -23,8 +23,10 @@ import { insertEntity } from '@myco/db/queries/entities.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { insertGraphEdge } from '@myco/db/queries/graph-edges.js';
 import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -93,6 +95,16 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
   return JSON.parse(result.content[0].text);
 }
 
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-agent-tools-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -115,7 +127,7 @@ describe('vault tools', () => {
     sessionId = session.id;
 
     // Create tools for this test
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
   });
 
   // -------------------------------------------------------------------------
@@ -226,6 +238,26 @@ describe('vault tools', () => {
       expect(data[0].status).toBe('completed');
       expect(data[0].activity_count).toBe(42);
     });
+
+    it('lists only unprocessed batches in the request-context project', async () => {
+      const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'completed' });
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionA);
+      upsertSession(sessionB);
+      insertBatch(makeBatch(sessionA.id, { user_prompt: 'Project A prompt' }));
+      insertBatch(makeBatch(sessionB.id, { user_prompt: 'Project B prompt' }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_unprocessed');
+      const result = await t.handler({ include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<{ user_prompt: string; project_id: string }>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].user_prompt).toBe('Project A prompt');
+      expect(data[0].project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    });
   });
 
   describe('vault_batches', () => {
@@ -283,6 +315,21 @@ describe('vault tools', () => {
       expect(data[0].status).toBe('completed');
       expect(data[0].activity_count).toBe(42);
       expect(data[0].processed).toBeDefined();
+    });
+
+    it('does not return batches for a session outside the request-context project', async () => {
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionB);
+      insertBatch(makeBatch(sessionB.id, { prompt_number: 1 }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_batches');
+      const result = await t.handler({ session_id: sessionB.id, include_metadata: true }, undefined);
+      const data = parseResult(result) as unknown[];
+
+      expect(data).toEqual([]);
     });
 
     it('suppresses repeated identical reads before they balloon context', async () => {
@@ -370,6 +417,22 @@ describe('vault tools', () => {
         found: false,
         batches: [],
       });
+    });
+
+    it('does not return summary material for a session outside the request-context project', async () => {
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionB);
+      insertBatch(makeBatch(sessionB.id, { prompt_number: 1, user_prompt: 'Project B' }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_session_summary_material');
+      const result = await t.handler({ session_id: sessionB.id }, undefined);
+      const data = parseResult(result) as { found: boolean; batches: unknown[] };
+
+      expect(data.found).toBe(false);
+      expect(data.batches).toEqual([]);
     });
   });
 
@@ -473,6 +536,37 @@ describe('vault tools', () => {
       expect(data.map((row) => row.id)).toEqual(['spore-b', 'spore-a']);
       expect(data.map((row) => row.content)).toEqual(['Beta', 'Alpha']);
     });
+
+    it('filters exact spore reads to the request-context project', async () => {
+      insertSpore({
+        id: 'spore-project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'Project A',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-project-b',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'decision',
+        content: 'Project B',
+        created_at: epochNow(),
+      });
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_spores');
+      const result = await t.handler({
+        ids: ['spore-project-b', 'spore-project-a'],
+        include_metadata: true,
+      }, undefined);
+      const data = parseResult(result) as Array<{ id: string; project_id: string }>;
+
+      expect(data).toEqual([{ id: 'spore-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', agent_id: TEST_AGENT_ID, observation_type: 'gotcha', status: 'active', content: 'Project A', context: null, importance: 5, file_path: null, tags: null, properties: null, session_id: null, prompt_batch_id: null, embedded: 0, created_at: expect.any(Number), updated_at: null, content_hash: null, machine_id: 'local', synced_at: null }]);
+    });
   });
 
   describe('vault_sessions', () => {
@@ -555,6 +649,31 @@ describe('vault tools', () => {
       expect(data).toHaveLength(1);
       expect(data[0]).toMatchObject({ id: completed.id, status: 'completed' });
     });
+
+    it('lists only sessions in the request-context project', async () => {
+      upsertSession(makeSession({
+        id: 'sess-project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        status: 'completed',
+        title: 'Project A',
+      }));
+      upsertSession(makeSession({
+        id: 'sess-project-b',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        status: 'completed',
+        title: 'Project B',
+      }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_sessions');
+      const result = await t.handler({ include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<{ id: string; project_id: string }>;
+
+      expect(data.map((row) => row.id)).toEqual(['sess-project-a']);
+      expect(data[0].project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    });
   });
 
   describe('vault_search_fts', () => {
@@ -563,6 +682,25 @@ describe('vault tools', () => {
       const result = await t.handler({ query: 'test query' }, undefined);
       const data = parseResult(result) as { results: unknown[] };
       expect(data.results).toEqual([]);
+    });
+
+    it('searches only rows in the request-context project', async () => {
+      const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'completed' });
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionA);
+      upsertSession(sessionB);
+      insertBatch(makeBatch(sessionA.id, { user_prompt: 'shared needle from project a' }));
+      insertBatch(makeBatch(sessionB.id, { user_prompt: 'shared needle from project b' }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_search_fts');
+      const result = await t.handler({ query: 'needle' }, undefined);
+      const data = parseResult(result) as { results: Array<{ preview: string }> };
+
+      expect(data.results).toHaveLength(1);
+      expect(data.results[0].preview).toContain('project a');
     });
   });
 
@@ -620,7 +758,7 @@ describe('vault tools', () => {
         ],
       } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
       const result = await t.handler({ query: 'decision' }, undefined);
       const data = parseResult(result) as { results: Array<{ id: string; preview: string; type: string }> };
@@ -671,7 +809,7 @@ describe('vault tools', () => {
         searchVectors,
       } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
       const since = epochNow() - 120;
       const result = await t.handler({
@@ -690,6 +828,63 @@ describe('vault tools', () => {
         },
       }));
       expect(data.results.map((row) => row.id)).toEqual(['spore-decision']);
+    });
+
+    it('passes project metadata filters and hydrates only matching project rows', async () => {
+      const sessionA = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'completed' });
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionA);
+      upsertSession(sessionB);
+      insertSpore({
+        id: 'spore-project-a',
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        agent_id: TEST_AGENT_ID,
+        session_id: sessionA.id,
+        observation_type: 'decision',
+        content: 'Project A spore',
+        created_at: epochNow(),
+      });
+      insertSpore({
+        id: 'spore-project-b',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        agent_id: TEST_AGENT_ID,
+        session_id: sessionB.id,
+        observation_type: 'decision',
+        content: 'Project B spore',
+        created_at: epochNow(),
+      });
+
+      const searchVectors = vi.fn(() => [
+        {
+          id: 'spore-project-a',
+          namespace: 'spores',
+          similarity: 0.95,
+          metadata: { session_id: sessionA.id, observation_type: 'decision', status: 'active', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+        },
+        {
+          id: 'spore-project-b',
+          namespace: 'spores',
+          similarity: 0.9,
+          metadata: { session_id: sessionB.id, observation_type: 'decision', status: 'active', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        },
+      ]);
+      const embeddingManager = {
+        embedQuery: async () => [0.1, 0.2],
+        searchVectors,
+      } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        embeddingManager,
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_search_semantic');
+      const result = await t.handler({ query: 'decision', namespace: 'spores' }, undefined);
+      const data = parseResult(result) as { results: Array<{ id: string }> };
+
+      expect(searchVectors).toHaveBeenCalledWith([0.1, 0.2], expect.objectContaining({
+        filters: { project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      }));
+      expect(data.results.map((row) => row.id)).toEqual(['spore-project-a']);
     });
   });
 
@@ -787,6 +982,40 @@ describe('vault tools', () => {
       expect(data[0].properties).toBe(JSON.stringify({ rationale: 'full metadata' }));
       expect(data[0].agent_id).toBe(TEST_AGENT_ID);
     });
+
+    it('lists only edges in the request-context project', async () => {
+      insertGraphEdge({
+        project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        agent_id: TEST_AGENT_ID,
+        source_id: 'session-a',
+        source_type: 'session',
+        target_id: 'spore-a',
+        target_type: 'spore',
+        type: 'FROM_SESSION',
+        created_at: epochNow(),
+      });
+      insertGraphEdge({
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        agent_id: TEST_AGENT_ID,
+        source_id: 'session-b',
+        source_type: 'session',
+        target_id: 'spore-b',
+        target_type: 'spore',
+        type: 'FROM_SESSION',
+        created_at: epochNow(),
+      });
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_edges');
+      const result = await t.handler({ include_metadata: true }, undefined);
+      const data = parseResult(result) as Array<{ project_id: string; source_id: string }>;
+
+      expect(data).toHaveLength(1);
+      expect(data[0].source_id).toBe('session-a');
+      expect(data[0].project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -855,6 +1084,13 @@ describe('vault tools', () => {
         content: 'Old observation',
         created_at: epochNow(),
       });
+      insertSpore({
+        id: 'spore-new',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'New observation',
+        created_at: epochNow(),
+      });
 
       const t = findTool(tools, 'vault_resolve_spore');
       const result = await t.handler(
@@ -880,6 +1116,36 @@ describe('vault tools', () => {
       ).all('spore-resolve-test');
       expect(events).toHaveLength(1);
     });
+
+    it('does not resolve a spore outside the request-context project', async () => {
+      insertSpore({
+        id: 'spore-other-project',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        agent_id: TEST_AGENT_ID,
+        observation_type: 'gotcha',
+        content: 'Other project observation',
+        created_at: epochNow(),
+      });
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_resolve_spore');
+      const result = await t.handler({
+        spore_id: 'spore-other-project',
+        action: 'archive',
+        reason: 'wrong project',
+      }, undefined);
+      const data = parseResult(result) as { error: string };
+
+      expect(data).toEqual({ error: 'Spore not found: spore-other-project' });
+
+      const db = getDatabase();
+      const spore = db.prepare('SELECT status FROM spores WHERE id = ?').get('spore-other-project') as { status: string };
+      const eventCount = db.prepare('SELECT COUNT(*) AS count FROM resolution_events').get() as { count: number };
+      expect(spore.status).toBe('active');
+      expect(eventCount.count).toBe(0);
+    });
   });
 
   describe('vault_update_session', () => {
@@ -896,6 +1162,32 @@ describe('vault tools', () => {
       const session = parseResult(result) as { title: string; summary: string };
       expect(session.title).toBe('New Title');
       expect(session.summary).toBe('New summary of the session');
+    });
+
+    it('does not update sessions outside the request-context project', async () => {
+      upsertSession(makeSession({
+        id: 'sess-other-project',
+        project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        status: 'completed',
+        title: 'Original',
+      }));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_update_session');
+      const result = await t.handler({
+        session_id: 'sess-other-project',
+        title: 'Wrong project update',
+      }, undefined);
+      const data = parseResult(result) as { error: string };
+
+      expect(data).toEqual({ error: 'Session not found: sess-other-project' });
+
+      const row = getDatabase()
+        .prepare('SELECT title FROM sessions WHERE id = ?')
+        .get('sess-other-project') as { title: string };
+      expect(row.title).toBe('Original');
     });
   });
 
@@ -934,6 +1226,21 @@ describe('vault tools', () => {
       expect(extract.content).toBe('# Digest\nCompact context.');
     });
 
+    it('writes digest extracts in the request-context project scope', async () => {
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_write_digest');
+      const result = await t.handler(
+        { tier: 1500, content: '# Project digest' },
+        undefined,
+      );
+      const extract = parseResult(result) as { project_id: string; content: string };
+
+      expect(extract.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+      expect(extract.content).toBe('# Project digest');
+    });
+
     it('upserts on (agent_id, tier) conflict', async () => {
       const t = findTool(tools, 'vault_write_digest');
       await t.handler({ tier: 5000, content: 'v1' }, undefined);
@@ -970,6 +1277,21 @@ describe('vault tools', () => {
       const result = await listTool.handler({}, undefined);
       const data = parseResult(result) as unknown[];
       expect(data).toEqual([]);
+    });
+
+    it('does not mark a batch outside the request-context project', async () => {
+      const sessionB = makeSession({ id: 'sess-project-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'completed' });
+      upsertSession(sessionB);
+      const batch = insertBatch(makeBatch(sessionB.id));
+
+      const scopedTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+        requestContext: requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+      });
+      const t = findTool(scopedTools, 'vault_mark_processed');
+      const result = await t.handler({ batch_id: batch.id }, undefined);
+      const data = parseResult(result) as { error: string };
+
+      expect(data.error).toBe(`Prompt batch not found: ${batch.id}`);
     });
   });
 

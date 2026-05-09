@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
+import { parse as parseToml } from 'smol-toml';
 
 // Mock SQLite database layer — avoid native extension dependency in tests
 const { mockDb } = vi.hoisted(() => {
@@ -13,6 +14,13 @@ const { mockDb } = vi.hoisted(() => {
 
 mock.module('@myco/db/client.js', () => ({
   initDatabase: vi.fn().mockReturnValue(mockDb),
+  openDatabase: vi.fn().mockReturnValue({
+    prepare: vi.fn().mockReturnValue({
+      get: vi.fn().mockReturnValue({ version: 32 }),
+    }),
+    run: vi.fn(),
+    close: vi.fn(),
+  }),
   vaultDbPath: vi.fn((dir: string) => `${dir}/myco.db`),
   closeDatabase: vi.fn(),
 }));
@@ -42,7 +50,7 @@ mock.module('@myco/vault/resolve.js', () => ({
 }));
 
 import { run } from '@myco/cli/init.js';
-import { initDatabase, closeDatabase } from '@myco/db/client.js';
+import { initDatabase, openDatabase, closeDatabase } from '@myco/db/client.js';
 import { resolveVaultDir } from '@myco/vault/resolve.js';
 
 describe('myco init', () => {
@@ -52,11 +60,13 @@ describe('myco init', () => {
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-init-test-'));
     vault = path.join(testDir, '.myco');
+    process.env.MYCO_HOME = path.join(testDir, '.home');
     vi.clearAllMocks();
     vi.mocked(resolveVaultDir).mockReturnValue(vault);
   });
 
   afterEach(() => {
+    delete process.env.MYCO_HOME;
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -64,6 +74,7 @@ describe('myco init', () => {
     await run(['--embedding-model', 'bge-m3']);
 
     expect(fs.existsSync(path.join(vault, 'myco.yaml'))).toBe(true);
+    expect(fs.existsSync(path.join(vault, 'project.toml'))).toBe(true);
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
   });
 
@@ -71,16 +82,100 @@ describe('myco init', () => {
     await run(['--embedding-model', 'bge-m3']);
 
     expect(initDatabase).toHaveBeenCalled();
+    expect(openDatabase).toHaveBeenCalled();
     expect(closeDatabase).toHaveBeenCalled();
+  });
+
+  it('initializes the Grove database under the global Myco home', async () => {
+    await run(['--embedding-model', 'bge-m3']);
+
+    const groveDbCall = vi.mocked(openDatabase).mock.calls.find(([dbPath]) =>
+      typeof dbPath === 'string' && dbPath.includes(`${path.sep}groves${path.sep}`),
+    );
+
+    expect(groveDbCall?.[0]).toEndWith(path.join('myco.db'));
+    expect(groveDbCall?.[0]).toContain(process.env.MYCO_HOME!);
   });
 
   it('creates all required subdirectories', async () => {
     await run(['--embedding-model', 'bge-m3']);
 
-    const dirs = ['buffer', 'attachments', 'logs'];
+    const dirs = ['buffer', 'attachments', 'logs', 'migration', 'tasks'];
     for (const dir of dirs) {
       expect(fs.existsSync(path.join(vault, dir))).toBe(true);
     }
+  });
+
+  it('writes project manifest and registers into the default Grove', async () => {
+    await run(['--embedding-model', 'bge-m3']);
+
+    const manifest = parseToml(fs.readFileSync(path.join(vault, 'project.toml'), 'utf-8')) as Record<string, any>;
+    expect(manifest.project.id).toStartWith('proj_');
+    expect(manifest.grove.binding_id).toStartWith('gbind_');
+    expect(manifest.grove.slug).toBe('default');
+
+    // Filter to directory entries — `~/.myco/groves/` also holds the
+    // top-level `registry.yaml` file (Grove registry pointer).
+    const grovesDir = path.join(process.env.MYCO_HOME!, 'groves');
+    const groveIds = fs.readdirSync(grovesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    expect(groveIds).toHaveLength(1);
+    expect(fs.existsSync(path.join(grovesDir, groveIds[0], 'registry', 'projects.toml'))).toBe(true);
+  });
+
+  it('honors --project and --grove for explicit project registration', async () => {
+    const home = process.env.MYCO_HOME!;
+    const { createGrove } = await import('@myco/grove/registry.js');
+    createGrove('Work', home);
+    const target = path.join(testDir, 'target-project');
+    fs.mkdirSync(target, { recursive: true });
+
+    await run(['--project', target, '--grove', 'work', '--embedding-model', 'bge-m3', '--non-interactive']);
+
+    const targetVault = path.join(target, '.myco');
+    const manifest = parseToml(fs.readFileSync(path.join(targetVault, 'project.toml'), 'utf-8')) as Record<string, any>;
+    expect(manifest.grove.slug).toBe('work');
+    expect(fs.existsSync(path.join(targetVault, 'myco.yaml'))).toBe(true);
+  });
+
+  it('rejects an unknown --grove before creating a partial vault', async () => {
+    const target = path.join(testDir, 'unknown-grove-project');
+    fs.mkdirSync(target, { recursive: true });
+
+    await expect(run([
+      '--project', target,
+      '--grove', 'does-not-exist',
+      '--embedding-model', 'bge-m3',
+      '--non-interactive',
+    ])).rejects.toThrow(/Unknown Grove: does-not-exist/);
+
+    expect(fs.existsSync(path.join(target, '.myco'))).toBe(false);
+    expect(initDatabase).not.toHaveBeenCalled();
+  });
+
+  it('rejects --grove when project.toml is already bound to another Grove', async () => {
+    const home = process.env.MYCO_HOME!;
+    const { createGrove, registerProjectInGrove } = await import('@myco/grove/registry.js');
+    const { saveProjectManifest } = await import('@myco/config/project-manifest.js');
+    const work = createGrove('Work', home);
+    createGrove('Other', home);
+    fs.mkdirSync(vault, { recursive: true });
+    saveProjectManifest(vault, {
+      project: { id: 'proj_bound', name: 'bound-project' },
+      grove: { binding_id: 'gbind_bound', slug: work.slug, mode: 'local' },
+    });
+    registerProjectInGrove(work.id, {
+      projectId: 'proj_bound',
+      projectName: 'bound-project',
+      projectRoot: testDir,
+      bindingId: 'gbind_bound',
+    }, home);
+
+    await expect(run(['--grove', 'other', '--non-interactive']))
+      .rejects.toThrow(/belongs to Grove Work/);
+
+    expect(initDatabase).not.toHaveBeenCalled();
   });
 
   it('writes valid v3 config with explicit values', async () => {
@@ -95,8 +190,10 @@ describe('myco init', () => {
     expect(config.version).toBe(3);
     expect(config.embedding.provider).toBe('ollama');
     expect(config.embedding.model).toBe('bge-m3');
-    expect(config.daemon.log_level).toBe('info');
     expect(config.capture.artifact_extensions).toEqual(['.md']);
+    // `daemon.log_level` is machine-tier now (~/.myco/config.yaml);
+    // ProjectConfigSchema strips it from project myco.yaml on save.
+    expect(config.daemon).toBeUndefined();
   });
 
   it('uses correct base_url when explicitly passed', async () => {
@@ -115,8 +212,11 @@ describe('myco init', () => {
     expect(gitignore).toContain('buffer/');
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('attachments/');
-    expect(gitignore).toContain('runtime/');
-    expect(gitignore).toContain('runtime.tmp/');
+    expect(gitignore).toContain('migration/');
+    // runtime.command and runtime/ moved to ~/.myco/ — no longer
+    // project-local artifacts to gitignore.
+    expect(gitignore).not.toContain('runtime.command');
+    expect(gitignore).not.toContain('runtime.tmp/');
   });
 
   it('is idempotent — does not overwrite user-set values on re-init', async () => {

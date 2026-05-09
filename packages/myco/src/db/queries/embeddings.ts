@@ -5,7 +5,8 @@
  * This module only manages the `embedded` flag on relational tables.
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
+import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,16 +63,14 @@ export function assertValidTable(table: string): asserts table is EmbeddableTabl
 // ---------------------------------------------------------------------------
 
 /** Mark a row as embedded in the external vector store. */
-export function markEmbedded(table: string, id: string | number): void {
+export function markEmbedded(table: string, id: string | number, db: Database = getDatabase()): void {
   assertValidTable(table);
-  const db = getDatabase();
   db.prepare(`UPDATE ${table} SET embedded = 1 WHERE id = ?`).run(id);
 }
 
 /** Clear the embedded flag (e.g., when vector is removed or needs re-embedding). */
-export function clearEmbedded(table: string, id: string | number): void {
+export function clearEmbedded(table: string, id: string | number, db: Database = getDatabase()): void {
   assertValidTable(table);
-  const db = getDatabase();
   db.prepare(`UPDATE ${table} SET embedded = 0 WHERE id = ?`).run(id);
 }
 
@@ -79,9 +78,9 @@ export function clearEmbedded(table: string, id: string | number): void {
 export function getUnembedded(
   table: string,
   limit: number = DEFAULT_UNEMBEDDED_LIMIT,
+  db: Database = getDatabase(),
 ): Array<{ id: string | number; created_at: number; text: string }> {
   assertValidTable(table);
-  const db = getDatabase();
   const textCol = EMBEDDABLE_TEXT_COLUMNS[table as EmbeddableTable];
 
   if (table === 'canopy_entries') {
@@ -110,34 +109,54 @@ export function getUnembedded(
 }
 
 /** Get aggregated embedding queue depth across all embeddable tables. */
-export function getEmbeddingQueueDepth(): {
+export function getEmbeddingQueueDepth(scope: ProjectScope): {
+  queue_depth: number;
+  embedded_count: number;
+  total: number;
+};
+export function getEmbeddingQueueDepth(scope: ProjectScope, db: Database): {
+  queue_depth: number;
+  embedded_count: number;
+  total: number;
+};
+export function getEmbeddingQueueDepth(
+  scopeArg: ProjectScope,
+  db: Database = getDatabase(),
+): {
   queue_depth: number;
   embedded_count: number;
   total: number;
 } {
-  const db = getDatabase();
+  const scope = projectScopeClause(scopeArg);
+  // Six SELECTs per row, identical params per arm.
+  const ARMS = 6;
+  const repeatedParams = (): unknown[] => {
+    const out: unknown[] = [];
+    for (let i = 0; i < ARMS; i++) out.push(...scope.params);
+    return out;
+  };
 
   const queueRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions       WHERE embedded = 0 AND summary IS NOT NULL) +
-      (SELECT COUNT(*) FROM spores         WHERE embedded = 0 AND status = 'active') +
-      (SELECT COUNT(*) FROM plans          WHERE embedded = 0 AND content IS NOT NULL) +
-      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 0 AND content IS NOT NULL) +
-      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 0 AND status = 'active') +
-      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 0 AND llm_description IS NOT NULL)
+      (SELECT COUNT(*) FROM sessions       WHERE embedded = 0 AND summary IS NOT NULL${scope.sql}) +
+      (SELECT COUNT(*) FROM spores         WHERE embedded = 0 AND status = 'active'${scope.sql}) +
+      (SELECT COUNT(*) FROM plans          WHERE embedded = 0 AND content IS NOT NULL${scope.sql}) +
+      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 0 AND content IS NOT NULL${scope.sql}) +
+      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 0 AND status = 'active'${scope.sql}) +
+      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 0 AND llm_description IS NOT NULL${scope.sql})
     AS cnt
-  `).get() as { cnt: number };
+  `).get(...repeatedParams()) as { cnt: number };
 
   const embeddedRow = db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM sessions       WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM spores         WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM plans          WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 1) +
-      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 1)
+      (SELECT COUNT(*) FROM sessions       WHERE embedded = 1${scope.sql}) +
+      (SELECT COUNT(*) FROM spores         WHERE embedded = 1${scope.sql}) +
+      (SELECT COUNT(*) FROM plans          WHERE embedded = 1${scope.sql}) +
+      (SELECT COUNT(*) FROM artifacts      WHERE embedded = 1${scope.sql}) +
+      (SELECT COUNT(*) FROM skill_records  WHERE embedded = 1${scope.sql}) +
+      (SELECT COUNT(*) FROM canopy_entries WHERE embedded = 1${scope.sql})
     AS cnt
-  `).get() as { cnt: number };
+  `).get(...repeatedParams()) as { cnt: number };
 
   const queue_depth = Number(queueRow.cnt ?? 0);
   const embedded_count = Number(embeddedRow.cnt ?? 0);

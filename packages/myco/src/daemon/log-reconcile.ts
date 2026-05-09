@@ -2,12 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { insertLogEntry } from '@myco/db/queries/logs.js';
 import { kindToComponent } from '@myco/constants/log-kinds.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
 /**
  * Replay JSONL log entries that are newer than the last entry in SQLite.
  * Returns the number of entries replayed.
  */
-export function reconcileLogBuffer(logDir: string, sinceTimestamp: string): number {
+export function reconcileLogBuffer(
+  logDir: string,
+  sinceTimestamp: string,
+  projectId: GroveProjectId,
+): number {
   let replayed = 0;
 
   // Read log files in order: rotated files first (oldest), then current
@@ -35,6 +40,7 @@ export function reconcileLogBuffer(logDir: string, sinceTimestamp: string): numb
             message,
             data: Object.keys(rest).length > 0 ? JSON.stringify(rest) : null,
             session_id: rest.session_id ?? null,
+            project_id: projectId,
           });
           replayed++;
         }

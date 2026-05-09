@@ -29,7 +29,9 @@ import {
   stagingRoot,
 } from '@myco/agent/tools/skill-staging.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 const NOW = Math.floor(Date.now() / 1000);
 
 describe('cleanupOnTaskFailure', () => {
@@ -174,13 +176,14 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-finalize',
       runContext: { cortex_instruction_input_hash: 'hash-cortex-1' },
     });
 
-    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toMatchObject({
+    expect(getCortexInstructions(DEFAULT_AGENT_ID, ALL_PROJECTS_SCOPE)).toMatchObject({
       agent_id: DEFAULT_AGENT_ID,
       content: '## Myco-Enabled Project\n\nMyco provides project memory for this repository.',
       input_hash: 'hash-cortex-1',
@@ -210,6 +213,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-fallback',
@@ -217,7 +221,7 @@ describe('finalizeOnTaskSuccess', () => {
       instruction: 'instruction-body',
     });
 
-    expect(getCortexInstructions(DEFAULT_AGENT_ID)?.input_hash).toBe(
+    expect(getCortexInstructions(DEFAULT_AGENT_ID, ALL_PROJECTS_SCOPE)?.input_hash).toBe(
       crypto.createHash(CONTENT_HASH_ALGORITHM).update('instruction-body').digest('hex'),
     );
   });
@@ -244,6 +248,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-dry',
@@ -251,12 +256,13 @@ describe('finalizeOnTaskSuccess', () => {
       dryRun: true,
     });
 
-    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toBeNull();
+    expect(getCortexInstructions(DEFAULT_AGENT_ID, ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('is a no-op for unrelated tasks', async () => {
     await expect(
       finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
         taskName: 'vault-evolve',
         agentId: DEFAULT_AGENT_ID,
         runId: 'run-unrelated',
@@ -264,6 +270,6 @@ describe('finalizeOnTaskSuccess', () => {
       }),
     ).resolves.toBeUndefined();
 
-    expect(getCortexInstructions(DEFAULT_AGENT_ID)).toBeNull();
+    expect(getCortexInstructions(DEFAULT_AGENT_ID, ALL_PROJECTS_SCOPE)).toBeNull();
   });
 });

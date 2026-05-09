@@ -5,10 +5,11 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { insertLogEntry } from '@myco/db/queries/logs.js';
-import { handleLogSearch, handleLogStream, handleLogDetail } from '@myco/daemon/api/log-explorer';
+import { createLogIngestionHandler, handleLogSearch, handleLogStream, handleLogDetail } from '@myco/daemon/api/log-explorer';
 import type { RouteRequest } from '@myco/daemon/router';
 import type { LogEntryInsert } from '@myco/db/queries/logs.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ function makeEntry(overrides: Partial<LogEntryInsert> = {}): LogEntryInsert {
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: {},
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '',
@@ -325,6 +327,34 @@ describe('log explorer API handlers', () => {
 
       const body = res.body as Record<string, unknown>;
       expect(body.resolved).toEqual({});
+    });
+  });
+
+  describe('createLogIngestionHandler', () => {
+    it('threads request project_id into persisted log metadata', async () => {
+      const calls: Array<Record<string, unknown>> = [];
+      const logger = {
+        log(level: string, kind: string, message: string, data?: Record<string, unknown>) {
+          calls.push({ level, kind, message, data });
+        },
+      };
+
+      const res = await createLogIngestionHandler(logger as never)(makeRequest({
+        body: {
+          level: 'info',
+          component: 'mcp',
+          message: 'Tool call: myco_search',
+          data: { tool: 'myco_search' },
+        },
+        requestContext: { projectId: 'proj_request' } as RouteRequest['requestContext'],
+      }));
+
+      expect(res.body).toEqual({ ok: true });
+      expect(calls[0].data).toMatchObject({
+        tool: 'myco_search',
+        mcp_component: 'mcp',
+        project_id: 'proj_request',
+      });
     });
   });
 });

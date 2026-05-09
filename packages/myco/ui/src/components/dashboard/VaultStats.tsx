@@ -1,103 +1,58 @@
 import { type StatsResponse } from '../../hooks/use-daemon';
-import { formatUptime, formatEpochAgo } from '../../lib/format';
+import { formatEpochAgo } from '../../lib/format';
 import { StatCard } from '../ui/stat-card';
-import { useCanopyRollup } from '../../hooks/use-canopy';
-
-/* ---------- Helpers ---------- */
-
-const KILO = 1_000;
-const MEGA = 1_000_000;
-
-/** Compact, sign-preserving integer formatter for the Canopy headline. */
-function formatTokens(n: number): string {
-  const sign = n < 0 ? '-' : '';
-  const abs = Math.abs(n);
-  if (abs >= MEGA) return `${sign}${(abs / MEGA).toFixed(1)}M`;
-  if (abs >= KILO * 10) return `${sign}${Math.round(abs / KILO)}k`;
-  if (abs >= KILO) return `${sign}${(abs / KILO).toFixed(1)}k`;
-  return `${sign}${abs.toLocaleString()}`;
-}
-
-/* ---------- Component ---------- */
+import { useProjectPathBuilder } from '../../hooks/use-project-selection';
 
 export function VaultStats({ stats }: { stats: StatsResponse }) {
-  const embeddingPercent =
-    stats.embedding.total_embeddable > 0
-      ? Math.round(
-          (stats.embedding.embedded_count / stats.embedding.total_embeddable) * 100,
-        )
-      : 0;
+  const projectPath = useProjectPathBuilder();
 
-  const digestLabel =
-    stats.digest.tiers_available.length > 0
-      ? `${stats.digest.tiers_available.length} tiers`
-      : 'None';
+  // Agent tile: the lifetime run count is ambient noise — what matters
+  // is whether the agent is active and how recently. Show the relative
+  // time as the headline; status as the sublabel; accent reflects state.
+  const agentValue = stats.agent.last_run_at
+    ? formatEpochAgo(stats.agent.last_run_at)
+    : 'Never';
+  const agentSublabel = stats.agent.last_run_status ?? '—';
 
-  const agentLabel =
-    stats.agent.last_run_at
-      ? formatEpochAgo(stats.agent.last_run_at)
-      : 'Never';
+  // Canopy tile: indexed-vs-described is the meaningful state.
+  // Total entries as the headline; "X/Y described" as sublabel tells
+  // the user whether Canopy has caught up with the codebase.
+  const canopyDescribed = stats.canopy.described_count;
+  const canopyTotal = stats.canopy.entries_count;
+  const canopySublabel = canopyTotal > 0
+    ? `${canopyDescribed}/${canopyTotal} described`
+    : 'no entries yet';
 
-  // Canopy lifetime rollup — folded into the dashboard stat row in place
-  // of the wide banner that previously sat above search on the session
-  // list page. Renders zeros while the endpoint is loading or returns
-  // null (pre-feature install) so the grid layout is stable.
-  const { data: canopy } = useCanopyRollup();
-  const canopyTokensSaved = canopy?.total_tokens_saved ?? 0;
-  const canopySessions = canopy?.sessions_with_canopy ?? 0;
-  const canopySublabel = canopySessions > 0
-    ? `across ${canopySessions} session${canopySessions === 1 ? '' : 's'}`
-    : 'no data yet';
-
+  // Embedding lives on the Grove Dashboard and uptime/version on the
+  // Machine Dashboard now — keep this row to project-scoped stats only.
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       <StatCard
         label="Sessions"
         value={String(stats.vault.session_count)}
         sublabel={`${stats.daemon.active_sessions.length} active`}
         accent="sage"
-        href="/sessions"
+        href={projectPath('/sessions')}
       />
       <StatCard
         label="Spores"
         value={String(stats.vault.spore_count)}
-        sublabel={`${stats.vault.entity_count} entities`}
         accent="sage"
-        href="/mycelium?tab=spores"
-      />
-      <StatCard
-        label="Embedding"
-        value={`${embeddingPercent}%`}
-        sublabel={`${stats.embedding.embedded_count}/${stats.embedding.total_embeddable}`}
-        accent={stats.embedding.queue_depth > 0 ? 'ochre' : 'sage'}
-        href="/operations"
-      />
-      <StatCard
-        label="Agent"
-        value={`${stats.agent.total_runs}`}
-        sublabel={`last: ${agentLabel}`}
-        accent={stats.agent.last_run_status === 'error' ? 'terracotta' : 'outline'}
-        href="/agent"
+        href={projectPath('/mycelium?tab=spores')}
       />
       <StatCard
         label="Canopy"
-        value={formatTokens(canopyTokensSaved)}
+        value={String(canopyTotal)}
         sublabel={canopySublabel}
-        accent="sage"
-        href="/cortex?tab=canopy"
+        accent={canopyTotal > canopyDescribed ? 'ochre' : 'sage'}
+        href={projectPath('/cortex?tab=canopy')}
       />
       <StatCard
-        label="Digest"
-        value={digestLabel}
-        sublabel={stats.digest.generated_at ? formatEpochAgo(stats.digest.generated_at) : undefined}
-        accent="outline"
-        href="/mycelium?tab=digest"
-      />
-      <StatCard
-        label="Uptime"
-        value={formatUptime(stats.daemon.uptime_seconds)}
-        sublabel={`v${stats.daemon.version}`}
-        accent="outline"
+        label="Agent"
+        value={agentValue}
+        sublabel={agentSublabel}
+        accent={stats.agent.last_run_status === 'error' ? 'terracotta' : 'outline'}
+        href={projectPath('/agent')}
       />
     </div>
   );

@@ -9,6 +9,7 @@ import { SessionRegistry } from '@myco/daemon/lifecycle.js';
 import { getSession, upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch, listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -149,7 +150,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     const parentAfter = batches.find((b) => b.prompt_number === 1)!;
     const childAfter = batches.find((b) => b.prompt_number === 2)!;
     expect(parentAfter.response_summary).toBe('combined turn reply');
@@ -225,7 +226,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     const batch2 = batches.find((b) => b.prompt_number === 2)!;
     expect(batch2.response_summary).toBe('Here is the branch summary.');
     // Batch 1's prior response must NOT be overwritten.
@@ -314,7 +315,7 @@ describe('createStopProcessor session capture rules', () => {
       },
     } as never);
 
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     const b1 = batches.find((b) => b.prompt_number === 1)!;
     const b2 = batches.find((b) => b.prompt_number === 2)!;
     const b3 = batches.find((b) => b.prompt_number === 3)!;
@@ -338,7 +339,7 @@ describe('createStopProcessor session capture rules', () => {
     } as never);
 
     expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
-    expect(getSession(sessionId)).toBeNull();
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('deletes a leaked session row when stop re-evaluates the capture rules', async () => {
@@ -362,8 +363,8 @@ describe('createStopProcessor session capture rules', () => {
       created_at: now,
     });
 
-    expect(getSession(sessionId)).not.toBeNull();
-    expect(listBatchesBySession(sessionId)).toHaveLength(1);
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).not.toBeNull();
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
 
     const res = await stopProcessor.handleStopRoute({
       body: {
@@ -375,8 +376,8 @@ describe('createStopProcessor session capture rules', () => {
     } as never);
 
     expect(res.body).toEqual({ ok: true, ignored: 'subagent-thread-spawn' });
-    expect(getSession(sessionId)).toBeNull();
-    expect(listBatchesBySession(sessionId)).toHaveLength(0);
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
   it('ignores and deletes a leaked noninteractive exec session row', async () => {
@@ -410,8 +411,8 @@ describe('createStopProcessor session capture rules', () => {
     } as never);
 
     expect(res.body).toEqual({ ok: true, ignored: 'noninteractive-exec' });
-    expect(getSession(sessionId)).toBeNull();
-    expect(listBatchesBySession(sessionId)).toHaveLength(0);
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE })).toHaveLength(0);
   });
 
   it('reconciles a plan-dir file written outside the fast-path tool gate', async () => {
@@ -453,7 +454,7 @@ describe('createStopProcessor session capture rules', () => {
     expect(res.body).toEqual({ ok: true });
     await stopProcessor.getActiveProcessing();
 
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);
     expect(plans[0].title).toBe('Reconciled Spec');
     expect(plans[0].source_path).toBe('docs/superpowers/specs/reconciled.md');
@@ -517,7 +518,7 @@ describe('createStopProcessor session capture rules', () => {
     expect(res.body).toEqual({ ok: true });
     await stopProcessor.getActiveProcessing();
 
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);
     expect(plans[0].prompt_batch_id).toBe(firstBatch.id);
 

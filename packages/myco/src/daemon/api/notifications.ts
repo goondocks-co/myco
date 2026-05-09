@@ -18,6 +18,7 @@ import { getAllDomains } from '../../notifications/registry.js';
 import { notify } from '../../notifications/notify.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import type { NotificationMode } from '../../notifications/types.js';
+import { projectScopeFromRequestContext, type MycoRequestContext } from '../../tools/request-context.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -46,15 +47,28 @@ const UpdateStatusBody = z.object({
 export async function handleListNotifications(
   _vaultDir: string,
   query: Record<string, string>,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const status = query.status as 'unread' | 'read' | 'dismissed' | undefined;
   const domain = query.domain;
   const mode = query.mode as NotificationMode | undefined;
   const limit = query.limit ? Number(query.limit) : undefined;
   const offset = query.offset ? Number(query.offset) : undefined;
+  // ?include_daemon=1 (or =true) merges daemon-scope rows in alongside
+  // the request's project rows so a single feed surfaces both layers.
+  const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
 
-  const items = listNotifications({ status, domain, mode, limit, offset });
-  const unreadCount = countNotifications('unread');
+  const scope = projectScopeFromRequestContext(requestContext);
+  const items = listNotifications({
+    status,
+    domain,
+    mode,
+    scope,
+    include_daemon_scope: includeDaemon,
+    limit,
+    offset,
+  });
+  const unreadCount = countNotifications('unread', scope, { includeDaemonScope: includeDaemon });
 
   return {
     body: {
@@ -68,6 +82,7 @@ export async function handleListNotifications(
 export async function handleCreateNotification(
   vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const parsed = CreateNotificationBody.safeParse(body);
   if (!parsed.success) {
@@ -76,8 +91,10 @@ export async function handleCreateNotification(
 
   const { domain, type, title, message, link, metadata } = parsed.data;
 
-  // Check config for structured HTTP responses before delegating
-  const config = loadMergedConfig(vaultDir);
+  // Check config for structured HTTP responses before delegating.
+  // Passing groveId routes Grove-tier notification settings through the
+  // merge AND keeps cache slots aligned with Grove-aware callers.
+  const config = loadMergedConfig(vaultDir, { groveId: requestContext?.groveId ?? null });
   if (!config.notifications.enabled) {
     return { body: { ok: true, suppressed: true, reason: 'notifications_disabled' } };
   }
@@ -91,17 +108,18 @@ export async function handleCreateNotification(
     domain, type, title, message, link, metadata,
     level: parsed.data.level,
     mode: parsed.data.mode,
-  }, config);
+  }, config, requestContext ? { projectId: requestContext.projectId } : undefined);
 
   if (!id) {
     return { body: { ok: true, suppressed: true, reason: 'unknown' } };
   }
+  const scope = projectScopeFromRequestContext(requestContext);
 
   return {
     body: {
       ok: true,
       id,
-      notification: parseNotificationRow(getNotification(id)!),
+      notification: parseNotificationRow(getNotification(id, scope)!),
     },
   };
 }
@@ -111,13 +129,14 @@ export async function handleUpdateNotification(
   _vaultDir: string,
   id: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const parsed = UpdateStatusBody.safeParse(body);
   if (!parsed.success) {
     return { status: 400, body: { error: 'validation_failed', issues: parsed.error.issues } };
   }
 
-  const updated = updateNotificationStatus(id, parsed.data.status);
+  const updated = updateNotificationStatus(id, parsed.data.status, projectScopeFromRequestContext(requestContext));
   if (!updated) {
     return { status: 404, body: { error: 'not_found' } };
   }
@@ -129,9 +148,10 @@ export async function handleUpdateNotification(
 export async function handleDismissAll(
   _vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = dismissAllNotifications(domain);
+  const count = dismissAllNotifications(domain, projectScopeFromRequestContext(requestContext));
   return { body: { ok: true, dismissed: count } };
 }
 
@@ -139,9 +159,10 @@ export async function handleDismissAll(
 export async function handleMarkAllRead(
   _vaultDir: string,
   body: unknown,
+  requestContext?: MycoRequestContext,
 ): Promise<RouteResponse> {
   const domain = (body as Record<string, unknown>)?.domain as string | undefined;
-  const count = markAllRead(domain);
+  const count = markAllRead(domain, projectScopeFromRequestContext(requestContext));
   return { body: { ok: true, marked: count } };
 }
 
@@ -151,8 +172,18 @@ export async function handleGetRegistry(): Promise<RouteResponse> {
 }
 
 /** GET /api/notifications/unread-count — lightweight unread count endpoint. */
-export async function handleUnreadCount(): Promise<RouteResponse> {
-  return { body: { count: countNotifications('unread') } };
+export async function handleUnreadCount(
+  requestContext?: MycoRequestContext,
+  query: Record<string, string> = {},
+): Promise<RouteResponse> {
+  const includeDaemon = query.include_daemon === '1' || query.include_daemon === 'true';
+  return {
+    body: {
+      count: countNotifications('unread', projectScopeFromRequestContext(requestContext), {
+        includeDaemonScope: includeDaemon,
+      }),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

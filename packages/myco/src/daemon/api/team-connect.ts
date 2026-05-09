@@ -6,29 +6,43 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { updateTeamConfig, loadMergedConfig } from '@myco/config/loader.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
+import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { writeSecret, readSecrets } from '@myco/config/secrets.js';
+import {
+  loadTeamConnectionConfig,
+  readTeamConnectionSecrets,
+  resolveTeamConnectionStore,
+  updateTeamConnectionConfig,
+  writeTeamConnectionSecret,
+} from '@myco/grove/team-connection.js';
 import {
   countPending,
+  countTeamSyncRows,
+  backfillAll,
   backfillUnsynced,
   LOCAL_ONLY_OUTBOX_TABLES,
   LOCAL_ONLY_SYNC_COLUMNS,
   LOCAL_ONLY_RATIONALES,
 } from '@myco/db/queries/team-outbox.js';
-import { readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
+import { searchLogs, type LogEntryRow } from '@myco/db/queries/logs.js';
+import { buildCommandEnv, readJsonConfig, resolveVaultConfigPath } from '@myco-deploy/index.js';
 import { getInstalledVersion } from '../update-checker.js';
 import { TEAM_PACKAGE_NAME } from '@myco/constants/update.js';
-import { TeamSyncClient } from '../team-sync.js';
-import { SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { TeamSyncClient, type DlqListResponse, type QueueStatsResponse, type TeamRemoteSyncSummaryResponse } from '../team-sync.js';
+import { MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION, TEAM_API_KEY_SECRET } from '@myco/constants.js';
+import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { getPluginVersion } from '@myco/version.js';
 import { SCHEMA_VERSION } from '@myco/db/schema.js';
+import { loadGroveRecord } from '@myco/grove/registry.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
+import { isGroveScoped, type MycoRequestContext } from '@myco/tools/request-context.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,20 +52,419 @@ const UPGRADE_SUBPROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 /** Maximum stdout+stderr the subprocess can produce before we truncate. */
 const UPGRADE_SUBPROCESS_MAX_BUFFER = 4 * 1024 * 1024;
 
+/**
+ * Cloudflare API fetches must time out so the daemon doesn't wedge a
+ * request handler when the network or the CF edge stalls. 30s matches
+ * the convention used for `wrangler whoami --json` above and is well
+ * below the daemon's per-request budget.
+ */
+const CLOUDFLARE_API_TIMEOUT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const TEAM_CONFIG_DIR = 'team';
 const TEAM_CONFIG_FILE = 'config.json';
+const HANDOFF_BURST_GAP_MS = 10_000;
+const HANDOFF_LOG_PAGE_SIZE = 500;
 
 interface TeamLocalConfig {
   package_version?: string;
+  worker_name?: string;
+  worker_url?: string;
+}
+
+interface WranglerWhoamiAccount {
+  id?: string;
+  name?: string;
+}
+
+interface WranglerWhoami {
+  loggedIn?: boolean;
+  accounts?: WranglerWhoamiAccount[];
+}
+
+interface CloudflareQueueCredentials {
+  token: string;
+  accountId: string;
+}
+
+interface TeamQueueNames {
+  sync: string;
+  dlq: string;
+}
+
+interface TeamConnectionContext {
+  connection_scope: 'grove' | 'legacy-project';
+  grove: {
+    id: string;
+    name: string;
+    slug: string;
+    mode: string;
+  } | null;
+  project: {
+    id: string;
+    name: string;
+    root: string;
+  };
+}
+
+interface TeamHandoffSummary {
+  completed_at: string;
+  started_at: string | null;
+  duration_ms: number | null;
+  enqueued: number | null;
+  accepted: number;
+  rejected: number;
+  batches: number;
+  error: string | null;
+  mode: string | null;
+  source: 'handoff_log' | 'flush_logs';
+}
+
+type LocalTeamPackageSource = 'installed' | 'dev-linked' | 'path';
+
+interface LocalTeamPackageVersion {
+  version: string;
+  source: LocalTeamPackageSource;
 }
 
 function readCachedTeamPackageVersion(vaultDir: string): string | null {
   const config = readJsonConfig<TeamLocalConfig>(resolveVaultConfigPath(vaultDir, TEAM_CONFIG_DIR, TEAM_CONFIG_FILE));
   return config?.package_version?.trim() || null;
+}
+
+function readTeamLocalState(vaultDir: string, requestContext?: MycoRequestContext): TeamLocalConfig | null {
+  const store = resolveTeamConnectionStore(vaultDir, requestContext);
+  const configPath = path.join(store.configDir, TEAM_CONFIG_DIR, TEAM_CONFIG_FILE);
+  return readJsonConfig<TeamLocalConfig>(configPath);
+}
+
+function resolveTeamQueueNames(vaultDir: string, requestContext?: MycoRequestContext): TeamQueueNames | null {
+  const workerName = readTeamLocalState(vaultDir, requestContext)?.worker_name?.trim();
+  if (!workerName) return null;
+  return {
+    sync: `${workerName}-sync`,
+    dlq: `${workerName}-sync-dlq`,
+  };
+}
+
+function readTomlString(text: string, key: string): string | null {
+  const match = text.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'm'));
+  return match?.[1] ?? null;
+}
+
+function wranglerAuthConfigCandidates(): string[] {
+  const home = os.homedir();
+  const candidates = [
+    process.env.XDG_CONFIG_HOME
+      ? path.join(process.env.XDG_CONFIG_HOME, '.wrangler', 'config', 'default.toml')
+      : null,
+    process.platform === 'darwin'
+      ? path.join(home, 'Library', 'Preferences', '.wrangler', 'config', 'default.toml')
+      : null,
+    path.join(home, '.config', '.wrangler', 'config', 'default.toml'),
+    path.join(home, '.wrangler', 'config', 'default.toml'),
+  ];
+  return candidates.filter((candidate): candidate is string => Boolean(candidate));
+}
+
+async function resolveWranglerCloudflareCredentials(): Promise<CloudflareQueueCredentials | null> {
+  let whoami: WranglerWhoami | null = null;
+  try {
+    const result = await execFileAsync('wrangler', ['whoami', '--json'], {
+      encoding: 'utf-8',
+      env: buildCommandEnv(),
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    whoami = JSON.parse(result.stdout) as WranglerWhoami;
+  } catch {
+    return null;
+  }
+
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim()
+    || whoami?.accounts?.find((account) => account.id)?.id?.trim()
+    || null;
+  if (!accountId) return null;
+
+  for (const candidate of wranglerAuthConfigCandidates()) {
+    if (!fs.existsSync(candidate)) continue;
+    const token = readTomlString(fs.readFileSync(candidate, 'utf-8'), 'oauth_token');
+    if (token) return { token, accountId };
+  }
+
+  return null;
+}
+
+async function resolveQueueId(creds: CloudflareQueueCredentials, queueName: string): Promise<string> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues?name=${encodeURIComponent(queueName)}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${creds.token}`,
+      'Content-Type': 'application/json',
+    },
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Cloudflare queue lookup failed: ${res.status} ${await res.text()}`);
+  }
+  const body = await res.json() as { result?: Array<{ queue_id?: string }> };
+  const id = body.result?.[0]?.queue_id;
+  if (!id) throw new Error(`Cloudflare queue not found: ${queueName}`);
+  return id;
+}
+
+async function fetchQueueStatsForQueue(creds: CloudflareQueueCredentials, queueName: string): Promise<{ depth: null; oldest_msg_age_s: null }> {
+  await resolveQueueId(creds, queueName);
+  return { depth: null, oldest_msg_age_s: null };
+}
+
+async function fetchLocalQueueStats(creds: CloudflareQueueCredentials, queues: TeamQueueNames): Promise<QueueStatsResponse> {
+  const [main, dlq] = await Promise.all([
+    fetchQueueStatsForQueue(creds, queues.sync),
+    fetchQueueStatsForQueue(creds, queues.dlq),
+  ]);
+  return { main, dlq };
+}
+
+async function listLocalDlq(creds: CloudflareQueueCredentials, queueName: string, limit: number): Promise<DlqListResponse> {
+  const queueId = await resolveQueueId(creds, queueName);
+  const batchSize = Math.min(Math.max(limit, 1), 100);
+  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues/${queueId}/messages/pull`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${creds.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ batch_size: batchSize, visibility_timeout_ms: 5 * 60 * 1000 }),
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Cloudflare DLQ pull failed: ${res.status} ${await res.text()}`);
+  }
+  const body = await res.json() as {
+    result?: { messages?: Array<{ lease_id?: string; body?: unknown; attempts?: number; metadata?: Record<string, unknown> }> };
+  };
+  return {
+    messages: (body.result?.messages ?? []).map((message) => ({
+      msg_id: String(message.lease_id ?? ''),
+      body: parseDlqBody(message.body),
+      attempts: typeof message.attempts === 'number' ? message.attempts : 0,
+      last_failure: typeof message.metadata?.last_failure === 'string' ? message.metadata.last_failure : undefined,
+      enqueued_at: typeof message.metadata?.enqueued_at === 'number' ? message.metadata.enqueued_at : undefined,
+    })),
+    next_cursor: null,
+  };
+}
+
+/**
+ * CF Queues' pull-consumer returns message body as a JSON string when
+ * the producer sent JSON. Parse so the UI can render
+ * `<table>/<id>` / `machine=<…>` instead of `?/?` `machine=?`.
+ */
+function parseDlqBody(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through.
+    }
+  }
+  return {};
+}
+
+async function ackLocalDlq(creds: CloudflareQueueCredentials, queueName: string, leaseIds: string[], action: 'retry' | 'discard'): Promise<void> {
+  const queueId = await resolveQueueId(creds, queueName);
+  const url = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/queues/${queueId}/messages/ack`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${creds.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      acks: action === 'discard' ? leaseIds.map((id) => ({ lease_id: id })) : [],
+      retries: action === 'retry' ? leaseIds.map((id) => ({ lease_id: id, delay_seconds: 0 })) : [],
+    }),
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Cloudflare DLQ ${action} failed: ${res.status} ${await res.text()}`);
+  }
+}
+
+function isCloudflareTokenMissing(value: unknown): value is { error: 'cf_api_token_not_configured' } {
+  return (
+    typeof value === 'object'
+    && value !== null
+    && (value as { error?: unknown }).error === 'cf_api_token_not_configured'
+  );
+}
+
+function numberFromLogData(data: Record<string, unknown>, key: string): number | null {
+  const value = Number(data[key]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function parseLogData(row: LogEntryRow): Record<string, unknown> {
+  if (!row.data) return {};
+  try {
+    const parsed = JSON.parse(row.data) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function explicitHandoffSummary(row: LogEntryRow): TeamHandoffSummary {
+  const data = parseLogData(row);
+  const durationMs = numberFromLogData(data, 'duration_ms');
+  const completedAt = row.timestamp;
+  const completedMs = Date.parse(completedAt);
+  const startedAt = durationMs !== null && Number.isFinite(completedMs)
+    ? new Date(completedMs - durationMs).toISOString()
+    : null;
+
+  return {
+    completed_at: completedAt,
+    started_at: startedAt,
+    duration_ms: durationMs,
+    enqueued: numberFromLogData(data, 'enqueued'),
+    accepted: numberFromLogData(data, 'flushed') ?? 0,
+    rejected: numberFromLogData(data, 'rejected') ?? 0,
+    batches: numberFromLogData(data, 'batches') ?? 0,
+    error: typeof data.error === 'string' && data.error.length > 0 ? data.error : null,
+    mode: typeof data.mode === 'string' ? data.mode : null,
+    source: 'handoff_log',
+  };
+}
+
+function latestFlushBurstSummary(): TeamHandoffSummary | null {
+  const entries = searchLogs({
+    kind: LOG_KINDS.TEAM_SYNC_COMPLETE,
+    page_size: HANDOFF_LOG_PAGE_SIZE,
+  }).entries;
+  if (entries.length === 0) return null;
+
+  const burst: LogEntryRow[] = [];
+  let previousTimestampMs = 0;
+  for (const entry of entries) {
+    const timestampMs = Date.parse(entry.timestamp);
+    if (!Number.isFinite(timestampMs)) continue;
+    if (burst.length > 0 && previousTimestampMs - timestampMs > HANDOFF_BURST_GAP_MS) break;
+    burst.push(entry);
+    previousTimestampMs = timestampMs;
+  }
+  if (burst.length === 0) return null;
+
+  let accepted = 0;
+  let rejected = 0;
+  let enqueued = 0;
+  for (const entry of burst) {
+    const data = parseLogData(entry);
+    accepted += numberFromLogData(data, 'accepted') ?? 0;
+    rejected += numberFromLogData(data, 'rejected') ?? 0;
+    enqueued += numberFromLogData(data, 'total') ?? 0;
+  }
+
+  const completedAt = burst[0].timestamp;
+  const startedAt = burst[burst.length - 1].timestamp;
+  const durationMs = Math.max(0, Date.parse(completedAt) - Date.parse(startedAt));
+
+  return {
+    completed_at: completedAt,
+    started_at: startedAt,
+    duration_ms: Number.isFinite(durationMs) ? durationMs : null,
+    enqueued,
+    accepted,
+    rejected,
+    batches: burst.length,
+    error: null,
+    mode: null,
+    source: 'flush_logs',
+  };
+}
+
+function latestHandoffSummary(): TeamHandoffSummary | null {
+  const handoff = searchLogs({
+    kind: LOG_KINDS.TEAM_SYNC_HANDOFF,
+    page_size: 1,
+  }).entries[0];
+  if (handoff) return explicitHandoffSummary(handoff);
+  return latestFlushBurstSummary();
+}
+
+function packageVersionNearExecutable(entryPath: string): string | null {
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(entryPath);
+  } catch {
+    return null;
+  }
+
+  let dir = fs.statSync(realPath).isDirectory() ? realPath : path.dirname(realPath);
+  for (let depth = 0; depth < 5; depth++) {
+    const pkgPath = path.join(dir, 'package.json');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { name?: string; version?: string };
+      if (pkg.name === TEAM_PACKAGE_NAME && typeof pkg.version === 'string') return pkg.version;
+    } catch {
+      // Keep walking toward the package root.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return null;
+}
+
+function executableSearchDirs(): string[] {
+  const fromPath = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  return Array.from(new Set([...fromPath, path.join(os.homedir(), '.local', 'bin')]));
+}
+
+function resolveExecutableFromPath(binaryName: string): string | null {
+  const suffixes = process.platform === 'win32'
+    ? ['', '.cmd', '.exe', '.bat']
+    : [''];
+
+  for (const dir of executableSearchDirs()) {
+    for (const suffix of suffixes) {
+      const candidate = path.join(dir, `${binaryName}${suffix}`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+
+  return null;
+}
+
+function resolvePathPackageVersion(binaryName: string, source: LocalTeamPackageSource): LocalTeamPackageVersion | null {
+  const entry = resolveExecutableFromPath(binaryName);
+  if (!entry) return null;
+  const version = packageVersionNearExecutable(entry);
+  return version ? { version, source } : null;
+}
+
+function resolveLocalTeamPackageVersion(globalPrefix: string | null): LocalTeamPackageVersion | null {
+  if (globalPrefix) {
+    const installedVersion = getInstalledVersion(globalPrefix, TEAM_PACKAGE_NAME);
+    if (installedVersion) return { version: installedVersion, source: 'installed' };
+  }
+
+  return (
+    resolvePathPackageVersion('myco-team-dev', 'dev-linked')
+    ?? resolvePathPackageVersion('myco-team', 'path')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +475,8 @@ export interface TeamHandlerDeps {
   vaultDir: string;
   machineId: string;
   logger: DaemonLogger;
-  getTeamClient: () => TeamSyncClient | null;
-  setTeamClient: (client: TeamSyncClient | null) => void;
+  getTeamClient: (requestContext?: MycoRequestContext) => TeamSyncClient | null;
+  setTeamClient: (client: TeamSyncClient | null, requestContext?: MycoRequestContext) => void;
   /**
    * npm global prefix — used to locate the installed `@goondocks/myco-team`
    * package for the Worker upgrade subprocess and for reporting the local
@@ -121,6 +534,32 @@ function resolveNodeBinary(globalPrefix: string | null): string {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Documentation for fields the `/api/team/status` response keeps in
+ * its envelope but no longer populates. The fields are always null
+ * in the current protocol and exist only for envelope compatibility
+ * with older daemon UIs that still read them. The descriptive map
+ * is exposed under `deprecated_fields` so consumers can render a
+ * one-line "field X was removed for security; use Y instead"
+ * disclosure rather than silently ignoring the now-empty value.
+ *
+ * The api_key/team_key removal was intentional (commits ad2e549e
+ * and 9572a683 — "Redact reusable Team keys from status responses")
+ * and is not reverted by C6; this map only documents the change.
+ */
+const DEPRECATED_STATUS_FIELDS: Record<string, { since: string; reason: string; replacement: string }> = {
+  api_key: {
+    since: 'protocol-v2',
+    reason: 'Reusable team keys removed from status responses for security.',
+    replacement: 'has_api_key',
+  },
+  team_key: {
+    since: 'protocol-v2',
+    reason: 'Reusable team keys removed from status responses for security.',
+    replacement: 'has_team_key',
+  },
+};
+
 export function createTeamHandlers(deps: TeamHandlerDeps) {
   const { vaultDir, machineId, logger } = deps;
 
@@ -170,15 +609,17 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       };
     }
 
-    // Save config and secret
-    updateTeamConfig(vaultDir, {
+    // Save config and secret to the selected Grove when request context is
+    // Grove-era; legacy callers keep the historical project-local storage.
+    updateTeamConnectionConfig(vaultDir, req.requestContext, {
       enabled: true,
       worker_url: url,
     });
-    writeSecret(vaultDir, TEAM_API_KEY_SECRET, api_key);
+    writeTeamConnectionSecret(vaultDir, req.requestContext, TEAM_API_KEY_SECRET, api_key);
+    deps.setTeamClient(client, req.requestContext);
 
-    const config = loadMergedConfig(vaultDir);
-    return { body: { connected: true, team: config.team } };
+    const team = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    return { body: { connected: true, team } };
   }
 
   /**
@@ -186,8 +627,9 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    *
    * Disables team sync and clears the live client reference.
    */
-  async function handleDisconnect(_req: RouteRequest): Promise<RouteResponse> {
-    updateTeamConfig(vaultDir, { enabled: false });
+  async function handleDisconnect(req: RouteRequest): Promise<RouteResponse> {
+    updateTeamConnectionConfig(vaultDir, req.requestContext, { enabled: false });
+    deps.setTeamClient(null, req.requestContext);
 
     return { body: { connected: false } };
   }
@@ -197,25 +639,32 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    *
    * Returns connection status, health check result, pending sync count, and machine_id.
    */
-  async function handleStatus(_req: RouteRequest): Promise<RouteResponse> {
-    const config = loadMergedConfig(vaultDir);
-    const client = deps.getTeamClient();
-    const secrets = readSecrets(vaultDir);
-    const hasApiKey = Boolean(secrets[TEAM_API_KEY_SECRET]);
-    const localTeamPackageVersion = deps.globalPrefix
-      ? getInstalledVersion(deps.globalPrefix, TEAM_PACKAGE_NAME)
-      : null;
-    const cachedTeamPackageVersion = readCachedTeamPackageVersion(vaultDir);
+  async function handleStatus(req: RouteRequest): Promise<RouteResponse> {
+    const config = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    const client = deps.getTeamClient(req.requestContext);
+    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
+    const store = resolveTeamConnectionStore(vaultDir, req.requestContext);
+    const teamKey = secrets[TEAM_API_KEY_SECRET]?.trim() || null;
+    const hasTeamKey = Boolean(teamKey);
+    const localTeamPackage = resolveLocalTeamPackageVersion(deps.globalPrefix);
+    const cachedTeamPackageVersion = readCachedTeamPackageVersion(store.configDir);
     let deployedWorkerVersion: string | null = null;
 
     let healthy = false;
     let healthError: string | undefined;
+    let workerHasMcpToken = false;
 
-    if (client && config.team.enabled) {
+    if (client && config.enabled) {
       try {
         const health = await client.health();
         healthy = true;
         deployedWorkerVersion = health.package_version?.trim() || null;
+        // The worker's `/health` returns `mcp_token_hash` only when the
+        // Cloud MCP token is provisioned in the worker's KV. Treat
+        // worker-up + token-provisioned as the MCP health signal — same
+        // process hosts both, so this avoids a separate authenticated
+        // probe round-trip.
+        workerHasMcpToken = Boolean(health.mcp_token_hash);
       } catch (err) {
         healthError = (err as Error).message;
       }
@@ -233,7 +682,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     let collectiveStatus: Awaited<ReturnType<TeamSyncClient['getCollectiveStatus']>> | null = null;
     let teamConfig: Awaited<ReturnType<TeamSyncClient['getConfig']>> | null = null;
-    if (client && config.team.enabled) {
+    if (client && config.enabled) {
       try {
         collectiveStatus = await client.getCollectiveStatus();
       } catch (err) {
@@ -267,23 +716,27 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
     return {
       body: {
-        enabled: config.team.enabled,
-        worker_url: config.team.worker_url ?? null,
-        has_api_key: hasApiKey,
-        api_key: secrets[TEAM_API_KEY_SECRET] ?? null,
+        ...resolveTeamConnectionContext(req.requestContext, vaultDir),
+        enabled: config.enabled,
+        worker_url: config.worker_url ?? null,
+        has_team_key: hasTeamKey,
+        team_key: null,
+        has_api_key: hasTeamKey,
+        api_key: null,
         healthy,
         health_error: healthError,
         pending_sync_count: pendingCount,
         machine_id: machineId,
         package_version: getPluginVersion(),
-        local_team_package_version: localTeamPackageVersion,
+        local_team_package_version: localTeamPackage?.version ?? null,
+        local_team_package_source: localTeamPackage?.source ?? null,
         cached_team_package_version: cachedTeamPackageVersion,
         deployed_worker_version: deployedWorkerVersion,
         worker_update_available:
-          config.team.enabled &&
-          Boolean(localTeamPackageVersion) &&
+          config.enabled &&
+          Boolean(localTeamPackage?.version) &&
           Boolean(deployedWorkerVersion) &&
-          deployedWorkerVersion !== localTeamPackageVersion,
+          deployedWorkerVersion !== localTeamPackage?.version,
         collective_connected: collectiveStatus?.connected ?? false,
         collective_url: collectiveStatus?.collective_url ?? null,
         collective_project_id: collectiveStatus?.project_id ?? null,
@@ -300,18 +753,23 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
         vector_reindex_last_deleted: Number.isFinite(vectorReindexLastDeleted) ? vectorReindexLastDeleted : null,
         schema_version: SCHEMA_VERSION,
         sync_protocol_version: SYNC_PROTOCOL_VERSION,
+        min_compat_client_version: MIN_COMPAT_CLIENT_VERSION,
         mcp_token: client?.getMcpToken() ?? null,
         mcp_endpoint: client?.getMcpEndpoint() ?? null,
+        mcp_healthy: healthy && workerHasMcpToken,
         local_only_disclosures: buildLocalOnlyDisclosures(),
+        deprecated_fields: DEPRECATED_STATUS_FIELDS,
       },
     };
   }
 
   /**
-   * Snapshot the local-only sync policy for the UI's "What stays local"
-   * disclosure on the Synced data tab. Derived from the canonical
-   * LOCAL_ONLY_OUTBOX_TABLES + LOCAL_ONLY_SYNC_COLUMNS + LOCAL_ONLY_RATIONALES
-   * exports so the UI can never drift from the enforcement.
+   * Snapshot the local-only sync policy for the UI's "What stays
+   * local" disclosure on the Synced data tab. Derived from the
+   * canonical LOCAL_ONLY_OUTBOX_TABLES + LOCAL_ONLY_SYNC_COLUMNS +
+   * LOCAL_ONLY_RATIONALES exports so the UI can never drift from
+   * the enforcement. Restored here after the Grove-scope refactor
+   * removed it; pre-Grove UIs treat the field as additive.
    */
   function buildLocalOnlyDisclosures(): Array<{ table: string; columns: string[]; rationale: string }> {
     const disclosures: Array<{ table: string; columns: string[]; rationale: string }> = [];
@@ -332,60 +790,172 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     return disclosures;
   }
 
-  /** POST /api/team/backfill — enqueue all unsynced rows to the outbox. */
-  async function handleBackfill(_req: RouteRequest): Promise<RouteResponse> {
-    const count = backfillUnsynced(machineId);
-    return { body: { enqueued: count } };
+  /**
+   * POST /api/team/backfill — single-button reconcile.
+   *   1. Enqueue local unsynced rows onto the outbox so the daemon
+   *      flushes them up the queue (existing behavior).
+   *   2. Tell the worker to enqueue `embed` jobs for every embeddable
+   *      row already in D1, so vectors get rebuilt for rows that
+   *      were synced before embedding worked. Failure here doesn't
+   *      fail the request — local backfill already succeeded and the
+   *      remote enqueue can be retried.
+   */
+  async function handleBackfill(req: RouteRequest): Promise<RouteResponse> {
+    const body = (req.body ?? {}) as { mode?: unknown };
+    const mode = body.mode === 'all' ? 'all' : 'unsynced';
+    const count = mode === 'all' ? backfillAll(machineId) : backfillUnsynced(machineId);
+
+    let vectorEnqueued: number | null = null;
+    let vectorError: string | null = null;
+    const client = deps.getTeamClient(req.requestContext);
+    if (client) {
+      try {
+        const result = await client.enqueueVectorReindex();
+        vectorEnqueued = result.enqueued;
+      } catch (err) {
+        vectorError = err instanceof Error ? err.message : String(err);
+        logger.warn('team-sync.backfill.reindex-failed', 'Remote vector reindex enqueue failed', { error: vectorError });
+      }
+    }
+
+    return { body: { enqueued: count, mode, vector_enqueued: vectorEnqueued, vector_error: vectorError } };
   }
 
-  function clientOrError(): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
-    const client = deps.getTeamClient();
+  function clientOrError(requestContext?: MycoRequestContext): { ok: true; client: TeamSyncClient } | { ok: false; response: RouteResponse } {
+    const client = deps.getTeamClient(requestContext);
     if (!client) return { ok: false, response: { status: 503, body: { error: 'team_not_configured' } } };
     return { ok: true, client };
   }
 
   /** GET /api/team/queue-stats — proxies CF queue depth + DLQ depth from the worker. */
-  async function handleQueueStats(_req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+  async function handleQueueStats(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const stats = await guard.client.getQueueStats();
+    if (isCloudflareTokenMissing(stats)) {
+      try {
+        const [creds, queues] = await Promise.all([
+          resolveWranglerCloudflareCredentials(),
+          Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
+        ]);
+        if (creds && queues) {
+          return { body: await fetchLocalQueueStats(creds, queues) };
+        }
+      } catch (err) {
+        const detail = errorMessage(err);
+        logger.warn('team-sync.queue.local-stats-failed', 'Local Wrangler queue stats unavailable', { error: detail });
+      }
+    }
     return { body: stats };
+  }
+
+  /** GET /api/team/sync-summary — local/remote sync status for the Sync tab. */
+  async function handleSyncSummary(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError(req.requestContext);
+    if (!guard.ok) return guard.response;
+
+    const localTables = countTeamSyncRows();
+    const localTotal = Object.values(localTables).reduce((sum, count) => sum + count, 0);
+    let pendingCount = 0;
+    try {
+      pendingCount = countPending();
+    } catch {
+      pendingCount = 0;
+    }
+
+    let remote: TeamRemoteSyncSummaryResponse | null = null;
+    let remoteError: string | null = null;
+    try {
+      remote = await guard.client.getSyncSummary();
+    } catch (err) {
+      remoteError = errorMessage(err);
+      logger.warn('team-sync.summary.remote-failed', 'Remote sync summary unavailable', { error: remoteError });
+    }
+
+    return {
+      body: {
+        generated_at: Math.floor(Date.now() / 1000),
+        local: {
+          total_records: localTotal,
+          pending_sync_count: pendingCount,
+          tables: localTables,
+          schema_version: SCHEMA_VERSION,
+        },
+        remote,
+        remote_error: remoteError,
+        last_handoff: latestHandoffSummary(),
+      },
+    };
   }
 
   /** GET /api/team/dlq — list a page of DLQ messages from the worker. */
   async function handleDlqList(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const limit = Number(req.query.limit ?? '50') || 50;
     const result = await guard.client.listDlq(limit);
+    if (isCloudflareTokenMissing(result)) {
+      try {
+        const [creds, queues] = await Promise.all([
+          resolveWranglerCloudflareCredentials(),
+          Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
+        ]);
+        if (creds && queues) {
+          return { body: await listLocalDlq(creds, queues.dlq, limit) };
+        }
+      } catch (err) {
+        const detail = errorMessage(err);
+        logger.warn('team-sync.queue.local-dlq-list-failed', 'Local Wrangler DLQ list unavailable', { error: detail });
+      }
+    }
     return { body: result };
   }
 
   /** POST /api/team/dlq/retry — re-publish DLQ messages back to the main queue. */
   async function handleDlqRetry(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
     if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
-    const result = await guard.client.retryDlq(leaseIds);
-    return { body: result };
+    try {
+      const result = await guard.client.retryDlq(leaseIds);
+      return { body: result };
+    } catch (err) {
+      const [creds, queues] = await Promise.all([
+        resolveWranglerCloudflareCredentials(),
+        Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
+      ]);
+      if (!creds || !queues) throw err;
+      await ackLocalDlq(creds, queues.dlq, leaseIds, 'retry');
+      return { body: { retried: leaseIds.length } };
+    }
   }
 
   /** POST /api/team/dlq/discard — permanently drop DLQ messages. */
   async function handleDlqDiscard(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { lease_ids?: unknown };
     const leaseIds = Array.isArray(body.lease_ids) ? body.lease_ids.filter((id): id is string => typeof id === 'string') : [];
     if (leaseIds.length === 0) return { status: 400, body: { error: 'lease_ids array is required' } };
-    const result = await guard.client.discardDlq(leaseIds);
-    return { body: result };
+    try {
+      const result = await guard.client.discardDlq(leaseIds);
+      return { body: result };
+    } catch (err) {
+      const [creds, queues] = await Promise.all([
+        resolveWranglerCloudflareCredentials(),
+        Promise.resolve(resolveTeamQueueNames(vaultDir, req.requestContext)),
+      ]);
+      if (!creds || !queues) throw err;
+      await ackLocalDlq(creds, queues.dlq, leaseIds, 'discard');
+      return { body: { discarded: leaseIds.length } };
+    }
   }
 
   /** POST /api/team/cf-api-token — stash a CF API token + account id on the worker. */
   async function handleSetCfApiToken(req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const body = (req.body ?? {}) as { token?: string; account_id?: string };
     if (!body.token || !body.account_id) {
@@ -396,8 +966,8 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   }
 
   /** DELETE /api/team/cf-api-token — clear the worker's CF API token. */
-  async function handleClearCfApiToken(_req: RouteRequest): Promise<RouteResponse> {
-    const guard = clientOrError();
+  async function handleClearCfApiToken(req: RouteRequest): Promise<RouteResponse> {
+    const guard = clientOrError(req.requestContext);
     if (!guard.ok) return guard.response;
     const result = await guard.client.clearCfApiToken();
     return { body: result };
@@ -411,7 +981,7 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
    * typed `myco_team_not_installed` error when it isn't so the UI can
    * surface an install prompt instead of a generic 500.
    */
-  async function handleUpgradeWorker(_req: RouteRequest): Promise<RouteResponse> {
+  async function handleUpgradeWorker(req: RouteRequest): Promise<RouteResponse> {
     const teamEntry = resolveMycoTeamEntry(deps.globalPrefix);
     if (!teamEntry) {
       return {
@@ -511,23 +1081,31 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
     // reinitialize the client from the fresh merged config rather than
     // the subprocess's result shape.
     const freshConfig = loadMergedConfig(vaultDir);
-    const secrets = readSecrets(vaultDir);
+    const workerUrl = result.worker_url ?? freshConfig.team.worker_url;
+    if (workerUrl) {
+      updateTeamConnectionConfig(vaultDir, req.requestContext, {
+        enabled: true,
+        worker_url: workerUrl,
+      });
+    }
+    const teamConfig = loadTeamConnectionConfig(vaultDir, req.requestContext);
+    const secrets = readTeamConnectionSecrets(vaultDir, req.requestContext);
     const apiKey = secrets[TEAM_API_KEY_SECRET];
-    if (freshConfig.team.enabled && freshConfig.team.worker_url && apiKey && deps.getTeamClient()) {
+    if (teamConfig.enabled && teamConfig.worker_url && apiKey && deps.getTeamClient(req.requestContext)) {
       deps.setTeamClient(new TeamSyncClient({
-        workerUrl: freshConfig.team.worker_url,
+        workerUrl: teamConfig.worker_url,
         apiKey,
         machineId,
         syncProtocolVersion: SYNC_PROTOCOL_VERSION,
-      }));
+      }), req.requestContext);
     }
 
     return { body: result };
   }
 
   /** POST /api/team/rotate-mcp-token — rotate the MCP bearer token. */
-  async function handleRotateMcpToken(_req: RouteRequest): Promise<RouteResponse> {
-    const client = deps.getTeamClient();
+  async function handleRotateMcpToken(req: RouteRequest): Promise<RouteResponse> {
+    const client = deps.getTeamClient(req.requestContext);
     if (!client) {
       return {
         status: 400,
@@ -550,6 +1128,34 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
 
   return {
     handleConnect, handleDisconnect, handleStatus, handleBackfill, handleUpgradeWorker, handleRotateMcpToken,
-    handleQueueStats, handleDlqList, handleDlqRetry, handleDlqDiscard, handleSetCfApiToken, handleClearCfApiToken,
+    handleQueueStats, handleSyncSummary, handleDlqList, handleDlqRetry, handleDlqDiscard, handleSetCfApiToken, handleClearCfApiToken,
+  };
+}
+
+function resolveTeamConnectionContext(
+  requestContext: MycoRequestContext | undefined,
+  fallbackVaultDir: string,
+): TeamConnectionContext {
+  const projectVaultDir = requestContext?.projectVaultDir ?? fallbackVaultDir;
+  const manifest = loadProjectManifest(projectVaultDir);
+  const projectRoot = requestContext?.projectRoot ?? resolveProjectRoot(projectVaultDir);
+  const groveScoped = isGroveScoped(requestContext);
+  const grove = groveScoped ? loadGroveRecord(requestContext!.groveId!) : null;
+
+  return {
+    connection_scope: groveScoped ? 'grove' : 'legacy-project',
+    grove: groveScoped
+      ? {
+          id: requestContext!.groveId!,
+          name: grove?.name ?? requestContext!.groveId!,
+          slug: grove?.slug ?? manifest?.grove?.slug ?? requestContext!.groveId!,
+          mode: grove?.mode ?? manifest?.grove?.mode ?? 'local',
+        }
+      : null,
+    project: {
+      id: requestContext?.projectId ?? manifest?.project.id ?? projectRoot,
+      name: manifest?.project.name ?? path.basename(projectRoot),
+      root: projectRoot,
+    },
   };
 }

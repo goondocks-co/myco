@@ -3,12 +3,13 @@ import type { LogEntry, LogLevel } from '../logs/reader.js';
 import { formatLogLine, parseIntFlag, parseStringFlag } from '../logs/format.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveDaemonLogDir } from '../daemon/service-state.js';
 
 /** Polling interval for follow mode (milliseconds). */
 const FOLLOW_POLL_INTERVAL_MS = 500;
 
 export function run(args: string[], vaultDir: string): void {
-  const logDir = path.join(vaultDir, 'logs');
+  const logDir = resolveDaemonLogDir(vaultDir, { env: process.env });
   const follow = args.includes('--follow') || args.includes('-f');
   const limit = parseIntFlag(args, '--tail', '-n') ?? DEFAULT_LOG_TAIL;
   const rawLevel = parseStringFlag(args, '--level', '-l');

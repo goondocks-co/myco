@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs';
 import { epochSeconds } from '@myco/constants.js';
 import { getDatabase } from '@myco/db/client.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { postProcess } from '@myco/canopy/describe/post-process.js';
 import { isCanopySensitivePath } from '@myco/canopy/sensitive-paths.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
@@ -94,8 +94,9 @@ async function readFirstLines(absolutePath: string, limit: number): Promise<stri
 }
 
 function resolveProjectId(deps: VaultToolDeps): string | null {
-  if (deps.vaultDir) return resolveCanopyProjectId(deps.vaultDir);
-  return deps.projectRoot ?? null;
+  if (deps.requestContext) return deps.requestContext.projectId;
+  if (deps.vaultDir) return resolveRequestContextForVault(deps.vaultDir).projectId;
+  return null;
 }
 
 function resolveProjectRoot(deps: VaultToolDeps): string | null {

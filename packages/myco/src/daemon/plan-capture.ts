@@ -17,7 +17,7 @@ import type { PlanRow } from '@myco/db/queries/plans.js';
 import type { Logger } from './logger.js';
 import {
   buildPathPlanLogicalKey,
-  buildPlanId,
+  buildScopedPlanId,
   buildSessionTagPlanLogicalKey,
   humanizePlanToken,
   normalizePlanSourcePath,
@@ -177,7 +177,9 @@ export function resolvePlanTitle(input: ResolvePlanTitleInput): string | null {
 }
 
 export interface PersistPlanInput {
-  sessionId: string;
+  id?: string;
+  sessionId?: string | null;
+  projectId?: string | null;
   content: string;
   logicalKey: string;
   sourcePath?: string | null;
@@ -210,11 +212,18 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   const createdAt = input.createdAt ?? Math.floor(Date.now() / 1000);
   const updatedAt = input.updatedAt ?? createdAt;
   const contentHash = createHash(CONTENT_HASH_ALGORITHM).update(input.content).digest('hex');
-  const existingPlan = getPlanByLogicalKey(input.logicalKey);
+  const projectId = input.projectId ?? null;
+  const lookupScope: import('@myco/grove/ids.js').ProjectScope = projectId
+    ? { kind: 'project', id: projectId as import('@myco/grove/ids.js').GroveProjectId }
+    : { kind: 'global' };
+  const existingPlan = getPlanByLogicalKey(input.logicalKey, lookupScope);
   const status = input.status ?? existingPlan?.status ?? 'active';
   const promptBatchId = input.promptBatchId === undefined
     ? (existingPlan?.prompt_batch_id ?? null)
     : input.promptBatchId;
+  const tags = input.tags === undefined
+    ? (existingPlan?.tags ?? null)
+    : normalizePlanTags(input.tags);
   const resolvedTitle = resolvePlanTitle({
     content: input.content,
     title: input.title,
@@ -246,13 +255,14 @@ export function persistPlan(input: PersistPlanInput): PlanRow {
   }
 
   return upsertPlan({
-    id: buildPlanId(input.logicalKey),
+    id: input.id ?? buildScopedPlanId(input.logicalKey, projectId),
+    project_id: projectId,
     logical_key: input.logicalKey,
     title: resolvedTitle,
     content: input.content,
     source_path: input.sourcePath ?? null,
-    tags: normalizePlanTags(input.tags),
-    session_id: input.sessionId,
+    tags,
+    session_id: input.sessionId ?? existingPlan?.session_id ?? null,
     prompt_batch_id: promptBatchId,
     content_hash: contentHash,
     status,
@@ -267,6 +277,8 @@ export interface CapturePlanInput {
   sourcePath: string;
   /** Project root used to canonicalize relative-vs-absolute file capture. */
   projectRoot?: string;
+  /** Grove project scope for the captured row. */
+  projectId?: string | null;
   /** Full markdown content of the plan file. */
   content: string;
   /** Session ID that triggered the write event. */
@@ -292,6 +304,7 @@ export function capturePlan(input: CapturePlanInput): PlanRow {
   const normalizedSourcePath = normalizePlanSourcePath(input.sourcePath, input.projectRoot);
   return persistPlan({
     sessionId: input.sessionId,
+    projectId: input.projectId,
     content: input.content,
     logicalKey: buildPathPlanLogicalKey(normalizedSourcePath),
     sourcePath: normalizedSourcePath,
@@ -304,6 +317,7 @@ export interface CaptureTaggedPlanInput {
   tag: string;
   content: string;
   sessionId: string;
+  projectId?: string | null;
   promptBatchId?: number | null;
   logger?: Logger;
 }
@@ -311,6 +325,7 @@ export interface CaptureTaggedPlanInput {
 export function captureTaggedPlan(input: CaptureTaggedPlanInput): PlanRow {
   return persistPlan({
     sessionId: input.sessionId,
+    projectId: input.projectId,
     content: input.content,
     logicalKey: buildSessionTagPlanLogicalKey(input.sessionId, input.tag),
     sourcePath: `${TRANSCRIPT_SOURCE_PREFIX}${input.tag}`,

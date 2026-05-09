@@ -1,6 +1,10 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { MycoConfigSchema } from '@myco/config/schema';
+import { ensureProjectManifest } from '@myco/config/project-manifest';
 import type { MycoConfig } from '@myco/config/schema';
 // Pre-import the real module before registering a partial mock. Bun's
 // `mock.module` eclipses the registry, so an inline `import()` inside the
@@ -51,14 +55,22 @@ function makeConfig(overrides: Partial<MycoConfig['agent']> = {}): MycoConfig {
 }
 
 describe('triggerCortexInstructions', () => {
+  let testVaultDir: string;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    testVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-test-'));
+    ensureProjectManifest(testVaultDir, { projectName: 'cortex-test' });
     buildCortexInstructionsInput.mockResolvedValue({
       inputHash: 'hash-1',
       instruction: 'Cortex instruction payload',
     });
     runAgent.mockResolvedValue({ status: 'completed', runId: 'run-cortex-1' });
     getLatestRunId.mockReturnValue('run-cortex-1');
+  });
+
+  afterEach(() => {
+    fs.rmSync(testVaultDir, { recursive: true, force: true });
   });
 
   it('returns without starting when event-driven tasks are disabled', async () => {
@@ -98,7 +110,7 @@ describe('triggerCortexInstructions', () => {
     const getTeamClient = vi.fn(() => null);
 
     const result = await triggerCortexInstructions({
-      vaultDir: '/tmp/myco',
+      vaultDir: testVaultDir,
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,
@@ -109,13 +121,14 @@ describe('triggerCortexInstructions', () => {
       started: true,
       runId: 'run-cortex-1',
     });
-    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), '/tmp/myco', getTeamClient);
-    expect(runAgent).toHaveBeenCalledWith('/tmp/myco', {
+    expect(buildCortexInstructionsInput).toHaveBeenCalledWith(makeConfig(), testVaultDir, getTeamClient, expect.any(Object));
+    expect(runAgent).toHaveBeenCalledWith(testVaultDir, {
       task: 'cortex-instructions',
       agentId: 'myco-agent',
       instruction: 'Cortex instruction payload',
       runContext: { cortex_instruction_input_hash: 'hash-1' },
       embeddingManager: expect.anything(),
+      requestContext: expect.any(Object),
     });
     expect(logger.warn).not.toHaveBeenCalled();
   });
@@ -125,7 +138,7 @@ describe('triggerCortexInstructions', () => {
     buildCortexInstructionsInput.mockRejectedValueOnce(new Error('DB unavailable'));
 
     const result = await triggerCortexInstructions({
-      vaultDir: '/tmp/myco',
+      vaultDir: testVaultDir,
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,
@@ -148,7 +161,7 @@ describe('triggerCortexInstructions', () => {
     });
 
     const result = await triggerCortexInstructions({
-      vaultDir: '/tmp/myco',
+      vaultDir: testVaultDir,
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,
@@ -176,7 +189,7 @@ describe('triggerCortexInstructions', () => {
     const logger = makeLogger();
 
     const result = await triggerCortexInstructions({
-      vaultDir: '/tmp/myco',
+      vaultDir: testVaultDir,
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,
@@ -192,7 +205,7 @@ describe('triggerCortexInstructions', () => {
     const registerInflightRun = vi.fn();
 
     const result = await triggerCortexInstructions({
-      vaultDir: '/tmp/myco',
+      vaultDir: testVaultDir,
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,

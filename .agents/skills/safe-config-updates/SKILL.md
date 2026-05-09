@@ -1,7 +1,7 @@
 ---
 name: myco:safe-config-updates
 description: |
-  Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through `updateConfig()` in `packages/myco/src/config/loader.ts`, and (2) all React settings forms must spread the original config before overlaying form values in their `formToConfig()` function. Also covers the complete procedure for adding new configurable settings to Myco's two-tier scoped config system including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch `myco.yaml`, add a settings field, modify a settings page, or add new configurable fields, these patterns apply.
+  Apply this skill whenever you need to write, update, or modify Myco configuration — whether from a React settings form, a CLI command, a task, or any other code path. This covers the two linked invariants that prevent silent data loss: (1) all YAML writes must flow through `updateConfig()` in `packages/myco/src/config/loader.ts`, and (2) all React settings forms must spread the original config before overlaying form values in their `formToConfig()` function. Also covers the complete procedure for adding new configurable settings to Myco's three-tier scoped config system (machine/grove/project/personal) including scope assignment decisions, Zod schema extension, API endpoint integration, useScopedConfig hook wiring, and ScopedField component wrapping. Use this skill even if the user hasn't explicitly asked about config safety — any time you touch `myco.yaml`, add a settings field, modify a settings page, or add new configurable fields, these patterns apply.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Safe Config Update Patterns
 
-`myco.yaml` is a multi-section document owned by different UI pages and code paths. If any write path reconstructs the config from scratch rather than patching it, it silently drops keys it doesn't know about. This skill teaches the two-layer defense: a single YAML write gate in `packages/myco/src/config/loader.ts`, and a spread-before-overlay pattern in every React form. Additionally, Myco uses a two-tier scoped configuration model where team settings live in committed `myco.yaml` while personal overrides live in gitignored `.myco/local.yaml`, enabling per-machine personalization without affecting team defaults.
+`myco.yaml` is a multi-section document owned by different UI pages and code paths. If any write path reconstructs the config from scratch rather than patching it, it silently drops keys it doesn't know about. This skill teaches the two-layer defense: a single YAML write gate in `packages/myco/src/config/loader.ts`, and a spread-before-overlay pattern in every React form. Additionally, Myco uses a three-tier scoped configuration model where machine-global settings live in `~/.myco/config.yaml`, grove-level settings live in `~/.myco/groves/<id>/grove.yaml`, project-team settings live in committed `myco.yaml`, while personal overrides live in gitignored `.myco/local.yaml`, enabling per-machine personalization and multi-project coordination without affecting team defaults.
 
 ## Prerequisites
 
@@ -17,9 +17,10 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 - Know which section(s) your change targets
 - For React form changes: locate the relevant settings page and its `formToConfig()` function
 - For programmatic writes: locate `packages/myco/src/config/loader.ts` and `packages/myco/src/config/updates.ts`
-- Understand that `myco.yaml` is committed (team-shared) while `.myco/local.yaml` is vault-scoped (gitignored, per-machine)
-- Know that config is deep-merged via `loadConfig()` with `arrayStrategy: 'replace'` where local values win
+- Understand the three-tier config hierarchy: machine (`~/.myco/config.yaml`) → grove (`~/.myco/groves/<id>/grove.yaml`) → project (`myco.yaml`) → personal (`.myco/local.yaml`)
+- Know that config is deep-merged via `loadConfig()` with `arrayStrategy: 'replace'` where higher-tier (personal) values win
 - Recognize that daemon subsystems can subscribe to config changes for live-reload without restart
+- Understand Grove's global daemon architecture and how it coordinates settings across multiple projects
 
 ---
 
@@ -64,6 +65,12 @@ The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.t
    The spread at every level is what makes partial updates safe. Without `...config.backup`, setting `backup.dir` would drop `backup.schedule` and any future keys.
 
 4. **The only legitimate exception** is `init.ts` creating a brand-new vault where no existing file exists yet. Every other write path must use `updateConfig`.
+
+### Grove-specific considerations
+
+**Global daemon coordination**: Grove's global daemon architecture means config changes may need coordination across multiple project vaults. Use the appropriate grove-aware config loader when working in a multi-project context.
+
+**Migration patterns**: Grove migration introduces new config layering where project-local configs can reference grove-global settings. Ensure config updates respect these layered dependencies and don't break grove coordination.
 
 ### Pitfall: append-only gitignore staleness
 
@@ -134,15 +141,15 @@ The Settings UI uses dedicated PATCH handling via `handlePutScopedConfig` in `pa
    import { ScopedField } from '../components/ScopedField';
 
    // The component automatically handles patch-based updates
-   <ScopedField 
-     path="embedding.model" 
-     scope="personal" 
-     label="Embedding Model" 
+   <ScopedField
+     path="embedding.model"
+     scope="personal"
+     label="Embedding Model"
    />
    ```
 
 2. **ScopedField automatically patches via the scoped config handler:**
-   - Personal-scoped settings → `handlePutScopedConfig` 
+   - Personal-scoped settings → `handlePutScopedConfig`
    - Handles the patch semantics internally
 
 3. **When building custom settings forms, use the scoped config endpoint directly:**
@@ -163,29 +170,42 @@ The Settings UI uses dedicated PATCH handling via `handlePutScopedConfig` in `pa
 ### Benefits over monolithic updates
 
 - **Eliminates config reconstruction bugs** — no need to manage the full config object in forms
-- **Automatic scope resolution** — ScopedField handles personal vs team scope assignment  
+- **Automatic scope resolution** — ScopedField handles personal vs team scope assignment
 - **Field-level granularity** — only the specific setting being changed is updated
 - **No spread-before-overlay complexity** — the patch semantics handle preservation automatically
 
 ---
 
-## Scoped Config Architecture — Two-Tier System
+## Scoped Config Architecture — Three-Tier System
 
-### Understanding the scoped config model
+### Understanding the three-tier scoped config model
 
-Myco's two-tier scoped configuration enables per-machine personalization without affecting team defaults:
+Myco's three-tier scoped configuration enables machine-global defaults, grove-level coordination, project team settings, and per-machine personalization:
 
-- **`myco.yaml`** — committed team-shared settings that affect how the team collaborates
-- **`.myco/local.yaml`** — gitignored per-machine overrides for individual developer preferences
+- **Machine tier** (`~/.myco/config.yaml`) — global daemon configuration across all groves and projects
+- **Grove tier** (`~/.myco/groves/<id>/grove.yaml`) — grove-level settings that coordinate across multiple projects within a grove  
+- **Project tier** (`myco.yaml`) — committed team-shared settings that affect how the team collaborates
+- **Personal tier** (`.myco/local.yaml`) — gitignored per-machine overrides for individual developer preferences
 
-The daemon uses `loadConfig()` to deep-merge these files with `arrayStrategy: 'replace'` where local values win. This allows individuals to override team settings locally without changing the shared configuration.
+The daemon uses `loadConfig()` to deep-merge these files with `arrayStrategy: 'replace'` where higher-tier values win (personal → project → grove → machine). This allows individuals to override team settings locally, teams to override grove settings for specific projects, and groves to override machine defaults, all without changing the lower-tier configuration.
 
-### Classify New Config Settings by Scope
+### Grove architecture coordination patterns
 
-When adding any new user-configurable behavior, follow these steps to determine which scope tier it belongs in:
+**Multi-project coordination**: Grove's global daemon architecture introduces additional configuration layers for coordinating settings across multiple project vaults within a grove. The global daemon maintains grove-level configuration that provides defaults for project-level settings.
 
-**Step 1: Apply the scope decision rule**
-If the setting affects how the team collaborates or shares data, it's Project-scoped. If it's about individual developer experience or machine-specific constraints, it's Personal-scoped. Auth flows remain unscoped for security isolation.
+**Migration compatibility**: Grove migration procedures can update existing project configurations to reference grove-global settings where appropriate, maintaining backward compatibility while enabling grove-wide coordination.
+
+**Initialization patterns**: Grove-aware init procedures detect and integrate with existing project configurations, ensuring smooth onboarding without disrupting established project settings.
+
+### Classify New Config Settings by Tier
+
+When adding any new user-configurable behavior, follow these steps to determine which tier it belongs in:
+
+**Step 1: Apply the tier decision rule**
+- **Machine tier**: Global daemon behavior across all groves (port, logging, global auth)
+- **Grove tier**: Multi-project coordination within a grove (shared resources, grove-wide policies)  
+- **Project tier**: Team collaboration settings specific to this project (task configs, team sync)
+- **Personal tier**: Individual developer experience preferences (UI themes, notification settings)
 
 **Step 2: Reference the classification matrix**
 Use these established patterns as precedent:
@@ -205,14 +225,18 @@ Use these established patterns as precedent:
 - Vault data policies (`vault.retention_days`, `vault.max_sessions`)
 - Team sync enablement (`sync.enabled`)
 
-*Team-Boundary (4 fields):* Auth/onboarding flows deliberately not scoped
-- Authentication configuration
-- Onboarding workflow settings
-- Access control policies
-- Audit trail configuration
+*Grove Settings:* Multi-project coordination within a grove
+- Resource sharing policies
+- Grove-wide task scheduling
+- Cross-project knowledge sharing settings
+
+*Machine Settings:* Global daemon configuration  
+- Global daemon port and networking
+- Machine-level authentication
+- Global logging and diagnostics
 
 **Step 3: Document your decision**
-Add the new field to the appropriate scope in comments and update any scope defaults matrices in the UI layer.
+Add the new field to the appropriate tier in comments and update any scope defaults matrices in the UI layer.
 
 ### Add New Scoped Config Fields
 
@@ -261,7 +285,7 @@ If the field requires daemon restart rather than live-reload, add it to the rest
 ```typescript
 const RESTART_REQUIRED_PATHS = [
   'daemon.port',
-  'daemon.log_level', 
+  'daemon.log_level',
   'new_field_requiring_restart'
 ];
 ```
@@ -302,7 +326,7 @@ function createModelReaction(deps: { logger: Logger, embedManager: EmbedManager 
   return (config: MycoConfig) => {
     // Handler must be idempotent - no self-writes
     // Use the provided config object (already parsed, optimized)
-    
+
     deps.logger.info('Model config changed, updating embedding provider');
     deps.embedManager.updateProvider(config.embedding.provider);
   };
@@ -364,6 +388,14 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Registry vs. direct config reads:** Use the `config` parameter passed to reactions for performance. The registry has already paid the YAML + schema parse cost once. Only call `loadConfig()` separately if you need to detect concurrent changes during reaction processing, which is rare.
 
+**Grove migration config compatibility:** When working with grove-aware configurations, ensure backward compatibility with pre-grove project configs. Grove migration procedures should preserve existing project settings while enabling grove coordination.
+
+**Multi-project configuration isolation:** Grove's global daemon coordinates multiple projects, but config changes should maintain appropriate isolation between projects unless explicitly designed for grove-wide coordination.
+
+**Three-tier merge precedence:** Remember that personal overrides win over project settings, which win over grove settings, which win over machine defaults. When debugging config issues, check all four tiers in the merge chain.
+
+**Grove-tier scope selection:** When adding grove-level settings, ensure they truly coordinate across projects rather than duplicating project-level functionality. Grove settings should enable multi-project workflows, not replace project autonomy.
+
 ---
 
 ## Checklist Before Submitting a Config Change
@@ -374,7 +406,9 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Settings page only sets fields it owns — no pass-through of other pages' sections
 - [ ] Modern settings UI uses ScopedField components or patch endpoints directly
 - [ ] If touching daemon-behavior fields, reload signal is sent
-- [ ] New scoped config fields have correct scope classification (Personal vs Project vs Team-boundary)
+- [ ] New scoped config fields have correct tier classification (Machine/Grove/Project/Personal)
 - [ ] Config reactions follow closure factory pattern and idempotency constraints
 - [ ] Config toggle side-effects use managed blocks and in-process reconciliation
+- [ ] Grove architecture compatibility considered for multi-project coordination
+- [ ] Three-tier merge precedence understood and documented
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss

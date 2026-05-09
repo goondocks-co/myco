@@ -1,7 +1,7 @@
 ---
 name: myco:vault-schema-extension
 description: |
-  Use this skill when adding or evolving Myco's SQLite vault database schema and its Cloudflare D1 cloud counterpart — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping local SQLite and D1 schemas in sync (including D1's lazy-migration behaviour where ALTER TABLE applies on the first request after deploy, not at deploy time), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
+  Use this skill when adding or evolving Myco's SQLite vault database schema and its Cloudflare D1 cloud counterpart — even if the user doesn't explicitly ask for "schema work." Covers: authoring versioned migration scripts with correct error guards (IF NOT EXISTS, user_version bumps), evolving existing tables with ALTER TABLE in a backfill-safe sequence, creating and populating FTS5 full-text search indexes with auto-sync triggers, keeping local SQLite and D1 schemas in sync (including D1's lazy-migration behaviour where ALTER TABLE applies on the first request after deploy, not at deploy time), selecting the right query patterns (WHERE IN with json_each for dynamic ID sets, hydration joins instead of N+1 selects, cursor-based pagination instead of OFFSET), Grove multi-tenant database design for global daemon architecture, and updating the constants and query modules that complete the data layer surface. Every new Myco feature that stores data touches this domain.
 managed_by: myco
 user-invocable: true
 allowed-tools: Read, Edit, Write, Bash, Grep, Glob
@@ -9,13 +9,16 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Vault Schema and Data Layer Extension
 
-Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array.
+Myco stores all project intelligence in a local SQLite file (`.myco/myco.db`) and mirrors the schema to Cloudflare D1 for team sync. Every new feature that persists data requires a versioned migration entry in the MIGRATIONS registry, query functions, and — depending on the feature — an FTS5 index and D1 alignment. Schema versions progress monotonically (v6→v7→v8→v9→…); each migration is a self-contained, idempotent entry in the declarative MIGRATIONS array. Grove architecture extends this foundation with global daemon coordination patterns and multi-project data organization.
 
 ## Prerequisites
 
 - Know what data needs to be stored and how it relates to existing tables (`sessions`, `spores`, `entities`, `edges`, etc.)
 - Check the current highest version in the `MIGRATIONS` array in `packages/myco/src/db/migrations.ts`
 - Decide upfront whether the table needs FTS5 (required if the intelligence agent will keyword-search it) and D1 alignment (required if the cloud MCP server queries it)
+- Understand Grove architecture implications for multi-project data coordination
+- For Grove migrations: understand project-scoped row management and migration_import_journal patterns
+- **For legacy database migration**: Be aware of historical column renames (e.g., `agent_runs.runtime` was renamed to `agent_runs.harness` in v29) that require schema normalization before Grove import
 
 ## Procedure A: Adding a New Table
 
@@ -98,7 +101,7 @@ All SQL lives in the appropriate query modules — never inline SQL strings in M
 
 ### 3. Update schema constants
 
-Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants:
+Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants. The schema has grown with subsystem additions (like CANOPY_* tables for code intelligence) representing natural schema evolution:
 
 | Constant | Add the table if… |
 |---|---|
@@ -107,6 +110,8 @@ Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants:
 | `SECONDARY_INDEXES` | Table has custom indexes beyond primary key |
 
 Review the schema-ddl.ts file to identify other table registration constants that may apply to your new table. Look for patterns like how existing tables (sessions, spores, etc.) are registered and follow the same registration approach.
+
+**Grove considerations**: When designing tables for Grove's global daemon architecture, consider whether data needs project-level isolation or grove-wide coordination. Most tables remain project-scoped, but some Grove features may require cross-project data organization.
 
 Find all places a similar table name appears to avoid missing any registration point:
 
@@ -142,6 +147,35 @@ Rules:
 - **Backfill in the same migration**, before the migration completes. This keeps the migration atomic: either both the schema change and the backfill succeed, or the whole migration retries.
 - **One conceptual change per migration** — keep each migration atomic and describable in a single sentence.
 - Update the query functions' INSERT and SELECT statements and the TypeScript row interface to include the new column.
+
+### Column renames (legacy considerations)
+
+For historical context, some columns have been renamed over time (e.g., `agent_runs.runtime` → `agent_runs.harness` in v29). When working with legacy databases:
+
+```typescript
+{
+  version: 29,
+  name: 'rename_agent_runs_runtime_to_harness',
+  description: 'Rename agent_runs.runtime column to harness for consistency',
+  up: (db: Database) => {
+    // SQLite requires full table rebuild for column rename
+    db.exec(`
+      CREATE TABLE agent_runs_new (
+        id TEXT PRIMARY KEY,
+        harness TEXT NOT NULL,  -- renamed from 'runtime'
+        task_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch())
+      );
+      INSERT INTO agent_runs_new (id, harness, task_name, created_at)
+        SELECT id, runtime, task_name, created_at FROM agent_runs;
+      DROP TABLE agent_runs;
+      ALTER TABLE agent_runs_new RENAME TO agent_runs;
+    `);
+  }
+}
+```
+
+**Important**: Always update query functions and TypeScript interfaces when column names change to maintain consistency across the codebase.
 
 ### What never to do
 
@@ -557,6 +591,169 @@ sqlite3 .myco/myco.db "EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY create
 | `db.prepare()` inside function | Move to module scope |
 | `/regex/` inside function | Move to module scope |
 
+## Procedure G: Grove Project-Scoped Schema Architecture
+
+Grove's global daemon architecture introduces project-scoped row management patterns requiring specialized schema design considerations.
+
+### Project-Scoped Row Management
+
+Grove migration (v31-v32) adds `project_id` columns across 24+ tables for proper project-scoped access:
+
+```typescript
+{
+  version: 31,
+  name: 'add_project_id_columns',
+  description: 'Add project_id columns for Grove multi-project isolation',
+  up: (db: Database) => {
+    // Add project_id to existing tables
+    const tables = ['sessions', 'spores', 'prompt_batches', 'entities', 'edges'];
+    for (const table of tables) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT;`);
+    }
+
+    // Backfill current rows with default project_id
+    const projectId = getDefaultProjectId(db);
+    for (const table of tables) {
+      db.exec(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL;`, projectId);
+    }
+  }
+}
+```
+
+### Migration Import Journal Pattern
+
+Grove migration introduces `migration_import_journal` tables for tracking data imports from legacy project vaults into a Grove:
+
+```typescript
+{
+  version: 32,
+  name: 'add_migration_import_journal',
+  description: 'Add migration import journal for Grove data coordination',
+  up: (db: Database) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS migration_import_journal (
+        id              TEXT PRIMARY KEY,
+        source_vault    TEXT NOT NULL,
+        target_project  TEXT NOT NULL,
+        import_type     TEXT NOT NULL,
+        imported_at     INTEGER NOT NULL DEFAULT (unixepoch()),
+        row_count       INTEGER NOT NULL,
+        checksum        TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_import_journal_target_project
+        ON migration_import_journal(target_project);
+      CREATE INDEX IF NOT EXISTS idx_import_journal_source_vault
+        ON migration_import_journal(source_vault);
+    `);
+  }
+}
+```
+
+### Grove Migration Contract Requirements
+
+**CRITICAL**: Grove activation must not import directly from legacy DBs with older schema versions. The migration contract requires a three-step normalization process to handle historical column renames and schema evolution:
+
+```bash
+# Step 1: Serialize the legacy DB (preserves exact state)
+sqlite3 legacy_vault.db ".backup legacy_serialized.db"
+
+# Step 2: Run current schema migrations on a copy
+cp legacy_serialized.db normalized_import.db
+myco-cli migrate --vault normalized_import.db  # Brings to current schema
+
+# Step 3: Import from normalized copy (matching schema)
+grove-importer import --source normalized_import.db --target grove_db.db
+```
+
+**Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema with the updated `agent_runs.harness` column. Direct import from mismatched schema causes activation failures in production because the importer queries fail when they reference the renamed column.
+
+### Historical Schema Changes to Consider
+
+When working with legacy database migrations, be aware of these historical column renames:
+
+| Table | Old Column | New Column | Migration Version |
+|---|---|---|---|
+| `agent_runs` | `runtime` | `harness` | v29 |
+
+Always check that import scripts and query functions use the current column names (`agent_runs.harness`) rather than legacy names (`agent_runs.runtime`).
+
+### Import Rekey Patterns
+
+Grove migration requires rekey patterns when importing data from legacy project vaults to avoid ID collisions:
+
+```typescript
+export function rekeyImportedRows(
+  db: Database,
+  sourceRows: any[],
+  targetProjectId: string
+): any[] {
+  const keyMapping = new Map<string, string>();
+
+  return sourceRows.map(row => {
+    // Generate new ID for target project
+    const newId = generateId();
+    keyMapping.set(row.id, newId);
+
+    return {
+      ...row,
+      id: newId,
+      project_id: targetProjectId,
+      imported_from: row.id, // Track original for debugging
+      imported_at: Math.floor(Date.now() / 1000)
+    };
+  });
+}
+```
+
+### Grove Schema Initialization
+
+Grove DB initialization follows a specific sequence at schema versions v31-v32:
+
+```typescript
+export function initializeGroveSchema(db: Database): void {
+  // 1. Ensure base schema is current (v30+)
+  runMigrations(db);
+
+  // 2. Add project_id columns if not already present
+  if (getCurrentSchemaVersion(db) < 31) {
+    runMigration(db, 31);
+  }
+
+  // 3. Add Grove coordination tables
+  if (getCurrentSchemaVersion(db) < 32) {
+    runMigration(db, 32);
+  }
+
+  // 4. Initialize default project if needed
+  ensureDefaultProject(db);
+}
+```
+
+### Project-Scoped Query Patterns
+
+When querying in Grove context, always scope by project_id to maintain proper isolation:
+
+```typescript
+// ❌ Cross-project data leak
+export function getSpores(db: Database, agentId: string) {
+  return db.prepare(`
+    SELECT * FROM spores WHERE agent_id = ?
+  `).all(agentId);
+}
+
+// ✅ Project-scoped isolation
+export function getSpores(
+  db: Database,
+  agentId: string,
+  projectId: string
+) {
+  return db.prepare(`
+    SELECT * FROM spores
+    WHERE agent_id = ? AND project_id = ?
+  `).all(agentId, projectId);
+}
+```
+
 ## File Layout Reference
 
 ```
@@ -564,10 +761,17 @@ packages/myco/
   src/
     db/
       migrations.ts            # MIGRATIONS array with declarative Migration entries
-      schema-ddl.ts            # Table DDL definitions and constants
+      schema-ddl.ts            # Table DDL definitions and constants (includes CANOPY_*, CORTEX_*, and other subsystem tables)
+      grove/                   # Grove-specific schema modules
+        project-management.ts  # Project-scoped row management
+        import-journal.ts      # Migration import journal functions
 packages/myco-team/
   migrations/                  # Parallel D1 SQL migration files
     0021_add_my_new_table.sql
+packages/grove/
+  schema/                      # Grove global daemon schema
+    initialization.ts          # Grove DB initialization patterns
+    multi-project-queries.ts   # Project-scoped query helpers
 ```
 
 ## Cross-Cutting Gotchas
@@ -579,5 +783,11 @@ packages/myco-team/
 - **Never post-filter in JS what SQL can filter** — use `json_each` for dynamic ID sets, JOIN for related data, and keyset cursors for pagination.
 - **All SQL lives in the appropriate query modules** — no inline SQL in MCP handlers or business logic. This keeps it grep-able, testable, and refactorable.
 - **Scan `packages/myco/src/db/schema-ddl.ts` after every new table** — missing a registration in `TABLE_DDLS` or `FTS_TABLES` silently limits the feature surface.
-- **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface.
+- **Review schema-ddl.ts for table registration constants after every new table** — missing registrations in various table arrays silently limits the feature surface. Expect additive growth with new subsystem tables like CANOPY_* exports for code intelligence features.
 - **Migration test functions for complex transformations** — include test helpers like `resolveV20PlanIdentityCollisionsForTest` for migrations that involve data conflicts or complex transformations.
+- **Grove project-scoped coordination** — consider whether new tables need project-level scoping or Grove-wide coordination when designing schema for Grove's global daemon architecture.
+- **Grove project_id is mandatory in v31+** — all new project-scoped tables must include a project_id column and all project-scoped queries must scope by project_id.
+- **Import rekey patterns required for Grove migration** — when importing data from legacy project vaults, use rekey patterns to avoid ID collisions and maintain referential integrity.
+- **Grove schema initialization sequence** — follow v31-v32 initialization pattern when setting up Grove databases to ensure proper multi-project support.
+- **Grove migration contract enforcement** — never import directly from legacy DBs with older schemas. Always serialize legacy DB, run current migrations on normalized copy, then import from schema-aligned source to avoid activation failures.
+- **Historical column renames** — be aware of column renames like `agent_runs.runtime` → `agent_runs.harness` (v29) when working with legacy database imports or when updating query functions. Always use current column names in new code.

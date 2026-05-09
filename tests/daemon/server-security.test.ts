@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
+import { ensureProjectManifest } from '@myco/config/project-manifest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,6 +22,7 @@ describe('DaemonServer CSRF/Origin/Content-Type gate', () => {
 
   beforeEach(async () => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sec-'));
+    ensureProjectManifest(vaultDir, { projectName: 'sec-test' });
     fs.mkdirSync(path.join(vaultDir, 'logs'), { recursive: true });
     logger = new DaemonLogger(path.join(vaultDir, 'logs'));
     server = new DaemonServer({ vaultDir, logger });

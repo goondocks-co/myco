@@ -22,8 +22,7 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { resolveCanopyProjectId } from '../../canopy/identity.js';
-import { resolveProjectRoot } from '../../vault/resolve.js';
+import { resolveRequestContextForVault } from '../../tools/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
@@ -97,8 +96,9 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const { sessionId, agent, toolInput } = parsed.data;
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
 
-    const projectRoot = resolveProjectRoot(deps.vaultDir);
-    const projectId = resolveCanopyProjectId(deps.vaultDir);
+    const ctx = resolveRequestContextForVault(deps.vaultDir);
+    const projectRoot = ctx.projectRoot;
+    const projectId = ctx.projectId;
     const config = deps.liveConfig.current.cortex.canopy;
 
     const capabilityOn = symbiontHasCapability(agent, 'preToolUseInjection');

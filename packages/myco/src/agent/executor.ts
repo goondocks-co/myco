@@ -16,8 +16,8 @@ import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { getDefaultTask } from '@myco/db/queries/tasks.js';
 import {
   insertRun,
@@ -134,11 +134,13 @@ export async function runAgent(
   vaultDir: string,
   options?: RunOptions,
 ): Promise<AgentRunResult> {
-  const db = initDatabase(vaultDbPath(vaultDir));
+  const db = initDatabase(options?.requestContext?.databasePath ?? vaultDbPath(vaultDir));
   createSchema(db);
 
   const agentId = options?.agentId ?? DEFAULT_AGENT_ID;
-  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId) : null;
+  const projectId = rowProjectIdFromRequestContext(options?.requestContext);
+  const scope = projectScopeFromRequestContext(options?.requestContext);
+  const resumedRun = options?.resumeRunId ? getRun(options.resumeRunId, scope) : null;
   if (options?.resumeRunId && !resumedRun) {
     return {
       runId: options.resumeRunId,
@@ -153,7 +155,7 @@ export async function runAgent(
     const effectiveTask = requestedTask
       ?? getDefaultTask(agentId)?.id;
     if (effectiveTask) {
-      const runningId = getRunningRunForTask(agentId, effectiveTask);
+      const runningId = getRunningRunForTask(agentId, effectiveTask, scope);
       if (runningId) {
         return {
           runId: runningId,
@@ -284,6 +286,7 @@ export async function runAgent(
   if (!resumedRun) {
     insertRun({
       id: runId,
+      project_id: projectId,
       agent_id: agentId,
       task: config.taskName,
       instruction: options?.instruction ?? null,
@@ -314,7 +317,7 @@ export async function runAgent(
       cost_source: resumedRun.cost_source,
       cost_data: resumedRun.cost_data,
       error: null,
-    });
+    }, scope);
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
@@ -405,10 +408,10 @@ export async function runAgent(
         usage: currentUsage,
         costData: currentCost,
         phaseResults: currentPhaseResults,
-      }));
+      }), scope);
     };
 
-    const projectRoot = resolveProjectRoot(vaultDir);
+    const projectRoot = options?.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
 
     // Assemble the PhaseLoopContext once. `checkpointState` is mutable by
     // reference — the loop updates it in place and we read back its final
@@ -426,6 +429,7 @@ export async function runAgent(
       abortController: taskAbortController,
       projectRoot,
       vaultDir,
+      requestContext: options?.requestContext,
       options,
       checkpointState,
       persistCheckpoints: persistHarnessState,
@@ -500,6 +504,7 @@ export async function runAgent(
       agentId,
       runId,
       runContext: options?.runContext,
+      requestContext: options?.requestContext,
       instruction: options?.instruction,
       dryRun: options?.dryRun,
       vaultDir,
@@ -520,7 +525,7 @@ export async function runAgent(
         phaseResults,
         sessionRef: runSessionRef,
       }),
-    });
+    }, scope);
 
     return {
       runId,
@@ -602,7 +607,7 @@ export async function runAgent(
         tokens_used: usage.totalTokens ?? phaseResults?.reduce((sum, phase) => sum + phase.tokensUsed, 0) ?? undefined,
         error: errorMessage,
         ...accountingUpdate,
-      });
+      }, scope);
     } catch (dbErr) {
       // DB failure in error path — log it but don't mask the original error
       options?.logger?.error('agent.run.db-save-failed', `Failed to save error to DB for run ${runId}`, {
@@ -678,6 +683,7 @@ export async function finalizeOnTaskSuccess(args: {
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   instruction?: string;
   dryRun?: boolean;
   vaultDir?: string;
@@ -697,8 +703,9 @@ export async function finalizeOnTaskSuccess(args: {
 function findLastReportByAction(
   runId: string,
   action: string,
+  scope: import('@myco/grove/ids.js').ProjectScope,
 ): ReturnType<typeof listReports>[number] | undefined {
-  const reports = listReports(runId);
+  const reports = listReports(runId, { scope });
   for (let i = reports.length - 1; i >= 0; i -= 1) {
     if (reports[i]?.action === action) return reports[i];
   }
@@ -721,9 +728,10 @@ function finalizeCortexInstructions(args: {
   agentId: string;
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   instruction?: string;
 }): void {
-  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION);
+  const report = findLastReportByAction(args.runId, CORTEX_INSTRUCTIONS_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
   if (!report) {
     throw new Error('cortex-instructions completed without a cortex_instructions report');
   }
@@ -733,6 +741,7 @@ function finalizeCortexInstructions(args: {
   }
 
   upsertCortexInstructions({
+    project_id: rowProjectIdFromRequestContext(args.requestContext),
     agent_id: args.agentId,
     content,
     input_hash: args.runContext?.cortex_instruction_input_hash ?? fallbackInstructionHash(args.instruction),
@@ -744,13 +753,14 @@ function finalizeCortexInstructions(args: {
 function finalizeCanopyMap(args: {
   runId: string;
   runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
   vaultDir?: string;
 }): void {
   if (!args.vaultDir) {
     throw new Error('canopy-map completed but vaultDir is unavailable — cannot resolve project_id');
   }
 
-  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION);
+  const report = findLastReportByAction(args.runId, CANOPY_MAP_REPORT_ACTION, projectScopeFromRequestContext(args.requestContext));
   if (!report) {
     throw new Error('canopy-map completed without a canopy_map report');
   }
@@ -767,8 +777,11 @@ function finalizeCanopyMap(args: {
     throw new Error('canopy-map completed without runContext.canopy_map_inputs_hash');
   }
 
-  const projectId = resolveCanopyProjectId(args.vaultDir);
-  const machineId = getMachineId(args.vaultDir);
+  if (!args.requestContext) {
+    throw new Error('canopy-map writer requires a Grove request context — none supplied');
+  }
+  const projectId = args.requestContext.projectId;
+  const machineId = args.requestContext.machineId;
   writeCanopyMap({
     project_id: projectId,
     machine_id: machineId,

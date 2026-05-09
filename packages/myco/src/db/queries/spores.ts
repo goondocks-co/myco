@@ -8,6 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -29,6 +30,7 @@ export const DEFAULT_IMPORTANCE = 5;
 /** Fields required (or optional) when inserting a spore. */
 export interface SporeInsert {
   id: string;
+  project_id?: string | null;
   agent_id: string;
   observation_type: string;
   content: string;
@@ -49,6 +51,7 @@ export interface SporeInsert {
 /** Row shape returned from spore queries (all columns). */
 export interface SporeRow {
   id: string;
+  project_id: string | null;
   agent_id: string;
   session_id: string | null;
   prompt_batch_id: number | null;
@@ -70,6 +73,7 @@ export interface SporeRow {
 
 /** Filter options for `listSpores`. */
 export interface ListSporesOptions {
+  scope: ProjectScope;
   agent_id?: string;
   observation_type?: string;
   status?: string;
@@ -96,6 +100,7 @@ export interface ListSporesOptions {
 
 const SPORE_COLUMNS = [
   'id',
+  'project_id',
   'agent_id',
   'session_id',
   'prompt_batch_id',
@@ -125,6 +130,7 @@ const SELECT_COLUMNS = SPORE_COLUMNS.join(', ');
 function toSporeRow(row: Record<string, unknown>): SporeRow {
   return {
     id: row.id as string,
+    project_id: (row.project_id as string) ?? null,
     agent_id: row.agent_id as string,
     session_id: (row.session_id as string) ?? null,
     prompt_batch_id: (row.prompt_batch_id as number) ?? null,
@@ -159,18 +165,19 @@ export function insertSpore(data: SporeInsert): SporeRow {
 
   db.prepare(
     `INSERT INTO spores (
-       id, agent_id, session_id, prompt_batch_id,
+       id, project_id, agent_id, session_id, prompt_batch_id,
        observation_type, status, content, context,
        importance, file_path, tags, content_hash,
        properties, created_at, updated_at, machine_id
      ) VALUES (
-       ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?
      )`,
   ).run(
     data.id,
+    data.project_id ?? null,
     data.agent_id,
     data.session_id ?? null,
     data.prompt_batch_id ?? null,
@@ -202,13 +209,14 @@ export function insertSpore(data: SporeInsert): SporeRow {
  *
  * @returns the spore row, or null if not found.
  */
-export function getSpore(id: string): SporeRow | null {
+export function getSpore(id: string, scope: ProjectScope): SporeRow | null {
   const db = getDatabase();
-
+  const conditions = ['id = ?'];
+  const params: unknown[] = [id];
+  appendProjectCondition(conditions, params, scope);
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
-
+    `SELECT ${SELECT_COLUMNS} FROM spores WHERE ${conditions.join(' AND ')}`,
+  ).get(...params) as Record<string, unknown> | undefined;
   if (!row) return null;
   return toSporeRow(row);
 }
@@ -227,6 +235,7 @@ function buildSporeWhere(
     conditions.push(`agent_id = ?`);
     params.push(options.agent_id);
   }
+  appendProjectCondition(conditions, params, options.scope);
   if (options.observation_type !== undefined) {
     conditions.push(`observation_type = ?`);
     params.push(options.observation_type);
@@ -269,7 +278,7 @@ function buildSporeWhere(
  * List spores with optional filters, ordered by created_at DESC.
  */
 export function listSpores(
-  options: ListSporesOptions = {},
+  options: ListSporesOptions,
 ): SporeRow[] {
   const db = getDatabase();
   const { where, params } = buildSporeWhere(options);
@@ -292,7 +301,7 @@ export function listSpores(
  * Count spores matching optional filters (for pagination totals).
  */
 export function countSpores(
-  options: Omit<ListSporesOptions, 'limit' | 'offset'> = {},
+  options: Omit<ListSporesOptions, 'limit' | 'offset'>,
 ): number {
   const db = getDatabase();
   const { where, params } = buildSporeWhere(options);
@@ -336,20 +345,20 @@ export function updateSporeStatus(
   id: string,
   status: string,
   updatedAt: number,
+  scope: ProjectScope,
 ): SporeRow | null {
   const db = getDatabase();
-
+  const conditions = ['id = ?'];
+  const params: unknown[] = [status, updatedAt, id];
+  appendProjectCondition(conditions, params, scope);
   const info = db.prepare(
-    `UPDATE spores
-     SET status = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(status, updatedAt, id);
+    `UPDATE spores SET status = ?, updated_at = ? WHERE ${conditions.join(' AND ')}`,
+  ).run(...params);
 
   if (info.changes === 0) return null;
 
-  const row = toSporeRow(
-    db.prepare(`SELECT ${SELECT_COLUMNS} FROM spores WHERE id = ?`).get(id) as Record<string, unknown>,
-  );
+  const row = getSpore(id, scope);
+  if (!row) return null;
 
   syncRow('spores', row);
 

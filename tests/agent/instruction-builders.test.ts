@@ -1,7 +1,7 @@
 /**
  * Tests for skill-evolve instruction builder.
  *
- * Exercises buildSkillEvolveInstruction() against an in-memory database,
+ * Exercises buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT) against an in-memory database,
  * verifying filtering logic for watermarks, throttle intervals, and
  * content assembly.
  */
@@ -15,6 +15,8 @@ import { vi } from '../helpers/vi-shim.js';
 mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => null }));
 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
@@ -25,6 +27,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { buildCortexInstructionsInput } from '@myco/context/cortex-brief.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import {
   buildSkillEvolveInstruction,
   buildSkillGenerateInstruction,
@@ -38,7 +41,9 @@ import {
   SKILL_EVOLVE_TASK,
 } from '@myco/agent/instruction-builders.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -102,9 +107,20 @@ function createSpore(createdAt: number, content: string = 'Test spore content'):
   return id;
 }
 
-function createSession(id: string, status: 'active' | 'completed', createdAt: number): void {
+function requestContext(projectId: string) {
+  return resolveLegacyRequestContext('/tmp/myco-instruction-builders-test/.myco', {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
+}
+
+function createSession(id: string, status: 'active' | 'completed', createdAt: number, projectId?: string): void {
   upsertSession({
     id,
+    ...(projectId !== undefined ? { project_id: projectId } : {}),
     agent: 'claude-code',
     started_at: createdAt,
     created_at: createdAt,
@@ -168,7 +184,7 @@ describe('buildSkillEvolveInstruction', () => {
   });
 
   it('returns skip message when no skills exist', async () => {
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -179,7 +195,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Create a spore before the watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -190,7 +206,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore created after the watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('active-skill');
   });
@@ -204,7 +220,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore exists after watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -218,7 +234,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore after all watermarks
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('max_skills_per_run: 2');
     // Should contain exactly 2 skill sections
@@ -234,7 +250,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('recently-assessed', watermark, now - 60);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     const selectedNames = [...result.matchAll(/^## Skill: ([^(]+)/gm)].map(match => match[1].trim());
     expect(selectedNames).toEqual(['never-assessed', 'oldest-assessed']);
   });
@@ -248,7 +264,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('stale-enough', watermark, lastAssessedAt);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('stale-enough');
   });
@@ -259,7 +275,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('content-check', watermark);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('### Current Content');
     expect(result).toContain('content-check'); // skill name still present in metadata
   });
@@ -270,7 +286,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('spore-id-check', watermark);
     const sporeId = createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toContain(sporeId);
   });
 
@@ -294,7 +310,7 @@ describe('buildSkillEvolveInstruction', () => {
     const uiSporeId = createSpore(now - 90, 'Daemon UI theme token regression affected SectionSaveRow layout.');
     const unrelatedSporeId = createSpore(now - 80, 'Cloudflare worker cron fanout timeout needs a tighter safety bound.');
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
 
     const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
     const uiSection = result.match(/## Skill: daemon-ui-development[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
@@ -348,6 +364,7 @@ describe('buildSkillEvolveInstruction', () => {
       { max_skills_per_run: 2, assess_interval_hours: 1 },
       undefined,
       provider,
+      TEST_REQUEST_CONTEXT,
     );
 
     const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
@@ -372,7 +389,7 @@ describe('buildSkillEvolveInstruction', () => {
       '# Steady\n## Scope\nNo code refs.\n## Procedure\nNo changes.\n',
     );
 
-    const result = await buildSkillEvolveInstruction({}, root);
+    const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
     rmSync(root, { recursive: true, force: true });
   });
@@ -401,7 +418,7 @@ describe('buildSkillEvolveInstruction', () => {
       'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\nexport const AddedTwo = 3;\n',
     );
 
-    const result = await buildSkillEvolveInstruction({}, root);
+    const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toContain('Pre-computed Drift Report');
     expect(result).toContain('growth=');
     rmSync(root, { recursive: true, force: true });
@@ -463,33 +480,33 @@ describe('buildSkillGenerateInstruction', () => {
       updated_at: now,
     });
     if (status !== CANDIDATE_STATUS.IDENTIFIED) {
-      updateCandidate(id, { status, updated_at: now });
+      updateCandidate(id, { status, updated_at: now }, ALL_PROJECTS_SCOPE);
     }
   }
 
   it('returns undefined when no candidates exist', () => {
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in identified state', () => {
     seedCandidate('c-1', CANDIDATE_STATUS.IDENTIFIED);
     seedCandidate('c-2', CANDIDATE_STATUS.IDENTIFIED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in dismissed state', () => {
     seedCandidate('c-d', CANDIDATE_STATUS.DISMISSED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in generated state', () => {
     seedCandidate('c-g', CANDIDATE_STATUS.GENERATED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns instruction with context when an approved candidate exists', () => {
     seedCandidate('c-a', CANDIDATE_STATUS.APPROVED);
-    const result = buildSkillGenerateInstruction();
+    const result = buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('candidate_id: c-a');
     expect(result!.context).toEqual({ candidate_id: 'c-a' });
@@ -541,11 +558,11 @@ describe('buildSkillSurveyInstruction', () => {
       created_at: now - 70,
     });
 
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when settled corpus is still too sparse', () => {
@@ -561,17 +578,17 @@ describe('buildSkillSurveyInstruction', () => {
       created_at: now - 90,
     });
 
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns instruction only after enough settled sessions and spores exist', () => {
     createSettledSurveyCorpus();
 
-    const result = buildSkillSurveyInstruction(TEST_AGENT_ID);
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
     expect(result!.instruction).toContain('only propose project-specific procedural domains');
@@ -582,12 +599,45 @@ describe('buildSkillSurveyInstruction', () => {
   it('returns undefined when no new settled knowledge exists after the watermark', () => {
     createSettledSurveyCorpus();
 
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeDefined();
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeDefined();
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'no-new-settled-knowledge',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
+  });
+
+  it('evaluates eligibility inside the request-context project scope', () => {
+    const now = epochSeconds();
+    createSession('settled-project-a-1', 'completed', now - 300, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    createSession('settled-project-a-2', 'completed', now - 200, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    createSession('settled-project-b-1', 'completed', now - 100, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    for (const [id, projectId] of [
+      ['spore-project-a-1', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-a-2', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-a-3', 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      ['spore-project-b-1', 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'],
+    ] as const) {
+      insertSpore({
+        id,
+        project_id: projectId,
+        agent_id: TEST_AGENT_ID,
+        session_id: projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ? 'settled-project-a-1' : 'settled-project-b-1',
+        observation_type: 'decision',
+        content: `${projectId} scoped observation`,
+        importance: 5,
+        created_at: now - 90,
+      });
+    }
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'))).toEqual({
+      eligible: true,
+      reason: null,
+    });
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, requestContext('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'))).toEqual({
+      eligible: false,
+      reason: 'insufficient-settled-sessions',
+    });
   });
 });
 
@@ -629,22 +679,22 @@ describe('buildTaskInstruction', () => {
   });
 
   it('returns undefined for tasks that do not use pre-assembled instructions', async () => {
-    await expect(buildTaskInstruction('vault-evolve')).resolves.toBeUndefined();
-    await expect(buildTaskInstruction('skill-survey')).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('vault-evolve', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-generate when no approved candidates exist', async () => {
-    await expect(buildTaskInstruction(SKILL_GENERATE_TASK)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-survey when no settled survey corpus exists', async () => {
-    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns bundle for skill-survey when settled survey corpus exists', async () => {
     createSettledSurveyCorpus();
 
-    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID);
+    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('project-specific procedural domains');
   });
@@ -659,9 +709,9 @@ describe('buildTaskInstruction', () => {
       created_at: now,
       updated_at: now,
     });
-    updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now });
+    updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
-    const result = await buildTaskInstruction(SKILL_GENERATE_TASK);
+    const result = await buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Ready topic');
     expect(result!.context?.candidate_id).toBe('ready-to-generate');
@@ -671,13 +721,16 @@ describe('buildTaskInstruction', () => {
     createAgent(DEFAULT_AGENT_ID);
     const config = MycoConfigSchema.parse({ version: 3 });
     // buildCortexInstructionsInput now requires a vaultDir for the
-    // canopy-map gate. Use a tmp dir with a pre-seeded machine_id so the
-    // build is deterministic without writing to a real vault.
+    // canopy-map gate AND a Grove project_id from the manifest. Use a
+    // tmp dir with a pre-seeded manifest + machine_id so the build is
+    // deterministic without writing to a real vault.
     const tmpRoot = mkdtempSync(join(tmpdir(), 'myco-task-instr-'));
     const vaultDir = join(tmpRoot, '.myco');
     mkdirSync(vaultDir, { recursive: true });
+    ensureProjectManifest(vaultDir, { projectName: 'task-instr-test' });
     writeFileSync(join(vaultDir, 'machine_id'), 'test-machine', 'utf-8');
-    const built = await buildCortexInstructionsInput(config, vaultDir);
+    const requestContext = resolveRequestContextForVault(vaultDir);
+    const built = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext);
 
     upsertCortexInstructions({
       agent_id: DEFAULT_AGENT_ID,
@@ -686,7 +739,16 @@ describe('buildTaskInstruction', () => {
       generated_at: epochSeconds(),
     });
 
-    const result = await buildTaskInstruction(CORTEX_INSTRUCTIONS_TASK, undefined, undefined, tmpRoot, undefined, config);
+    const result = await buildTaskInstruction(
+      CORTEX_INSTRUCTIONS_TASK,
+      undefined,
+      undefined,
+      tmpRoot,
+      undefined,
+      config,
+      undefined,
+      requestContext,
+    );
     expect(result).toBeUndefined();
     rmSync(tmpRoot, { recursive: true, force: true });
   });

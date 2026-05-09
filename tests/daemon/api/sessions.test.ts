@@ -7,10 +7,13 @@ import { initDatabase, closeDatabase } from '@myco/db/client';
 import { createSchema } from '@myco/db/schema';
 import { upsertSession, getSession } from '@myco/db/queries/sessions';
 import { upsertPlan, getPlan } from '@myco/db/queries/plans';
-import { createSessionMutationHandlers, createGetSessionHandler } from '@myco/daemon/api/sessions';
+import { createSessionMutationHandlers, createGetSessionHandler, handleListSessions } from '@myco/daemon/api/sessions';
 import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context';
 import type { RouteRequest } from '@myco/daemon/router';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 /**
  * Handlers depend on an EmbeddingManager for the delete path; the complete
  * path doesn't touch it, so a stub with the interface shape is enough.
@@ -28,11 +31,66 @@ function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     ...overrides,
   } as RouteRequest;
 }
 
+function requestContext(vaultDir: string, projectId: string) {
+  return resolveLegacyRequestContext(vaultDir, {
+    projectRoot: `/workspace/${projectId}`,
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'machine-test',
+    source: 'explicit',
+  });
+}
+
 const epochNow = () => Math.floor(Date.now() / 1000);
+
+describe('session API request context scoping', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sessions-scope-'));
+    const dbPath = path.join(tmpDir, 'myco.db');
+    const db = initDatabase(dbPath);
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    closeDatabase();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('lists only sessions in the requested project context', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', agent: 'test-agent', started_at: now, created_at: now });
+    upsertSession({ id: 'sess-b', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', agent: 'test-agent', started_at: now, created_at: now });
+
+    const res = await handleListSessions(makeRequest({
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    }));
+
+    const body = res.body as { sessions: Array<{ id: string }>; total: number };
+    expect(body.sessions.map((session) => session.id)).toEqual(['sess-a']);
+    expect(body.total).toBe(1);
+  });
+
+  it('does not return a session from a different project context', async () => {
+    const now = epochNow();
+    upsertSession({ id: 'sess-other', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', agent: 'test-agent', started_at: now, created_at: now });
+    const handler = createGetSessionHandler();
+
+    const res = await handler(makeRequest({
+      params: { id: 'sess-other' },
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    }));
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: 'not_found' });
+  });
+});
 
 describe('handleCompleteSession', () => {
   let tmpDir: string;
@@ -85,7 +143,7 @@ describe('handleCompleteSession', () => {
       was_active: true,
     });
 
-    const after = getSession('sess-active');
+    const after = getSession('sess-active', ALL_PROJECTS_SCOPE);
     expect(after?.status).toBe('completed');
     expect(after?.ended_at).toBeGreaterThanOrEqual(now);
   });
@@ -110,7 +168,7 @@ describe('handleCompleteSession', () => {
       was_active: false,
     });
 
-    const after = getSession('sess-done');
+    const after = getSession('sess-done', ALL_PROJECTS_SCOPE);
     expect(after?.status).toBe('completed');
     expect(after?.ended_at).toBe(originalEnd);
   });
@@ -170,7 +228,7 @@ describe('handleDeletePlan', () => {
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-delete' } }));
 
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-delete')).toBeNull();
+    expect(getPlan('plan-delete', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-delete');
   });
 
@@ -180,6 +238,36 @@ describe('handleDeletePlan', () => {
 
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ error: { code: 'plan-not-found' } });
+  });
+
+  it('does not delete a plan from a different project context', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-plan-other',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      agent: 'test-agent',
+      started_at: now,
+      created_at: now,
+    });
+    upsertPlan({
+      id: 'plan-other-project',
+      project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      logical_key: 'session:sess-plan-other:key:primary',
+      session_id: 'sess-plan-other',
+      title: 'Do not delete',
+      content: '# Do not delete',
+      created_at: now,
+    });
+
+    const { handleDeletePlan } = makeHandlers();
+    const res = await handleDeletePlan(makeRequest({
+      params: { id: 'plan-other-project' },
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    }));
+
+    expect(res.status).toBe(404);
+    expect(getPlan('plan-other-project', projectScope('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as GroveProjectId))).not.toBeNull();
+    expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
   });
 });
 
@@ -230,7 +318,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
     const { handleDeletePlan } = makeHandlers();
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
     expect(res.status).toBe(403);
-    expect(getPlan('plan-owned')).not.toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).not.toBeNull();
     expect(embeddingManager.onRemoved).not.toHaveBeenCalled();
   });
 
@@ -242,7 +330,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       body: { force_remote: true },
     }));
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-owned')).toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).toBeNull();
     expect(embeddingManager.onRemoved).toHaveBeenCalledWith('plans', 'plan-owned');
   });
 
@@ -251,7 +339,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
     const { handleDeletePlan } = makeHandlers();
     const res = await handleDeletePlan(makeRequest({ params: { id: 'plan-owned' } }));
     expect(res.status === undefined || res.status < 400).toBe(true);
-    expect(getPlan('plan-owned')).toBeNull();
+    expect(getPlan('plan-owned', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 });
 

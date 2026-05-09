@@ -1,6 +1,6 @@
 /** Shared skeleton: read stdin, POST to daemon /events, buffer on failure. */
 
-import { DaemonClient, isIgnoredEventResponse } from './client.js';
+import { createHookDaemonClient, isIgnoredEventResponse } from './client.js';
 import { type NormalizedHookInput } from './normalize.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
@@ -29,7 +29,7 @@ export async function sendEvent(
       transcript_path: input.transcriptPath,
     };
 
-    const client = new DaemonClient(VAULT_DIR);
+    const client = createHookDaemonClient(VAULT_DIR, { sessionId });
     const result = await client.post('/events', { ...eventWithContext, session_id: sessionId, agent: symbiont });
 
     // Buffer on transport failure OR server-side `ignored` so reconcile can replay it.

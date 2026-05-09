@@ -9,7 +9,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { requestContextHeaders, resolveRequestContextForVault, type MycoRequestContext } from './request-context.js';
 import { extractErrorMessage, type ToolFailure } from './error.js';
 
 // ---------------------------------------------------------------------------
@@ -74,15 +74,19 @@ export type PlansResult = PlanSummary[] | PlanSummary | PlanDeleteResult | PlanS
 export async function handleMycoPlans(
   input: PlansInput,
   client: DaemonClient,
-  vaultDir: string,
+  contextOrVaultDir: MycoRequestContext | string,
 ): Promise<PlansResult> {
   const op = input.op ?? 'list';
+  const context = typeof contextOrVaultDir === 'string'
+    ? resolveRequestContextForVault(contextOrVaultDir)
+    : contextOrVaultDir;
 
   if (op === 'save') {
-    if (!input.session_id) return { ok: false, error: 'session_id is required for op: save' };
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
+    if (!input.id && !input.session_id) return { ok: false, error: 'session_id is required for op: save' };
 
     const result = saveMcpPlan({
+      id: input.id,
       session_id: input.session_id,
       content: input.content,
       source_path: input.source_path,
@@ -90,7 +94,8 @@ export async function handleMycoPlans(
       title: input.title,
       status: input.status,
       tags: input.tags,
-      projectRoot: resolveProjectRoot(vaultDir),
+      projectRoot: context.projectRoot,
+      requestContext: context,
     });
 
     if (!result.ok) return { ok: false, error: result.message };
@@ -116,7 +121,11 @@ export async function handleMycoPlans(
       return { ok: false, error: 'id is required for op: delete' };
     }
     const body = input.force_remote ? { force_remote: true } : undefined;
-    const result = await client.delete(`/api/plans/${encodeURIComponent(input.id)}`, body);
+    const result = await client.delete(
+      `/api/plans/${encodeURIComponent(input.id)}`,
+      body,
+      { headers: requestContextHeaders(context) },
+    );
     if (!result.ok) {
       return { ok: false, error: extractErrorMessage(result.data, 'delete_failed') };
     }
@@ -129,7 +138,7 @@ export async function handleMycoPlans(
 
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
-    const result = listPlansForMcp({ id: input.id });
+    const result = listPlansForMcp({ id: input.id, requestContext: context });
     if (!result.ok) return { ok: false, error: result.message };
     if (!result.plans.length) return { ok: false, error: 'Plan not found' };
     return result.plans[0];
@@ -144,6 +153,7 @@ export async function handleMycoPlans(
     session: input.session,
     status: input.status,
     limit: input.limit,
+    requestContext: context,
   });
   if (!result.ok) return { ok: false, error: result.message };
   return result.plans;

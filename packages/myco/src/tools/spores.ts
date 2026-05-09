@@ -8,6 +8,7 @@
 
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveSpore, supersedeSpore, consolidateSpores } from '@myco/spores/write.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import { type ToolFailure } from './error.js';
 import { buildEndpoint } from './shared.js';
 
@@ -33,12 +34,16 @@ export interface SporesInput {
 export async function handleMycoSpores(
   input: SporesInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<unknown | ToolFailure> {
   const op = input.op ?? 'list';
 
   if (op === 'get') {
     if (!input.id) return { ok: false, error: 'id is required for op: get' };
-    const result = await client.get(`/api/spores/${encodeURIComponent(input.id)}`);
+    const endpoint = `/api/spores/${encodeURIComponent(input.id)}`;
+    const result = requestContext
+      ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+      : await client.get(endpoint);
     if (!result.ok || !result.data) return { ok: false, error: 'Spore not found' };
     return result.data;
   }
@@ -46,7 +51,7 @@ export async function handleMycoSpores(
   if (op === 'save') {
     if (!input.content) return { ok: false, error: 'content is required for op: save' };
     if (!input.type) return { ok: false, error: 'type is required for op: save' };
-    return saveSpore({ content: input.content, type: input.type, tags: input.tags });
+    return saveSpore({ content: input.content, type: input.type, tags: input.tags, requestContext });
   }
 
   if (op === 'supersede') {
@@ -56,6 +61,7 @@ export async function handleMycoSpores(
       old_spore_id: input.old_spore_id,
       new_spore_id: input.new_spore_id,
       reason: input.reason,
+      requestContext,
     });
   }
 
@@ -69,6 +75,7 @@ export async function handleMycoSpores(
       observation_type: input.observation_type,
       tags: input.tags,
       reason: input.reason,
+      requestContext,
     });
   }
 
@@ -80,7 +87,9 @@ export async function handleMycoSpores(
     limit: input.limit,
     offset: input.offset,
   });
-  const result = await client.get(endpoint);
+  const result = requestContext
+    ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+    : await client.get(endpoint);
   if (!result.ok || !result.data) return { spores: [], total: 0, offset: input.offset ?? 0, limit: input.limit };
   return result.data;
 }

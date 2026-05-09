@@ -19,6 +19,7 @@ import {
   getEmbeddingQueueDepth,
   EMBEDDABLE_TABLES,
 } from '@myco/db/queries/embeddings.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -244,7 +245,7 @@ describe('embedding flag helpers', () => {
 
   describe('getEmbeddingQueueDepth', () => {
     it('returns all zeros for empty database', () => {
-      const result = getEmbeddingQueueDepth();
+      const result = getEmbeddingQueueDepth( ALL_PROJECTS_SCOPE);
       expect(result.queue_depth).toBe(0);
       expect(result.embedded_count).toBe(0);
       expect(result.total).toBe(0);
@@ -256,7 +257,7 @@ describe('embedding flag helpers', () => {
       const agentId = createAgent('agent-depth');
       insertSpore(makeSpore(agentId));
 
-      const result = getEmbeddingQueueDepth();
+      const result = getEmbeddingQueueDepth( ALL_PROJECTS_SCOPE);
       expect(result.queue_depth).toBe(2);
       expect(result.embedded_count).toBe(0);
       expect(result.total).toBe(2);
@@ -267,7 +268,7 @@ describe('embedding flag helpers', () => {
       upsertSession(session);
       markEmbedded('sessions', session.id);
 
-      const result = getEmbeddingQueueDepth();
+      const result = getEmbeddingQueueDepth( ALL_PROJECTS_SCOPE);
       expect(result.embedded_count).toBe(1);
       expect(result.queue_depth).toBe(0);
     });
@@ -277,7 +278,7 @@ describe('embedding flag helpers', () => {
       insertSpore(makeSpore(agentId, { id: 'spore-active-q', status: 'active' }));
       insertSpore(makeSpore(agentId, { id: 'spore-superseded-q', status: 'superseded' }));
 
-      const result = getEmbeddingQueueDepth();
+      const result = getEmbeddingQueueDepth( ALL_PROJECTS_SCOPE);
       // Only the active spore should count
       expect(result.queue_depth).toBe(1);
       expect(result.total).toBe(1);

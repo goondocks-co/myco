@@ -35,6 +35,7 @@ import {
   handleTaskCompleted,
   handleCompact,
 } from '@myco/daemon/main.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -88,7 +89,7 @@ describe('daemon capture flow', () => {
     handleStopBatches(sessionId);
 
     // --- Verify session stays active (Stop != SessionEnd) ---
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session).not.toBeNull();
     expect(session!.status).toBe('active');
     expect(session!.ended_at).toBeNull();
@@ -96,7 +97,7 @@ describe('daemon capture flow', () => {
     // --- Verify batches ---
     // Both batches should be closed (status = 'completed')
     // getUnprocessedBatches returns processed=0 items — both are unprocessed (no Phase 2 yet)
-    const batches = getUnprocessedBatches();
+    const batches = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
     expect(batches.length).toBe(2);
 
     const b1 = batches.find((b) => b.id === result1.batchId);
@@ -115,7 +116,7 @@ describe('daemon capture flow', () => {
     expect(b2!.prompt_number).toBe(2);
 
     // --- Verify activities ---
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(4);
 
     // First 3 activities belong to batch 1
@@ -135,7 +136,7 @@ describe('daemon capture flow', () => {
     expect(activities[3].file_path).toBe('/tmp/hello.test.ts');
 
     // --- Verify activity count ---
-    const totalActivities = countActivities(sessionId);
+    const totalActivities = countActivities(sessionId, ALL_PROJECTS_SCOPE);
     expect(totalActivities).toBe(4);
   });
 
@@ -153,7 +154,7 @@ describe('daemon capture flow', () => {
     // Tool use without a prior user prompt — should still record activity
     handleToolUse(sessionId, 'Read', { file_path: '/tmp/file.ts' }, 'contents', TEST_PROJECT_ROOT);
 
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
     expect(activities[0].prompt_batch_id).toBeNull();
     expect(activities[0].tool_name).toBe('Read');
@@ -172,7 +173,7 @@ describe('daemon capture flow', () => {
 
     handleToolUse(sessionId, 'edit', { filePath: '/tmp/opencode.ts' }, 'updated', TEST_PROJECT_ROOT);
 
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
     expect(activities[0].file_path).toBe('/tmp/opencode.ts');
   });
@@ -192,7 +193,7 @@ describe('daemon capture flow', () => {
 
     handleToolUse(sessionId, 'Read', { file_path: absolute }, 'contents', TEST_PROJECT_ROOT);
 
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities).toHaveLength(1);
     expect(activities[0].file_path).toBe('src/file.ts');
     expect(activities[0].canopy_injection_tokens).toBe(123);
@@ -212,7 +213,7 @@ describe('daemon capture flow', () => {
     // Stop with no events — closes batches but session stays active
     handleStopBatches(sessionId);
 
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session!.status).toBe('active');
   });
 
@@ -231,11 +232,11 @@ describe('daemon capture flow', () => {
     handleStopBatches(sessionId);
 
     // After Stop: session stays active
-    expect(getSession(sessionId)!.status).toBe('active');
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)!.status).toBe('active');
 
     // SessionEnd: session is now completed
     closeSession(sessionId, epochNow());
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, ALL_PROJECTS_SCOPE);
     expect(session!.status).toBe('completed');
     expect(session!.ended_at).toBeGreaterThan(0);
   });
@@ -255,7 +256,7 @@ describe('daemon capture flow', () => {
     const largeInput = { file_path: '/tmp/file.ts', content: 'x'.repeat(10000) };
     handleToolUse(sessionId, 'Write', largeInput, undefined, TEST_PROJECT_ROOT);
 
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
     // tool_input should be truncated
     expect(activities[0].tool_input!.length).toBeLessThanOrEqual(4000);
@@ -276,7 +277,7 @@ describe('daemon capture flow', () => {
     handleUserPrompt(sessionId, 'second');
     handleUserPrompt(sessionId, 'third');
 
-    const batches = getUnprocessedBatches();
+    const batches = getUnprocessedBatches({ scope: ALL_PROJECTS_SCOPE });
     const sessionBatches = batches
       .filter((b) => b.session_id === sessionId)
       .sort((a, b) => a.id - b.id);
@@ -321,7 +322,7 @@ describe('stateless DB functions', () => {
       expect(closed).toBe(2);
 
       // All batches should now be completed
-      const batches = listBatchesBySession(sessionId);
+      const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
       expect(batches.length).toBe(3);
       for (const b of batches) {
         expect(b.status).toBe('completed');
@@ -356,10 +357,10 @@ describe('stateless DB functions', () => {
       // Close only session1's batches
       closeOpenBatches(session1, now + 1);
 
-      const s1Batches = listBatchesBySession(session1);
+      const s1Batches = listBatchesBySession(session1, { scope: ALL_PROJECTS_SCOPE });
       expect(s1Batches[0].status).toBe('completed');
 
-      const s2Batches = listBatchesBySession(session2);
+      const s2Batches = listBatchesBySession(session2, { scope: ALL_PROJECTS_SCOPE });
       expect(s2Batches[0].status).toBe('active');
     });
   });
@@ -571,7 +572,7 @@ describe('daemon-restart resilience', () => {
     expect(b4.prompt_number).toBe(4);
 
     // Verify all 4 batches exist with correct sequential numbering
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches.length).toBe(4);
     expect(batches.map((b) => b.prompt_number)).toEqual([1, 2, 3, 4]);
   });
@@ -607,7 +608,7 @@ describe('daemon-restart resilience', () => {
     expect(postActivity.prompt_batch_id).toBe(postBatch.id);
 
     // Verify all activities have correct batch linkage
-    const activities = listActivities({ session_id: sessionId });
+    const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(2);
     expect(activities[0].prompt_batch_id).toBe(preBatch.id);
     expect(activities[1].prompt_batch_id).toBe(postBatch.id);
@@ -672,7 +673,7 @@ describe('daemon-restart resilience', () => {
     expect(r3b2.prompt_number).toBe(5);
 
     // All 5 batches, sequential
-    const batches = listBatchesBySession(sessionId);
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches.length).toBe(5);
     expect(batches.map((b) => b.prompt_number)).toEqual([1, 2, 3, 4, 5]);
   });
@@ -704,7 +705,7 @@ describe('new event type handlers', () => {
         false,
       );
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('Bash');
       expect(activities[0].success).toBe(0);
@@ -720,7 +721,7 @@ describe('new event type handlers', () => {
 
       handleToolFailure(sessionId, 'Bash', { command: 'sleep 999' }, undefined, true);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].success).toBe(0);
       expect(activities[0].error_message).toBe('interrupted');
@@ -734,7 +735,7 @@ describe('new event type handlers', () => {
 
       handleToolFailure(sessionId, 'Write', { file_path: '/tmp/readonly.ts' }, 'EACCES', false);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities[0].file_path).toBe('/tmp/readonly.ts');
     });
 
@@ -746,7 +747,7 @@ describe('new event type handlers', () => {
 
       handleToolFailure(sessionId, 'edit', { filePath: '/tmp/opencode-readonly.ts' }, 'EACCES', false);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities[0].file_path).toBe('/tmp/opencode-readonly.ts');
     });
   });
@@ -762,7 +763,7 @@ describe('new event type handlers', () => {
 
       handleSubagentStart(sessionId, 'agent-123', 'researcher');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('subagent_start');
       expect(activities[0].tool_input).toContain('agent-123');
@@ -780,7 +781,7 @@ describe('new event type handlers', () => {
 
       handleSubagentStop(sessionId, 'agent-123', 'researcher', 'Found 3 relevant files');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('subagent_stop');
       expect(activities[0].tool_output_summary).toBe('Found 3 relevant files');
@@ -794,7 +795,7 @@ describe('new event type handlers', () => {
 
       handleSubagentStop(sessionId, 'agent-456', undefined, undefined);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_output_summary).toBeNull();
     });
@@ -811,7 +812,7 @@ describe('new event type handlers', () => {
 
       handleStopFailure(sessionId, 'Transcript parse failed', 'JSONL line 42 invalid');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('stop_failure');
       expect(activities[0].success).toBe(0);
@@ -827,7 +828,7 @@ describe('new event type handlers', () => {
 
       handleStopFailure(sessionId, 'Unknown error', undefined);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities[0].error_message).toBe('Unknown error');
       expect(activities[0].tool_output_summary).toBeNull();
     });
@@ -844,7 +845,7 @@ describe('new event type handlers', () => {
 
       handleTaskCompleted(sessionId, 'task-42', 'Fix login bug', 'Users cannot log in with SSO');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('task_completed');
       expect(activities[0].tool_input).toContain('task-42');
@@ -864,7 +865,7 @@ describe('new event type handlers', () => {
 
       handleCompact(sessionId, 'pre', 'auto', undefined);
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('pre_compact');
       expect(activities[0].tool_input).toContain('auto');
@@ -879,7 +880,7 @@ describe('new event type handlers', () => {
 
       handleCompact(sessionId, 'post', 'manual', 'Compacted 15 turns to 3');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
       expect(activities[0].tool_name).toBe('post_compact');
       expect(activities[0].tool_output_summary).toBe('Compacted 15 turns to 3');
@@ -894,7 +895,7 @@ describe('new event type handlers', () => {
       handleCompact(sessionId, 'pre', 'auto', undefined);
       handleCompact(sessionId, 'post', 'auto', 'Reduced context by 60%');
 
-      const activities = listActivities({ session_id: sessionId });
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(2);
       expect(activities[0].tool_name).toBe('pre_compact');
       expect(activities[1].tool_name).toBe('post_compact');

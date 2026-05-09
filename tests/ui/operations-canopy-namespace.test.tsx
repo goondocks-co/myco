@@ -3,6 +3,7 @@
 import { describe, expect, it, beforeEach, mock } from 'bun:test';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { vi } from '../helpers/vi-shim.js';
 import type { EmbeddingDetails } from '../../packages/myco/ui/src/hooks/use-embedding-details';
 
@@ -60,8 +61,11 @@ mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
 }));
 
 // Imported AFTER the mocks so the module-level imports resolve to the stubs.
-const { default: Operations } = await import(
-  '../../packages/myco/ui/src/pages/Operations'
+// Operations was renamed to GroveMaintenance during the four-commit
+// sidebar regroup; the page contents (Embedding/Database/Backup tabs)
+// are unchanged.
+const { default: GroveMaintenance } = await import(
+  '../../packages/myco/ui/src/pages/GroveMaintenance'
 );
 
 /* ---------- Helpers ---------- */
@@ -96,7 +100,9 @@ function renderPage() {
   const client = makeQueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <Operations />
+      <MemoryRouter>
+        <GroveMaintenance />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

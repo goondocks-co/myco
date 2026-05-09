@@ -16,6 +16,7 @@ const SESSIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS sessions (
     id                     TEXT NOT NULL,
     machine_id             TEXT NOT NULL,
+    project_id             TEXT,
     agent                  TEXT NOT NULL,
     "user"                 TEXT,
     project_root           TEXT,
@@ -41,9 +42,11 @@ const PROMPT_BATCHES_TABLE = `
   CREATE TABLE IF NOT EXISTS prompt_batches (
     id                     INTEGER NOT NULL,
     machine_id             TEXT NOT NULL,
+    project_id             TEXT,
     session_id             TEXT NOT NULL,
     parent_prompt_batch_id INTEGER,
     kind                   TEXT NOT NULL DEFAULT 'initial',
+    origin                 TEXT NOT NULL DEFAULT 'human',
     prompt_number          INTEGER,
     user_prompt            TEXT,
     response_summary       TEXT,
@@ -63,6 +66,7 @@ const SPORES_TABLE = `
   CREATE TABLE IF NOT EXISTS spores (
     id                TEXT NOT NULL,
     machine_id        TEXT NOT NULL,
+    project_id        TEXT,
     agent_id          TEXT NOT NULL,
     session_id        TEXT,
     prompt_batch_id   INTEGER,
@@ -85,6 +89,7 @@ const ENTITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS entities (
     id          TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
+    project_id  TEXT,
     agent_id    TEXT NOT NULL,
     type        TEXT NOT NULL,
     name        TEXT NOT NULL,
@@ -100,6 +105,7 @@ const GRAPH_EDGES_TABLE = `
   CREATE TABLE IF NOT EXISTS graph_edges (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL,
     source_id       TEXT NOT NULL,
     source_type     TEXT NOT NULL,
@@ -118,6 +124,7 @@ const PLANS_TABLE = `
   CREATE TABLE IF NOT EXISTS plans (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
+    project_id       TEXT,
     logical_key      TEXT,
     status           TEXT DEFAULT 'active',
     author           TEXT,
@@ -139,6 +146,7 @@ const ARTIFACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS artifacts (
     id               TEXT NOT NULL,
     machine_id       TEXT NOT NULL,
+    project_id       TEXT,
     artifact_type    TEXT,
     source_path      TEXT NOT NULL,
     title            TEXT NOT NULL,
@@ -158,6 +166,7 @@ const ENTITY_MENTIONS_TABLE = `
     note_type   TEXT NOT NULL,
     agent_id    TEXT NOT NULL,
     machine_id  TEXT NOT NULL,
+    project_id  TEXT,
     synced_at   INTEGER,
     UNIQUE (entity_id, note_id, note_type, agent_id)
   )`;
@@ -166,6 +175,7 @@ const RESOLUTION_EVENTS_TABLE = `
   CREATE TABLE IF NOT EXISTS resolution_events (
     id            TEXT NOT NULL,
     machine_id    TEXT NOT NULL,
+    project_id    TEXT,
     agent_id      TEXT NOT NULL,
     spore_id      TEXT NOT NULL,
     action        TEXT NOT NULL,
@@ -181,6 +191,7 @@ const DIGEST_EXTRACTS_TABLE = `
   CREATE TABLE IF NOT EXISTS digest_extracts (
     id              INTEGER NOT NULL,
     machine_id      TEXT NOT NULL,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL,
     tier            INTEGER NOT NULL,
     content         TEXT NOT NULL,
@@ -194,6 +205,7 @@ const SKILL_CANDIDATES_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_candidates (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL,
     topic           TEXT NOT NULL,
     rationale       TEXT NOT NULL,
@@ -213,6 +225,7 @@ const SKILL_RECORDS_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_records (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
+    project_id      TEXT,
     agent_id        TEXT NOT NULL,
     name            TEXT NOT NULL,
     display_name    TEXT NOT NULL,
@@ -235,6 +248,7 @@ const SKILL_USAGE_TABLE = `
   CREATE TABLE IF NOT EXISTS skill_usage (
     id              TEXT NOT NULL,
     machine_id      TEXT NOT NULL,
+    project_id      TEXT,
     skill_id        TEXT NOT NULL,
     session_id      TEXT NOT NULL,
     detected_at     INTEGER NOT NULL,
@@ -277,6 +291,28 @@ const BASE_SECONDARY_INDEXES = [
 const POST_MIGRATION_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_plans_logical_key ON plans (logical_key)',
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_parent ON prompt_batches (parent_prompt_batch_id)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_origin_created ON prompt_batches (project_id, origin, created_at)',
+  // v39 mirror — composite (project_id, created_at) indexes that back
+  // per-project recency queries on the local SQLite vault. D1 carries
+  // them so the same query plan works against the synced replica.
+  'CREATE INDEX IF NOT EXISTS idx_sessions_project_created ON sessions (project_id, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
+];
+
+const PROJECT_SCOPE_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_id ON prompt_batches (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_spores_project_id ON spores (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entities_project_id ON entities (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_graph_edges_project_id ON graph_edges (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_plans_project_id ON plans (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_project_id ON entity_mentions (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_resolution_events_project_id ON resolution_events (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_digest_extracts_project_id ON digest_extracts (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_candidates_project_id ON skill_candidates (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_records_project_id ON skill_records (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_skill_usage_project_id ON skill_usage (project_id)',
 ];
 
 const ALL_DDLS = [
@@ -297,11 +333,33 @@ const ALL_DDLS = [
   TEAM_CONFIG_TABLE,
 ];
 
+export interface InitD1Options {
+  /**
+   * Oldest sync protocol version the worker still accepts. The
+   * Grove-era project-id orphan prune is gated on every active node
+   * having registered at >= this version. Pre-Grove daemons that
+   * haven't connected since the worker upgrade still have valid
+   * pre-Grove rows in D1; deleting them on the worker's first boot
+   * after upgrade is what would silently destroy that teammate's
+   * data. When omitted, the prune runs unconditionally — preserving
+   * the historical behavior for callers that don't pass options.
+   */
+  minClientVersion?: number;
+}
+
 /**
  * Create all D1 tables and indexes. Fully idempotent via IF NOT EXISTS.
  * Includes ALTER TABLE migrations for columns added after initial deployment.
+ *
+ * The optional `minClientVersion` argument gates the destructive
+ * one-shot pre-Grove orphan-row prune. Without it, the function runs
+ * the prune on every boot — same as before. With it, the prune only
+ * runs once every active node in the `nodes` table has registered at
+ * the new floor (see `arePruneClientsAtMinVersion`). This protects
+ * unmigrated teammates from losing their pre-Grove rows the first
+ * time any teammate ships an upgraded worker.
  */
-export async function initD1Schema(db: D1Database): Promise<void> {
+export async function initD1Schema(db: D1Database, options: InitD1Options = {}): Promise<void> {
   const statements = [...ALL_DDLS, ...BASE_SECONDARY_INDEXES];
   const batch = statements.map((sql) => db.prepare(sql));
   await db.batch(batch);
@@ -314,6 +372,20 @@ export async function initD1Schema(db: D1Database): Promise<void> {
     'ALTER TABLE skill_candidates ADD COLUMN supersedes TEXT',
     'ALTER TABLE prompt_batches ADD COLUMN parent_prompt_batch_id INTEGER',
     "ALTER TABLE prompt_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'initial'",
+    "ALTER TABLE prompt_batches ADD COLUMN origin TEXT NOT NULL DEFAULT 'human'",
+    'ALTER TABLE sessions ADD COLUMN project_id TEXT',
+    'ALTER TABLE prompt_batches ADD COLUMN project_id TEXT',
+    'ALTER TABLE spores ADD COLUMN project_id TEXT',
+    'ALTER TABLE entities ADD COLUMN project_id TEXT',
+    'ALTER TABLE graph_edges ADD COLUMN project_id TEXT',
+    'ALTER TABLE plans ADD COLUMN project_id TEXT',
+    'ALTER TABLE artifacts ADD COLUMN project_id TEXT',
+    'ALTER TABLE entity_mentions ADD COLUMN project_id TEXT',
+    'ALTER TABLE resolution_events ADD COLUMN project_id TEXT',
+    'ALTER TABLE digest_extracts ADD COLUMN project_id TEXT',
+    'ALTER TABLE skill_candidates ADD COLUMN project_id TEXT',
+    'ALTER TABLE skill_records ADD COLUMN project_id TEXT',
+    'ALTER TABLE skill_usage ADD COLUMN project_id TEXT',
   ];
   for (const sql of migrations) {
     try {
@@ -323,7 +395,7 @@ export async function initD1Schema(db: D1Database): Promise<void> {
     }
   }
 
-  for (const sql of POST_MIGRATION_INDEXES) {
+  for (const sql of [...POST_MIGRATION_INDEXES, ...PROJECT_SCOPE_INDEXES]) {
     await db.prepare(sql).run();
   }
 
@@ -390,5 +462,114 @@ export async function initD1Schema(db: D1Database): Promise<void> {
       .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
       .bind('evaluation_feature_pruned', '1')
       .run();
+  }
+
+  // One-shot prune for orphan `project_id` rows: NULL, empty, or any
+  // non-`proj_<32 hex>` value. These came from pre-Grove daemon writers
+  // that quietly enqueued bad ids before the brand was added locally
+  // (and the corresponding worker-side gate in handleEnqueue). Mirrors
+  // the local v36 sweep and converges D1 with the cleaned-up vault.
+  // Marker-guarded so the prune runs once per D1.
+  const projectIdPruneMarker = await db
+    .prepare(`SELECT value FROM team_config WHERE key = ?`)
+    .bind('project_id_orphans_pruned_v36')
+    .first<{ value: string }>();
+
+  if (!projectIdPruneMarker) {
+    // Compatibility gate: defer the destructive prune until every
+    // active node in the `nodes` table has registered at
+    // >= options.minClientVersion. Pre-Grove daemons (no
+    // sync_protocol_version row, or a value below the floor) still
+    // own valid pre-Grove rows in D1; running the prune on the
+    // worker's first boot after upgrade would silently delete that
+    // teammate's data on every other teammate's machine. Skipping
+    // the marker write means we re-evaluate next boot — the prune
+    // runs as soon as all teammates ship the upgrade, with no
+    // operator intervention.
+    const safeToPrune = await arePruneClientsAtMinVersion(db, options.minClientVersion);
+    if (!safeToPrune) {
+      return;
+    }
+
+    const tablesToPrune: readonly string[] = [
+      'sessions',
+      'prompt_batches',
+      'spores',
+      'entities',
+      'graph_edges',
+      'plans',
+      'artifacts',
+      'entity_mentions',
+      'resolution_events',
+      'digest_extracts',
+      'skill_candidates',
+      'skill_records',
+      'skill_usage',
+    ];
+    for (const table of tablesToPrune) {
+      try {
+        await db
+          .prepare(
+            `DELETE FROM ${table}
+              WHERE project_id IS NULL
+                 OR project_id = ''
+                 OR project_id NOT LIKE 'proj_%'`,
+          )
+          .run();
+      } catch {
+        // Table absent on this D1 (e.g. an older deploy that hasn't
+        // received every column yet) — skip and move on.
+      }
+    }
+    await db
+      .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
+      .bind('project_id_orphans_pruned_v36', '1')
+      .run();
+  }
+}
+
+/**
+ * Active-node window for the prune gate. A node that hasn't checked
+ * in within this window is treated as departed and ignored — without
+ * this, a single stale node on protocol v0/null would block the
+ * prune forever. Mirrors the 30-day "active machine" definition the
+ * daemon uses on the local outbox.
+ */
+const PRUNE_ACTIVE_WINDOW_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * True when it's safe to run the v36 project-id orphan prune.
+ *
+ * Returns false when *any* active node has registered at a protocol
+ * below `minClientVersion`, OR has never recorded a protocol version
+ * at all (NULL is treated as v1 — the historical pre-version client).
+ *
+ * If `minClientVersion` is undefined the gate is bypassed (preserves
+ * the legacy "always prune" behavior for callers that don't pass it).
+ */
+async function arePruneClientsAtMinVersion(
+  db: D1Database,
+  minClientVersion: number | undefined,
+): Promise<boolean> {
+  if (typeof minClientVersion !== 'number' || !Number.isFinite(minClientVersion)) {
+    return true;
+  }
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - PRUNE_ACTIVE_WINDOW_SECONDS;
+    const row = await db
+      .prepare(
+        `SELECT COUNT(*) AS unsafe
+           FROM nodes
+          WHERE last_seen >= ?
+            AND COALESCE(sync_protocol_version, 1) < ?`,
+      )
+      .bind(cutoff, minClientVersion)
+      .first<{ unsafe: number }>();
+    return Number(row?.unsafe ?? 0) === 0;
+  } catch {
+    // `nodes` table may be missing on a brand-new D1 that hasn't
+    // received any /connect calls yet. With nothing to protect, the
+    // prune is safe — this is the fresh-deploy fast path.
+    return true;
   }
 }

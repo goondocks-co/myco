@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { initDatabase, getDatabase, closeDatabase } from '@myco/db/client.js';
+import { initDatabase, getDatabase, closeDatabase, openDatabase, withDatabase } from '@myco/db/client.js';
 
 describe('SQLite client', () => {
   afterEach(() => {
@@ -57,5 +57,28 @@ describe('SQLite client', () => {
     const db = initDatabase();
     const result = db.prepare('SELECT 42 as val').get() as { val: number };
     expect(result.val).toBe(42);
+  });
+
+  it('uses scoped database connections inside withDatabase and restores the singleton afterward', () => {
+    const singleton = initDatabase();
+    const scoped = openDatabase();
+
+    try {
+      singleton.prepare('CREATE TABLE singleton_marker (value TEXT)').run();
+      scoped.prepare('CREATE TABLE scoped_marker (value TEXT)').run();
+
+      const result = withDatabase(scoped, () => {
+        expect(getDatabase()).toBe(scoped);
+        return scoped.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scoped_marker'")
+          .get() as { name: string };
+      });
+
+      expect(result.name).toBe('scoped_marker');
+      expect(getDatabase()).toBe(singleton);
+      expect(singleton.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'singleton_marker'")
+        .get()).toBeTruthy();
+    } finally {
+      scoped.close();
+    }
   });
 });

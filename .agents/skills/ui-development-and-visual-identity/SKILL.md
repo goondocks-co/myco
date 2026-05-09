@@ -105,6 +105,156 @@ function detectHubBasePrefix(): string {
 
 **Hub compatibility pattern**: Pre-#161 daemon versions lack `__MYCO_HUB_PREFIX__` detection, causing routing mismatches when served through hub proxy. Ensure daemon version compatibility or provide fallback routing.
 
+### Grove Multi-Project UI Switcher
+
+Implement Slack/Linear-style project switcher for Grove multi-tenant navigation:
+
+```typescript
+// Project switcher component with URL-driven navigation
+function ProjectSwitcher() {
+  const { groveSlug, projectSlug } = useParams<{
+    groveSlug: string;
+    projectSlug: string;
+  }>();
+  
+  const { projects } = useGroveProjects(groveSlug);
+  const navigate = useNavigate();
+  
+  function switchProject(newProjectSlug: string) {
+    // URL pattern: /g/:groveSlug/p/:projectSlug/
+    navigate(`/g/${groveSlug}/p/${newProjectSlug}/`);
+  }
+  
+  return (
+    <DropdownMenu>
+      <DropdownTrigger>
+        <Button variant="ghost" className="project-switcher">
+          {projectSlug} <ChevronDown />
+        </Button>
+      </DropdownTrigger>
+      <DropdownContent>
+        {projects.map(project => (
+          <DropdownItem 
+            key={project.slug}
+            onClick={() => switchProject(project.slug)}
+            className={project.slug === projectSlug ? 'active' : ''}
+          >
+            <ProjectIcon project={project} />
+            {project.displayName}
+          </DropdownItem>
+        ))}
+      </DropdownContent>
+    </DropdownMenu>
+  );
+}
+```
+
+**Grove URL navigation pattern**:
+- Root grove: `/g/:groveSlug/`
+- Project context: `/g/:groveSlug/p/:projectSlug/`
+- Resource routes: `/g/:groveSlug/p/:projectSlug/sessions`
+
+### Request Context Headers for Grove
+
+Inject project context into API requests for multi-tenant safety:
+
+```typescript
+// Grove context headers injection
+function useGroveApiClient() {
+  const { groveSlug, projectSlug } = useGroveContext();
+  
+  const apiClient = useMemo(() => {
+    const client = axios.create({
+      baseURL: '/api/v1',
+      headers: {
+        'X-Grove-Slug': groveSlug,
+        'X-Project-Slug': projectSlug,
+      }
+    });
+    
+    // Inject context into all requests
+    client.interceptors.request.use(config => {
+      config.headers = {
+        ...config.headers,
+        'X-Grove-Slug': groveSlug,
+        'X-Project-Slug': projectSlug,
+      };
+      return config;
+    });
+    
+    return client;
+  }, [groveSlug, projectSlug]);
+  
+  return apiClient;
+}
+```
+
+### Project-Scoped Query Cache Keys
+
+Ensure query cache isolation between projects for safety:
+
+```typescript
+// Scoped query keys prevent cross-project data leaks
+function useProjectSessions() {
+  const { groveSlug, projectSlug } = useGroveContext();
+  
+  // Cache key includes project context
+  const queryKey = ['sessions', groveSlug, projectSlug];
+  
+  return useQuery({
+    queryKey,
+    queryFn: () => fetchProjectSessions(groveSlug, projectSlug),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+// Global cache invalidation for project switches
+function invalidateProjectCache(groveSlug: string, projectSlug: string) {
+  queryClient.removeQueries({
+    predicate: (query) => {
+      const [domain, grove, project] = query.queryKey as string[];
+      return grove === groveSlug && project === projectSlug;
+    }
+  });
+}
+```
+
+### Visual Identity Per Project Safety
+
+Provide visual cues to prevent cross-project confusion:
+
+```typescript
+// Project-specific visual identity
+function ProjectIdentityProvider({ children }: { children: ReactNode }) {
+  const { project } = useGroveContext();
+  
+  // Each project gets distinct visual identity
+  const projectTheme = project.theme || 'sage';
+  const projectColor = project.accentColor || 'default';
+  
+  useEffect(() => {
+    // Update CSS custom properties for project
+    document.documentElement.style.setProperty(
+      '--project-accent', 
+      projectColor
+    );
+    document.documentElement.setAttribute(
+      'data-project-theme', 
+      projectTheme
+    );
+    
+    // Update tab title with project context
+    document.title = `${project.displayName} | Myco`;
+  }, [project, projectTheme, projectColor]);
+  
+  return (
+    <div className={`project-context project-${project.slug}`}>
+      {children}
+    </div>
+  );
+}
+```
+
 ## Procedure B: Theme System Implementation and Extension
 
 ### Core Theme Architecture
@@ -241,6 +391,41 @@ Balance unified Myco identity with practical tab distinction:
 - Dynamic tab titles with project context
 - Instance-specific favicon variants
 - Contextual navigation differences
+
+### Team UI Credential Naming Patterns
+
+Implement consistent credential naming for team UI components:
+
+```typescript
+// Team UI credential naming pattern
+interface TeamCredential {
+  id: string;
+  type: 'api-key' | 'oauth-token' | 'webhook-secret';
+  displayName: string;
+  purpose: string;
+  scope: 'project' | 'team' | 'organization';
+}
+
+// Naming convention for display
+function formatCredentialName(credential: TeamCredential, context: string): string {
+  const prefix = credential.scope === 'project' ? 'Project' : 
+                 credential.scope === 'team' ? 'Team' : 'Org';
+  const suffix = context ? ` (${context})` : '';
+  
+  return `${prefix} ${credential.displayName}${suffix}`;
+}
+
+// Examples:
+// "Project API Key (Development)"
+// "Team OAuth Token (Slack Integration)" 
+// "Org Webhook Secret (CI/CD Pipeline)"
+```
+
+**Team UI credential patterns**:
+- Scope prefix (Project/Team/Org) for clarity
+- Descriptive display name for purpose
+- Optional context suffix for environment or integration
+- Consistent formatting across all team UI components
 
 ## Procedure D: Frontend Build Integration
 
@@ -511,3 +696,9 @@ test('theme picker updates appearance correctly', async ({ page }) => {
 **Hub Base-Path Version Mismatch**: Pre-#161 daemon versions don't understand `__MYCO_HUB_PREFIX__`, causing routing failures when proxied through hub. Verify daemon version compatibility before hub deployment.
 
 **Worktree Nested UI Install Required**: New worktrees need `npm install` inside each nested UI workspace (`packages/*/ui/`) — root install doesn't cover them, leading to build failures.
+
+**Grove Project Context Loss**: Without proper context headers and query cache scoping, data can leak between projects. Always inject `X-Grove-Slug` and `X-Project-Slug` headers and scope cache keys by project.
+
+**Multi-Project Navigation State**: Project switcher state can become stale if not properly synchronized with URL changes. Use URL params as source of truth, not component state.
+
+**Team UI Credential Confusion**: Without consistent naming patterns, credentials become indistinguishable in UI lists. Always include scope prefix and descriptive context.

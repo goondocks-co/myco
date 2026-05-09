@@ -5,6 +5,13 @@
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { EmbeddingManager } from '@myco/daemon/embedding/index.js';
 import type { TeamSyncClient } from '@myco/daemon/team-sync.js';
+import {
+  projectScopeFromRequestContext,
+  resolveRequestContextForVault,
+  rowProjectIdFromRequestContext,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
+import type { ProjectScope } from '@myco/grove/ids.js';
 
 export interface MycoToolDefinition<TInput = any> {
   name: string;
@@ -74,6 +81,7 @@ export interface VaultToolDeps {
   machineId?: string;
   projectRoot?: string;
   vaultDir?: string;
+  requestContext?: MycoRequestContext;
   /**
    * When true, the tool surface is running in dry-run mode. Most write
    * tools are intercepted centrally by `createVaultTools` (see
@@ -84,4 +92,20 @@ export interface VaultToolDeps {
   dryRun?: boolean;
   /** Record a turn in the audit trail. Returns the inserted row id when available. */
   recordTurn: (toolName: string, toolInput: unknown) => number | null;
+}
+
+export function rowProjectIdFromVaultToolDeps(deps: VaultToolDeps): string | null | undefined {
+  const context = deps.requestContext
+    ?? (deps.vaultDir ? resolveRequestContextForVault(deps.vaultDir, {
+      machineId: deps.machineId,
+    }) : undefined);
+  return rowProjectIdFromRequestContext(context);
+}
+
+export function projectScopeFromVaultToolDeps(deps: VaultToolDeps): ProjectScope {
+  const context = deps.requestContext
+    ?? (deps.vaultDir ? resolveRequestContextForVault(deps.vaultDir, {
+      machineId: deps.machineId,
+    }) : undefined);
+  return projectScopeFromRequestContext(context);
 }

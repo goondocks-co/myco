@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /** Minimum query length before a search request is issued. */
 const SEARCH_MIN_LENGTH = 2;
@@ -124,8 +125,9 @@ export function useSearch(
   mode: 'semantic' | 'fts' = 'semantic',
   filters?: SemanticSearchUiFilters,
 ) {
+  const queryKey = useProjectScopedQueryKey(['search', query, mode, filters?.namespace ?? 'all', filters?.observationType ?? 'all', filters?.recentWindow ?? 'any']);
   return useQuery<SearchResponse>({
-    queryKey: ['search', query, mode, filters?.namespace ?? 'all', filters?.observationType ?? 'all', filters?.recentWindow ?? 'any'],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<SearchResponse>(
         buildSearchPath(query, mode, filters),
@@ -146,8 +148,9 @@ export function useCanopySearch(
   filters?: CanopySearchUiFilters,
   enabled = true,
 ) {
+  const queryKey = useProjectScopedQueryKey(['search-canopy', query, filters?.language ?? 'all']);
   return useQuery<{ mode: string; results: CanopySearchResult[]; provider_unavailable?: boolean }>({
-    queryKey: ['search-canopy', query, filters?.language ?? 'all'],
+    queryKey,
     queryFn: async ({ signal }) => {
       const raw = await fetchJson<CanopySearchResponse>(
         buildCanopySearchPath(query, filters),

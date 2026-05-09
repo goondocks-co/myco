@@ -34,7 +34,7 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
@@ -44,6 +44,9 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
+import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
+import type { ProjectPowerStateTracker } from './project-power-state.js';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -68,6 +71,12 @@ export interface EventDispatchDeps {
   reconcileSession: (sessionId: string) => void;
   planWatchConfig: PlanWatchConfig; // object reference — mutated in place for hot-reload
   triggerTitleSummary: (sessionId: string) => Promise<void>;
+  /**
+   * Per-project power state. user_prompt events on a session count as
+   * activity for that session's project, keeping its scheduler ticking
+   * even when it isn't the foreground project in the web UI.
+   */
+  projectStateTracker?: ProjectPowerStateTracker;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +164,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     } as Record<string, unknown> & { type: string; session_id: string; timestamp: string };
 
     let userPromptBatchId: number | undefined;
+    const requestProjectId = rowProjectIdFromRequestContext(req.requestContext);
+    const requestProjectRoot = req.requestContext?.projectRoot ?? projectRoot;
+    const requestMachineId = req.requestContext?.machineId ?? machineId;
 
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
 
@@ -165,7 +177,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       // this run); re-gating it risks applying phantom-detection rules to a
       // legitimate mid-flight session whose in-memory registry was lost on
       // daemon restart. The capture gate is for first-sight sessions only.
-      const existingRow = getSession(event.session_id);
+      const existingRow = getSession(event.session_id, projectScopeFromRequestContext(req.requestContext));
       if (existingRow) {
         registry.register(event.session_id, { started_at: event.timestamp });
         logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Rehydrated registry from DB', {
@@ -212,11 +224,13 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
         upsertSession({
           id: event.session_id,
+          project_id: requestProjectId,
           agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
+          project_root: requestProjectRoot,
           status: 'active',
           started_at: startedEpoch,
           created_at: now,
-          machine_id: machineId,
+          machine_id: requestMachineId,
         });
 
         // Reconcile buffer against DB — recover any prompts lost during downtime.
@@ -234,6 +248,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     // --- Prompt batch tracking ---
     if (event.type === 'user_prompt') {
       powerManager.recordActivity();
+      const requestProjectId = req.requestContext?.projectId;
+      if (
+        deps.projectStateTracker &&
+        requestProjectId &&
+        isGroveEraId(requestProjectId, 'project') &&
+        req.requestContext?.groveId
+      ) {
+        deps.projectStateTracker.recordActivity(
+          req.requestContext.groveId,
+          assertGroveProjectId(requestProjectId),
+        );
+      }
       const promptText = String(event.prompt ?? '');
 
       // Skip system-injected messages (task notifications, system reminders) —
@@ -254,7 +280,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         // isn't in the in-memory registry (e.g., after daemon restart) —
         // without this, a manually-completed or stale-swept session stays
         // hidden from intelligence-task queries even after the user resumes.
-        if (reactivateSessionIfCompleted(event.session_id)) {
+        if (reactivateSessionIfCompleted(event.session_id, projectScopeFromRequestContext(req.requestContext))) {
           logger.info(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Reactivated completed session on new activity', {
             session_id: event.session_id,
           });
@@ -272,6 +298,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
                 tag,
                 content,
                 sessionId: event.session_id,
+                projectId: requestProjectId,
                 promptBatchId: batchId,
                 logger,
               });
@@ -302,6 +329,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
               promptNumber,
               images: eventImages,
               logger,
+              projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
             });
           }
 
@@ -333,11 +361,12 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         const captureSessionId = event.session_id;
         fs.promises.readFile(planFilePath, 'utf-8').then((planContent) => {
           const latestBatch = getLatestBatch(captureSessionId);
-          capturePlan({
-            sourcePath: planFilePath,
-            projectRoot,
-            content: planContent,
-            sessionId: captureSessionId,
+            capturePlan({
+              sourcePath: planFilePath,
+              projectRoot: requestProjectRoot,
+              projectId: requestProjectId,
+              content: planContent,
+              sessionId: captureSessionId,
             promptBatchId: latestBatch?.id ?? null,
             logger,
           });
@@ -358,7 +387,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
-          projectRoot,
+          requestProjectRoot,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
@@ -370,9 +399,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           handleCanopyToolUse({
             db: getDatabase(),
             logger,
-            machineId,
-            projectRoot,
-            projectId: resolveCanopyProjectId(vaultDir),
+            machineId: requestMachineId,
+            projectRoot: requestProjectRoot,
+            projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
             toolName,
             toolInput: event.tool_input,
             defaultExcludePatterns: liveConfig.current.cortex.canopy.exclude.default_patterns,

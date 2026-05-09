@@ -3,7 +3,15 @@ import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { readSecrets, writeSecret, loadSecrets } from '@myco/config/secrets';
+import {
+  deleteSecrets,
+  loadSecrets,
+  readSecrets,
+  tightenSecretsPermissions,
+  writeSecret,
+} from '@myco/config/secrets';
+
+const POSIX = process.platform !== 'win32';
 
 describe('secrets', () => {
   let testDir: string;
@@ -89,6 +97,77 @@ describe('secrets', () => {
     it('is a no-op when secrets.env does not exist', () => {
       // Should not throw
       loadSecrets(testDir);
+    });
+  });
+
+  describe('filesystem permissions (G1)', () => {
+    it('writeSecret writes the file with 0o600 perms', () => {
+      writeSecret(testDir, 'API_KEY', 'sk-test');
+      const stat = fs.statSync(path.join(testDir, 'secrets.env'));
+      if (POSIX) {
+        expect(stat.mode & 0o777).toBe(0o600);
+      }
+    });
+
+    it('writeSecret tightens perms even when the file pre-exists with looser mode', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'PRE=existing\n', { mode: 0o644 });
+      // Sanity: confirm fixture set the loose mode (POSIX only).
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o644);
+      }
+      writeSecret(testDir, 'API_KEY', 'sk-test');
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
+      }
+    });
+
+    it('writeSecret tightens parent dir perms to 0o700', () => {
+      writeSecret(testDir, 'API_KEY', 'sk-test');
+      if (POSIX) {
+        expect(fs.statSync(testDir).mode & 0o777).toBe(0o700);
+      }
+    });
+
+    it('deleteSecrets preserves 0o600 on the rewritten file', () => {
+      writeSecret(testDir, 'KEEP', 'a');
+      writeSecret(testDir, 'DROP', 'b');
+      // Loosen the file to verify deleteSecrets re-tightens it.
+      const secretsPath = path.join(testDir, 'secrets.env');
+      if (POSIX) fs.chmodSync(secretsPath, 0o644);
+      deleteSecrets(testDir, ['DROP']);
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
+      }
+      expect(readSecrets(testDir)).toEqual({ KEEP: 'a' });
+    });
+
+    it('tightenSecretsPermissions retroactively chmod-tightens an existing loose file', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'KEY=value\n', { mode: 0o644 });
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o644);
+      }
+      tightenSecretsPermissions(testDir);
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
+      }
+    });
+
+    it('tightenSecretsPermissions is a no-op when secrets.env does not exist', () => {
+      // Must not throw, must still tighten the dir perms.
+      expect(() => tightenSecretsPermissions(testDir)).not.toThrow();
+    });
+
+    it('loadSecrets retroactively tightens existing-file perms at boot', () => {
+      const secretsPath = path.join(testDir, 'secrets.env');
+      fs.writeFileSync(secretsPath, 'BOOTKEY=value\n', { mode: 0o640 });
+      loadSecrets(testDir);
+      if (POSIX) {
+        expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
+      }
+      // Cleanup
+      delete process.env.BOOTKEY;
     });
   });
 });

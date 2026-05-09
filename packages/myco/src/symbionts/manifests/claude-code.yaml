@@ -76,6 +76,43 @@ capture:
         prompt_starts_with: "<command-name>"
       action: drop
       reason: claude-code-builtin-command-dispatch
+    # Async Agent-tool completion notifications.
+    #
+    # When Claude Code's Agent (Task) tool completes a background sub-agent
+    # invocation, the runtime injects a `<task-notification>` envelope into
+    # the transcript as a synthetic `type: "user"` entry. From the model's
+    # perspective this is "system, here's the result you were waiting on" —
+    # not a user-typed prompt. Without classification, every async agent
+    # completion creates a new prompt_batch indistinguishable from a real
+    # human prompt, swamping the Sessions UI (175+ such rows in 30 days of
+    # dogfood usage).
+    #
+    # Capture the envelope (the result content is genuinely useful to keep
+    # in the prompt_batches table) but tag it with origin='system' so UI
+    # default filters can hide it from human-attributed views.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<task-notification>"
+      action: classify
+      set_origin: system
+      reason: claude-code-task-notification
+    # Slash-skill envelope expansions.
+    #
+    # When a slash-skill resolves (e.g. /compound-engineering:ce-review),
+    # Claude Code expands the SKILL.md body and injects it into the
+    # transcript as a synthetic user-type entry wrapped in `<skill>...`.
+    # Same misclassification problem as <task-notification>: capture, but
+    # mark as origin='system' so it's distinguishable from a human-typed
+    # prompt. The user typed the slash command (already captured upstream
+    # via the hook); this is only the structural expansion.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_starts_with: "<skill>"
+      action: classify
+      set_origin: system
+      reason: claude-code-skill-envelope
   prompts:
     shapes:
       # Standard user prompts. Claude Code tags synthesized transcript entries

@@ -12,6 +12,7 @@ import { extractTaggedPlans, captureTaggedPlan } from '@myco/daemon/plan-capture
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -86,7 +87,7 @@ describe('Codex plan capture integration', () => {
     }
 
     // Step 4: Verify database state
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);
     expect(plans[0].title).toBe('Collective V1 Plan');
     expect(plans[0].content).toBe(planMarkdown);
@@ -117,7 +118,7 @@ describe('Codex plan capture integration', () => {
     // Same ID — upserted, not duplicated
     expect(revised.id).toBe(original.id);
 
-    const plans = listPlansBySession(sessionId);
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);
     expect(plans[0].title).toBe('Revised Plan');
     expect(plans[0].content).toBe('# Revised Plan\n\nSecond version.');

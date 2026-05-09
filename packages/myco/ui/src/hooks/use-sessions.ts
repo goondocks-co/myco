@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, deleteJson, postJson } from '../lib/api';
 import { usePowerQuery } from './use-power-query';
 import { POLL_INTERVALS } from '../lib/constants';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -70,6 +71,8 @@ export interface SessionsResponse {
   limit: number;
 }
 
+export type PromptBatchOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
+
 export interface BatchRow {
   id: number;
   session_id: string;
@@ -86,6 +89,7 @@ export interface BatchRow {
   created_at: number;
   parent_prompt_batch_id: number | null;
   kind: string;
+  origin: PromptBatchOrigin;
 }
 
 export interface ActivityRow {
@@ -179,11 +183,26 @@ export function useSession(id: string | undefined) {
   });
 }
 
-export function useSessionBatches(sessionId: string | undefined) {
+/**
+ * Fetch the prompt batches for a session.
+ *
+ * `origins` filters which batches are included. Default `['human']` hides
+ * system-injected and agent-dispatched batches (e.g. <task-notification>,
+ * <subagent_notification>, <skill> envelope expansions) from the main
+ * Sessions view, leaving only user-typed prompts.
+ *
+ * Pass `'all'` to include every batch — useful for the developer drawer
+ * or operator views where the full transcript shape matters.
+ */
+export function useSessionBatches(
+  sessionId: string | undefined,
+  origins: readonly PromptBatchOrigin[] | 'all' = ['human'],
+) {
+  const query = origins === 'all' ? '' : `?origins=${origins.join(',')}`;
   return usePowerQuery<BatchRow[]>({
-    queryKey: ['session-batches', sessionId],
+    queryKey: ['session-batches', sessionId, origins === 'all' ? 'all' : [...origins].sort().join(',')],
     queryFn: ({ signal }) =>
-      fetchJson<BatchRow[]>(`/sessions/${sessionId}/batches`, { signal }),
+      fetchJson<BatchRow[]>(`/sessions/${sessionId}/batches${query}`, { signal }),
     enabled: sessionId !== undefined,
     pollCategory: 'standard',
     refetchInterval: BATCHES_POLL_INTERVAL,
@@ -191,8 +210,9 @@ export function useSessionBatches(sessionId: string | undefined) {
 }
 
 export function useBatchActivities(batchId: number | undefined) {
+  const queryKey = useProjectScopedQueryKey(['batch-activities', batchId]);
   return useQuery<ActivityRow[]>({
-    queryKey: ['batch-activities', batchId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<ActivityRow[]>(`/batches/${batchId}/activities`, { signal }),
     enabled: batchId !== undefined,
@@ -201,8 +221,9 @@ export function useBatchActivities(batchId: number | undefined) {
 }
 
 export function useSessionAttachments(sessionId: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['session-attachments', sessionId]);
   return useQuery<AttachmentRow[]>({
-    queryKey: ['session-attachments', sessionId],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<AttachmentRow[]>(`/sessions/${sessionId}/attachments`, { signal }),
     enabled: sessionId !== undefined,
@@ -234,8 +255,9 @@ export function useCompleteSession() {
 }
 
 export function useSessionImpact(sessionId: string | null) {
+  const queryKey = useProjectScopedQueryKey(['session-impact', sessionId]);
   return useQuery<SessionImpact>({
-    queryKey: ['session-impact', sessionId],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SessionImpact>(`/sessions/${sessionId}/impact`, { signal }),
     enabled: sessionId !== null,
     staleTime: IMPACT_STALE_TIME,

@@ -18,7 +18,9 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { buildPlanId } from '@myco/plans/identity.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
-import { resolveCanopyProjectId } from '@myco/canopy/identity.js';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { assertGroveProjectId, createProjectId, type GroveProjectId } from '@myco/grove/ids.js';
+import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 
 /**
@@ -26,13 +28,25 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
  * `buildCortexInstructionsInput` can derive (project_id, machine_id)
  * deterministically without writing to the real filesystem.
  */
-function makeVaultDir(): { vaultDir: string; machineId: string; cleanup: () => void } {
+function makeVaultDir(): { vaultDir: string; machineId: string; projectId: GroveProjectId; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cortex-brief-'));
   const vaultDir = path.join(dir, '.myco');
   fs.mkdirSync(vaultDir, { recursive: true });
   const machineId = 'test-machine';
   fs.writeFileSync(path.join(vaultDir, 'machine_id'), machineId, 'utf-8');
-  return { vaultDir, machineId, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  const manifest = ensureProjectManifest(vaultDir, { projectName: 'cortex-brief-test' });
+  const projectId = assertGroveProjectId(manifest.project.id);
+  return { vaultDir, machineId, projectId, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+function requestContext(vaultDir: string, projectId: string) {
+  return resolveLegacyRequestContext(vaultDir, {
+    projectRoot: path.dirname(vaultDir),
+    projectId,
+    groveId: 'grove-test',
+    machineId: 'test-machine',
+    source: 'explicit',
+  });
 }
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -192,6 +206,7 @@ describe('buildCortexInstructionsInput', () => {
 
   it('includes digest, recent sessions, recent spores, and active plans', async () => {
     const config = MycoConfigSchema.parse({ version: 3 });
+    const { vaultDir, projectId, cleanup } = makeVaultDir();
 
     registerAgent({
       id: DEFAULT_AGENT_ID,
@@ -200,6 +215,7 @@ describe('buildCortexInstructionsInput', () => {
     });
 
     upsertDigestExtract({
+      project_id: projectId,
       agent_id: DEFAULT_AGENT_ID,
       tier: config.cortex.digest.tier,
       content: 'Current digest says the Cortex rollout is in progress and focused on session-start guidance.',
@@ -208,6 +224,7 @@ describe('buildCortexInstructionsInput', () => {
 
     upsertSession({
       id: 'sess-cortex-1',
+      project_id: projectId,
       agent: 'codex',
       started_at: NOW,
       created_at: NOW,
@@ -225,6 +242,7 @@ describe('buildCortexInstructionsInput', () => {
 
     insertSpore({
       id: 'spore-cortex-1',
+      project_id: projectId,
       agent_id: 'agent-cortex',
       observation_type: 'decision',
       content: 'Cortex instructions should mention current vault activity instead of static retrieval boilerplate.',
@@ -234,6 +252,7 @@ describe('buildCortexInstructionsInput', () => {
     });
     insertSpore({
       id: 'spore-cortex-retired-tool',
+      project_id: projectId,
       agent_id: 'agent-cortex',
       observation_type: 'decision',
       content: 'A prior note mentioned myco_recall, but generated instructions should not repeat obsolete tool names.',
@@ -244,6 +263,7 @@ describe('buildCortexInstructionsInput', () => {
 
     upsertPlan({
       id: buildPlanId('session:sess-cortex-1:key:primary'),
+      project_id: projectId,
       logical_key: 'session:sess-cortex-1:key:primary',
       created_at: NOW,
       status: 'active',
@@ -252,8 +272,12 @@ describe('buildCortexInstructionsInput', () => {
       session_id: 'sess-cortex-1',
     });
 
-    const { vaultDir, cleanup } = makeVaultDir();
-    const result = await buildCortexInstructionsInput(config, vaultDir);
+    const result = await buildCortexInstructionsInput(
+      config,
+      vaultDir,
+      undefined,
+      requestContext(vaultDir, projectId),
+    );
     cleanup();
 
     expect(result.instruction).toContain('## Current digest excerpt');
@@ -273,13 +297,103 @@ describe('buildCortexInstructionsInput', () => {
     expect(result.instruction).not.toContain('myco_recall');
   });
 
+  it('uses request-context project scope for recent vault context', async () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
+    const projectAId = assertGroveProjectId(createProjectId());
+    const projectBId = assertGroveProjectId(createProjectId());
+
+    upsertDigestExtract({
+      project_id: projectAId,
+      agent_id: DEFAULT_AGENT_ID,
+      tier: config.cortex.digest.tier,
+      content: 'Project A digest only.',
+      generated_at: NOW,
+    });
+    upsertDigestExtract({
+      project_id: projectBId,
+      agent_id: DEFAULT_AGENT_ID,
+      tier: config.cortex.digest.tier,
+      content: 'Project B digest must stay hidden.',
+      generated_at: NOW,
+    });
+    upsertSession({
+      id: 'sess-cortex-project-a',
+      project_id: projectAId,
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      title: 'Project A session',
+      summary: 'Project A session summary.',
+      status: 'completed',
+    });
+    upsertSession({
+      id: 'sess-cortex-project-b',
+      project_id: projectBId,
+      agent: 'codex',
+      started_at: NOW,
+      created_at: NOW,
+      title: 'Project B session',
+      summary: 'Project B session summary.',
+      status: 'completed',
+    });
+    insertSpore({
+      id: 'spore-cortex-project-a',
+      project_id: projectAId,
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'Project A decision.',
+      created_at: NOW,
+      status: 'active',
+      session_id: 'sess-cortex-project-a',
+    });
+    insertSpore({
+      id: 'spore-cortex-project-b',
+      project_id: projectBId,
+      agent_id: DEFAULT_AGENT_ID,
+      observation_type: 'decision',
+      content: 'Project B decision must stay hidden.',
+      created_at: NOW,
+      status: 'active',
+      session_id: 'sess-cortex-project-b',
+    });
+    upsertPlan({
+      id: 'plan-cortex-project-a',
+      project_id: projectAId,
+      logical_key: 'project-a-plan',
+      created_at: NOW,
+      status: 'active',
+      title: 'Project A plan',
+      content: 'Project A plan body.',
+    });
+    upsertPlan({
+      id: 'plan-cortex-project-b',
+      project_id: projectBId,
+      logical_key: 'project-b-plan',
+      created_at: NOW,
+      status: 'active',
+      title: 'Project B plan',
+      content: 'Project B plan body must stay hidden.',
+    });
+
+    const { vaultDir, cleanup } = makeVaultDir();
+    const result = await buildCortexInstructionsInput(config, vaultDir, undefined, requestContext(vaultDir, projectAId));
+    cleanup();
+
+    expect(result.instruction).toContain('Project A digest only');
+    expect(result.instruction).toContain('Project A session');
+    expect(result.instruction).toContain('Project A decision');
+    expect(result.instruction).toContain('Project A plan');
+    expect(result.instruction).not.toContain('Project B');
+  });
+
   it('emits the myco_cortex canopy_map directive only when a populated map exists for the project', async () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
-    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    const { vaultDir, machineId, projectId, cleanup } = makeVaultDir();
     writeCanopyMap({
-      project_id: resolveCanopyProjectId(vaultDir),
+      project_id: projectId,
       machine_id: machineId,
       content: '## Directory skeleton\n- src/ — application code\n',
       inputs_hash: 'h-test-1',
@@ -287,7 +401,12 @@ describe('buildCortexInstructionsInput', () => {
       generated_by_run_id: null,
     });
 
-    const result = await buildCortexInstructionsInput(config, vaultDir);
+    const result = await buildCortexInstructionsInput(
+      config,
+      vaultDir,
+      undefined,
+      requestContext(vaultDir, projectId),
+    );
     cleanup();
     expect(result.instruction).toContain('myco_cortex');
     expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call myco_cortex --json');
@@ -299,9 +418,14 @@ describe('buildCortexInstructionsInput', () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
-    const { vaultDir, cleanup } = makeVaultDir();
+    const { vaultDir, projectId, cleanup } = makeVaultDir();
     // No writeCanopyMap — the map row is missing.
-    const result = await buildCortexInstructionsInput(config, vaultDir);
+    const result = await buildCortexInstructionsInput(
+      config,
+      vaultDir,
+      undefined,
+      requestContext(vaultDir, projectId),
+    );
     cleanup();
     expect(result.instruction).not.toContain('"op":"canopy_map"');
   });
@@ -310,16 +434,21 @@ describe('buildCortexInstructionsInput', () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: true } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
-    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    const { vaultDir, machineId, projectId, cleanup } = makeVaultDir();
     writeCanopyMap({
-      project_id: resolveCanopyProjectId(vaultDir),
+      project_id: projectId,
       machine_id: machineId,
       content: '',
       inputs_hash: 'h-empty',
       token_estimate: 0,
       generated_by_run_id: null,
     });
-    const result = await buildCortexInstructionsInput(config, vaultDir);
+    const result = await buildCortexInstructionsInput(
+      config,
+      vaultDir,
+      undefined,
+      requestContext(vaultDir, projectId),
+    );
     cleanup();
     expect(result.instruction).not.toContain('"op":"canopy_map"');
   });
@@ -328,16 +457,21 @@ describe('buildCortexInstructionsInput', () => {
     const config = MycoConfigSchema.parse({ version: 3, cortex: { instructions: { inject_on_session_start: false } } });
     registerAgent({ id: DEFAULT_AGENT_ID, name: 'default-agent', created_at: NOW });
 
-    const { vaultDir, machineId, cleanup } = makeVaultDir();
+    const { vaultDir, machineId, projectId, cleanup } = makeVaultDir();
     writeCanopyMap({
-      project_id: resolveCanopyProjectId(vaultDir),
+      project_id: projectId,
       machine_id: machineId,
       content: '## Map\n',
       inputs_hash: 'h-disabled',
       token_estimate: 10,
       generated_by_run_id: null,
     });
-    const result = await buildCortexInstructionsInput(config, vaultDir);
+    const result = await buildCortexInstructionsInput(
+      config,
+      vaultDir,
+      undefined,
+      requestContext(vaultDir, projectId),
+    );
     cleanup();
     expect(result.instruction).not.toContain('"op":"canopy_map"');
   });

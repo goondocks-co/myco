@@ -5,12 +5,13 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import {
   upsertPlan,
   deletePlan,
   getPlan,
+  getPlanByLogicalKey,
   listPlans,
   listPlansBySession,
 } from '@myco/db/queries/plans.js';
@@ -18,6 +19,9 @@ import type { PlanInsert } from '@myco/db/queries/plans.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { SessionInsert } from '@myco/db/queries/sessions.js';
 import { buildPlanId } from '@myco/plans/identity.js';
+import { getDatabase } from '@myco/db/client.js';
+import { initTeamContext, resetTeamContext } from '@myco/daemon/team-context.js';
+import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -50,6 +54,7 @@ describe('plan query helpers', () => {
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
   beforeEach(() => { cleanTestDb(); });
+  afterEach(() => { resetTeamContext(); });
 
   // ---------------------------------------------------------------------------
   // upsertPlan + getPlan
@@ -65,7 +70,7 @@ describe('plan query helpers', () => {
       expect(row.status).toBe('active');
       expect(row.processed).toBe(0);
 
-      const fetched = getPlan(data.id);
+      const fetched = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
       expect(fetched!.id).toBe(data.id);
       expect(fetched!.title).toBe('Migration plan');
@@ -99,9 +104,40 @@ describe('plan query helpers', () => {
 
       expect(row.logical_key).toBe(logicalKey);
       expect(row.id).toBe('plan-b');
-      expect(listPlans()).toHaveLength(1);
-      expect(getPlan('plan-b')?.title).toBe('Updated');
-      expect(getPlan('plan-a')).toBeNull();
+      expect(listPlans({ scope: ALL_PROJECTS_SCOPE })).toHaveLength(1);
+      expect(getPlan('plan-b', ALL_PROJECTS_SCOPE)?.title).toBe('Updated');
+      expect(getPlan('plan-a', ALL_PROJECTS_SCOPE)).toBeNull();
+    });
+
+    it('allows the same logical_key in different project scopes', async () => {
+      const logicalKey = 'path:plans/roadmap.md';
+      upsertPlan(makePlan({
+        id: 'plan-project-a',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        title: 'Project A original',
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-project-b',
+        project_id: 'proj_b',
+        logical_key: logicalKey,
+        title: 'Project B',
+      }));
+
+      const updated = upsertPlan(makePlan({
+        id: 'plan-project-a-updated',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        title: 'Project A updated',
+      }));
+
+      expect(updated.id).toBe('plan-project-a-updated');
+      expect(updated.project_id).toBe('proj_a');
+      expect(listPlans({ scope: ALL_PROJECTS_SCOPE })).toHaveLength(2);
+      expect(getPlan('plan-project-a', ALL_PROJECTS_SCOPE)).toBeNull();
+      expect(getPlan('plan-project-a-updated', ALL_PROJECTS_SCOPE)?.title).toBe('Project A updated');
+      expect(getPlan('plan-project-b', ALL_PROJECTS_SCOPE)?.title).toBe('Project B');
+      expect(getPlan('plan-project-b', ALL_PROJECTS_SCOPE)?.project_id).toBe('proj_b');
     });
 
     it('is idempotent — second upsert updates without error', async () => {
@@ -109,7 +145,7 @@ describe('plan query helpers', () => {
       upsertPlan(data);
       upsertPlan({ ...data, title: 'Updated' });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.title).toBe('Updated');
     });
@@ -120,7 +156,7 @@ describe('plan query helpers', () => {
 
       upsertPlan({ ...data, status: 'completed' });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.status).toBe('completed');
     });
 
@@ -132,7 +168,7 @@ describe('plan query helpers', () => {
       const later = now + 60;
       upsertPlan({ ...data, title: 'Changed', updated_at: later });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.updated_at).toBe(later);
     });
   });
@@ -143,7 +179,7 @@ describe('plan query helpers', () => {
 
   describe('getPlan', () => {
     it('returns null for non-existent id', async () => {
-      const row = getPlan('does-not-exist');
+      const row = getPlan('does-not-exist', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
   });
@@ -153,14 +189,31 @@ describe('plan query helpers', () => {
       const data = makePlan({ title: 'Delete me' });
       upsertPlan(data);
 
-      const deleted = deletePlan(data.id);
+      const deleted = deletePlan(data.id, ALL_PROJECTS_SCOPE);
 
       expect(deleted?.id).toBe(data.id);
-      expect(getPlan(data.id)).toBeNull();
+      expect(getPlan(data.id, ALL_PROJECTS_SCOPE)).toBeNull();
     });
 
     it('returns null when the plan does not exist', () => {
-      expect(deletePlan('missing-plan')).toBeNull();
+      expect(deletePlan('missing-plan', ALL_PROJECTS_SCOPE)).toBeNull();
+    });
+
+    it('includes project_id in team-sync delete tombstones', () => {
+      const projectId = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const data = makePlan({ id: 'plan-delete-scoped', project_id: projectId, title: 'Delete scoped' });
+      upsertPlan(data);
+      initTeamContext(true, 'machine-a');
+
+      deletePlan(data.id, projectScope(projectId as GroveProjectId));
+
+      const row = getDatabase().prepare(
+        "SELECT payload FROM team_outbox WHERE table_name = 'plans' AND row_id = ? AND operation = 'delete'",
+      ).get(data.id) as { payload: string };
+      expect(JSON.parse(row.payload)).toMatchObject({
+        id: data.id,
+        project_id: projectId,
+      });
     });
   });
 
@@ -175,7 +228,7 @@ describe('plan query helpers', () => {
       upsertPlan(makePlan({ id: 'plan-mid', created_at: now - 50 }));
       upsertPlan(makePlan({ id: 'plan-new', created_at: now }));
 
-      const rows = listPlans();
+      const rows = listPlans({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       expect(rows[0].id).toBe('plan-new');
       expect(rows[1].id).toBe('plan-mid');
@@ -188,7 +241,7 @@ describe('plan query helpers', () => {
       upsertPlan(makePlan({ id: 'plan-done', status: 'completed', created_at: now + 1 }));
       upsertPlan(makePlan({ id: 'plan-draft', status: 'draft', created_at: now + 2 }));
 
-      const rows = listPlans({ status: 'active' });
+      const rows = listPlans({ status: 'active', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('plan-active');
     });
@@ -199,7 +252,7 @@ describe('plan query helpers', () => {
         upsertPlan(makePlan({ created_at: now + i }));
       }
 
-      const rows = listPlans({ limit: 2 });
+      const rows = listPlans({ limit: 2, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(2);
     });
 
@@ -210,7 +263,7 @@ describe('plan query helpers', () => {
       }
       upsertPlan(makePlan({ status: 'completed', created_at: now + 10 }));
 
-      const rows = listPlans({ status: 'active', limit: 3 });
+      const rows = listPlans({ status: 'active', limit: 3, scope: ALL_PROJECTS_SCOPE });
       expect(rows).toHaveLength(3);
       // All should be active
       for (const row of rows) {
@@ -219,13 +272,41 @@ describe('plan query helpers', () => {
     });
 
     it('returns empty array when no plans match', async () => {
-      const rows = listPlans({ status: 'nonexistent' });
+      const rows = listPlans({ status: 'nonexistent', scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
     });
 
     it('returns empty array when no plans exist', async () => {
-      const rows = listPlans();
+      const rows = listPlans({ scope: ALL_PROJECTS_SCOPE });
       expect(rows).toEqual([]);
+    });
+
+    it('filters by explicit project scope', async () => {
+      const now = epochNow();
+      const logicalKey = 'path:plans/shared.md';
+      upsertPlan(makePlan({
+        id: 'plan-legacy',
+        logical_key: logicalKey,
+        created_at: now,
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-a',
+        project_id: 'proj_a',
+        logical_key: logicalKey,
+        created_at: now + 1,
+      }));
+      upsertPlan(makePlan({
+        id: 'plan-b',
+        project_id: 'proj_b',
+        logical_key: logicalKey,
+        created_at: now + 2,
+      }));
+
+      expect(getPlan('plan-a', projectScope('proj_a' as GroveProjectId))?.project_id).toBe('proj_a');
+      expect(getPlan('plan-a', projectScope('proj_b' as GroveProjectId))).toBeNull();
+      expect(getPlanByLogicalKey(logicalKey, projectScope('proj_b' as GroveProjectId))?.id).toBe('plan-b');
+      expect(listPlans({ scope: GLOBAL_SCOPE}).map((row) => row.id)).toEqual(['plan-legacy']);
+      expect(listPlans({ scope: projectScope('proj_a' as GroveProjectId)}).map((row) => row.id)).toEqual(['plan-a']);
     });
   });
 
@@ -269,7 +350,7 @@ describe('plan query helpers', () => {
       upsertPlan(data);
       upsertPlan({ ...data, session_id: session2.id });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.session_id).toBe(session2.id);
     });
 
@@ -285,7 +366,7 @@ describe('plan query helpers', () => {
       // Re-upsert with same content_hash
       upsertPlan({ ...data, title: 'Same content, new title' });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.embedded).toBe(1);
     });
 
@@ -300,7 +381,7 @@ describe('plan query helpers', () => {
       // Re-upsert with different content_hash
       upsertPlan({ ...data, content_hash: 'updated-hash' });
 
-      const row = getPlan(data.id);
+      const row = getPlan(data.id, ALL_PROJECTS_SCOPE);
       expect(row!.embedded).toBe(0);
     });
   });
@@ -318,7 +399,7 @@ describe('plan query helpers', () => {
       upsertPlan(makePlan({ id: 'plan-old', session_id: session.id, created_at: now - 100 }));
       upsertPlan(makePlan({ id: 'plan-new', session_id: session.id, created_at: now }));
 
-      const rows = listPlansBySession(session.id);
+      const rows = listPlansBySession(session.id, ALL_PROJECTS_SCOPE);
       expect(rows).toHaveLength(2);
       expect(rows[0].id).toBe('plan-new');
       expect(rows[1].id).toBe('plan-old');
@@ -334,7 +415,7 @@ describe('plan query helpers', () => {
       upsertPlan(makePlan({ id: 'plan-s2', session_id: session2.id }));
       upsertPlan(makePlan({ id: 'plan-none' })); // no session
 
-      const rows = listPlansBySession(session1.id);
+      const rows = listPlansBySession(session1.id, ALL_PROJECTS_SCOPE);
       expect(rows).toHaveLength(1);
       expect(rows[0].id).toBe('plan-s1');
     });
@@ -343,13 +424,25 @@ describe('plan query helpers', () => {
       const session = makeSession();
       upsertSession(session);
 
-      const rows = listPlansBySession(session.id);
+      const rows = listPlansBySession(session.id, ALL_PROJECTS_SCOPE);
       expect(rows).toEqual([]);
     });
 
     it('returns empty array for unknown session id', async () => {
-      const rows = listPlansBySession('nonexistent-session');
+      const rows = listPlansBySession('nonexistent-session', ALL_PROJECTS_SCOPE);
       expect(rows).toEqual([]);
+    });
+
+    it('filters session plans by explicit project scope', async () => {
+      const session = makeSession();
+      upsertSession(session);
+
+      upsertPlan(makePlan({ id: 'plan-legacy', session_id: session.id, created_at: 1 }));
+      upsertPlan(makePlan({ id: 'plan-a', project_id: 'proj_a', session_id: session.id, created_at: 2 }));
+      upsertPlan(makePlan({ id: 'plan-b', project_id: 'proj_b', session_id: session.id, created_at: 3 }));
+
+      expect(listPlansBySession(session.id, GLOBAL_SCOPE).map((row) => row.id)).toEqual(['plan-legacy']);
+      expect(listPlansBySession(session.id, projectScope('proj_a' as GroveProjectId)).map((row) => row.id)).toEqual(['plan-a']);
     });
   });
 });

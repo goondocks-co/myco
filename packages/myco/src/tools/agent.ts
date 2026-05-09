@@ -8,6 +8,7 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { extractErrorMessage } from './error.js';
 import { buildEndpoint } from './shared.js';
+import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 
 export type AgentOp = 'runs' | 'run';
 
@@ -29,6 +30,7 @@ export interface AgentHandlerResult {
 export async function handleMycoAgent(
   input: AgentInput,
   client: DaemonClient,
+  requestContext?: MycoRequestContext,
 ): Promise<AgentHandlerResult> {
   const op = input.op ?? 'runs';
 
@@ -36,9 +38,10 @@ export async function handleMycoAgent(
     if (!input.id) {
       return { ok: false, op, error: 'id is required for op: run' };
     }
-    const result = await client.get(
-      `/api/agent/runs/${encodeURIComponent(input.id)}`,
-    );
+    const endpoint = `/api/agent/runs/${encodeURIComponent(input.id)}`;
+    const result = requestContext
+      ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+      : await client.get(endpoint);
     if (!result.ok) {
       return { ok: false, op, error: extractErrorMessage(result.data, 'fetch_failed') };
     }
@@ -50,7 +53,9 @@ export async function handleMycoAgent(
     agentId: input.agent_id,
     limit: input.limit,
   });
-  const result = await client.get(endpoint);
+  const result = requestContext
+    ? await client.get(endpoint, { headers: requestContextHeaders(requestContext) })
+    : await client.get(endpoint);
   if (!result.ok) {
     return { ok: false, op, error: extractErrorMessage(result.data, 'fetch_failed') };
   }

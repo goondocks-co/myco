@@ -12,7 +12,7 @@ import { createMcpHandler } from 'agents/mcp';
 import { createMcpServerInstance } from './mcp/server';
 import { authenticateMcpRequest, ensureMcpToken, rotateMcpToken, getMcpTokenHash, MCP_TOKEN_KEY } from './mcp/auth';
 import { toCloudSearchResult } from './mcp/result-shape';
-import { searchKnowledge, embedText, type TeamVectorMetadata } from './search-helpers';
+import { searchKnowledge, embedText, MAX_EMBEDDING_TEXT_CHARS, type TeamVectorMetadata } from './search-helpers';
 import { fetchRecord, isAllowedRecordType } from './records';
 import {
   clearCfApiCredentials,
@@ -33,7 +33,22 @@ export interface Env {
   MYCO_TEAM_VECTORS: VectorizeIndex;
   AI: Ai;
   MYCO_TEAM_API_KEY: string;
+  /**
+   * Server-side sync protocol version. Read as a string from
+   * `wrangler.toml [vars]` and parsed at request time. The worker
+   * accepts clients in the inclusive window
+   * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]`.
+   */
   SYNC_PROTOCOL_VERSION: string;
+  /**
+   * Oldest sync protocol the worker still accepts. Mirrors the
+   * `MIN_COMPAT_CLIENT_VERSION` constant in
+   * `packages/myco/src/constants.ts`. Optional in the type so older
+   * deploys without the var still boot — `resolveProtocolBounds`
+   * falls back to "same as server" (preserving the historical
+   * strict-equality gate).
+   */
+  MIN_COMPAT_CLIENT_VERSION?: string;
   MYCO_SECRETS: KVNamespace;
   /**
    * Producer binding for the project's sync queue. Bound at deploy time via
@@ -77,15 +92,78 @@ const SYNCED_TABLES = [
 
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
 
+const GROVE_PROJECT_ID_PATTERN = /^proj_[0-9a-f]{32}$/;
+
+/**
+ * Validate that a value is a Grove-era project id (`proj_<32 hex chars>`).
+ * Mirrors the daemon-side `assertGroveProjectId` gate so contamination
+ * (NULL, empty, path-string, wrong prefix) can't reach D1 — one of the
+ * defenses-in-depth introduced after the path-string regression.
+ */
+function isGroveProjectId(value: unknown): value is string {
+  return typeof value === 'string' && GROVE_PROJECT_ID_PATTERN.test(value);
+}
+
+/**
+ * Resolve the server-side protocol bounds. The worker accepts clients
+ * in the inclusive window `[minClientVersion, serverVersion]`. The
+ * min bound is optional in `Env` so older deploys without the var
+ * still boot — in that case we fall back to "same as server" (no
+ * compat window, equivalent to the historical strict-equality gate).
+ */
+function resolveProtocolBounds(env: Env): { serverVersion: number; minClientVersion: number } {
+  const serverVersion = parseInt(env.SYNC_PROTOCOL_VERSION, 10);
+  const parsedMin = env.MIN_COMPAT_CLIENT_VERSION
+    ? parseInt(env.MIN_COMPAT_CLIENT_VERSION, 10)
+    : NaN;
+  const minClientVersion = Number.isFinite(parsedMin) ? parsedMin : serverVersion;
+  return { serverVersion, minClientVersion };
+}
+
+const QUEUE_SEND_BATCH_SIZE = 100;
+const QUEUE_SEND_BATCH_MAX_BYTES = 192 * 1024;
+
 type SyncedTable = (typeof SYNCED_TABLES)[number];
 
 interface SyncRecord {
   table: SyncedTable;
-  operation: 'upsert' | 'delete';
+  operation: 'upsert' | 'delete' | 'embed';
   id: string;
   machine_id: string;
   content_hash?: string | null;
+  /**
+   * Row payload. Required for `upsert`. For `delete` and `embed`, only
+   * `id`/`machine_id` matter — `embed` re-reads the row from D1 so
+   * messages stay tiny and never carry duplicate row state.
+   */
   data: Record<string, unknown>;
+}
+
+function estimateQueueMessageBytes(record: SyncRecord): number {
+  return new TextEncoder().encode(JSON.stringify({ body: record })).byteLength;
+}
+
+async function sendQueueRecords(queue: Queue<SyncRecord>, records: SyncRecord[]): Promise<void> {
+  let chunk: SyncRecord[] = [];
+  let chunkBytes = 0;
+
+  const flush = async () => {
+    if (chunk.length === 0) return;
+    await queue.sendBatch(chunk.map((record) => ({ body: record })));
+    chunk = [];
+    chunkBytes = 0;
+  };
+
+  for (const record of records) {
+    const size = estimateQueueMessageBytes(record);
+    if (chunk.length > 0 && (chunk.length >= QUEUE_SEND_BATCH_SIZE || chunkBytes + size > QUEUE_SEND_BATCH_MAX_BYTES)) {
+      await flush();
+    }
+    chunk.push(record);
+    chunkBytes += size;
+  }
+
+  await flush();
 }
 
 interface ConnectPayload {
@@ -109,10 +187,19 @@ interface SearchResult {
   data: Record<string, unknown>;
 }
 
-interface VectorReindexCursor {
-  created_at: number;
+/**
+ * One row to embed-and-upsert. Collected per queue batch so we can fire
+ * a single batched `ai.run` call (bge-m3 accepts an array of texts) and
+ * a single `Vectorize.upsert` instead of N parallel calls — Workers AI
+ * serializes per-isolate, so 100 parallel `ai.run` calls take ~100s
+ * instead of the ~1-2s a single batched call takes.
+ */
+interface EmbedJob {
+  table: string;
   id: string;
   machine_id: string;
+  text: string;
+  metadata: Partial<TeamVectorMetadata>;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,9 +230,6 @@ const COLLECTIVE_STALE_AFTER_SECONDS = COLLECTIVE_HEARTBEAT_INTERVAL_SECONDS * 3
 const DEFAULT_TEAM_PACKAGE_VERSION = '0.1.0';
 const TEAM_COLLECTIVE_CAPABILITIES = ['search', 'digest', 'collective_proxy'] as const;
 const TEAM_COLLECTIVE_QUERY_TOOLS = new Set(['collective_search', 'collective_projects', 'collective_project', 'collective_settings']);
-const VECTOR_REINDEX_DEFAULT_BATCH = 100;
-const VECTOR_REINDEX_MAX_BATCH = 250;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -389,12 +473,14 @@ async function handleHealth(env: Env): Promise<Response> {
 
   const count = countResult?.count ?? 0;
   const mcpTokenHash = storedToken ? getMcpTokenHash(storedToken) : null;
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
 
   return jsonResponse({
     status: 'ok',
     nodes: count,
     node_count: count,
-    sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+    sync_protocol_version: serverVersion,
+    min_compat_client_version: minClientVersion,
     package_version: metadata.package_version,
     schema_version: metadata.schema_version,
     mcp_token_hash: mcpTokenHash,
@@ -405,6 +491,25 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as ConnectPayload;
   if (!body.machine_id) {
     return errorResponse('machine_id is required', 400);
+  }
+
+  // Reject pre-window clients up-front so they don't quietly register
+  // a node row that the worker then refuses every push from. The same
+  // window guards `/api/team/enqueue` below; surfacing it here means
+  // the daemon's connect step gets a clear typed error to display in
+  // the Team page (instead of "connected" followed by silent push
+  // failures). A missing `sync_protocol_version` is allowed for
+  // backward compatibility — older daemons that don't send the field
+  // are treated as v1 and gated below at enqueue time.
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
+  if (typeof body.sync_protocol_version === 'number'
+    && (body.sync_protocol_version < minClientVersion || body.sync_protocol_version > serverVersion)) {
+    return jsonResponse({
+      error: 'protocol_version_unsupported',
+      message: `Client protocol v${body.sync_protocol_version} is outside the worker's supported window [${minClientVersion}, ${serverVersion}]. Run \`myco update\` (or \`myco-team upgrade\`) on this machine.`,
+      sync_protocol_version: serverVersion,
+      min_compat_client_version: minClientVersion,
+    }, 409);
   }
 
   const now = epochSeconds();
@@ -434,7 +539,8 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
 
   return jsonResponse({
     status: 'connected',
-    sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+    sync_protocol_version: serverVersion,
+    min_compat_client_version: minClientVersion,
     config,
     mcp_token: mcpToken,
     mcp_endpoint: '/mcp',
@@ -451,21 +557,54 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as SyncPayload;
 
-  const serverVersion = parseInt(env.SYNC_PROTOCOL_VERSION, 10);
-  if (body.sync_protocol_version !== serverVersion) {
-    return errorResponse(
-      `Protocol version mismatch: client=${body.sync_protocol_version}, server=${serverVersion}`,
-      409,
-    );
+  // Accept clients in the inclusive `[minClientVersion, serverVersion]`
+  // window. This replaces the historical strict-equality gate so an
+  // upgraded worker doesn't lock out teammates whose daemon hasn't
+  // shipped the bump yet. Out-of-window payloads still 409 with an
+  // explicit typed error — silent shape changes are not allowed.
+  const { serverVersion, minClientVersion } = resolveProtocolBounds(env);
+  const clientVersion = body.sync_protocol_version;
+  if (clientVersion < minClientVersion || clientVersion > serverVersion) {
+    return jsonResponse({
+      error: 'protocol_version_unsupported',
+      message: `Client protocol v${clientVersion} is outside the worker's supported window [${minClientVersion}, ${serverVersion}]. Run \`myco update\` on this machine.`,
+      sync_protocol_version: serverVersion,
+      min_compat_client_version: minClientVersion,
+    }, 409);
   }
 
   if (!Array.isArray(body.records) || body.records.length === 0) {
     return jsonResponse({ accepted: 0 });
   }
 
+  // Protocol v1 didn't define the `embed` SyncRecord operation. A v1
+  // client should never produce one, but if a payload sneaks through
+  // (e.g. a daemon mid-upgrade) reject it explicitly rather than
+  // letting the consumer route it through `coalescedEmbedBatch`
+  // against an empty data payload. Defense-in-depth — mirrors in
+  // spirit the project_id gate further down.
+  if (clientVersion < 2) {
+    const hasEmbed = body.records.some((record) => record.operation === 'embed');
+    if (hasEmbed) {
+      return jsonResponse({
+        error: 'protocol_too_old_for_embed',
+        message: `Client protocol v${clientVersion} cannot use the 'embed' SyncRecord operation (added in v2). Run \`myco update\` on this machine.`,
+        sync_protocol_version: serverVersion,
+        min_compat_client_version: minClientVersion,
+      }, 409);
+    }
+  }
+
   // Validate table names up-front so the daemon can't poison the queue with
   // payloads the consumer would always reject. Unknown tables are reported in
   // the response so the daemon surfaces them during its flush.
+  //
+  // Also reject records whose `data.project_id` is not a Grove-era id
+  // (`proj_<32 hex chars>`). Defense-in-depth against pre-Grove writers
+  // that quietly enqueued NULL or path-string project ids — those
+  // landed in D1 unchallenged before the brand was added locally.
+  // Mirroring the local gate here means a future runtime regression on
+  // either side can't recontaminate D1.
   const acceptedRecords: SyncRecord[] = [];
   const rejected: Array<{ id: string; table: string; error: string }> = [];
   for (const record of body.records) {
@@ -473,13 +612,20 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       rejected.push({ id: record.id, table: record.table, error: `Unknown table: ${record.table}` });
       continue;
     }
+    const projectId = (record.data as Record<string, unknown> | undefined)?.project_id;
+    if (!isGroveProjectId(projectId)) {
+      rejected.push({
+        id: record.id,
+        table: record.table,
+        error: `Invalid project_id: expected proj_<32 hex chars>, got ${JSON.stringify(projectId)}`,
+      });
+      continue;
+    }
     acceptedRecords.push(record);
   }
 
   if (acceptedRecords.length > 0) {
-    // sendBatch caps at 100 messages or 256KB per call — the daemon batches
-    // its flush in 100-message chunks, so a single sendBatch covers a tick.
-    await env.SYNC_QUEUE.sendBatch(acceptedRecords.map((record) => ({ body: record })));
+    await sendQueueRecords(env.SYNC_QUEUE, acceptedRecords);
   }
 
   await touchNodeLastSeen(env, body.machine_id);
@@ -515,7 +661,7 @@ async function touchNodeLastSeen(env: Env, machineId: string): Promise<void> {
 async function writeRecordToD1(
   env: Env,
   record: SyncRecord,
-): Promise<{ skipped: boolean; embedTask?: () => Promise<void> }> {
+): Promise<{ skipped: boolean; embedTask?: () => Promise<void>; embedJob?: EmbedJob }> {
   if (record.operation === 'delete') {
     await handleDelete(env, record);
     return { skipped: false };
@@ -547,8 +693,13 @@ async function writeRecordToD1(
   }
   return {
     skipped: false,
-    embedTask: () =>
-      embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data)),
+    embedJob: {
+      table,
+      id,
+      machine_id,
+      text: textContent,
+      metadata: buildVectorMetadata(table, record.data),
+    },
   };
 }
 
@@ -571,11 +722,12 @@ async function writeRecordToD1(
  */
 async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
   if (!schemaInitialized) {
-    await initD1Schema(env.MYCO_TEAM_DB);
+    await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
     schemaInitialized = true;
   }
 
-  const embeddingTasks: Array<() => Promise<void>> = [];
+  const deleteVectorTasks: Array<() => Promise<void>> = [];
+  const embedJobs: EmbedJob[] = [];
   const groups = new Map<string, Array<Message<SyncRecord>>>();
   for (const message of batch.messages) {
     const key = `${message.body.table}\t${message.body.operation}`;
@@ -588,15 +740,75 @@ async function handleSyncBatch(batch: MessageBatch<SyncRecord>, env: Env): Promi
     const [table, operation] = key.split('\t');
     if (operation === 'delete') {
       await coalescedDeleteBatch(env, table, messages);
+    } else if (operation === 'embed') {
+      await coalescedEmbedBatch(env, table, messages, deleteVectorTasks, embedJobs);
     } else {
-      await coalescedUpsertBatch(env, table, messages, embeddingTasks);
+      await coalescedUpsertBatch(env, table, messages, deleteVectorTasks, embedJobs);
     }
   }
 
-  // Vectorize is a best-effort companion index — embedding failures don't
-  // fail the batch (recoverable via /vectors/reindex). Run in parallel.
-  if (embeddingTasks.length > 0) {
-    await Promise.allSettled(embeddingTasks.map((task) => task()));
+  // Vectorize is a best-effort companion index — failures don't fail
+  // the batch (rows are recoverable via /vectors/reindex). Vector
+  // deletes (retired spores) run as parallel deleteByIds; embed jobs
+  // are folded into a single batched `ai.run` + `Vectorize.upsert`
+  // call so we don't pay per-isolate AI serialization 100 times per
+  // batch. All errors get logged so silent embed-side outages
+  // (Workers AI errors, missing AI binding, Vectorize upsert
+  // failures) surface in `wrangler tail` instead of vanishing.
+  if (deleteVectorTasks.length > 0) {
+    const results = await Promise.allSettled(deleteVectorTasks.map((task) => task()));
+    let failed = 0;
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        failed++;
+        console.error('team-sync.vector-delete-failed', {
+          error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+        });
+      }
+    }
+    if (failed > 0) console.error(`team-sync.vector-delete-summary ${failed}/${results.length} failed`);
+  }
+  if (embedJobs.length > 0) {
+    await runBatchEmbed(env, embedJobs);
+  }
+}
+
+
+/**
+ * Embed each job sequentially via the existing single-text
+ * `embedAndUpsert` path. We tried batching multiple texts per ai.run
+ * to amortize the per-call overhead, but bge-m3's 60K-token total
+ * context window combined with the wide tokenization-density variance
+ * across this dataset (0.84–4 chars/token observed) made batch sizing
+ * unreliable: every estimated budget either dropped vectors or killed
+ * throughput, and the model surfaces at least two distinct overflow
+ * error codes (3030, 5021) requiring increasingly broad detection.
+ *
+ * Per-row sequential is slow (~1s/row, so ~30 min for a full reindex
+ * of ~2K rows), but always correct: each call has one text well under
+ * the context window, so token overflow is structurally impossible.
+ * Per-row failures log and continue rather than dropping the whole
+ * group. Source rows stay in D1 and are recoverable via another
+ * /vectors/reindex call if anything fails.
+ */
+async function runBatchEmbed(env: Env, jobs: EmbedJob[]): Promise<void> {
+  let succeeded = 0;
+  let failed = 0;
+  for (const job of jobs) {
+    try {
+      await embedAndUpsert(env, job.table, job.id, job.machine_id, job.text, job.metadata);
+      succeeded++;
+    } catch (err) {
+      failed++;
+      console.error('team-sync.embed-failed', {
+        table: job.table,
+        id: job.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (failed > 0) {
+    console.error(`team-sync.embed-summary ${failed}/${jobs.length} embeddings failed (${succeeded} succeeded)`);
   }
 }
 
@@ -609,22 +821,30 @@ async function coalescedUpsertBatch(
   env: Env,
   table: string,
   messages: Array<Message<SyncRecord>>,
-  embeddingTasks: Array<() => Promise<void>>,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
 ): Promise<void> {
   // Phase 1: batch SELECT existing content_hash for the (id, machine_id)
   // tuples we're about to write. Records without content_hash skip the
-  // filter and write unconditionally.
+  // filter and write unconditionally. D1 caps a prepared statement at
+  // 100 bound parameters, so chunk into 50-message slices (2 binds
+  // each) — a full CF queue batch of 100 messages would otherwise
+  // blow the limit and silently disable dedup for the whole group.
   const filterCandidates = messages.filter((m) => Boolean(m.body.content_hash));
   const existingHashes = new Map<string, string | null>();
   if (filterCandidates.length > 0) {
-    const tuples = filterCandidates.map(() => '(?, ?)').join(', ');
-    const binds = filterCandidates.flatMap((m) => [m.body.id, m.body.machine_id]);
+    const D1_BIND_LIMIT_PAIRS = 50;
     try {
-      const result = await env.MYCO_TEAM_DB.prepare(
-        `SELECT id, machine_id, content_hash FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
-      ).bind(...binds).all<{ id: string; machine_id: string; content_hash: string | null }>();
-      for (const row of result.results ?? []) {
-        existingHashes.set(`${row.id}\t${row.machine_id}`, row.content_hash);
+      for (let offset = 0; offset < filterCandidates.length; offset += D1_BIND_LIMIT_PAIRS) {
+        const slice = filterCandidates.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
+        const tuples = slice.map(() => '(?, ?)').join(', ');
+        const binds = slice.flatMap((m) => [m.body.id, m.body.machine_id]);
+        const result = await env.MYCO_TEAM_DB.prepare(
+          `SELECT id, machine_id, content_hash FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+        ).bind(...binds).all<{ id: string; machine_id: string; content_hash: string | null }>();
+        for (const row of result.results ?? []) {
+          existingHashes.set(`${row.id}\t${row.machine_id}`, row.content_hash);
+        }
       }
     } catch (err) {
       // SELECT failure is unusual — fall through; the survivors path will
@@ -655,8 +875,7 @@ async function coalescedUpsertBatch(
   try {
     await env.MYCO_TEAM_DB.batch(statements);
     for (const message of survivors) {
-      const embedTask = buildEmbedTask(env, message.body);
-      if (embedTask) embeddingTasks.push(embedTask);
+      routeRecordForEmbedding(env, message.body, deleteVectorTasks, embedJobs);
       message.ack();
     }
   } catch (err) {
@@ -664,7 +883,8 @@ async function coalescedUpsertBatch(
     for (const message of survivors) {
       try {
         const result = await writeRecordToD1(env, message.body);
-        if (result.embedTask) embeddingTasks.push(result.embedTask);
+        if (result.embedTask) deleteVectorTasks.push(result.embedTask);
+        if (result.embedJob) embedJobs.push(result.embedJob);
         message.ack();
       } catch (perRecordErr) {
         const reason = perRecordErr instanceof Error ? perRecordErr.message : String(perRecordErr);
@@ -710,23 +930,107 @@ async function coalescedDeleteBatch(
   }
 }
 
-/** Build an embedding task for a record if its table is embeddable. */
-function buildEmbedTask(env: Env, record: SyncRecord): (() => Promise<void>) | null {
+/**
+ * Coalesced reindex path. Reads each row from D1 (messages carry only
+ * id/machine_id to keep queue payloads small), builds an embed task,
+ * and acks. Embedding errors surface through the same allSettled probe
+ * that wraps `coalescedUpsertBatch`'s tasks at the end of the batch.
+ *
+ * Designed for retroactive backfill: re-running against a fully-indexed
+ * set is cheap because `embedAndUpsert` overwrites the same vector id.
+ */
+async function coalescedEmbedBatch(
+  env: Env,
+  table: string,
+  messages: Array<Message<SyncRecord>>,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
+): Promise<void> {
+  if (!(table in EMBEDDABLE_TABLES)) {
+    for (const message of messages) message.ack();
+    return;
+  }
+
+  // D1 caps a prepared statement at 100 bound parameters. Two binds
+  // per message (id + machine_id) means we can only address 50
+  // messages per SELECT — chunk so a max-size CF queue batch (100
+  // messages) doesn't blow the limit and route the whole group
+  // through retries to DLQ.
+  const D1_BIND_LIMIT_PAIRS = 50;
+  const rowsByKey = new Map<string, Record<string, unknown>>();
+  try {
+    for (let offset = 0; offset < messages.length; offset += D1_BIND_LIMIT_PAIRS) {
+      const slice = messages.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
+      const tuples = slice.map(() => '(?, ?)').join(', ');
+      const binds = slice.flatMap((m) => [m.body.id, m.body.machine_id]);
+      const result = await env.MYCO_TEAM_DB.prepare(
+        `SELECT * FROM ${table} WHERE (id, machine_id) IN (${tuples})`,
+      ).bind(...binds).all<Record<string, unknown>>();
+      for (const row of result.results ?? []) {
+        if (typeof row.id === 'string' && typeof row.machine_id === 'string') {
+          rowsByKey.set(`${row.id}\t${row.machine_id}`, row);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`team-sync.queue.embed_select_failed table=${table}: ${err instanceof Error ? err.message : err}`);
+    for (const message of messages) message.retry();
+    return;
+  }
+
+  for (const message of messages) {
+    const row = rowsByKey.get(`${message.body.id}\t${message.body.machine_id}`);
+    if (!row) {
+      // Row was deleted between enqueue and consume — drop the embed
+      // request to avoid an upsert against missing source data.
+      message.ack();
+      continue;
+    }
+    routeRecordForEmbedding(env, {
+      table: table as SyncedTable,
+      operation: 'embed',
+      id: message.body.id,
+      machine_id: message.body.machine_id,
+      data: row,
+    }, deleteVectorTasks, embedJobs);
+    message.ack();
+  }
+}
+
+/**
+ * Route a record into either the vector-delete task list (retired
+ * spores need their vector removed) or the embed job list (active
+ * embeddable rows). No-op for non-embeddable tables or rows whose
+ * embedding text is empty.
+ */
+function routeRecordForEmbedding(
+  env: Env,
+  record: SyncRecord,
+  deleteVectorTasks: Array<() => Promise<void>>,
+  embedJobs: EmbedJob[],
+): void {
   const embeddableField = EMBEDDABLE_TABLES[record.table];
-  if (!embeddableField) return null;
+  if (!embeddableField) return;
   const textContent = record.data[embeddableField] as string | undefined;
-  if (!textContent) return null;
+  if (!textContent) return;
   const { table, id, machine_id } = record;
   if (table === 'spores' && record.data.status !== 'active') {
-    return () => deleteVector(env, table, id, machine_id);
+    deleteVectorTasks.push(() => deleteVector(env, table, id, machine_id));
+    return;
   }
-  return () => embedAndUpsert(env, table, id, machine_id, textContent, buildVectorMetadata(table, record.data));
+  embedJobs.push({
+    table,
+    id,
+    machine_id,
+    text: textContent,
+    metadata: buildVectorMetadata(table, record.data),
+  });
 }
 
 /**
  * Dead-letter consumer. Logs each failed message so operators can see the
  * tail-end record id and table without leaving the Worker logs view; the
- * daemon UI's Outbox tab (PR2) provides the structured replay/discard path.
+ * daemon UI's Sync tab provides the structured replay/discard path.
  */
 async function handleDlqBatch(batch: MessageBatch<SyncRecord>, _env: Env): Promise<void> {
   for (const message of batch.messages) {
@@ -785,6 +1089,8 @@ function buildVectorMetadata(table: string, data: Record<string, unknown>): Part
     if (typeof value === 'number' && Number.isFinite(value)) metadata[key] = value as never;
   };
 
+  maybeString('project_id', data.project_id);
+
   switch (table) {
     case 'spores':
       maybeString('status', data.status);
@@ -829,149 +1135,142 @@ function parseNumberParam(value: string | null): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function encodeReindexCursor(cursor: VectorReindexCursor | null): string | null {
-  return cursor ? JSON.stringify(cursor) : null;
-}
 
-function decodeReindexCursor(value: unknown): VectorReindexCursor | null {
-  if (!value || typeof value !== 'string') return null;
-  try {
-    const parsed = JSON.parse(value) as Partial<VectorReindexCursor>;
-    if (
-      typeof parsed.created_at === 'number' &&
-      typeof parsed.id === 'string' &&
-      typeof parsed.machine_id === 'string'
-    ) {
-      return {
-        created_at: parsed.created_at,
-        id: parsed.id,
-        machine_id: parsed.machine_id,
-      };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function listReindexRows(
-  env: Env,
-  table: keyof typeof EMBEDDABLE_TABLES,
-  limit: number,
-  cursor: VectorReindexCursor | null,
-): Promise<Array<{ id: string; machine_id: string; text: string; data: Record<string, unknown> }>> {
-  const textField = EMBEDDABLE_TABLES[table];
-  const params: unknown[] = [];
-  let whereClause = '';
-  if (cursor) {
-    whereClause = `
-      WHERE (
-        created_at > ?
-        OR (created_at = ? AND id > ?)
-        OR (created_at = ? AND id = ? AND machine_id > ?)
-      )`;
-    params.push(cursor.created_at, cursor.created_at, cursor.id, cursor.created_at, cursor.id, cursor.machine_id);
-  }
-
-  const sql = `
-    SELECT *
-    FROM ${table}
-    ${whereClause}
-    ORDER BY created_at ASC, id ASC, machine_id ASC
-    LIMIT ?
-  `;
-  params.push(limit);
-  const { results } = await env.MYCO_TEAM_DB.prepare(sql).bind(...params).all<Record<string, unknown>>();
-
-  return (results ?? [])
-    .map((row) => {
-      const text = row[textField];
-      if (typeof row.id !== 'string' || typeof row.machine_id !== 'string' || typeof text !== 'string' || text.length === 0) {
-        return null;
-      }
-      return {
-        id: row.id,
-        machine_id: row.machine_id,
-        text,
-        data: row,
-      };
-    })
-    .filter((row): row is { id: string; machine_id: string; text: string; data: Record<string, unknown> } => row !== null);
-}
-
+/**
+ * Reindex by enqueueing per-row `embed` jobs onto the existing sync
+ * queue. Returns immediately with the count rather than embedding
+ * inline — callers watch progress via the Vectorize index count
+ * surfaced through `/sync-summary`.
+ *
+ * Body: `{ table?: <one of EMBEDDABLE_TABLES> }`. When `table` is
+ * omitted, queues every embeddable table.
+ */
 async function handleVectorReindex(request: Request, env: Env): Promise<Response> {
-  const body = await request.json() as {
+  const body = await request.json().catch(() => ({})) as {
     table?: keyof typeof EMBEDDABLE_TABLES;
-    limit?: number;
-    cursor?: string | null;
   };
-  const table = body.table;
-  if (!table || !(table in EMBEDDABLE_TABLES)) {
-    return errorResponse('table must be one of spores, sessions, plans, artifacts, skill_records', 400);
+  const tables: Array<keyof typeof EMBEDDABLE_TABLES> = body.table
+    ? [body.table]
+    : (Object.keys(EMBEDDABLE_TABLES) as Array<keyof typeof EMBEDDABLE_TABLES>);
+
+  for (const table of tables) {
+    if (!(table in EMBEDDABLE_TABLES)) {
+      return errorResponse(`Unknown table: ${table}`, 400);
+    }
   }
 
-  const limit = Math.min(Math.max(body.limit ?? VECTOR_REINDEX_DEFAULT_BATCH, 1), VECTOR_REINDEX_MAX_BATCH);
-  const cursor = decodeReindexCursor(body.cursor ?? null);
-  const rows = await listReindexRows(env, table, limit, cursor);
   const startedAt = epochSeconds();
-
   await writeTeamConfig(env, {
-    vector_reindex_status: 'running',
-    vector_reindex_last_table: table,
+    vector_reindex_status: 'enqueueing',
     vector_reindex_last_run_at: String(startedAt),
     vector_reindex_last_error: '',
   });
 
+  const byTable: Record<string, number> = {};
+  let totalEnqueued = 0;
   try {
-    let reindexed = 0;
-    let deleted = 0;
-    for (const row of rows) {
-      if (table === 'spores' && row.data.status !== 'active') {
-        await deleteVector(env, table, row.id, row.machine_id);
-        deleted += 1;
-        continue;
+    for (const table of tables) {
+      const records = await listReindexEnqueueRecords(env, table);
+      if (records.length > 0) {
+        await sendQueueRecords(env.SYNC_QUEUE, records);
       }
-      await embedAndUpsert(env, table, row.id, row.machine_id, row.text, buildVectorMetadata(table, row.data));
-      reindexed += 1;
+      byTable[table] = records.length;
+      totalEnqueued += records.length;
     }
-
-    const next = rows.length === limit
-      ? rows[rows.length - 1]
-      : null;
-
-    await writeTeamConfig(env, {
-      vector_reindex_status: next ? 'running' : 'ok',
-      vector_reindex_last_table: table,
-      vector_reindex_last_run_at: String(epochSeconds()),
-      vector_reindex_last_processed: String(rows.length),
-      vector_reindex_last_reindexed: String(reindexed),
-      vector_reindex_last_deleted: String(deleted),
-      vector_reindex_last_error: '',
-    });
-
-    return jsonResponse({
-      table,
-      processed: rows.length,
-      reindexed,
-      deleted,
-      next_cursor: next
-        ? encodeReindexCursor({
-            created_at: Number(next.data.created_at ?? 0),
-            id: next.id,
-            machine_id: next.machine_id,
-          })
-        : null,
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await writeTeamConfig(env, {
       vector_reindex_status: 'error',
-      vector_reindex_last_table: table,
       vector_reindex_last_run_at: String(epochSeconds()),
       vector_reindex_last_error: message,
     });
     throw error;
   }
+
+  await writeTeamConfig(env, {
+    vector_reindex_status: 'queued',
+    vector_reindex_last_run_at: String(epochSeconds()),
+    vector_reindex_last_processed: String(totalEnqueued),
+    vector_reindex_last_error: '',
+  });
+
+  // Response shape:
+  //   - New (v2) callers read `enqueued` and `by_table`.
+  //   - Pre-Grove (v1) callers expected
+  //     `{ table, processed, reindexed, deleted, next_cursor }` from
+  //     the inline-embedding implementation that this endpoint
+  //     replaced. Emit those fields *additively* so an upgraded
+  //     worker doesn't silently break a teammate whose daemon hasn't
+  //     shipped the bump yet — `processed` and `reindexed` map
+  //     1:1 to the enqueue count, `deleted` is always 0 (deletes are
+  //     handled by the queue consumer, not the producer), and
+  //     `next_cursor` is null because the queue-driven path does the
+  //     full table in a single enqueue. New code MUST NOT rely on
+  //     the legacy fields — they exist only for cross-version
+  //     compatibility during the v1 → v2 rollout.
+  const firstTable = tables[0] ?? null;
+  return jsonResponse({
+    enqueued: totalEnqueued,
+    by_table: byTable,
+    table: firstTable,
+    processed: totalEnqueued,
+    reindexed: totalEnqueued,
+    deleted: 0,
+    next_cursor: null,
+    sync_protocol_version: resolveProtocolBounds(env).serverVersion,
+  });
+}
+
+/**
+ * List minimal `embed` SyncRecords for a table — id/machine_id only,
+ * no row payload (consumer reads the row from D1 at consume time).
+ * Skips rows whose embeddable text is empty since `embedAndUpsert`
+ * has nothing to embed for them.
+ */
+async function listReindexEnqueueRecords(
+  env: Env,
+  table: keyof typeof EMBEDDABLE_TABLES,
+): Promise<SyncRecord[]> {
+  const textField = EMBEDDABLE_TABLES[table];
+  const sql = embeddableSelectSql(table, 'id, machine_id');
+  const { results } = await env.MYCO_TEAM_DB.prepare(sql).all<{ id: string; machine_id: string }>();
+  return (results ?? []).map((row) => ({
+    table: table as SyncedTable,
+    operation: 'embed' as const,
+    id: row.id,
+    machine_id: row.machine_id,
+    data: {},
+  }));
+}
+
+/**
+ * SQL fragment matching exactly the rows the consumer will actually
+ * embed: non-empty text, plus `status='active'` on spores (consumer
+ * routes non-active spores to deleteVector, not embed). Keeping the
+ * producer's filter aligned with the consumer's routing means
+ * `vector_enqueued` reports what'll actually become a vector — no
+ * more "1967 enqueued, 818 expected" confusion.
+ */
+function embeddableSelectSql(
+  table: keyof typeof EMBEDDABLE_TABLES,
+  columns: string,
+): string {
+  const textField = EMBEDDABLE_TABLES[table];
+  const statusFilter = table === 'spores' ? ` AND status = 'active'` : '';
+  return `SELECT ${columns} FROM ${table}
+          WHERE ${textField} IS NOT NULL
+            AND length(${textField}) > 0${statusFilter}`;
+}
+
+/** Count rows in remote D1 that the consumer would embed if reindexed. */
+async function countEmbeddableRows(env: Env): Promise<number> {
+  let total = 0;
+  for (const table of Object.keys(EMBEDDABLE_TABLES) as Array<keyof typeof EMBEDDABLE_TABLES>) {
+    const sql = embeddableSelectSql(table, 'COUNT(*) AS cnt');
+    const row = await env.MYCO_TEAM_DB.prepare(sql).first<{ cnt: number }>();
+    total += Number(row?.cnt ?? 0);
+  }
+  return total;
 }
 
 async function deleteVector(env: Env, table: string, id: string, machineId: string): Promise<void> {
@@ -1007,6 +1306,7 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     session_id: url.searchParams.get('session_id') ?? undefined,
     source_path: url.searchParams.get('source_path') ?? undefined,
     name: url.searchParams.get('name') ?? undefined,
+    project_id: url.searchParams.get('project_id') ?? undefined,
   });
 
   return jsonResponse({ results: results.map(toCloudSearchResult) });
@@ -1030,6 +1330,70 @@ async function handleGetConfig(env: Env): Promise<Response> {
   return jsonResponse({
     config,
     sync_protocol_version: parseInt(env.SYNC_PROTOCOL_VERSION, 10),
+  });
+}
+
+async function handleSyncSummary(env: Env): Promise<Response> {
+  const selectList = SYNCED_TABLES.map((table) => `(SELECT COUNT(*) FROM ${table}) AS ${table}`).join(', ');
+  const row = await env.MYCO_TEAM_DB.prepare(`SELECT ${selectList}`).first<Record<string, unknown>>() ?? {};
+  const tables: Record<string, number> = {};
+  let totalRecords = 0;
+
+  for (const table of SYNCED_TABLES) {
+    const value = Number(row[table] ?? 0);
+    const count = Number.isFinite(value) ? value : 0;
+    tables[table] = count;
+    totalRecords += count;
+  }
+
+  // Vectorize index probe — `describe()` JSON has the count field as
+  // `vectorCount` at runtime (matches `wrangler vectorize info`), but
+  // the @cloudflare/workers-types declaration calls it `vectorsCount`.
+  // Read both. Whichever the runtime actually populates wins; the
+  // other resolves to undefined and the `??` chain skips it.
+  let vectorCount: number | null = null;
+  let vectorIndexHealthy = false;
+  let vectorIndexError: string | null = null;
+  try {
+    const desc = (await env.MYCO_TEAM_VECTORS.describe()) as unknown as
+      { vectorsCount?: number; vectorCount?: number };
+    const raw = desc.vectorCount ?? desc.vectorsCount;
+    const c = Number(raw ?? 0);
+    vectorCount = Number.isFinite(c) ? c : null;
+    vectorIndexHealthy = true;
+  } catch (err) {
+    vectorIndexError = (err as Error).message ?? 'describe failed';
+  }
+
+  // Embeddable target: how many vectors the index *should* hold given
+  // current D1 contents (active-spore + non-empty text filter,
+  // matching the consumer's routing). Surfaced so the Vectors tile
+  // can render "X of Y indexed" instead of comparing to misleading
+  // counts like total enqueue-eligible (which double-counts retired
+  // spores routed to deleteVector).
+  let embeddableCount: number | null = null;
+  try {
+    embeddableCount = await countEmbeddableRows(env);
+  } catch (err) {
+    console.error('team-sync.embeddable-count-failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const schemaVersion = Number(env.MYCO_SCHEMA_VERSION ?? '');
+  const syncProtocolVersion = Number(env.SYNC_PROTOCOL_VERSION ?? '');
+
+  return jsonResponse({
+    generated_at: epochSeconds(),
+    total_records: totalRecords,
+    tables,
+    vector_count: vectorCount,
+    vector_index_healthy: vectorIndexHealthy,
+    vector_index_error: vectorIndexError,
+    embeddable_count: embeddableCount,
+    schema_version: Number.isFinite(schemaVersion) ? schemaVersion : null,
+    package_version: env.MYCO_TEAM_PACKAGE_VERSION ?? DEFAULT_TEAM_PACKAGE_VERSION,
+    sync_protocol_version: Number.isFinite(syncProtocolVersion) ? syncProtocolVersion : 0,
   });
 }
 
@@ -1114,8 +1478,8 @@ async function handleCollectiveStatus(env: Env): Promise<Response> {
 /**
  * Operator surface for queue diagnostics + DLQ management. All endpoints
  * require the project's CF API token (queues:read,write) stashed in KV.
- * Daemon flows the token through `POST /tokens/cf-api`; the UI prompts
- * for it when missing.
+ * Daemon flows the token through `POST /tokens/cf-api`; the UI surfaces
+ * the queue/DLQ state as unavailable when missing.
  */
 async function handleQueueStats(env: Env): Promise<Response> {
   const creds = await readCfApiCredentials(env.MYCO_SECRETS);
@@ -1239,7 +1603,7 @@ export default {
     if (method === 'GET' && path === '/health') {
       try {
         if (!schemaInitialized) {
-          await initD1Schema(env.MYCO_TEAM_DB);
+          await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
           schemaInitialized = true;
         }
         return await handleHealth(env);
@@ -1252,13 +1616,13 @@ export default {
     // MCP routes — separate auth from sync routes
     if (path.startsWith('/mcp')) {
       if (!schemaInitialized) {
-        await initD1Schema(env.MYCO_TEAM_DB);
+        await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
         schemaInitialized = true;
       }
 
       // Token rotation — authenticated with team API key
       if (path === '/mcp/rotate' && method === 'POST') {
-        const rotateAuthError = validateAuth(request, env);
+        const rotateAuthError = await validateAuth(request, env);
         if (rotateAuthError) return rotateAuthError;
         const newToken = await rotateMcpToken(env.MYCO_SECRETS);
         return jsonResponse({ token: newToken });
@@ -1274,11 +1638,11 @@ export default {
     }
 
     // All other routes require auth
-    const authError = validateAuth(request, env);
+    const authError = await validateAuth(request, env);
     if (authError) return authError;
 
     if (!schemaInitialized) {
-      await initD1Schema(env.MYCO_TEAM_DB);
+      await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
       schemaInitialized = true;
     }
 
@@ -1326,6 +1690,9 @@ export default {
       if (method === 'GET' && path === '/queue-stats') {
         return await handleQueueStats(env);
       }
+      if (method === 'GET' && path === '/sync-summary') {
+        return await handleSyncSummary(env);
+      }
       if (method === 'GET' && path === '/dlq') {
         return await handleDlqList(request, env);
       }
@@ -1350,7 +1717,7 @@ export default {
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     if (!schemaInitialized) {
-      await initD1Schema(env.MYCO_TEAM_DB);
+      await initD1Schema(env.MYCO_TEAM_DB, { minClientVersion: resolveProtocolBounds(env).minClientVersion });
       schemaInitialized = true;
     }
     await syncCollectiveSettings(env);

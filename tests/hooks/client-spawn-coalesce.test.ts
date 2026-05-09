@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
+import * as childProcessActual__ns from 'node:child_process';
 
 // Mock child_process.spawn at module-boundary so the `spawn` import inside
 // hooks/client.ts resolves to our spy. vi.spyOn doesn't work here — the
 // named import captures the real function at parse time.
 const spawnMock = vi.fn(() => ({ unref: () => {} }));
-mock.module('node:child_process', () => ({ spawn: spawnMock }));
+const childProcessActual = { ...childProcessActual__ns };
+mock.module('node:child_process', () => ({ ...childProcessActual, spawn: spawnMock }));
 
 // Late import so the mock is in place before client.ts evaluates.
 const { DaemonClient } = await import('@myco/hooks/client');

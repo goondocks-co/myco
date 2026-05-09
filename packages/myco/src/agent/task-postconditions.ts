@@ -1,5 +1,6 @@
 import { listReports } from '@myco/db/queries/reports.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 interface PostconditionInput {
   runId: string;
@@ -9,7 +10,7 @@ interface PostconditionInput {
 type PostconditionValidator = (input: PostconditionInput) => string | null;
 
 function validateTitleSummaryRun({ runId }: PostconditionInput): string | null {
-  const reports = listReports(runId);
+  const reports = listReports(runId, { scope: ALL_PROJECTS_SCOPE });
   if (reports.length === 0) {
     return 'title-summary completed without calling vault_report';
   }

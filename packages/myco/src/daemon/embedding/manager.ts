@@ -359,10 +359,13 @@ export class EmbeddingManager {
   }
 
   /**
-   * Get details for the operations UI: vector stats, pending counts, provider info.
+   * Get details for the operations UI: vector stats, pending counts,
+   * provider info. Pass `projectId` to narrow counts to a single
+   * project's namespace; omit (or pass `null`) for Grove-wide totals
+   * (no project filter — every project in the Grove DB).
    */
-  getDetails(): EmbeddingDetails {
-    const stats = this.vectorStore.stats();
+  getDetails(options: { projectId?: string | null } = {}): EmbeddingDetails {
+    const stats = this.vectorStore.stats({ projectId: options.projectId });
 
     const pending: Record<string, number> = {};
     for (const namespace of EMBEDDABLE_NAMESPACES) {

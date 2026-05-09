@@ -13,6 +13,7 @@ interface SearchArgs {
   session_id?: string;
   source_path?: string;
   name?: string;
+  project_id?: string;
 }
 
 export async function handleSearch(args: SearchArgs, env: Pick<Env, 'MYCO_TEAM_DB' | 'MYCO_TEAM_VECTORS' | 'AI'>) {

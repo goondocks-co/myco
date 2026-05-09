@@ -9,6 +9,7 @@ import { initDatabase, closeDatabase, getDatabase, SQLITE_DB_FILE } from '@myco/
 import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
+import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -39,6 +40,7 @@ function seedEntry(projectId: string, p: string, sizeBytes: number): void {
 }
 
 let tmpVault: string;
+let tmpProjectId: string;
 let server: http.Server | null = null;
 let port = 0;
 
@@ -47,6 +49,7 @@ beforeEach(async () => {
   _resetPendingInjections();
   tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-e2e-'));
   fs.mkdirSync(path.join(tmpVault, '.myco'), { recursive: true });
+  tmpProjectId = ensureProjectManifest(path.join(tmpVault, '.myco'), { projectName: 'canopy-e2e' }).project.id;
   initDatabase(path.join(tmpVault, '.myco', SQLITE_DB_FILE));
   createSchema(getDatabase(), 'local');
 
@@ -91,7 +94,7 @@ afterEach(async () => {
 
 describe('end-to-end Canopy injection over HTTP', () => {
   it('returns the composed blob and records pending tokens for a Claude Code Read', async () => {
-    seedEntry(tmpVault, 'src/big.ts', 4096);
+    seedEntry(tmpProjectId, 'src/big.ts', 4096);
 
     const res = await fetch(`http://127.0.0.1:${port}/canopy/inject`, {
       method: 'POST',
@@ -123,7 +126,7 @@ describe('end-to-end Canopy injection over HTTP', () => {
   });
 
   it('returns inject:false (capability_off) for a non-injection-capable symbiont', async () => {
-    seedEntry(tmpVault, 'src/big.ts', 4096);
+    seedEntry(tmpProjectId, 'src/big.ts', 4096);
 
     const res = await fetch(`http://127.0.0.1:${port}/canopy/inject`, {
       method: 'POST',
@@ -142,7 +145,7 @@ describe('end-to-end Canopy injection over HTTP', () => {
   });
 
   it('returns inject:false (targeted) when offset is set', async () => {
-    seedEntry(tmpVault, 'src/big.ts', 4096);
+    seedEntry(tmpProjectId, 'src/big.ts', 4096);
 
     const res = await fetch(`http://127.0.0.1:${port}/canopy/inject`, {
       method: 'POST',

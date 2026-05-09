@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
 
@@ -119,17 +120,19 @@ export function useSpores(filters?: {
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
   const qs = params.toString();
   const path = qs ? `/spores?${qs}` : '/spores';
+  const queryKey = useProjectScopedQueryKey(['spores', filters]);
 
   return useQuery<SporesResponse>({
-    queryKey: ['spores', filters],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SporesResponse>(path, { signal }),
     staleTime: SPORES_STALE_TIME,
   });
 }
 
 export function useSpore(id: string | undefined) {
+  const queryKey = useProjectScopedQueryKey(['spore', id]);
   return useQuery<SporeDetail>({
-    queryKey: ['spore', id],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<SporeDetail>(`/spores/${id}`, { signal }),
     enabled: id !== undefined,
     staleTime: SPORE_DETAIL_STALE_TIME,
@@ -142,17 +145,19 @@ export function useEntities(options?: { mentioned_in?: string; note_type?: strin
   if (options?.note_type) params.set('note_type', options.note_type);
   const qs = params.toString();
   const path = qs ? `/entities?${qs}` : '/entities';
+  const queryKey = useProjectScopedQueryKey(['entities', options]);
 
   return useQuery<EntitiesResponse>({
-    queryKey: ['entities', options],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<EntitiesResponse>(path, { signal }),
     staleTime: ENTITIES_STALE_TIME,
   });
 }
 
 export function useGraph(entityId: string | undefined, depth: number = 1, enabled: boolean = true) {
+  const queryKey = useProjectScopedQueryKey(['graph', entityId, depth]);
   return useQuery<GraphResponse>({
-    queryKey: ['graph', entityId, depth],
+    queryKey,
     queryFn: ({ signal }) =>
       fetchJson<GraphResponse>(`/graph/${entityId}?depth=${depth}`, { signal }),
     enabled: enabled && entityId !== undefined,
@@ -166,8 +171,9 @@ export interface FullGraphResponse {
 }
 
 export function useFullGraph(enabled: boolean = true) {
+  const queryKey = useProjectScopedQueryKey(['full-graph']);
   return useQuery<FullGraphResponse>({
-    queryKey: ['full-graph'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<FullGraphResponse>('/graph', { signal }),
     enabled,
     staleTime: GRAPH_STALE_TIME,
@@ -175,8 +181,9 @@ export function useFullGraph(enabled: boolean = true) {
 }
 
 export function useGraphSeeds() {
+  const queryKey = useProjectScopedQueryKey(['graph-seeds']);
   return useQuery<GraphSeedResponse>({
-    queryKey: ['graph-seeds'],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<GraphSeedResponse>('/graph/seeds', { signal }),
     staleTime: GRAPH_STALE_TIME,
   });
@@ -186,9 +193,10 @@ export function useDigest(agentId?: string) {
   const path = agentId
     ? `/digest?agent_id=${encodeURIComponent(agentId)}`
     : '/digest';
+  const queryKey = useProjectScopedQueryKey(['digest', agentId]);
 
   return useQuery<DigestResponse>({
-    queryKey: ['digest', agentId],
+    queryKey,
     queryFn: ({ signal }) => fetchJson<DigestResponse>(path, { signal }),
     staleTime: DIGEST_STALE_TIME,
   });

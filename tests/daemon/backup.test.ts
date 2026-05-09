@@ -123,13 +123,13 @@ describe('backup engine', () => {
   });
 
   describe('createBackup()', () => {
-    it('creates a file named by machine_id', () => {
+    it('creates a timestamped file under the machine_id prefix', () => {
       seedAgent();
       seedSession('sess-001', LOCAL_MACHINE);
 
       const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
 
-      expect(filePath).toBe(path.join(tmpDir, `${LOCAL_MACHINE}.sql`));
+      expect(filePath).toMatch(new RegExp(`${LOCAL_MACHINE}__[0-9]+\\.sql$`));
       expect(fs.existsSync(filePath)).toBe(true);
     });
 
@@ -138,12 +138,8 @@ describe('backup engine', () => {
       seedSession('sess-002', LOCAL_MACHINE);
       seedSpore('spore-001', 'sess-002', LOCAL_MACHINE);
 
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-
-      const content = fs.readFileSync(
-        path.join(tmpDir, `${LOCAL_MACHINE}.sql`),
-        'utf-8',
-      );
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const content = fs.readFileSync(filePath, 'utf-8');
 
       expect(content).toContain('INSERT OR IGNORE INTO sessions');
       expect(content).toContain('INSERT OR IGNORE INTO spores');
@@ -155,26 +151,16 @@ describe('backup engine', () => {
       seedAgent();
       seedSession('sess-003', LOCAL_MACHINE);
 
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-
-      const content = fs.readFileSync(
-        path.join(tmpDir, `${LOCAL_MACHINE}.sql`),
-        'utf-8',
-      );
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const content = fs.readFileSync(filePath, 'utf-8');
 
       expect(content).toContain(`machine_id=${LOCAL_MACHINE}`);
       expect(content).toContain('Protocol version:');
     });
 
     it('excludes tables with no rows', () => {
-      // No data seeded — backup should have header only
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-
-      const content = fs.readFileSync(
-        path.join(tmpDir, `${LOCAL_MACHINE}.sql`),
-        'utf-8',
-      );
-
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const content = fs.readFileSync(filePath, 'utf-8');
       expect(content).not.toContain('INSERT OR IGNORE');
     });
 
@@ -193,31 +179,25 @@ describe('backup engine', () => {
         machine_id: LOCAL_MACHINE,
       });
 
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const content = fs.readFileSync(filePath, 'utf-8');
 
-      const content = fs.readFileSync(
-        path.join(tmpDir, `${LOCAL_MACHINE}.sql`),
-        'utf-8',
-      );
-
-      // Single quotes should be escaped as double single quotes
       expect(content).toContain("It''s a test with ''quotes''");
     });
 
-    it('is idempotent — second backup overwrites first', () => {
+    it('produces a new timestamped file on every call', () => {
       seedAgent();
       seedSession('sess-004', LOCAL_MACHINE);
 
       const path1 = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-      const content1 = fs.readFileSync(path1, 'utf-8');
-
+      // Ensure ts increments — wait one second since stamps are epoch-seconds.
+      const beforeSecond = Math.floor(Date.now() / 1000);
+      while (Math.floor(Date.now() / 1000) === beforeSecond) { /* spin */ }
       const path2 = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
-      const content2 = fs.readFileSync(path2, 'utf-8');
 
-      expect(path1).toBe(path2);
-      // Content may differ slightly in timestamp but both should contain the session
-      expect(content1).toContain('sess-004');
-      expect(content2).toContain('sess-004');
+      expect(path1).not.toBe(path2);
+      expect(fs.readFileSync(path1, 'utf-8')).toContain('sess-004');
+      expect(fs.readFileSync(path2, 'utf-8')).toContain('sess-004');
     });
   });
 
@@ -230,13 +210,14 @@ describe('backup engine', () => {
     it('returns metadata for backup files', () => {
       seedAgent();
       seedSession('sess-005', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const expectedName = path.basename(filePath);
 
       const backups = listBackups(tmpDir);
 
       expect(backups).toHaveLength(1);
       expect(backups[0].machine_id).toBe(LOCAL_MACHINE);
-      expect(backups[0].file_name).toBe(`${LOCAL_MACHINE}.sql`);
+      expect(backups[0].file_name).toBe(expectedName);
       expect(backups[0].size_bytes).toBeGreaterThan(0);
       expect(backups[0].modified_at).toBeTruthy();
     });
@@ -254,19 +235,17 @@ describe('backup engine', () => {
     it('ignores cloud-sync conflict files with special characters', () => {
       seedAgent();
       seedSession('sess-007', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const filePath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const expectedName = path.basename(filePath);
 
-      // Conflict marker with spaces, parens, and hash (e.g. Proton Drive)
       fs.writeFileSync(
         path.join(tmpDir, `${LOCAL_MACHINE} (# Edit conflict 2000-01-01 XXXXXXX #).sql`),
         'fake backup',
       );
-      // Conflict marker with spaces and parens (e.g. Dropbox)
       fs.writeFileSync(
         path.join(tmpDir, `${LOCAL_MACHINE} (conflicted copy 2000-01-01).sql`),
         'fake backup',
       );
-      // Conflict marker with extra dots (e.g. Syncthing)
       fs.writeFileSync(
         path.join(tmpDir, `${LOCAL_MACHINE}.sync-conflict-20000101-000000-ABCDEF0.sql`),
         'fake backup',
@@ -274,7 +253,7 @@ describe('backup engine', () => {
 
       const backups = listBackups(tmpDir);
       expect(backups).toHaveLength(1);
-      expect(backups[0].file_name).toBe(`${LOCAL_MACHINE}.sql`);
+      expect(backups[0].file_name).toBe(expectedName);
     });
   });
 
@@ -284,10 +263,9 @@ describe('backup engine', () => {
       seedAgent();
       seedSession('sess-010', LOCAL_MACHINE);
       seedSpore('spore-010', 'sess-010', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
       cleanTestDb();
 
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
       const tables = restorePreview(getDatabase(), backupPath);
 
       const sessionTable = tables.find((t) => t.table === 'sessions');
@@ -299,10 +277,9 @@ describe('backup engine', () => {
     it('shows records as existing when they already exist', () => {
       seedAgent();
       seedSession('sess-011', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
 
       // Data still in DB — preview should show existing
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
       const tables = restorePreview(getDatabase(), backupPath);
 
       const sessionTable = tables.find((t) => t.table === 'sessions');
@@ -314,11 +291,10 @@ describe('backup engine', () => {
     it('does not modify the database', () => {
       seedAgent();
       seedSession('sess-012', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
       cleanTestDb();
 
       const db = getDatabase();
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
 
       restorePreview(db, backupPath);
 
@@ -333,10 +309,9 @@ describe('backup engine', () => {
       seedAgent();
       seedSession('sess-020', LOCAL_MACHINE);
       seedSpore('spore-020', 'sess-020', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
       cleanTestDb();
 
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
       const result = restoreBackup(getDatabase(), backupPath);
 
       expect(result.total_restored).toBeGreaterThan(0);
@@ -353,10 +328,9 @@ describe('backup engine', () => {
     it('skips existing records without duplication', () => {
       seedAgent();
       seedSession('sess-021', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
 
       // Restore into DB that already has the data
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
       const result = restoreBackup(getDatabase(), backupPath);
 
       const sessionTable = result.tables.find((t) => t.table === 'sessions');
@@ -377,13 +351,12 @@ describe('backup engine', () => {
 
       // Create a backup from "remote" machine
       seedSession('remote-sess', REMOTE_MACHINE);
-      createBackup(getDatabase(), tmpDir, REMOTE_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, REMOTE_MACHINE);
 
       // Remove the remote session, keep local
       getDatabase().prepare("DELETE FROM sessions WHERE id = 'remote-sess'").run();
 
       // Restore — should add remote-sess without touching local-sess
-      const backupPath = path.join(tmpDir, `${REMOTE_MACHINE}.sql`);
       const result = restoreBackup(getDatabase(), backupPath);
 
       expect(result.total_restored).toBeGreaterThan(0);
@@ -398,10 +371,9 @@ describe('backup engine', () => {
       seedSession('sess-030', LOCAL_MACHINE);
       seedSpore('spore-030', 'sess-030', LOCAL_MACHINE);
       seedPlan('plan-030', LOCAL_MACHINE);
-      createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
+      const backupPath = createBackup(getDatabase(), tmpDir, LOCAL_MACHINE);
       cleanTestDb();
 
-      const backupPath = path.join(tmpDir, `${LOCAL_MACHINE}.sql`);
       const result = restoreBackup(getDatabase(), backupPath);
 
       expect(result.tables.length).toBeGreaterThan(0);

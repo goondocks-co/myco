@@ -11,6 +11,7 @@ import { insertRun, getRunningRunForTask, getLatestRunId, STATUS_RUNNING, STATUS
 import { insertCandidate, deleteCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { insertSkillRecord, deleteSkillRecordCascade, getSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage, listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { insertSkillUsage, countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { validateSkillContent } from '@myco/agent/tools.js';
 import {
@@ -53,7 +54,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    const result = getRunningRunForTask(AGENT_ID, 'vault-evolve');
+    const result = getRunningRunForTask(AGENT_ID, 'vault-evolve', ALL_PROJECTS_SCOPE);
     expect(result).toBe('run-1');
   });
 
@@ -63,7 +64,7 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    expect(getRunningRunForTask(AGENT_ID, 'skill-generate')).toBeNull();
+    expect(getRunningRunForTask(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('getLatestRunId returns most recent run', () => {
@@ -76,8 +77,8 @@ describe('P1 #2: Concurrency guard query helpers', () => {
       status: STATUS_RUNNING, started_at: now, created_at: now,
     });
 
-    expect(getLatestRunId(AGENT_ID, 'skill-generate')).toBe('run-new');
-    expect(getLatestRunId(AGENT_ID)).toBe('run-new');
+    expect(getLatestRunId(AGENT_ID, 'skill-generate', ALL_PROJECTS_SCOPE)).toBe('run-new');
+    expect(getLatestRunId(AGENT_ID, undefined, ALL_PROJECTS_SCOPE)).toBe('run-new');
   });
 });
 
@@ -102,65 +103,107 @@ describe('P1 #3: v7 migration entity_mentions exclusion', () => {
 // P1 #4: Scheduler lastRun in finally + per-task tracking
 // ---------------------------------------------------------------------------
 describe('P1 #4: Scheduler retry behavior', () => {
+  // The scheduler is now project-scoped (Phase 3 Grove rearchitecture).
+  // These regression tests run against a single project to mirror the
+  // pre-Grove "one project per daemon" assumption they originally
+  // captured.
   function makeTask(name: string, schedule: AgentTask['schedule']): AgentTask {
     return { name, displayName: name, description: 'test', agent: 'a', prompt: 'p', isDefault: false, schedule };
+  }
+
+  const { assertGroveProjectId } = require('@myco/grove/ids.js') as typeof import('@myco/grove/ids.js');
+  const PROJECT_ID = assertGroveProjectId('proj_' + 'a'.repeat(32));
+  const GROVE_ID = 'grv_' + 'b'.repeat(32);
+
+  function singleProjectScope(): Parameters<ScheduledJobContext['runTask']>[0] {
+    // Tests only read grove.id and projectId off the scope; everything
+    // else is shape-only for type compatibility.
+    return {
+      grove: { id: GROVE_ID } as never,
+      groveHome: '',
+      databasePath: '',
+      db: {} as never,
+      project: {} as never,
+      projectId: PROJECT_ID,
+      projectRoot: '',
+      projectVaultDir: '',
+      requestContext: {} as never,
+    };
   }
 
   it('respects interval even after task failure', async () => {
     const tasks = [makeTask('t', { enabled: true, intervalSeconds: 3600, runIn: ['active'] })];
     const runTask = vi.fn().mockRejectedValue(new Error('fail'));
     const ctx: ScheduledJobContext = {
+      forEachProject: async (visit) => { await visit(singleProjectScope()); },
       isTaskRunning: () => false,
       setTaskRunning: vi.fn(),
       runTask,
       preConditions: {},
+      getProjectPowerState: () => 'active',
+      onTaskError: () => {},
     };
 
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
-    // First run — should attempt and fail (error propagates to PowerManager)
-    await jobs[0].fn().catch(() => {});
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
     expect(runTask).toHaveBeenCalledTimes(1);
 
-    // Second run immediately — should be throttled (lastRun was updated in finally)
+    // Second tick immediately — interval gate blocks even though the
+    // first run rejected. lastRun is stamped before dispatch so a
+    // failing run can't induce a tight retry loop.
     runTask.mockClear();
-    await jobs[0].fn().catch(() => {});
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
     expect(runTask).not.toHaveBeenCalled();
   });
 
-  it('allows different tasks to run concurrently', async () => {
+  it('allows different tasks to run concurrently for the same project', async () => {
     const tasks = [
       makeTask('a', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
       makeTask('b', { enabled: true, intervalSeconds: 1, runIn: ['active'] }),
     ];
     const runningTasks = new Set<string>();
+    const taskKey = (groveId: string, projectId: string, name: string) =>
+      `${groveId}:${projectId}:${name}`;
     const ctx: ScheduledJobContext = {
-      isTaskRunning: (name) => runningTasks.has(name),
-      setTaskRunning: (name, v) => { if (v) runningTasks.add(name); else runningTasks.delete(name); },
+      forEachProject: async (visit) => { await visit(singleProjectScope()); },
+      isTaskRunning: (groveId, projectId, name) => runningTasks.has(taskKey(groveId, projectId, name)),
+      setTaskRunning: (groveId, projectId, name, v) => {
+        const k = taskKey(groveId, projectId, name);
+        if (v) runningTasks.add(k);
+        else runningTasks.delete(k);
+      },
       runTask: vi.fn().mockResolvedValue(undefined),
       preConditions: {},
+      getProjectPowerState: () => 'active',
     };
 
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
 
-    // Simulate task 'a' running
-    runningTasks.add('a');
-    // Task 'b' should still be able to run
-    await jobs[1].fn();
-    expect(ctx.runTask).toHaveBeenCalledWith('b');
+    // Simulate task 'a' running for the (grove, project); task 'b' must still dispatch.
+    runningTasks.add(taskKey(GROVE_ID, PROJECT_ID, 'a'));
+    await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
+    expect(ctx.runTask).toHaveBeenCalledTimes(1);
+    expect(((ctx.runTask as ReturnType<typeof vi.fn>).mock.calls[0][1])).toBe('b');
   });
 
-  it('blocks same task from running concurrently', async () => {
+  it('blocks same task from running concurrently for the same project', async () => {
     const tasks = [makeTask('a', { enabled: true, intervalSeconds: 1, runIn: ['active'] })];
     const ctx: ScheduledJobContext = {
-      isTaskRunning: (name) => name === 'a',
+      forEachProject: async (visit) => { await visit(singleProjectScope()); },
+      isTaskRunning: (_groveId, _projectId, name) => name === 'a',
       setTaskRunning: vi.fn(),
       runTask: vi.fn().mockResolvedValue(undefined),
       preConditions: {},
+      getProjectPowerState: () => 'active',
     };
 
     const { jobs } = buildScheduledJobs(tasks, {}, ctx);
     await jobs[0].fn();
+    await new Promise((r) => setImmediate(r));
     expect(ctx.runTask).not.toHaveBeenCalled();
   });
 });
@@ -226,12 +269,12 @@ describe('Delete operations', () => {
       topic: 't', rationale: 'r', created_at: now, updated_at: now,
     });
 
-    expect(deleteCandidate('cand-del')).toBe(true);
-    expect(getCandidate('cand-del')).toBeNull();
+    expect(deleteCandidate('cand-del', ALL_PROJECTS_SCOPE)).toBe(true);
+    expect(getCandidate('cand-del', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 
   it('deleteCandidate returns false for non-existent', () => {
-    expect(deleteCandidate('nonexistent')).toBe(false);
+    expect(deleteCandidate('nonexistent', ALL_PROJECTS_SCOPE)).toBe(false);
   });
 
   it('deleteSkillRecordCascade removes record, lineage, and usage', async () => {
@@ -250,11 +293,11 @@ describe('Delete operations', () => {
       id: 'usage-1', skill_id: 'skill-del', session_id: 'sess-1', detected_at: now,
     });
 
-    const result = deleteSkillRecordCascade('skill-del');
-    expect(result).toEqual({ id: 'skill-del', name: 'test-skill' });
+    const result = deleteSkillRecordCascade('skill-del', ALL_PROJECTS_SCOPE);
+    expect(result).toEqual({ id: 'skill-del', project_id: null, name: 'test-skill' });
 
-    expect(getSkillRecord('skill-del')).toBeNull();
-    expect(listLineageForSkill('skill-del')).toHaveLength(0);
+    expect(getSkillRecord('skill-del', ALL_PROJECTS_SCOPE)).toBeNull();
+    expect(listLineageForSkill('skill-del', ALL_PROJECTS_SCOPE)).toHaveLength(0);
     expect(countUsageForSkill('skill-del')).toBe(0);
   });
 
@@ -263,7 +306,7 @@ describe('Delete operations', () => {
       id: 'cand-linked', agent_id: AGENT_ID, machine_id: 'test',
       topic: 't', rationale: 'r', created_at: now, updated_at: now,
     });
-    updateCandidate('cand-linked', { status: 'generated', skill_id: 'skill-cascade', updated_at: now });
+    updateCandidate('cand-linked', { status: 'generated', skill_id: 'skill-cascade', updated_at: now }, ALL_PROJECTS_SCOPE);
 
     insertSkillRecord({
       id: 'skill-cascade', agent_id: AGENT_ID, machine_id: 'test', name: 'cascade-skill',
@@ -271,15 +314,15 @@ describe('Delete operations', () => {
       candidate_id: 'cand-linked', created_at: now, updated_at: now,
     });
 
-    deleteSkillRecordCascade('skill-cascade');
+    deleteSkillRecordCascade('skill-cascade', ALL_PROJECTS_SCOPE);
 
-    const candidate = getCandidate('cand-linked');
+    const candidate = getCandidate('cand-linked', ALL_PROJECTS_SCOPE);
     expect(candidate?.status).toBe('dismissed');
     expect(candidate?.skill_id).toBeNull();
   });
 
   it('deleteSkillRecordCascade returns null for non-existent', () => {
-    expect(deleteSkillRecordCascade('nonexistent')).toBeNull();
+    expect(deleteSkillRecordCascade('nonexistent', ALL_PROJECTS_SCOPE)).toBeNull();
   });
 });
 
@@ -303,8 +346,8 @@ describe('P2 #14: listLineageForSkill LIMIT', () => {
       });
     }
 
-    expect(listLineageForSkill('skill-lin', 3)).toHaveLength(3);
-    expect(listLineageForSkill('skill-lin')).toHaveLength(5);
+    expect(listLineageForSkill('skill-lin', ALL_PROJECTS_SCOPE, 3)).toHaveLength(3);
+    expect(listLineageForSkill('skill-lin', ALL_PROJECTS_SCOPE)).toHaveLength(5);
   });
 });
 

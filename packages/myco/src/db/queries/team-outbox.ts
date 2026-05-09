@@ -17,8 +17,8 @@ import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.j
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Max records returned per listPending call. */
-const BURST_BATCH_SIZE = 200;
+/** Max records returned per listPending call. Cloudflare Queues sendBatch caps at 100. */
+const BURST_BATCH_SIZE = 100;
 
 /** Age in seconds after which sent records are pruned (24 hours). */
 const SENT_PRUNE_AGE_SECONDS = 86_400;
@@ -299,7 +299,7 @@ export function countPending(): number {
 // ---------------------------------------------------------------------------
 
 /** Tables eligible for backfill/sync (must have id, machine_id, synced_at columns). */
-const BACKFILL_TABLES = [
+export const TEAM_SYNC_BACKFILL_TABLES = [
   'sessions',
   'prompt_batches',
   'spores',
@@ -315,7 +315,35 @@ const BACKFILL_TABLES = [
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
 
-const BACKFILL_TABLE_SET = new Set<string>(BACKFILL_TABLES);
+export const TEAM_SYNC_OBSERVED_TABLES = [
+  'sessions',
+  'prompt_batches',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'plans',
+  'artifacts',
+  'digest_extracts',
+  'skill_candidates',
+  'skill_records',
+  'skill_usage',
+] as const;
+
+export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];
+
+const BACKFILL_TABLE_SET = new Set<string>(TEAM_SYNC_BACKFILL_TABLES);
+
+export function countTeamSyncRows(): Record<TeamSyncObservedTable, number> {
+  const db = getDatabase();
+  const counts = {} as Record<TeamSyncObservedTable, number>;
+  for (const table of TEAM_SYNC_OBSERVED_TABLES) {
+    const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+    counts[table] = row.count;
+  }
+  return counts;
+}
 
 /**
  * Mark source rows as synced after successful outbox flush.
@@ -364,19 +392,36 @@ export function markSourceRowsSynced(records: OutboxRow[], syncedAt: number): vo
  * @returns the total number of records enqueued.
  */
 export function backfillUnsynced(machineId: string): number {
+  return backfillRows(machineId, 'unsynced');
+}
+
+/**
+ * Enqueue every sync-eligible Grove row into the outbox, even if the row was
+ * previously handed to the Worker. This is the operator reconciliation path:
+ * useful after provisioning a fresh team Worker, repairing remote state, or
+ * validating that the full Grove can be resent idempotently.
+ */
+export function backfillAll(machineId: string): number {
+  return backfillRows(machineId, 'all');
+}
+
+function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
   const db = getDatabase();
   let total = 0;
 
   const now = Math.floor(Date.now() / MS_PER_SECOND);
 
   // Process one table at a time in separate transactions to avoid long locks
-  for (const table of BACKFILL_TABLES) {
+  for (const table of TEAM_SYNC_BACKFILL_TABLES) {
+    const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
+    const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';
     const rows = db.prepare(
       `SELECT * FROM ${table}
-       WHERE synced_at IS NULL
+       WHERE ${sourcePredicate}
        AND NOT EXISTS (
          SELECT 1 FROM team_outbox
          WHERE team_outbox.table_name = ? AND team_outbox.row_id = CAST(${table}.id AS TEXT)
+         ${outboxPredicate}
        )`,
     ).all(table) as Record<string, unknown>[];
 
