@@ -31,10 +31,16 @@ function emptyRequest(body: unknown = undefined): RouteRequest {
   return { body, query: {}, params: {}, pathname: '/api/database/optimize' };
 }
 
+// G5: all-groves fan-out requires a confirmation_token matching
+// MYCO_DAEMON_AUTH. Tests stamp a deterministic token so the gate
+// passes on the success path; the negative path covers omission.
+const ALL_GROVES_TOKEN = 'a'.repeat(64);
+
 describe('database scope-aware actions', () => {
   let workDir: string;
   let mycoHome: string;
   let previousMycoHome: string | undefined;
+  let previousAuthToken: string | undefined;
   let logger: DaemonLogger;
 
   beforeEach(() => {
@@ -43,10 +49,14 @@ describe('database scope-aware actions', () => {
     fs.mkdirSync(mycoHome, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
+    previousAuthToken = process.env.MYCO_DAEMON_AUTH;
+    process.env.MYCO_DAEMON_AUTH = ALL_GROVES_TOKEN;
     logger = makeLogger(workDir);
   });
 
   afterEach(() => {
+    if (previousAuthToken === undefined) delete process.env.MYCO_DAEMON_AUTH;
+    else process.env.MYCO_DAEMON_AUTH = previousAuthToken;
     if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
     else process.env.MYCO_HOME = previousMycoHome;
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -128,7 +138,7 @@ describe('database scope-aware actions', () => {
     ensureGroveDatabase(b.id, mycoHome);
 
     const handlers = makeHandlers();
-    const res = await handlers.handleOptimize(emptyRequest({ scope: { kind: 'all-groves' } }));
+    const res = await handlers.handleOptimize(emptyRequest({ scope: { kind: 'all-groves' }, confirmation_token: ALL_GROVES_TOKEN }));
 
     const body = res.body as {
       scope: { kind: string };
@@ -143,12 +153,45 @@ describe('database scope-aware actions', () => {
     expect(body.summary.ok + body.summary.failed).toBe(2);
   });
 
+  it('rejects all-groves dispatch without a confirmation_token (G5)', async () => {
+    createGrove('alpha', mycoHome);
+
+    const handlers = makeHandlers();
+    const res = await handlers.handleOptimize(emptyRequest({ scope: { kind: 'all-groves' } }));
+
+    expect(res.status).toBe(403);
+    const body = res.body as { error: string };
+    expect(body.error).toBe('all_groves_confirmation_required');
+  });
+
+  it('rejects all-groves dispatch with a wrong confirmation_token (G5)', async () => {
+    createGrove('alpha', mycoHome);
+
+    const handlers = makeHandlers();
+    const res = await handlers.handleOptimize(emptyRequest({
+      scope: { kind: 'all-groves' },
+      confirmation_token: 'wrong-token',
+    }));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('does NOT require a confirmation_token for kind=grove (single-Grove ops are unrestricted)', async () => {
+    const grove = createGrove('alpha', mycoHome);
+    ensureGroveDatabase(grove.id, mycoHome);
+
+    const handlers = makeHandlers();
+    const res = await handlers.handleOptimize(emptyRequest({ scope: { kind: 'grove', grove_id: grove.id } }));
+    // Status undefined or 200 — either way, NOT 403.
+    expect(res.status === 403).toBe(false);
+  });
+
   it('coalesces concurrent identical all-groves dispatches', async () => {
     const a = createGrove('alpha', mycoHome);
     ensureGroveDatabase(a.id, mycoHome);
 
     const handlers = makeHandlers();
-    const req = emptyRequest({ scope: { kind: 'all-groves' } });
+    const req = emptyRequest({ scope: { kind: 'all-groves' }, confirmation_token: ALL_GROVES_TOKEN });
 
     const [r1, r2] = await Promise.all([
       handlers.handleOptimize(req),

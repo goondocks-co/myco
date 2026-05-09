@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
 import { getPluginVersion } from '../version.js';
 import {
+  REQUEST_CONTEXT_AUTH_ENV,
+  REQUEST_CONTEXT_AUTH_HEADER,
   REQUEST_CONTEXT_ENV,
   requestContextFromEnvironment,
   requestContextHeaders,
@@ -115,6 +117,7 @@ export class DaemonClient {
     });
     this.defaultHeaders = {
       ...(options.requestContext ? requestContextHeaders(options.requestContext) : {}),
+      ...resolveDaemonAuthHeader(this.daemonService.statePath),
       ...(options.headers ?? {}),
     };
   }
@@ -406,4 +409,19 @@ export function createHookDaemonClient(
   input: HookRequestContextInput = {},
 ): DaemonClient {
   return new DaemonClient(vaultDir, { requestContext: requestContextForHook(vaultDir, input) });
+}
+
+/**
+ * Resolve the daemon-issued bearer token (G4). Spawned children
+ * inherit it via env; out-of-band invocations recover it from
+ * `daemon.json`. Returns the headers ready to merge into a fetch
+ * request — empty when no token is available, so the gate stays a
+ * no-op for callers the daemon did not produce.
+ */
+function resolveDaemonAuthHeader(daemonStatePath: string): Record<string, string> {
+  const fromEnv = process.env[REQUEST_CONTEXT_AUTH_ENV];
+  if (fromEnv) return { [REQUEST_CONTEXT_AUTH_HEADER]: fromEnv };
+  const state = readDaemonState(daemonStatePath);
+  if (state?.auth_token) return { [REQUEST_CONTEXT_AUTH_HEADER]: state.auth_token };
+  return {};
 }

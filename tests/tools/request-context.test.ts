@@ -7,8 +7,10 @@ import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { assertGroveProjectId, createProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
+  REQUEST_CONTEXT_AUTH_HEADER,
   REQUEST_CONTEXT_ENV,
   REQUEST_CONTEXT_HEADERS,
+  UnauthorizedRequestContextError,
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
   requestContextHeaders,
@@ -274,11 +276,14 @@ describe('tool request context', () => {
   // queries actually consume. Three branches:
   //   - Grove-bound context  → { kind: 'project', id }
   //   - Legacy non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
-  //   - Missing context      → { kind: 'all' } (admin/aggregation default)
+  //   - Missing context      → throws (D5 strictness gate)
   describe('projectScopeFromRequestContext', () => {
-    it('returns { kind: "all" } when no context is supplied', () => {
-      expect(projectScopeFromRequestContext()).toEqual({ kind: 'all' });
-      expect(projectScopeFromRequestContext(undefined)).toEqual({ kind: 'all' });
+    it('throws when no context is supplied (D5 strictness gate)', () => {
+      // Post-D5: missing context is a programming error, not a silent
+      // widen to {kind:'all'}. Production middleware always supplies
+      // a request context; this assertion locks the new contract.
+      expect(() => projectScopeFromRequestContext()).toThrow();
+      expect(() => projectScopeFromRequestContext(undefined)).toThrow();
     });
 
     it('returns GLOBAL_SCOPE for legacy non-Grove contexts', () => {
@@ -300,6 +305,62 @@ describe('tool request context', () => {
       });
       const scope = projectScopeFromRequestContext(grove);
       expect(scope).toEqual({ kind: 'project', id: projectId });
+    });
+  });
+
+  describe('context-switch auth gate (G4)', () => {
+    const TOKEN = 'a'.repeat(64);
+
+    it('rejects context-switching headers without the auth bearer', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
+    it('rejects context-switching headers with the wrong auth bearer', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        expect(() => requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+          [REQUEST_CONTEXT_AUTH_HEADER]: 'wrong-token',
+        }, vaultDir, { expectedAuthToken: TOKEN })).toThrow(UnauthorizedRequestContextError);
+      });
+    });
+
+    it('accepts context-switching headers when the auth bearer matches', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+          [REQUEST_CONTEXT_AUTH_HEADER]: TOKEN,
+        }, vaultDir, { expectedAuthToken: TOKEN });
+        expect(resolved.projectId).toBe(projectId);
+        expect(resolved.groveId).toBe(groveId);
+      });
+    });
+
+    it('lets requests through without context-switching headers regardless of token', () => {
+      withRegisteredProject(({ vaultDir }) => {
+        // No project/grove headers → no auth gate. Legacy callers
+        // still work even when a token is configured.
+        const resolved = requestContextFromHttpHeaders({}, vaultDir, { expectedAuthToken: TOKEN });
+        expect(resolved.source).toBe('headers');
+      });
+    });
+
+    it('allows context-switching headers when no token is configured (legacy / unit tests)', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        // No expectedAuthToken → gate is a no-op (preserves
+        // backwards compatibility for tests / pre-G4 daemons).
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+        }, vaultDir);
+        expect(resolved.projectId).toBe(projectId);
+      });
     });
   });
 });
