@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco-worker",
-  "version": "0.1.7",
+  "version": "0.3.0",
   "private": true,
   "description": "Myco team sync Cloudflare Worker",
   "type": "module",

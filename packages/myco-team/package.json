@@ -1,6 +1,6 @@
 {
   "name": "@goondocks/myco-team",
-  "version": "0.1.7",
+  "version": "0.3.0",
   "description": "Myco team sync Cloudflare Worker and deployment CLI",
   "type": "module",
   "bin": {
