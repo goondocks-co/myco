@@ -19,8 +19,9 @@ import type { EmbeddingManager } from '@myco/daemon/embedding/manager';
 import type { DaemonLogger } from '@myco/daemon/logger';
 import { DEFAULT_AGENT_ID } from '@myco/constants';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeReq(body: unknown): RouteRequest {
-  return { params: {}, query: {}, body, pathname: '/context' };
+  return { params: {}, query: {}, body, pathname: '/context', requestContext: TEST_REQUEST_CONTEXT };
 }
 
 function mockLogger(): DaemonLogger {

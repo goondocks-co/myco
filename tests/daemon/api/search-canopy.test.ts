@@ -17,6 +17,7 @@ import { createSearchHandler } from '@myco/daemon/api/search.js';
 import type { EmbeddingManager } from '@myco/daemon/embedding/manager.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 function seedCanopyRow(opts: {
@@ -41,7 +42,7 @@ function seedCanopyRow(opts: {
 }
 
 function makeRequest(query: Record<string, string>): RouteRequest {
-  return { body: {}, query, params: {}, pathname: '/api/search' } as RouteRequest;
+  return { body: {}, query, params: {}, pathname: '/api/search', requestContext: TEST_REQUEST_CONTEXT } as RouteRequest;
 }
 
 function fakeEmbeddingManager(overrides: Partial<EmbeddingManager> = {}): EmbeddingManager {

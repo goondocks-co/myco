@@ -15,6 +15,7 @@ import { upsertSession } from '@myco/db/queries/sessions.js';
 import type { CandidateInsert } from '@myco/db/queries/skill-candidates.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
 import type { RouteRequest } from '@myco/daemon/router';
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 import {
   handleListCandidates,
   handleGetCandidate,
@@ -35,6 +36,7 @@ function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     pathname: '/api/skill-candidates',
     ...overrides,
   };

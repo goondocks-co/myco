@@ -13,6 +13,7 @@ import type { RouteRequest } from '@myco/daemon/router';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 /**
  * Handlers depend on an EmbeddingManager for the delete path; the complete
  * path doesn't touch it, so a stub with the interface shape is enough.
@@ -30,6 +31,7 @@ function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     ...overrides,
   } as RouteRequest;
 }

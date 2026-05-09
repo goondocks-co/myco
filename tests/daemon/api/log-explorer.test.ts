@@ -9,6 +9,7 @@ import { createLogIngestionHandler, handleLogSearch, handleLogStream, handleLogD
 import type { RouteRequest } from '@myco/daemon/router';
 import type { LogEntryInsert } from '@myco/db/queries/logs.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ function makeEntry(overrides: Partial<LogEntryInsert> = {}): LogEntryInsert {
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: {},
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '',

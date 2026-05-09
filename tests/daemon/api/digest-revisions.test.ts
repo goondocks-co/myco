@@ -15,12 +15,13 @@ import { createDigestRevisionHandlers } from '@myco/daemon/api/digest-revisions'
 import type { RouteRequest } from '@myco/daemon/router';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 const epochNow = () => Math.floor(Date.now() / 1000);
 const AGENT_ID = 'myco-agent';
 const TIER = 1500;
 
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
-  return { params: {}, query: {}, body: undefined, pathname: '/', ...overrides } as RouteRequest;
+  return { params: {}, query: {}, body: undefined, pathname: '/', requestContext: TEST_REQUEST_CONTEXT, ...overrides } as RouteRequest;
 }
 
 function makeHandlers() {

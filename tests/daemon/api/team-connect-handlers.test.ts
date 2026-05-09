@@ -10,6 +10,7 @@ import { readTeamConnectionSecrets } from '@myco/grove/team-connection.js';
 import type { RouteRequest, RouteResponse } from '@myco/daemon/router.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // Direct branch coverage for handlers in
 // `packages/myco/src/daemon/api/team-connect.ts` that the existing
 // tests/daemon/api/team-connect-status.test.ts left untested:
@@ -58,6 +59,7 @@ function makeStubClient(overrides: Record<string, unknown> = {}): unknown {
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '/api/team/test',

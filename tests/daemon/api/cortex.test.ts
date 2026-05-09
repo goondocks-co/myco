@@ -24,11 +24,13 @@ mock.module('@myco/daemon/cortex.js', () => ({
 
 import { createCortexHandlers } from '@myco/daemon/api/cortex';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     pathname: '/api/cortex',
     ...overrides,
   } as RouteRequest;

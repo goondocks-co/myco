@@ -38,6 +38,7 @@ import {
 import type { AgentTask } from '@myco/agent/types.js';
 import type { RouteRequest } from '@myco/daemon/router';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     pathname: '/api/agent/tasks',
     ...overrides,
   };

@@ -56,6 +56,7 @@ import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-insta
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -64,6 +65,7 @@ import type { RouteRequest } from '@myco/daemon/router.js';
 function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: {},
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '/api/update/status',

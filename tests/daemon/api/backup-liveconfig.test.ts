@@ -7,12 +7,13 @@ import { createBackupHandlers, resolveBackupDir } from '@myco/daemon/api/backup'
 import type { MycoConfig } from '@myco/config/schema';
 import type { RouteRequest } from '@myco/daemon/router';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeConfig(overrides: Partial<MycoConfig['backup']> = {}): MycoConfig {
   return { backup: { ...overrides } } as MycoConfig;
 }
 
 function makeRequest(body: unknown = {}): RouteRequest {
-  return { params: {}, query: {}, body } as RouteRequest;
+  return { params: {}, query: {}, body, requestContext: TEST_REQUEST_CONTEXT } as RouteRequest;
 }
 
 function makeBootDb(): never {

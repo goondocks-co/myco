@@ -14,6 +14,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import type { RouteRequest } from '@myco/daemon/router';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 // Capture runAgent invocation options so we can verify pass-through.
@@ -32,7 +33,7 @@ mock.module('@myco/agent/config-resolver.js', () => ({
 }));
 
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
-  return { params: {}, query: {}, body: undefined, pathname: '/', ...overrides } as RouteRequest;
+  return { params: {}, query: {}, body: undefined, pathname: '/', requestContext: TEST_REQUEST_CONTEXT, ...overrides } as RouteRequest;
 }
 
 function makeHandlers() {

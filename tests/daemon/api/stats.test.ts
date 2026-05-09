@@ -16,9 +16,11 @@ import { computeConfigHash, createLiveStatsHandler, resolveStatsContext } from '
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeReq(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     query: {},
     params: {},
     pathname: '/api/stats',

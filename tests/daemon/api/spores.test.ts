@@ -18,11 +18,13 @@ import { createGetSporeHandler, handleListSpores } from '@myco/daemon/api/myceli
 import type { RouteRequest } from '@myco/daemon/router';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeRequest(overrides: Partial<RouteRequest> = {}): RouteRequest {
   return {
     params: {},
     query: {},
     body: undefined,
+    requestContext: TEST_REQUEST_CONTEXT,
     ...overrides,
   } as RouteRequest;
 }
