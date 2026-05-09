@@ -166,8 +166,16 @@ export function getDevBuildCliEntry(): string | null {
  * Uses `process.execPath` (not `argv[1]`) for the same reason `main.ts`
  * does: under the bun-compiled binary, `argv[1]` is a virtual `/$bunfs/`
  * path that `realpath` rejects.
+ *
+ * Fast-paths: a dev myco install always has `process.execPath` ending in
+ * the bun-compiled binary name (`myco` on linux/darwin, `myco.exe` on
+ * Windows). Anything else — `node` running a `.ts` test, the `bun`
+ * runtime running tests directly, an external tool — cannot be a dev
+ * build, so skip the (relatively expensive) `npm prefix -g` subprocess.
  */
 export function activateDevBuildModeIfDetected(): void {
+  if (!looksLikeMycoBinary(process.execPath)) return;
+
   let globalPrefix: string | null = null;
   try {
     globalPrefix = resolveGlobalPrefix();
@@ -180,6 +188,11 @@ export function activateDevBuildModeIfDetected(): void {
     setDevBuildCliEntry(devEntry);
     setDevServiceMode(true);
   }
+}
+
+function looksLikeMycoBinary(execPath: string): boolean {
+  const base = path.basename(execPath).toLowerCase();
+  return base === 'myco' || base === 'myco.exe';
 }
 
 /**
