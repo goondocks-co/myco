@@ -228,6 +228,35 @@ describe('scope-iteration', () => {
       cache.closeAll();
     });
 
+    it('is a no-op summary when no Groves are registered', async () => {
+      // Mirrors the forEachGrove zero-Grove test but for the
+      // project-iteration variant, which has its own short-circuit
+      // path (it has to enumerate Groves first, then their
+      // registered projects). Without this, a regression that broke
+      // the "no Groves at all" branch would slip past every other
+      // test in this file because they all create ≥1 Grove.
+      const cache = new GroveRuntimeCache();
+      const summary = await forEachRegisteredProject(cache, logger, () => {
+        throw new Error('body should not run');
+      }, { mycoHome, machineId: MACHINE_ID });
+      expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0 });
+      cache.closeAll();
+    });
+
+    it('is a no-op summary when Groves exist but none have registered projects', async () => {
+      // Distinct from the no-Groves case: the Grove enumeration step
+      // succeeds, but the per-Grove project list is empty. The body
+      // must not run; the summary must reflect zero attempts.
+      createGroveWithDb('Alpha');
+      createGroveWithDb('Bravo');
+      const cache = new GroveRuntimeCache();
+      const summary = await forEachRegisteredProject(cache, logger, () => {
+        throw new Error('body should not run');
+      }, { mycoHome, machineId: MACHINE_ID });
+      expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0 });
+      cache.closeAll();
+    });
+
     it('honors shouldVisit predicate to gate the body', async () => {
       const a = createGroveWithDb('Alpha');
       registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');

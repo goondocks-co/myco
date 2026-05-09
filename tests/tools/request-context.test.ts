@@ -13,8 +13,10 @@ import {
   requestContextFromHttpHeaders,
   requestContextHeaders,
   rowProjectIdFromRequestContext,
+  projectScopeFromRequestContext,
   resolveLegacyRequestContext,
 } from '@myco/tools/request-context.js';
+import { GLOBAL_SCOPE } from '@myco/grove/ids.js';
 
 function withRegisteredProject<T>(fn: (args: {
   home: string;
@@ -264,5 +266,40 @@ describe('tool request context', () => {
       // @ts-expect-error — exercising the runtime brand check on bad input
       projectId: '/tmp/p',
     })).toThrow(/Grove project id/);
+  });
+
+  // Direct branch coverage for projectScopeFromRequestContext. The
+  // wider request-context tests focus on rowProjectIdFromRequestContext
+  // (the ID extractor) but the SCOPE shape is what the read-side
+  // queries actually consume. Three branches:
+  //   - Grove-bound context  → { kind: 'project', id }
+  //   - Legacy non-Grove ctx → GLOBAL_SCOPE (kind: 'global')
+  //   - Missing context      → { kind: 'all' } (admin/aggregation default)
+  describe('projectScopeFromRequestContext', () => {
+    it('returns { kind: "all" } when no context is supplied', () => {
+      expect(projectScopeFromRequestContext()).toEqual({ kind: 'all' });
+      expect(projectScopeFromRequestContext(undefined)).toEqual({ kind: 'all' });
+    });
+
+    it('returns GLOBAL_SCOPE for legacy non-Grove contexts', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const legacy = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: null,
+      });
+      const scope = projectScopeFromRequestContext(legacy);
+      expect(scope).toBe(GLOBAL_SCOPE);
+      expect(scope.kind).toBe('global');
+    });
+
+    it('scopes Grove-bound contexts to their project id', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const grove = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+        projectId,
+        groveId: 'grove-a',
+      });
+      const scope = projectScopeFromRequestContext(grove);
+      expect(scope).toEqual({ kind: 'project', id: projectId });
+    });
   });
 });

@@ -507,6 +507,37 @@ describe('auto-backup power job', () => {
     const files = fs.readdirSync(dir).filter((f) => /^test-machine__[0-9]+\.sql$/.test(f));
     expect(files.length).toBe(1);
   });
+
+  // Locks in the bug fix at db89073d: the auto-backup job must check the
+  // age of the most recent <machineId>__<ts>.sql for this machine and skip
+  // when it is younger than `backup.auto_interval_hours`. Without the
+  // gate, every idle/sleep tick burns a retention slot. Mirrors the
+  // `database-optimize` "skips when interval has not elapsed" pattern.
+  it('skips backup when interval has not elapsed since last run', async () => {
+    const deps = buildDeps(fx);
+    deps.liveConfig.current = {
+      ...deps.liveConfig.current,
+      backup: {
+        retention: { keep_daily: 14, keep_weekly: 8 },
+        auto_interval_hours: 24,
+      },
+    };
+    registerPowerJobs(pm as never, deps);
+
+    // First invocation creates a fresh backup file.
+    await pm.find('auto-backup').fn();
+    const dir = path.join(fx.mycoHome, 'groves', fx.grove.id, 'backups');
+    const matcher = /^test-machine__[0-9]+\.sql$/;
+    const firstFiles = fs.readdirSync(dir).filter((f) => matcher.test(f));
+    expect(firstFiles.length).toBe(1);
+
+    // Second invocation within auto_interval_hours must be a no-op:
+    // no new backup file should appear.
+    await pm.find('auto-backup').fn();
+    const secondFiles = fs.readdirSync(dir).filter((f) => matcher.test(f));
+    expect(secondFiles.length).toBe(1);
+    expect(secondFiles[0]).toBe(firstFiles[0]);
+  });
 });
 
 // ---------------------------------------------------------------------------
