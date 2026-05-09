@@ -13,6 +13,7 @@ import { DaemonClient } from '@myco/hooks/client.js';
 import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function mockClient(getData: unknown = null, ok = true): DaemonClient {
   return {
     get: vi.fn().mockResolvedValue({ ok, data: getData }),
@@ -63,7 +64,7 @@ describe('myco_sessions op:list (in-process)', () => {
     seedSession({ id: 'sess-1', title: 'Auth Refactor', status: 'completed' });
     seedSession({ id: 'sess-2', title: 'Current Work', status: 'active' });
 
-    const results = await handleMycoSessions({}, mockClient()) as Array<{ id: string }>;
+    const results = await handleMycoSessions({}, mockClient(), TEST_REQUEST_CONTEXT) as Array<{ id: string }>;
     expect(results).toHaveLength(2);
     expect(results.map((r) => r.id).sort()).toEqual(['sess-1', 'sess-2']);
   });
@@ -72,7 +73,7 @@ describe('myco_sessions op:list (in-process)', () => {
     seedSession({ id: 'sess-1', status: 'completed' });
     seedSession({ id: 'sess-2', status: 'active' });
 
-    const results = await handleMycoSessions({ status: 'active' }, mockClient()) as Array<{ id: string; status: string }>;
+    const results = await handleMycoSessions({ status: 'active' }, mockClient(), TEST_REQUEST_CONTEXT) as Array<{ id: string; status: string }>;
     expect(results).toHaveLength(1);
     expect(results[0].id).toBe('sess-2');
   });
@@ -82,12 +83,12 @@ describe('myco_sessions op:list (in-process)', () => {
     seedSession({ id: 'sess-2', started_at: 1700000100 });
     seedSession({ id: 'sess-3', started_at: 1700000200 });
 
-    const results = await handleMycoSessions({ limit: 1 }, mockClient()) as Array<{ id: string }>;
+    const results = await handleMycoSessions({ limit: 1 }, mockClient(), TEST_REQUEST_CONTEXT) as Array<{ id: string }>;
     expect(results).toHaveLength(1);
   });
 
   it('returns empty when DB has no sessions', async () => {
-    const results = await handleMycoSessions({}, mockClient()) as Array<unknown>;
+    const results = await handleMycoSessions({}, mockClient(), TEST_REQUEST_CONTEXT) as Array<unknown>;
     expect(results).toEqual([]);
   });
 
@@ -100,7 +101,7 @@ describe('myco_sessions op:list (in-process)', () => {
       started_at: 1700000000,
     });
 
-    const results = await handleMycoSessions({}, mockClient()) as Array<{
+    const results = await handleMycoSessions({}, mockClient(), TEST_REQUEST_CONTEXT) as Array<{
       agent: string | null;
       title: string | null;
       status: string;
@@ -117,20 +118,26 @@ describe('myco_sessions op:list (in-process)', () => {
 describe('myco_sessions op:get (HTTP, unchanged)', () => {
   it('fetches single session via /api/sessions/:id', async () => {
     const client = mockClient({ id: 'sess-1', title: 'Detail' });
-    const result = await handleMycoSessions({ op: 'get', id: 'sess-1' }, client);
+    const result = await handleMycoSessions({ op: 'get', id: 'sess-1' }, client, TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ id: 'sess-1', title: 'Detail' });
-    expect(client.get).toHaveBeenCalledWith('/api/sessions/sess-1');
+    // J3: scope-override tools forward requestContext as headers so the
+    // daemon resolves the right Grove for cross-project pivots.
+    expect(client.get).toHaveBeenCalledWith('/api/sessions/sess-1', expect.objectContaining({
+      headers: expect.objectContaining({
+        'x-myco-project-id': TEST_REQUEST_CONTEXT.projectId,
+      }),
+    }));
   });
 
   it('returns structured not-found on missing session', async () => {
     const client = mockClient(null, false);
-    const result = await handleMycoSessions({ op: 'get', id: 'missing' }, client);
+    const result = await handleMycoSessions({ op: 'get', id: 'missing' }, client, TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'Session not found' });
   });
 
   it('rejects op:get without id', async () => {
     const client = mockClient({});
-    const result = await handleMycoSessions({ op: 'get' }, client);
+    const result = await handleMycoSessions({ op: 'get' }, client, TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'id is required for op: get' });
     expect(client.get).not.toHaveBeenCalled();
   });

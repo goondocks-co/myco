@@ -558,7 +558,7 @@ describe('buildSkillSurveyInstruction', () => {
       created_at: now - 70,
     });
 
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
@@ -578,7 +578,7 @@ describe('buildSkillSurveyInstruction', () => {
       created_at: now - 90,
     });
 
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
@@ -600,7 +600,7 @@ describe('buildSkillSurveyInstruction', () => {
     createSettledSurveyCorpus();
 
     expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeDefined();
-    expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'no-new-settled-knowledge',
     });
@@ -679,22 +679,22 @@ describe('buildTaskInstruction', () => {
   });
 
   it('returns undefined for tasks that do not use pre-assembled instructions', async () => {
-    await expect(buildTaskInstruction('vault-evolve')).resolves.toBeUndefined();
-    await expect(buildTaskInstruction('skill-survey')).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('vault-evolve', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-generate when no approved candidates exist', async () => {
-    await expect(buildTaskInstruction(SKILL_GENERATE_TASK)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns undefined for skill-survey when no settled survey corpus exists', async () => {
-    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID)).resolves.toBeUndefined();
+    await expect(buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
   });
 
   it('returns bundle for skill-survey when settled survey corpus exists', async () => {
     createSettledSurveyCorpus();
 
-    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID);
+    const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('project-specific procedural domains');
   });
@@ -711,7 +711,7 @@ describe('buildTaskInstruction', () => {
     });
     updateCandidate('ready-to-generate', { status: CANDIDATE_STATUS.APPROVED, updated_at: now }, ALL_PROJECTS_SCOPE);
 
-    const result = await buildTaskInstruction(SKILL_GENERATE_TASK);
+    const result = await buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Ready topic');
     expect(result!.context?.candidate_id).toBe('ready-to-generate');

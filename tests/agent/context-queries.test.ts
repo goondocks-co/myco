@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import type { ContextQuery } from '@myco/agent/types.js';
-import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { GLOBAL_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Mocks: DB query functions
@@ -151,7 +151,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
       ], TEST_REQUEST_CONTEXT);
 
-      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false, scope: ALL_PROJECTS_SCOPE });
+      expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false, scope: GLOBAL_SCOPE });
     });
 
     it('passes request-context project scope to getUnprocessedBatches', async () => {
@@ -189,7 +189,7 @@ describe('executeContextQueries', () => {
         agent_id: TEST_AGENT_ID,
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
         includeActive: false,
-        scope: ALL_PROJECTS_SCOPE,
+        scope: GLOBAL_SCOPE,
       });
     });
 
@@ -204,7 +204,7 @@ describe('executeContextQueries', () => {
         agent_id: TEST_AGENT_ID,
         limit: 20,
         includeActive: false,
-        scope: ALL_PROJECTS_SCOPE,
+        scope: GLOBAL_SCOPE,
       });
     });
 
@@ -243,7 +243,7 @@ describe('executeContextQueries', () => {
         prompt_count: 3,
         started_at: 1000,
       }]);
-      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false, scope: ALL_PROJECTS_SCOPE });
+      expect(listSessions).toHaveBeenCalledWith({ limit: DEFAULT_CONTEXT_QUERY_LIMIT, includeActive: false, scope: GLOBAL_SCOPE });
     });
 
     it('passes request-context project scope to listSessions', async () => {
@@ -338,7 +338,7 @@ describe('executeContextQueries', () => {
       expect(getUnprocessedBatches).toHaveBeenCalledWith({
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
         includeActive: false,
-        scope: ALL_PROJECTS_SCOPE,
+        scope: GLOBAL_SCOPE,
       });
     });
 
@@ -349,7 +349,7 @@ describe('executeContextQueries', () => {
         makeQuery({ tool: 'vault_sessions', limit: 50 }),
       ], TEST_REQUEST_CONTEXT);
 
-      expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false, scope: ALL_PROJECTS_SCOPE });
+      expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false, scope: GLOBAL_SCOPE });
     });
   });
 

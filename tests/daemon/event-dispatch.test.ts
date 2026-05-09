@@ -13,6 +13,7 @@ import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 function makeHandler() {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-event-dispatch-'));
   const logger = new DaemonLogger(logDir, { level: 'debug' });
@@ -57,6 +58,7 @@ describe('createEventDispatcher', () => {
     const sessionId = 'codex-orphan-tool-001';
 
     const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
       body: {
         type: 'tool_use',
         session_id: sessionId,
@@ -92,6 +94,7 @@ describe('createEventDispatcher', () => {
     );
 
     const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
       body: {
         type: 'tool_use',
         session_id: sessionId,
@@ -133,6 +136,7 @@ describe('createEventDispatcher', () => {
     ].join('\n');
 
     const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
       body: {
         type: 'user_prompt',
         session_id: sessionId,
@@ -192,6 +196,7 @@ describe('createEventDispatcher', () => {
       // Opencode events never carry transcript_path. Before the fix this
       // would get dropped by codex's any_agent rule via the capture gate.
       const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
         body: {
           type: 'user_prompt',
           session_id: sessionId,
@@ -223,6 +228,7 @@ describe('createEventDispatcher', () => {
       // First-sight codex event with no transcript_path — the phantom case
       // the codex manifest rule was written for. Must still drop.
       const res = await handler({
+      requestContext: TEST_REQUEST_CONTEXT,
         body: {
           type: 'tool_use',
           session_id: sessionId,

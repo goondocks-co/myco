@@ -31,6 +31,7 @@ import {
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 const NOW = Math.floor(Date.now() / 1000);
 
 describe('cleanupOnTaskFailure', () => {
@@ -175,6 +176,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-finalize',
@@ -211,6 +213,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-fallback',
@@ -245,6 +248,7 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
       taskName: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       runId: 'run-cortex-dry',
@@ -258,6 +262,7 @@ describe('finalizeOnTaskSuccess', () => {
   it('is a no-op for unrelated tasks', async () => {
     await expect(
       finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
         taskName: 'vault-evolve',
         agentId: DEFAULT_AGENT_ID,
         runId: 'run-unrelated',

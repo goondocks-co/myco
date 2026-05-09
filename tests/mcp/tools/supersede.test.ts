@@ -14,6 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function mockClient(): DaemonClient {
   return {
     get: vi.fn(),
@@ -67,7 +68,7 @@ describe('myco_spores op: supersede (in-process)', () => {
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'Bug was fixed',
-    }, mockClient()) as SupersedeResult;
+    }, mockClient(), TEST_REQUEST_CONTEXT) as SupersedeResult;
 
     expect(result.status).toBe('superseded');
     expect(result.old_spore).toBe('old-spore');
@@ -84,7 +85,7 @@ describe('myco_spores op: supersede (in-process)', () => {
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'reason',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
 
     const db = getDatabase();
     const row = db.prepare('SELECT status FROM spores WHERE id = ?').get('old-spore') as { status: string };
@@ -101,7 +102,7 @@ describe('myco_spores op: supersede (in-process)', () => {
       old_spore_id: 'old-spore',
       new_spore_id: 'new-spore',
       reason: 'reason',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
 
     const db = getDatabase();
     const event = db.prepare(
@@ -156,12 +157,12 @@ describe('myco_spores op: supersede (in-process)', () => {
   });
 
   it('rejects op:supersede without old_spore_id', async () => {
-    const result = await handleMycoSpores({ op: 'supersede', new_spore_id: 'b' }, mockClient());
+    const result = await handleMycoSpores({ op: 'supersede', new_spore_id: 'b' }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'old_spore_id is required for op: supersede' });
   });
 
   it('rejects op:supersede without new_spore_id', async () => {
-    const result = await handleMycoSpores({ op: 'supersede', old_spore_id: 'a' }, mockClient());
+    const result = await handleMycoSpores({ op: 'supersede', old_spore_id: 'a' }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'new_spore_id is required for op: supersede' });
   });
 });

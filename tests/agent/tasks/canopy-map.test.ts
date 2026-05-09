@@ -44,6 +44,7 @@ import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import { BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { epochSeconds } from '@myco/constants.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function makeConfig(overrides: { canopyEnabled?: boolean } = {}): MycoConfig {
   const enabled = overrides.canopyEnabled ?? true;
   return MycoConfigSchema.parse({
@@ -399,6 +400,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,
           runId,
@@ -422,6 +424,7 @@ describe('canopy-map task', () => {
 
       await expect(
         finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
           taskName: CANOPY_MAP_TASK,
           agentId: TEST_AGENT_ID,
           runId,

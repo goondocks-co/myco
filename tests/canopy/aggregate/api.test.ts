@@ -16,6 +16,7 @@ import {
   handleGetCanopyRollup,
 } from '@myco/daemon/api/canopy-read.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 
 const PROJECT_ID = '/repo/myco';
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -30,6 +31,7 @@ function makeReq(opts: {
     query: opts.query ?? {},
     params: opts.params ?? {},
     pathname: '/test',
+    requestContext: TEST_REQUEST_CONTEXT,
   };
 }
 

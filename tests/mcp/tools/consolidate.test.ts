@@ -14,6 +14,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 
+import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 function mockClient(): DaemonClient {
   return {
     get: vi.fn(),
@@ -71,7 +72,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       observation_type: 'gotcha',
       tags: ['sqlite'],
       reason: 'Three SQLite gotchas',
-    }, mockClient()) as ConsolidateResult;
+    }, mockClient(), TEST_REQUEST_CONTEXT) as ConsolidateResult;
 
     expect(result.status).toBe('consolidated');
     expect(result.new_spore_id).toMatch(/^gotcha-[0-9a-f]+$/);
@@ -99,7 +100,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       source_spore_ids: ['d-1', 'd-2'],
       consolidated_content: 'merged',
       observation_type: 'decision',
-    }, mockClient()) as ConsolidateResult;
+    }, mockClient(), TEST_REQUEST_CONTEXT) as ConsolidateResult;
 
     const db = getDatabase();
     const events = db.prepare(`
@@ -141,7 +142,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       source_spore_ids: [],
       consolidated_content: 'x',
       observation_type: 'gotcha',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'source_spore_ids is required for op: consolidate' });
   });
 
@@ -150,7 +151,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       observation_type: 'gotcha',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'consolidated_content is required for op: consolidate' });
   });
 
@@ -159,7 +160,7 @@ describe('myco_spores op: consolidate (in-process)', () => {
       op: 'consolidate',
       source_spore_ids: ['a', 'b'],
       consolidated_content: 'x',
-    }, mockClient());
+    }, mockClient(), TEST_REQUEST_CONTEXT);
     expect(result).toEqual({ ok: false, error: 'observation_type is required for op: consolidate' });
   });
 });
