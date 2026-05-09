@@ -33,6 +33,10 @@ migration/
 # Per-user appearance and settings overrides
 local.yaml
 
+# Project-scope runtime pin written by `make dev-link`. Per-machine,
+# never committed.
+runtime.command
+
 # Grove migration archive — timestamped snapshot of pre-Grove vault data
 # moved aside post-activation. Never committed; recoverable on disk.
 .archive-*/

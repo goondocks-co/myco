@@ -258,18 +258,28 @@ export function resolveMycoBinary(): string {
 }
 
 /**
- * Read `~/.myco/runtime.command`. Returns the trimmed binary path/name
- * the launcher should exec, or null when the file is absent or empty
- * (the global PATH-resolved `myco` is the implicit default).
+ * Read the layered `runtime.command` pin and return the trimmed binary
+ * path the launcher should exec, or null when no pin applies (the global
+ * PATH-resolved `myco` is the implicit default).
  *
- * Machine-scoped: there's exactly one daemon per machine, and the
- * runtime that backs it is a machine-level choice. The launcher shims
- * (`bin/myco.cjs`, `myco-run.cjs`, `myco-cli.cjs`) read this same file
- * via their own filesystem code — they can't import this module.
+ * When `vaultDir` is supplied, `<vaultDir>/runtime.command` is checked
+ * first (project-scope pin written by `make dev-link`); the machine-scope
+ * `~/.myco/runtime.command` is the fallback (written by the beta-channel
+ * installer). The same layering is implemented in the CJS launcher shims
+ * (`bin/myco.cjs`, `bin/myco-run`, `.agents/myco-run.cjs`) — they can't
+ * import this module so the logic is mirrored.
  */
-export function resolveRuntimeCommand(): string | null {
+export function resolveRuntimeCommand(vaultDir?: string): string | null {
+  if (vaultDir) {
+    const projectPin = readPinFile(path.join(vaultDir, 'runtime.command'));
+    if (projectPin) return projectPin;
+  }
+  return readPinFile(resolveMachineRuntimeCommandPath());
+}
+
+function readPinFile(filePath: string): string | null {
   try {
-    const raw = fs.readFileSync(resolveMachineRuntimeCommandPath(), 'utf-8').trim();
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
   } catch {
     return null;
@@ -328,14 +338,16 @@ export function isUpdateExempt(): boolean {
 /**
  * Classify how the daemon was launched, for the sidebar runtime badge.
  *
- * - `'dev'`   — `detectDevBuild` flagged this binary as outside the npm
- *               global prefix (dogfood `make dev-link`, `npm link`, etc.).
- * - `'beta'`  — `~/.myco/runtime.command` points inside the managed
- *               runtime dir (`~/.myco/runtime/`).
- * - `'stable'` — neither: the global myco install on PATH answers.
+ * - `'dev'`    — `detectDevBuild` flagged this binary as outside the npm
+ *                global prefix (dogfood `make dev-link`, `npm link`, etc.),
+ *                or a project-scope pin at `<vaultDir>/runtime.command`
+ *                points the daemon at a hand-built dev binary.
+ * - `'beta'`   — the machine pin at `~/.myco/runtime.command` points
+ *                inside the managed runtime dir (`~/.myco/runtime/`).
+ * - `'stable'` — none of the above; the global myco install on PATH answers.
  *
- * Mutually exclusive in practice: a dev build always wins over a beta
- * runtime since the dev binary is actually executing the daemon.
+ * A dev build always wins over a beta runtime since the dev binary is
+ * actually executing the daemon.
  */
 export type RuntimeOrigin = 'stable' | 'dev' | 'beta';
 
@@ -345,11 +357,11 @@ export interface RuntimeOriginInfo {
   command: string | null;
 }
 
-export function getRuntimeOrigin(): RuntimeOriginInfo {
+export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
   if (devBuildCliEntry !== null) {
     return { source: 'dev', command: devBuildCliEntry };
   }
-  const runtimeCommand = resolveRuntimeCommand();
+  const runtimeCommand = resolveRuntimeCommand(vaultDir);
   if (runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)) {
     return { source: 'beta', command: runtimeCommand };
   }
