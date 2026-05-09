@@ -140,19 +140,29 @@ dev-link: dev-build
 	@chmod +x $(HOME)/.local/bin/myco-collective-dev
 	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
 	@chmod +x $(HOME)/.local/bin/myco-run
-	@# Write the absolute path of the dev binary to the machine-scope
+	@# Write the absolute path of the dev binary to the project-scope
 	@# runtime.command so every launcher (hook guard, MCP, CLI shim,
-	@# daemon respawn) dispatches to the same dev binary regardless of
-	@# which project it's invoked from. GUI-launched agents run under
-	@# launchd's minimal PATH which excludes ~/.local/bin; baking the
-	@# absolute path at link time makes hook capture robust under both
-	@# GUI and shell launches.
-	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(HOME)/.myco/runtime.command
+	@# daemon respawn) inside this repo dispatches to the same dev binary.
+	@# GUI-launched agents run under launchd's minimal PATH which excludes
+	@# ~/.local/bin; baking the absolute path at link time makes hook
+	@# capture robust under both GUI and shell launches.
+	@#
+	@# Project-scope (not machine-scope) so dev mode applies only when the
+	@# user is working inside this repo. Outside it, `myco` resolves to the
+	@# globally-installed binary as users expect.
+	@mkdir -p $(PWD)/.myco
+	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.command
+	@# Sweep any pre-0.25.2 machine-scope pin written by older `make dev-link`
+	@# runs — it would shadow the new project pin from outside the repo.
+	@if [ -f $(HOME)/.myco/runtime.command ]; then \
+		rm -f $(HOME)/.myco/runtime.command; \
+		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
+	fi
 	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
-	@echo "✓ ~/.myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
+	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
 	@# Regenerate symbiont configs across every registered project so any
 	@# that opt into `substituteRuntimeCommand` (opencode today) get the
 	@# runtime.command alias baked into their MCP command. Symbionts that
@@ -169,9 +179,12 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-team-dev
 	@rm -f $(HOME)/.local/bin/myco-collective-dev
 	@rm -f $(HOME)/.local/bin/myco-run
+	@rm -f $(PWD)/.myco/runtime.command
+	@# Also sweep the legacy machine-scope pin in case the user ran the
+	@# pre-0.25.2 `make dev-link` and never re-linked.
 	@rm -f $(HOME)/.myco/runtime.command
 	@echo "✓ myco-dev symlink removed"
 	@echo "✓ myco-team-dev symlink removed"
 	@echo "✓ myco-collective-dev symlink removed"
 	@echo "✓ myco-run symlink removed"
-	@echo "✓ ~/.myco/runtime.command removed — launchers fall back to default 'myco'"
+	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"

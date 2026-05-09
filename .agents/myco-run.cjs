@@ -5,7 +5,9 @@
 // Myco don't see hook errors in their agent sessions. It stays deliberately
 // thin: its only jobs are (1) provide a cross-platform entry point that
 // works under every shell our symbionts fire hooks from, and (2) resolve
-// which myco binary to exec via ~/.myco/runtime.command.
+// which myco binary to exec via the layered runtime.command pin
+// (project-scope `<project>/.myco/runtime.command` first, then machine-scope
+// `~/.myco/runtime.command`).
 //
 // Managed by: myco init / myco update
 // Safe to delete: myco remove
@@ -40,16 +42,33 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 // Machine-scoped: there's exactly one daemon per machine, and the runtime
 // that backs it is a machine-level choice, not per-project.
 const args = process.argv.slice(2);
-const bin = readMachineRuntimeCommand() ?? 'myco';
+const bin = readLayeredRuntimeCommand() ?? 'myco';
+
+function readPinFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    return raw || null;
+  } catch { return null; }
+}
+
+function readProjectRuntimeCommand(startDir) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    const pin = readPinFile(path.join(dir, '.myco', 'runtime.command'));
+    if (pin) return pin;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
 
 function readMachineRuntimeCommand() {
-  try {
-    const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
-    const raw = fs.readFileSync(path.join(home, 'runtime.command'), 'utf-8').trim();
-    return raw || null;
-  } catch {
-    return null;
-  }
+  const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  return readPinFile(path.join(home, 'runtime.command'));
+}
+
+function readLayeredRuntimeCommand() {
+  return readProjectRuntimeCommand(process.cwd()) ?? readMachineRuntimeCommand();
 }
 
 function expandHome(value) {
@@ -79,7 +98,7 @@ function writeToolRuntimeUnavailable(command, args) {
     ...(tool ? { tool } : {}),
     error: {
       code: 'runtime_unavailable',
-      message: `Myco runtime command '${command}' could not be found. Check ~/.myco/runtime.command or run Myco update from a shell where Myco is installed.`,
+      message: `Myco runtime command '${command}' could not be found. Check <project>/.myco/runtime.command and ~/.myco/runtime.command, or run Myco update from a shell where Myco is installed.`,
     },
   };
   process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);

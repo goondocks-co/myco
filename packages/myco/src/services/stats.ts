@@ -200,7 +200,7 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
         version: daemonVersion,
         uptime_seconds: daemonUptimeSeconds,
         active_sessions: active_session_ids,
-        runtime: getRuntimeOrigin(),
+        runtime: getRuntimeOrigin(vaultDir),
       },
       vault: {
         path: vaultDir,

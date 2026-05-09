@@ -1,31 +1,22 @@
 #!/usr/bin/env node
 
-// Self-locating MCP launcher with project-aware alias dispatch.
+// Self-locating MCP launcher with layered runtime-command dispatch.
 //
 // Two dispatch modes, checked in order:
 //
-//   1. Alias mode — if the project (found by walking up from cwd) has a
-//      `.myco/runtime.command` file with a non-empty value, re-exec that
-//      binary with the same argv. Mirrors `.agents/myco-run.cjs`: one
-//      source of truth for "which myco binary answers for this project,"
-//      whether invoked from a hook or from MCP.
-//
-//      A single env-var marker (MYCO_RUN_REDIRECTED=1) prevents infinite
-//      recursion if someone sets `runtime.command=myco-run` or creates
-//      any loop. It's a belt-and-suspenders cheaper than realpath
-//      comparisons and robust across symlink chains.
-//
-//      If the aliased binary isn't on PATH (ENOENT), fall through to
-//      self-locate — the production binary still works when a project
-//      references a dev binary the current process can't reach.
+//   1. Alias mode — consult the layered `runtime.command` pin (project
+//      pin via walk-up from cwd, then machine pin at `~/.myco/runtime.command`).
+//      If a pin is found, re-exec into that binary with the same argv.
+//      Single env-var marker (MYCO_RUN_REDIRECTED=1) prevents infinite
+//      recursion. If the aliased binary isn't on PATH (ENOENT), fall
+//      through to self-locate.
 //
 //   2. Self-locate — resolve this launcher's own install via
 //      realpathSync(argv[1]) and exec the sibling packaged launcher
-//      (`bin/myco.cjs`). This keeps `myco-run` aligned with the Bun
-//      package layout, where `myco` dispatches into the selected compiled
-//      binary under vendor/.
+//      (`bin/myco.cjs`).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -33,23 +24,43 @@ function isPackagedInstall(scriptPath) {
   return scriptPath.split(path.sep).includes('node_modules');
 }
 
-function resolveRuntimeCommand(startDir) {
+function readPinFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    return raw || null;
+  } catch { return null; }
+}
+
+function resolveProjectPin(startDir) {
   let dir = path.resolve(startDir);
   while (true) {
     const candidate = path.join(dir, '.myco', 'runtime.command');
-    try {
-      const alias = fs.readFileSync(candidate, 'utf-8').trim();
-      return alias || null;
-    } catch { /* not here, try parent */ }
+    const pin = readPinFile(candidate);
+    if (pin) return pin;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
 }
 
+function expandHome(value) {
+  if (value === '~') return os.homedir();
+  if (value.startsWith(`~${path.sep}`)) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+function resolveMachinePin() {
+  const home = process.env.MYCO_HOME ? expandHome(process.env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  return readPinFile(path.join(home, 'runtime.command'));
+}
+
+function resolveLayeredPin() {
+  return resolveProjectPin(process.cwd()) ?? resolveMachinePin();
+}
+
 function tryRedirectViaAlias(argv) {
   if (process.env.MYCO_RUN_REDIRECTED === '1') return false;
-  const alias = resolveRuntimeCommand(process.cwd());
+  const alias = resolveLayeredPin();
   if (!alias) return false;
 
   try {

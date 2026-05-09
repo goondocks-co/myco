@@ -95,7 +95,7 @@ describe('myco-run.cjs', () => {
           tool: 'canopy_map',
           error: {
             code: 'runtime_unavailable',
-            message: "Myco runtime command 'myco' could not be found. Check ~/.myco/runtime.command or run Myco update from a shell where Myco is installed.",
+            message: "Myco runtime command 'myco' could not be found. Check <project>/.myco/runtime.command and ~/.myco/runtime.command, or run Myco update from a shell where Myco is installed.",
           },
         });
       }

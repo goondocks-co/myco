@@ -6,10 +6,14 @@
 // writes `vendor/resolved.json` with the host target. This shim reads that
 // file and execFileSyncs the correct binary with forwarded argv.
 //
-// Before dispatching, the shim consults `.myco/runtime.command` via
-// runtime-redirect.cjs. Projects that pin a local runtime (beta channel,
-// dogfood) are re-exec'd into that binary so the interactive CLI matches
-// the binary the project's daemon, hooks, and MCP server already use.
+// Before dispatching, the shim consults a layered `runtime.command` pin
+// via runtime-redirect.cjs:
+//   1. Project pin: walk up from cwd for `<dir>/.myco/runtime.command`
+//      (written by `make dev-link`) — applies only when invoked from
+//      inside an opted-in project.
+//   2. Machine pin: `~/.myco/runtime.command` (written by the beta
+//      installer) — applies everywhere as a fallback.
+// When neither pin matches, the shim runs the bundled production binary.
 // Set `MYCO_DEBUG_REDIRECT=1` to trace redirect decisions on stderr.
 //
 // Rationale: npm's `bin` entry must be a single path. We can't point it
