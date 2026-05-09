@@ -214,7 +214,12 @@ describe('initTeamSync.reconcileClient', () => {
       vaultDir,
       serverVersion: '1.2.3',
     });
-    const groveContext = requestContext('grove_external', 'proj_external');
+    // G3 requires grove_<32hex>; G6 requires registry membership.
+    // Register a Grove via createGrove() to satisfy both gates and use
+    // its real id in the request context.
+    const { createGrove } = await import('../../packages/myco/src/grove/registry.js');
+    const grove = createGrove('external-team-test');
+    const groveContext = requestContext(grove.id, 'proj_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee2');
     const groveDir = resolveGroveDir(groveContext.groveId);
     fs.mkdirSync(groveDir, { recursive: true });
     fs.writeFileSync(path.join(groveDir, 'grove.yaml'), [

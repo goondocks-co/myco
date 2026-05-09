@@ -73,7 +73,9 @@ describe('team-connect handlers — direct coverage', () => {
   let mycoHome: string;
   let groveDir: string;
   let groveConfigPath: string;
-  const groveId = 'grove_handler_test';
+  // G3 requires grove_<32hex>; G6 requires registry membership. Mint via
+  // createGrove() to satisfy both gates.
+  let groveId: string;
   let originalMycoHome: string | undefined;
   let groveCtx: MycoRequestContext;
 
@@ -81,7 +83,7 @@ describe('team-connect handlers — direct coverage', () => {
     setupTestDb();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     cleanTestDb();
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-team-handlers-'));
     vaultDir = path.join(tempDir, 'project', '.myco');
@@ -96,12 +98,17 @@ describe('team-connect handlers — direct coverage', () => {
     // the Grove-aware path (the only path that actually persists team
     // settings — the legacy project YAML strips `team:` on save).
     mycoHome = path.join(tempDir, 'home');
+    fs.mkdirSync(mycoHome, { recursive: true });
+    originalMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    // Register a Grove via the public API so it satisfies G3/G6.
+    const { createGrove } = await import('../../../packages/myco/src/grove/registry.js');
+    const grove = createGrove('handler-test', mycoHome);
+    groveId = grove.id;
     groveDir = path.join(mycoHome, 'groves', groveId);
     fs.mkdirSync(groveDir, { recursive: true });
     groveConfigPath = path.join(groveDir, 'grove.yaml');
     fs.writeFileSync(groveConfigPath, 'team:\n  enabled: false\n', 'utf-8');
-    originalMycoHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = mycoHome;
     groveCtx = {
       projectRoot: path.join(tempDir, 'project'),
       projectVaultDir: vaultDir,

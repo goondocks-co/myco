@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
-import { requestContextHeaders, resolveLegacyRequestContext } from '@myco/tools/request-context';
+import { requestContextHeaders, resolveLegacyRequestContext, REQUEST_CONTEXT_AUTH_HEADER } from '@myco/tools/request-context';
 import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
@@ -117,7 +117,7 @@ describe('DaemonServer', () => {
         source: 'explicit',
       });
       const res = await fetch(`http://127.0.0.1:${server.port}/api/context-echo`, {
-        headers: requestContextHeaders(context),
+        headers: { ...requestContextHeaders(context), [REQUEST_CONTEXT_AUTH_HEADER]: server.getAuthToken() },
       });
       const body = await res.json() as { context: { projectId: string; groveId: string; source: string } };
 
@@ -197,10 +197,10 @@ describe('DaemonServer', () => {
       });
 
       const resA = await fetch(`http://127.0.0.1:${server.port}/api/db-marker`, {
-        headers: requestContextHeaders(contextA),
+        headers: { ...requestContextHeaders(contextA), [REQUEST_CONTEXT_AUTH_HEADER]: server.getAuthToken() },
       });
       const resB = await fetch(`http://127.0.0.1:${server.port}/api/db-marker`, {
-        headers: requestContextHeaders(contextB),
+        headers: { ...requestContextHeaders(contextB), [REQUEST_CONTEXT_AUTH_HEADER]: server.getAuthToken() },
       });
 
       expect(await resA.json()).toEqual({ value: 'db-a' });

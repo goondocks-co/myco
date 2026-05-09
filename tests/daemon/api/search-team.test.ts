@@ -10,8 +10,15 @@ import type { RouteRequest } from '@myco/daemon/router.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
-function makeRequest(query: Record<string, string>, requestContext: MycoRequestContext = TEST_REQUEST_CONTEXT): RouteRequest {
-  return { body: {}, query, params: {}, pathname: '/api/search', requestContext } as RouteRequest;
+function makeRequest(query: Record<string, string>, requestContext?: MycoRequestContext): RouteRequest {
+  // When the test doesn't provide a custom request context, default to the
+  // shared TEST_REQUEST_CONTEXT but blank its databasePath so the search
+  // handler falls back to the singleton via getDatabase(). Tests that
+  // explicitly pass a custom requestContext (e.g. seeded.requestContext)
+  // keep their real per-Grove DB path so the per-request open path is
+  // exercised correctly.
+  const ctx = requestContext ?? { ...TEST_REQUEST_CONTEXT, databasePath: '' };
+  return { body: {}, query, params: {}, pathname: '/api/search', requestContext: ctx } as RouteRequest;
 }
 
 function fakeEmbeddingManager(): EmbeddingManager {

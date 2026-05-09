@@ -106,6 +106,7 @@ describe('createSessionContextHandler', () => {
       content: 'Use `myco_cortex` before major changes.',
       input_hash: 'hash-session',
       generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
     });
     const handler = createSessionContextHandler(makeDeps());
     const result = await handler(makeReq({ session_id: 'sess-1', branch: 'main' }));
@@ -145,12 +146,14 @@ describe('createSessionContextHandler', () => {
       content: 'Use `myco_cortex` before major changes.',
       input_hash: 'hash-session-digest',
       generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
     });
     upsertDigestExtract({
       agent_id: DEFAULT_AGENT_ID,
       tier: 5000,
       content: 'Digest extract for current project work.',
       generated_at: NOW,
+      project_id: TEST_REQUEST_CONTEXT.projectId,
     });
     const handler = createSessionContextHandler(makeDeps({
       config: makeConfig({ session_start_digest_enabled: true }),

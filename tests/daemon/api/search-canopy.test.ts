@@ -42,7 +42,11 @@ function seedCanopyRow(opts: {
 }
 
 function makeRequest(query: Record<string, string>): RouteRequest {
-  return { body: {}, query, params: {}, pathname: '/api/search', requestContext: TEST_REQUEST_CONTEXT } as RouteRequest;
+  // Search handler opens a per-request DB from requestContext.databasePath.
+  // The test relies on the singleton via setupTestDb(); blank the path so
+  // openRequestDatabase falls back to getDatabase().
+  const ctx = { ...TEST_REQUEST_CONTEXT, databasePath: '' };
+  return { body: {}, query, params: {}, pathname: '/api/search', requestContext: ctx } as RouteRequest;
 }
 
 function fakeEmbeddingManager(overrides: Partial<EmbeddingManager> = {}): EmbeddingManager {
