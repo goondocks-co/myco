@@ -17,6 +17,37 @@ export interface GroveRuntimeCacheOptions {
 }
 
 /**
+ * Default cache capacity. Sized for many-Grove machines: a developer
+ * with 8–16 active Groves should hit warm cache on every tick rather
+ * than thrash. The previous default of 8 was sized for the single-
+ * Grove era and left every additional Grove paying re-open cost on
+ * housekeeping fan-outs that walk the full set.
+ *
+ * Use `recommendCapacity(groveCount)` from a caller that knows the
+ * registry size to auto-tune above the default.
+ */
+export const DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY = 32;
+
+/**
+ * Hard ceiling on auto-sized capacity. Even on a machine with many
+ * Groves, holding more than this many open SQLite handles + vector
+ * stores at once is wasteful — better to let the LRU recycle the cold
+ * tail.
+ */
+export const GROVE_RUNTIME_CACHE_CEILING = 128;
+
+/**
+ * Suggest a cache capacity given the Grove count. Returns at least
+ * `DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY` and never exceeds
+ * `GROVE_RUNTIME_CACHE_CEILING`. Roughly sized to `groveCount * 2` so
+ * a fan-out + a concurrent operator action both fit without eviction.
+ */
+export function recommendCapacity(groveCount: number): number {
+  const computed = Math.max(DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY, groveCount * 2);
+  return Math.min(GROVE_RUNTIME_CACHE_CEILING, computed);
+}
+
+/**
  * Bounded LRU cache for per-Grove runtime resources held by the global
  * daemon: SQLite handle, vector store, and embedding manager.
  *
@@ -41,14 +72,39 @@ export interface GroveRuntimeCacheOptions {
 export class GroveRuntimeCache {
   private readonly entries = new Map<string, GroveRuntimeEntry>();
   private readonly pinCounts = new Map<string, number>();
-  private readonly capacity: number;
+  private capacity: number;
 
   constructor(options: GroveRuntimeCacheOptions = {}) {
-    this.capacity = options.capacity ?? 8;
+    this.capacity = options.capacity ?? DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY;
   }
 
   size(): number {
     return this.entries.size;
+  }
+
+  /**
+   * Currently effective capacity. Exposed for diagnostics and tests.
+   * Does not include the temporary excess held by pinned entries.
+   */
+  getCapacity(): number {
+    return this.capacity;
+  }
+
+  /**
+   * Grow (only) the cache capacity. Used when the daemon discovers more
+   * Groves than the cache was sized for at construction. Capacity may
+   * never shrink below the current size — that would require evicting
+   * live entries, which conflicts with pinning semantics. Returns the
+   * effective capacity after the call.
+   *
+   * Capped at GROVE_RUNTIME_CACHE_CEILING.
+   */
+  growCapacity(target: number): number {
+    const bounded = Math.min(GROVE_RUNTIME_CACHE_CEILING, target);
+    if (bounded > this.capacity) {
+      this.capacity = bounded;
+    }
+    return this.capacity;
   }
 
   getDatabase(databasePath: string): Database {
@@ -173,5 +229,10 @@ export class GroveRuntimeCache {
 
 function closeEntry(entry: GroveRuntimeEntry): void {
   try { entry.vectorStore?.close(); } catch { /* best-effort */ }
+  // EmbeddingManager has no closable resources of its own — its
+  // VectorStore (closed above) and EmbeddableRecordSource (which holds
+  // the same `db` we close below) are both injected. Symmetry with the
+  // vectorStore branch is intentionally GC-only; adding a no-op
+  // close() would only be cosmetic.
   try { entry.db.close(); } catch { /* best-effort */ }
 }

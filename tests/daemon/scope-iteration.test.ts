@@ -72,7 +72,7 @@ describe('scope-iteration', () => {
       const summary = await forEachGrove(cache, logger, () => {
         throw new Error('body should not run');
       }, { mycoHome });
-      expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0 });
+      expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0, skipped: 0 });
       cache.closeAll();
     });
 
@@ -86,7 +86,7 @@ describe('scope-iteration', () => {
         // Schema is real — we should be able to query.
         db.prepare('SELECT 1').get();
       }, { mycoHome });
-      expect(summary).toEqual({ attempted: 2, ok: 2, failed: 0 });
+      expect(summary).toEqual({ attempted: 2, ok: 2, failed: 0, skipped: 0 });
       const ids = seen.map((s) => s.id).sort();
       expect(ids).toEqual([a.id, b.id].sort());
       expect(seen.find((s) => s.id === a.id)?.databasePath).toBe(resolveGroveDbPath(a.id, mycoHome));
@@ -128,6 +128,45 @@ describe('scope-iteration', () => {
       expect(summary.ok).toBe(2);
       expect(summary.failed).toBe(1);
       expect(visited.sort()).toEqual([a.id, b.id, c.id].sort());
+      cache.closeAll();
+    });
+
+    it('shouldVisitGrove skips Groves before any DB open', async () => {
+      const a = createGroveWithDb('Alpha');
+      const b = createGroveWithDb('Bravo');
+      const c = createGroveWithDb('Charlie');
+      const cache = new GroveRuntimeCache();
+      const visited: string[] = [];
+      const summary = await forEachGrove(cache, logger, ({ grove }) => {
+        visited.push(grove.id);
+      }, {
+        mycoHome,
+        shouldVisitGrove: (grove) => grove.id !== b.id,
+      });
+      expect(summary.attempted).toBe(2);
+      expect(summary.ok).toBe(2);
+      expect(summary.failed).toBe(0);
+      expect(summary.skipped).toBe(1);
+      expect(visited.sort()).toEqual([a.id, c.id].sort());
+      cache.closeAll();
+    });
+
+    it('shouldVisitGrove returning false for every Grove is a fast no-op', async () => {
+      createGroveWithDb('Alpha');
+      createGroveWithDb('Bravo');
+      const cache = new GroveRuntimeCache();
+      let bodyCalls = 0;
+      const summary = await forEachGrove(cache, logger, () => {
+        bodyCalls += 1;
+      }, {
+        mycoHome,
+        shouldVisitGrove: () => false,
+      });
+      expect(bodyCalls).toBe(0);
+      expect(summary.attempted).toBe(0);
+      expect(summary.skipped).toBe(2);
+      // The cache was never touched — size stays at 0.
+      expect(cache.size()).toBe(0);
       cache.closeAll();
     });
 

@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
+import {
+  GroveRuntimeCache,
+  DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY,
+  GROVE_RUNTIME_CACHE_CEILING,
+  recommendCapacity,
+} from '@myco/daemon/grove-runtime-cache.js';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 
@@ -166,5 +171,47 @@ describe('GroveRuntimeCache', () => {
     cache.getDatabase(b); // should evict A now that all pins are released
     expect(cache.size()).toBe(1);
     cache.closeAll();
+  });
+
+  describe('capacity defaults and auto-sizing', () => {
+    it('default capacity is the many-Grove-friendly DEFAULT constant', () => {
+      const cache = new GroveRuntimeCache();
+      expect(cache.getCapacity()).toBe(DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY);
+      expect(DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY).toBeGreaterThanOrEqual(32);
+    });
+
+    it('explicit capacity overrides the default', () => {
+      const cache = new GroveRuntimeCache({ capacity: 4 });
+      expect(cache.getCapacity()).toBe(4);
+    });
+
+    it('recommendCapacity returns at least the default for small Grove counts', () => {
+      expect(recommendCapacity(0)).toBe(DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY);
+      expect(recommendCapacity(8)).toBe(DEFAULT_GROVE_RUNTIME_CACHE_CAPACITY);
+    });
+
+    it('recommendCapacity scales to 2x Grove count above the default', () => {
+      const recommended = recommendCapacity(40);
+      expect(recommended).toBe(80);
+    });
+
+    it('recommendCapacity caps at GROVE_RUNTIME_CACHE_CEILING', () => {
+      expect(recommendCapacity(10_000)).toBe(GROVE_RUNTIME_CACHE_CEILING);
+    });
+
+    it('growCapacity grows the cache and never shrinks below current', () => {
+      const cache = new GroveRuntimeCache({ capacity: 4 });
+      expect(cache.growCapacity(16)).toBe(16);
+      expect(cache.getCapacity()).toBe(16);
+      // shrink attempts are ignored
+      expect(cache.growCapacity(2)).toBe(16);
+      expect(cache.getCapacity()).toBe(16);
+    });
+
+    it('growCapacity respects the hard ceiling', () => {
+      const cache = new GroveRuntimeCache({ capacity: 4 });
+      const out = cache.growCapacity(GROVE_RUNTIME_CACHE_CEILING + 1000);
+      expect(out).toBe(GROVE_RUNTIME_CACHE_CEILING);
+    });
   });
 });

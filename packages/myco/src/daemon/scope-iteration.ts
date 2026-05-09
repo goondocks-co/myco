@@ -79,12 +79,33 @@ export interface ForEachGroveOptions {
    * optimize) must stay sequential to avoid VACUUM lock contention.
    */
   parallel?: boolean;
+  /**
+   * Optional pre-DB-open predicate. Groves for which this returns
+   * `false` are skipped entirely — the DB is not opened, the body is
+   * not invoked, and the Grove is not counted toward `attempted`.
+   *
+   * The intended use is cold-Grove avoidance: the cheapest signal a
+   * caller can supply is a stat of the Grove DB mtime against an
+   * activity threshold, or a Grove-level activity hint maintained
+   * elsewhere. Skipping a cold Grove on a frequent-tick PowerJob
+   * avoids opening its SQLite handle and warming the
+   * GroveRuntimeCache for no work.
+   *
+   * The predicate runs before the cache lookup, so a Grove the
+   * caller decides to skip never displaces a warm entry.
+   */
+  shouldVisitGrove?: (grove: GroveRecord) => boolean;
 }
 
 export interface ScopeIterationSummary {
   attempted: number;
   ok: number;
   failed: number;
+  /**
+   * Groves filtered out by `shouldVisitGrove` before the body ran.
+   * Always present; defaults to 0 when no filter is supplied.
+   */
+  skipped?: number;
 }
 
 /**
@@ -99,7 +120,24 @@ export async function forEachGrove(
   options: ForEachGroveOptions = {},
 ): Promise<ScopeIterationSummary> {
   const mycoHome = options.mycoHome ?? resolveMycoHome();
-  const groves = listGroves(mycoHome);
+  const allGroves = listGroves(mycoHome);
+
+  // Apply the optional pre-open filter before any cache touch so cold
+  // Groves don't displace warm entries. Filtering happens here rather
+  // than inside `visit` so `attempted` reflects only Groves the body
+  // actually ran for.
+  let groves: GroveRecord[];
+  let skipped = 0;
+  const shouldVisitGrove = options.shouldVisitGrove;
+  if (shouldVisitGrove) {
+    groves = [];
+    for (const grove of allGroves) {
+      if (shouldVisitGrove(grove)) groves.push(grove);
+      else skipped += 1;
+    }
+  } else {
+    groves = allGroves;
+  }
 
   let ok = 0;
   let failed = 0;
@@ -136,7 +174,7 @@ export async function forEachGrove(
     for (const grove of groves) await visit(grove);
   }
 
-  return { attempted: groves.length, ok, failed };
+  return { attempted: groves.length, ok, failed, skipped };
 }
 
 // ---------------------------------------------------------------------------

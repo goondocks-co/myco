@@ -1,4 +1,4 @@
-import type { Database } from 'bun:sqlite';
+import type { Database, Statement } from 'bun:sqlite';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 
 export interface ProjectActivitySeedRow {
@@ -125,4 +125,116 @@ export function getProjectActivityWithBacklog(
     scheduled_runs_in_window: number;
   };
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Batched activity-with-backlog
+// ---------------------------------------------------------------------------
+//
+// `/api/projects/activity` handles N projects per Grove, each previously
+// resolved by a single-row `getProjectActivityWithBacklog` call. With many
+// projects, the round-trip cost dominates — and every per-project query
+// re-prepared the same SQL. The batched form below issues three indexed
+// `GROUP BY project_id` scans (sessions, prompt_batches, agent_runs)
+// filtered by the request's project-id list using `WHERE project_id IN
+// (SELECT value FROM json_each(?))`. The IN-clause shape lets a single
+// prepared statement handle any project-id-list cardinality without
+// re-preparing.
+//
+// Statements are memoized per `Database` instance via a module-scope
+// `WeakMap`. Memoization is keyed on the DB handle so multiple Groves
+// each get their own prepared-statement cache and no statement leaks
+// across closed handles (the handle is the GC root).
+
+interface BatchedStatements {
+  sessions: Statement<{ project_id: string; last: number | null }, [string]>;
+  prompts: Statement<{ project_id: string; last: number | null }, [string]>;
+  runs: Statement<
+    { project_id: string; n: number },
+    [string, number]
+  >;
+}
+
+const STATEMENT_CACHE = new WeakMap<Database, BatchedStatements>();
+
+function getBatchedStatements(db: Database): BatchedStatements {
+  const cached = STATEMENT_CACHE.get(db);
+  if (cached) return cached;
+  const stmts: BatchedStatements = {
+    sessions: db.prepare(
+      `SELECT project_id, MAX(created_at) AS last
+         FROM sessions
+        WHERE project_id IN (SELECT value FROM json_each(?))
+        GROUP BY project_id`,
+    ),
+    prompts: db.prepare(
+      `SELECT project_id, MAX(created_at) AS last
+         FROM prompt_batches
+        WHERE project_id IN (SELECT value FROM json_each(?))
+        GROUP BY project_id`,
+    ),
+    runs: db.prepare(
+      `SELECT project_id, COUNT(*) AS n
+         FROM agent_runs
+        WHERE project_id IN (SELECT value FROM json_each(?))
+          AND started_at IS NOT NULL
+          AND started_at >= ?
+        GROUP BY project_id`,
+    ),
+  };
+  STATEMENT_CACHE.set(db, stmts);
+  return stmts;
+}
+
+/**
+ * Batched form of `getProjectActivityWithBacklog`: collects the same
+ * `(last_seconds, scheduled_runs_in_window)` tuple for every project in
+ * `projectIds` with at most three indexed `GROUP BY project_id` scans.
+ *
+ * Replaces an N-round-trip per-Grove loop in `/api/projects/activity`.
+ * Returns a `Map` keyed by `project_id`. Projects with no rows in any of
+ * the three source tables are absent from the map (callers should fall
+ * back to `{ last_seconds: null, scheduled_runs_in_window: 0 }`).
+ *
+ * Empty `projectIds` short-circuits to an empty Map without preparing
+ * the statements.
+ */
+export function getActivityWithBacklogForProjects(
+  db: Database,
+  projectIds: readonly GroveProjectId[],
+  windowStartSeconds: number,
+): Map<GroveProjectId, ProjectActivityWithBacklog> {
+  const out = new Map<GroveProjectId, ProjectActivityWithBacklog>();
+  if (projectIds.length === 0) return out;
+
+  const idsJson = JSON.stringify(projectIds);
+  const stmts = getBatchedStatements(db);
+
+  // Pre-seed an entry for every requested id so callers iterating the
+  // input list always find a value; downstream merges only set fields
+  // they actually observe.
+  for (const id of projectIds) {
+    out.set(id, { last_seconds: null, scheduled_runs_in_window: 0 });
+  }
+
+  const merge = (projectId: string, value: number | null): void => {
+    if (value == null) return;
+    const id = projectId as GroveProjectId;
+    const entry = out.get(id);
+    if (!entry) return;
+    if (entry.last_seconds == null || value > entry.last_seconds) {
+      entry.last_seconds = value;
+    }
+  };
+
+  for (const row of stmts.sessions.all(idsJson)) merge(row.project_id, row.last);
+  for (const row of stmts.prompts.all(idsJson)) merge(row.project_id, row.last);
+
+  for (const row of stmts.runs.all(idsJson, windowStartSeconds)) {
+    const entry = out.get(row.project_id as GroveProjectId);
+    if (!entry) continue;
+    entry.scheduled_runs_in_window = row.n;
+  }
+
+  return out;
 }

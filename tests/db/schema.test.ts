@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(38);
+      expect(SCHEMA_VERSION).toBe(39);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -2099,6 +2099,87 @@ describe('Database schema', () => {
         createSchema(db);
         expect(tableExists(db, 'canopy_entries')).toBe(true);
         expect(() => runMigration(db, 25)).not.toThrow();
+      });
+    });
+
+    describe('v38 to v39: composite (project_id, created_at) indexes', () => {
+      function runMigration(target: Database, version: number) {
+        const m = MIGRATIONS.find((mm) => mm.version === version);
+        expect(m, `migration v${version} registered`).toBeDefined();
+        m!.migrate(target, 'local');
+      }
+
+      /** Bring the vault to v38-shape: run createSchema, then drop the
+       *  v39 indexes and stamp the version back to 38 so the v39
+       *  migration step re-runs. */
+      function setupAtV38(target: Database): void {
+        createSchema(target);
+        target.prepare(`DELETE FROM schema_version WHERE version = ?`).run(SCHEMA_VERSION);
+        target.prepare(
+          `INSERT INTO schema_version (version, applied_at)
+           VALUES (38, 1000)
+           ON CONFLICT (version) DO NOTHING`,
+        ).run();
+        target.prepare(`DROP INDEX IF EXISTS idx_sessions_project_created`).run();
+        target.prepare(`DROP INDEX IF EXISTS idx_prompt_batches_project_created`).run();
+      }
+
+      it('fresh install installs both composite indexes', () => {
+        createSchema(db);
+        expect(indexExists(db, 'idx_sessions_project_created')).toBe(true);
+        expect(indexExists(db, 'idx_prompt_batches_project_created')).toBe(true);
+      });
+
+      it('records schema_version row 39 after migration', () => {
+        setupAtV38(db);
+        runMigration(db, 39);
+        const row = db.prepare(`SELECT version FROM schema_version WHERE version = 39`).get() as
+          | { version: number }
+          | undefined;
+        expect(row?.version).toBe(39);
+      });
+
+      it('creates both indexes on existing v38 vaults', () => {
+        setupAtV38(db);
+        expect(indexExists(db, 'idx_sessions_project_created')).toBe(false);
+        expect(indexExists(db, 'idx_prompt_batches_project_created')).toBe(false);
+
+        runMigration(db, 39);
+
+        expect(indexExists(db, 'idx_sessions_project_created')).toBe(true);
+        expect(indexExists(db, 'idx_prompt_batches_project_created')).toBe(true);
+      });
+
+      it('is idempotent — running twice does not throw', () => {
+        setupAtV38(db);
+        runMigration(db, 39);
+        expect(() => runMigration(db, 39)).not.toThrow();
+      });
+
+      it('is safe when artifacts already exist (fresh-install v39 replay)', () => {
+        createSchema(db);
+        expect(indexExists(db, 'idx_sessions_project_created')).toBe(true);
+        expect(() => runMigration(db, 39)).not.toThrow();
+      });
+
+      it('SQLite query planner uses idx_sessions_project_created for project recency', () => {
+        createSchema(db);
+        const plan = db.prepare(
+          `EXPLAIN QUERY PLAN
+             SELECT MAX(created_at) FROM sessions WHERE project_id = ?`,
+        ).all('proj_demo') as Array<{ detail: string }>;
+        const detail = plan.map((row) => row.detail).join(' ');
+        expect(detail).toContain('idx_sessions_project_created');
+      });
+
+      it('SQLite query planner uses idx_prompt_batches_project_created for project recency', () => {
+        createSchema(db);
+        const plan = db.prepare(
+          `EXPLAIN QUERY PLAN
+             SELECT MAX(created_at) FROM prompt_batches WHERE project_id = ?`,
+        ).all('proj_demo') as Array<{ detail: string }>;
+        const detail = plan.map((row) => row.detail).join(' ');
+        expect(detail).toContain('idx_prompt_batches_project_created');
       });
     });
   });
