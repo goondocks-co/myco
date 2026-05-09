@@ -26,8 +26,8 @@
     "url": "https://github.com/goondocks-co/myco.git"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
-    "@anthropic-ai/sdk": "^0.92.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
+    "@anthropic-ai/sdk": "^0.95.1",
     "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@openai/agents": "^0.8.5",
@@ -39,7 +39,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.15.2",
+    "@cloudflare/vitest-pool-workers": "^0.16.3",
     "@tanstack/react-query": "^5.100.9",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
