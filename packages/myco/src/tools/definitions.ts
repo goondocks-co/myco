@@ -64,6 +64,8 @@ export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
+export const TOOL_MAINTENANCE = 'myco_maintenance';
+export const TOOL_UPDATE = 'myco_update';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
@@ -73,6 +75,8 @@ export const TOOL_COLLECTIVE_SETTINGS = 'collective_settings';
 const PROP_BRANCH = 'Git branch name to find related sessions and plans';
 const PROP_SINCE = 'ISO timestamp — entries after this date';
 const PROP_TAGS = 'Tags for discoverability — component names, technologies, concepts';
+const PROP_GROVE_ID_PIVOT = 'Optional Grove id to pivot this call to a different Grove (default: harness Grove). Mirrors the UI\'s project switcher; switches the underlying database when supplied.';
+const PROP_PROJECT_ID_PIVOT = 'Optional Grove project id (proj_<32 hex>) to pivot this call to a different project (default: harness project). When supplied alone, scopes within the current Grove.';
 
 // --- Tool definitions ---
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -100,13 +104,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
         language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
       required: ['query'],
     },
   },
   {
     name: TOOL_CORTEX,
-    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path.',
+    description: 'Retrieve Cortex-produced project intelligence. op: "digest" returns the pre-computed project digest at tier 1500, 5000, or 10000. op: "instructions" returns the generated project instruction brief when available. op: "canopy_map" returns the rendered project Canopy map for the resolved request context. op: "canopy_entry" retrieves one Canopy file summary from the resolved request context by id (`project_id:path`) or path. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-Grove project activity feed (last activity, scheduled runs, active flag).',
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -114,17 +120,20 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, and op: "canopy_entry" to retrieve a Canopy result returned by search.',
+      guidance: 'Use op: "digest" for broad orientation, op: "canopy_map" as the default opener for project layout, op: "canopy_entry" to retrieve a Canopy result returned by search, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active across the machine.',
       priority: 10,
     },
     inputSchema: {
       type: 'object' as const,
       properties: {
-        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry'], description: 'Operation (default: "digest")' },
+        op: { type: 'string', enum: ['digest', 'instructions', 'canopy_map', 'canopy_entry', 'notifications', 'maintenance_summary', 'projects_activity'], description: 'Operation (default: "digest")' },
         tier: { type: 'number', enum: [1500, 5000, 10000], description: 'Digest token budget tier. Larger tiers include more detail. Default: 5000.' },
         id: { type: 'string', description: 'Canopy entry id for op: "canopy_entry" in the form project_id:path' },
-        project_id: { type: 'string', description: 'Legacy Canopy project id hint. The resolved request context is authoritative when available.' },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
         path: { type: 'string', description: 'Canopy file path for op: "canopy_entry"' },
+        unread_only: { type: 'boolean', description: 'op: "notifications" — return only unread entries (default: false)' },
+        limit: { type: 'number', description: 'op: "notifications" — max entries to return' },
       },
     },
   },
@@ -156,6 +165,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
         limit: { type: 'number', description: 'Max results for op: "list"' },
         force_remote: { type: 'boolean', description: 'Allow op: "delete" to remove a plan belonging to another machine. Enqueues a tombstone for team sync.' },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -183,6 +194,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         since: { type: 'string', description: PROP_SINCE },
         status: { type: 'string', description: 'Filter by session status (e.g., active, completed)' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SESSIONS_DEFAULT_LIMIT})` },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -202,6 +215,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         id: { type: 'string', description: 'Skill id or name for op: "get"' },
         status: { type: 'string', description: 'Filter by status: active, stale, retired' },
         limit: { type: 'number', description: `Max results (default: ${MCP_SKILLS_DEFAULT_LIMIT})` },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -237,6 +252,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         consolidated_content: { type: 'string', description: 'Merged content for op: "consolidate" — synthesize, do not just concatenate' },
         reason: { type: 'string', description: 'Reason for op: "supersede" or op: "consolidate"' },
         tags: { type: 'array', items: { type: 'string' }, description: PROP_TAGS },
+        grove_id: { type: 'string', description: PROP_GROVE_ID_PIVOT },
+        project_id: { type: 'string', description: PROP_PROJECT_ID_PIVOT },
       },
     },
   },
@@ -261,6 +278,72 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         task: { type: 'string', description: 'Filter op: "runs" by task name' },
         agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
+      },
+    },
+  },
+  // -------------------------------------------------------------------------
+  // Operator action tools (Stream J — agent-native parity).
+  //
+  // myco_maintenance and myco_update wrap operator workflows the daemon
+  // UI exposes (Optimize / Vacuum / Reindex / Integrity-check / Reconcile
+  // / Rebuild / Backup-now / Restore-preview / Restore / Update). They
+  // are not retrieval tools — no `cortex` metadata so they don't appear
+  // in the session-start guidance brief — and they're allowed to be
+  // absent from non-daemon tool surfaces (Pi/Team) by intent.
+  // -------------------------------------------------------------------------
+  {
+    name: TOOL_MAINTENANCE,
+    description: 'Operator actions for the local Myco daemon: database maintenance (optimize/vacuum/reindex/integrity-check), embedding pipeline (rebuild/reconcile), backups (now/list), and restore (preview/apply). All ops accept an optional ActionScope body — `kind: "project"` (default), `"grove"`, or `"all-groves"` — that mirrors the daemon UI\'s scope pill and fans actions out across registered Groves when set.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: {
+          type: 'string',
+          enum: [
+            'database_optimize',
+            'database_vacuum',
+            'database_reindex',
+            'database_integrity_check',
+            'embedding_rebuild',
+            'embedding_reconcile',
+            'backup_now',
+            'backup_list',
+            'restore_preview',
+            'restore',
+          ],
+          description: 'Operation to perform. Read-only: backup_list, restore_preview. Mutating: everything else.',
+        },
+        scope: {
+          type: 'object',
+          description: 'Optional ActionScope envelope: `{ kind: "project", grove_id, project_id }` | `{ kind: "grove", grove_id }` | `{ kind: "all-groves" }`. Defaults to the request-context Grove/project when omitted.',
+        },
+        file_name: { type: 'string', description: 'restore_preview / restore — point-in-time backup file name (preferred over machine_id).' },
+        machine_id: { type: 'string', description: 'restore_preview / restore — restore the newest backup for this machine. Pass file_name OR machine_id.' },
+        async: { type: 'boolean', description: 'embedding_rebuild — when true, queue work for the background loop and return immediately instead of draining inline.' },
+      },
+      required: ['op'],
+    },
+  },
+  {
+    name: TOOL_UPDATE,
+    description: 'Manage Myco self-update: read installed/latest versions and channel (op: "status"), force a registry check (op: "check"), apply pending updates (op: "apply"), and switch release channel (op: "set_channel"). Cross-Grove fan-out on apply is built into the daemon installer (it calls `myco update --all-projects` post-install) so a single op: "apply" call drives every registered project.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['status', 'check', 'apply', 'set_channel'], description: 'Operation: status (default), check, apply, or set_channel.' },
+        channel: { type: 'string', enum: ['stable', 'beta'], description: 'Required for op: "set_channel" — the release channel to switch to.' },
       },
     },
   },
