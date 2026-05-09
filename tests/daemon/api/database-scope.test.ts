@@ -97,7 +97,10 @@ describe('database scope-aware actions', () => {
     expect(body.summary.ok + body.summary.failed).toBe(1);
   });
 
-  it('treats kind=project as kind=grove for database actions', async () => {
+  it('rejects kind=project for database actions with 400 invalid_scope', async () => {
+    // Database maintenance has no project-narrowed data plane (the
+    // whole SQLite file is the unit), so wire-level `kind: 'project'`
+    // is rejected rather than silently widened to the Grove DB. (P2 #36)
     const grove = createGrove('alpha', mycoHome);
     ensureGroveDatabase(grove.id, mycoHome);
 
@@ -112,13 +115,10 @@ describe('database scope-aware actions', () => {
       }),
     );
 
-    const body = res.body as {
-      scope: { kind: string };
-      results: Array<{ grove_id: string; ok: boolean }>;
-    };
-    expect(body.scope.kind).toBe('project');
-    expect(body.results).toHaveLength(1);
-    expect(body.results[0]!.grove_id).toBe(grove.id);
+    expect(res.status).toBe(400);
+    const body = res.body as { error: string; message: string };
+    expect(body.error).toBe('invalid_scope');
+    expect(body.message).toMatch(/whole Grove DB/);
   });
 
   it('fans out across every Grove for kind=all-groves', async () => {

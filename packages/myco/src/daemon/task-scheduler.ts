@@ -10,7 +10,7 @@
 
 import type { AgentTask, AcceleratorConfig, TaskSchedule } from '@myco/agent/types.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
-import type { ProjectScope } from './scope-iteration.js';
+import type { RegisteredProjectScope } from './scope-iteration.js';
 import type { PowerJob } from './power.js';
 import type { PowerState } from './power.js';
 
@@ -50,7 +50,7 @@ export interface ScheduledJobContext {
    * pinning + per-Grove `withDatabase` scoping work the same way as
    * the rest of the daemon's housekeeping fan-outs.
    */
-  forEachProject: (visit: (scope: ProjectScope) => Promise<void> | void) => Promise<void>;
+  forEachProject: (visit: (scope: RegisteredProjectScope) => Promise<void> | void) => Promise<void>;
   /** Per-(grove, project, task) running flag. */
   isTaskRunning: (groveId: string, projectId: GroveProjectId, taskName: string) => boolean;
   setTaskRunning: (
@@ -64,13 +64,13 @@ export interface ScheduledJobContext {
    * `holdDeepSleep=true` pins the project at `sleep` instead of dropping
    * to `deep_sleep` so accelerator-bound work drains while idle.
    */
-  getProjectPowerState: (scope: ProjectScope, holdDeepSleep: boolean) => PowerState;
+  getProjectPowerState: (scope: RegisteredProjectScope, holdDeepSleep: boolean) => PowerState;
   /** Per-project task dispatcher. */
-  runTask: (scope: ProjectScope, taskName: string) => Promise<void>;
+  runTask: (scope: RegisteredProjectScope, taskName: string) => Promise<void>;
   /** Pre-condition checks scoped to a project. */
-  preConditions: Record<string, (scope: ProjectScope) => boolean>;
+  preConditions: Record<string, (scope: RegisteredProjectScope) => boolean>;
   /** Backlog count functions keyed by accelerator name. */
-  accelerators?: Record<string, (scope: ProjectScope, limit?: number) => number>;
+  accelerators?: Record<string, (scope: RegisteredProjectScope, limit?: number) => number>;
   /** Detached-run error sink so the PowerManager tick stays responsive. */
   onTaskError?: (taskName: string, groveId: string, projectId: GroveProjectId, err: unknown) => void;
   /**
@@ -79,7 +79,7 @@ export interface ScheduledJobContext {
    * projects that appear after boot double-firing tasks they recently
    * completed before the daemon came up.
    */
-  seedMissingLastRuns?: (scope: ProjectScope) => Map<string, number>;
+  seedMissingLastRuns?: (scope: RegisteredProjectScope) => Map<string, number>;
 }
 
 /**

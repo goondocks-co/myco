@@ -40,10 +40,10 @@ export interface DatabaseMaintenanceRouteDeps {
 
 // Database maintenance is Grove-DB-only — there is no project-narrowed
 // path because optimize/vacuum/reindex/integrity-check operate on the
-// whole SQLite file. So `kind: 'project'` is treated identically to
-// `kind: 'grove'` for these endpoints; the comment in each handler
-// makes that explicit so future readers don't expect project-narrowed
-// behavior here.
+// whole SQLite file. Wire-level `kind: 'project'` is rejected for these
+// endpoints rather than silently widened, so a UI/client request that
+// asked to narrow on a project gets a deterministic error instead of
+// an action that spans the entire Grove. (P2 #36)
 
 export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRouteDeps): {
   handleDetails: RouteHandler;
@@ -61,7 +61,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     return new DatabaseMaintenanceManager(dbPath, groveDir, deps.logger);
   }
 
-  async function dispatchSingleGrove<T>(
+  async function dispatchSingleGrove<T extends object>(
     groveId: string,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<PerGroveResultBase & T> {
@@ -76,7 +76,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     );
   }
 
-  async function dispatchAllGroves<T>(
+  async function dispatchAllGroves<T extends object>(
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<Array<PerGroveResultBase & T>> {
     const results: Array<PerGroveResultBase & T> = [];
@@ -97,17 +97,20 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
     return results;
   }
 
-  async function dispatch<T>(
+  async function dispatch<T extends object>(
     endpoint: string,
     req: RouteRequest,
     run: (manager: DatabaseMaintenanceManager) => Promise<T>,
   ): Promise<RouteResponse> {
     return runScopedAction<T>(endpoint, req, inflight, async (scope) => {
+      if (scope.kind === 'project') {
+        throw new InvalidActionScopeError(
+          'Database maintenance operates on the whole Grove DB; pass kind: "grove" or "all-groves" instead of "project"',
+        );
+      }
       if (scope.kind === 'all-groves') return dispatchAllGroves(run);
-      // 'project' is treated as 'grove' here: database maintenance has no
-      // project-narrowed path — the whole Grove DB is the unit.
       return [await dispatchSingleGrove(scope.grove_id, run)];
-    });
+    }, { defaultKind: 'grove' });
   }
 
   // VACUUM precheck failures need to surface 409 with the standard error
@@ -118,12 +121,26 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
   async function dispatchVacuum(req: RouteRequest): Promise<RouteResponse> {
     let scope: ActionScope;
     try {
-      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+      scope = resolveActionScope({
+        body: req.body,
+        requestContext: req.requestContext,
+        defaultKind: 'grove',
+      });
     } catch (err) {
       if (err instanceof InvalidActionScopeError) {
         return { status: 400, body: { error: 'invalid_scope', message: err.message } };
       }
       throw err;
+    }
+
+    if (scope.kind === 'project') {
+      return {
+        status: 400,
+        body: {
+          error: 'invalid_scope',
+          message: 'Database maintenance operates on the whole Grove DB; pass kind: "grove" or "all-groves" instead of "project"',
+        },
+      };
     }
 
     if (scope.kind !== 'all-groves') {

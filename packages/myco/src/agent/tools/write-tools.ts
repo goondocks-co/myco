@@ -14,6 +14,7 @@ import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
+import { assertGroveProjectId } from '@myco/grove/ids.js';
 import { insertResolutionEvent } from '@myco/db/queries/resolution-events.js';
 import { upsertDigestExtract, listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
@@ -62,8 +63,13 @@ export function createWriteTools(deps: VaultToolDeps) {
         created_at: now,
       });
 
-      // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM)
-      try { createSporeLineage(spore); } catch { /* lineage best-effort */ }
+      // Best-effort: structural lineage edges (FROM_SESSION, EXTRACTED_FROM, DERIVED_FROM).
+      // SporeRow.project_id is `string | null` from the DB; brand it via the
+      // single mint site before threading into the writer.
+      try {
+        const lineageProjectId = spore.project_id ? assertGroveProjectId(spore.project_id) : null;
+        createSporeLineage({ ...spore, project_id: lineageProjectId });
+      } catch { /* lineage best-effort */ }
 
       embeddingManager?.onContentWritten('spores', spore.id, args.content, {
         status: 'active',

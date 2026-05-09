@@ -12,6 +12,7 @@
  */
 
 import { insertGraphEdge } from './graph-edges.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import {
   EDGE_TYPE_FROM_SESSION,
   EDGE_TYPE_EXTRACTED_FROM,
@@ -27,7 +28,7 @@ import {
 export function createSporeLineage(spore: {
   id: string;
   agent_id: string;
-  project_id?: string | null;
+  project_id?: GroveProjectId | null;
   session_id?: string | null;
   prompt_batch_id?: number | null;
   observation_type?: string;
@@ -92,7 +93,7 @@ export function createBatchLineage(
   sessionId: string,
   batchId: number,
   createdAt: number,
-  projectId?: string | null,
+  projectId: GroveProjectId | null,
 ): void {
   insertGraphEdge({
     agent_id: agentId,

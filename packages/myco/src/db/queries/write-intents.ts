@@ -11,6 +11,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 import { epochSeconds } from '@myco/constants.js';
 import { tryParseJson } from '@myco/utils/json.js';
 
@@ -21,7 +22,13 @@ import { tryParseJson } from '@myco/utils/json.js';
 /** Fields required when inserting a write intent. */
 export interface WriteIntentInsert {
   runId: string;
-  projectId?: string | null;
+  /**
+   * Branded project id. `null` writes a global write intent (the
+   * `INSERT` falls back to the parent agent_run's project_id via
+   * subquery, so passing `null` is the canonical "let the run decide"
+   * path). `undefined` and `null` behave identically.
+   */
+  projectId?: GroveProjectId | null;
   /** Phase of the task that emitted this write, if any. */
   phaseId?: string | null;
   /** Name of the tool the agent called (e.g. 'vault_create_spore'). */

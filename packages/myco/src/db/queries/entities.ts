@@ -9,6 +9,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import type { GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -24,7 +25,13 @@ const DEFAULT_LIST_LIMIT = 100;
 /** Fields required (or optional) when inserting an entity. */
 export interface EntityInsert {
   id: string;
-  project_id?: string | null;
+  /**
+   * Branded project id. `null` is allowed for the daemon-global
+   * (pre-Grove / aggregation) entity scope, but plain `string` is
+   * rejected — writers must thread the brand through from a request
+   * context or `assertGroveProjectId` mint.
+   */
+  project_id?: GroveProjectId | null;
   agent_id: string;
   type: string;
   name: string;

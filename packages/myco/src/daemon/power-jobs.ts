@@ -27,7 +27,7 @@ import {
   forEachGrove,
   forEachRegisteredProject,
   type GroveScope,
-  type ProjectScope,
+  type RegisteredProjectScope,
 } from './scope-iteration.js';
 import {
   resolveMycoHome,
@@ -401,7 +401,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       await forEachRegisteredProject(
         cache,
         logger,
-        ({ project, projectVaultDir }: ProjectScope) => {
+        ({ project, projectVaultDir }: RegisteredProjectScope) => {
           const stale = listStaleStagingDirs(projectVaultDir, STAGING_MAX_AGE_MS);
           if (stale.length === 0) return;
           for (const candidateId of stale) {
@@ -433,7 +433,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
       forEachRegisteredProject(
         cache,
         logger,
-        async ({ databasePath, projectId, projectRoot, grove }: ProjectScope) => {
+        async ({ databasePath, projectId, projectRoot, grove }: RegisteredProjectScope) => {
           const runner = canopyRegistry.ensureRunner({
             databasePath,
             projectId,

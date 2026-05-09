@@ -288,13 +288,23 @@ export function rowProjectIdFromRequestContext(
 /**
  * Build a strict `ProjectScope` from a request context for read-side
  * filtering. Grove-bound requests scope to their project; legacy
- * project-local contexts scope to global (NULL project_id) rows; missing
- * contexts are explicit "all projects" reads.
+ * project-local contexts scope to global (NULL project_id) rows.
+ *
+ * Throws on a missing context. Consumers that genuinely want a cross-
+ * project read must opt into `ALL_PROJECTS_SCOPE` from `@myco/grove/ids`
+ * explicitly — the historical silent fallthrough to `{ kind: 'all' }`
+ * caused unintended cross-project leaks for any handler whose request
+ * arrived without context (P2 #35).
  */
 export function projectScopeFromRequestContext(
-  context?: MycoRequestContext,
+  context: MycoRequestContext | undefined,
 ): ProjectScope {
-  if (!context) return { kind: 'all' };
+  if (!context) {
+    throw new Error(
+      'projectScopeFromRequestContext requires a MycoRequestContext. '
+      + 'If a cross-project read is intended, pass ALL_PROJECTS_SCOPE explicitly.',
+    );
+  }
   return context.groveId ? projectScope(context.projectId) : GLOBAL_SCOPE;
 }
 

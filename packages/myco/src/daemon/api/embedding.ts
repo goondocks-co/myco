@@ -235,7 +235,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     return { manager: entry.embeddingManager!, db: entry.db, databasePath };
   }
 
-  async function dispatchSingleGrove<T>(
+  async function dispatchSingleGrove<T extends object>(
     groveId: string,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<PerGroveResultBase & T> {
@@ -249,7 +249,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     });
   }
 
-  async function dispatchAllGroves<T>(
+  async function dispatchAllGroves<T extends object>(
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
   ): Promise<Array<PerGroveResultBase & T>> {
     const results: Array<PerGroveResultBase & T> = [];
@@ -271,7 +271,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
     return results;
   }
 
-  async function dispatch<T>(
+  async function dispatch<T extends object>(
     endpoint: string,
     req: RouteRequest,
     run: (manager: EmbeddingManager, db: Database) => Promise<T> | T,
@@ -288,8 +288,21 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
       // deployments still work.
       const runtime = deps.resolveRequestRuntime(req);
       const slug = loadGroveRecord(scope.grove_id, mycoHome)?.slug ?? scope.grove_id;
+      // The legacy resolver may surface a runtime without a DB handle
+      // when the request lacks Grove context. Surface that explicitly
+      // as a per-Grove failure rather than passing `undefined as
+      // Database` and trusting the manager not to reach for it.
+      if (!runtime.db) {
+        return [{
+          grove_id: scope.grove_id,
+          grove_slug: slug,
+          ok: false,
+          error: 'embedding action requires a Grove-scoped database; request context is missing one',
+        } as PerGroveResultBase & T];
+      }
+      const runtimeDb: Database = runtime.db;
       return [await wrapPerGroveResult(scope.grove_id, slug, () =>
-        run(runtime.manager, runtime.db ?? (undefined as unknown as Database)),
+        run(runtime.manager, runtimeDb),
       )];
     });
   }

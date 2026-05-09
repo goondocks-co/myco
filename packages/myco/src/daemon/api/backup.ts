@@ -166,7 +166,16 @@ export function createBackupHandlers(deps: BackupDeps) {
     // resolution so old clients continue to work.
     let scope: ActionScope | null = null;
     try {
-      scope = resolveActionScope({ body: req.body, requestContext: req.requestContext });
+      // Backup is per-Grove, never per-project. Default-from-context
+      // therefore resolves to `kind:'grove'` rather than the historical
+      // `kind:'project'`, which avoided silently widening to a Grove
+      // backup when the caller's request context happened to have a
+      // project id. (P2 #36)
+      scope = resolveActionScope({
+        body: req.body,
+        requestContext: req.requestContext,
+        defaultKind: 'grove',
+      });
     } catch (err) {
       if (err instanceof InvalidActionScopeError) {
         const raw = (req.body as { scope?: unknown } | null | undefined)?.scope;
@@ -195,21 +204,31 @@ export function createBackupHandlers(deps: BackupDeps) {
       });
     }
 
-    if (scope && (scope.kind === 'grove' || scope.kind === 'project')) {
+    if (scope && scope.kind === 'project') {
+      // Backup files are per-Grove, not per-project — there is no
+      // project-narrowed data plane to honor here. Reject the scope
+      // explicitly rather than silently widening to the Grove backup,
+      // so clients that asked for a project-scoped backup get a
+      // deterministic error and can choose `kind:'grove'` instead.
+      // (P2 #36)
+      return {
+        status: 400,
+        body: {
+          error: 'invalid_scope',
+          message: 'Backups are taken per-Grove; pass kind: "grove" or "all-groves" instead of "project"',
+        },
+      };
+    }
+
+    if (scope && scope.kind === 'grove') {
       const grove = loadGroveRecord(scope.grove_id, mycoHome);
       if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
       const key = `backup:${actionScopeKey(scope)}`;
       return inflight.run(key, async (): Promise<RouteResponse> => {
-        // Comment: 'project' has no narrower path here — backup files
-        // are per-Grove, not per-project — so 'project' is treated
-        // identically to 'grove'.
         const result = performBackupForGrove(grove);
         if (!result.ok) {
           return { status: 500, body: { scope, results: [result], summary: { ok: 0, failed: 1 } } };
         }
-        // Legacy clients that send `{kind:'project'}` from the
-        // request-context default get the legacy flat shape; explicit
-        // grove/project scopes from the new UI get the wrapped shape.
         return {
           body: {
             scope,
