@@ -41,19 +41,13 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
 }
 
 /**
- * Process-level switch separating the production daemon's service descriptor
- * from a contributor's dogfood daemon. Set once at process startup (after
- * `detectDevBuild()` reports the running binary is a dev build) via
- * `setDevServiceMode(true)`. Mirrors the `setDevBuildCliEntry` pattern in
- * `update-checker.ts`. Tests reset via `setDevServiceMode(false)`.
+ * Process-level switch routing the daemon to `service-dev/` instead of
+ * `service/` so a contributor's dogfood daemon coexists with a production
+ * daemon on the same machine (different paths → different derived ports).
  *
- * Production binary → `~/.myco/service/`     → `derivePort` ≠ dev's port.
- * Dev binary        → `~/.myco/service-dev/` → `derivePort` ≠ prod's port.
- *
- * Both daemons share `~/.myco/` (config, secrets, groves) so the dogfood
- * daemon exercises the real system, but they bind separate ports and write
- * separate `daemon.json` descriptors so they coexist on a contributor's
- * machine without evicting each other.
+ * Slaved to `setDevBuildCliEntry` in `update-checker.ts` — tests reset by
+ * calling that helper with `null`. The two flags MUST stay paired; setting
+ * this directly is reserved for the pairing in `update-checker.ts`.
  */
 let devServiceMode = false;
 

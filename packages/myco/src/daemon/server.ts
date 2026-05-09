@@ -62,6 +62,12 @@ export class DaemonServer {
    * that didn't inherit the env) can recover it.
    */
   private authToken: string;
+  /**
+   * Cache of post-injection dashboard HTML, keyed by source file path.
+   * The token is fixed for the daemon's lifetime and the built HTML is
+   * immutable, so reading + injecting on every request is wasted work.
+   */
+  private htmlCache = new Map<string, string>();
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
@@ -257,8 +263,12 @@ export class DaemonServer {
       if (result) {
         try {
           if (result.contentType === 'text/html') {
-            const raw = await fs.promises.readFile(result.filePath, 'utf-8');
-            const injected = injectDashboardBootstrap(raw, this.authToken);
+            let injected = this.htmlCache.get(result.filePath);
+            if (injected === undefined) {
+              const raw = await fs.promises.readFile(result.filePath, 'utf-8');
+              injected = injectDashboardBootstrap(raw, this.authToken);
+              this.htmlCache.set(result.filePath, injected);
+            }
             res.writeHead(200, {
               'Content-Type': 'text/html; charset=utf-8',
               'Cache-Control': result.cacheControl,
@@ -440,22 +450,21 @@ export class DaemonServer {
 }
 
 /**
- * Inject the daemon-issued bearer token into the dashboard HTML at serve
- * time so the browser-side `fetchJson` wrapper can attach `x-myco-auth`
- * to context-switching API calls. Without this the `/api/stats` endpoint
- * (used by the Dashboard) rejects context-aware URLs like
- * `/g/<grove-slug>/p/<project-slug>` with `unauthorized_context_switch`.
+ * Inject the daemon-issued bearer token into the dashboard HTML so the
+ * browser-side `fetchJson` wrapper can attach `x-myco-auth` to
+ * context-switching API calls. Without this the `/api/stats` endpoint
+ * rejects context-aware URLs with `unauthorized_context_switch`.
  *
- * The token is same-origin-only (the daemon binds 127.0.0.1) and is
- * regenerated each process start, so embedding it in HTML is consistent
- * with the threat model already established for `daemon.json`.
+ * Throws if the source HTML lacks `</head>` — silent no-op would leave
+ * the dashboard dead in the water with no signal in logs. We'd rather
+ * fail loudly on the first request and surface the regression in CI.
  */
 function injectDashboardBootstrap(html: string, authToken: string): string {
-  // JSON-stringify defensively — a hex-encoded random token never contains
-  // </script> or quote characters, but keep the shape robust against future
-  // token formats.
   const safeToken = JSON.stringify(authToken);
   const bootstrap = `<script>window.__MYCO_AUTH__=${safeToken};</script>`;
+  if (!html.includes('</head>')) {
+    throw new Error('dashboard HTML is missing </head>; cannot inject auth bootstrap');
+  }
   return html.replace('</head>', `${bootstrap}</head>`);
 }
 

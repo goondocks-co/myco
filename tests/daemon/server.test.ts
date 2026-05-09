@@ -62,7 +62,11 @@ describe('DaemonServer', () => {
 
   it('returns JSON 404 for unknown API routes instead of the SPA shell', async () => {
     const uiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-ui-'));
-    fs.writeFileSync(path.join(uiDir, 'index.html'), '<html><body>Dashboard</body></html>');
+    // The HTML must include </head> so the auth-bootstrap injector
+    // (`injectDashboardBootstrap`) can attach the daemon's bearer token
+    // — the production Vite build always has one, and the injector now
+    // throws on a missing marker rather than silently no-op'ing.
+    fs.writeFileSync(path.join(uiDir, 'index.html'), '<html><head></head><body>Dashboard</body></html>');
     const server = new DaemonServer({ vaultDir, logger, uiDir });
     try {
       await server.start();
