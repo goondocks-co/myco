@@ -256,12 +256,22 @@ export class DaemonServer {
       const result = resolveStaticFile(this.uiDir, pathname);
       if (result) {
         try {
-          const content = await fs.promises.readFile(result.filePath);
-          res.writeHead(200, {
-            'Content-Type': result.contentType,
-            'Cache-Control': result.cacheControl,
-          });
-          res.end(content);
+          if (result.contentType === 'text/html') {
+            const raw = await fs.promises.readFile(result.filePath, 'utf-8');
+            const injected = injectDashboardBootstrap(raw, this.authToken);
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': result.cacheControl,
+            });
+            res.end(injected);
+          } else {
+            const content = await fs.promises.readFile(result.filePath);
+            res.writeHead(200, {
+              'Content-Type': result.contentType,
+              'Cache-Control': result.cacheControl,
+            });
+            res.end(content);
+          }
         } catch {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'not found' }));
@@ -427,6 +437,26 @@ export class DaemonServer {
   private removeDaemonJson(): void {
     removeDaemonState(this.daemonStatePath, process.pid);
   }
+}
+
+/**
+ * Inject the daemon-issued bearer token into the dashboard HTML at serve
+ * time so the browser-side `fetchJson` wrapper can attach `x-myco-auth`
+ * to context-switching API calls. Without this the `/api/stats` endpoint
+ * (used by the Dashboard) rejects context-aware URLs like
+ * `/g/<grove-slug>/p/<project-slug>` with `unauthorized_context_switch`.
+ *
+ * The token is same-origin-only (the daemon binds 127.0.0.1) and is
+ * regenerated each process start, so embedding it in HTML is consistent
+ * with the threat model already established for `daemon.json`.
+ */
+function injectDashboardBootstrap(html: string, authToken: string): string {
+  // JSON-stringify defensively — a hex-encoded random token never contains
+  // </script> or quote characters, but keep the shape robust against future
+  // token formats.
+  const safeToken = JSON.stringify(authToken);
+  const bootstrap = `<script>window.__MYCO_AUTH__=${safeToken};</script>`;
+  return html.replace('</head>', `${bootstrap}</head>`);
 }
 
 /**
