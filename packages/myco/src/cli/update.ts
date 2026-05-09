@@ -1,12 +1,19 @@
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
+import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
-import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
+import { readDaemonPort } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
+import { loadProjectManifest } from '../config/project-manifest.js';
+import {
+  activateProjectMigration,
+  completeLegacyArchive,
+  summarizeImportedRowCount,
+} from '../grove/activation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -48,6 +55,13 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
 
   console.log(`Updating Myco vault at ${vaultDir}\n`);
 
+  const resolvedProjectRoot = projectRoot ?? resolveProjectRoot(vaultDir);
+
+  // One-time Grove migration: a legacy (pre-0.25) project has a populated
+  // .myco/myco.db but no project.toml Grove binding. Lift it into the
+  // machine's default Grove before the rest of update operates on it.
+  ensureGroveActivation(vaultDir, resolvedProjectRoot);
+
   const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
   const currentVersion = getPluginVersion();
 
@@ -70,7 +84,6 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
 
   // --- Update symbiont registration ---
 
-  const resolvedProjectRoot = projectRoot ?? resolveProjectRoot(vaultDir);
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
 
@@ -119,6 +132,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   // makes the child daemon start against the shared vault while this health
   // check waits on the worktree vault and falsely reports failure.
   let daemonHealthy = false;
+  let daemonError: string | null = null;
   try {
     const { DaemonClient } = await import('../hooks/client.js');
     const daemonVaultDir = resolveVaultDir(resolvedProjectRoot);
@@ -127,8 +141,9 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     if (daemonHealthy && await httpMcpEndpointMissing(daemonVaultDir)) {
       daemonHealthy = await client.restart({ checkStale: false });
     }
-  } catch {
+  } catch (err) {
     daemonHealthy = false;
+    daemonError = err instanceof Error ? err.message : String(err);
   }
 
   // --- Summary ---
@@ -141,10 +156,76 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   }
   if (daemonHealthy) {
     console.log('Daemon is running for HTTP MCP.');
+  } else if (daemonError) {
+    console.log(`Daemon could not be verified (${daemonError}); run \`myco restart\` before using HTTP MCP.`);
   } else {
     console.log('Daemon could not be verified; run `myco restart` before using HTTP MCP.');
   }
+
+  const dashboardUrl = dashboardUrlForVault(vaultDir);
+  if (dashboardUrl) {
+    console.log(`Dashboard: ${dashboardUrl}`);
+  }
   console.log('Run `myco doctor` to verify setup health.');
+}
+
+/**
+ * Lift a legacy (pre-0.25) project into the machine's default Grove on
+ * its first `myco update`. Returns early once the project.toml binding
+ * exists, so steady-state runs are an mtime-cached file read.
+ *
+ * Tolerates fresh vaults: a `myco.yaml` without a `myco.db` is a
+ * just-initialized project with nothing to migrate.
+ */
+function ensureGroveActivation(vaultDir: string, projectRoot: string): void {
+  const manifest = loadProjectManifest(vaultDir);
+  if (manifest?.grove?.binding_id) return;
+
+  if (!fs.existsSync(path.join(vaultDir, 'myco.db'))) return;
+
+  console.log('  → Legacy project detected; running one-time Grove migration…');
+  const result = activateProjectMigration({ projectRoot });
+  if (result.already_activated) {
+    console.log(`  ✓ Project already activated in Grove ${result.grove.name} (${result.grove.slug})`);
+    // Sweep up legacy data from an older activation that ran before
+    // archiving was inline — bounded existsSync sweep, no-op on a
+    // freshly-archived vault.
+    const archive = completeLegacyArchive(vaultDir);
+    if (archive.archived_dir) {
+      console.log(`  ✓ Archived legacy data to ${archive.archived_dir}`);
+    }
+  } else {
+    const total = summarizeImportedRowCount(result.import_result);
+    console.log(`  ✓ Migrated to Grove ${result.grove.name} (${result.grove.slug}) — ${total} rows imported`);
+    // activateProjectMigration archives legacy data inline; no second call.
+  }
+  console.log('');
+}
+
+/**
+ * Dashboard URL for this project, or null when the daemon isn't reachable
+ * or the project isn't fully bound. We deliberately do NOT fall back to
+ * the global dashboard root — landing there post-migration would mislead
+ * about where the project moved to.
+ */
+function dashboardUrlForVault(vaultDir: string): string | null {
+  const manifest = loadProjectManifest(vaultDir);
+  const groveSlug = manifest?.grove?.slug;
+  const projectId = manifest?.project?.id;
+  if (!groveSlug || !projectId) return null;
+
+  const grove = listGroves().find((g) => g.slug === groveSlug);
+  if (!grove) return null;
+  const project = listRegisteredProjects(grove.id).find((p) => p.project_id === projectId);
+  if (!project) return null;
+
+  return resolveProjectDashboardUrl({
+    vaultDir,
+    groveSlug,
+    groveId: grove.id,
+    projectId,
+    projectName: project.name,
+  });
 }
 
 /**
@@ -198,7 +279,7 @@ async function runAllProjects(): Promise<void> {
 }
 
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
-  const port = readDaemonPort(vaultDir);
+  const port = readDaemonPort(vaultDir, { env: process.env });
   if (port === null) return false;
   try {
     const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -211,8 +292,4 @@ async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function readDaemonPort(vaultDir: string): number | null {
-  return readDaemonState(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)?.port ?? null;
 }

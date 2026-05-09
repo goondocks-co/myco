@@ -33,6 +33,7 @@ import {
   UPDATE_ERROR_PATH,
   UPDATE_CHECK_INTERVAL_HOURS,
   MS_PER_HOUR,
+  DEV_BUILD_CACHE_PATH,
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
   type ReleaseChannel,
@@ -41,7 +42,9 @@ import {
 import {
   resolveMachineRuntimeCommandPath,
   resolveMachineRuntimeDir,
+  setDevServiceMode,
 } from '../grove/paths.js';
+import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -136,11 +139,12 @@ let devBuildCliEntry: string | null = null;
 
 /**
  * Record the daemon's dev-build CLI entry. Pass `null` to clear.
- * Called once at daemon startup after `detectDevBuild()` decides whether
- * the running binary is a dev build.
+ * Also pairs `setDevServiceMode` so the service-dir branch in `grove/paths`
+ * never drifts from the update-checker's view of the running binary.
  */
 export function setDevBuildCliEntry(cliEntry: string | null): void {
   devBuildCliEntry = cliEntry;
+  setDevServiceMode(cliEntry !== null);
 }
 
 /**
@@ -149,6 +153,93 @@ export function setDevBuildCliEntry(cliEntry: string | null): void {
  */
 export function getDevBuildCliEntry(): string | null {
   return devBuildCliEntry;
+}
+
+/**
+ * Run dev-build detection at CLI startup and record the result via
+ * `setDevBuildCliEntry` (which also drives `setDevServiceMode` for the
+ * `service-dev/` branch).
+ *
+ * Cached on disk in `~/.myco/dev-build-cache.json` keyed by the realpath
+ * of `process.execPath` plus the running package version. The first call
+ * after a reinstall pays the `npm prefix -g` subprocess; subsequent calls
+ * read a single small JSON file. This matters because the function fires
+ * on every CLI invocation including hooks, where 200-600ms of `npm`
+ * startup would be visible per agent action.
+ *
+ * Uses `process.execPath` (not `argv[1]`) for the same reason `main.ts`
+ * does: under the bun-compiled binary, `argv[1]` is a virtual `/$bunfs/`
+ * path that `realpath` rejects.
+ */
+export function activateDevBuildModeIfDetected(): void {
+  if (!looksLikeMycoBinary(process.execPath)) return;
+
+  let execRealpath: string;
+  try {
+    execRealpath = fs.realpathSync(process.execPath);
+  } catch {
+    return;
+  }
+  const version = getPluginVersion();
+
+  const cached = readDevBuildCache();
+  if (cached && cached.exec_path_realpath === execRealpath && cached.package_version === version) {
+    if (cached.dev_build_cli_entry) setDevBuildCliEntry(cached.dev_build_cli_entry);
+    return;
+  }
+
+  let globalPrefix: string | null = null;
+  try {
+    globalPrefix = resolveGlobalPrefix();
+  } catch {
+    // npm not on PATH or otherwise unresolvable — treat as production
+    // and don't write a cache entry; we'll re-try next invocation.
+    return;
+  }
+  const devEntry = detectDevBuild(globalPrefix, process.execPath, fs.realpathSync);
+  if (devEntry) setDevBuildCliEntry(devEntry);
+  writeDevBuildCache({
+    exec_path_realpath: execRealpath,
+    package_version: version,
+    dev_build_cli_entry: devEntry,
+  });
+}
+
+interface DevBuildCacheEntry {
+  exec_path_realpath: string;
+  package_version: string;
+  dev_build_cli_entry: string | null;
+}
+
+function readDevBuildCache(): DevBuildCacheEntry | null {
+  try {
+    const raw = fs.readFileSync(DEV_BUILD_CACHE_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<DevBuildCacheEntry>;
+    if (
+      typeof parsed?.exec_path_realpath === 'string'
+      && typeof parsed?.package_version === 'string'
+      && (parsed.dev_build_cli_entry === null || typeof parsed.dev_build_cli_entry === 'string')
+    ) {
+      return parsed as DevBuildCacheEntry;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDevBuildCache(entry: DevBuildCacheEntry): void {
+  try {
+    fs.mkdirSync(MYCO_GLOBAL_DIR, { recursive: true });
+    fs.writeFileSync(DEV_BUILD_CACHE_PATH, JSON.stringify(entry, null, 2), 'utf-8');
+  } catch {
+    // Cache write failure is non-fatal; we just pay the subprocess again next run.
+  }
+}
+
+function looksLikeMycoBinary(execPath: string): boolean {
+  const base = path.basename(execPath).toLowerCase();
+  return base === 'myco' || base === 'myco.exe';
 }
 
 /**

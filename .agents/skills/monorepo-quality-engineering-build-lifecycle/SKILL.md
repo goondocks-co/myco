@@ -73,22 +73,6 @@ GROVE_PROJECT_ID=<project-id> make build-tenant
 - Test suites run with proper project context isolation
 - Database schema validation respects multi-tenant constraints
 
-### Grove Activation Quality Gates
-
-When activating Grove features, validate multi-tenant readiness:
-
-```bash
-# Grove activation validation
-./scripts/validate-grove-readiness.sh
-```
-
-**Grove activation checklist**:
-- Project-specific configuration isolated from system defaults
-- Database migrations tested with tenant isolation
-- API endpoints secured with proper project-scoped authentication
-- Build artifacts separated by project context
-- Test suite validates cross-project isolation boundaries
-
 ### Quality Gate Debugging
 
 When build stages fail:
@@ -141,30 +125,11 @@ import { PromptInput } from '@goondocks/myco';
 import type { PromptInput } from '@goondocks/myco';
 ```
 
-3. **Platform boundary contamination detection**:
-```bash
-# Check for cross-package value imports that break tree-shaking
-npm run analyze-bundle-contamination
-
-# Validate platform-specific builds don't leak cross-package dependencies
-for platform in linux darwin win32; do
-  npm run build --target=$platform
-  npm run validate-platform-isolation --platform=$platform
-done
-```
-
 **Tree-shaking fragility patterns**:
 - **Value imports of types**: Import types that should be type-only imports  
 - **Cross-package helper contamination**: Utility functions pulled across package boundaries
 - **Platform-specific leaks**: Native dependencies contaminating wrong platform builds
 - **Bundle size regression**: Sudden increases indicating contaminated tree-shaking
-
-4. **Bundle contamination validation**:
-```bash
-# After build, check package sizes for unexpected bloat
-ls -lh packages/myco-*/dist/
-# Compare against baseline - sudden size increases indicate contamination
-```
 
 ### Build Matrix Management
 
@@ -243,7 +208,7 @@ git branch -r | grep dependabot | head -5  # Process in batches
 git checkout -b deps/batch-update
 for branch in $(git branch -r | grep dependabot | head -5); do
   git merge $branch --no-edit
-ndone
+done
 npm test
 ```
 
@@ -252,6 +217,48 @@ npm test
 ## Procedure 4: Release Workflow Hardening
 
 Harden release workflows against common failure modes including multi-package publish pitfalls and OIDC auth issues.
+
+### Multi-Project Update Fan-Out Workflow
+
+Grove daemon supports `myco update --all-projects` for machine-scoped update coordination across all Groves:
+
+```bash
+# Multi-project update fan-out across all Groves
+myco update --all-projects
+
+# This replaces per-project update calls:
+# myco update --project /path/to/project1
+# myco update --project /path/to/project2
+# etc.
+```
+
+**Multi-project update quality patterns**:
+- **Fan-out validation**: Verify all projects receive updates without errors
+- **Failure isolation**: One project failure doesn't block others
+- **Resource management**: Bounded concurrency to prevent system overload
+- **Machine-scoped coordination**: Updates coordinated at machine level, not per-project
+
+### Grove Multi-Project Update Implementation
+
+Quality validation for machine-scoped update workflows:
+
+```bash
+# Validate multi-project update fan-out
+npm run test:multi-project-updates
+
+# Test resource management during fan-out
+npm run test:update-concurrency-limits
+
+# Validate failure isolation patterns
+npm run test:update-failure-isolation
+```
+
+**Multi-project update validation checklist**:
+- All registered projects in all Groves receive updates
+- Failed updates in one project don't block others
+- Resource usage stays within system limits during fan-out
+- Update status reporting aggregates across all projects
+- Machine-scoped runtime.command updates apply consistently
 
 ### Grove Public Release Readiness
 
@@ -336,27 +343,6 @@ cat .npmrc | grep _authToken
 ```bash
 # Test npm authentication without tokens
 npm whoami  # Should work with OIDC, not token auth
-```
-
-### npm Publish Safety
-
-1. **Pre-publication validation**:
-```bash
-# Validate package structure
-npm pack --dry-run
-tar -tzf *.tgz | head -20  # Preview package contents
-
-# Validate dependencies are resolved
-npm ls --production
-```
-
-2. **Workspace build orchestration** follows proper sequence:
-```bash
-# Root package.json build script order:
-# 1. shared package first
-# 2. core myco package
-# 3. dependent packages (team, collective, hub)
-npm run build
 ```
 
 ## Procedure 5: CI/CD Pipeline Robustness
@@ -480,41 +466,40 @@ grep -r "@goondocks/myco" packages/*/package.json
 
 Validate Grove daemon multi-project fan-out patterns, scope iteration infrastructure, and runtime cache management for quality engineering.
 
-### Multi-Project Staging GC Fan-Out Patterns
+### Multi-Project Update Fan-Out Quality Patterns
 
-Grove daemon must handle GC pressure during multi-project staging operations that fan out across project boundaries:
+Grove daemon `myco update --all-projects` requires robust fan-out quality validation:
 
-1. **GC fan-out validation**:
+1. **Update fan-out validation**:
 ```bash
-# Test multi-project GC patterns under load
-npm run test:multi-project-gc-load
+# Test multi-project update fan-out under load
+npm run test:multi-project-update-fanout
 
-# Monitor staging operation GC pressure
-npm run monitor:staging-gc-fanout
+# Validate update isolation and resource management
+npm run test:update-concurrency-bounds
 ```
 
 2. **Fan-out resource management**:
 ```typescript
-// BAD: Unbounded staging fan-out accumulates GC pressure
+// BAD: Unbounded update fan-out accumulates system pressure
 const allProjects = await getAllProjects();
-await Promise.all(allProjects.map(project => stageProject(project)));
+await Promise.all(allProjects.map(project => updateProject(project)));
 
-// GOOD: Bounded staging with GC pressure relief
+// GOOD: Bounded update with resource management
 const projectChunks = chunk(allProjects, 4); // Process in chunks of 4
 for (const chunk of projectChunks) {
-  await Promise.all(chunk.map(project => stageProject(project)));
-  // Allow GC between chunks
+  await Promise.all(chunk.map(project => updateProject(project)));
+  // Allow system recovery between chunks
   await new Promise(resolve => setImmediate(resolve));
-  if (global.gc) global.gc(); // Manual GC if available
 }
 ```
 
-**Multi-project staging GC patterns**:
-- **Chunked processing**: Break large fan-outs into manageable chunks
-- **GC relief points**: Allow garbage collection between chunks
-- **Memory pressure monitoring**: Track heap usage during fan-out operations
-- **Resource cleanup**: Explicit cleanup of staging artifacts per chunk
-- **Bounded concurrency**: Limit concurrent staging operations to prevent OOM
+**Multi-project update fan-out patterns**:
+- **Chunked processing**: Break large update fan-outs into manageable chunks
+- **Failure isolation**: One project failure doesn't block others
+- **Resource relief points**: Allow system recovery between update chunks
+- **Progress reporting**: Aggregate update status across all projects
+- **Bounded concurrency**: Limit concurrent updates to prevent system overload
 
 ### Scope Iterator Validation
 
@@ -566,113 +551,6 @@ const dbHandle = await openDatabase(projectRoot);
 const dbHandle = await cache.resolveDatabase(projectId, projectRoot);
 ```
 
-3. **Bounded handle management with re-resolution**:
-```typescript
-// Grove runtime cache with bounded handle management
-class GroveRuntimeCache {
-  private dbCache = new LRU<string, Database>({ max: 20 });
-  private embeddingCache = new LRU<string, EmbeddingManager>({ max: 10 });
-
-  async resolveDatabase(projectId: string, projectRoot: string): Promise<Database> {
-    const cacheKey = `${projectId}:${projectRoot}`;
-    
-    if (this.dbCache.has(cacheKey)) {
-      return this.dbCache.get(cacheKey)!;
-    }
-
-    // Re-resolution on cache miss
-    const db = await openDatabase(projectRoot);
-    this.dbCache.set(cacheKey, db);
-    
-    // Pin during operation to prevent premature eviction
-    this.pin(cacheKey);
-    return db;
-  }
-
-  // Handle management validation patterns
-  private validateCacheBounds(): void {
-    if (this.dbCache.size > 20 || this.embeddingCache.size > 10) {
-      throw new Error('Cache bounds exceeded - handle leak detected');
-    }
-  }
-}
-```
-
-**Grove cache quality patterns**:
-- **Bounded LRU**: Database and embedding handles bounded by LRU
-- **Re-resolution**: Handles can be evicted and re-resolved on demand
-- **Pin/unpin**: Prevent premature eviction during active operations
-- **Handle leak detection**: Validate cache bounds don't grow unbounded
-- **Graceful degradation**: Cache misses trigger re-resolution, not failures
-
-### Per-Project Lifecycle Management
-
-Validate cold project gating and scheduled task dispatch patterns:
-
-1. **Cold project gating validation**:
-```bash
-# Test cold project detection and gating
-npm run test:cold-project-gating
-
-# Validate scheduled task dispatch respects project state
-npm run test:scheduled-dispatch
-```
-
-2. **Project lifecycle patterns**:
-```typescript
-// Validate proper cold project handling
-// BAD: Processing inactive projects
-await processAllProjects();
-
-// GOOD: Cold gating with activity detection and scheduled dispatch
-await forEachProjectCold(cache, logger, async (projectId, projectRoot) => {
-  // Only processes projects with recent activity
-  await processActiveProject(projectId, projectRoot);
-}, {
-  maxConcurrency: 4,
-  activityThresholdHours: 24,
-  scheduledTaskDispatch: true
-});
-```
-
-3. **Scheduled task dispatch with cold gating**:
-```typescript
-// Cold gating with scheduled task coordination
-interface ColdGatingOptions {
-  activityThresholdHours: number;
-  scheduledTaskDispatch: boolean;
-  maxConcurrency: number;
-  gcReliefInterval: number; // GC relief between chunks
-}
-
-async function forEachProjectCold(
-  cache: GroveRuntimeCache,
-  logger: Logger,
-  fn: ProjectProcessor,
-  options: ColdGatingOptions
-): Promise<void> {
-  const activeProjects = await getActiveProjects(options.activityThresholdHours);
-  const chunks = chunk(activeProjects, options.maxConcurrency);
-
-  for (const chunk of chunks) {
-    // Scheduled dispatch with cold gating
-    await Promise.all(chunk.map(async (project) => {
-      if (await isProjectCold(project.id, options.activityThresholdHours)) {
-        logger.debug(`Skipping cold project: ${project.id}`);
-        return;
-      }
-
-      await fn(project.id, project.root);
-    }));
-
-    // GC relief between chunks for fan-out operations
-    if (options.gcReliefInterval) {
-      await new Promise(resolve => setTimeout(resolve, options.gcReliefInterval));
-    }
-  }
-}
-```
-
 ## Cross-Cutting Gotchas
 
 ### Build System Pitfalls
@@ -703,5 +581,5 @@ async function forEachProjectCold(
 - **Cross-project contamination**: Grove activation can introduce cross-project dependencies without proper isolation checks
 - **Scope iterator misuse**: Direct project iteration bypasses cold gating and can process inactive projects
 - **Cache handle leaks**: Unbounded handle accumulation without proper LRU bounds degrades Grove daemon performance
-- **Multi-project staging failures**: Fan-out operations can accumulate GC pressure without proper resource management and chunked processing
-- **GC pressure accumulation**: Multi-project operations without GC relief points can cause OOM failures during staging
+- **Multi-project update failures**: `--all-projects` fan-out can overwhelm system resources without proper chunking and resource management
+- **Update isolation breakdown**: One failed project update can cascade to others without proper failure isolation patterns

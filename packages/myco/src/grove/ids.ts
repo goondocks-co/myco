@@ -130,6 +130,22 @@ export function slugifyGroveName(name: string): string {
   return slug || 'default';
 }
 
+/**
+ * URL-stable slug for a project under a Grove. Combines the slugified
+ * project name with a 6-hex suffix derived from the project id so two
+ * projects with the same name in the same Grove still get distinct URLs.
+ *
+ * Canonical: every code path that surfaces a project URL — the daemon
+ * `/api/groves` response, `myco update`'s post-migration banner, the UI
+ * router — must call this function rather than reinventing the formula.
+ * Drift between callers will produce dashboard URLs that 404.
+ */
+export function projectUrlSlug(projectName: string, projectId: string): string {
+  const base = slugifyGroveName(projectName);
+  const suffix = crypto.createHash('sha1').update(projectId).digest('hex').slice(0, 6);
+  return `${base}-${suffix}`;
+}
+
 function randomOpaqueSuffix(): string {
   return crypto.randomBytes(RANDOM_BYTES).toString('hex');
 }

@@ -62,6 +62,12 @@ export class DaemonServer {
    * that didn't inherit the env) can recover it.
    */
   private authToken: string;
+  /**
+   * Cache of post-injection dashboard HTML, keyed by source file path.
+   * The token is fixed for the daemon's lifetime and the built HTML is
+   * immutable, so reading + injecting on every request is wasted work.
+   */
+  private htmlCache = new Map<string, string>();
 
   constructor(config: DaemonServerConfig) {
     this.vaultDir = config.vaultDir;
@@ -256,12 +262,26 @@ export class DaemonServer {
       const result = resolveStaticFile(this.uiDir, pathname);
       if (result) {
         try {
-          const content = await fs.promises.readFile(result.filePath);
-          res.writeHead(200, {
-            'Content-Type': result.contentType,
-            'Cache-Control': result.cacheControl,
-          });
-          res.end(content);
+          if (result.contentType === 'text/html') {
+            let injected = this.htmlCache.get(result.filePath);
+            if (injected === undefined) {
+              const raw = await fs.promises.readFile(result.filePath, 'utf-8');
+              injected = injectDashboardBootstrap(raw, this.authToken);
+              this.htmlCache.set(result.filePath, injected);
+            }
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': result.cacheControl,
+            });
+            res.end(injected);
+          } else {
+            const content = await fs.promises.readFile(result.filePath);
+            res.writeHead(200, {
+              'Content-Type': result.contentType,
+              'Cache-Control': result.cacheControl,
+            });
+            res.end(content);
+          }
         } catch {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'not found' }));
@@ -427,6 +447,25 @@ export class DaemonServer {
   private removeDaemonJson(): void {
     removeDaemonState(this.daemonStatePath, process.pid);
   }
+}
+
+/**
+ * Inject the daemon-issued bearer token into the dashboard HTML so the
+ * browser-side `fetchJson` wrapper can attach `x-myco-auth` to
+ * context-switching API calls. Without this the `/api/stats` endpoint
+ * rejects context-aware URLs with `unauthorized_context_switch`.
+ *
+ * Throws if the source HTML lacks `</head>` — silent no-op would leave
+ * the dashboard dead in the water with no signal in logs. We'd rather
+ * fail loudly on the first request and surface the regression in CI.
+ */
+function injectDashboardBootstrap(html: string, authToken: string): string {
+  const safeToken = JSON.stringify(authToken);
+  const bootstrap = `<script>window.__MYCO_AUTH__=${safeToken};</script>`;
+  if (!html.includes('</head>')) {
+    throw new Error('dashboard HTML is missing </head>; cannot inject auth bootstrap');
+  }
+  return html.replace('</head>', `${bootstrap}</head>`);
 }
 
 /**

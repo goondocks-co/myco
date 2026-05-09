@@ -6,7 +6,12 @@ import {
   setDefaultGrove,
 } from '@myco/grove/registry.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { activateProjectMigration, completeLegacyArchive } from '@myco/grove/activation.js';
+import {
+  activateProjectMigration,
+  completeLegacyArchive,
+  summarizeImportedRowCount,
+} from '@myco/grove/activation.js';
+import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { parseStringFlag } from './shared.js';
 
 const USAGE = `Usage: myco grove <command>
@@ -89,11 +94,21 @@ export async function run(args: string[]): Promise<void> {
     console.log(`${mode} project ${result.project_name}`);
     console.log(`Project:  ${result.project_id}`);
     console.log(`Grove:    ${result.grove.name} (${result.grove.slug})`);
-    console.log(`Imported: ${summarizeImportedRows(result.import_result)}`);
+    console.log(`Imported: ${summarizeImportedRowCount(result.import_result)} rows`);
     if (result.dry_run) {
       console.log('No project binding files were written.');
     } else {
       console.log(`Marker:   ${result.marker_path}`);
+      const dashboardUrl = resolveProjectDashboardUrl({
+        vaultDir: result.project_vault_dir,
+        groveSlug: result.grove.slug,
+        groveId: result.grove.id,
+        projectId: result.project_id,
+        projectName: result.project_name,
+      });
+      if (dashboardUrl) {
+        console.log(`Dashboard: ${dashboardUrl}`);
+      }
     }
     return;
   }
@@ -117,12 +132,4 @@ export async function run(args: string[]): Promise<void> {
   }
 
   throw new Error(`Unknown grove command: ${cmd}`);
-}
-
-function summarizeImportedRows(result: ReturnType<typeof activateProjectMigration>['import_result']): string {
-  if (!result) return '0 rows';
-  const total = Object.entries(result)
-    .filter(([key]) => !key.startsWith('skipped_'))
-    .reduce((sum, [, value]) => sum + Number(value), 0);
-  return `${total} rows`;
 }
