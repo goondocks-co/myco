@@ -1,6 +1,6 @@
 /**
- * Tests for bin/runtime-redirect.cjs — the CLI shim's machine-scope
- * runtime pin reader.
+ * Tests for bin/runtime-redirect.cjs — the CLI shim's layered runtime pin
+ * reader (project pin via cwd walk-up, then machine pin at ~/.myco/).
  *
  * The orchestration in `maybeRedirect` calls `process.exit` on successful
  * redirect, so it's exercised via a spawned subprocess. The pure helpers
@@ -15,8 +15,11 @@ import { spawnSync } from 'node:child_process';
 
 const MODULE_PATH = path.resolve('packages/myco/bin/runtime-redirect.cjs');
 
+type Found = { pin: string; source: string };
 type Helpers = {
-  readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => string | null;
+  readMachineRuntimeCommand: (env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => Found | null;
+  readProjectRuntimeCommand: (startDir: string, traceRefusal?: (reason: string) => void) => Found | null;
+  readLayeredRuntimeCommand: (startDir: string, env?: NodeJS.ProcessEnv, traceRefusal?: (reason: string) => void) => Found | null;
   pointsAtSelf: (target: string, selfPath: string) => boolean;
   checkRuntimeCommandTrust: (filePath: string) => { ok: boolean; reason?: string };
 };
@@ -54,7 +57,7 @@ describe('readMachineRuntimeCommand', () => {
   it('returns the trimmed contents when runtime.command is present', () => {
     fs.writeFileSync(path.join(tmpRoot, 'runtime.command'), '/opt/pinned/myco\n');
     const { readMachineRuntimeCommand } = loadModule();
-    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })?.pin).toBe('/opt/pinned/myco');
   });
 
   it('returns null when runtime.command exists but is empty / whitespace only', () => {
@@ -93,7 +96,7 @@ describe('readMachineRuntimeCommand', () => {
     fs.writeFileSync(filePath, '/opt/pinned/myco');
     fs.chmodSync(filePath, 0o600);
     const { readMachineRuntimeCommand } = loadModule();
-    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })?.pin).toBe('/opt/pinned/myco');
   });
 
   it('accepts a pin file with 0o644 perms (group/other readable but not writable)', () => {
@@ -102,7 +105,7 @@ describe('readMachineRuntimeCommand', () => {
     fs.writeFileSync(filePath, '/opt/pinned/myco');
     fs.chmodSync(filePath, 0o644);
     const { readMachineRuntimeCommand } = loadModule();
-    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })).toBe('/opt/pinned/myco');
+    expect(readMachineRuntimeCommand({ MYCO_HOME: tmpRoot })?.pin).toBe('/opt/pinned/myco');
   });
 
   it('checkRuntimeCommandTrust returns ok for owner-only files', () => {
@@ -121,13 +124,75 @@ describe('readMachineRuntimeCommand', () => {
   });
 
   it('expands a leading ~ in MYCO_HOME', () => {
-    // Write the file under the test's HOME so `MYCO_HOME=~/myco-home-test/.myco`
-    // expands to a real path. Cleanup happens via afterEach since tmpRoot
-    // already covers it — but we need to write under HOME for the expansion
-    // case, so we just verify the no-throw / null branch.
     const { readMachineRuntimeCommand } = loadModule();
-    // ~ alone is supported as a shorthand for HOME.
     expect(() => readMachineRuntimeCommand({ MYCO_HOME: '~' })).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readProjectRuntimeCommand — walk-up from cwd
+// ---------------------------------------------------------------------------
+
+describe('readProjectRuntimeCommand', () => {
+  it('returns null when no ancestor of startDir has a .myco/runtime.command', () => {
+    const { readProjectRuntimeCommand } = loadModule();
+    expect(readProjectRuntimeCommand(tmpRoot)).toBeNull();
+  });
+
+  it('returns the pin when startDir itself has .myco/runtime.command', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/dev/myco-dev\n');
+    const { readProjectRuntimeCommand } = loadModule();
+    expect(readProjectRuntimeCommand(tmpRoot)?.pin).toBe('/dev/myco-dev');
+  });
+
+  it('walks up from a nested subdirectory to find an ancestor pin', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/dev/myco-dev');
+    const nested = path.join(tmpRoot, 'a', 'b', 'c');
+    fs.mkdirSync(nested, { recursive: true });
+    const { readProjectRuntimeCommand } = loadModule();
+    expect(readProjectRuntimeCommand(nested)?.pin).toBe('/dev/myco-dev');
+  });
+
+  it('returns the closest ancestor when multiple .myco/runtime.command files exist', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/outer/myco');
+    const inner = path.join(tmpRoot, 'inner');
+    fs.mkdirSync(path.join(inner, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(inner, '.myco', 'runtime.command'), '/inner/myco');
+    const { readProjectRuntimeCommand } = loadModule();
+    expect(readProjectRuntimeCommand(inner)?.pin).toBe('/inner/myco');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readLayeredRuntimeCommand — project pin overrides machine pin
+// ---------------------------------------------------------------------------
+
+describe('readLayeredRuntimeCommand', () => {
+  it('returns project pin when both project and machine pins exist', () => {
+    fs.mkdirSync(path.join(tmpRoot, '.myco'));
+    fs.writeFileSync(path.join(tmpRoot, '.myco', 'runtime.command'), '/project/myco-dev');
+    const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
+    fs.writeFileSync(path.join(home, 'runtime.command'), '/machine/myco');
+    const { readLayeredRuntimeCommand } = loadModule();
+    expect(readLayeredRuntimeCommand(tmpRoot, { MYCO_HOME: home })?.pin).toBe('/project/myco-dev');
+  });
+
+  it('falls back to machine pin when no project pin exists in startDir ancestry', () => {
+    const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
+    fs.writeFileSync(path.join(home, 'runtime.command'), '/machine/myco');
+    const sub = path.join(tmpRoot, 'sub');
+    fs.mkdirSync(sub);
+    const { readLayeredRuntimeCommand } = loadModule();
+    expect(readLayeredRuntimeCommand(sub, { MYCO_HOME: home })?.pin).toBe('/machine/myco');
+  });
+
+  it('returns null when neither layer has a pin', () => {
+    const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
+    const { readLayeredRuntimeCommand } = loadModule();
+    expect(readLayeredRuntimeCommand(tmpRoot, { MYCO_HOME: home })).toBeNull();
   });
 });
 
@@ -319,14 +384,59 @@ describe('maybeRedirect (integration)', () => {
   it('traces the skip reason when MYCO_DEBUG_REDIRECT is set and no pin exists', () => {
     const { shimPath } = makeShim();
     const home = makeMycoHome();
+    // cwd is a fresh tmpRoot child with no `.myco/runtime.command` in any
+    // ancestor and an empty MYCO_HOME — exercises the both-layers-empty
+    // fallthrough trace.
+    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
 
     const res = spawnSync(process.execPath, [shimPath], {
-      cwd: tmpRoot,
+      cwd,
       encoding: 'utf-8',
       env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined, MYCO_DEBUG_REDIRECT: '1' },
     });
     expect(res.status).toBe(0);
-    expect(res.stderr).toContain('[myco] redirect: skip (no ~/.myco/runtime.command pin found)');
+    expect(res.stderr).toContain('[myco] redirect: skip (no project or machine runtime.command pin)');
+  });
+
+  it('honors a project pin over the machine pin when both are set', () => {
+    const { shimPath } = makeShim();
+    const home = makeMycoHome();
+
+    const projectPinned = path.join(tmpRoot, 'project-pinned.sh');
+    fs.writeFileSync(projectPinned, '#!/bin/sh\nprintf "project:%s" "$*"\n', { mode: 0o755 });
+    const machinePinned = path.join(tmpRoot, 'machine-pinned.sh');
+    fs.writeFileSync(machinePinned, '#!/bin/sh\nprintf "machine:%s" "$*"\n', { mode: 0o755 });
+
+    const projectRoot = fs.mkdtempSync(path.join(tmpRoot, 'project-'));
+    fs.mkdirSync(path.join(projectRoot, '.myco'));
+    fs.writeFileSync(path.join(projectRoot, '.myco', 'runtime.command'), projectPinned);
+    fs.writeFileSync(path.join(home, 'runtime.command'), machinePinned);
+
+    const res = spawnSync(process.execPath, [shimPath, 'doctor'], {
+      cwd: projectRoot,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('project:doctor');
+  });
+
+  it('falls back to the machine pin when invoked outside any project pin tree', () => {
+    const { shimPath } = makeShim();
+    const home = makeMycoHome();
+    const machinePinned = path.join(tmpRoot, 'machine-only.sh');
+    fs.writeFileSync(machinePinned, '#!/bin/sh\nprintf "machine:%s" "$*"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(home, 'runtime.command'), machinePinned);
+    // Walk up from tmpRoot finds no .myco/ dir — pure machine-pin path.
+    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'unrelated-'));
+
+    const res = spawnSync(process.execPath, [shimPath, 'doctor'], {
+      cwd,
+      encoding: 'utf-8',
+      env: { ...process.env, MYCO_HOME: home, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('machine:doctor');
   });
 
   it('traces the skip reason when MYCO_REDIRECTED is already set', () => {

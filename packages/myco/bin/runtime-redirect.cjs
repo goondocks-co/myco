@@ -1,21 +1,24 @@
-// Machine-scope runtime redirect for the myco CLI shim.
+// Layered runtime redirect for the myco CLI shim.
 //
-// When the machine has `~/.myco/runtime.command` set (managed beta runtime
-// or `make dev-link`), this helper re-execs into that binary so the
-// interactive CLI matches the binary the daemon, hooks, and MCP server
-// already use. Without it, `myco doctor`, `myco update`, etc. resolve to
-// the global binary while every other dispatch path resolves to the pin —
-// producing version skew between CLI and daemon.
+// Looks up `runtime.command` in two scopes, in order:
 //
-// `~/.myco/runtime.command` is the single source of truth for "which myco
-// does this machine use." File absent → bare `myco` from PATH.
+//   1. **Project**: walk up from cwd looking for `<dir>/.myco/runtime.command`.
+//      Written by `make dev-link` so dev-mode applies only when the user is
+//      working inside the dogfood project — not machine-wide.
+//   2. **Machine**: `~/.myco/runtime.command` (honoring `MYCO_HOME`).
+//      Written by the beta-channel installer to redirect every CLI invocation
+//      on the host into the managed runtime under `~/.myco/runtime/`.
 //
-// G7: the runtime.command pin file is exec'd as the user's `myco` binary
-// for every CLI invocation. After Wave 1 rescoped this from per-project
-// to per-machine, a sloppy umask that leaves it group-writable would let
-// a hostile local user redirect every `myco` command on the host. We
-// therefore refuse to honor any pin file whose stat shows owner != us
-// or whose mode permits group/other write.
+// Either layer's value is the absolute path of the binary to re-exec.
+// Falling through both means "no redirect — run the bundled binary."
+// This mirrors the layered config hierarchy: project pin overrides machine
+// pin, machine pin applies as fallback.
+//
+// G7 (security): `runtime.command` files are exec'd as the user's `myco`
+// binary. A sloppy umask that leaves either file group/other-writable would
+// let a hostile local user redirect every `myco` command. Both layers go
+// through `checkRuntimeCommandTrust`, which refuses any pin file whose stat
+// shows owner != us or whose mode permits group/other write.
 
 'use strict';
 
@@ -24,20 +27,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022; // group-write or other-write
+const RUNTIME_COMMAND_INSECURE_MODE_MASK = 0o022;
+const RUNTIME_COMMAND_FILENAME = 'runtime.command';
 
-/**
- * Inspect the `~/.myco/runtime.command` file's owner and mode. Returns
- * `{ ok: true }` when the file is owner-only writable AND owned by the
- * current process's uid; otherwise `{ ok: false, reason }` describing
- * the refusal so callers can trace skips when MYCO_DEBUG_REDIRECT is
- * set.
- *
- * On non-POSIX platforms (Windows) `fs.statSync` reports synthetic uid
- * values that won't match `process.getuid()` — we treat the platform
- * as "ACL-managed elsewhere" and short-circuit to ok=true so the pin
- * still works there. POSIX is where the threat lives.
- */
 function checkRuntimeCommandTrust(filePath) {
   if (process.platform === 'win32') return { ok: true };
   let stat;
@@ -58,33 +50,54 @@ function checkRuntimeCommandTrust(filePath) {
   return { ok: true };
 }
 
-/**
- * Read `~/.myco/runtime.command` (honoring `MYCO_HOME` when set). Returns
- * the trimmed file contents, or null when the file is missing, empty,
- * or fails the G7 trust check (foreign owner or group/other-writable).
- *
- * Filename literal mirrors `MACHINE_RUNTIME_COMMAND_FILENAME` from
- * `src/constants/update.ts`. This file is plain CJS (runs before bun) so
- * it can't import the TS source of truth.
- *
- * The `traceRefusal` callback (optional) is invoked with a string when
- * the trust check rejects the file — so `maybeRedirect` can surface the
- * reason to stderr under MYCO_DEBUG_REDIRECT.
- */
-function readMachineRuntimeCommand(env = process.env, traceRefusal) {
+function readPinAt(filePath, traceRefusal) {
+  const trust = checkRuntimeCommandTrust(filePath);
+  if (!trust.ok) {
+    if (typeof traceRefusal === 'function') traceRefusal(`${filePath}: ${trust.reason}`);
+    return null;
+  }
   try {
-    const home = env.MYCO_HOME ? expandHome(env.MYCO_HOME) : path.join(os.homedir(), '.myco');
-    const filePath = path.join(home, 'runtime.command');
-    const trust = checkRuntimeCommandTrust(filePath);
-    if (!trust.ok) {
-      if (typeof traceRefusal === 'function') traceRefusal(trust.reason);
-      return null;
-    }
     const raw = fs.readFileSync(filePath, 'utf-8').trim();
     return raw || null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Walk up from `startDir` looking for `<dir>/.myco/runtime.command`. Returns
+ * `{ pin, source }` on the first hit, or null when no project pin exists in
+ * any ancestor of `startDir`. Stops at the filesystem root.
+ */
+function readProjectRuntimeCommand(startDir, traceRefusal) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(dir, '.myco', RUNTIME_COMMAND_FILENAME);
+    const pin = readPinAt(candidate, traceRefusal);
+    if (pin) return { pin, source: candidate };
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function readMachineRuntimeCommand(env, traceRefusal) {
+  const home = env.MYCO_HOME ? expandHome(env.MYCO_HOME) : path.join(os.homedir(), '.myco');
+  const filePath = path.join(home, RUNTIME_COMMAND_FILENAME);
+  const pin = readPinAt(filePath, traceRefusal);
+  return pin ? { pin, source: filePath } : null;
+}
+
+/**
+ * Layered lookup: project pin (walking up from `startDir`) wins over machine
+ * pin. Returns `{ pin, source }` describing which file produced the value,
+ * or null when neither layer has a usable pin.
+ */
+function readLayeredRuntimeCommand(startDir, env = process.env, traceRefusal) {
+  return (
+    readProjectRuntimeCommand(startDir, traceRefusal)
+    ?? readMachineRuntimeCommand(env, traceRefusal)
+  );
 }
 
 function expandHome(value) {
@@ -93,16 +106,7 @@ function expandHome(value) {
   return value;
 }
 
-/**
- * True when `target` and `selfPath` resolve (through symlinks) to the same
- * binary — used to skip a redirect that would just re-exec into ourselves.
- * Returns false on any filesystem error (target missing, permission, etc.)
- * so the caller proceeds to attempt the exec and handles ENOENT there.
- */
 function pointsAtSelf(target, selfPath) {
-  // Unqualified PATH commands (`myco`, `myco-dev`) can't be self-redirects:
-  // selfPath is always absolute, so realpathSync(target) would either fail or
-  // resolve to a different binary. Skip the syscall on the common case.
   if (!target.includes(path.sep)) return false;
   try {
     return fs.realpathSync(target) === fs.realpathSync(selfPath);
@@ -112,20 +116,18 @@ function pointsAtSelf(target, selfPath) {
 }
 
 /**
- * If a machine-scope runtime pin applies and points at a different binary
- * than ourselves, re-exec into it with forwarded argv and an env var set
- * to prevent infinite redirect loops. Exits the process on successful
+ * If a runtime pin (project or machine) applies and points at a different
+ * binary than ourselves, re-exec into it with forwarded argv and an env var
+ * set to prevent infinite redirect loops. Exits the process on successful
  * redirect (propagating the child's exit code).
  *
- * Returns `false` when no redirect happens, so the caller falls through
- * to its normal dispatch. Skip reasons: `MYCO_REDIRECTED` already set,
- * no pin found, pin points at self, or pin target is missing.
+ * Returns `false` when no redirect happens. Skip reasons: `MYCO_REDIRECTED`
+ * already set, no pin found in either layer, pin points at self, or pin
+ * target is missing.
  *
- * When `MYCO_DEBUG_REDIRECT` is set in env, each redirect and each skip
- * emits a single-line trace to stderr — useful when `which myco` reports
- * one binary but `myco --version` seems to run a different one.
+ * `MYCO_DEBUG_REDIRECT=1` traces each lookup decision on stderr.
  */
-function maybeRedirect(selfPath, env = process.env) {
+function maybeRedirect(selfPath, env = process.env, startDir = process.cwd()) {
   const debug = Boolean(env.MYCO_DEBUG_REDIRECT);
   const trace = (msg) => {
     if (debug) process.stderr.write(`[myco] redirect: ${msg}\n`);
@@ -135,28 +137,26 @@ function maybeRedirect(selfPath, env = process.env) {
     trace('skip (MYCO_REDIRECTED already set)');
     return false;
   }
-  const pin = readMachineRuntimeCommand(env, (reason) => {
-    trace(`refused (${reason})`);
-  });
-  if (!pin) {
-    trace('skip (no ~/.myco/runtime.command pin found)');
+  const found = readLayeredRuntimeCommand(startDir, env, (reason) => trace(`refused (${reason})`));
+  if (!found) {
+    trace('skip (no project or machine runtime.command pin)');
     return false;
   }
-  if (pointsAtSelf(pin, selfPath)) {
-    trace(`skip (pin points at self: ${pin})`);
+  if (pointsAtSelf(found.pin, selfPath)) {
+    trace(`skip (pin points at self: ${found.pin})`);
     return false;
   }
 
-  trace(`${selfPath} → ${pin}`);
+  trace(`${selfPath} → ${found.pin} (via ${found.source})`);
   try {
-    execFileSync(pin, process.argv.slice(2), {
+    execFileSync(found.pin, process.argv.slice(2), {
       stdio: 'inherit',
       env: { ...env, MYCO_REDIRECTED: '1' },
     });
     process.exit(0);
   } catch (err) {
     if (err && err.code === 'ENOENT') {
-      trace(`fallback to normal dispatch (pin target missing: ${pin})`);
+      trace(`fallback to normal dispatch (pin target missing: ${found.pin})`);
       return false;
     }
     process.exit((err && typeof err.status === 'number') ? err.status : 1);
@@ -164,7 +164,9 @@ function maybeRedirect(selfPath, env = process.env) {
 }
 
 module.exports = {
+  readProjectRuntimeCommand,
   readMachineRuntimeCommand,
+  readLayeredRuntimeCommand,
   pointsAtSelf,
   maybeRedirect,
   checkRuntimeCommandTrust,

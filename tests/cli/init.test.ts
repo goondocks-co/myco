@@ -213,9 +213,11 @@ describe('myco init', () => {
     expect(gitignore).toContain('logs/');
     expect(gitignore).toContain('attachments/');
     expect(gitignore).toContain('migration/');
-    // runtime.command and runtime/ moved to ~/.myco/ — no longer
-    // project-local artifacts to gitignore.
-    expect(gitignore).not.toContain('runtime.command');
+    // Project-scope runtime pin (written by `make dev-link`) is per-machine
+    // and must not be committed. The legacy machine-scope `runtime/` and
+    // `runtime.tmp/` directories don't live under .myco/ — they're at
+    // `~/.myco/` — and never need a project-level gitignore entry.
+    expect(gitignore).toContain('runtime.command');
     expect(gitignore).not.toContain('runtime.tmp/');
   });
 

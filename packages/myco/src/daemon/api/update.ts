@@ -77,7 +77,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
    * snapshot into all downstream helpers instead of re-reading.
    */
   function readVaultSnapshot() {
-    const runtimeCommand = resolveRuntimeCommand();
+    const runtimeCommand = resolveRuntimeCommand(vaultDir);
     const desiredChannel = readProjectReleaseChannel(vaultDir);
     const runtimeScope: 'managed' | 'machine' =
       runtimeCommand !== null && isManagedMachineRuntime(runtimeCommand)
