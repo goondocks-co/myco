@@ -428,9 +428,9 @@ class TransportParityGate {
 
 ## Procedure F: Grove Registry Management and Home Path Primitives
 
-Implement standardized Grove paths and registry management.
+Implement standardized Grove paths and registry management with comprehensive machine runtime support.
 
-### Grove Home Primitives
+### Grove Home and Machine Runtime Primitives
 
 Use Grove path constants from `packages/myco/src/grove/paths.ts`:
 ```typescript
@@ -440,19 +440,60 @@ export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
+export const GROVE_REGISTRY_DIRNAME = 'registry';
+export const GROVE_REGISTRY_FILENAME = 'registry.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
+export const SERVICE_DIRNAME = 'service';
 
 // Resolve Grove directories and service paths
 const groveHome = resolveMycoHome();
 const grovesDir = resolveGrovesDir(groveHome);
 const groveDir = resolveGroveDir(groveId, groveHome);
+const groveRegistryPath = resolveGroveRegistryPath(groveHome);
 const daemonStatePath = resolveServiceDaemonStatePath();
+
+// Machine runtime path resolution for runtime state management
+const runtimeDir = resolveMachineRuntimeDir(groveHome);
+const runtimeTmpDir = resolveMachineRuntimeTmpDir(groveHome);
+const runtimeCommandPath = resolveMachineRuntimeCommandPath(groveHome, commandName);
+```
+
+### Machine Runtime State Management
+
+Use machine runtime paths for temporary state, command execution, and machine-local resources:
+```typescript
+import { resolveMachineRuntimeDir, resolveMachineRuntimeTmpDir, resolveMachineRuntimeCommandPath } from '../grove/paths.js';
+
+// Machine runtime directory setup for Grove operations
+async function setupMachineRuntime(groveHome: string) {
+  const runtimeDir = resolveMachineRuntimeDir(groveHome);
+  const tmpDir = resolveMachineRuntimeTmpDir(groveHome);
+  
+  // Ensure machine runtime directories exist
+  await fs.promises.mkdir(runtimeDir, { recursive: true });
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  
+  return { runtimeDir, tmpDir };
+}
+
+// Command path resolution for machine-local executables
+function resolveRuntimeCommand(groveHome: string, commandName: string): string {
+  return resolveMachineRuntimeCommandPath(groveHome, commandName);
+}
+
+// Temporary file management during Grove operations
+async function createRuntimeTempFile(groveHome: string, suffix: string): Promise<string> {
+  const tmpDir = resolveMachineRuntimeTmpDir(groveHome);
+  const tempPath = path.join(tmpDir, `grove-temp-${Date.now()}-${suffix}`);
+  return tempPath;
+}
 ```
 
 ### Grove Registry Structure
 
-Maintain Grove metadata in `grove.toml` files:
+Maintain Grove metadata in `grove.toml` files and centralized registry using `GROVE_REGISTRY_FILENAME`:
 ```toml
+# Individual grove.toml (GROVE_METADATA_FILENAME)
 [grove]
 id = "grove_abc123"
 name = "production"
@@ -461,6 +502,19 @@ status = "active"
 
 [projects]
 # Project bindings managed in projects.toml
+```
+
+Registry structure in `registry.toml` (GROVE_REGISTRY_FILENAME):
+```toml
+[registry]
+version = "1.0"
+
+[[groves]]
+id = "grove_abc123"
+name = "production"
+endpoint = "https://grove.myco.dev"
+status = "active"
+created_at = "2026-05-01T12:00:00Z"
 ```
 
 ### CLI Surface Implementation
@@ -481,9 +535,14 @@ async function listGroves() {
   }));
 }
 
-// Grove Selection
+// Grove Selection with machine runtime path support
 async function useGrove(nameOrId: string) {
   const grove = resolveGrove(nameOrId);
+  
+  // Setup machine runtime for Grove operations
+  const groveHome = resolveMycoHome();
+  await setupMachineRuntime(groveHome);
+  
   // Update default Grove binding
 }
 ```
@@ -508,7 +567,7 @@ myco init --grove-only --grove "production"
 
 ### Grove Discovery Logic
 
-Implement Grove resolution:
+Implement Grove resolution with machine runtime support:
 ```typescript
 async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
   const availableGroves = await loadAvailableGroves();
@@ -542,10 +601,16 @@ async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
 
 **Transport Parity Testing**: When adding new tools or modifying context handling, test both HTTP MCP and CLI transports to ensure consistent behavior with the global daemon architecture.
 
-**Grove Registry Corruption**: Malformed Grove registry files cause CLI commands to fail silently. Always validate registry structure on load and provide helpful error messages.
+**Grove Registry Corruption**: Malformed Grove registry files cause CLI commands to fail silently. Always validate registry structure on load and provide helpful error messages. Use `GROVE_REGISTRY_FILENAME` constant for consistent path resolution.
 
 **CLI-to-Daemon MCP Bridge**: The `myco mcp` command is the bridge point between stdio MCP clients and the global daemon. Any context extraction failures here break agent tool access.
 
 **Grove-Only Mode State Management**: When running in Grove-only mode (no local daemon), ensure all state paths resolve correctly using `resolveServiceDaemonStatePath()` to prevent file not found errors during UI initialization.
 
 **Mode A UI Context Isolation**: The Mode A UI switcher must properly isolate Grove-connected project contexts. Failure to thread context through UI state management causes cross-project data leakage in multi-Grove environments.
+
+**Machine Runtime Path Resolution**: Use machine runtime path primitives (`resolveMachineRuntimeDir`, `resolveMachineRuntimeCommandPath`, `resolveMachineRuntimeTmpDir`) for any operations requiring machine-local runtime state. Direct path construction bypasses Grove home resolution and causes path inconsistencies across environments.
+
+**Registry File Naming**: Always use `GROVE_REGISTRY_FILENAME` constant ('registry.toml') for registry path resolution. Hardcoded filenames cause path mismatches when Grove path constants are updated.
+
+**Machine Runtime Directory Initialization**: Machine runtime directories must be created before Grove operations that require temporary state or command execution. Use `setupMachineRuntime()` pattern to ensure runtime directory availability.

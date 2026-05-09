@@ -122,64 +122,59 @@ SELECT task_name, grove_id, completed_at FROM migration_tasks;
 - Failed tasks can be retried by removing the completion record
 - Critical for schema updates and grove-wide configuration migrations
 
-### Grove Runtime Command Coordination
+### Machine-Scoped Runtime Command Architecture
 
-Grove architecture centralizes runtime dispatch through the global daemon:
+Machine-scoped architecture centralizes runtime dispatch through a single machine-level command:
 
 ```typescript
-// Grove-aware runtime command handling
-import { GROVE_RUNTIME_COMMAND_FILENAME } from '../constants';
+// Machine-scoped runtime command handling
+const MACHINE_RUNTIME_COMMAND_PATH = path.join(os.homedir(), '.myco', 'runtime.command');
 
-// Reading grove runtime command
-const groveRuntimePath = path.join(groveDir, GROVE_RUNTIME_COMMAND_FILENAME);
-const runtimeCommand = fs.readFileSync(groveRuntimePath, 'utf-8').trim();
+// Reading machine runtime command
+const runtimeCommand = fs.readFileSync(MACHINE_RUNTIME_COMMAND_PATH, 'utf-8').trim();
 
-// Global daemon coordinates runtime across groves
+// Global daemon uses machine-scoped runtime for all operations
 ```
 
-**Grove runtime patterns:**
-- **Location**: `~/.myco/groves/<grove>/runtime.command`
+**Machine runtime patterns:**
+- **Location**: `~/.myco/runtime.command` (single machine-level file)
 - **Content**: PATH command name or absolute path to replayable Myco launcher
-- **Purpose**: Enables per-grove runtime customization while maintaining global daemon coordination
-- **Lifecycle**: Written by grove init/update flows, read by global daemon for grove-specific operations
-- **Coordination**: Global daemon validates runtime compatibility across groves
+- **Purpose**: Provides consistent runtime across all groves and projects on the machine
+- **Lifecycle**: Written by machine-level init/update flows, read by global daemon for all operations
+- **Simplification**: Eliminates grove-specific and project-specific runtime complexity
 
-### Cross-Grove Runtime Coordination
+### Machine Runtime Command Coordination
 
-Global daemon manages runtime compatibility across multiple groves:
+Global daemon manages runtime through a single machine-scoped command:
 
 ```bash
-# Global daemon binary coordination
+# Machine-scoped daemon binary coordination
 GLOBAL_DAEMON_BIN=$(jq -r '.binaryPath' ~/.myco/daemon.json)
+MACHINE_RUNTIME_CMD=$(cat ~/.myco/runtime.command 2>/dev/null || echo "")
 
-# Per-grove runtime validation
-for grove in ~/.myco/groves/*/; do
-  GROVE_RUNTIME=$(cat "$grove/runtime.command" 2>/dev/null || echo "")
-  if [ "$GROVE_RUNTIME" != "$GLOBAL_DAEMON_BIN" ] && [ -n "$GROVE_RUNTIME" ]; then
-    echo "Grove runtime mismatch in $(basename $grove)"
-    # Global daemon handles grove-specific runtime coordination
-  fi
-done
+# Validate machine runtime consistency
+if [ -n "$MACHINE_RUNTIME_CMD" ] && [ "$MACHINE_RUNTIME_CMD" != "$GLOBAL_DAEMON_BIN" ]; then
+  echo "Machine runtime preference detected: $MACHINE_RUNTIME_CMD"
+  # Global daemon respects machine-level runtime command
+fi
 ```
 
-This prevents conflicts between grove-specific runtimes while maintaining global daemon authority.
+This simplifies coordination by removing grove-specific and project-specific runtime complexity.
 
 ### Version-Sync Loop Prevention
 
-Guard against restart loops in grove-aware global daemon:
+Guard against restart loops in machine-aware global daemon:
 
 ```typescript
-// Global daemon version-sync with grove awareness
+// Global daemon version-sync with machine runtime awareness
 if (currentVersion !== runningVersion) {
-  // Check grove-specific runtime compatibility
-  for (const grove of managedGroves) {
-    const groveRuntime = readGroveRuntimeCommand(grove.path);
-    const expectedBinary = resolveGroveRuntimeCommand(grove, currentVersion);
+  // Check machine-level runtime preference
+  const machineRuntime = readMachineRuntimeCommand();
+  const expectedBinary = resolveExpectedRuntimeCommand(currentVersion);
 
-    if (groveRuntime && expectedBinary !== groveRuntime) {
-      // Step aside for grove-specific runtime
-      return { action: 'step_aside', reason: 'grove_runtime_mismatch', grove: grove.id };
-    }
+  if (machineRuntime && expectedBinary !== machineRuntime) {
+    // Respect machine-level runtime preference
+    return { action: 'step_aside', reason: 'machine_runtime_preference', runtime: machineRuntime };
   }
 
   // Safe to restart for global version sync
@@ -187,7 +182,7 @@ if (currentVersion !== runningVersion) {
 }
 ```
 
-**Critical invariant**: Global daemon coordinates runtime across groves but respects grove-specific runtime preferences when present.
+**Critical invariant**: Global daemon respects machine-level runtime.command when present, eliminating grove-specific coordination complexity.
 
 ### Global Daemon Configuration Performance Optimization
 
@@ -385,17 +380,17 @@ if ! lsof -i :$DAEMON_PORT >/dev/null 2>&1; then
 fi
 ```
 
-### Binary Path and Grove Coordination
+### Binary Path and Machine Runtime Coordination
 
-Track global daemon binary with grove compatibility:
+Track global daemon binary with machine runtime compatibility:
 
 ```typescript
 const globalBinary = await getGlobalDaemonBinaryPath();
 const daemonBinary = globalDaemonState.binaryPath;
 
 if (globalBinary !== daemonBinary && globalDaemonHealthy) {
-  // Global runtime change detected - coordinate grove handoff
-  await coordinateGlobalRuntimeTransition();
+  // Global runtime change detected - coordinate machine runtime transition
+  await coordinateMachineRuntimeTransition();
 }
 ```
 
@@ -416,27 +411,23 @@ if (!daemonState.hubMigrated) {
 }
 ```
 
-### Grove Runtime Coordination Patterns
+### Machine Runtime Coordination Patterns
 
-Coordinate global daemon with grove-specific runtime preferences:
+Coordinate global daemon with machine-level runtime preference:
 
 ```typescript
-// Validate grove runtime consistency with global daemon
+// Validate machine runtime consistency with global daemon
 const globalDaemonBinary = globalDaemonState.binaryPath;
+const machineRuntime = readMachineRuntimeCommand();
 
-for (const grove of managedGroves) {
-  const groveRuntime = readGroveRuntimeCommand(grove.path);
+if (machineRuntime && machineRuntime !== globalDaemonBinary) {
+  console.warn('Machine runtime preference detected', {
+    machineRuntime: machineRuntime,
+    globalDaemon: globalDaemonBinary
+  });
 
-  if (groveRuntime && groveRuntime !== globalDaemonBinary) {
-    console.warn('Grove runtime preference detected', {
-      grove: grove.id,
-      groveRuntime: groveRuntime,
-      globalDaemon: globalDaemonBinary
-    });
-
-    // Respect grove preference while maintaining global coordination
-    await coordinateGroveRuntime(grove, groveRuntime);
-  }
+  // Respect machine preference in global coordination
+  await coordinateMachineRuntime(machineRuntime);
 }
 ```
 
@@ -462,7 +453,7 @@ const activeGlobalDaemons = listeningPids.map(pid =>
 When multiple global daemons detected:
 
 1. **Identify conflicting global processes** via port scanning and ~/.myco/daemon.json comparison
-2. **Determine primary global daemon** (newest, healthiest, or grove-preferred)
+2. **Determine primary global daemon** (newest, healthiest, or machine-preferred)
 3. **Check for Hub processes** and migrate state to global daemon if needed
 4. **Gracefully evict secondary global daemons** with grove coordination
 5. **Update ~/.myco/daemon.json** to reflect resolved global state
@@ -491,8 +482,7 @@ async function registerGroveWithGlobalDaemon(groveState: GroveState) {
   await globalDaemonClient.registerGrove({
     groveId: groveState.id,
     projectPaths: groveState.projects,
-    capabilities: ['ui', 'mcp', 'agents'],
-    runtimePreference: groveState.runtimeCommand
+    capabilities: ['ui', 'mcp', 'agents']
   });
 }
 
@@ -743,21 +733,21 @@ const cachedConfig = await getConfigWithCache(projectRoot, 30000);
 
 **Performance impact**: TOML re-parsing on every request degrades daemon responsiveness and causes grove coordination timing issues.
 
-### Grove-Global Runtime Coordination
+### Machine Runtime Coordination
 
-**Runtime compatibility pitfalls:** When detecting global runtime changes, account for grove-specific preferences:
+**Runtime compatibility pitfalls:** When detecting global runtime changes, account for machine-level preference:
 
 ```bash
-# Resolve grove runtime preferences for global coordination
+# Resolve machine runtime preference for global coordination
 GLOBAL_BIN=$(readlink -f $(jq -r '.binaryPath' ~/.myco/daemon.json))
-for grove_runtime in ~/.myco/groves/*/runtime.command; do
-  if [ -f "$grove_runtime" ]; then
-    GROVE_BIN=$(readlink -f $(cat "$grove_runtime"))
-    if [ "$GLOBAL_BIN" != "$GROVE_BIN" ]; then
-      echo "Grove runtime preference detected: $(dirname $grove_runtime)"
-    fi
+MACHINE_RUNTIME=$(cat ~/.myco/runtime.command 2>/dev/null || echo "")
+
+if [ -n "$MACHINE_RUNTIME" ]; then
+  MACHINE_BIN=$(readlink -f "$MACHINE_RUNTIME")
+  if [ "$GLOBAL_BIN" != "$MACHINE_BIN" ]; then
+    echo "Machine runtime preference detected: $MACHINE_RUNTIME"
   fi
-done
+fi
 ```
 
 ### Hub Migration State Tracking
@@ -778,7 +768,7 @@ fi
 
 **Grove coordination scope:** Global daemon port scanning must account for grove-specific coordination requirements and avoid interfering with grove-local processes.
 
-**Global Version-Sync Hazard:** Prevent infinite restart loops by ensuring grove runtime preferences are compatible with global daemon version-sync operations. Grove-global mismatches cause coordination failures and version-sync instability.
+**Global Version-Sync Hazard:** Prevent infinite restart loops by ensuring machine runtime preference is compatible with global daemon version-sync operations. Machine-global mismatches cause coordination failures and version-sync instability.
 
 **Grove State Synchronization:** The global daemon state (`.myco/daemon.json`) must stay synchronized with grove-specific configuration. Drift between global and grove state can cause coordination failures and health check inconsistencies.
 

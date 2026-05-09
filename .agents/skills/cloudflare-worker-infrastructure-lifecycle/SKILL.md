@@ -143,12 +143,16 @@ curl "https://your-team-worker.workers.dev/health" \
     "outbox_queue_depth": 0,
     "last_successful_sync": "2024-04-23T10:28:15Z",
     "sync_failures_last_24h": 0,
-    "grove_data_volume_mb": 145.2
+    "grove_data_volume_mb": 145.2,
+    "project_sync_status": {
+      "proj_123": {"status": "active", "last_sync": "2024-04-23T10:28:15Z"},
+      "proj_456": {"status": "active", "last_sync": "2024-04-23T10:27:45Z"}
+    }
   }
 }
 ```
 
-**Enhanced visibility patterns**: Grove sync visibility now includes operational metrics for monitoring sync health, queue depth, failure rates, and data volume trends across grove projects.
+**Enhanced visibility patterns**: Grove sync visibility now includes project-level sync status tracking, operational metrics for monitoring sync health, queue depth, failure rates, and data volume trends across grove projects.
 
 ### Grove-Coordinated Backup and Restore
 
@@ -334,20 +338,25 @@ const projectSwitcher = {
     lastAccessed: key.metadata.last_accessed_at,
     sessionCount: key.metadata.active_sessions,
     projectStatus: key.metadata.status, // active, paused, archived
-    quickActions: key.metadata.quick_actions // recent tasks, pinned workflows
+    quickActions: key.metadata.quick_actions, // recent tasks, pinned workflows
+    projectIcon: key.metadata.icon, // project type or custom icon
+    collaboratorCount: key.metadata.collaborator_count
   })),
   switchUrl: `/api/grove/${grove_id}/switch-project`,
   preferences: {
     rememberLastProject: true,
     autoSwitchOnActivity: false,
     showInactiveProjects: true,
-    projectSortOrder: 'last_accessed' // or 'name', 'activity'
+    projectSortOrder: 'last_accessed', // or 'name', 'activity'
+    compactView: false
   },
   uiEnhancements: {
     keyboardShortcuts: true,
     projectPreview: true,
     quickSearch: true,
-    recentProjects: 5
+    recentProjects: 5,
+    projectGrouping: true, // group by type, status, or activity
+    batchOperations: true // multi-select for archive, pause operations
   }
 };
 ```
@@ -359,6 +368,8 @@ const projectSwitcher = {
 - **Project preview**: Hover preview showing recent activity and key metrics
 - **Smart sorting**: Last accessed, activity level, or alphabetical project ordering
 - **User preferences**: Configurable switcher behavior and display options
+- **Project grouping**: Organize projects by type, status, or activity level
+- **Batch operations**: Multi-select interface for bulk project management
 
 ### Grove Config Isolation Patterns
 
