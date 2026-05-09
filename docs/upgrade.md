@@ -28,7 +28,7 @@ myco update --all-projects
 The command is the single entry point that reconciles a project against the installed package version. In order:
 
 1. **Verify vault**: ensure `<project>/.myco/myco.yaml` exists. Fails fast on a non-Myco directory.
-2. **Auto-migrate (one-time)**: if the project has no Grove binding (`project.toml` absent, or no `grove.binding_id`), run `myco grove migrate-project` against the machine's default Grove. Imports the legacy SQLite + vector data into the Grove's database and archives `.myco/myco.db`, `.myco/vectors.db`, and friends to `.myco/.archive-<timestamp>/`.
+2. **Auto-migrate (one-time)**: if the project has a populated `.myco/myco.db` but no Grove binding (`project.toml` absent, or no `grove.binding_id`), run `myco grove migrate-project` against the machine's default Grove. Imports the legacy SQLite + vector data into the Grove's database and archives `.myco/myco.db`, `.myco/vectors.db`, and friends to `.myco/.archive-<timestamp>/`. Skipped on freshly-initialized vaults that have no database yet.
 3. **Refresh `.gitignore`**: rewrite to the current template if it drifted.
 4. **Re-register symbionts**: regenerate hooks, MCP entries, settings, and skills for every configured agent (Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Pi, VS Code Copilot, Windsurf).
 5. **Write version stamp**: record the current version in `.myco/last-update-version`.
@@ -75,43 +75,13 @@ Dashboard: http://localhost:20915/g/default/p/<project-slug>
 Run `myco doctor` to verify setup health.
 ```
 
-Open the printed URL. The Dashboard center pane should populate within a second. The runtime origin badge in the left nav should say **stable**.
+Open the printed URL. The Dashboard center pane should populate within a second.
 
 If the center pane stays on "Connecting to daemon...":
 
 - Hard-reload the browser tab (Cmd+Shift+R / Ctrl+Shift+R) — older HTML may be cached without the auth-token bootstrap that 0.25.1+ injects.
 - Confirm the URL port matches `daemon.json`: `cat ~/.myco/service/daemon.json | jq .port`.
 - `myco doctor` for a full health sweep.
-
-## Contributors: dogfood daemon
-
-If you're building Myco itself (`make dev-link`), the dogfood daemon runs **alongside** the production daemon, not instead of it:
-
-| Daemon | Binary | Service path | Port (deterministic from path) |
-|--------|--------|--------------|---------------------------------|
-| Production | `/opt/homebrew/.../node_modules/@goondocks/myco/...` | `~/.myco/service/` | `derivePort('~/.myco/service')` |
-| Dogfood | `~/.local/bin/myco-dev` (symlink → repo `vendor/<target>/myco`) | `~/.myco/service-dev/` | `derivePort('~/.myco/service-dev')` |
-
-Both are machine-scoped, both see all Groves on the machine, both share `~/.myco/` for config/secrets/grove databases. The runtime origin badge in the left nav distinguishes them: **stable** vs **dev**.
-
-To start a dogfood daemon for the first time:
-
-```bash
-cd <your-myco-checkout>
-make dev-build       # compile vendor/<target>/myco
-make dev-link        # symlink ~/.local/bin/myco-dev + write ~/.myco/runtime.command
-~/.local/bin/myco-dev daemon
-```
-
-The pin at `~/.myco/runtime.command` is what causes `myco` (the dispatcher) to exec `myco-dev` for that session's CLI invocations. To switch back to the production binary for a single shell:
-
-```bash
-mv ~/.myco/runtime.command ~/.myco/runtime.command.bak
-# … work on a non-Myco project …
-mv ~/.myco/runtime.command.bak ~/.myco/runtime.command
-```
-
-The two daemons are independent processes. Stopping one does not stop the other; updating one does not update the other.
 
 ## Rollback
 
@@ -148,18 +118,3 @@ The project is already bound to a Grove different from the default. Either:
 ### Dashboard shows "Connecting to daemon..." after upgrade
 
 Hard-reload the tab. The auth-token bootstrap injected by 0.25.1+ is in the HTML; an older cached page won't have it.
-
-### "Dev build detected; update checks exempted" on a non-dogfood machine
-
-The running binary is outside the npm global prefix. Confirm with `which myco`. If it points at `~/.local/bin/myco-dev` or similar, you're on a contributor machine and the dogfood daemon is in play. On a regular user machine, expect `which myco` → `<npm-prefix>/bin/myco`.
-
-## Reference: derived ports
-
-Both daemons compute their canonical port from the service path:
-
-```
-derivePort('~/.myco/service')      = 20915  ← production daemon
-derivePort('~/.myco/service-dev')  = 19344  ← dogfood daemon (contributors only)
-```
-
-These are deterministic given a stable `~/.myco/` path. If your home directory differs (e.g., a custom `MYCO_HOME` env var), the ports differ accordingly — but the rule (different paths → different ports) holds.

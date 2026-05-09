@@ -176,10 +176,17 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
  * via `loadProjectManifest`'s binding check, so this stays cheap on the
  * post-migration steady state where every release ships another round
  * of `myco update --all-projects`.
+ *
+ * Tolerates fresh vaults: a `myco.yaml` without a `myco.db` is a
+ * just-initialized project that has no data to migrate. Skip silently
+ * rather than letting the activator throw "Legacy project database not
+ * found" — that path is only reachable from genuine 0.24.x carryovers.
  */
 function ensureGroveActivation(vaultDir: string, projectRoot: string): void {
   const manifest = loadProjectManifest(vaultDir);
   if (manifest?.grove?.binding_id) return;
+
+  if (!fs.existsSync(path.join(vaultDir, 'myco.db'))) return;
 
   console.log('  → Legacy project detected; running one-time Grove migration…');
   const result = activateProjectMigration({ projectRoot });
