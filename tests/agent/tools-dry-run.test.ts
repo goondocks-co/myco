@@ -40,6 +40,7 @@ import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants / helpers
 // ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
     ensureProjectManifest(vaultDir, { projectName: 'tools-dry-run-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: true,
@@ -354,7 +355,7 @@ describe('vault tools regression (dryRun: false)', () => {
     sessionId = `sess-${Math.random().toString(36).slice(2, 8)}`;
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
   });
 
   it('vault_create_spore inserts a real spore row and records no intent', async () => {
@@ -408,12 +409,12 @@ describe('vault tools wrapper JSON.stringify dedupe', () => {
     ensureProjectManifest(vaultDir, { projectName: 'stringify-dedupe-test' });
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
-    dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    dryTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: true,
     });
-    liveTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    liveTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
       dryRun: false,

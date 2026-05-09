@@ -24,6 +24,7 @@ import { epochSeconds } from '@myco/constants.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -274,7 +275,7 @@ describe('executor dry-run threading', () => {
   it('persists dry_run=true on the agent_runs row when dryRun:true', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR, { dryRun: true, task: TEST_TASK_NAME });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, dryRun: true, task: TEST_TASK_NAME });
 
     // title-summary has a postcondition that would fail without real writes,
     // but dryRun skips it — so the run should still complete.
@@ -293,7 +294,7 @@ describe('executor dry-run threading', () => {
 
     // title-summary postcondition requires vault_report + (vault_update_session or skip).
     // With dryRun:true the run must still complete (no postcondition violation thrown).
-    const result = await runAgent(TEST_VAULT_DIR, { dryRun: true, task: TEST_TASK_NAME });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, dryRun: true, task: TEST_TASK_NAME });
 
     expect(result.status).toBe('completed');
     expect(result.error).toBeUndefined();
@@ -304,7 +305,7 @@ describe('executor dry-run threading', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     // With dryRun:false and no real writes, postcondition should fail.
-    const result = await runAgent(TEST_VAULT_DIR, { dryRun: false, task: TEST_TASK_NAME });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, dryRun: false, task: TEST_TASK_NAME });
 
     // The postcondition for title-summary fails when no vault_report or
     // vault_update_session was called.
@@ -329,7 +330,7 @@ describe('executor dry-run threading', () => {
       updated_at: epochSeconds(),
     });
 
-    const result = await runAgent(TEST_VAULT_DIR, { task: noPostconditionTask });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: noPostconditionTask });
 
     // vault-evolve has no postcondition rule, so it completes.
     const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
@@ -352,7 +353,7 @@ describe('executor dry-run threading', () => {
       },
     ];
 
-    const result = await runAgent(TEST_VAULT_DIR, { dryRun: true, task: TEST_TASK_NAME });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, dryRun: true, task: TEST_TASK_NAME });
 
     expect(result.status).toBe('completed');
 

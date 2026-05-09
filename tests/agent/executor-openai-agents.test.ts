@@ -25,6 +25,7 @@ import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -282,11 +283,11 @@ describe('executor with openai-agents harness', () => {
 
   it('runs the openai-agents harness and persists harness=openai-agents on the row', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       executionOverrides: {
         harness: 'openai-agents',
-        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+        provider: {type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
 
@@ -298,10 +299,10 @@ describe('executor with openai-agents harness', () => {
 
   it('infers openai-agents when a per-run provider override is OpenAI-only', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       executionOverrides: {
-        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+        provider: {type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
 
@@ -314,12 +315,12 @@ describe('executor with openai-agents harness', () => {
 
   it('persists dry_run=true and forwards dryRun to the openai-local MCP server', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       dryRun: true,
       executionOverrides: {
         harness: 'openai-agents',
-        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+        provider: {type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
 
@@ -336,11 +337,11 @@ describe('executor with openai-agents harness', () => {
 
     // First run — establishes checkpoint state with harness=openai-agents
     mockLastResponseId = 'resp_first_call';
-    const first = await runAgent(TEST_VAULT_DIR, {
+    const first = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       executionOverrides: {
         harness: 'openai-agents',
-        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+        provider: {type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
     expect(first.status).toBe('completed');
@@ -372,14 +373,14 @@ describe('executor with openai-agents harness', () => {
     });
 
     mockLastResponseId = 'resp_abc_next';
-    const resumed = await runAgent(TEST_VAULT_DIR, {
+    const resumed = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       instruction: 'Resume me',
       resumeRunId: existingRunId,
       resumeMode: 'manual',
       executionOverrides: {
         harness: 'openai-agents',
-        provider: { type: 'openai', model: 'gpt-5.4-mini' },
+        provider: {type: 'openai', model: 'gpt-5.4-mini' },
       },
     });
     expect(resumed.status).toBe('completed');

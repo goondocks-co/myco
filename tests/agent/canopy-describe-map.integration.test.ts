@@ -21,6 +21,7 @@ import { createVaultTools } from '@myco/agent/tools.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import type { PhaseDefinition } from '@myco/agent/types.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ describe('canopy-describe end-to-end (map phase)', () => {
     ).run(projectId, 'y.ts', 'existing desc', 200, 100);
 
     const phase = loadCanopyDescribePhase();
-    const allTools = createVaultTools('myco-agent', 'run-1', { projectRoot, vaultDir, dryRun: false });
+    const allTools = createVaultTools('myco-agent', 'run-1', { requestContext: TEST_REQUEST_CONTEXT, projectRoot, vaultDir, dryRun: false });
 
     const result = await executeMapPhase({
       phase,
@@ -162,7 +163,7 @@ describe('canopy-describe end-to-end (map phase)', () => {
     ).run(projectId, 'src/foo.ts', 'old description', 200, 100);
 
     const phase = loadCanopyDescribePhase();
-    const allTools = createVaultTools('myco-agent', 'run-2', { projectRoot, vaultDir, dryRun: false });
+    const allTools = createVaultTools('myco-agent', 'run-2', { requestContext: TEST_REQUEST_CONTEXT, projectRoot, vaultDir, dryRun: false });
 
     const result = await executeMapPhase({
       phase,

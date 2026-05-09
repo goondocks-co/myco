@@ -28,6 +28,7 @@ import type { PhaseDefinition, ExecutionConfig, OrchestratorConfig, EffectiveCon
 import type { ReportRow } from '@myco/db/queries/reports.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -829,7 +830,7 @@ describe('runAgent', () => {
   it('completes a successful run with cost and token tracking', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     expect(result.runId).toBeDefined();
@@ -855,7 +856,7 @@ describe('runAgent', () => {
   it('passes system prompt and composed task prompt to the SDK', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(capturedQueryArgs).not.toBeNull();
     expect(capturedQueryArgs!.prompt).toContain('## Current Vault State');
@@ -877,7 +878,7 @@ describe('runAgent', () => {
     });
 
     // Same task running → skipped
-    const result = await runAgent(TEST_VAULT_DIR, { task: 'vault-evolve' });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: 'vault-evolve' });
 
     expect(result.status).toBe('skipped');
     expect(result.reason).toBe('already_running');
@@ -891,7 +892,7 @@ describe('runAgent', () => {
     mockQueryBehavior = 'error';
     mockErrorMessage = 'API rate limit exceeded';
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('failed');
     expect(result.error).toContain('API rate limit exceeded');
@@ -937,7 +938,7 @@ describe('runAgent', () => {
     mockQueryBehavior = 'error';
     mockErrorMessage = 'Claude Code process exited with code 1';
 
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       resumeRunId: existingRunId,
       resumeMode: 'scheduled',
@@ -982,7 +983,7 @@ describe('runAgent', () => {
     mockQueryBehavior = 'error';
     mockErrorMessage = 'Upstream 500 from model provider';
 
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       resumeRunId: existingRunId,
       resumeMode: 'scheduled',
@@ -1017,7 +1018,7 @@ describe('runAgent', () => {
       error: 'boom',
     });
 
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       instruction: 'Retry this run',
       resumeRunId: existingRunId,
@@ -1035,7 +1036,7 @@ describe('runAgent', () => {
   it('stores user instruction in run record and prompt', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR, {
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       instruction: 'Focus on security observations only.',
     });
 
@@ -1051,7 +1052,7 @@ describe('runAgent', () => {
   it('uses correct SDK options (model, maxTurns, tools, permissions)', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(capturedQueryArgs).not.toBeNull();
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
@@ -1072,7 +1073,7 @@ describe('runAgent', () => {
       `UPDATE agents SET model = ?, max_turns = ? WHERE id = ?`,
     ).run('claude-opus-4-20250514', 20, TEST_AGENT_ID);
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.model).toBe('claude-opus-4-20250514');
@@ -1082,7 +1083,7 @@ describe('runAgent', () => {
   it('does not return phases for non-phased tasks', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     expect(result.phases).toBeUndefined();
@@ -1096,7 +1097,7 @@ describe('runAgent', () => {
     // Set execution config with a different model — no phases
     mockExecution = { model: 'claude-haiku-4-5' };
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.model).toBe('claude-haiku-4-5');
@@ -1108,7 +1109,7 @@ describe('runAgent', () => {
     // Set execution config with a custom maxTurns
     mockExecution = { maxTurns: 42 };
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
     expect(opts.maxTurns).toBe(42);
@@ -1117,7 +1118,7 @@ describe('runAgent', () => {
   it('passes abort controller to SDK for timeout enforcement', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(capturedQueryArgs).not.toBeNull();
     const opts = capturedQueryArgs!.options as Record<string, unknown>;
@@ -1130,7 +1131,7 @@ describe('runAgent', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
     await createTask('title-summary', 'Generate or update session titles and summaries.');
 
-    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: 'title-summary' });
 
     expect(result.status).toBe('failed');
     expect(result.error).toContain('title-summary');
@@ -1153,7 +1154,7 @@ describe('runAgent', () => {
       created_at: epochSeconds(),
     }];
 
-    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: 'title-summary' });
 
     expect(result.status).toBe('completed');
   });
@@ -1173,7 +1174,7 @@ describe('runAgent', () => {
       created_at: epochSeconds(),
     }];
 
-    const result = await runAgent(TEST_VAULT_DIR, { task: 'title-summary' });
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT, task: 'title-summary' });
 
     expect(result.status).toBe('completed');
   });
@@ -1229,7 +1230,7 @@ describe('runAgent — phased execution', () => {
       'Run complete.',
     ];
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     // 3 phases = 3 query() calls
@@ -1241,7 +1242,7 @@ describe('runAgent — phased execution', () => {
   it('returns per-phase results with token tracking', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.phases).toBeDefined();
     expect(result.phases!.length).toBe(3);
@@ -1264,7 +1265,7 @@ describe('runAgent — phased execution', () => {
   it('scopes tools per phase', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(scopedToolCalls.length).toBe(3);
     expect(scopedToolCalls[0].toolNames).toEqual(['vault_state', 'vault_unprocessed']);
@@ -1275,7 +1276,7 @@ describe('runAgent — phased execution', () => {
   it('passes phase-specific maxTurns to SDK', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(allQueryCalls.length).toBe(3);
     expect((allQueryCalls[0].options as Record<string, unknown>).maxTurns).toBe(3);
@@ -1292,7 +1293,7 @@ describe('runAgent — phased execution', () => {
       'Done.',
     ];
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     // Phase 1 prompt should NOT have prior results
     expect(allQueryCalls[0].prompt).not.toContain('## Prior Phase Results');
@@ -1317,7 +1318,7 @@ describe('runAgent — phased execution', () => {
     mockQueryBehaviors = ['success', 'error', 'success'];
     mockErrorMessage = 'Model unavailable';
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     // Run-level status must reflect the required phase failure — not "completed".
     // A required phase failing is a failed run, even though the pipeline stopped
@@ -1347,7 +1348,7 @@ describe('runAgent — phased execution', () => {
 
     mockQueryBehaviors = ['abort'];
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('failed');
     expect(result.error).toContain('Agent run timed out after 1 seconds');
@@ -1369,7 +1370,7 @@ describe('runAgent — phased execution', () => {
     mockQueryBehaviors = ['success', 'error', 'success'];
     mockErrorMessage = 'Timeout';
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.phases!.length).toBe(3);
     expect(result.phases![0].status).toBe('completed');
@@ -1387,7 +1388,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(allQueryCalls.length).toBe(2);
     // Phase 1 should use the phase-specific model
@@ -1411,7 +1412,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(allQueryCalls).toHaveLength(1);
     expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-haiku-4-5');
@@ -1438,7 +1439,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(allQueryCalls).toHaveLength(2);
     expect((allQueryCalls[0].options as Record<string, unknown>).model).toBe('claude-opus-4-6');
@@ -1462,11 +1463,11 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR, {
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       executionOverrides: {
         phases: {
           phaseA: { reasoningLevel: 'low' },
-          phaseB: { reasoningLevel: 'high' },
+          phaseB: {reasoningLevel: 'high' },
         },
       },
     });
@@ -1485,10 +1486,10 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR, {
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       executionOverrides: {
         phases: {
-          phaseA: { model: 'run-option-model' },
+          phaseA: {model: 'run-option-model' },
         },
       },
     });
@@ -1512,12 +1513,11 @@ describe('runAgent — phased execution', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     // Use lmstudio (not ollama) so the ollama variant resolver is a no-op.
-    await runAgent(TEST_VAULT_DIR, {
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       executionOverrides: {
         phases: {
           phaseA: {
-            provider: {
-              type: 'lmstudio',
+            provider: {              type: 'lmstudio',
               model: 'qwen3-30b',
               baseUrl: 'http://localhost:1234',
             },
@@ -1546,9 +1546,9 @@ describe('runAgent — phased execution', () => {
 
     // Use lmstudio (not ollama) to avoid the ollama-variant resolver making
     // real network calls to create Modelfile variants.
-    await runAgent(TEST_VAULT_DIR, {
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       executionOverrides: {
-        provider: { type: 'lmstudio', model: 'qwen3-30b', baseUrl: 'http://localhost:1234' },
+        provider: {type: 'lmstudio', model: 'qwen3-30b', baseUrl: 'http://localhost:1234' },
       },
     });
 
@@ -1564,10 +1564,10 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR, {
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       executionOverrides: {
         phases: {
-          phaseA: { maxTurns: 25 },
+          phaseA: {maxTurns: 25 },
         },
       },
     });
@@ -1584,11 +1584,11 @@ describe('runAgent — phased execution', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { runAgent } = await import('@myco/agent/executor.js');
-      const result = await runAgent(TEST_VAULT_DIR, {
+      const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
         executionOverrides: {
           phases: {
             phaseA: { reasoningLevel: 'low' },
-            bogusPhase: { reasoningLevel: 'high' },
+            bogusPhase: {reasoningLevel: 'high' },
           },
         },
       });
@@ -1610,10 +1610,10 @@ describe('runAgent — phased execution', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { runAgent } = await import('@myco/agent/executor.js');
-      const result = await runAgent(TEST_VAULT_DIR, {
+      const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
         executionOverrides: {
           phases: {
-            extract: { reasoningLevel: 'high' },
+            extract: {reasoningLevel: 'high' },
           },
         },
       });
@@ -1635,7 +1635,7 @@ describe('runAgent — phased execution', () => {
   it('records correct aggregate tokens and cost', async () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     // Each phase: 1850 tokens, $0.0042 — 3 phases total
     expect(result.tokensUsed).toBe(5550);
@@ -1657,7 +1657,7 @@ describe('runAgent — phased execution', () => {
     // No mockOrchestratorConfig set — orchestrator is disabled by default
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     // Exactly 3 query() calls — one per phase, no orchestrator call
     expect(allQueryCalls.length).toBe(3);
@@ -1683,7 +1683,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     // 1 orchestrator planning call + 3 phase calls = 4 total
@@ -1724,7 +1724,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     // 1 orchestrator + 2 phase calls (summarize was skipped)
@@ -1754,7 +1754,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.status).toBe('completed');
     // 1 orchestrator + 3 phase calls — required phase cannot be skipped
@@ -1783,7 +1783,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     // Phase calls start at index 1 (index 0 is orchestrator)
     expect((allQueryCalls[2].options as Record<string, unknown>).maxTurns).toBe(7);
@@ -1796,7 +1796,7 @@ describe('runAgent — phased execution', () => {
 
     const { runAgent } = await import('@myco/agent/executor.js');
 
-    const result = await runAgent(TEST_VAULT_DIR);
+    const result = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(result.phases).toBeDefined();
     expect(result.phases!.length).toBe(3);
@@ -1812,7 +1812,7 @@ describe('runAgent — phased execution', () => {
     ];
 
     const { runAgent } = await import('@myco/agent/executor.js');
-    await runAgent(TEST_VAULT_DIR);
+    await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT });
 
     expect(scopedToolCalls.length).toBe(2);
     // explore phase should have readOnly: true

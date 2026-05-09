@@ -28,6 +28,7 @@ import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ describe('vault skill tools', () => {
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
 
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, {
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
     });

@@ -39,6 +39,7 @@ import { cleanupStagedSkill, stagingPath, stagingManifestPath } from '@myco/agen
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 const AGENT_ID = 'agent-int';
 const RUN_ID = 'run-int-001';
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -90,7 +91,7 @@ describe('skill staging → finalize pipeline', () => {
     // Wipe staging between tests to prevent candidate_id collisions
     fs.rmSync(path.join(vaultDir, 'staging'), { recursive: true, force: true });
 
-    tools = createVaultTools(AGENT_ID, RUN_ID, { projectRoot: tmpDir, vaultDir });
+    tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, projectRoot: tmpDir, vaultDir });
   });
 
   // --------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 // Import the module under test after mocks are registered
 import { executeContextQueries } from '@myco/agent/context-queries.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -128,7 +129,7 @@ describe('executeContextQueries', () => {
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', purpose: 'check backlog' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_unprocessed');
@@ -148,7 +149,7 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', limit: 5 }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(getUnprocessedBatches).toHaveBeenCalledWith({ limit: 5, includeActive: false, scope: ALL_PROJECTS_SCOPE });
     });
@@ -174,7 +175,7 @@ describe('executeContextQueries', () => {
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_spores', purpose: 'review spores' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_spores');
@@ -197,7 +198,7 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_spores', limit: 20 }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(listSpores).toHaveBeenCalledWith({
         agent_id: TEST_AGENT_ID,
@@ -229,7 +230,7 @@ describe('executeContextQueries', () => {
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_sessions', purpose: 'list recent sessions' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_sessions');
@@ -266,7 +267,7 @@ describe('executeContextQueries', () => {
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_state', purpose: 'read cursor position' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_state');
@@ -283,7 +284,7 @@ describe('executeContextQueries', () => {
 
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', required: false }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(1);
       expect(results[0].data).toBeNull();
@@ -298,7 +299,7 @@ describe('executeContextQueries', () => {
       await expect(
         executeContextQueries(TEST_AGENT_ID, [
           makeQuery({ tool: 'vault_spores', required: true }),
-        ]),
+        ], TEST_REQUEST_CONTEXT),
       ).rejects.toThrow('Required context query "vault_spores" failed: Connection lost');
     });
 
@@ -306,7 +307,7 @@ describe('executeContextQueries', () => {
       await expect(
         executeContextQueries(TEST_AGENT_ID, [
           makeQuery({ tool: 'vault_nonexistent', required: false }),
-        ]),
+        ], TEST_REQUEST_CONTEXT),
       ).rejects.toThrow('Unknown context query tool: "vault_nonexistent"');
     });
 
@@ -314,7 +315,7 @@ describe('executeContextQueries', () => {
       await expect(
         executeContextQueries(TEST_AGENT_ID, [
           makeQuery({ tool: 'vault_unknown', required: false }),
-        ]),
+        ], TEST_REQUEST_CONTEXT),
       ).rejects.toThrow('Unknown context query tool: "vault_unknown"');
     });
   });
@@ -332,7 +333,7 @@ describe('executeContextQueries', () => {
         required: false,
       };
 
-      await executeContextQueries(TEST_AGENT_ID, [query]);
+      await executeContextQueries(TEST_AGENT_ID, [query], TEST_REQUEST_CONTEXT);
 
       expect(getUnprocessedBatches).toHaveBeenCalledWith({
         limit: DEFAULT_CONTEXT_QUERY_LIMIT,
@@ -346,7 +347,7 @@ describe('executeContextQueries', () => {
 
       await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_sessions', limit: 50 }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(listSessions).toHaveBeenCalledWith({ limit: 50, includeActive: false, scope: ALL_PROJECTS_SCOPE });
     });
@@ -360,7 +361,7 @@ describe('executeContextQueries', () => {
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', purpose: 'backlog' }),
         makeQuery({ tool: 'vault_state', purpose: 'cursor' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(2);
       expect(results[0].tool).toBe('vault_unprocessed');
@@ -376,7 +377,7 @@ describe('executeContextQueries', () => {
       const results = await executeContextQueries(TEST_AGENT_ID, [
         makeQuery({ tool: 'vault_unprocessed', required: false }),
         makeQuery({ tool: 'vault_state', purpose: 'cursor' }),
-      ]);
+      ], TEST_REQUEST_CONTEXT);
 
       expect(results).toHaveLength(2);
       expect(results[0].error).toBe('DB down');

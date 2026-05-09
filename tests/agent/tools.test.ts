@@ -26,6 +26,7 @@ import { createVaultTools, VAULT_TOOL_COUNT } from '@myco/agent/tools.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ describe('vault tools', () => {
     sessionId = session.id;
 
     // Create tools for this test
-    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID);
+    tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT });
   });
 
   // -------------------------------------------------------------------------
@@ -757,7 +758,7 @@ describe('vault tools', () => {
         ],
       } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
       const result = await t.handler({ query: 'decision' }, undefined);
       const data = parseResult(result) as { results: Array<{ id: string; preview: string; type: string }> };
@@ -808,7 +809,7 @@ describe('vault tools', () => {
         searchVectors,
       } as Pick<EmbeddingManager, 'embedQuery' | 'searchVectors'> as EmbeddingManager;
 
-      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { embeddingManager });
+      const semanticTools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT, embeddingManager });
       const t = findTool(semanticTools, 'vault_search_semantic');
       const since = epochNow() - 120;
       const result = await t.handler({

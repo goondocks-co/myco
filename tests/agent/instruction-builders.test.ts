@@ -1,7 +1,7 @@
 /**
  * Tests for skill-evolve instruction builder.
  *
- * Exercises buildSkillEvolveInstruction() against an in-memory database,
+ * Exercises buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT) against an in-memory database,
  * verifying filtering logic for watermarks, throttle intervals, and
  * content assembly.
  */
@@ -43,6 +43,7 @@ import {
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -183,7 +184,7 @@ describe('buildSkillEvolveInstruction', () => {
   });
 
   it('returns skip message when no skills exist', async () => {
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -194,7 +195,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Create a spore before the watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -205,7 +206,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore created after the watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('active-skill');
   });
@@ -219,7 +220,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore exists after watermark
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
   });
 
@@ -233,7 +234,7 @@ describe('buildSkillEvolveInstruction', () => {
     // Spore after all watermarks
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('max_skills_per_run: 2');
     // Should contain exactly 2 skill sections
@@ -249,7 +250,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('recently-assessed', watermark, now - 60);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     const selectedNames = [...result.matchAll(/^## Skill: ([^(]+)/gm)].map(match => match[1].trim());
     expect(selectedNames).toEqual(['never-assessed', 'oldest-assessed']);
   });
@@ -263,7 +264,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('stale-enough', watermark, lastAssessedAt);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('No skills need assessment');
     expect(result).toContain('stale-enough');
   });
@@ -274,7 +275,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('content-check', watermark);
     createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).not.toContain('### Current Content');
     expect(result).toContain('content-check'); // skill name still present in metadata
   });
@@ -285,7 +286,7 @@ describe('buildSkillEvolveInstruction', () => {
     createSkillWithWatermark('spore-id-check', watermark);
     const sporeId = createSpore(now - 100);
 
-    const result = await buildSkillEvolveInstruction();
+    const result = await buildSkillEvolveInstruction(undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toContain(sporeId);
   });
 
@@ -309,7 +310,7 @@ describe('buildSkillEvolveInstruction', () => {
     const uiSporeId = createSpore(now - 90, 'Daemon UI theme token regression affected SectionSaveRow layout.');
     const unrelatedSporeId = createSpore(now - 80, 'Cloudflare worker cron fanout timeout needs a tighter safety bound.');
 
-    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 });
+    const result = await buildSkillEvolveInstruction({ max_skills_per_run: 2, assess_interval_hours: 1 }, undefined, undefined, TEST_REQUEST_CONTEXT);
 
     const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
     const uiSection = result.match(/## Skill: daemon-ui-development[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
@@ -363,6 +364,7 @@ describe('buildSkillEvolveInstruction', () => {
       { max_skills_per_run: 2, assess_interval_hours: 1 },
       undefined,
       provider,
+      TEST_REQUEST_CONTEXT,
     );
 
     const sqliteSection = result.match(/## Skill: sqlite-query-patterns[\s\S]*?new_spore_ids: (\[[^\n]+\])/);
@@ -387,7 +389,7 @@ describe('buildSkillEvolveInstruction', () => {
       '# Steady\n## Scope\nNo code refs.\n## Procedure\nNo changes.\n',
     );
 
-    const result = await buildSkillEvolveInstruction({}, root);
+    const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeUndefined();
     rmSync(root, { recursive: true, force: true });
   });
@@ -416,7 +418,7 @@ describe('buildSkillEvolveInstruction', () => {
       'export const ExistingSymbol = 1;\nexport const AddedOne = 2;\nexport const AddedTwo = 3;\n',
     );
 
-    const result = await buildSkillEvolveInstruction({}, root);
+    const result = await buildSkillEvolveInstruction({}, root, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toContain('Pre-computed Drift Report');
     expect(result).toContain('growth=');
     rmSync(root, { recursive: true, force: true });
@@ -483,28 +485,28 @@ describe('buildSkillGenerateInstruction', () => {
   }
 
   it('returns undefined when no candidates exist', () => {
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in identified state', () => {
     seedCandidate('c-1', CANDIDATE_STATUS.IDENTIFIED);
     seedCandidate('c-2', CANDIDATE_STATUS.IDENTIFIED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in dismissed state', () => {
     seedCandidate('c-d', CANDIDATE_STATUS.DISMISSED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when all candidates are in generated state', () => {
     seedCandidate('c-g', CANDIDATE_STATUS.GENERATED);
-    expect(buildSkillGenerateInstruction()).toBeUndefined();
+    expect(buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns instruction with context when an approved candidate exists', () => {
     seedCandidate('c-a', CANDIDATE_STATUS.APPROVED);
-    const result = buildSkillGenerateInstruction();
+    const result = buildSkillGenerateInstruction(TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('candidate_id: c-a');
     expect(result!.context).toEqual({ candidate_id: 'c-a' });
@@ -560,7 +562,7 @@ describe('buildSkillSurveyInstruction', () => {
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns undefined when settled corpus is still too sparse', () => {
@@ -580,13 +582,13 @@ describe('buildSkillSurveyInstruction', () => {
       eligible: false,
       reason: 'insufficient-settled-sessions',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('returns instruction only after enough settled sessions and spores exist', () => {
     createSettledSurveyCorpus();
 
-    const result = buildSkillSurveyInstruction(TEST_AGENT_ID);
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
     expect(result!.instruction).toContain('only propose project-specific procedural domains');
@@ -597,12 +599,12 @@ describe('buildSkillSurveyInstruction', () => {
   it('returns undefined when no new settled knowledge exists after the watermark', () => {
     createSettledSurveyCorpus();
 
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeDefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeDefined();
     expect(getSkillSurveyEligibility(TEST_AGENT_ID)).toEqual({
       eligible: false,
       reason: 'no-new-settled-knowledge',
     });
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID)).toBeUndefined();
+    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
   it('evaluates eligibility inside the request-context project scope', () => {

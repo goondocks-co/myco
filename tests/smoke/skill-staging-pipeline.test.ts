@@ -27,6 +27,7 @@ import { cleanupStagedSkill, stagingPath } from '@myco/agent/tools/skill-staging
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
+import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
 // Test harness constants
 // ---------------------------------------------------------------------------
@@ -143,7 +144,7 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     const approvedAtBefore = getCandidate(candidateId, ALL_PROJECTS_SCOPE)!.approved_at;
     expect(approvedAtBefore).toBeGreaterThan(0);
 
-    const tools = createVaultTools(AGENT_ID, RUN_ID, {
+    const tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
     });
@@ -234,7 +235,7 @@ describe('smoke: skill staging pipeline (real on-disk SQLite)', () => {
     expect(approvedAtBeforeFailure).toBeGreaterThan(0);
 
     // Stage (draft phase)
-    const tools = createVaultTools(AGENT_ID, RUN_ID, {
+    const tools = createVaultTools(AGENT_ID, RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
       vaultDir,
     });
