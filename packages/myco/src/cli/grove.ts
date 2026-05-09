@@ -3,10 +3,16 @@ import {
   createGrove,
   getDefaultGroveId,
   listGroves,
+  listRegisteredProjects,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { projectUrlSlug } from '@myco/grove/ids.js';
 import { activateProjectMigration, completeLegacyArchive } from '@myco/grove/activation.js';
+import {
+  readDaemonState,
+  resolveDaemonServiceState,
+} from '@myco/daemon/service-state.js';
 import { parseStringFlag } from './shared.js';
 
 const USAGE = `Usage: myco grove <command>
@@ -94,6 +100,16 @@ export async function run(args: string[]): Promise<void> {
       console.log('No project binding files were written.');
     } else {
       console.log(`Marker:   ${result.marker_path}`);
+      const dashboardUrl = resolveDashboardUrl(
+        result.project_vault_dir,
+        result.grove.slug,
+        result.project_id,
+        result.project_name,
+        result.grove.id,
+      );
+      if (dashboardUrl) {
+        console.log(`Dashboard: ${dashboardUrl}`);
+      }
     }
     return;
   }
@@ -125,4 +141,25 @@ function summarizeImportedRows(result: ReturnType<typeof activateProjectMigratio
     .filter(([key]) => !key.startsWith('skipped_'))
     .reduce((sum, [, value]) => sum + Number(value), 0);
   return `${total} rows`;
+}
+
+/**
+ * Build the dashboard URL pointing at the freshly-activated project,
+ * for the daemon currently bound on the local host. Returns null when
+ * the daemon isn't reachable yet — printing nothing in that case is
+ * less misleading than printing a URL that 404s.
+ */
+function resolveDashboardUrl(
+  vaultDir: string,
+  groveSlug: string,
+  projectId: string,
+  projectName: string,
+  groveId: string,
+): string | null {
+  const port = readDaemonState(resolveDaemonServiceState(vaultDir, { env: process.env }).statePath)?.port;
+  if (typeof port !== 'number') return null;
+  const projects = listRegisteredProjects(groveId);
+  const registered = projects.find((p) => p.project_id === projectId);
+  const slug = projectUrlSlug(registered?.name ?? projectName, projectId);
+  return `http://localhost:${port}/g/${groveSlug}/p/${slug}`;
 }

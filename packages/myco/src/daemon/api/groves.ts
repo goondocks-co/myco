@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
@@ -8,7 +7,7 @@ import {
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
-import { slugifyGroveName } from '@myco/grove/ids.js';
+import { projectUrlSlug } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
 import type { DaemonServiceScope } from '@myco/daemon/service-state.js';
 
@@ -106,9 +105,7 @@ function serializeProject(project: RegisteredProject): GroveProjectSummary {
 }
 
 function projectSlug(project: RegisteredProject): string {
-  const base = slugifyGroveName(project.name);
-  const suffix = crypto.createHash('sha1').update(project.project_id).digest('hex').slice(0, 6);
-  return `${base}-${suffix}`;
+  return projectUrlSlug(project.name, project.project_id);
 }
 
 function manifestState(project: RegisteredProject): GroveProjectSummary['manifest_state'] {
