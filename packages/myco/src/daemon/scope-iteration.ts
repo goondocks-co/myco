@@ -212,6 +212,19 @@ export interface ForEachRegisteredProjectOptions extends ForEachGroveOptions {
    * projects.
    */
   shouldVisit?: (scope: RegisteredProjectScope) => boolean;
+  /**
+   * Optional notifier invoked alongside the error log when a per-project
+   * body throws. Mirrors the `notifyOnFailure` convention in
+   * `power-jobs.ts` for Grove-scope work: callers that own a vault dir
+   * + notification pipeline use this hook to surface project failures
+   * in the dashboard. Without it, a failure in one project's body is
+   * recorded only in the daemon log and the operator never sees it.
+   *
+   * The callback is best-effort and must not throw; the iteration
+   * continues regardless of what the notifier does. The error message
+   * has already been extracted from the thrown value.
+   */
+  notifyOnProjectFailure?: (scope: RegisteredProjectScope, errorMessage: string) => void;
 }
 
 /**
@@ -258,12 +271,31 @@ export async function forEachRegisteredProject(
           ok += 1;
         } catch (err) {
           failed += 1;
+          const message = errorMessage(err);
           logger.error(LOG_KINDS.DAEMON_START, 'Project iteration body failed', {
             grove_id: grove.id,
             project_id: project.project_id,
             project_root: project.root,
-            error: errorMessage(err),
+            error: message,
           });
+          if (options.notifyOnProjectFailure) {
+            try {
+              options.notifyOnProjectFailure(registeredScope, message);
+            } catch (notifyErr) {
+              // Notifier must never escalate a logged failure into a
+              // sweep abort; swallow and continue. Log at warn so a
+              // broken notifier is itself visible.
+              logger.warn(
+                LOG_KINDS.DAEMON_START,
+                'Project iteration notifier threw',
+                {
+                  grove_id: grove.id,
+                  project_id: project.project_id,
+                  error: errorMessage(notifyErr),
+                },
+              );
+            }
+          }
         }
       }
     },

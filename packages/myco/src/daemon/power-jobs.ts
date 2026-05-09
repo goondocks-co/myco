@@ -46,6 +46,12 @@ const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // drains we don't need to re-walk every Grove for ZERO_PENDING_TTL_MS.
 const ZERO_PENDING_TTL_MS = 30_000;
 
+// Rate-limit window for per-Grove embedding-probe failures. The probe
+// fires on every PowerManager tick; without throttling, a Grove with
+// a persistent embedding error would log on every tick. One warn per
+// hour per Grove is enough to expose the failure without flooding.
+const PROBE_FAILURE_WARN_INTERVAL_MS = 60 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -99,12 +105,25 @@ function buildLoggerForGrove(logger: Logger, scope: GroveScope): Logger {
 // Per-Grove memo for the logger and the projectVaultDir resolver. Both
 // derive from the Grove + its registered projects which only changes
 // when a project is registered/removed; recomputing per tick wastes work.
+//
+// A consumer whose value depends on data that *can* change between ticks
+// (e.g. the registered-project list) supplies an optional `isStale`
+// predicate. The cache calls it on every `get()` and rebuilds when the
+// predicate returns true. This lets project register/unregister
+// flow through without a daemon restart even though the daemon doesn't
+// have a direct register-event hook today: the next tick after a new
+// project lands invalidates the cache automatically.
 class PerGroveCache<T> {
   private readonly entries = new Map<string, T>();
-  constructor(private readonly build: (scope: GroveScope) => T) {}
+  constructor(
+    private readonly build: (scope: GroveScope) => T,
+    private readonly isStale?: (scope: GroveScope, cached: T) => boolean,
+  ) {}
   get(scope: GroveScope): T {
     const cached = this.entries.get(scope.grove.id);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && !(this.isStale?.(scope, cached) ?? false)) {
+      return cached;
+    }
     const fresh = this.build(scope);
     this.entries.set(scope.grove.id, fresh);
     return fresh;
@@ -136,6 +155,9 @@ interface PendingProbeCache {
 // predicate doesn't walk every Grove on every tick when fully drained.
 function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   let cache: PendingProbeCache | null = null;
+  // Per-Grove last-warn timestamps so a persistently-broken Grove
+  // surfaces in logs without flooding on every tick.
+  const lastWarnAt = new Map<string, number>();
   return () => {
     if (cache && Date.now() < cache.expiresAt) return cache.total;
     const mycoHome = deps.mycoHome ?? resolveMycoHome();
@@ -152,9 +174,25 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
           cache = null;
           return total;
         }
-      } catch {
+      } catch (err) {
         // Swallow per-Grove failure — better to risk an early sleep than
         // hold the whole machine awake on a transiently-broken signal.
+        // But surface the failure at warn level (rate-limited per Grove)
+        // so persistent breakage is visible in the daemon log.
+        const now = Date.now();
+        const last = lastWarnAt.get(grove.id) ?? 0;
+        if (now - last >= PROBE_FAILURE_WARN_INTERVAL_MS) {
+          lastWarnAt.set(grove.id, now);
+          deps.logger.warn(
+            LOG_KINDS.EMBEDDING_RECONCILE,
+            'Embedding pending-probe failed for Grove',
+            {
+              grove_id: grove.id,
+              grove_slug: grove.slug,
+              error: errorMessage(err),
+            },
+          );
+        }
       }
     }
     cache = { total: 0, expiresAt: Date.now() + ZERO_PENDING_TTL_MS };
@@ -180,14 +218,34 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
   const groveLoggers = new PerGroveCache<Logger>((scope) => buildLoggerForGrove(logger, scope));
-  const projectVaultDirResolvers = new PerGroveCache<(projectId: string | null) => string | null>(
+  // The resolver carries a fingerprint of the project list it was
+  // built from so a project register/unregister forces a rebuild on the
+  // next tick without anyone calling `invalidate(...)` explicitly.
+  // The fingerprint is just `count + sorted-ids`, which is cheap to
+  // recompute and stable across ticks while the registry is unchanged.
+  interface ProjectVaultDirResolver {
+    resolve: (projectId: string | null) => string | null;
+    fingerprint: string;
+  }
+  const fingerprintProjects = (groveId: string): string => {
+    const ids = listRegisteredProjects(groveId, mycoHome).map((p) => p.project_id);
+    ids.sort();
+    return `${ids.length}:${ids.join(',')}`;
+  };
+  const projectVaultDirResolvers = new PerGroveCache<ProjectVaultDirResolver>(
     (scope) => {
       const projects = listRegisteredProjects(scope.grove.id, mycoHome);
       const byId = new Map(
         projects.map((p) => [p.project_id, resolveProjectVaultDir(p.root)]),
       );
-      return (projectId) => (projectId ? byId.get(projectId) ?? null : null);
+      const ids = projects.map((p) => p.project_id);
+      ids.sort();
+      return {
+        resolve: (projectId) => (projectId ? byId.get(projectId) ?? null : null),
+        fingerprint: `${ids.length}:${ids.join(',')}`,
+      };
     },
+    (scope, cached) => fingerprintProjects(scope.grove.id) !== cached.fingerprint,
   );
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
@@ -230,6 +288,29 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     );
   };
 
+  // Project-scope analogue passed to forEachRegisteredProject. The error
+  // log already happens inside the iterator's catch; this helper only
+  // surfaces a daemon-scope notification so operators see the failure
+  // in the dashboard, not just in the daemon log.
+  const buildProjectFailureNotifier = (
+    notifyType: string,
+    titleVerb: string,
+  ): ((scope: RegisteredProjectScope, message: string) => void) => {
+    return (scope, message) => {
+      notifyDaemon(
+        notifyType,
+        `${titleVerb} failed for ${scope.project.name ?? scope.project.project_id}`,
+        message,
+        {
+          grove_id: scope.grove.id,
+          grove_slug: scope.grove.slug,
+          project_id: scope.project.project_id,
+          project_root: scope.project.root,
+        },
+      );
+    };
+  };
+
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
     () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
 
@@ -270,7 +351,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         logger: groveLoggers.get(scope),
         registeredSessionIds: () => [...registry.sessions],
         embeddingManager: manager,
-        resolveProjectVaultDir: projectVaultDirResolvers.get(scope),
+        resolveProjectVaultDir: projectVaultDirResolvers.get(scope).resolve,
         staleThresholdMs: liveConfig.current.daemon.stale_session_threshold_ms,
       });
     }),
@@ -418,7 +499,14 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
             },
           );
         },
-        { mycoHome, machineId },
+        {
+          mycoHome,
+          machineId,
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.staging_gc_failed',
+            'Staging GC',
+          ),
+        },
       );
     },
   });
@@ -442,7 +530,14 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           });
           await runner.run(now);
         },
-        { mycoHome, machineId },
+        {
+          mycoHome,
+          machineId,
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.canopy_dispatch_failed',
+            'Canopy background scan',
+          ),
+        },
       ).then(() => undefined),
   });
 

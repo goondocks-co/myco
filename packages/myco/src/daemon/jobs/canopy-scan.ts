@@ -208,6 +208,20 @@ export class CanopyBackgroundScanDispatcher {
 // ---------------------------------------------------------------------------
 
 /**
+ * Composite identity key for the runner registry. Combines every field
+ * that a re-bind could change so a runner is never reused across a
+ * registry resolution that points at a different DB or root.
+ */
+function canopyRunnerKey(identity: CanopyRunnerIdentity): string {
+  return [
+    identity.groveId,
+    identity.projectId,
+    identity.databasePath,
+    identity.projectRoot,
+  ].join('\x00');
+}
+
+/**
  * Holds one `CanopyDeltaScanRunner` per project, materialized on first
  * dispatch. Lookups by `projectId` are used by:
  *
@@ -220,22 +234,51 @@ export class CanopyBackgroundScanDispatcher {
  *   every project at once.
  */
 export class CanopyJobsRegistry {
+  // Keyed by full identity (groveId + projectId + databasePath + projectRoot)
+  // so a re-bind that changes any field is treated as a fresh runner. A
+  // projectId-only key would silently reuse a runner whose database
+  // handle or root path no longer matches the live registry, leading
+  // to scans against the wrong DB on the next tick.
   private readonly runners = new Map<string, CanopyDeltaScanRunner>();
+  private readonly identities = new Map<string, CanopyRunnerIdentity>();
 
   constructor(private readonly shared: CanopyRunnerSharedDeps) {}
 
   /** Get-or-create a per-project runner. Cheap; safe to call repeatedly. */
   ensureRunner(identity: CanopyRunnerIdentity): CanopyDeltaScanRunner {
-    const existing = this.runners.get(identity.projectId);
+    const key = canopyRunnerKey(identity);
+    const existing = this.runners.get(key);
     if (existing) return existing;
+    // Identity changed (different groveId / databasePath / projectRoot
+    // for the same projectId): drop the stale runner so the new
+    // identity owns the slot. Logged at warn so a re-bind is visible.
+    for (const [staleKey, staleIdentity] of this.identities) {
+      if (staleIdentity.projectId === identity.projectId) {
+        this.shared.logger.warn(LOG_KINDS.CANOPY_SCAN, 'Canopy runner identity changed; replacing stale runner', {
+          project_id: identity.projectId,
+          previous_grove_id: staleIdentity.groveId,
+          previous_database_path: staleIdentity.databasePath,
+          previous_project_root: staleIdentity.projectRoot,
+          grove_id: identity.groveId,
+          database_path: identity.databasePath,
+          project_root: identity.projectRoot,
+        });
+        this.runners.delete(staleKey);
+        this.identities.delete(staleKey);
+      }
+    }
     const runner = new CanopyDeltaScanRunner(identity, this.shared);
-    this.runners.set(identity.projectId, runner);
+    this.runners.set(key, runner);
+    this.identities.set(key, identity);
     return runner;
   }
 
   /** Look up an existing runner without materializing one. */
   getRunner(projectId: GroveProjectId): CanopyDeltaScanRunner | undefined {
-    return this.runners.get(projectId);
+    for (const [key, identity] of this.identities) {
+      if (identity.projectId === projectId) return this.runners.get(key);
+    }
+    return undefined;
   }
 
   /**

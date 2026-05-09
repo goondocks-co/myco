@@ -296,6 +296,65 @@ describe('scope-iteration', () => {
       cache.closeAll();
     });
 
+    it('invokes notifyOnProjectFailure when a per-project body throws', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');
+      registerProject(a, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'a2');
+      const cache = new GroveRuntimeCache();
+      const notified: Array<{ projectId: string; message: string }> = [];
+      const summary = await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ projectId }) => {
+          if (projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+            throw new Error('boom');
+          }
+        },
+        {
+          mycoHome,
+          machineId: MACHINE_ID,
+          notifyOnProjectFailure: (scope, message) => {
+            notified.push({ projectId: scope.projectId, message });
+          },
+        },
+      );
+      expect(summary).toEqual({ attempted: 2, ok: 1, failed: 1 });
+      expect(notified).toEqual([
+        { projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', message: 'boom' },
+      ]);
+      cache.closeAll();
+    });
+
+    it('continues sweeping when notifyOnProjectFailure itself throws', async () => {
+      const a = createGroveWithDb('Alpha');
+      registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');
+      registerProject(a, 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'a2');
+      const cache = new GroveRuntimeCache();
+      let bodyCalls = 0;
+      const summary = await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ projectId }) => {
+          bodyCalls += 1;
+          if (projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+            throw new Error('body-boom');
+          }
+        },
+        {
+          mycoHome,
+          machineId: MACHINE_ID,
+          notifyOnProjectFailure: () => {
+            throw new Error('notifier-boom');
+          },
+        },
+      );
+      // Sweep must complete despite both the body and the notifier
+      // throwing for the first project.
+      expect(summary).toEqual({ attempted: 2, ok: 1, failed: 1 });
+      expect(bodyCalls).toBe(2);
+      cache.closeAll();
+    });
+
     it('honors shouldVisit predicate to gate the body', async () => {
       const a = createGroveWithDb('Alpha');
       registerProject(a, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a1');

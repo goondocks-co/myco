@@ -52,6 +52,14 @@ const UPGRADE_SUBPROCESS_TIMEOUT_MS = 5 * 60 * 1000;
 /** Maximum stdout+stderr the subprocess can produce before we truncate. */
 const UPGRADE_SUBPROCESS_MAX_BUFFER = 4 * 1024 * 1024;
 
+/**
+ * Cloudflare API fetches must time out so the daemon doesn't wedge a
+ * request handler when the network or the CF edge stalls. 30s matches
+ * the convention used for `wrangler whoami --json` above and is well
+ * below the daemon's per-request budget.
+ */
+const CLOUDFLARE_API_TIMEOUT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -197,6 +205,7 @@ async function resolveQueueId(creds: CloudflareQueueCredentials, queueName: stri
       Authorization: `Bearer ${creds.token}`,
       'Content-Type': 'application/json',
     },
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Cloudflare queue lookup failed: ${res.status} ${await res.text()}`);
@@ -231,6 +240,7 @@ async function listLocalDlq(creds: CloudflareQueueCredentials, queueName: string
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ batch_size: batchSize, visibility_timeout_ms: 5 * 60 * 1000 }),
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Cloudflare DLQ pull failed: ${res.status} ${await res.text()}`);
@@ -285,6 +295,7 @@ async function ackLocalDlq(creds: CloudflareQueueCredentials, queueName: string,
       acks: action === 'discard' ? leaseIds.map((id) => ({ lease_id: id })) : [],
       retries: action === 'retry' ? leaseIds.map((id) => ({ lease_id: id, delay_seconds: 0 })) : [],
     }),
+    signal: AbortSignal.timeout(CLOUDFLARE_API_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Cloudflare DLQ ${action} failed: ${res.status} ${await res.text()}`);

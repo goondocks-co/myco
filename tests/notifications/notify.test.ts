@@ -12,7 +12,7 @@ import {
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId, projectScope } from '@myco/grove/ids';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { registerBuiltinDomains } from '@myco/notifications/domains';
-import { notify } from '@myco/notifications/notify';
+import { _clearNotifyDedupForTests, notify } from '@myco/notifications/notify';
 import { clearAll } from '@myco/notifications/registry';
 
 describe('notify', () => {
@@ -25,6 +25,7 @@ describe('notify', () => {
     createSchema(db);
     clearAll();
     registerBuiltinDomains();
+    _clearNotifyDedupForTests();
   });
 
   afterEach(() => {
@@ -173,6 +174,66 @@ describe('notify', () => {
       expect(
         countNotifications('unread', scope, { includeDaemonScope: true }),
       ).toBe(2);
+    });
+  });
+
+  describe('dedup window', () => {
+    beforeEach(() => {
+      fs.writeFileSync(path.join(tmpDir, 'myco.yaml'), 'version: 3\n');
+    });
+
+    it('suppresses repeats of the same (domain, type, project) within the dedup window', () => {
+      const a = notify(
+        tmpDir,
+        { domain: 'daemon', type: 'daemon.backup_failed', title: 'first' },
+        undefined,
+        { scope: 'daemon' },
+      );
+      const b = notify(
+        tmpDir,
+        { domain: 'daemon', type: 'daemon.backup_failed', title: 'second' },
+        undefined,
+        { scope: 'daemon' },
+      );
+      expect(a).toBeTruthy();
+      expect(b).toBeNull();
+      // Only the first row landed.
+      expect(countNotifications(undefined, ALL_PROJECTS_SCOPE)).toBe(1);
+    });
+
+    it('does not dedup across different types in the same domain', () => {
+      const a = notify(
+        tmpDir,
+        { domain: 'daemon', type: 'daemon.backup_failed', title: 'backup' },
+        undefined,
+        { scope: 'daemon' },
+      );
+      const b = notify(
+        tmpDir,
+        { domain: 'daemon', type: 'daemon.optimize_failed', title: 'optimize' },
+        undefined,
+        { scope: 'daemon' },
+      );
+      expect(a).toBeTruthy();
+      expect(b).toBeTruthy();
+      expect(countNotifications(undefined, ALL_PROJECTS_SCOPE)).toBe(2);
+    });
+
+    it('does not dedup daemon-scope vs project-scope rows of the same type', () => {
+      const projectId = notify(tmpDir, {
+        domain: 'agents',
+        type: 'agent.task.failure',
+        title: 'project failure',
+      });
+      const daemonId = notify(
+        tmpDir,
+        { domain: 'agents', type: 'agent.task.failure', title: 'daemon failure' },
+        undefined,
+        { scope: 'daemon' },
+      );
+      expect(projectId).toBeTruthy();
+      expect(daemonId).toBeTruthy();
+      expect(projectId).not.toBe(daemonId);
     });
   });
 
