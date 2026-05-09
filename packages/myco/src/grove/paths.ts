@@ -11,6 +11,7 @@ import { assertGroveEraId } from './ids.js';
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
 export const SERVICE_DIRNAME = 'service';
+export const SERVICE_DEV_DIRNAME = 'service-dev';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_DB_FILENAME = 'myco.db';
@@ -39,8 +40,33 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, GLOBAL_CONFIG_FILENAME);
 }
 
+/**
+ * Process-level switch separating the production daemon's service descriptor
+ * from a contributor's dogfood daemon. Set once at process startup (after
+ * `detectDevBuild()` reports the running binary is a dev build) via
+ * `setDevServiceMode(true)`. Mirrors the `setDevBuildCliEntry` pattern in
+ * `update-checker.ts`. Tests reset via `setDevServiceMode(false)`.
+ *
+ * Production binary → `~/.myco/service/`     → `derivePort` ≠ dev's port.
+ * Dev binary        → `~/.myco/service-dev/` → `derivePort` ≠ prod's port.
+ *
+ * Both daemons share `~/.myco/` (config, secrets, groves) so the dogfood
+ * daemon exercises the real system, but they bind separate ports and write
+ * separate `daemon.json` descriptors so they coexist on a contributor's
+ * machine without evicting each other.
+ */
+let devServiceMode = false;
+
+export function setDevServiceMode(value: boolean): void {
+  devServiceMode = value;
+}
+
+export function isDevServiceMode(): boolean {
+  return devServiceMode;
+}
+
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, SERVICE_DIRNAME);
+  return path.join(mycoHome, devServiceMode ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME);
 }
 
 export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {

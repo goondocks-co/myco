@@ -41,6 +41,7 @@ import {
 import {
   resolveMachineRuntimeCommandPath,
   resolveMachineRuntimeDir,
+  setDevServiceMode,
 } from '../grove/paths.js';
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,36 @@ export function setDevBuildCliEntry(cliEntry: string | null): void {
  */
 export function getDevBuildCliEntry(): string | null {
   return devBuildCliEntry;
+}
+
+/**
+ * Run dev-build detection at process startup and route the result into the
+ * two side-effects every entry point cares about: the update-checker exemption
+ * (`setDevBuildCliEntry`) and the service-path branch (`setDevServiceMode`).
+ *
+ * Called once at the top of `cli.ts:main()` so every invocation — daemon, CLI
+ * subcommands, MCP, hooks — resolves `~/.myco/service-dev/` instead of
+ * `~/.myco/service/` when the running binary is a dev build. Without this
+ * early activation the dogfood and production daemons would derive the same
+ * canonical port and evict each other.
+ *
+ * Uses `process.execPath` (not `argv[1]`) for the same reason `main.ts`
+ * does: under the bun-compiled binary, `argv[1]` is a virtual `/$bunfs/`
+ * path that `realpath` rejects.
+ */
+export function activateDevBuildModeIfDetected(): void {
+  let globalPrefix: string | null = null;
+  try {
+    globalPrefix = resolveGlobalPrefix();
+  } catch {
+    // npm not on PATH or otherwise unresolvable — treat as production.
+    return;
+  }
+  const devEntry = detectDevBuild(globalPrefix, process.execPath, fs.realpathSync);
+  if (devEntry) {
+    setDevBuildCliEntry(devEntry);
+    setDevServiceMode(true);
+  }
 }
 
 /**
