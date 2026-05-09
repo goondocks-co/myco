@@ -26,5 +26,5 @@
     "typescript": "^6.0.3",
     "vite": "^8.0.10"
   },
-  "version": "0.1.8"
+  "version": "0.3.0"
 }
