@@ -212,6 +212,7 @@ export function activateProjectMigration(
   const existingManifest = loadProjectManifest(projectVaultDir);
   const identity = prepareIdentity({
     existingManifest,
+    existingMarker: existingMarkerEarly,
     grove,
     projectRoot,
     projectName: input.projectName,
@@ -413,14 +414,27 @@ function openMigratedSourceSnapshot(sourceDbPath: string, machineId: string): So
 
 function prepareIdentity(input: {
   existingManifest: ProjectManifest | null;
+  existingMarker: ActivationMarker | null;
   grove: GroveRecord;
   projectRoot: string;
   projectName?: string;
   mycoHome: string;
 }): PreparedIdentity {
-  const projectId = input.existingManifest?.project.id ?? createProjectId();
-  const projectName = input.existingManifest?.project.name ?? input.projectName ?? path.basename(input.projectRoot);
-  const bindingId = input.existingManifest?.grove?.binding_id ?? createGroveBindingId();
+  // Identity preference: manifest first (if present), marker second (when
+  // we're repairing a vault whose project.toml went missing post-migration),
+  // freshly-minted last (true first-run activation). This keeps repair
+  // runs aligned with the existing marker so `assertExistingMarkerMatches`
+  // doesn't throw on a brand-new id we just minted.
+  const projectId = input.existingManifest?.project.id
+    ?? input.existingMarker?.project_id
+    ?? createProjectId();
+  const projectName = input.existingManifest?.project.name
+    ?? input.existingMarker?.project_name
+    ?? input.projectName
+    ?? path.basename(input.projectRoot);
+  const bindingId = input.existingManifest?.grove?.binding_id
+    ?? input.existingMarker?.grove_binding_id
+    ?? createGroveBindingId();
 
   const registeredBinding = findRegisteredProjectByBinding(bindingId, input.mycoHome);
   if (registeredBinding) {
@@ -434,7 +448,7 @@ function prepareIdentity(input: {
         `Existing project.toml Grove binding ${bindingId} is registered to project ${registeredBinding.project.project_id}, not ${projectId}.`,
       );
     }
-    if (path.resolve(registeredBinding.project.root) !== input.projectRoot) {
+    if (!pathsEquivalent(registeredBinding.project.root, input.projectRoot)) {
       throw new Error(
         `Existing project.toml Grove binding ${bindingId} is already registered at ${registeredBinding.project.root}; refusing to rebind it to ${input.projectRoot}.`,
       );
