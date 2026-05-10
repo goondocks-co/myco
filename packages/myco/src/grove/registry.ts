@@ -184,11 +184,26 @@ export function clearGroveRegistryCaches(): void {
   legacyGlobalConfigCache.clear();
 }
 
-export function listGroves(mycoHome = resolveMycoHome()): GroveRecord[] {
-  return groveDirEntriesCache.get(resolveGrovesDir(mycoHome))
+export interface ListGrovesOptions {
+  /**
+   * Restrict to Groves owned by a specific service dir. Omit to enumerate
+   * every Grove on disk — only the registry-advertisement endpoint and the
+   * one-shot deploy migration script should pass nothing.
+   */
+  servedBy?: DaemonServiceDir;
+}
+
+export function listGroves(
+  mycoHome = resolveMycoHome(),
+  options: ListGrovesOptions = {},
+): GroveRecord[] {
+  const all = groveDirEntriesCache.get(resolveGrovesDir(mycoHome))
     .map((name) => loadGroveRecord(name, mycoHome))
-    .filter((record): record is GroveRecord => !!record)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .filter((record): record is GroveRecord => !!record);
+  const filtered = options.servedBy
+    ? all.filter((g) => g.served_by === options.servedBy)
+    : all;
+  return filtered.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): GroveRecord | null {
