@@ -339,11 +339,11 @@ function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): 
       parsed.embedding = embeddingConfig;
     }
 
-    // Keep daemon.port and daemon.log_level, drop grace_period and max_log_size
+    // Keep daemon.log_level; drop port (machine-derived now), grace_period, max_log_size
     const daemon = parsed.daemon as Record<string, unknown> | undefined;
     if (daemon) {
-      const { port, log_level } = daemon;
-      parsed.daemon = { port: port ?? null, log_level: log_level ?? 'info' };
+      const { log_level } = daemon;
+      parsed.daemon = { log_level: log_level ?? 'info' };
     }
 
     // Keep capture basics, drop token-related fields; migrate artifact_watch → plan_dirs

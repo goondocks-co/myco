@@ -97,7 +97,9 @@ digest:
     // Opt into the three-tier strip so we can assert the moved Machine fields.
     loadConfig(tmpDir, { migrateTiers: true });
     const machineYaml = fs.readFileSync(path.join(mycoHomeDir, 'config.yaml'), 'utf-8');
-    expect(machineYaml).toContain('port: 7432');
+    // daemon.port is no longer migrated — the canonical port is derived
+    // from the service path; the v2 override is silently dropped.
+    expect(machineYaml).not.toContain('port:');
     expect(machineYaml).toContain('log_level: debug');
     const reloaded = loadConfig(tmpDir);
     expect(reloaded.version).toBe(3);

@@ -5,12 +5,7 @@ import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, removeTomlS
 import { deepMergeSettings, deepRemoveSettings } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { ensureAgentsMd, ensureSymlink, isMycoHookGroup } from './install-helpers.js';
-import {
-  loadMergedConfig,
-  loadMachineConfig,
-  saveMachineConfig,
-} from '../config/loader.js';
-import { derivePort } from '../daemon/port.js';
+import { loadMergedConfig } from '../config/loader.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
@@ -1046,23 +1041,7 @@ export class SymbiontInstaller {
 
   private resolveDaemonPort(): number {
     const vaultDir = path.join(this.projectRoot, '.myco');
-    const daemonService = resolveDaemonServiceState(vaultDir, { env: process.env });
-    if (daemonService.scope === 'global') return daemonService.canonicalPort;
-
-    // Daemon port is machine-tier (one daemon per machine).
-    // Persist+read from `~/.myco/config.yaml`, NOT project myco.yaml.
-    try {
-      const machine = loadMachineConfig();
-      if (machine.daemon.port !== null) return machine.daemon.port;
-      const port = derivePort(vaultDir);
-      saveMachineConfig({
-        ...machine,
-        daemon: { ...machine.daemon, port },
-      });
-      return port;
-    } catch {
-      return derivePort(vaultDir);
-    }
+    return resolveDaemonServiceState(vaultDir, { env: process.env }).canonicalPort;
   }
 
   /**

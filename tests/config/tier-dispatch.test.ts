@@ -44,7 +44,7 @@ describe('Tier dispatch', () => {
   it('saveMachineConfig writes ~/.myco/config.yaml', () => {
     saveMachineConfig({
       ...loadMachineConfig(),
-      daemon: { port: 9999, log_level: 'debug', log_retention_days: 14, update_channel: 'stable' },
+      daemon: { log_level: 'debug', log_retention_days: 14, update_channel: 'stable' },
     });
 
     const expected = resolveGlobalConfigPath();
@@ -52,14 +52,14 @@ describe('Tier dispatch', () => {
     expect(fs.existsSync(expected)).toBe(true);
 
     const written = YAML.parse(fs.readFileSync(expected, 'utf-8'));
-    expect(written.daemon.port).toBe(9999);
     expect(written.daemon.log_level).toBe('debug');
+    expect(written.daemon.log_retention_days).toBe(14);
   });
 
   it('saveMachineConfig does NOT write to a Grove config file', () => {
     saveMachineConfig({
       ...loadMachineConfig(),
-      daemon: { port: 8888, log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
+      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
     });
 
     const grovePath = resolveGroveConfigPath('grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
@@ -95,24 +95,25 @@ describe('Tier dispatch', () => {
     }
   });
 
-  it('save{Machine,Grove}Config write to distinct files for the same field name', () => {
+  it('save{Machine,Grove}Config write to distinct files for distinct daemon fields', () => {
     saveMachineConfig({
       ...loadMachineConfig(),
-      daemon: { port: 7777, log_level: 'info', log_retention_days: 7, update_channel: 'stable' },
+      // Machine tier owns daemon.log_level / log_retention_days / update_channel.
+      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
     });
     saveGroveConfig('grove_3333333333333333333333333333aaaa', {
       ...loadGroveConfig('grove_3333333333333333333333333333aaaa'),
-      // Grove tier owns daemon.stale_session_threshold_ms
+      // Grove tier owns daemon.stale_session_threshold_ms.
       daemon: { stale_session_threshold_ms: 60_000 },
     });
 
     const machineDoc = YAML.parse(fs.readFileSync(resolveGlobalConfigPath(), 'utf-8'));
     const groveDoc = YAML.parse(fs.readFileSync(resolveGroveConfigPath('grove_3333333333333333333333333333aaaa'), 'utf-8'));
 
-    expect(machineDoc.daemon.port).toBe(7777);
+    expect(machineDoc.daemon.update_channel).toBe('beta');
     expect(machineDoc.daemon.stale_session_threshold_ms).toBeUndefined();
     expect(groveDoc.daemon.stale_session_threshold_ms).toBe(60_000);
-    expect(groveDoc.daemon.port).toBeUndefined();
+    expect(groveDoc.daemon.update_channel).toBeUndefined();
   });
 
   it('saveConfig strips Grove/Machine tier fields out of the project file (ProjectConfigSchema)', () => {
@@ -147,7 +148,7 @@ describe('Tier dispatch', () => {
   it('loadMachineConfig and loadGroveConfig read from their own tier files only', () => {
     saveMachineConfig({
       ...loadMachineConfig(),
-      daemon: { port: 6666, log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
+      daemon: { log_level: 'info', log_retention_days: 7, update_channel: 'beta' },
     });
     saveGroveConfig('grove_4444444444444444444444444444aaaa', {
       ...loadGroveConfig('grove_4444444444444444444444444444aaaa'),
@@ -157,8 +158,8 @@ describe('Tier dispatch', () => {
     const machine = loadMachineConfig();
     const grove = loadGroveConfig('grove_4444444444444444444444444444aaaa');
 
-    expect(machine.daemon.port).toBe(6666);
     expect(machine.daemon.update_channel).toBe('beta');
+    expect(machine.daemon.log_retention_days).toBe(7);
     expect(grove.backup?.dir).toBe('/tmp/readback');
   });
 });
