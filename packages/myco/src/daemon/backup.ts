@@ -9,29 +9,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
+import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /**
- * Tables included in backup dumps (all synced tables).
+ * Tables that cannot participate in the row-by-row backup format.
  *
- * `cortex_instructions` is intentionally excluded: it's local-only
- * operating guidance (see schema v19 migration + LOCAL_ONLY_OUTBOX_TABLES)
- * and must not move across machines via backup/restore.
+ * `entity_mentions` has no `id` column (gotcha_entity_mentions_not_synced):
+ * the dump format addresses rows by primary key for `INSERT OR IGNORE`
+ * idempotency, and a keyless table can't be addressed that way. Adding
+ * an `id` column to `entity_mentions` removes this carve-out.
+ */
+const BACKUP_EXCLUSIONS = new Set<string>(['entity_mentions']);
+
+/**
+ * Tables included in backup dumps. Derived from GROVE_PROJECT_SCOPED_TABLES
+ * so backup coverage and project-scope coverage stay in lockstep, plus
+ * `team_members` which is grove-scoped (not project-scoped) but still
+ * needs to round-trip through backup/restore.
  */
 export const BACKUP_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
+  ...GROVE_PROJECT_SCOPED_TABLES.filter((t) => !BACKUP_EXCLUSIONS.has(t)),
   'team_members',
 ] as const;
 
@@ -56,6 +57,27 @@ const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Scope of a backup. `all-projects` produces a vault-wide dump (the
+ * historical default); `single-project` filters every per-table SELECT
+ * by `project_id` so the resulting file carries only the target
+ * project's rows.
+ */
+export type ProjectScope =
+  | { kind: 'all-projects' }
+  | { kind: 'single-project'; projectId: string };
+
+export const ALL_PROJECTS_SCOPE: ProjectScope = { kind: 'all-projects' };
+
+export function projectScope(projectId: string): ProjectScope {
+  return { kind: 'single-project', projectId };
+}
+
+function projectScopeClause(scope: ProjectScope): { sql: string; params: unknown[] } {
+  if (scope.kind === 'all-projects') return { sql: '', params: [] };
+  return { sql: ' WHERE project_id = ?', params: [scope.projectId] };
+}
 
 /** Metadata for a backup file on disk. */
 export interface BackupMeta {
@@ -110,13 +132,22 @@ function toSqlLiteral(value: unknown): string {
 // Backup
 // ---------------------------------------------------------------------------
 
+/** Tables that carry a `project_id` column and so accept project scoping. */
+const PROJECT_SCOPED_BACKUP_TABLES = new Set<string>(GROVE_PROJECT_SCOPED_TABLES);
+
 /**
  * Create a SQL dump backup of all synced tables.
  *
- * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES to
- * `{backupDir}/{machineId}__{epochSeconds}.sql`. Each invocation produces
- * a new file; old ones are reclaimed by `pruneBackups` per the configured
- * retention policy.
+ * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES.
+ * The default scope is vault-wide; pass `projectScope(projectId)` to
+ * filter every per-table SELECT by `project_id`.
+ *
+ * Filename scheme:
+ * - all-projects: `{machineId}__{epochSeconds}.sql`
+ * - single-project: `{machineId}__{projectSlug}__{epochSeconds}.sql`
+ *
+ * Each invocation produces a new file; old ones are reclaimed by
+ * `pruneBackups` per the configured retention policy.
  *
  * @returns the absolute path of the created backup file.
  */
@@ -124,19 +155,30 @@ export function createBackup(
   db: Database,
   backupDir: string,
   machineId: string,
+  scope: ProjectScope = ALL_PROJECTS_SCOPE,
+  projectSlug?: string,
 ): string {
   fs.mkdirSync(backupDir, { recursive: true });
 
   const lines: string[] = [];
   const timestamp = epochSeconds();
+  const clause = projectScopeClause(scope);
+  const scopeLabel = scope.kind === 'single-project'
+    ? `project=${scope.projectId}`
+    : 'all-projects';
 
   // Header
   lines.push(`${BACKUP_HEADER_TEMPLATE}: machine_id=${machineId}, created_at=${timestamp}`);
   lines.push(`-- Protocol version: ${SYNC_PROTOCOL_VERSION}`);
+  lines.push(`-- scope: ${scopeLabel}`);
   lines.push('');
 
   for (const table of BACKUP_TABLES) {
-    const rows = db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+    const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
+    const sql = `SELECT * FROM ${table}${useScope ? clause.sql : ''}`;
+    const rows = useScope
+      ? db.prepare(sql).all(...clause.params) as Record<string, unknown>[]
+      : db.prepare(sql).all() as Record<string, unknown>[];
     if (rows.length === 0) continue;
 
     lines.push(`-- Table: ${table} (${rows.length} rows)`);
@@ -153,7 +195,10 @@ export function createBackup(
     lines.push('');
   }
 
-  const filePath = path.join(backupDir, `${machineId}__${timestamp}${BACKUP_EXTENSION}`);
+  const filename = scope.kind === 'single-project'
+    ? `${machineId}__${projectSlug ?? 'unknown'}__${timestamp}${BACKUP_EXTENSION}`
+    : `${machineId}__${timestamp}${BACKUP_EXTENSION}`;
+  const filePath = path.join(backupDir, filename);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
   return filePath;

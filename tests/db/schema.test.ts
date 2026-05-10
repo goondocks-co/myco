@@ -159,6 +159,24 @@ describe('Database schema', () => {
         expect(getColumnNames(db, 'team_outbox')).not.toContain('project_id');
       });
 
+      it('every table with a project_id column is registered in GROVE_PROJECT_SCOPED_TABLES', () => {
+        createSchema(db);
+        const tables = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+        ).all() as Array<{ name: string }>;
+
+        const projectScoped = tables
+          .map((t) => t.name)
+          .filter((name) => {
+            const cols = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+            return cols.some((c) => c.name === 'project_id');
+          });
+
+        const registered = new Set<string>(GROVE_PROJECT_SCOPED_TABLES);
+        const missing = projectScoped.filter((name) => !registered.has(name));
+        expect(missing).toEqual([]);
+      });
+
       it('sessions table has correct columns', () => {
         createSchema(db);
         const colNames = getColumnNames(db, 'sessions');

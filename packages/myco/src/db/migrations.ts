@@ -2204,8 +2204,38 @@ const V36_DELETE_ONLY_TABLES: readonly string[] = ['canopy_entries', 'canopy_map
  * For these tables: when exactly one Grove-era `project_id` is present
  * in the table, backfill orphans to that id (preserving the audit data),
  * then DELETE any remaining orphans (multiple Grove ids → can't infer).
+ *
+ * Frozen snapshot of GROVE_PROJECT_SCOPED_TABLES as it stood at v36.
+ * Migrations must never reference live constants — later additions to
+ * GROVE_PROJECT_SCOPED_TABLES (canopy_*, agent_state, …) would silently
+ * change the historical migration's semantics.
  */
-const V36_BACKFILL_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
+const V36_BACKFILL_TABLES: readonly string[] = [
+  'sessions',
+  'prompt_batches',
+  'activities',
+  'plans',
+  'artifacts',
+  'attachments',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'digest_extracts',
+  'cortex_instructions',
+  'agent_runs',
+  'agent_reports',
+  'agent_turns',
+  'agent_run_write_intents',
+  'digest_extract_revisions',
+  'skill_candidates',
+  'skill_records',
+  'skill_lineage',
+  'skill_usage',
+  'notifications',
+  'log_entries',
+];
 
 function migrateV35ToV36(db: Database): void {
   // Suspend FK enforcement for the duration of the sweep. Several FK
