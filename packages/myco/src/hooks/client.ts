@@ -107,7 +107,6 @@ export class DaemonClient {
   private vaultDir: string;
   private defaultHeaders: Record<string, string>;
   private daemonService: DaemonServiceState;
-  private legacyProjectDaemonCleaned = false;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
@@ -283,7 +282,6 @@ export class DaemonClient {
    * version-driven restarts.
    */
   async ensureRunning(opts?: { checkStale?: boolean }): Promise<boolean> {
-    this.cleanLegacyProjectDaemon();
     const checkStale = opts?.checkStale ?? true;
     const info = this.readDaemonJson();
 
@@ -319,7 +317,6 @@ export class DaemonClient {
   }
 
   async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
-    this.cleanLegacyProjectDaemon();
     this.killDaemon(this.readDaemonJson());
     await new Promise((r) => setTimeout(r, 200));
     return this.ensureRunning(opts);
@@ -360,37 +357,7 @@ export class DaemonClient {
   }
 
   private readDaemonJson(): DaemonInfo | null {
-    this.cleanLegacyProjectDaemon();
     return readDaemonState(this.daemonService.statePath);
-  }
-
-  private cleanLegacyProjectDaemon(): void {
-    if (this.legacyProjectDaemonCleaned) return;
-    this.legacyProjectDaemonCleaned = true;
-
-    const legacyPath = path.join(this.vaultDir, 'daemon.json');
-    if (path.resolve(legacyPath) === path.resolve(this.daemonService.statePath)) return;
-
-    const legacyInfo = readDaemonState(legacyPath);
-    if (!legacyInfo) {
-      removeDaemonState(legacyPath);
-      return;
-    }
-
-    const globalInfo = readDaemonState(this.daemonService.statePath);
-    if (globalInfo?.pid === legacyInfo.pid) {
-      removeDaemonState(legacyPath, legacyInfo.pid);
-      return;
-    }
-
-    if (legacyInfo.pid !== process.pid) {
-      try {
-        process.kill(legacyInfo.pid, 'SIGTERM');
-      } catch {
-        // Already dead or inaccessible.
-      }
-    }
-    removeDaemonState(legacyPath, legacyInfo.pid);
   }
 }
 
