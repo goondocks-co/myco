@@ -206,36 +206,51 @@ export function ensureProjectManifest(
   const existing = loadProjectManifest(projectVaultDir);
   if (existing) {
     if (options.groveSlug && !existing.grove?.binding_id) {
-      const updated: ProjectManifest = {
+      const bindingId = options.groveBindingId ?? createGroveBindingId();
+      const portable: ProjectManifest = {
         ...existing,
         grove: {
           ...existing.grove,
-          binding_id: options.groveBindingId ?? createGroveBindingId(),
           slug: existing.grove?.slug ?? options.groveSlug,
           mode: existing.grove?.mode ?? 'local',
         },
       };
-      saveProjectManifest(projectVaultDir, updated);
-      return updated;
+      saveProjectManifest(projectVaultDir, portable);
+      saveProjectLocalManifest(projectVaultDir, {
+        grove_binding: { binding_id: bindingId, mode: 'local' },
+      });
+      return {
+        ...portable,
+        grove: { ...portable.grove, mode: 'local', binding_id: bindingId },
+      };
     }
     return existing;
   }
 
-  const manifest: ProjectManifest = {
+  const bindingId = options.groveSlug
+    ? (options.groveBindingId ?? createGroveBindingId())
+    : null;
+  const portable: ProjectManifest = {
     project: {
       id: createProjectId(),
       name: options.projectName,
     },
     grove: options.groveSlug
       ? {
-        binding_id: options.groveBindingId ?? createGroveBindingId(),
         slug: options.groveSlug,
         mode: 'local',
       }
       : undefined,
   };
-  saveProjectManifest(projectVaultDir, manifest);
-  return manifest;
+  saveProjectManifest(projectVaultDir, portable);
+  if (bindingId) {
+    saveProjectLocalManifest(projectVaultDir, {
+      grove_binding: { binding_id: bindingId, mode: 'local' },
+    });
+  }
+  return bindingId
+    ? { ...portable, grove: { ...portable.grove, mode: 'local', binding_id: bindingId } }
+    : portable;
 }
 
 function migrateCombinedManifest(
@@ -308,13 +323,18 @@ function mergeGroveTable(
   grove: NonNullable<ProjectManifest['grove']>,
 ): TomlTableWithoutBigInt {
   const existingTable = isPlainTable(existing) ? existing as TomlTableWithoutBigInt : {};
-  const table: TomlTableWithoutBigInt = {
-    ...existingTable,
-    mode: grove.mode,
-  };
+  const table: TomlTableWithoutBigInt = { ...existingTable };
+  // `mode` and `binding_id` belong in `project.local.toml`. Persist them
+  // inline only when the caller passes them explicitly (legacy combined
+  // shape used as a test fixture or pre-WB2 callers); when absent, drop
+  // any stale inline copy so a re-save naturally migrates the file to
+  // the portable shape.
+  if (grove.binding_id) table.binding_id = grove.binding_id;
+  else delete table.binding_id;
+  if (grove.binding_id) table.mode = grove.mode;
+  else delete table.mode;
   if (grove.id) table.id = grove.id;
   if (grove.name) table.name = grove.name;
-  if (grove.binding_id) table.binding_id = grove.binding_id;
   if (grove.slug) table.slug = grove.slug;
   if (grove.remote) {
     table.remote = {

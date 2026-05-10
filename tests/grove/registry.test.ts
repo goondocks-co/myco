@@ -8,12 +8,15 @@ import {
   clearGroveRegistryCaches,
   createGrove,
   ensureDefaultGrove,
+  ensureGroveExistsLocally,
   getDefaultGroveId,
   listGroves,
+  loadGroveRecord,
   registerProjectInGrove,
   resolveGrove,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
+import { createGroveId } from '@myco/grove/ids.js';
 
 let home: string;
 
@@ -100,5 +103,43 @@ describe('Grove registry', () => {
 
     expect(projects.projects.proj_1.binding_id).toBe('gbind_1');
     expect(roots.roots['/tmp/myco']).toBe('proj_1');
+  });
+
+  describe('ensureGroveExistsLocally', () => {
+    it('returns the existing record without touching disk when already registered', () => {
+      const created = createGrove('Already Here', home);
+      const metadataPath = path.join(home, 'groves', created.id, 'grove.toml');
+      const beforeStat = fs.statSync(metadataPath);
+
+      const result = ensureGroveExistsLocally(created.id, { name: 'Other Name', slug: 'other-slug' }, home);
+
+      expect(result.id).toBe(created.id);
+      expect(result.name).toBe(created.name);
+      expect(result.slug).toBe(created.slug);
+      const afterStat = fs.statSync(metadataPath);
+      expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    });
+
+    it('lazy-provisions a Grove with the supplied id when none exists locally', () => {
+      const portableId = createGroveId();
+
+      const result = ensureGroveExistsLocally(portableId, { name: 'Imported Grove', slug: 'imported-grove' }, home);
+
+      expect(result.id).toBe(portableId);
+      expect(result.name).toBe('Imported Grove');
+      expect(result.slug).toBe('imported-grove');
+      expect(loadGroveRecord(portableId, home)?.id).toBe(portableId);
+      expect(fs.existsSync(path.join(home, 'groves', portableId, 'grove.toml'))).toBe(true);
+    });
+
+    it('suffixes the slug when it collides with a different existing Grove', () => {
+      createGrove('Work', home);
+      const portableId = createGroveId();
+
+      const result = ensureGroveExistsLocally(portableId, { name: 'Work', slug: 'work' }, home);
+
+      expect(result.id).toBe(portableId);
+      expect(result.slug).toBe('work-2');
+    });
   });
 });

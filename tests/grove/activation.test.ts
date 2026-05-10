@@ -7,6 +7,8 @@ import YAML from 'yaml';
 import { saveConfig, loadConfig, loadMergedConfig } from '@myco/config/loader.js';
 import { MycoConfigSchema } from '@myco/config/schema.js';
 import { saveProjectManifest } from '@myco/config/project-manifest.js';
+import { createGroveId } from '@myco/grove/ids.js';
+import { loadGroveRecord, listGroves } from '@myco/grove/registry.js';
 import { openDatabase, type Database } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
@@ -100,8 +102,13 @@ describe('Grove project activation', () => {
 
     const manifest = parseToml(fs.readFileSync(path.join(vaultDir, 'project.toml'), 'utf-8')) as Record<string, any>;
     expect(manifest.project.id).toBe(result.project_id);
+    expect(manifest.grove.id).toBe(grove.id);
     expect(manifest.grove.slug).toBe(grove.slug);
-    expect(manifest.grove.binding_id).toBe(result.grove_binding_id);
+    expect(manifest.grove.binding_id).toBeUndefined();
+    expect(manifest.grove.mode).toBeUndefined();
+    const localManifest = parseToml(fs.readFileSync(path.join(vaultDir, 'project.local.toml'), 'utf-8')) as Record<string, any>;
+    expect(localManifest.grove_binding.binding_id).toBe(result.grove_binding_id);
+    expect(localManifest.grove_binding.mode).toBe('local');
     expect(listRegisteredProjects(grove.id, mycoHome)).toMatchObject([
       {
         project_id: result.project_id,
@@ -290,6 +297,34 @@ describe('Grove project activation', () => {
     expect(marker.legacy_archive_error.message).toContain('injected archive failure');
     expect(typeof marker.legacy_archive_error.failed_at).toBe('string');
     expect(marker.legacy_archived).toBeUndefined();
+  });
+
+  it('lazy-provisions a local Grove when project.toml carries an unknown grove.id', () => {
+    const portableGroveId = createGroveId();
+    saveProjectManifest(vaultDir, {
+      project: { id: 'proj_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', name: 'lazy-project' },
+      grove: { id: portableGroveId, slug: 'lazy-grove', name: 'Lazy Grove', mode: 'local' },
+    });
+    expect(loadGroveRecord(portableGroveId, mycoHome)).toBeNull();
+
+    const result = activateProjectMigration({
+      projectRoot,
+      mycoHome,
+    });
+
+    expect(result.grove.id).toBe(portableGroveId);
+    expect(loadGroveRecord(portableGroveId, mycoHome)?.id).toBe(portableGroveId);
+    expect(listGroves(mycoHome).map((g) => g.id)).toContain(portableGroveId);
+
+    const parsedAfter = parseToml(fs.readFileSync(path.join(vaultDir, 'project.toml'), 'utf-8')) as Record<string, any>;
+    expect(parsedAfter.project.id).toBe('proj_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
+    expect(parsedAfter.grove.id).toBe(portableGroveId);
+    expect(parsedAfter.grove.binding_id).toBeUndefined();
+    expect(parsedAfter.grove.mode).toBeUndefined();
+
+    const localManifest = parseToml(fs.readFileSync(path.join(vaultDir, 'project.local.toml'), 'utf-8')) as Record<string, any>;
+    expect(localManifest.grove_binding.binding_id).toBe(result.grove_binding_id);
+    expect(localManifest.grove_binding.mode).toBe('local');
   });
 
   it('normalizes older source schemas through a snapshot without mutating the source DB', () => {

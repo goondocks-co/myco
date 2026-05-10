@@ -189,6 +189,51 @@ export function createGrove(name: string, mycoHome = resolveMycoHome()): GroveRe
   return record;
 }
 
+/**
+ * Ensure a Grove with `groveId` exists in the local registry, lazy-provisioning
+ * it from the supplied fallback metadata when it doesn't. Used by activation
+ * when a portable `project.toml` carries a `grove.id` that isn't yet
+ * registered on this machine — checking out a project bound to another
+ * Grove era id should "just work" instead of failing or silently minting a
+ * new id. If the supplied slug collides with an existing different Grove,
+ * the new Grove gets a numeric suffix and the suffixed slug is reflected
+ * in the returned record.
+ */
+export function ensureGroveExistsLocally(
+  groveId: string,
+  fallback: { name: string; slug: string },
+  mycoHome = resolveMycoHome(),
+): GroveRecord {
+  const existing = loadGroveRecord(groveId, mycoHome);
+  if (existing) return existing;
+
+  const trimmedName = fallback.name.trim();
+  if (!trimmedName) throw new Error('Grove name is required');
+  const requestedSlug = slugifyGroveName(fallback.slug || trimmedName);
+  const slug = uniqueSlug(requestedSlug, mycoHome);
+
+  const record: GroveRecord = {
+    id: groveId,
+    name: trimmedName,
+    slug,
+    mode: 'local',
+    created_at: new Date().toISOString(),
+  };
+  writeGroveRecord(record, mycoHome);
+  if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
+  return record;
+}
+
+function uniqueSlug(base: string, mycoHome: string): string {
+  const taken = new Set(listGroves(mycoHome).map((grove) => grove.slug));
+  if (!taken.has(base)) return base;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${base}-${i}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw new Error(`Unable to allocate unique Grove slug from base ${base}`);
+}
+
 export function ensureDefaultGrove(mycoHome = resolveMycoHome()): GroveRecord {
   const defaultId = getDefaultGroveId(mycoHome);
   if (defaultId) {

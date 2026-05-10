@@ -111,8 +111,12 @@ describe('myco init', () => {
 
     const manifest = parseToml(fs.readFileSync(path.join(vault, 'project.toml'), 'utf-8')) as Record<string, any>;
     expect(manifest.project.id).toStartWith('proj_');
-    expect(manifest.grove.binding_id).toStartWith('gbind_');
     expect(manifest.grove.slug).toBe('default');
+    expect(manifest.grove.binding_id).toBeUndefined();
+    expect(manifest.grove.mode).toBeUndefined();
+    const localManifest = parseToml(fs.readFileSync(path.join(vault, 'project.local.toml'), 'utf-8')) as Record<string, any>;
+    expect(localManifest.grove_binding.binding_id).toStartWith('gbind_');
+    expect(localManifest.grove_binding.mode).toBe('local');
 
     // Filter to directory entries — `~/.myco/groves/` also holds the
     // top-level `registry.yaml` file (Grove registry pointer).
