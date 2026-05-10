@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { FolderTree, Plus } from 'lucide-react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useGroves } from '../hooks/use-groves';
-import { useBackupProject } from '../hooks/use-grove-mutations';
+import { useBackupProject, useSetDefaultGrove } from '../hooks/use-grove-mutations';
 import {
   colorForProjectId,
   monogramFor,
@@ -29,6 +29,7 @@ export default function Groves() {
   const query = useGroves();
   const navigate = useNavigate();
   const backupProject = useBackupProject();
+  const setDefaultGrove = useSetDefaultGrove();
 
   const [newOpen, setNewOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<GroveSummary | null>(null);
@@ -37,6 +38,20 @@ export default function Groves() {
   const [pendingBackupId, setPendingBackupId] = useState<string | null>(null);
 
   const groves = query.data?.groves ?? [];
+
+  function handleSetDefault(grove: GroveSummary) {
+    setDefaultGrove.mutate(
+      { id: grove.id },
+      {
+        onSuccess: () => {
+          showToast({ level: 'success', title: `${grove.name} is now the default Grove` });
+        },
+        onError: (err) => {
+          showToast({ level: 'error', title: 'Failed to set default', detail: err.message });
+        },
+      },
+    );
+  }
 
   function handleBackup(project: GroveProjectSummary) {
     setPendingBackupId(project.project_id);
@@ -90,8 +105,10 @@ export default function Groves() {
                   <GroveActionMenu
                     groveName={grove.name}
                     projectCount={grove.project_count}
+                    isDefault={grove.is_default}
                     onRename={() => setRenameTarget(grove)}
                     onDelete={() => setDeleteTarget(grove)}
+                    onSetDefault={() => handleSetDefault(grove)}
                   />
                 </div>
               </div>

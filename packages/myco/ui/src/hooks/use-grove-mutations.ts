@@ -26,6 +26,13 @@ export interface BackupProjectResponse {
   size_bytes: number;
 }
 
+export interface SetDefaultGroveResponse {
+  id: string;
+  slug: string;
+  name: string;
+  is_default: true;
+}
+
 export function useCreateGrove() {
   const qc = useQueryClient();
   return useMutation<CreateGroveResponse, Error, { name: string }>({
@@ -73,6 +80,17 @@ export function useMoveProject() {
       postJson<MoveProjectResponse>(
         `/groves/${encodeURIComponent(targetGroveId)}/projects/${encodeURIComponent(projectId)}`,
       ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['groves'] });
+    },
+  });
+}
+
+export function useSetDefaultGrove() {
+  const qc = useQueryClient();
+  return useMutation<SetDefaultGroveResponse, Error, { id: string }>({
+    mutationFn: ({ id }) =>
+      postJson<SetDefaultGroveResponse>(`/groves/${encodeURIComponent(id)}/default`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['groves'] });
     },
