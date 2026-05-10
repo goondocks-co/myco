@@ -1,5 +1,5 @@
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
-import { resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { resolveMycoHome, resolveProjectVaultDir, resolveServiceDirName } from '@myco/grove/paths.js';
 import {
   createGrove,
   deleteGrove,
@@ -9,6 +9,8 @@ import {
   listRegisteredProjects,
   loadGroveRecord,
   renameGrove,
+  setDefaultGrove,
+  type DaemonVariant,
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
@@ -16,6 +18,10 @@ import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
 import { errorBody } from './error-envelope.js';
+
+function daemonVariant(daemonStateDir: string): DaemonVariant {
+  return resolveServiceDirName(daemonStateDir, resolveMycoHome());
+}
 
 export interface GroveProjectSummary {
   project_id: string;
@@ -55,22 +61,26 @@ export function servedGroveScopeForDaemon(): ServedGroveScope {
   return { groveIds: null };
 }
 
-export function createListGrovesHandler(scope: ServedGroveScope): RouteHandler {
-  return async () => ({ body: listGroveSummaries(scope) });
+export function createListGrovesHandler(scope: ServedGroveScope, daemonStateDir: string): RouteHandler {
+  return async () => ({ body: listGroveSummaries(scope, daemonVariant(daemonStateDir)) });
 }
 
-export function createListGroveProjectsHandler(scope: ServedGroveScope): RouteHandler {
+export function createListGroveProjectsHandler(scope: ServedGroveScope, daemonStateDir: string): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    const grove = listGroveSummaries(scope).groves.find((row) => row.id === groveId || row.slug === groveId);
+    const summaries = listGroveSummaries(scope, daemonVariant(daemonStateDir));
+    const grove = summaries.groves.find((row) => row.id === groveId || row.slug === groveId);
     if (!grove) return { status: 404, body: { error: 'grove_not_found' } };
     return { body: { projects: grove.projects } };
   };
 }
 
-export function listGroveSummaries(scope: ServedGroveScope = { groveIds: null }): GrovesResponse {
+export function listGroveSummaries(
+  scope: ServedGroveScope = { groveIds: null },
+  servedBy?: DaemonVariant,
+): GrovesResponse {
   const defaultGroveId = getDefaultGroveId();
-  const allGroves = listGroves();
+  const allGroves = servedBy ? listGroves(undefined, { servedBy }) : listGroves();
   const filtered = scope.groveIds
     ? allGroves.filter((grove) => scope.groveIds!.includes(grove.id))
     : allGroves;
@@ -108,7 +118,7 @@ function projectSlug(project: RegisteredProject): string {
   return projectUrlSlug(project.name, project.project_id);
 }
 
-export function createCreateGroveHandler(): RouteHandler {
+export function createCreateGroveHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
     const body = (req.body ?? {}) as { name?: unknown };
     const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -116,7 +126,7 @@ export function createCreateGroveHandler(): RouteHandler {
       return { status: 400, body: errorBody('name_required', 'Grove name is required') };
     }
     try {
-      const grove = createGrove(name);
+      const grove = createGrove(name, undefined, { servedBy: daemonVariant(daemonStateDir) });
       return {
         status: 201,
         body: {
@@ -124,6 +134,7 @@ export function createCreateGroveHandler(): RouteHandler {
           slug: grove.slug,
           name: grove.name,
           mode: grove.mode,
+          served_by: grove.served_by,
           created_at: grove.created_at,
         },
       };
@@ -133,7 +144,7 @@ export function createCreateGroveHandler(): RouteHandler {
   };
 }
 
-export function createRenameGroveHandler(): RouteHandler {
+export function createRenameGroveHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
     const body = (req.body ?? {}) as { name?: unknown };
@@ -141,7 +152,8 @@ export function createRenameGroveHandler(): RouteHandler {
     if (!name) {
       return { status: 400, body: errorBody('name_required', 'Grove name is required') };
     }
-    if (!loadGroveRecord(groveId)) {
+    const existing = loadGroveRecord(groveId);
+    if (!existing || existing.served_by !== daemonVariant(daemonStateDir)) {
       return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
     }
     try {
@@ -161,10 +173,11 @@ export function createRenameGroveHandler(): RouteHandler {
   };
 }
 
-export function createDeleteGroveHandler(): RouteHandler {
+export function createDeleteGroveHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
     const groveId = req.params.id;
-    if (!loadGroveRecord(groveId)) {
+    const existing = loadGroveRecord(groveId);
+    if (!existing || existing.served_by !== daemonVariant(daemonStateDir)) {
       return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
     }
     const projects = listRegisteredProjects(groveId);
@@ -192,10 +205,11 @@ export function createDeleteGroveHandler(): RouteHandler {
   };
 }
 
-export function createMoveProjectHandler(): RouteHandler {
+export function createMoveProjectHandler(daemonStateDir: string): RouteHandler {
   return async (req) => {
     const targetGroveId = req.params.id;
     const projectId = req.params.projectId;
+    const servedBy = daemonVariant(daemonStateDir);
 
     const found = findRegisteredProject({ projectId });
     if (!found) {
@@ -206,6 +220,16 @@ export function createMoveProjectHandler(): RouteHandler {
     }
     const sourceGroveId = found.grove.id;
 
+    // Source must be served by this daemon — leak nothing about Groves
+    // owned by a different daemon. Treat as project_not_found from this
+    // daemon's perspective.
+    if (found.grove.served_by !== servedBy) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+
     if (sourceGroveId === targetGroveId) {
       return {
         status: 400,
@@ -213,7 +237,8 @@ export function createMoveProjectHandler(): RouteHandler {
       };
     }
 
-    if (!loadGroveRecord(targetGroveId)) {
+    const target = loadGroveRecord(targetGroveId);
+    if (!target || target.served_by !== servedBy) {
       return {
         status: 404,
         body: errorBody('target_grove_not_found', `Unknown target Grove: ${targetGroveId}`),
@@ -225,6 +250,29 @@ export function createMoveProjectHandler(): RouteHandler {
       return { body: { ok: true, move: result } };
     } catch (err) {
       return { status: 500, body: errorBody('move_failed', (err as Error).message) };
+    }
+  };
+}
+
+export function createSetDefaultGroveHandler(daemonStateDir: string): RouteHandler {
+  return async (req) => {
+    const groveId = req.params.id;
+    const grove = loadGroveRecord(groveId);
+    if (!grove || grove.served_by !== daemonVariant(daemonStateDir)) {
+      return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
+    }
+    try {
+      const updated = setDefaultGrove(groveId);
+      return {
+        body: {
+          id: updated.id,
+          slug: updated.slug,
+          name: updated.name,
+          is_default: true,
+        },
+      };
+    } catch (err) {
+      return { status: 500, body: errorBody('set_default_failed', (err as Error).message) };
     }
   };
 }

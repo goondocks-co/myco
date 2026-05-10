@@ -63,6 +63,7 @@ import {
   createListGrovesHandler,
   createMoveProjectHandler,
   createRenameGroveHandler,
+  createSetDefaultGroveHandler,
   servedGroveScopeForDaemon,
 } from './api/groves.js';
 import {
@@ -1046,12 +1047,14 @@ export async function main(): Promise<void> {
     configHash: configHashRef,
   }));
   const groveScope = servedGroveScopeForDaemon();
-  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
-  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
-  server.registerRoute('POST', '/api/groves', createCreateGroveHandler());
-  server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler());
-  server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler());
-  server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler());
+  const groveDaemonStateDir = daemonService.stateDir;
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope, groveDaemonStateDir));
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope, groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves', createCreateGroveHandler(groveDaemonStateDir));
+  server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler(groveDaemonStateDir));
+  server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler());
   server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler());
 

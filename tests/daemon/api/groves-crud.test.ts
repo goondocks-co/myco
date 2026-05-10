@@ -9,6 +9,8 @@ import {
   createDeleteGroveHandler,
   createMoveProjectHandler,
   createRenameGroveHandler,
+  createSetDefaultGroveHandler,
+  listGroveSummaries,
 } from '@myco/daemon/api/groves.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js';
@@ -24,6 +26,8 @@ import {
 describe('Grove CRUD API', () => {
   let testDir: string;
   let mycoHome: string;
+  let serviceDir: string;
+  let serviceDevDir: string;
   let previousHome: string | undefined;
 
   beforeEach(() => {
@@ -32,6 +36,10 @@ describe('Grove CRUD API', () => {
     previousHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
     fs.mkdirSync(mycoHome, { recursive: true });
+    serviceDir = path.join(mycoHome, 'service');
+    serviceDevDir = path.join(mycoHome, 'service-dev');
+    fs.mkdirSync(serviceDir, { recursive: true });
+    fs.mkdirSync(serviceDevDir, { recursive: true });
     clearGroveRegistryCaches();
   });
 
@@ -56,7 +64,7 @@ describe('Grove CRUD API', () => {
 
   describe('POST /api/groves', () => {
     it('creates a Grove with 201 + serialized record', async () => {
-      const response = await call(createCreateGroveHandler(), { body: { name: 'Client Work' } });
+      const response = await call(createCreateGroveHandler(serviceDir), { body: { name: 'Client Work' } });
       expect(response.status).toBe(201);
       const body = response.body as { id: string; name: string; slug: string; mode: string };
       expect(body.name).toBe('Client Work');
@@ -66,21 +74,21 @@ describe('Grove CRUD API', () => {
     });
 
     it('rejects missing name with 400 name_required', async () => {
-      const response = await call(createCreateGroveHandler(), { body: {} });
+      const response = await call(createCreateGroveHandler(serviceDir), { body: {} });
       expect(response.status).toBe(400);
       const body = response.body as { error: { code: string } };
       expect(body.error.code).toBe('name_required');
     });
 
     it('rejects empty/whitespace name with 400 name_required', async () => {
-      const response = await call(createCreateGroveHandler(), { body: { name: '   ' } });
+      const response = await call(createCreateGroveHandler(serviceDir), { body: { name: '   ' } });
       expect(response.status).toBe(400);
       expect((response.body as { error: { code: string } }).error.code).toBe('name_required');
     });
 
     it('returns 500 on duplicate name (slug collision)', async () => {
       createGrove('Duplicate');
-      const response = await call(createCreateGroveHandler(), { body: { name: 'Duplicate' } });
+      const response = await call(createCreateGroveHandler(serviceDir), { body: { name: 'Duplicate' } });
       expect(response.status).toBe(500);
       expect((response.body as { error: { code: string } }).error.code).toBe('create_failed');
     });
@@ -89,7 +97,7 @@ describe('Grove CRUD API', () => {
   describe('PATCH /api/groves/:id', () => {
     it('renames a Grove and returns the updated record', async () => {
       const grove = createGrove('Original');
-      const response = await call(createRenameGroveHandler(), {
+      const response = await call(createRenameGroveHandler(serviceDir), {
         body: { name: 'Renamed' },
         params: { id: grove.id },
       });
@@ -102,7 +110,7 @@ describe('Grove CRUD API', () => {
 
     it('returns 400 when name is missing', async () => {
       const grove = createGrove('Original');
-      const response = await call(createRenameGroveHandler(), {
+      const response = await call(createRenameGroveHandler(serviceDir), {
         body: {},
         params: { id: grove.id },
       });
@@ -111,7 +119,7 @@ describe('Grove CRUD API', () => {
     });
 
     it('returns 404 for unknown Grove id', async () => {
-      const response = await call(createRenameGroveHandler(), {
+      const response = await call(createRenameGroveHandler(serviceDir), {
         body: { name: 'Whatever' },
         params: { id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
       });
@@ -123,7 +131,7 @@ describe('Grove CRUD API', () => {
   describe('DELETE /api/groves/:id', () => {
     it('deletes an empty Grove and returns 204', async () => {
       const grove = createGrove('Disposable');
-      const response = await call(createDeleteGroveHandler(), { params: { id: grove.id } });
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
       expect(response.status).toBe(204);
       expect(loadGroveRecord(grove.id)).toBeNull();
     });
@@ -136,7 +144,7 @@ describe('Grove CRUD API', () => {
         projectName: 'Held',
         projectRoot: path.join(testDir, 'held'),
       });
-      const response = await call(createDeleteGroveHandler(), { params: { id: grove.id } });
+      const response = await call(createDeleteGroveHandler(serviceDir), { params: { id: grove.id } });
       expect(response.status).toBe(409);
       const body = response.body as { error: { code: string }; project_count: number };
       expect(body.error.code).toBe('grove_not_empty');
@@ -145,7 +153,7 @@ describe('Grove CRUD API', () => {
     });
 
     it('returns 404 for unknown Grove id', async () => {
-      const response = await call(createDeleteGroveHandler(), {
+      const response = await call(createDeleteGroveHandler(serviceDir), {
         params: { id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
       });
       expect(response.status).toBe(404);
@@ -181,7 +189,7 @@ describe('Grove CRUD API', () => {
         bindingId: 'gbind_initial',
       });
 
-      const response = await call(createMoveProjectHandler(), {
+      const response = await call(createMoveProjectHandler(serviceDir), {
         params: { id: target.id, projectId },
       });
       expect(response.status).toBeUndefined();
@@ -208,7 +216,7 @@ describe('Grove CRUD API', () => {
         projectName: 'Solo',
         projectRoot,
       });
-      const response = await call(createMoveProjectHandler(), {
+      const response = await call(createMoveProjectHandler(serviceDir), {
         params: { id: grove.id, projectId },
       });
       expect(response.status).toBe(400);
@@ -225,7 +233,7 @@ describe('Grove CRUD API', () => {
         projectName: 'Orphan',
         projectRoot,
       });
-      const response = await call(createMoveProjectHandler(), {
+      const response = await call(createMoveProjectHandler(serviceDir), {
         params: { id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', projectId },
       });
       expect(response.status).toBe(404);
@@ -234,11 +242,139 @@ describe('Grove CRUD API', () => {
 
     it('returns 404 when project is not registered anywhere', async () => {
       const target = createGrove('Target');
-      const response = await call(createMoveProjectHandler(), {
+      const response = await call(createMoveProjectHandler(serviceDir), {
         params: { id: target.id, projectId: createProjectId() },
       });
       expect(response.status).toBe(404);
       expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+    });
+  });
+
+  describe('served_by boundary enforcement', () => {
+    it('POST /api/groves stamps served_by from the calling daemon', async () => {
+      const response = await call(createCreateGroveHandler(serviceDir), { body: { name: 'Prod' } });
+      expect(response.status).toBe(201);
+      const body = response.body as { id: string; served_by: string };
+      expect(body.served_by).toBe('service');
+      const record = loadGroveRecord(body.id);
+      expect(record?.served_by).toBe('service');
+
+      const devResponse = await call(createCreateGroveHandler(serviceDevDir), { body: { name: 'Dogfood' } });
+      expect(devResponse.status).toBe(201);
+      const devBody = devResponse.body as { id: string; served_by: string };
+      expect(devBody.served_by).toBe('service-dev');
+      const devRecord = loadGroveRecord(devBody.id);
+      expect(devRecord?.served_by).toBe('service-dev');
+    });
+
+    it('listGroveSummaries filters out Groves served by another daemon', () => {
+      createGrove('Prod');
+      createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+
+      const prodView = listGroveSummaries({ groveIds: null }, 'service');
+      expect(prodView.groves.map((g) => g.name).sort()).toEqual(['Prod']);
+
+      const devView = listGroveSummaries({ groveIds: null }, 'service-dev');
+      expect(devView.groves.map((g) => g.name).sort()).toEqual(['Dogfood']);
+    });
+
+    it('PATCH returns 404 for a Grove served by a different daemon', async () => {
+      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+      const response = await call(createRenameGroveHandler(serviceDir), {
+        body: { name: 'Renamed' },
+        params: { id: dev.id },
+      });
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
+      // Untouched.
+      expect(loadGroveRecord(dev.id)?.name).toBe('Dogfood');
+    });
+
+    it('DELETE returns 404 for a Grove served by a different daemon', async () => {
+      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+      const response = await call(createDeleteGroveHandler(serviceDir), {
+        params: { id: dev.id },
+      });
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
+      expect(loadGroveRecord(dev.id)).not.toBeNull();
+    });
+
+    it('move returns 404 when target Grove is served by a different daemon', async () => {
+      const source = createGrove('Source');
+      const target = createGrove('DevTarget', undefined, { servedBy: 'service-dev' });
+      const projectId = createProjectId();
+      const projectRoot = path.join(testDir, 'cross-daemon-project');
+      fs.mkdirSync(resolveProjectVaultDir(projectRoot), { recursive: true });
+      registerProjectInGrove(source.id, {
+        projectId,
+        projectName: 'Cross',
+        projectRoot,
+      });
+
+      const response = await call(createMoveProjectHandler(serviceDir), {
+        params: { id: target.id, projectId },
+      });
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('target_grove_not_found');
+    });
+
+    it('move returns 404 when source Grove is served by a different daemon', async () => {
+      const devSource = createGrove('DevSource', undefined, { servedBy: 'service-dev' });
+      const target = createGrove('Target');
+      const projectId = createProjectId();
+      const projectRoot = path.join(testDir, 'dev-source-project');
+      fs.mkdirSync(resolveProjectVaultDir(projectRoot), { recursive: true });
+      registerProjectInGrove(devSource.id, {
+        projectId,
+        projectName: 'Hidden',
+        projectRoot,
+      });
+
+      const response = await call(createMoveProjectHandler(serviceDir), {
+        params: { id: target.id, projectId },
+      });
+      // From this daemon's perspective, the project doesn't exist.
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+    });
+  });
+
+  describe('POST /api/groves/:id/default', () => {
+    it('sets the default Grove and returns the updated record', async () => {
+      const first = createGrove('First');
+      const second = createGrove('Second');
+      // First Grove auto-promoted to default on creation; flip it.
+      const response = await call(createSetDefaultGroveHandler(serviceDir), {
+        params: { id: second.id },
+      });
+      expect(response.status).toBeUndefined();
+      const body = response.body as { id: string; name: string; is_default: boolean };
+      expect(body.id).toBe(second.id);
+      expect(body.is_default).toBe(true);
+
+      const summaries = listGroveSummaries({ groveIds: null }, 'service');
+      const defaulted = summaries.groves.find((g) => g.id === second.id);
+      const previous = summaries.groves.find((g) => g.id === first.id);
+      expect(defaulted?.is_default).toBe(true);
+      expect(previous?.is_default).toBe(false);
+    });
+
+    it('returns 404 for an unknown Grove id', async () => {
+      const response = await call(createSetDefaultGroveHandler(serviceDir), {
+        params: { id: 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      });
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
+    });
+
+    it('returns 404 for a Grove served by a different daemon', async () => {
+      const dev = createGrove('Dogfood', undefined, { servedBy: 'service-dev' });
+      const response = await call(createSetDefaultGroveHandler(serviceDir), {
+        params: { id: dev.id },
+      });
+      expect(response.status).toBe(404);
+      expect((response.body as { error: { code: string } }).error.code).toBe('grove_not_found');
     });
   });
 });

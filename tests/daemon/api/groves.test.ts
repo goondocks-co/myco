@@ -9,12 +9,17 @@ import { createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 
 describe('Grove discovery API', () => {
   let testDir: string;
+  let mycoHome: string;
+  let serviceDir: string;
   let previousHome: string | undefined;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-groves-api-'));
+    mycoHome = path.join(testDir, 'home');
     previousHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = path.join(testDir, 'home');
+    process.env.MYCO_HOME = mycoHome;
+    serviceDir = path.join(mycoHome, 'service');
+    fs.mkdirSync(serviceDir, { recursive: true });
   });
 
   afterEach(() => {
@@ -39,7 +44,7 @@ describe('Grove discovery API', () => {
       bindingId: 'gbind_a',
     });
 
-    const response = await createListGrovesHandler({ groveIds: null })({
+    const response = await createListGrovesHandler({ groveIds: null }, serviceDir)({
       body: undefined,
       query: {},
       params: {},
@@ -69,7 +74,7 @@ describe('Grove discovery API', () => {
       projectRoot: path.join(testDir, 'ten-second-tom'),
     });
 
-    const response = await createListGrovesHandler({ groveIds: [dogfood.id] })({
+    const response = await createListGrovesHandler({ groveIds: [dogfood.id] }, serviceDir)({
       body: undefined,
       query: {},
       params: {},
@@ -87,7 +92,7 @@ describe('Grove discovery API', () => {
     createGrove('Default Projects');
 
     const scope = servedGroveScopeForDaemon();
-    const result = await listNames(scope);
+    const result = await listNames(scope, serviceDir);
 
     expect(scope.groveIds).toBeNull();
     expect(result).toHaveLength(2);
@@ -103,7 +108,7 @@ describe('Grove discovery API', () => {
       projectRoot: path.join(testDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
     });
 
-    const response = await createListGroveProjectsHandler({ groveIds: null })({
+    const response = await createListGroveProjectsHandler({ groveIds: null }, serviceDir)({
       body: undefined,
       query: {},
       params: { id: grove.id },
@@ -115,8 +120,11 @@ describe('Grove discovery API', () => {
   });
 });
 
-async function listNames(scope: ReturnType<typeof servedGroveScopeForDaemon>): Promise<string[]> {
-  const result = await createListGrovesHandler(scope)({
+async function listNames(
+  scope: ReturnType<typeof servedGroveScopeForDaemon>,
+  daemonStateDir: string,
+): Promise<string[]> {
+  const result = await createListGrovesHandler(scope, daemonStateDir)({
     body: undefined,
     query: {},
     params: {},
