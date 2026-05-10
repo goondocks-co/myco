@@ -43,10 +43,9 @@ staging/
 # machine-local paths and import metadata; never committed.
 migration/
 
-# Grove project binding — carries the per-machine \`grove.binding_id\` and
-# slug. Different machines bind the same project to different Groves;
-# committing one machine's binding collides with another's.
-project.toml
+# Grove project binding — per-machine. \`project.toml\` itself is committed
+# (portable project + Grove identity); the per-machine binding lives here.
+project.local.toml
 
 # Per-user appearance and settings overrides
 local.yaml

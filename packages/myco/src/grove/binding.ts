@@ -1,5 +1,7 @@
 import {
+  loadProjectLocalManifest,
   loadProjectManifest,
+  saveProjectLocalManifest,
   saveProjectManifest,
   type ProjectManifest,
 } from '../config/project-manifest.js';
@@ -64,6 +66,7 @@ export function resolveProjectGroveBinding(
   const projectRoot = resolveProjectRoot(vaultDir);
 
   const manifest = loadProjectManifest(vaultDir);
+  const localManifest = loadProjectLocalManifest(vaultDir);
   const markerPath = activationMarkerPath(vaultDir);
   const marker = safeReadMarker(markerPath);
   const hasManifest = Boolean(manifest);
@@ -72,8 +75,15 @@ export function resolveProjectGroveBinding(
   // Pre-Grove vault: no manifest, no marker, no migration ever happened.
   if (!hasManifest && !hasMarker) return { kind: 'legacy' };
 
+  // Binding id may live on either leg during the WB1→WB2 transition:
+  // post-migration it sits in project.local.toml; pre-migration it stays
+  // inline on manifest.grove.binding_id.
+  const manifestBindingId = localManifest?.grove_binding?.binding_id
+    ?? manifest?.grove?.binding_id
+    ?? null;
+
   // Manifest present but no binding → in-progress init or partial write.
-  if (manifest && !manifest.grove?.binding_id && !hasMarker) {
+  if (manifest && !manifestBindingId && !hasMarker) {
     return {
       kind: 'inconsistent',
       details: {
@@ -88,10 +98,10 @@ export function resolveProjectGroveBinding(
   }
 
   // We have at least one of {manifest with binding, marker}. Resolve registry.
-  const registeredFromManifest = manifest?.grove?.binding_id
+  const registeredFromManifest = manifest && manifestBindingId
     ? findRegisteredProject({
         projectId: manifest.project.id,
-        bindingId: manifest.grove.binding_id,
+        bindingId: manifestBindingId,
       }, mycoHome)
     : null;
   const registeredFromMarker = !registeredFromManifest && marker
@@ -107,15 +117,23 @@ export function resolveProjectGroveBinding(
   // other two are consistent, rewrite the missing leg from authoritative
   // state. Repair is opt-in so read-only callers don't cause writes.
   if (options.repair) {
-    return resolveAfterRepair(vaultDir, projectRoot, manifest, marker, registered, mycoHome);
+    return resolveAfterRepair(
+      vaultDir,
+      projectRoot,
+      manifest,
+      manifestBindingId,
+      marker,
+      registered,
+      mycoHome,
+    );
   }
 
   // Triple invariant: all three present and consistent.
-  if (manifest?.grove?.binding_id && marker && registered) {
+  if (manifest && manifestBindingId && marker && registered) {
     if (
-      manifest.grove.binding_id === marker.grove_binding_id
+      manifestBindingId === marker.grove_binding_id
       && manifest.project.id === marker.project_id
-      && registered.project.binding_id === manifest.grove.binding_id
+      && registered.project.binding_id === manifestBindingId
     ) {
       return { kind: 'grove', manifest, marker, registered };
     }
@@ -136,7 +154,7 @@ export function resolveProjectGroveBinding(
   return {
     kind: 'inconsistent',
     details: {
-      reason: missingLegReason(manifest, marker, registered),
+      reason: missingLegReason(manifest, manifestBindingId, marker, registered),
       hasManifest,
       hasMarker,
       hasRegistryRow: Boolean(registered),
@@ -148,11 +166,12 @@ export function resolveProjectGroveBinding(
 
 function missingLegReason(
   manifest: ProjectManifest | null,
+  manifestBindingId: string | null,
   marker: ActivationMarker | null,
   registered: ResolvedRegisteredProject | null,
 ): string {
   const missing: string[] = [];
-  if (!manifest?.grove?.binding_id) missing.push('project.toml grove binding');
+  if (!manifest || !manifestBindingId) missing.push('project.toml grove binding');
   if (!marker) missing.push('activation marker');
   if (!registered) missing.push('grove registry row');
   return `Grove binding is incomplete — missing: ${missing.join(', ')}`;
@@ -162,11 +181,13 @@ function resolveAfterRepair(
   vaultDir: string,
   projectRoot: string,
   manifest: ProjectManifest | null,
+  manifestBindingId: string | null,
   marker: ActivationMarker | null,
   registered: ResolvedRegisteredProject | null,
   mycoHome: string,
 ): GroveBindingResult {
   let nextManifest = manifest;
+  let nextBindingId = manifestBindingId;
   let nextRegistered = registered;
 
   // Repair 1: marker + registry exist, manifest is missing → recreate from marker.
@@ -176,11 +197,15 @@ function resolveAfterRepair(
       grove: { mode: 'local', slug: marker.grove_slug, binding_id: marker.grove_binding_id },
     };
     saveProjectManifest(vaultDir, restored);
+    saveProjectLocalManifest(vaultDir, {
+      grove_binding: { binding_id: marker.grove_binding_id, mode: 'local' },
+    });
     nextManifest = restored;
+    nextBindingId = marker.grove_binding_id;
   }
 
   // Repair 2: manifest + marker exist, registry row missing → re-register.
-  if (nextManifest?.grove?.binding_id && marker && !nextRegistered) {
+  if (nextManifest && nextBindingId && marker && !nextRegistered) {
     registerProjectInGrove(marker.grove_id, {
       projectId: marker.project_id,
       projectName: marker.project_name,
@@ -195,11 +220,11 @@ function resolveAfterRepair(
   }
 
   // Re-evaluate without the repair flag so the consistency check runs.
-  if (nextManifest?.grove?.binding_id && marker && nextRegistered) {
+  if (nextManifest && nextBindingId && marker && nextRegistered) {
     if (
-      nextManifest.grove.binding_id === marker.grove_binding_id
+      nextBindingId === marker.grove_binding_id
       && nextManifest.project.id === marker.project_id
-      && nextRegistered.project.binding_id === nextManifest.grove.binding_id
+      && nextRegistered.project.binding_id === nextBindingId
     ) {
       return { kind: 'grove', manifest: nextManifest, marker, registered: nextRegistered };
     }
@@ -211,7 +236,7 @@ function resolveAfterRepair(
   return {
     kind: 'inconsistent',
     details: {
-      reason: missingLegReason(nextManifest, marker, nextRegistered),
+      reason: missingLegReason(nextManifest, nextBindingId, marker, nextRegistered),
       hasManifest: Boolean(nextManifest),
       hasMarker: Boolean(marker),
       hasRegistryRow: Boolean(nextRegistered),

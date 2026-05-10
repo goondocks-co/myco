@@ -18,6 +18,10 @@ import {
   resolveMycoHome,
 } from './paths.js';
 import { slugifyGroveName } from './ids.js';
+import {
+  findRegisteredProjectByBinding as findRegisteredProjectByBindingResolve,
+  type RegistryResolvedProject,
+} from './registry-resolve.js';
 
 export interface GroveRecord {
   id: string;
@@ -336,12 +340,12 @@ export function findRegisteredProjectByBinding(
   bindingId: string,
   mycoHome = resolveMycoHome(),
 ): ResolvedRegisteredProject | null {
-  for (const grove of listGroves(mycoHome)) {
-    const project = listRegisteredProjects(grove.id, mycoHome)
-      .find((row) => row.binding_id === bindingId);
-    if (project) return { grove, project };
-  }
-  return null;
+  // Delegates to the cycle-safe seam in `registry-resolve.ts`. The shape
+  // matches `ResolvedRegisteredProject` field-for-field; the cast is the
+  // boundary between the cached registry surface here and the
+  // dependency-light loader the manifest layer uses.
+  const result = findRegisteredProjectByBindingResolve(bindingId, mycoHome);
+  return result as RegistryResolvedProject as ResolvedRegisteredProject | null;
 }
 
 function resolveGroveByIdOrName(ref: string, mycoHome: string): GroveRecord {

@@ -52,6 +52,7 @@ export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GLOBAL_CONFIG_FILENAME = 'config.yaml';
 export const GROVE_REGISTRY_FILENAME = 'registry.yaml';
 export const PROJECT_MANIFEST_FILENAME = 'project.toml';
+export const PROJECT_LOCAL_MANIFEST_FILENAME = 'project.local.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 
 export interface MycoHomeOptions {
@@ -164,6 +165,10 @@ export function resolveProjectVaultDir(projectRoot: string): string {
 
 export function resolveProjectManifestPath(projectVaultDir: string): string {
   return path.join(projectVaultDir, PROJECT_MANIFEST_FILENAME);
+}
+
+export function resolveProjectLocalManifestPath(projectVaultDir: string): string {
+  return path.join(projectVaultDir, PROJECT_LOCAL_MANIFEST_FILENAME);
 }
 
 /**

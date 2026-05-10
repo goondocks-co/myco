@@ -1,4 +1,7 @@
-import { loadProjectManifest } from '@myco/config/project-manifest.js';
+import {
+  loadProjectLocalManifest,
+  loadProjectManifest,
+} from '@myco/config/project-manifest.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
   getDefaultGroveId,
@@ -109,9 +112,12 @@ function projectSlug(project: RegisteredProject): string {
 }
 
 function manifestState(project: RegisteredProject): GroveProjectSummary['manifest_state'] {
+  const vaultDir = resolveProjectVaultDir(project.root);
   let manifest;
+  let local;
   try {
-    manifest = loadProjectManifest(resolveProjectVaultDir(project.root));
+    manifest = loadProjectManifest(vaultDir);
+    local = loadProjectLocalManifest(vaultDir);
   } catch {
     // Distinguish "file is malformed" from "file is absent". Returning
     // 'missing' for a parse error sends the user to `myco init`, which
@@ -121,10 +127,14 @@ function manifestState(project: RegisteredProject): GroveProjectSummary['manifes
   }
   if (!manifest) return 'missing';
   if (manifest.project.id !== project.project_id) return 'mismatch';
+  // Binding id may live on either leg during the WB1→WB2 transition:
+  // post-migration vaults carry it in project.local.toml; pre-migration
+  // (or hand-edited) vaults still carry it inline on `manifest.grove`.
+  const manifestBindingId = local?.grove_binding?.binding_id ?? manifest.grove?.binding_id;
   if (
     project.binding_id
-    && manifest.grove?.binding_id
-    && project.binding_id !== manifest.grove.binding_id
+    && manifestBindingId
+    && project.binding_id !== manifestBindingId
   ) {
     return 'mismatch';
   }
