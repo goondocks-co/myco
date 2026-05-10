@@ -43,16 +43,9 @@ staging/
 # machine-local paths and import metadata; never committed.
 migration/
 
-# Grove project binding — carries the per-machine \`grove.binding_id\` and
-# slug. Different machines bind the same project to different Groves;
-# committing one machine's binding collides with another's.
-#
-# WB2 carve-out: switch this to \`project.local.toml\` once activation
-# (\`grove/activation.ts\` → \`saveProjectManifest\`) writes the binding into
-# \`project.local.toml\` instead of inline into \`project.toml\`. Remove this
-# comment and replace the line below with \`project.local.toml\` when
-# \`project.toml\` no longer carries \`grove.binding_id\` on fresh \`myco init\`.
-project.toml
+# Grove project binding — per-machine. \`project.toml\` itself is committed
+# (portable project + Grove identity); the binding lives here.
+project.local.toml
 
 # Per-user appearance and settings overrides
 local.yaml
