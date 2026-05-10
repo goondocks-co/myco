@@ -168,7 +168,6 @@ const EXACT_FIELD_LABELS: Record<string, string> = {
   'notifications.system_notifications': 'Browser Notifications',
   'capture.ignore_plan_dirs_in_git': 'Ignore Custom Plan Dirs In Git',
   'capture.plan_dirs': 'Custom Directories',
-  'daemon.port': 'Daemon Port',
   'daemon.log_level': 'Log Level',
   'daemon.log_retention_days': 'Log Retention (days)',
   [AGENT_PATHS.scheduledTasksEnabled]: 'Scheduled Tasks',

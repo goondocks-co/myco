@@ -32,7 +32,6 @@ const EmbeddingProviderSchema = z.object({
 });
 
 const DaemonSchema = z.object({
-  port: z.number().int().min(1024).max(65535).nullable().default(null),
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   log_retention_days: z.number().int().min(1).max(365).default(30),
   /**
@@ -371,12 +370,15 @@ export type AppearanceConfig = z.infer<typeof AppearanceConfigSchema>;
 // Resolution order on read: machine → grove → project → personal (highest).
 
 /**
- * Machine tier — one daemon process per machine, one log policy, one port.
+ * Machine tier — one daemon process per machine, one log policy.
  * Stored in `~/.myco/config.yaml`. Sparse — every field has a default.
+ *
+ * The daemon's listening port is NOT configurable: it's deterministically
+ * derived from the service path via `derivePort` so launchers, hooks, and
+ * MCP children all converge on the same value without per-machine config
+ * lookup. See `daemon/port.ts`.
  */
 const MachineDaemonSchema = z.object({
-  /** Port the global daemon listens on. Null = pick an available port. */
-  port: z.number().int().min(1024).max(65535).nullable().default(null),
   /** Log verbosity for the daemon process (stdout/stderr). */
   log_level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   /**
@@ -398,10 +400,21 @@ const MachineDaemonSchema = z.object({
 // validation so existing installs keep parsing — the registry value
 // is migrated to the new file the first time `getDefaultGroveId`
 // runs after upgrade.
+//
+// `daemon.port` was a pre-Grove machine-level override of the daemon
+// port. Post-Grove the canonical port is always `derivePort` of the
+// service path; the override silently broke port resolution for users
+// whose stale value didn't match the canonical. Strip it here so old
+// `~/.myco/config.yaml` files keep parsing under strict mode while the
+// runtime ignores the dead field.
 export const MachineConfigSchema = z.preprocess((raw) => {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const { grove: _legacy, ...rest } = raw as Record<string, unknown>;
-    return rest;
+    const { grove: _legacy, daemon, ...rest } = raw as Record<string, unknown>;
+    if (daemon && typeof daemon === 'object' && !Array.isArray(daemon)) {
+      const { port: _deadPort, ...daemonRest } = daemon as Record<string, unknown>;
+      return { ...rest, daemon: daemonRest };
+    }
+    return { ...rest, ...(daemon !== undefined ? { daemon } : {}) };
   }
   return raw;
 }, z.object({

@@ -6,11 +6,11 @@ export const PORT_RANGE_SIZE = 10000;
 /**
  * Derive a deterministic port from a vault path.
  *
- * The port is the authoritative binding target for a daemon — either this
- * derived value, or an explicit override in `myco.yaml` under `daemon.port`.
- * Startup never silently falls back to a different port; if the canonical
- * port is unavailable, the daemon either steps aside (sibling wins) or
- * fails loudly (unrelated squatter).
+ * The single authoritative source of truth for the daemon's binding port.
+ * No config override; no fallback. Launchers, hooks, MCP children, and the
+ * daemon itself all derive the same value from the service path so they
+ * converge without per-machine config lookup. Startup either binds the
+ * canonical port or fails loudly (squatter) / steps aside (sibling).
  */
 export function derivePort(vaultPath: string): number {
   const hash = createHash('md5').update(vaultPath).digest();
