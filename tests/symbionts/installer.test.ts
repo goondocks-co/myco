@@ -1050,9 +1050,11 @@ describe('installMcp (TOML)', () => {
     expect(content).not.toContain('[mcp_servers.myco.env]');
   });
 
-  it('uses daemon.port from machine config when installing Codex MCP URL', () => {
-    // Daemon port is machine-tier (one daemon per machine); seed
-    // ~/.myco/config.yaml rather than the project's myco.yaml.
+  it('ignores any stale daemon.port in machine config (canonical port is derived)', () => {
+    // Pre-0.25.3 installs may have a stale `daemon.port` field in
+    // ~/.myco/config.yaml left over from the deprecated machine override.
+    // The installer must ignore it and use the derived canonical port so
+    // launchers, hooks, and the daemon all converge on the same value.
     const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
     process.env.MYCO_HOME = mycoHome;
     fs.writeFileSync(path.join(mycoHome, 'config.yaml'), [
@@ -1074,13 +1076,15 @@ describe('installMcp (TOML)', () => {
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     installer.installMcp();
 
+    const expectedPort = derivePort(path.join(projectRoot, '.myco'));
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    expect(content).toContain('url = "http://127.0.0.1:21039/mcp"');
+    expect(content).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
+    expect(content).not.toContain('21039');
   });
 
-  it('persists a stable daemon.port to machine config before installing Codex MCP URL when omitted', () => {
-    // Sandbox MYCO_HOME so we don't pollute the user's real
-    // ~/.myco/config.yaml when the installer persists the derived port.
+  it('uses derivePort(vaultDir) for Codex MCP URL on a legacy (non-grove) project', () => {
+    // Sandbox MYCO_HOME so we don't read or write the user's real
+    // ~/.myco/config.yaml during this test.
     const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
     process.env.MYCO_HOME = mycoHome;
 
@@ -1093,9 +1097,7 @@ describe('installMcp (TOML)', () => {
 
     const expectedPort = derivePort(path.join(projectRoot, '.myco'));
     const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
-    const machineConfig = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
     expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
-    expect(machineConfig).toContain(`port: ${expectedPort}`);
   });
 
   it('uses the global daemon port for Grove-bound project MCP URLs', () => {

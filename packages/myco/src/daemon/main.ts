@@ -1521,18 +1521,15 @@ export async function main(): Promise<void> {
 
   // --- Start server ---
   //
-  // The port is authoritative: Grove-bound projects use the per-user global
-  // service port; legacy projects keep the explicit `daemon.port` override in
-  // myco.yaml or the deterministic hash of the vault path.
-  // No silent fallback — if the port is unavailable after eviction, either a
-  // concurrent sibling won the race (step aside) or something unrelated is
-  // squatting (fail loudly). Ghost daemons on surprise ports come from
-  // silent fallback, so we don't do that.
+  // The canonical port is the single source of truth: derivePort(serviceDir)
+  // for grove-bound projects, derivePort(vaultDir) for the rare legacy case.
+  // No config override and no silent fallback — if the port is unavailable
+  // after eviction, either a concurrent sibling won the race (step aside)
+  // or something unrelated is squatting (fail loudly). Ghost daemons on
+  // surprise ports come from fallbacks, so we don't have any.
 
   await server.evictExistingDaemon();
-  const canonicalPort = dataPaths.usingGrove
-    ? daemonService.canonicalPort
-    : config.daemon.port ?? daemonService.canonicalPort;
+  const canonicalPort = daemonService.canonicalPort;
 
   try {
     await server.start(canonicalPort);
@@ -1549,7 +1546,7 @@ export async function main(): Promise<void> {
 
     logger.error(LOG_KINDS.DAEMON_PORT, 'Canonical port is held by another process — cannot start', {
       port: canonicalPort,
-      hint: `Run \`lsof -iTCP:${canonicalPort}\` to identify the owner, then either kill it or override daemon.port in myco.yaml`,
+      hint: `Run \`lsof -iTCP:${canonicalPort}\` to identify the owner and stop it.`,
     });
     process.stderr.write(
       `Myco daemon cannot bind port ${canonicalPort} (held by another process). ` +

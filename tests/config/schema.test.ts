@@ -48,7 +48,6 @@ describe('MycoConfigSchema v3', () => {
     const config = MycoConfigSchema.parse(minimal);
     expect(config.capture.buffer_max_events).toBe(500);
     expect(config.daemon.log_level).toBe('info');
-    expect(config.daemon.port).toBeNull();
     expect(config.notifications.default_mode).toBe('summary');
   });
 
