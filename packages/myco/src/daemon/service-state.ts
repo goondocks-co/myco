@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import {
-  DAEMON_STATE_FILENAME,
   resolveMycoHome,
   resolveServiceDaemonStatePath,
   resolveServiceDir,
@@ -10,7 +9,7 @@ import {
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { derivePort } from './port.js';
 
-export type DaemonServiceScope = 'global' | 'legacy-project';
+export type DaemonServiceScope = 'global';
 
 export interface DaemonState {
   pid: number;
@@ -49,23 +48,25 @@ export function resolveDaemonServiceState(
   vaultDir: string,
   options: ResolveDaemonServiceStateOptions = {},
 ): DaemonServiceState {
-  if (usesGlobalDaemon(vaultDir, options)) {
-    const mycoHome = resolveMycoHome({ env: options.env as NodeJS.ProcessEnv | undefined });
-    const statePath = resolveServiceDaemonStatePath(mycoHome);
-    return {
-      scope: 'global',
-      stateDir: path.dirname(statePath),
-      statePath,
-      canonicalPort: resolveGlobalDaemonPort(mycoHome),
-    };
-  }
-
+  assertGroveBound(vaultDir, options);
+  const mycoHome = resolveMycoHome({ env: options.env as NodeJS.ProcessEnv | undefined });
+  const statePath = resolveServiceDaemonStatePath(mycoHome);
   return {
-    scope: 'legacy-project',
-    stateDir: vaultDir,
-    statePath: path.join(vaultDir, DAEMON_STATE_FILENAME),
-    canonicalPort: derivePort(vaultDir),
+    scope: 'global',
+    stateDir: path.dirname(statePath),
+    statePath,
+    canonicalPort: resolveGlobalDaemonPort(mycoHome),
   };
+}
+
+function assertGroveBound(vaultDir: string, options: ResolveDaemonServiceStateOptions): void {
+  if (options.requestContext?.groveId) return;
+  const manifest = loadProjectManifest(vaultDir);
+  if (manifest?.grove?.binding_id) return;
+  throw new Error(
+    `Grove binding required at ${vaultDir}: project.toml has no [grove].binding_id. `
+    + `Run \`myco init\` to bind this project to a Grove. There is no per-vault daemon fallback.`,
+  );
 }
 
 export function resolveDaemonLogDir(
@@ -127,17 +128,3 @@ export function daemonStateMtimeMs(statePath: string): number | null {
   }
 }
 
-function usesGlobalDaemon(
-  vaultDir: string,
-  options: ResolveDaemonServiceStateOptions,
-): boolean {
-  if (options.requestContext?.groveId) return true;
-
-  // Read directly via loadProjectManifest (which returns null on ENOENT but
-  // throws on parse error). Letting parse errors propagate is intentional —
-  // a corrupt project.toml on a grove-bound vault must NOT silently route
-  // the daemon to legacy-project scope and create a divergent database.
-  // Pre-Grove vaults are the legitimate "no manifest" case and return false.
-  const manifest = loadProjectManifest(vaultDir);
-  return Boolean(manifest?.grove?.binding_id);
-}

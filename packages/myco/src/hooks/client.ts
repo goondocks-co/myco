@@ -365,7 +365,6 @@ export class DaemonClient {
   }
 
   private cleanLegacyProjectDaemon(): void {
-    if (this.daemonService.scope !== 'global') return;
     if (this.legacyProjectDaemonCleaned) return;
     this.legacyProjectDaemonCleaned = true;
 

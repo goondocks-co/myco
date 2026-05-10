@@ -471,7 +471,6 @@ export async function main(): Promise<void> {
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
     vault: bootstrapVaultDir,
-    daemon_scope: daemonService.scope,
     daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
   });
@@ -1041,10 +1040,7 @@ export async function main(): Promise<void> {
     server,
     configHash: configHashRef,
   }));
-  const groveScope = servedGroveScopeForDaemon({
-    daemonScope: daemonService.scope,
-    startupGroveId: dataPaths.requestContext.groveId,
-  });
+  const groveScope = servedGroveScopeForDaemon();
   server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
   server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
   server.registerRoute('POST', '/api/groves', createCreateGroveHandler());

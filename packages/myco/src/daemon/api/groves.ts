@@ -15,7 +15,6 @@ import {
 import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
-import type { DaemonServiceScope } from '@myco/daemon/service-state.js';
 import { errorBody } from './error-envelope.js';
 
 export interface GroveProjectSummary {
@@ -47,19 +46,13 @@ export interface GrovesResponse {
 export interface ServedGroveScope {
   /**
    * Grove ids this daemon should advertise. `null` means "every Grove
-   * the global registry knows about" (the global daemon model that serves
-   * the user's full Grove set). A populated array is reserved for legacy
-   * project-local daemon mode.
+   * the global registry knows about".
    */
   groveIds: readonly string[] | null;
 }
 
-export function servedGroveScopeForDaemon(input: {
-  daemonScope: DaemonServiceScope;
-  startupGroveId: string | null;
-}): ServedGroveScope {
-  if (input.daemonScope === 'global') return { groveIds: null };
-  return { groveIds: input.startupGroveId ? [input.startupGroveId] : null };
+export function servedGroveScopeForDaemon(): ServedGroveScope {
+  return { groveIds: null };
 }
 
 export function createListGrovesHandler(scope: ServedGroveScope): RouteHandler {
