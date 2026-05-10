@@ -23,13 +23,14 @@ Myco's notification system provides user feedback across multiple domains (daemo
 ## Prerequisites
 
 - Understanding of Myco's four-domain architecture (daemon, vault, symbiont, UI)
-- Familiarity with SQLite schema patterns and database constraints
+- Familiarity with SQLite schema patterns and database constraints  
 - Knowledge of React state management and component lifecycle
 - Access to browser Notification API for push notification implementation
+- Understanding of TypeScript interfaces and registry patterns
+- Access to `myco.yaml` for notification configuration
+- Knowledge of the `notify()` function API for emission
 
 ## Procedure A: Notification Schema Design and Database Integration
-
-### Database Schema Implementation
 
 Create notification tables with proper constraints and nullable project scoping:
 
@@ -56,11 +57,17 @@ CREATE TABLE notification_deliveries (
   acknowledged_at INTEGER,
   FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
 );
+
+-- Auto-cleanup for expired notifications
+CREATE TRIGGER cleanup_expired_notifications 
+AFTER INSERT ON notifications
+BEGIN
+  DELETE FROM notifications 
+  WHERE expires_at IS NOT NULL AND expires_at < unixepoch();
+END;
 ```
 
-### Event Payload Structure Design
-
-Design consistent event payload structures for different notification types:
+Design consistent event payload structures:
 
 ```typescript
 interface NotificationEvent {
@@ -73,49 +80,94 @@ interface NotificationEvent {
   expiresAt?: number;
   deliveryModes: NotificationDeliveryMode[];
 }
-
-interface SkillGeneratedEvent extends NotificationEvent {
-  type: 'skill_generated';
-  metadata: {
-    skillName: string;
-    candidateId: string;
-    sourceSporeCount: number;
-  };
-}
 ```
 
-### Database Constraint Patterns
+## Procedure B: Domain Registry Wiring and Notification Emission
 
-Implement lifecycle constraints to prevent notification data corruption:
+Register new domains and implement emission points using the domain registry pattern:
 
-```sql
--- Ensure expired notifications are cleaned up
-CREATE TRIGGER cleanup_expired_notifications 
-AFTER INSERT ON notifications
-BEGIN
-  DELETE FROM notifications 
-  WHERE expires_at IS NOT NULL AND expires_at < unixepoch();
-END;
-```
+1. **Define domain descriptor** in your domain module:
+   ```typescript
+   import { NotificationDomainDescriptor } from '../notifications/types.js';
+   
+   export const YOUR_DOMAIN_DESCRIPTOR: NotificationDomainDescriptor = {
+     domain: 'your-domain',
+     label: 'Your Domain',
+     types: [
+       { 
+         id: 'your-domain.action.success', 
+         label: 'Action completed', 
+         defaultMode: 'banner', 
+         defaultLevel: 'success' 
+       },
+       { 
+         id: 'your-domain.action.error', 
+         label: 'Action failed', 
+         defaultMode: 'banner', 
+         defaultLevel: 'error' 
+       }
+     ]
+   };
+   ```
 
-## Procedure B: Domain Event Emission Point Integration
+2. **Register domain and emit notifications**:
+   ```typescript
+   import { register } from '../notifications/registry.js';
+   import { notify } from '../notifications/notify.js';
+   
+   // Register during initialization
+   register(YOUR_DOMAIN_DESCRIPTOR);
+   
+   // Emit in domain logic
+   export async function performDomainAction(entityId: string): Promise<void> {
+     const vaultDir = getVaultDir();
+     
+     try {
+       // ... perform domain logic
+       
+       notify(vaultDir, {
+         domain: 'your-domain',
+         type: 'your-domain.action.success',
+         title: 'Action Completed',
+         message: `Successfully processed ${entityId}`,
+         link: `/domain/${entityId}`,
+         metadata: { entityId, timestamp: Date.now() }
+       });
+     } catch (error) {
+       notify(vaultDir, {
+         domain: 'your-domain',
+         type: 'your-domain.action.error',
+         title: 'Action Failed',
+         message: error.message,
+         level: 'error',
+         metadata: { entityId, error: error.message }
+       });
+       throw error;
+     }
+   }
+   ```
 
-### Daemon Domain Event Emission
+3. **Configure batching and delivery modes** in `myco.yaml`:
+   ```yaml
+   notifications:
+     enabled: true
+     modes:
+       your-domain.action.error: banner    # Immediate
+       your-domain.status.update: summary  # Batched
+     levels:
+       your-domain.action.success: success
+       your-domain.action.error: error
+   ```
 
-Integrate notification emission at daemon lifecycle boundaries:
+## Procedure C: Domain Event Emission Point Integration
+
+### Daemon and Agent Task Integration
+
+Integrate emission points at key system boundaries:
 
 ```typescript
+// Daemon lifecycle events
 class DaemonLifecycle {
-  async startDaemon() {
-    await this.emitNotification({
-      type: 'daemon_started',
-      title: 'Myco Daemon Started',
-      message: 'Intelligence pipeline is now active',
-      projectId: null,  // Daemon-scoped
-      deliveryModes: ['ui_banner']
-    });
-  }
-
   async processingComplete(results: ProcessingResults) {
     if (results.newSpores > 0) {
       await this.emitNotification({
@@ -129,13 +181,41 @@ class DaemonLifecycle {
     }
   }
 }
+
+// Agent task execution
+export async function executeAgentTask(task: AgentTask, vaultDir: string): Promise<TaskResult> {
+  try {
+    const result = await doExecuteTask(task);
+    
+    notify(vaultDir, {
+      domain: 'agents',
+      type: 'agents.task.completed',
+      title: `${task.type} Task Completed`,
+      message: `Task completed successfully`,
+      level: 'success',
+      link: `/agents/runs/${result.runId}`,
+      metadata: { taskId: task.id, duration: result.duration }
+    });
+    
+    return result;
+  } catch (error) {
+    notify(vaultDir, {
+      domain: 'agents', 
+      type: 'agents.task.error',
+      title: `${task.type} Task Failed`,
+      message: error.message,
+      level: 'error',
+      metadata: { taskId: task.id, error: error.message }
+    });
+    throw error;
+  }
+}
 ```
 
-### Vault Intelligence Domain Integration
-
-Place emission points at vault operation boundaries:
+### High-Importance Spore and Session Events
 
 ```typescript
+// Vault intelligence 
 class VaultIntelligence {
   async createSpore(sporeData: SporeCreationData) {
     const spore = await this.vault.createSpore(sporeData);
@@ -147,10 +227,6 @@ class VaultIntelligence {
         title: 'Significant Discovery',
         message: `New ${spore.observationType}: ${spore.content.substring(0, 100)}...`,
         projectId: this.projectId,
-        metadata: { 
-          sporeId: spore.id, 
-          importance: spore.importance 
-        },
         deliveryModes: ['ui_banner', 'browser_push']
       });
     }
@@ -158,36 +234,28 @@ class VaultIntelligence {
     return spore;
   }
 }
-```
 
-### UI Operation Domain Integration
-
-Emit events for user-initiated operations:
-
-```typescript
-class UIOperations {
-  async approveSkillCandidate(candidateId: string) {
-    const candidate = await this.vault.updateSkillCandidate(candidateId, { 
-      status: 'approved' 
-    });
-    
-    await this.emitNotification({
-      type: 'skill_candidate_approved',
-      title: 'Skill Generation Queued',
-      message: `"${candidate.topic}" approved for skill generation`,
-      projectId: this.projectId,
-      metadata: { candidateId, topic: candidate.topic },
-      deliveryModes: ['ui_banner']
-    });
-  }
+// Session lifecycle
+export async function createSession(params: SessionCreateParams, vaultDir: string): Promise<Session> {
+  const session = await doCreateSession(params);
+  
+  notify(vaultDir, {
+    domain: 'sessions',
+    type: 'sessions.created',
+    title: 'New Session Started',
+    message: `Session ${session.id.substring(0, 8)} created`,
+    level: 'info',
+    link: `/sessions/${session.id}`,
+    metadata: { sessionId: session.id, agentType: params.agentType }
+  });
+  
+  return session;
 }
 ```
 
-## Procedure C: Browser Notification Patterns and Annoyance Prevention
+## Procedure D: Browser Notification Patterns and Annoyance Prevention
 
-### Permission Request Flow Implementation
-
-Implement progressive permission requests to avoid notification blocking:
+Implement progressive permission requests and rate limiting:
 
 ```typescript
 class BrowserNotificationManager {
@@ -197,25 +265,21 @@ class BrowserNotificationManager {
 
   async requestPermissionIfNeeded(): Promise<NotificationPermission> {
     const currentPermission = Notification.permission;
-    
     if (currentPermission !== 'default') return currentPermission;
     
     // Avoid rapid permission requests
     const now = Date.now();
-    if (this.permissionRequested && 
-        (now - this.lastRequestTime) < this.REQUEST_COOLDOWN) {
+    if (this.permissionRequested && (now - this.lastRequestTime) < this.REQUEST_COOLDOWN) {
       return 'default';
     }
     
     this.permissionRequested = true;
     this.lastRequestTime = now;
-    
     return await Notification.requestPermission();
   }
 
   async showNotificationSafely(title: string, options: NotificationOptions) {
     const permission = await this.requestPermissionIfNeeded();
-    
     if (permission === 'granted') {
       return new Notification(title, {
         ...options,
@@ -223,18 +287,10 @@ class BrowserNotificationManager {
         requireInteraction: false
       });
     }
-    
-    // Fall back to UI banner if permission denied
     return this.showUIFallback(title, options);
   }
 }
-```
 
-### Rate Limiting Implementation
-
-Implement notification rate limiting to prevent annoyance:
-
-```typescript
 class NotificationRateLimiter {
   private readonly recentNotifications = new Map<string, number[]>();
   private readonly MAX_PER_HOUR = 10;
@@ -244,43 +300,27 @@ class NotificationRateLimiter {
     const now = Date.now();
     const hourAgo = now - (60 * 60 * 1000);
     
-    // Check global rate limit
+    // Check global and per-type rate limits
     const allRecent = Array.from(this.recentNotifications.values())
       .flat()
       .filter(time => time > hourAgo);
-    
     if (allRecent.length >= this.MAX_PER_HOUR) return false;
     
-    // Check per-type rate limit
     const typeRecent = (this.recentNotifications.get(type) || [])
       .filter(time => time > hourAgo);
-    
     return typeRecent.length < this.MAX_PER_TYPE_PER_HOUR;
-  }
-
-  recordNotification(type: string) {
-    const now = Date.now();
-    const existing = this.recentNotifications.get(type) || [];
-    existing.push(now);
-    this.recentNotifications.set(type, existing);
   }
 }
 ```
 
-## Procedure D: Notification Display Architecture and React State Management
-
-### React Notification Queue Component
+## Procedure E: Notification Display Architecture and React State Management
 
 Build notification display components with proper state management:
 
 ```tsx
-export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
-  children 
-}) => {
+export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [dismissTimers, setDismissTimers] = useState<Map<string, NodeJS.Timeout>>(
-    new Map()
-  );
+  const [dismissTimers, setDismissTimers] = useState<Map<string, NodeJS.Timeout>>(new Map());
 
   const addNotification = useCallback((notification: Omit<Notification, 'id'>) => {
     const id = crypto.randomUUID();
@@ -290,18 +330,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({
     
     // Auto-dismiss after delay if configured
     if (notification.autoDismissMs) {
-      const timer = setTimeout(() => {
-        dismissNotification(id);
-      }, notification.autoDismissMs);
-      
+      const timer = setTimeout(() => dismissNotification(id), notification.autoDismissMs);
       setDismissTimers(prev => new Map(prev.set(id, timer)));
     }
   }, []);
 
   const dismissNotification = useCallback((id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
-    
-    // Clear auto-dismiss timer
     const timer = dismissTimers.get(id);
     if (timer) {
       clearTimeout(timer);
@@ -314,22 +349,12 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [dismissTimers]);
 
   return (
-    <NotificationContext.Provider value={{
-      notifications,
-      addNotification,
-      dismissNotification
-    }}>
+    <NotificationContext.Provider value={{ notifications, addNotification, dismissNotification }}>
       {children}
     </NotificationContext.Provider>
   );
 };
-```
 
-### Notification Banner Component
-
-Implement notification display with interaction patterns:
-
-```tsx
 export const NotificationBanner: React.FC<{
   notification: Notification;
   onDismiss: () => void;
@@ -347,15 +372,6 @@ export const NotificationBanner: React.FC<{
     setTimeout(onDismiss, 300);
   };
 
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'skill_generated': return '🎯';
-      case 'session_completed': return '✅';
-      case 'high_importance_spore': return '💡';
-      default: return 'ℹ️';
-    }
-  };
-
   return (
     <div 
       className={`notification-banner ${isVisible ? 'notification-banner--visible' : ''}`}
@@ -364,28 +380,23 @@ export const NotificationBanner: React.FC<{
     >
       <div className="notification-banner__content">
         <span className="notification-banner__icon">
-          {getTypeIcon(notification.type)}
+          {notification.type === 'skill_generated' ? '🎯' : 'ℹ️'}
         </span>
         <div className="notification-banner__text">
           <h4 className="notification-banner__title">{notification.title}</h4>
           <p className="notification-banner__message">{notification.message}</p>
         </div>
       </div>
-      
       <div className="notification-banner__actions">
-        {onAction && (
-          <button onClick={onAction} aria-label="Take action">View</button>
-        )}
-        <button onClick={handleDismiss} aria-label="Dismiss">×</button>
+        {onAction && <button onClick={onAction}>View</button>}
+        <button onClick={handleDismiss}>×</button>
       </div>
     </div>
   );
 };
 ```
 
-## Procedure E: Registry-Driven Notification Configuration
-
-### Notification Type Registry Implementation
+## Procedure F: Registry-Driven Notification Configuration
 
 Create configurable notification behavior through type registries:
 
@@ -414,19 +425,6 @@ export const NOTIFICATION_TYPE_REGISTRY: Record<string, NotificationTypeConfig> 
       messageTemplate: 'Generated from {{sourceSporeCount}} observations'
     }
   },
-  
-  session_completed: {
-    displayName: 'Session Captured',
-    defaultDeliveryModes: ['ui_banner'],
-    autoDismissMs: 8000,
-    priority: 'low',
-    userConfigurable: true,
-    template: {
-      titleTemplate: 'Session Complete',
-      messageTemplate: '{{sessionTitle}} - {{activityCount}} activities captured'
-    }
-  },
-  
   high_importance_spore: {
     displayName: 'Significant Discovery',
     defaultDeliveryModes: ['ui_banner', 'browser_push'],
@@ -438,28 +436,15 @@ export const NOTIFICATION_TYPE_REGISTRY: Record<string, NotificationTypeConfig> 
     }
   }
 };
-```
 
-### Template-Driven Notification Content
-
-Generate notification content from templates and metadata:
-
-```typescript
 class NotificationTemplateEngine {
   private static interpolate(template: string, data: Record<string, any>): string {
-    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-      return String(data[key] || match);
-    });
+    return template.replace(/\{\{(\w+)\}\}/g, (match, key) => String(data[key] || match));
   }
 
-  static generateNotificationContent(
-    type: string, 
-    baseData: Partial<NotificationEvent>
-  ): NotificationEvent {
+  static generateNotificationContent(type: string, baseData: Partial<NotificationEvent>): NotificationEvent {
     const config = NOTIFICATION_TYPE_REGISTRY[type];
-    if (!config) {
-      throw new Error(`Unknown notification type: ${type}`);
-    }
+    if (!config) throw new Error(`Unknown notification type: ${type}`);
 
     const metadata = baseData.metadata || {};
     const interpolationData = { ...baseData, ...metadata };
@@ -481,16 +466,13 @@ class NotificationTemplateEngine {
 }
 ```
 
-## Procedure F: Multi-Mode Notification Delivery Coordination
-
-### Delivery Mode Coordination
+## Procedure G: Multi-Mode Notification Delivery Coordination
 
 Coordinate notification delivery across multiple channels with priority and fallback:
 
 ```typescript
 class NotificationDeliveryCoordinator {
   constructor(
-    private preferenceManager: NotificationPreferenceManager,
     private rateLimiter: NotificationRateLimiter,
     private browserManager: BrowserNotificationManager
   ) {}
@@ -514,7 +496,7 @@ class NotificationDeliveryCoordinator {
       }
     }
     
-    // If all delivery modes failed, try UI banner as fallback
+    // Fallback to UI banner if all modes failed
     if (results.every(r => !r.success) && !event.deliveryModes.includes('ui_banner')) {
       try {
         await this.deliverToMode(event, 'ui_banner');
@@ -530,54 +512,97 @@ class NotificationDeliveryCoordinator {
   private async deliverToMode(event: NotificationEvent, mode: string): Promise<void> {
     switch (mode) {
       case 'ui_banner':
-        return this.deliverUIBanner(event);
+        const notificationContext = getNotificationContext();
+        notificationContext.addNotification({
+          type: event.type,
+          title: event.title,
+          message: event.message,
+          metadata: event.metadata,
+          autoDismissMs: NOTIFICATION_TYPE_REGISTRY[event.type]?.autoDismissMs
+        });
+        break;
       case 'browser_push':
-        return this.deliverBrowserPush(event);
+        const notification = await this.browserManager.showNotificationSafely(event.title, {
+          body: event.message,
+          tag: `myco-${event.type}`,
+          data: { type: event.type, metadata: event.metadata }
+        });
+        if (!notification) throw new Error('Browser notification delivery failed');
+        break;
       default:
         throw new Error(`Unknown delivery mode: ${mode}`);
-    }
-  }
-
-  private async deliverUIBanner(event: NotificationEvent): Promise<void> {
-    const notificationContext = getNotificationContext();
-    notificationContext.addNotification({
-      type: event.type,
-      title: event.title,
-      message: event.message,
-      metadata: event.metadata,
-      autoDismissMs: NOTIFICATION_TYPE_REGISTRY[event.type]?.autoDismissMs
-    });
-  }
-
-  private async deliverBrowserPush(event: NotificationEvent): Promise<void> {
-    const notification = await this.browserManager.showNotificationSafely(
-      event.title,
-      {
-        body: event.message,
-        tag: `myco-${event.type}`,
-        data: { type: event.type, metadata: event.metadata }
-      }
-    );
-    
-    if (!notification) {
-      throw new Error('Browser notification delivery failed');
     }
   }
 }
 ```
 
+## Procedure H: Notification Delivery Debugging and Troubleshooting
+
+Debug notification delivery failures and trace flow from emission to display:
+
+```typescript
+// Debug wrapper for notify calls
+export function debugNotify(
+  vaultDir: string | undefined,
+  payload: CreateNotificationPayload,
+  context?: string
+): string | null {
+  console.debug(`[Notifications] Emitting from ${context}:`, {
+    domain: payload.domain,
+    type: payload.type,
+    title: payload.title,
+    vaultDir: vaultDir ? 'present' : 'undefined'
+  });
+  
+  const id = notify(vaultDir, payload);
+  console.debug(`[Notifications] Result:`, { id: id || 'suppressed' });
+  return id;
+}
+
+// Debug notification flow
+export async function debugNotificationFlow(domain: string, type: string): Promise<void> {
+  const vaultDir = getVaultDir();
+  const id = notify(vaultDir, {
+    domain, type,
+    title: 'Debug Test Notification',
+    message: 'Testing notification system'
+  });
+  
+  if (!id) {
+    console.log('Notification suppressed - checking config...');
+    const config = await loadMergedConfig(vaultDir);
+    console.log('Notifications enabled:', config.notifications?.enabled);
+    console.log('Domain registered:', getDomain(domain) ? 'yes' : 'no');
+  }
+}
+```
+
+**Database verification commands**:
+```bash
+# Check recent notifications
+sqlite3 .myco/vault.db "SELECT domain, type, title, created_at FROM notifications ORDER BY created_at DESC LIMIT 10;"
+
+# Debug WebSocket delivery
+curl http://localhost:20915/api/status | jq '.websocket'
+curl http://localhost:20915/api/notifications | jq '.data | length'
+```
+
 ## Cross-Cutting Gotchas
 
-**Database Transaction Scope**: Always wrap notification creation and delivery recording in the same transaction to ensure consistency. If delivery fails after database insert, you'll have orphaned notification records.
+**Emission Point Timing**: Call `notify()` AFTER core operations succeed, not before. Failed operations shouldn't generate success notifications, but always emit error notifications in catch blocks.
 
-**Browser Permission Timing**: Never request notification permissions immediately on page load or without user interaction. Modern browsers block aggressive permission requests, leading to permanent "denied" states.
+**VaultDir Resolution**: Always pass correct `vaultDir` to `notify()`. Use `getVaultDir()` or undefined for no-op behavior. Never hardcode vault paths.
 
-**React State Update Batching**: When adding multiple notifications rapidly (e.g., batch processing results), use React's batching mechanisms to prevent excessive re-renders that can cause notification display flickering.
+**Registry Timing**: Register notification domains during application initialization, not on-demand. Registry must be populated before first `notify()` call.
 
-**Notification Deduplication**: Use notification `tag` attributes for browser notifications and in-memory deduplication for UI banners to prevent showing identical notifications multiple times during rapid event emission.
+**Browser Permission Timing**: Never request notification permissions on page load without user interaction. Modern browsers block aggressive permission requests permanently.
 
-**Memory Leak Prevention**: Always clear notification timers and event listeners when components unmount. Browser notifications persist beyond component lifecycle and can accumulate event handlers.
+**Rate Limiting Scope**: Implement rate limiting per notification type AND globally. Type-specific limits prevent spam, global limits prevent system overload.
 
-**Rate Limiting Scope**: Implement rate limiting per notification type AND globally. Type-specific limits prevent spam of particular events, while global limits prevent notification overload during system issues.
+**Database Transaction Scope**: Wrap notification creation and delivery recording in same transaction to ensure consistency.
 
-**Fallback Delivery Chain**: Design delivery modes with clear fallback priorities. If high-priority delivery (browser push) fails, automatically attempt lower-priority modes (UI banner) rather than losing the notification entirely.
+**React State Batching**: Use React's batching mechanisms when adding multiple notifications rapidly to prevent display flickering.
+
+**Memory Leak Prevention**: Always clear notification timers and event listeners when components unmount.
+
+**Fallback Delivery Chain**: Design delivery modes with clear fallback priorities. If high-priority delivery fails, automatically attempt lower-priority modes rather than losing notifications.
