@@ -19,7 +19,7 @@ export interface GroveProjectSummary {
   binding_id: string | null;
   created_at: string;
   updated_at: string;
-  manifest_state: 'present' | 'missing' | 'mismatch';
+  manifest_state: 'present' | 'missing' | 'invalid' | 'mismatch';
 }
 
 export interface GroveSummary {
@@ -109,19 +109,24 @@ function projectSlug(project: RegisteredProject): string {
 }
 
 function manifestState(project: RegisteredProject): GroveProjectSummary['manifest_state'] {
+  let manifest;
   try {
-    const manifest = loadProjectManifest(resolveProjectVaultDir(project.root));
-    if (!manifest) return 'missing';
-    if (manifest.project.id !== project.project_id) return 'mismatch';
-    if (
-      project.binding_id
-      && manifest.grove?.binding_id
-      && project.binding_id !== manifest.grove.binding_id
-    ) {
-      return 'mismatch';
-    }
-    return 'present';
+    manifest = loadProjectManifest(resolveProjectVaultDir(project.root));
   } catch {
-    return 'missing';
+    // Distinguish "file is malformed" from "file is absent". Returning
+    // 'missing' for a parse error sends the user to `myco init`, which
+    // would happily overwrite the broken file without surfacing what
+    // was wrong; 'invalid' gives the UI a clear path to "open and fix".
+    return 'invalid';
   }
+  if (!manifest) return 'missing';
+  if (manifest.project.id !== project.project_id) return 'mismatch';
+  if (
+    project.binding_id
+    && manifest.grove?.binding_id
+    && project.binding_id !== manifest.grove.binding_id
+  ) {
+    return 'mismatch';
+  }
+  return 'present';
 }

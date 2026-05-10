@@ -254,7 +254,11 @@ function migrateLegacyProjectFields(
     machineDirty = true;
   };
 
-  moveMachine(['daemon', 'port'], ['daemon', 'port']);
+  // Note: do NOT promote `daemon.port`. The canonical port is derived
+  // from the service path (`daemon/port.ts`) — promoting a stale legacy
+  // value into machine config would re-poison `~/.myco/config.yaml` and
+  // silently hijack port resolution. The MachineConfigSchema preprocess
+  // strips it on read; this drop ensures it never gets re-written.
   moveMachine(['daemon', 'log_level'], ['daemon', 'log_level']);
   moveMachine(['daemon', 'log_retention_days'], ['daemon', 'log_retention_days']);
   // `update.channel` from legacy schema → daemon.update_channel.

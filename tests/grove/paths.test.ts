@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
+  pathsEquivalent,
   resolveGroveDbPath,
   resolveGroveDir,
   resolveGroveProjectsPath,
@@ -63,5 +66,54 @@ describe('Grove path primitives', () => {
       expect(() => resolveGroveProjectsPath(GROVE_ID, home)).not.toThrow();
       expect(() => resolveGroveRootsPath(GROVE_ID, home)).not.toThrow();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathsEquivalent — case-insensitive identity on macOS APFS via inode compare
+// ---------------------------------------------------------------------------
+
+describe('pathsEquivalent', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-paths-eq-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('returns true for identical resolved strings', () => {
+    expect(pathsEquivalent('/tmp/a', '/tmp/a')).toBe(true);
+    expect(pathsEquivalent('/tmp/./a', '/tmp/a')).toBe(true);
+  });
+
+  it('returns true for case-mismatched paths to the same file (case-insensitive FS)', () => {
+    if (process.platform !== 'darwin' && process.platform !== 'win32') return;
+    const dir = path.join(tmpRoot, 'CaseProj');
+    fs.mkdirSync(dir, { recursive: true });
+    const lower = path.join(tmpRoot, 'caseproj');
+    expect(pathsEquivalent(dir, lower)).toBe(true);
+  });
+
+  it('returns true across symlink chains', () => {
+    const realDir = path.join(tmpRoot, 'real');
+    fs.mkdirSync(realDir, { recursive: true });
+    const linkDir = path.join(tmpRoot, 'link');
+    fs.symlinkSync(realDir, linkDir);
+    expect(pathsEquivalent(realDir, linkDir)).toBe(true);
+  });
+
+  it('returns false for distinct files', () => {
+    const a = path.join(tmpRoot, 'a');
+    const b = path.join(tmpRoot, 'b');
+    fs.mkdirSync(a);
+    fs.mkdirSync(b);
+    expect(pathsEquivalent(a, b)).toBe(false);
+  });
+
+  it('returns false when either path does not exist', () => {
+    expect(pathsEquivalent(path.join(tmpRoot, 'absent-a'), path.join(tmpRoot, 'absent-b'))).toBe(false);
   });
 });

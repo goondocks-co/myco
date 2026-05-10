@@ -19,6 +19,7 @@ import { importProjectCoreRows, type ImportProjectCoreResult } from '@myco/grove
 import { createGroveBindingId, createMigrationId, createProjectId } from '@myco/grove/ids.js';
 import {
   GROVE_VECTORS_FILENAME,
+  pathsEquivalent,
   resolveProjectVaultDir,
   resolveMycoHome,
 } from '@myco/grove/paths.js';
@@ -29,6 +30,7 @@ import {
   resolveGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
+import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
 
 export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
 
@@ -78,7 +80,7 @@ export interface ActivateProjectMigrationResult {
   marker_path: string;
 }
 
-interface ActivationMarker {
+export interface ActivationMarker {
   status: 'activated';
   migration_id: string;
   project_root: string;
@@ -210,6 +212,7 @@ export function activateProjectMigration(
   const existingManifest = loadProjectManifest(projectVaultDir);
   const identity = prepareIdentity({
     existingManifest,
+    existingMarker: existingMarkerEarly,
     grove,
     projectRoot,
     projectName: input.projectName,
@@ -224,6 +227,31 @@ export function activateProjectMigration(
       groveId: grove.id,
       projectId: identity.projectId,
     });
+    // Repair the triple invariant before returning. The marker is
+    // authoritative — it was the last thing the activation transaction
+    // wrote — so if `project.toml` or the registry row went missing
+    // (manual delete, partial restore, errant cleanup), regenerate them
+    // from the marker rather than silently letting the daemon fall back
+    // to legacy mode and create a divergent database.
+    if (!input.dryRun) {
+      ensureVaultGitignoreCurrent(projectVaultDir);
+      if (!existingManifest || !existingManifest.grove?.binding_id) {
+        saveProjectManifest(projectVaultDir, identity.manifest);
+      }
+      const registered = findRegisteredProject({
+        projectId: existingMarker.project_id,
+        bindingId: existingMarker.grove_binding_id,
+        groveId: existingMarker.grove_id,
+      }, mycoHome);
+      if (!registered) {
+        registerProjectInGrove(existingMarker.grove_id, {
+          projectId: existingMarker.project_id,
+          projectName: existingMarker.project_name,
+          projectRoot,
+          bindingId: existingMarker.grove_binding_id,
+        }, mycoHome);
+      }
+    }
     return {
       migration_id: existingMarker.migration_id,
       dry_run: Boolean(input.dryRun),
@@ -293,6 +321,11 @@ export function activateProjectMigration(
     // BEFORE the marker write means the next run repeats those FS
     // writes and tries again from a still-empty Grove DB.
     if (!input.dryRun) {
+      // Refresh `.myco/.gitignore` BEFORE writing project.toml or the marker
+      // so they're never untracked-but-stageable. A user committing them
+      // leaks per-machine grove bindings and machine-local paths from the
+      // activation run.
+      ensureVaultGitignoreCurrent(projectVaultDir);
       saveProjectManifest(projectVaultDir, identity.manifest);
       registerProjectInGrove(grove.id, {
         projectId: identity.projectId,
@@ -381,14 +414,27 @@ function openMigratedSourceSnapshot(sourceDbPath: string, machineId: string): So
 
 function prepareIdentity(input: {
   existingManifest: ProjectManifest | null;
+  existingMarker: ActivationMarker | null;
   grove: GroveRecord;
   projectRoot: string;
   projectName?: string;
   mycoHome: string;
 }): PreparedIdentity {
-  const projectId = input.existingManifest?.project.id ?? createProjectId();
-  const projectName = input.existingManifest?.project.name ?? input.projectName ?? path.basename(input.projectRoot);
-  const bindingId = input.existingManifest?.grove?.binding_id ?? createGroveBindingId();
+  // Identity preference: manifest first (if present), marker second (when
+  // we're repairing a vault whose project.toml went missing post-migration),
+  // freshly-minted last (true first-run activation). This keeps repair
+  // runs aligned with the existing marker so `assertExistingMarkerMatches`
+  // doesn't throw on a brand-new id we just minted.
+  const projectId = input.existingManifest?.project.id
+    ?? input.existingMarker?.project_id
+    ?? createProjectId();
+  const projectName = input.existingManifest?.project.name
+    ?? input.existingMarker?.project_name
+    ?? input.projectName
+    ?? path.basename(input.projectRoot);
+  const bindingId = input.existingManifest?.grove?.binding_id
+    ?? input.existingMarker?.grove_binding_id
+    ?? createGroveBindingId();
 
   const registeredBinding = findRegisteredProjectByBinding(bindingId, input.mycoHome);
   if (registeredBinding) {
@@ -402,7 +448,7 @@ function prepareIdentity(input: {
         `Existing project.toml Grove binding ${bindingId} is registered to project ${registeredBinding.project.project_id}, not ${projectId}.`,
       );
     }
-    if (path.resolve(registeredBinding.project.root) !== input.projectRoot) {
+    if (!pathsEquivalent(registeredBinding.project.root, input.projectRoot)) {
       throw new Error(
         `Existing project.toml Grove binding ${bindingId} is already registered at ${registeredBinding.project.root}; refusing to rebind it to ${input.projectRoot}.`,
       );
@@ -597,7 +643,7 @@ function stampLegacyArchiveOnMarker(
   return { archived_dir: archivedDir };
 }
 
-function readActivationMarker(filePath: string): ActivationMarker | null {
+export function readActivationMarker(filePath: string): ActivationMarker | null {
   if (!fs.existsSync(filePath)) return null;
   const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<ActivationMarker>;
   if (parsed.status !== 'activated') {
@@ -613,8 +659,11 @@ function assertExistingMarkerMatches(marker: ActivationMarker, expected: {
   projectId: string;
 }): void {
   const mismatches: string[] = [];
-  if (path.resolve(marker.project_root) !== expected.projectRoot) mismatches.push('project root');
-  if (path.resolve(marker.source_db_path) !== expected.sourceDbPath) mismatches.push('source DB path');
+  // pathsEquivalent handles macOS APFS case-insensitivity and symlink chains;
+  // bare path.resolve compares case-sensitive strings and would falsely flag
+  // `/Users/me/repos/...` vs `/Users/me/Repos/...` as a mismatch.
+  if (!pathsEquivalent(marker.project_root, expected.projectRoot)) mismatches.push('project root');
+  if (!pathsEquivalent(marker.source_db_path, expected.sourceDbPath)) mismatches.push('source DB path');
   if (marker.grove_id !== expected.groveId) mismatches.push('Grove id');
   if (marker.project_id !== expected.projectId) mismatches.push('project id');
   if (mismatches.length > 0) {
