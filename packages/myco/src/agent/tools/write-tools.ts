@@ -24,7 +24,7 @@ import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFr
 // ---------------------------------------------------------------------------
 
 export function createWriteTools(deps: VaultToolDeps) {
-  const { agentId, embeddingManager, machineId } = deps;
+  const { agentId, embeddingManager, machineId, requestContext } = deps;
   const projectId = rowProjectIdFromVaultToolDeps(deps);
   const scope = projectScopeFromVaultToolDeps(deps);
 
@@ -182,7 +182,7 @@ export function createWriteTools(deps: VaultToolDeps) {
     },
     async (args) => {
       const now = epochSeconds();
-      const state = setState(agentId, args.key, args.value, now);
+      const state = setState(agentId, requestContext!.projectId, args.key, args.value, now);
 
       return textResult(state);
     },

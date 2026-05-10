@@ -71,12 +71,13 @@ export async function executeContextQueries(
   }
 
   const scope = projectScopeFromRequestContext(requestContext);
+  const projectId = requestContext!.projectId;
 
   // Execute all queries in parallel — they hit independent DB tables.
   const settled = await Promise.allSettled(
     queries.map(async (query) => {
       const limit = query.limit ?? DEFAULT_CONTEXT_QUERY_LIMIT;
-      const data = await executeQuery(agentId, query.tool, limit, scope);
+      const data = await executeQuery(agentId, query.tool, limit, scope, projectId);
       return { tool: query.tool, purpose: query.purpose, data } satisfies ContextQueryResult;
     }),
   );
@@ -142,6 +143,7 @@ async function executeQuery(
   tool: string,
   limit: number,
   scope: ProjectScope,
+  projectId: string,
 ): Promise<unknown> {
   switch (tool) {
     case 'vault_unprocessed':
@@ -170,7 +172,7 @@ async function executeQuery(
       }).map(projectSessionForAgent);
 
     case 'vault_state':
-      return getStatesForAgent(agentId);
+      return getStatesForAgent(agentId, projectId);
 
     default:
       throw new Error(`Unknown context query tool: "${tool}"`);
