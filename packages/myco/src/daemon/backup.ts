@@ -10,6 +10,13 @@ import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
+import {
+  ALL_PROJECTS_SCOPE,
+  projectScope,
+  type ProjectScope,
+} from '@myco/grove/ids.js';
+
+export { ALL_PROJECTS_SCOPE, projectScope, type ProjectScope };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,24 +66,21 @@ const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
 // ---------------------------------------------------------------------------
 
 /**
- * Scope of a backup. `all-projects` produces a vault-wide dump (the
- * historical default); `single-project` filters every per-table SELECT
- * by `project_id` so the resulting file carries only the target
- * project's rows.
+ * Backup uses the canonical `ProjectScope` from `@myco/grove/ids.js`:
+ *   - `{ kind: 'project', id }`  — single-project dump (filter `project_id = ?`)
+ *   - `{ kind: 'global' }`        — daemon-wide rows (no project filter applies
+ *                                   at the dump level; project-scoped tables
+ *                                   are emitted unfiltered, same as `'all'`)
+ *   - `{ kind: 'all' }`           — vault-wide dump, no project filter
+ *
+ * For backup purposes `'global'` and `'all'` are equivalent: both produce a
+ * no-op `WHERE` clause so every row of every BACKUP_TABLES table is dumped.
  */
-export type ProjectScope =
-  | { kind: 'all-projects' }
-  | { kind: 'single-project'; projectId: string };
-
-export const ALL_PROJECTS_SCOPE: ProjectScope = { kind: 'all-projects' };
-
-export function projectScope(projectId: string): ProjectScope {
-  return { kind: 'single-project', projectId };
-}
-
 function projectScopeClause(scope: ProjectScope): { sql: string; params: unknown[] } {
-  if (scope.kind === 'all-projects') return { sql: '', params: [] };
-  return { sql: ' WHERE project_id = ?', params: [scope.projectId] };
+  if (scope.kind === 'project') {
+    return { sql: ' WHERE project_id = ?', params: [scope.id] };
+  }
+  return { sql: '', params: [] };
 }
 
 /** Metadata for a backup file on disk. */
@@ -163,8 +167,8 @@ export function createBackup(
   const lines: string[] = [];
   const timestamp = epochSeconds();
   const clause = projectScopeClause(scope);
-  const scopeLabel = scope.kind === 'single-project'
-    ? `project=${scope.projectId}`
+  const scopeLabel = scope.kind === 'project'
+    ? `project=${scope.id}`
     : 'all-projects';
 
   // Header
@@ -195,7 +199,7 @@ export function createBackup(
     lines.push('');
   }
 
-  const filename = scope.kind === 'single-project'
+  const filename = scope.kind === 'project'
     ? `${machineId}__${projectSlug ?? 'unknown'}__${timestamp}${BACKUP_EXTENSION}`
     : `${machineId}__${timestamp}${BACKUP_EXTENSION}`;
   const filePath = path.join(backupDir, filename);

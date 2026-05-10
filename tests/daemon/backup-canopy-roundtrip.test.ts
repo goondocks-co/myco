@@ -12,8 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
-import { createBackup, projectScope, restoreBackup } from '@myco/daemon/backup.js';
-import { createProjectId } from '@myco/grove/ids.js';
+import { createBackup, restoreBackup } from '@myco/daemon/backup.js';
+import { assertGroveProjectId, createProjectId, projectScope } from '@myco/grove/ids.js';
 
 const MACHINE_ID = 'testuser_aaaa1111';
 
@@ -39,7 +39,7 @@ describe('backup round-trip — canopy tables', () => {
   });
 
   it('canopy_entries and canopy_maps round-trip via backup/restore', () => {
-    const projectId = createProjectId();
+    const projectId = assertGroveProjectId(createProjectId());
     const now = 1700000000;
     const db = getDatabase();
 
@@ -75,8 +75,8 @@ describe('backup round-trip — canopy tables', () => {
   });
 
   it('project-scoped backup includes only the target project rows', () => {
-    const projectA = createProjectId();
-    const projectB = createProjectId();
+    const projectA = assertGroveProjectId(createProjectId());
+    const projectB = assertGroveProjectId(createProjectId());
     const now = 1700000000;
     const db = getDatabase();
 
