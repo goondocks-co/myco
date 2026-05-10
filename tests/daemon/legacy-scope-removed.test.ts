@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
+import { assertGroveBound } from '@myco/daemon/service-state.js';
 
 describe('post-Grove daemon scope', () => {
   let savedHome: string | undefined;
@@ -32,6 +32,6 @@ describe('post-Grove daemon scope', () => {
     process.env.HOME = home;
     delete process.env.MYCO_HOME;
 
-    expect(() => resolveDaemonServiceState(vault)).toThrow(/Grove binding/);
+    expect(() => assertGroveBound(vault)).toThrow(/Grove binding/);
   });
 });

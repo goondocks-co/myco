@@ -9,6 +9,16 @@ import {
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { derivePort } from './port.js';
 
+export class GroveBindingRequiredError extends Error {
+  constructor(vaultDir: string) {
+    super(
+      `Grove binding required at ${vaultDir}: project.toml has no [grove].binding_id. `
+      + `Run \`myco init\` to bind this project to a Grove. There is no per-vault daemon fallback.`,
+    );
+    this.name = 'GroveBindingRequiredError';
+  }
+}
+
 export type DaemonServiceScope = 'global';
 
 export interface DaemonState {
@@ -48,7 +58,6 @@ export function resolveDaemonServiceState(
   vaultDir: string,
   options: ResolveDaemonServiceStateOptions = {},
 ): DaemonServiceState {
-  assertGroveBound(vaultDir, options);
   const mycoHome = resolveMycoHome({ env: options.env as NodeJS.ProcessEnv | undefined });
   const statePath = resolveServiceDaemonStatePath(mycoHome);
   return {
@@ -59,14 +68,21 @@ export function resolveDaemonServiceState(
   };
 }
 
-function assertGroveBound(vaultDir: string, options: ResolveDaemonServiceStateOptions): void {
+/**
+ * Throws if the vault has no Grove binding (neither the supplied
+ * requestContext.groveId nor the overlaid `manifest.grove.binding_id`).
+ * Call from daemon startup or other paths that genuinely require a
+ * binding — read-only helpers (doctor, logs, setup-llm) can resolve
+ * the daemon state directly without this gate.
+ */
+export function assertGroveBound(
+  vaultDir: string,
+  options: ResolveDaemonServiceStateOptions = {},
+): void {
   if (options.requestContext?.groveId) return;
   const manifest = loadProjectManifest(vaultDir);
   if (manifest?.grove?.binding_id) return;
-  throw new Error(
-    `Grove binding required at ${vaultDir}: project.toml has no [grove].binding_id. `
-    + `Run \`myco init\` to bind this project to a Grove. There is no per-vault daemon fallback.`,
-  );
+  throw new GroveBindingRequiredError(vaultDir);
 }
 
 export function resolveDaemonLogDir(

@@ -5,6 +5,7 @@ import os from 'node:os';
 import YAML from 'yaml';
 import { MycoConfigSchema } from '@myco/config/schema';
 import { run } from '@myco/cli/setup-llm';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 
 function writeConfig(dir: string, config: Record<string, unknown>): void {
   fs.writeFileSync(path.join(dir, 'myco.yaml'), YAML.stringify(config), 'utf-8');
@@ -93,12 +94,19 @@ describe('myco setup-llm', () => {
   });
 
   it('shows daemon restart notice when daemon.json exists', async () => {
-    fs.writeFileSync(path.join(tmpDir, 'daemon.json'), '{}', 'utf-8');
-    await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
-    expect(logged.some((l) => l.includes('restart'))).toBe(true);
+    const statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '{}', 'utf-8');
+    try {
+      await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
+      expect(logged.some((l) => l.includes('restart'))).toBe(true);
+    } finally {
+      try { fs.unlinkSync(statePath); } catch { /* gone */ }
+    }
   });
 
   it('does not show daemon restart notice when daemon.json is absent', async () => {
+    try { fs.unlinkSync(resolveServiceDaemonStatePath()); } catch { /* gone */ }
     await run(['--embedding-model', 'nomic-embed-text'], tmpDir);
     expect(logged.every((l) => !l.includes('restart'))).toBe(true);
   });

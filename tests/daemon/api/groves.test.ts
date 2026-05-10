@@ -82,34 +82,17 @@ describe('Grove discovery API', () => {
     expect(body.groves[0].name).toBe('Myco Dogfood');
   });
 
-  it('serves the full registry for the global daemon even when startup came from one Grove', async () => {
-    const startupGrove = createGrove('Myco Dogfood');
+  it('serves the full registry for the global daemon', async () => {
+    createGrove('Myco Dogfood');
     createGrove('Default Projects');
 
-    const scope = servedGroveScopeForDaemon({
-      daemonScope: 'global',
-      startupGroveId: startupGrove.id,
-    });
+    const scope = servedGroveScopeForDaemon();
     const result = await listNames(scope);
 
     expect(scope.groveIds).toBeNull();
     expect(result).toHaveLength(2);
     expect(result).toContain('Myco Dogfood');
     expect(result).toContain('Default Projects');
-  });
-
-  it('keeps legacy project-local daemon discovery scoped to the startup Grove', async () => {
-    const startupGrove = createGrove('Myco Dogfood');
-    createGrove('Default Projects');
-
-    const scope = servedGroveScopeForDaemon({
-      daemonScope: 'legacy-project',
-      startupGroveId: startupGrove.id,
-    });
-    const result = await listNames(scope);
-
-    expect(scope.groveIds).toEqual([startupGrove.id]);
-    expect(result).toEqual(['Myco Dogfood']);
   });
 
   it('lists projects for one Grove by id', async () => {

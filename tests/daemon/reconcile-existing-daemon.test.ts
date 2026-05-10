@@ -7,7 +7,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { reconcileExistingDaemon, isHealthyMycoSibling } from '@myco/daemon/main';
 import { DaemonLogger } from '@myco/daemon/logger';
 import { getPluginVersion } from '@myco/version';
-import { derivePort } from '@myco/daemon/port';
 import { resolveDaemonServiceState } from '@myco/daemon/service-state';
 
 // Prevents the concurrent-spawn cascade we observed in production, where
@@ -64,6 +63,7 @@ describe('reconcileExistingDaemon', () => {
   afterEach(async () => {
     sibling.kill('SIGKILL');
     await new Promise<void>((resolve) => sibling.once('exit', () => resolve()));
+    try { fs.unlinkSync(daemonService(vaultDir).statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
@@ -73,29 +73,33 @@ describe('reconcileExistingDaemon', () => {
   });
 
   it('returns ok and cleans daemon.json when recorded pid is dead', async () => {
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      svc.statePath,
       JSON.stringify({ pid: 0x7fffffff, port: 12345 }),
     );
-    const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
     expect(result).toBe('ok');
-    expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+    expect(fs.existsSync(svc.statePath)).toBe(false);
   });
 
   it('steps aside when recorded daemon is recent, healthy, same version, and on canonical port', async () => {
+    const svc = daemonService(vaultDir);
     await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },
       async (port) => {
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          svc.statePath,
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('step-aside');
         // daemon.json must survive — the sibling we stepped aside for owns it.
-        expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
+        expect(fs.existsSync(svc.statePath)).toBe(true);
       },
-      derivePort(vaultDir),
+      svc.canonicalPort,
     );
   });
 
@@ -103,14 +107,16 @@ describe('reconcileExistingDaemon', () => {
     // An orphan squatting the canonical port forced the sibling to fall back
     // to a non-canonical port. We must NOT step aside — we need to proceed
     // through eviction so the canonical port is reclaimed.
+    const svc = daemonService(vaultDir);
     await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },
       async (port) => {
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          svc.statePath,
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('ok');
       },
       // Explicitly NOT the canonical port — let the OS pick any ephemeral port.
@@ -119,62 +125,71 @@ describe('reconcileExistingDaemon', () => {
   });
 
   it('takes over (ok) when recorded daemon version differs from the current plugin', async () => {
+    const svc = daemonService(vaultDir);
     await withHealthServer(
       { status: 200, body: { myco: true, version: '0.0.0-different' } },
       async (port) => {
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          svc.statePath,
           JSON.stringify({ pid: siblingPid, port }),
         );
-        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('ok');
-        expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+        expect(fs.existsSync(svc.statePath)).toBe(false);
       },
+      svc.canonicalPort,
     );
   });
 
   it('steps aside when daemon is healthy but command differs (runtime mismatch)', async () => {
+    const svc = daemonService(vaultDir);
     await withHealthServer(
       { status: 200, body: { myco: true, version: '0.0.0-different' } },
       async (port) => {
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          svc.statePath,
           JSON.stringify({ pid: siblingPid, port, command: '/tmp/bun-myco' }),
         );
-        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('step-aside');
-        expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(true);
+        expect(fs.existsSync(svc.statePath)).toBe(true);
       },
-      derivePort(vaultDir),
+      svc.canonicalPort,
     );
   });
 
   it('takes over (ok) when daemon.json is older than the grace window', async () => {
+    const svc = daemonService(vaultDir);
     await withHealthServer(
       { status: 200, body: { myco: true, version: getPluginVersion() } },
       async (port) => {
-        const jsonPath = path.join(vaultDir, 'daemon.json');
-        fs.writeFileSync(jsonPath, JSON.stringify({ pid: siblingPid, port }));
+        fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+        fs.writeFileSync(svc.statePath, JSON.stringify({ pid: siblingPid, port }));
         // Backdate mtime well past DAEMON_STALE_GRACE_PERIOD_MS (60s).
         const ancient = (Date.now() - 10 * 60 * 1000) / 1000;
-        fs.utimesSync(jsonPath, ancient, ancient);
-        const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+        fs.utimesSync(svc.statePath, ancient, ancient);
+        const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
         expect(result).toBe('ok');
-        expect(fs.existsSync(jsonPath)).toBe(false);
+        expect(fs.existsSync(svc.statePath)).toBe(false);
       },
+      svc.canonicalPort,
     );
   });
 
   it('takes over (ok) when recorded daemon fails its health probe', async () => {
     // Port 1 is privileged and refuses user-space fetches — the health probe
     // times out / fails, and we should fall through to takeover.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      svc.statePath,
       JSON.stringify({ pid: siblingPid, port: 1 }),
     );
-    const result = await reconcileExistingDaemon(daemonService(vaultDir), makeLogger(vaultDir));
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
     expect(result).toBe('ok');
-    expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+    expect(fs.existsSync(svc.statePath)).toBe(false);
   });
 });
 

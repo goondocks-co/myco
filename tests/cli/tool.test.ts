@@ -9,6 +9,7 @@ import { openDatabase, withDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertPlan } from '@myco/db/queries/plans.js';
 import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context.js';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { cleanTestDb, setupTestDb, teardownTestDb } from '../helpers/db.js';
 import { vi } from '../helpers/vi-shim.js';
 
@@ -48,6 +49,7 @@ describe('myco tool CLI', () => {
     process.stdout.write = originalStdoutWrite;
     vi.unstubAllEnvs();
     for (const server of servers) server.close();
+    try { fs.unlinkSync(resolveServiceDaemonStatePath()); } catch { /* gone */ }
     process.exitCode = 0;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -79,7 +81,9 @@ describe('myco tool CLI', () => {
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
     const address = server.address() as { port: number };
-    fs.writeFileSync(path.join(tmpDir, 'daemon.json'), JSON.stringify({ pid: process.pid, port: address.port }), 'utf-8');
+    const statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ pid: process.pid, port: address.port }), 'utf-8');
   }
 
   it('lists tools as JSON', async () => {

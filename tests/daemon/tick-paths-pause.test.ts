@@ -141,6 +141,7 @@ function buildDeps(fx: Fixture, configOverrides: Record<string, unknown> = {}): 
     cache: fx.cache,
     embeddingRuntimeFactory: fx.factory,
     mycoHome: fx.mycoHome,
+    daemonStateDir: path.join(fx.mycoHome, 'service'),
   };
 }
 
@@ -297,6 +298,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
       'test-machine',
       fakeRegistry(visited),
       makeLiveConfig(),
+      path.join(fx.mycoHome, 'service'),
     );
 
     expect(visited).toContain(PROJECT_LIVE);
@@ -313,6 +315,7 @@ describe('runInitialCanopyPopulateAcrossProjects honors the project pause primit
       'test-machine',
       fakeRegistry(visited),
       makeLiveConfig(),
+      path.join(fx.mycoHome, 'service'),
     );
 
     expect(new Set(visited)).toEqual(new Set([PROJECT_PAUSED, PROJECT_LIVE]));

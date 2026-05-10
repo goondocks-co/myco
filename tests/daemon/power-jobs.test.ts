@@ -148,6 +148,7 @@ function buildDeps(fx: GroveFixture, overrides: Partial<Record<string, unknown>>
     cache: fx.cache,
     embeddingRuntimeFactory: fx.factory,
     mycoHome: fx.mycoHome,
+    daemonStateDir: path.join(fx.mycoHome, 'service'),
   };
 }
 

@@ -186,6 +186,7 @@ import {
   daemonStateMtimeMs,
   readDaemonState,
   removeDaemonState,
+  assertGroveBound,
   resolveDaemonLogDir,
   resolveDaemonServiceState,
   type DaemonServiceState,
@@ -440,6 +441,10 @@ export async function main(): Promise<void> {
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
+  assertGroveBound(bootstrapVaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  });
   const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
