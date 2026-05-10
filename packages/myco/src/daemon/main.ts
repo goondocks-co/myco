@@ -350,6 +350,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
   machineId: string,
   registry: CanopyJobsRegistry,
   liveConfig: { current: MycoConfig },
+  daemonStateDir: string,
 ): Promise<void> {
   try {
     const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
@@ -369,6 +370,7 @@ export async function runInitialCanopyPopulateAcrossProjects(
       },
       {
         machineId,
+        daemonStateDir,
         // Pause gate: skip projects under an in-flight move/vacuum so the
         // initial populate doesn't write to a DB the op owns exclusively.
         shouldVisit: (scope) => !isProjectPaused(scope.projectId, mycoHome).paused,
@@ -624,6 +626,7 @@ export async function main(): Promise<void> {
     cache: runtimeCache,
     logger,
     vaultDir: bootstrapVaultDir,
+    daemonStateDir: daemonService.stateDir,
   });
   /**
    * Build a per-Grove embedding runtime for any DB handle the runtime
@@ -947,6 +950,7 @@ export async function main(): Promise<void> {
       getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
       mycoHome,
+      daemonStateDir: daemonService.stateDir,
       machineId,
       projectStateTracker,
     });
@@ -1357,6 +1361,7 @@ export async function main(): Promise<void> {
     logger,
     vaultDir: bootstrapVaultDir,
     serverVersion: server.version,
+    daemonStateDir: daemonService.stateDir,
     requestContext: dataPaths.requestContext,
   });
   reactions.on(['team'], async () => {
@@ -1499,6 +1504,7 @@ export async function main(): Promise<void> {
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     logger,
     resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);
   server.registerRoute('POST', '/api/embedding/reconcile', embeddingActionHandlers.handleReconcile);
@@ -1525,6 +1531,7 @@ export async function main(): Promise<void> {
     liveConfig,
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('GET', '/api/maintenance/summary', maintenanceHandlers.handleSummary);
   server.registerRoute('GET', '/api/groves/:id/maintenance', maintenanceHandlers.handleGroveMaintenance);
@@ -1533,6 +1540,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     cache: runtimeCache,
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
@@ -1613,7 +1621,7 @@ export async function main(): Promise<void> {
   try {
     await forEachGrove(runtimeCache, logger, ({ grove, db }) => {
       projectStateTracker.seed(readProjectActivitySeed(db, grove.id));
-    });
+    }, { daemonStateDir: daemonService.stateDir });
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Project power-state seed failed', {
       error: errorMessage(err),
@@ -1638,6 +1646,7 @@ export async function main(): Promise<void> {
     onCanopyMassAdd: (groveId, projectId) =>
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: bootstrapVaultDir,
+    daemonStateDir: daemonService.stateDir,
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
@@ -1659,6 +1668,7 @@ export async function main(): Promise<void> {
     machineId,
     powerJobs.canopy.registry,
     liveConfig,
+    daemonService.stateDir,
   );
 
   // Fan markRunningRunsInterrupted across every registered Grove so a
@@ -1680,7 +1690,7 @@ export async function main(): Promise<void> {
             });
           }
         },
-        { jobName: 'mark-stale-running-runs' },
+        { daemonStateDir: daemonService.stateDir, jobName: 'mark-stale-running-runs' },
       );
     } catch (err) {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to fan stale-run sweep across Groves', {

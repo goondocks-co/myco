@@ -99,6 +99,8 @@ export interface TaskSchedulingDeps {
   getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
   cache: GroveRuntimeCache;
   mycoHome: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   machineId: string;
   projectStateTracker: ProjectPowerStateTracker;
 }
@@ -116,6 +118,7 @@ async function seedInitialLastRuns(
   cache: GroveRuntimeCache,
   logger: DaemonLogger,
   mycoHome: string,
+  daemonStateDir: string,
 ): Promise<ProjectTaskLastRunMap> {
   const seed: ProjectTaskLastRunMap = {};
   const floorSeconds = Math.floor((Date.now() - SEED_FLOOR_DAYS * MS_PER_DAY) / 1000);
@@ -134,7 +137,7 @@ async function seedInitialLastRuns(
       const projectId = assertGroveProjectId(row.project_id);
       seed[lastRunKey(grove.id, projectId, row.task)] = row.last_completed * 1000;
     }
-  }, { mycoHome, jobName: 'seed-last-runs' });
+  }, { mycoHome, daemonStateDir, jobName: 'seed-last-runs' });
   return seed;
 }
 
@@ -155,6 +158,7 @@ export async function registerScheduledTasks(
     getTeamClient,
     cache,
     mycoHome,
+    daemonStateDir,
     machineId,
     projectStateTracker,
   } = deps;
@@ -191,7 +195,7 @@ export async function registerScheduledTasks(
   // Boot-time seed across all registered Groves, keyed by
   // `${projectId}:${taskName}` so warm projects don't double-fire on
   // restart. Failures are best-effort; an empty seed is fine.
-  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome).catch((err) => {
+  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome, daemonStateDir).catch((err) => {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to seed scheduled-task lastRun map', {
       error: errorMessage(err),
     });
@@ -337,6 +341,7 @@ export async function registerScheduledTasks(
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
           shouldVisit: (scope) => {
             // Per-project pause gate. Long-running ops (move, vacuum) take

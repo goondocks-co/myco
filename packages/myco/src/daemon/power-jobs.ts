@@ -77,6 +77,8 @@ export interface PowerJobDeps {
   embeddingRuntimeFactory: EmbeddingRuntimeFactory;
   /** Override Myco home (tests); defaults to the resolved global home. */
   mycoHome?: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
@@ -218,6 +220,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     embeddingRuntimeFactory,
     onCanopyMassAdd,
     daemonVaultDir,
+    daemonStateDir,
   } = deps;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
@@ -316,7 +319,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   };
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
-    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
+    () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
@@ -505,6 +508,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
           // Pause gate: a paused project's vault is owned by an in-flight
           // op (move, vacuum); skip GC against it so the op gets the
@@ -540,6 +544,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
           // Pause gate: skip projects under an in-flight move/vacuum so
           // the canopy scan doesn't write to a DB the op owns exclusively.
