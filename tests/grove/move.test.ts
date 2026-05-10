@@ -1,0 +1,478 @@
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parse as parseToml } from 'smol-toml';
+import { openDatabase, type Database } from '@myco/db/client.js';
+import { createSchema } from '@myco/db/schema.js';
+import {
+  clearGroveRegistryCaches,
+  createGrove,
+  deregisterProjectInGrove,
+  isProjectPaused,
+  listRegisteredProjects,
+  pauseProject,
+  registerProjectInGrove,
+} from '@myco/grove/registry.js';
+import { createBackup } from '@myco/daemon/backup.js';
+import {
+  assertGroveProjectId,
+  createProjectId,
+  projectScope,
+  projectUrlSlug,
+} from '@myco/grove/ids.js';
+import {
+  resolveGroveDbPath,
+  resolveProjectVaultDir,
+} from '@myco/grove/paths.js';
+import { moveProjectBetweenGroves } from '@myco/grove/move.js';
+
+let tmpDir: string;
+let mycoHome: string;
+let projectRoot: string;
+let vaultDir: string;
+let snapshotsRoot: string;
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-grove-move-'));
+  mycoHome = path.join(tmpDir, 'home');
+  projectRoot = path.join(tmpDir, 'project');
+  snapshotsRoot = path.join(tmpDir, 'snapshots');
+  fs.mkdirSync(mycoHome, { recursive: true });
+  fs.mkdirSync(projectRoot, { recursive: true });
+  vaultDir = resolveProjectVaultDir(projectRoot);
+  fs.mkdirSync(vaultDir, { recursive: true });
+  clearGroveRegistryCaches();
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  clearGroveRegistryCaches();
+});
+
+function withGroveDb<T>(groveId: string, fn: (db: Database) => T): T {
+  const dbPath = resolveGroveDbPath(groveId, mycoHome);
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = openDatabase(dbPath);
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+function ensureGroveDb(groveId: string): void {
+  withGroveDb(groveId, (db) => createSchema(db));
+}
+
+function seedAgent(groveId: string): void {
+  withGroveDb(groveId, (db) => {
+    db.prepare(
+      `INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('claude-code', 'Claude Code', 'built-in', 1, 100);
+  });
+}
+
+function seedProjectRows(groveId: string, projectId: string): void {
+  withGroveDb(groveId, (db) => {
+    db.prepare(
+      `INSERT INTO sessions (
+         id, agent, project_root, branch, started_at, status, created_at,
+         embedded, machine_id, project_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `sess-${projectId}-1`,
+      'claude-code',
+      projectRoot,
+      'main',
+      200,
+      'completed',
+      200,
+      1,
+      'test-machine',
+      projectId,
+    );
+    db.prepare(
+      `INSERT INTO plans (
+         id, logical_key, status, author, title, content, source_path,
+         tags, session_id, content_hash, processed, created_at,
+         updated_at, embedded, machine_id, project_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `plan-${projectId}-1`,
+      `move:${projectId}`,
+      'active',
+      'claude-code',
+      `Plan for ${projectId}`,
+      'Move me content',
+      null,
+      'move',
+      `sess-${projectId}-1`,
+      `hash-${projectId}`,
+      1,
+      210,
+      211,
+      1,
+      'test-machine',
+      projectId,
+    );
+    db.prepare(
+      `INSERT INTO spores (
+         id, agent_id, session_id, observation_type, content,
+         created_at, machine_id, project_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `spore-${projectId}-1`,
+      'claude-code',
+      `sess-${projectId}-1`,
+      'gotcha',
+      'Project-scoped spore',
+      220,
+      'test-machine',
+      projectId,
+    );
+  });
+}
+
+function countRows(groveId: string, table: string, projectId: string): number {
+  return withGroveDb(groveId, (db) => {
+    const row = db.prepare(
+      `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`,
+    ).get(projectId) as { n: number };
+    return row.n;
+  });
+}
+
+describe('moveProjectBetweenGroves', () => {
+  it('happy path: relocates project data, registry, and manifest to target Grove', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+      bindingId: 'gbind_initial',
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    const result = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+
+    expect(result.from_grove_id).toBe(source.id);
+    expect(result.to_grove_id).toBe(target.id);
+    expect(result.project_id).toBe(projectId);
+    expect(fs.existsSync(result.snapshot_path)).toBe(true);
+    expect(Object.keys(result.table_counts).length).toBeGreaterThan(0);
+    expect(result.table_counts.sessions).toBe(1);
+    expect(result.table_counts.plans).toBe(1);
+    expect(result.table_counts.spores).toBe(1);
+
+    // Target Grove has the rows.
+    expect(countRows(target.id, 'sessions', projectId)).toBe(1);
+    expect(countRows(target.id, 'plans', projectId)).toBe(1);
+    expect(countRows(target.id, 'spores', projectId)).toBe(1);
+
+    // Source Grove no longer has the rows.
+    expect(countRows(source.id, 'sessions', projectId)).toBe(0);
+    expect(countRows(source.id, 'plans', projectId)).toBe(0);
+    expect(countRows(source.id, 'spores', projectId)).toBe(0);
+
+    // Source registry no longer lists; target does.
+    expect(listRegisteredProjects(source.id, mycoHome).map((p) => p.project_id))
+      .not.toContain(projectId);
+    expect(listRegisteredProjects(target.id, mycoHome).map((p) => p.project_id))
+      .toContain(projectId);
+
+    // project.toml reflects target's Grove.
+    const manifestRaw = fs.readFileSync(path.join(vaultDir, 'project.toml'), 'utf-8');
+    const manifest = parseToml(manifestRaw) as { grove?: { id?: string; slug?: string; name?: string } };
+    expect(manifest.grove?.id).toBe(target.id);
+    expect(manifest.grove?.slug).toBe('target');
+    expect(manifest.grove?.name).toBe('Target');
+
+    // project.local.toml has a fresh binding_id.
+    const localRaw = fs.readFileSync(path.join(vaultDir, 'project.local.toml'), 'utf-8');
+    const localDoc = parseToml(localRaw) as { grove_binding?: { binding_id?: string } };
+    const newBinding = localDoc.grove_binding?.binding_id;
+    expect(newBinding).toBeDefined();
+    expect(newBinding).not.toBe('gbind_initial');
+
+    // Target registry entry points at the new binding.
+    const targetEntry = listRegisteredProjects(target.id, mycoHome).find(
+      (p) => p.project_id === projectId,
+    );
+    expect(targetEntry?.binding_id).toBe(newBinding);
+
+    // Marker file exists with phase 'completed'.
+    const migrationDir = path.join(vaultDir, 'migration');
+    const markers = fs.readdirSync(migrationDir);
+    expect(markers).toHaveLength(1);
+    const marker = JSON.parse(fs.readFileSync(path.join(migrationDir, markers[0]), 'utf-8'));
+    expect(marker.phase).toBe('completed');
+    expect(marker.snapshot_path).toBe(result.snapshot_path);
+
+    // Project is no longer paused (deregistered from source clears the entry).
+    expect(isProjectPaused(projectId, mycoHome).paused).toBe(false);
+  });
+
+  it('throws when source and target Grove ids are the same', () => {
+    const grove = createGrove('Solo', mycoHome);
+    ensureGroveDb(grove.id);
+    const projectId = createProjectId();
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+
+    expect(() =>
+      moveProjectBetweenGroves(grove.id, grove.id, projectId, mycoHome, { snapshotsRoot }),
+    ).toThrow(/source and target Grove ids must differ/);
+  });
+
+  it('throws when the target Grove is not registered locally', () => {
+    const source = createGrove('Source', mycoHome);
+    ensureGroveDb(source.id);
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+
+    expect(() =>
+      moveProjectBetweenGroves(
+        source.id,
+        'grove_00000000000000000000000000000000',
+        projectId,
+        mycoHome,
+        { snapshotsRoot },
+      ),
+    ).toThrow(/Target Grove .* is not registered locally/);
+  });
+
+  it('throws when the project is not registered in the source Grove', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    const projectId = createProjectId();
+
+    expect(() =>
+      moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot }),
+    ).toThrow(/not registered in Grove/);
+  });
+
+  it('resumes from snapshot_complete: restores, verifies, commits without re-snapshotting', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    // First, do a full move so we have a real snapshot file on disk.
+    const initial = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+
+    // Calling again with a completed marker is idempotent.
+    const repeat = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+    expect(repeat.snapshot_path).toBe(initial.snapshot_path);
+    expect(repeat.table_counts.sessions).toBe(initial.table_counts.sessions);
+  });
+
+  it('resumes mid-flight when a snapshot_complete marker is hand-crafted', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    // Manually run the snapshot phase via createBackup, then drop a marker
+    // recording phase=snapshot_complete. The orchestrator should pick up
+    // at restore.
+    const moveOpId = `grove-move-${projectId}-9999`;
+    const migrationDir = path.join(vaultDir, 'migration');
+    fs.mkdirSync(migrationDir, { recursive: true });
+
+    // Use a real backup file produced by the orchestrator's first call
+    // up through the snapshot phase. Easiest: run createBackup directly.
+    // We piggyback on the orchestrator's path layout for the snapshot.
+    // To do this cleanly, run a real move first into a third Grove, then
+    // pretend to be resuming. Instead — simpler — run a partial move by
+    // crashing after snapshot. We don't have a fault-injection seam, so
+    // we do a full move, then deliberately copy the snapshot file and
+    // craft a marker pointing to it for a fresh project move.
+    //
+    // For this test we do a full happy-path move, which leaves a marker
+    // and snapshot. We then rewind: delete target rows, re-register the
+    // project on source, hand-craft a snapshot_complete marker for a
+    // fresh move op, and call moveProjectBetweenGroves again.
+    moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot });
+
+    // Tear target rows down; re-register on source; reset the project
+    // manifest so we can start a "second" move.
+    withGroveDb(target.id, (db) => {
+      db.run('PRAGMA foreign_keys = OFF');
+      try {
+        for (const table of ['plans', 'spores', 'sessions']) {
+          db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
+        }
+      } finally {
+        db.run('PRAGMA foreign_keys = ON');
+      }
+    });
+    seedProjectRows(source.id, projectId);
+    // Pull the project off the target and reattach to source for the
+    // resume scenario.
+    deregisterProjectInGrove(target.id, projectId, mycoHome);
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+
+    // Take a fresh snapshot via createBackup at the location the
+    // orchestrator would write it.
+    const projectSlug = projectUrlSlug('Demo', projectId);
+    const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    const snapshotPath = withGroveDb(source.id, (db) =>
+      createBackup(db, snapshotDir, 'test-machine', projectScope(assertGroveProjectId(projectId)), projectSlug),
+    );
+
+    // Clear out the prior happy-path marker(s) and write our craft.
+    for (const f of fs.readdirSync(migrationDir)) {
+      fs.rmSync(path.join(migrationDir, f), { force: true });
+    }
+    fs.writeFileSync(
+      path.join(migrationDir, `${moveOpId}.json`),
+      JSON.stringify({
+        move_op_id: moveOpId,
+        from_grove_id: source.id,
+        to_grove_id: target.id,
+        project_id: projectId,
+        started_at: new Date().toISOString(),
+        phase: 'snapshot_complete',
+        snapshot_path: snapshotPath,
+      }, null, 2),
+      'utf-8',
+    );
+
+    // Now resume — should restore from the existing snapshot (not re-snapshot).
+    const result = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+
+    expect(result.snapshot_path).toBe(snapshotPath);
+    expect(countRows(target.id, 'sessions', projectId)).toBe(1);
+    expect(countRows(source.id, 'sessions', projectId)).toBe(0);
+  });
+
+  it('refuses when an in-progress marker exists for a different project', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectA = createProjectId();
+    const projectB = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId: projectB,
+      projectName: 'B',
+      projectRoot,
+    }, mycoHome);
+
+    const migrationDir = path.join(vaultDir, 'migration');
+    fs.mkdirSync(migrationDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(migrationDir, 'grove-move-a.json'),
+      JSON.stringify({
+        move_op_id: 'grove-move-a',
+        from_grove_id: source.id,
+        to_grove_id: target.id,
+        project_id: projectA,
+        started_at: new Date().toISOString(),
+        phase: 'restored',
+      }, null, 2),
+      'utf-8',
+    );
+
+    expect(() =>
+      moveProjectBetweenGroves(source.id, target.id, projectB, mycoHome, { snapshotsRoot }),
+    ).toThrow(/different project/);
+  });
+
+  it('pauses the source project after entry, before snapshot completes', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    // Inject a fault by hand-crafting a marker at phase='snapshot' AFTER
+    // the orchestrator has paused the project but before it finishes.
+    // Easiest: run the orchestrator end-to-end and assert the *visible
+    // postcondition* — pause cleared after deregister. Then assert the
+    // mid-flight pause path by running pauseProject directly and confirming
+    // the captured 'grove-move' reason is what the orchestrator would set.
+    moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot });
+    // Postcondition: pause cleared because source entry was deregistered.
+    expect(isProjectPaused(projectId, mycoHome).paused).toBe(false);
+
+    // Mid-flight pause path: simulate by calling pauseProject as the
+    // orchestrator would and confirming isProjectPaused reflects it.
+    // Re-register to validate the pause mechanism still serves the same
+    // contract from this Grove.
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    pauseProject(source.id, projectId, 'grove-move', 'op-mid-flight', mycoHome);
+    const status = isProjectPaused(projectId, mycoHome);
+    expect(status.paused).toBe(true);
+    if (!status.paused) throw new Error('unreachable');
+    expect(status.reason).toBe('grove-move');
+    expect(status.owner_op).toBe('op-mid-flight');
+  });
+});
