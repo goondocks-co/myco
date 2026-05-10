@@ -173,6 +173,17 @@ describe('Grove registry', () => {
       expect(() => deregisterProjectInGrove(grove.id, 'proj_missing', home)).toThrow(/not registered/);
     });
 
+    it('with force: true is a no-op when the project is already missing', () => {
+      const grove = createGrove('Work', home);
+
+      // Move-orchestrator resume path: the project was already deregistered
+      // on a prior partial commit; force makes the second attempt a no-op
+      // instead of throwing and breaking resumability.
+      expect(() =>
+        deregisterProjectInGrove(grove.id, 'proj_missing', home, { force: true }),
+      ).not.toThrow();
+    });
+
     it('reflects deregistration in listRegisteredProjects without manual cache clear', () => {
       const grove = createGrove('Work', home);
       registerProjectInGrove(grove.id, {

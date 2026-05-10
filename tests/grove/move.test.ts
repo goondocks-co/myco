@@ -433,6 +433,170 @@ describe('moveProjectBetweenGroves', () => {
     ).toThrow(/different project/);
   });
 
+  it('writes markers in a parseable state after every phase (atomic temp+rename)', () => {
+    // Atomic semantics are hard to test deterministically without fault
+    // injection. Structural test: after a full move, every JSON marker
+    // file in the migration dir parses cleanly (no torn writes left
+    // behind, no orphaned `.tmp-*` files).
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot });
+
+    const migrationDir = path.join(vaultDir, 'migration');
+    const entries = fs.readdirSync(migrationDir);
+    // No leftover temp files from the atomic write path.
+    expect(entries.every((entry) => !entry.includes('.tmp-'))).toBe(true);
+    // Every marker JSON parses successfully.
+    for (const entry of entries) {
+      const raw = fs.readFileSync(path.join(migrationDir, entry), 'utf-8');
+      expect(() => JSON.parse(raw)).not.toThrow();
+    }
+  });
+
+  it('resumes after a partial commit: target registered, source deregistered, marker still verified', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    // Drive the orchestrator through to completion, then rewind into the
+    // exact post-commit-step / pre-marker-write state we want to resume
+    // from: target registered, source deregistered, marker recorded as
+    // 'verified' (NOT 'committed') so the commit block re-enters.
+    const initial = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+
+    const migrationDir = path.join(vaultDir, 'migration');
+    const markers = fs.readdirSync(migrationDir).filter((f) => f.endsWith('.json'));
+    expect(markers).toHaveLength(1);
+    const markerPath = path.join(migrationDir, markers[0]);
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+
+    // Hand-craft the partial-commit scenario: marker says 'verified',
+    // but on disk we already have target registered and source
+    // deregistered (the orchestrator's commit block already ran the
+    // register+deregister but didn't get to advance the marker).
+    marker.phase = 'verified';
+    fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2), 'utf-8');
+
+    // Resume must NOT throw: target register is a no-op merge; source
+    // deregister is force:true so the missing entry is tolerated.
+    expect(() =>
+      moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot }),
+    ).not.toThrow();
+
+    // Final state still consistent: target has rows, source has none,
+    // marker advanced to completed.
+    expect(countRows(target.id, 'sessions', projectId)).toBe(1);
+    expect(countRows(source.id, 'sessions', projectId)).toBe(0);
+    const finalMarker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+    expect(finalMarker.phase).toBe('completed');
+    // Snapshot path is preserved through the resume.
+    expect(finalMarker.snapshot_path).toBe(initial.snapshot_path);
+  });
+
+  it('clean phase deletes entity_mentions from source for the moved project only', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const movingProjectId = createProjectId();
+    const otherProjectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId: movingProjectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, movingProjectId);
+
+    // Seed entity_mentions for both the moving project and an unrelated
+    // project. entity_mentions is project-scoped but excluded from
+    // BACKUP_TABLES (no `id` column), so the orchestrator's clean phase
+    // must DELETE the moving project's rows without touching the rest.
+    withGroveDb(source.id, (db) => {
+      // entity_mentions schema: (project_id, entity_id, note_id, note_type,
+      // agent_id, machine_id, synced_at) with FKs on entity_id → entities
+      // and agent_id → agents. Seed two entities first to satisfy them.
+      const insertEntity = db.prepare(
+        `INSERT INTO entities (id, project_id, agent_id, type, name, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertEntity.run('ent-moving-1', movingProjectId, 'claude-code', 'thing', 'A', 100, 100);
+      insertEntity.run('ent-moving-2', movingProjectId, 'claude-code', 'thing', 'B', 101, 101);
+      insertEntity.run('ent-other-1', otherProjectId, 'claude-code', 'thing', 'C', 102, 102);
+
+      const insert = db.prepare(
+        `INSERT INTO entity_mentions
+           (project_id, entity_id, note_id, note_type, agent_id)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      insert.run(movingProjectId, 'ent-moving-1', `note-${movingProjectId}-1`, 'session', 'claude-code');
+      insert.run(movingProjectId, 'ent-moving-2', `note-${movingProjectId}-2`, 'session', 'claude-code');
+      insert.run(otherProjectId, 'ent-other-1', `note-other-1`, 'session', 'claude-code');
+    });
+
+    const before = withGroveDb(source.id, (db) => ({
+      moving: (db.prepare(
+        `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
+      ).get(movingProjectId) as { n: number }).n,
+      other: (db.prepare(
+        `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
+      ).get(otherProjectId) as { n: number }).n,
+    }));
+    expect(before.moving).toBe(2);
+    expect(before.other).toBe(1);
+
+    moveProjectBetweenGroves(source.id, target.id, movingProjectId, mycoHome, { snapshotsRoot });
+
+    // Source: moving project's entity_mentions are gone, unrelated remain.
+    const sourceAfter = withGroveDb(source.id, (db) => ({
+      moving: (db.prepare(
+        `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
+      ).get(movingProjectId) as { n: number }).n,
+      other: (db.prepare(
+        `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
+      ).get(otherProjectId) as { n: number }).n,
+    }));
+    expect(sourceAfter.moving).toBe(0);
+    expect(sourceAfter.other).toBe(1);
+
+    // Target: entity_mentions intentionally not transported (excluded
+    // from BACKUP_TABLES), so the moving project's rows are not present.
+    const targetMoving = withGroveDb(target.id, (db) =>
+      (db.prepare(
+        `SELECT COUNT(*) AS n FROM entity_mentions WHERE project_id = ?`,
+      ).get(movingProjectId) as { n: number }).n,
+    );
+    expect(targetMoving).toBe(0);
+  });
+
   it('pauses the source project after entry, before snapshot completes', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);

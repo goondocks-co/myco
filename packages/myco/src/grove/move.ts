@@ -180,10 +180,13 @@ export function moveProjectBetweenGroves(
     };
   }
 
-  // From this point a non-completed move requires the source entry to
-  // exist OR the marker to be past the commit phase (which already
-  // deregistered the source entry). Anything else is a bug.
-  if (!sourceEntry && (!existingMarker || orderOf(existingMarker.phase) < orderOf('committed'))) {
+  // From this point a non-completed move requires either the source
+  // entry to exist, or the target entry to exist (resume after the
+  // commit block ran — even partially — already deregistered source).
+  // `registryEntry` above already has this OR semantics; the only
+  // remaining bug shape is "no entry on either Grove and no resumable
+  // marker", which is caught by the registryEntry null check earlier.
+  if (!sourceEntry && !targetEntry) {
     throw new Error(`Project ${projectId} is not registered in Grove ${sourceGroveId}`);
   }
 
@@ -202,16 +205,18 @@ export function moveProjectBetweenGroves(
     phase: 'snapshot',
   };
 
-  // Pause source. Idempotent for the same owner_op so resume after a
-  // crash does not throw on a still-held lock.
-  try {
+  // Pause source. `pauseProject` is idempotent for the same owner_op
+  // (refreshes `since`, no throw) so a fresh-after-crash resume re-takes
+  // its own lock cleanly. A different owner_op on the lock is a real
+  // conflict and surfaces.
+  //
+  // Skipped when the source entry is already gone — that is the resume
+  // scenario where the commit block ran register+deregister but did not
+  // advance the marker. pauseProject would throw "not registered" in
+  // that case, but the pause's purpose (gating writes against the
+  // source registry entry) is already met by the entry being absent.
+  if (sourceEntry) {
     pauseProject(sourceGroveId, projectId, 'grove-move', moveOpId, mycoHome);
-  } catch (err) {
-    // If the project was already deregistered (resume after committed
-    // phase), pauseProject throws "not registered". That's expected on
-    // resume past commit; continue.
-    const phase = marker.phase;
-    if (phase !== 'committed' && phase !== 'cleaned') throw err;
   }
 
   if (!fs.existsSync(markerPath)) writeMarker(markerPath, marker);
@@ -287,13 +292,20 @@ export function moveProjectBetweenGroves(
 
   if (orderOf(marker.phase) <= orderOf('verified')) {
     const newBindingId = marker.new_binding_id ?? createGroveBindingId();
+    // registerProjectInGrove merges with any existing entry (preserves
+    // created_at, refreshes updated_at), so a resume after a partial
+    // commit is idempotent on the target side.
     registerProjectInGrove(targetGroveId, {
       projectId,
       projectName,
       projectRoot,
       bindingId: newBindingId,
     }, mycoHome);
-    deregisterProjectInGrove(sourceGroveId, projectId, mycoHome);
+    // `force: true` is the resume-idempotent path: a crash between the
+    // source deregister and writing phase=committed would otherwise cause
+    // the next call to throw "not registered" here. With force, the second
+    // attempt is a no-op and we advance the marker.
+    deregisterProjectInGrove(sourceGroveId, projectId, mycoHome, { force: true });
     saveProjectManifest(vaultDir, {
       project: { id: projectId, name: projectName },
       grove: {
@@ -351,8 +363,14 @@ function orderOf(phase: MovePhase): number {
 }
 
 function writeMarker(markerPath: string, marker: MoveMarker): void {
+  // Atomic write: a torn JSON file would parse as null and the orchestrator
+  // would silently start a fresh move op on top of partial work, defeating
+  // resumability. Temp+rename keeps `markerPath` either at its prior valid
+  // state or fully replaced with the new one.
   fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-  fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2), 'utf-8');
+  const tmp = `${markerPath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(marker, null, 2), 'utf-8');
+  fs.renameSync(tmp, markerPath);
 }
 
 function findExistingMarkerForProject(migrationDir: string, projectId: string): MoveMarker | null {
@@ -483,6 +501,17 @@ function deleteProjectRows(db: Database, projectId: string): void {
         } catch {
           // Table may not exist on a brand-new target Grove DB; skip.
         }
+      }
+      // `entity_mentions` is project-scoped but excluded from BACKUP_TABLES
+      // (no `id` column makes it incompatible with the INSERT OR IGNORE
+      // round-trip; see gotcha_entity_mentions_not_synced.md). Its rows
+      // are not snapshotted and not restored on the target, so we delete
+      // them from source explicitly here — the moved project must leave
+      // no orphans behind.
+      try {
+        db.prepare(`DELETE FROM entity_mentions WHERE project_id = ?`).run(projectId);
+      } catch {
+        // Table may not exist on older schemas; skip.
       }
     });
     tx();

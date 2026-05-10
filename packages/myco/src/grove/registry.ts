@@ -581,11 +581,18 @@ export function isProjectPaused(
  * Remove the project entry from a Grove's `projects.toml`. Throws when
  * the project isn't bound to that Grove — silent no-op would mask move
  * orchestrator bugs that re-deregister an already-detached project.
+ *
+ * Pass `{ force: true }` to make the call a no-op when the project is
+ * already missing. The move orchestrator uses this on resume after a
+ * partial commit (target registered, source deregistered, marker not yet
+ * written): without `force`, the second pass would throw on the source
+ * deregister and break resumability.
  */
 export function deregisterProjectInGrove(
   groveId: string,
   projectId: string,
   mycoHome = resolveMycoHome(),
+  opts: { force?: boolean } = {},
 ): void {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
@@ -596,6 +603,7 @@ export function deregisterProjectInGrove(
     ? { ...(projectsDoc.projects as Record<string, unknown>) }
     : {};
   if (!isPlainTable(projects[projectId])) {
+    if (opts.force) return;
     throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
   }
   const entry = projects[projectId] as Record<string, unknown>;
@@ -682,6 +690,10 @@ export function renameGrove(
  * On success: removes `~/.myco/groves/<groveId>/` (metadata, registry,
  * SQLite, vectors). Clears the cross-Grove default pointer if the
  * deleted Grove was the default.
+ *
+ * Note: `force: true` discards any per-project pause state on bound
+ * projects along with the rest of the Grove dir — pauses live in the
+ * Grove's `projects.toml`, which is removed with the directory.
  */
 export function deleteGrove(
   groveId: string,
