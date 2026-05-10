@@ -10,7 +10,7 @@ import {
 } from '@myco/daemon/backup.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { findRegisteredProject } from '@myco/grove/registry.js';
+import { findRegisteredProject, isProjectPaused } from '@myco/grove/registry.js';
 import { assertGroveProjectId, projectUrlSlug } from '@myco/grove/ids.js';
 import { findProjectByRef } from './grove.js';
 
@@ -46,6 +46,13 @@ export async function run(args: string[]): Promise<void> {
     if (!projectRef) throw new Error('Project id or slug is required');
     const found = findProjectByRef(projectRef, mycoHome);
     if (!found) throw new Error(`Project not found: ${projectRef}`);
+
+    const paused = isProjectPaused(found.project.project_id, mycoHome);
+    if (paused.paused) {
+      console.error(`Project is paused: ${paused.reason} (since ${new Date(paused.since * 1000).toISOString()}, owner_op: ${paused.owner_op})`);
+      console.error(`Wait for the operation to complete or check the daemon logs.`);
+      process.exit(1);
+    }
 
     const vaultDir = resolveProjectVaultDir(found.project.root);
     const machineId = getMachineId(vaultDir);
@@ -85,6 +92,13 @@ export async function run(args: string[]): Promise<void> {
     const projectId = header.scope.id;
     const found = findRegisteredProject({ projectId }, mycoHome);
     if (!found) throw new Error(`Snapshot project ${projectId} is not registered locally`);
+
+    const paused = isProjectPaused(found.project.project_id, mycoHome);
+    if (paused.paused) {
+      console.error(`Project is paused: ${paused.reason} (since ${new Date(paused.since * 1000).toISOString()}, owner_op: ${paused.owner_op})`);
+      console.error(`Wait for the operation to complete or check the daemon logs.`);
+      process.exit(1);
+    }
 
     const groveDbPath = resolveGroveDbPath(found.grove.id, mycoHome);
     const db = openDatabase(groveDbPath);

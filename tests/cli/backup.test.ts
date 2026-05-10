@@ -7,6 +7,7 @@ import { createSchema } from '@myco/db/schema.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
+  pauseProject,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 import { resolveGroveDbPath } from '@myco/grove/paths.js';
@@ -185,5 +186,56 @@ describe('myco backup CLI', () => {
     await run([]);
     expect(out.mock.calls.flat().join('')).toContain('Usage: myco backup');
     out.mockRestore();
+  });
+
+  it('exits 1 and prints pause status when project is paused (backup project)', async () => {
+    const { groveId, projectId } = setupProject();
+    pauseProject(groveId, projectId, 'grove-move', 'op-1', home);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`__exit_${code}__`);
+    }) as never);
+
+    try {
+      await expect(run(['project', projectId])).rejects.toThrow(/__exit_1__/);
+      const output = err.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(output).toContain('Project is paused');
+      expect(output).toContain('grove-move');
+      expect(output).toContain('op-1');
+    } finally {
+      err.mockRestore();
+      exit.mockRestore();
+    }
+  });
+
+  it('exits 1 when restoring a snapshot for a paused project', async () => {
+    const { groveId, projectId, slug } = setupProject();
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['project', projectId]);
+    log.mockRestore();
+
+    const backupDir = path.join(backupsDir, slug);
+    const sqlFile = fs.readdirSync(backupDir).find((f) => f.endsWith('.sql'))!;
+    const snapshotPath = path.join(backupDir, sqlFile);
+
+    pauseProject(groveId, projectId, 'grove-move', 'op-2', home);
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`__exit_${code}__`);
+    }) as never);
+
+    try {
+      await expect(run(['restore', snapshotPath])).rejects.toThrow(/__exit_1__/);
+      const output = err.mock.calls.map((call) => call.join(' ')).join('\n');
+      expect(output).toContain('Project is paused');
+      expect(output).toContain('grove-move');
+      expect(output).toContain('op-2');
+    } finally {
+      err.mockRestore();
+      exit.mockRestore();
+    }
   });
 });
