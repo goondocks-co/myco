@@ -23,12 +23,21 @@ import {
   type RegistryResolvedProject,
 } from './registry-resolve.js';
 
+export type DaemonServiceDir = 'service' | 'service-dev';
+
 export interface GroveRecord {
   id: string;
   name: string;
   slug: string;
   mode: 'local';
   created_at: string;
+  /**
+   * Which daemon's service dir is responsible for this Grove. Set at
+   * Grove creation. Reads default to `'service'` so existing Groves
+   * created before this field landed remain owned by the production
+   * daemon. Written into `grove.toml` on every subsequent write.
+   */
+  served_by: DaemonServiceDir;
 }
 
 export interface RegisteredProject {
@@ -120,12 +129,14 @@ const groveRecordCache = createMtimeCache((metadataPath: string): GroveRecord | 
   const grove = isPlainTable(doc.grove) ? doc.grove as Record<string, unknown> : null;
   if (!grove) return null;
   if (typeof grove.id !== 'string' || typeof grove.name !== 'string' || typeof grove.slug !== 'string') return null;
+  const servedBy: DaemonServiceDir = grove.served_by === 'service-dev' ? 'service-dev' : 'service';
   return {
     id: grove.id,
     name: grove.name,
     slug: grove.slug,
     mode: 'local',
     created_at: typeof grove.created_at === 'string' ? grove.created_at : new Date(0).toISOString(),
+    served_by: servedBy,
   };
 });
 
@@ -190,7 +201,15 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
   return groveRecordCache.get(resolveGroveMetadataPath(groveId, mycoHome));
 }
 
-export function createGrove(name: string, mycoHome = resolveMycoHome()): GroveRecord {
+export interface CreateGroveOptions {
+  servedBy?: DaemonServiceDir;
+}
+
+export function createGrove(
+  name: string,
+  mycoHome = resolveMycoHome(),
+  options: CreateGroveOptions = {},
+): GroveRecord {
   const trimmed = name.trim();
   if (!trimmed) throw new Error('Grove name is required');
   const slug = slugifyGroveName(trimmed);
@@ -203,6 +222,7 @@ export function createGrove(name: string, mycoHome = resolveMycoHome()): GroveRe
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
+    served_by: options.servedBy ?? 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
@@ -238,6 +258,7 @@ export function ensureGroveExistsLocally(
     slug,
     mode: 'local',
     created_at: new Date().toISOString(),
+    served_by: 'service',
   };
   writeGroveRecord(record, mycoHome);
   if (!getDefaultGroveId(mycoHome)) setDefaultGrove(record.id, mycoHome);
