@@ -23,7 +23,7 @@ import {
   type RegistryResolvedProject,
 } from './registry-resolve.js';
 
-export type DaemonServiceDir = 'service' | 'service-dev';
+export type DaemonVariant = 'service' | 'service-dev';
 
 export interface GroveRecord {
   id: string;
@@ -37,7 +37,7 @@ export interface GroveRecord {
    * created before this field landed remain owned by the production
    * daemon. Written into `grove.toml` on every subsequent write.
    */
-  served_by: DaemonServiceDir;
+  served_by: DaemonVariant;
 }
 
 export interface RegisteredProject {
@@ -129,7 +129,7 @@ const groveRecordCache = createMtimeCache((metadataPath: string): GroveRecord | 
   const grove = isPlainTable(doc.grove) ? doc.grove as Record<string, unknown> : null;
   if (!grove) return null;
   if (typeof grove.id !== 'string' || typeof grove.name !== 'string' || typeof grove.slug !== 'string') return null;
-  const servedBy: DaemonServiceDir = grove.served_by === 'service-dev' ? 'service-dev' : 'service';
+  const servedBy: DaemonVariant = grove.served_by === 'service-dev' ? 'service-dev' : 'service';
   return {
     id: grove.id,
     name: grove.name,
@@ -190,7 +190,7 @@ export interface ListGrovesOptions {
    * every Grove on disk — only the registry-advertisement endpoint and the
    * one-shot deploy migration script should pass nothing.
    */
-  servedBy?: DaemonServiceDir;
+  servedBy?: DaemonVariant;
 }
 
 export function listGroves(
@@ -217,7 +217,7 @@ export function loadGroveRecord(groveId: string, mycoHome = resolveMycoHome()): 
 }
 
 export interface CreateGroveOptions {
-  servedBy?: DaemonServiceDir;
+  servedBy?: DaemonVariant;
 }
 
 export function createGrove(
