@@ -23,6 +23,7 @@ import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { aggregateSessionCanopy, rollupCanopy } from '@myco/db/queries/canopy.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const PROJECT_ID = '/repo/myco';
 
@@ -310,7 +311,7 @@ describe('rollupCanopy', () => {
   });
 
   it('returns zero rollup with no sessions', () => {
-    const r = rollupCanopy(null);
+    const r = rollupCanopy(ALL_PROJECTS_SCOPE);
     expect(r.sessions_with_data).toBe(0);
     expect(r.total_tokens_saved).toBe(0);
     expect(r.avg_tokens_saved_per_session).toBe(0);
@@ -347,7 +348,7 @@ describe('rollupCanopy', () => {
       WHERE id = ?
     `).run('s3');
 
-    const r = rollupCanopy(null);
+    const r = rollupCanopy(ALL_PROJECTS_SCOPE);
     expect(r.sessions_with_data).toBe(2);
     expect(r.total_tokens_saved).toBe(1500);
     expect(r.avg_tokens_saved_per_session).toBe(750);
@@ -373,11 +374,11 @@ describe('rollupCanopy', () => {
       WHERE id = ?
     `).run('new');
 
-    const fresh = rollupCanopy(null, { since: 150 });
+    const fresh = rollupCanopy(ALL_PROJECTS_SCOPE, { since: 150 });
     expect(fresh.sessions_with_data).toBe(1);
     expect(fresh.total_tokens_saved).toBe(200);
 
-    const stale = rollupCanopy(null, { until: 150 });
+    const stale = rollupCanopy(ALL_PROJECTS_SCOPE, { until: 150 });
     expect(stale.sessions_with_data).toBe(1);
     expect(stale.total_tokens_saved).toBe(100);
   });

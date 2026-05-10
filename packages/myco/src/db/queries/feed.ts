@@ -4,12 +4,16 @@
  * Uses UNION ALL to merge per-table subqueries, then a final ORDER BY + LIMIT
  * to produce a cross-table timeline ordered by timestamp descending.
  *
- * All functions obtain the SQLite instance internally via `getDatabase()`.
- * Queries use positional `?` placeholders throughout (better-sqlite3).
+ * Every branch filters on `project_id` via the supplied `ProjectScope`.
+ * Post-Grove, all three tables hold rows from multiple projects in the
+ * same Grove DB; an unfiltered read leaks data across project boundaries.
+ * Callers must pass the scope from `projectScopeFromRequestContext` (or
+ * explicitly opt into `ALL_PROJECTS_SCOPE` for cross-project admin views).
  */
 
-import { getDatabase } from '@myco/db/client.js';
+import { getDatabase, type Database } from '@myco/db/client.js';
 import { FEED_DEFAULT_LIMIT } from '@myco/constants.js';
+import { projectScopeClause, type ProjectScope } from './project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,8 +32,8 @@ export interface FeedEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * Return the most recent activity across sessions, agent runs, and spores,
- * merged into a single timeline sorted by timestamp descending.
+ * Return the most recent activity across sessions, agent runs, and spores
+ * within `scope`, merged into a single timeline sorted by timestamp descending.
  *
  * Each branch contributes up to `limit` candidates; the final result is
  * also capped at `limit`.
@@ -38,17 +42,19 @@ export interface FeedEntry {
  * parenthesized subqueries the way PostgreSQL does. Instead, each branch
  * is wrapped as a subquery (SELECT ... ORDER BY ... LIMIT ?) to achieve
  * the same effect.
- *
- * @param limit - max entries to return (defaults to FEED_DEFAULT_LIMIT)
  */
-export function getActivityFeed(limit: number = FEED_DEFAULT_LIMIT): FeedEntry[] {
-  const db = getDatabase();
+export function getActivityFeed(
+  scope: ProjectScope,
+  limit: number = FEED_DEFAULT_LIMIT,
+  db: Database = getDatabase(),
+): FeedEntry[] {
+  const clause = projectScopeClause(scope);
 
   const rows = db.prepare(`
     SELECT * FROM (
       SELECT 'session' as type, id, COALESCE(title, 'Session ' || substr(id, 1, 8)) as summary,
               COALESCE(ended_at, started_at) as timestamp
-       FROM sessions ORDER BY started_at DESC LIMIT ?
+       FROM sessions WHERE 1 = 1${clause.sql} ORDER BY started_at DESC LIMIT ?
     )
 
     UNION ALL
@@ -56,7 +62,7 @@ export function getActivityFeed(limit: number = FEED_DEFAULT_LIMIT): FeedEntry[]
     SELECT * FROM (
       SELECT 'agent_run' as type, id, task || ' — ' || status as summary,
               COALESCE(completed_at, started_at) as timestamp
-       FROM agent_runs ORDER BY started_at DESC LIMIT ?
+       FROM agent_runs WHERE 1 = 1${clause.sql} ORDER BY started_at DESC LIMIT ?
     )
 
     UNION ALL
@@ -64,11 +70,16 @@ export function getActivityFeed(limit: number = FEED_DEFAULT_LIMIT): FeedEntry[]
     SELECT * FROM (
       SELECT 'spore' as type, id, observation_type || ': ' || substr(content, 1, 80) as summary,
               created_at as timestamp
-       FROM spores WHERE status = 'active' ORDER BY created_at DESC LIMIT ?
+       FROM spores WHERE status = 'active'${clause.sql} ORDER BY created_at DESC LIMIT ?
     )
 
     ORDER BY timestamp DESC LIMIT ?
-  `).all(limit, limit, limit, limit) as FeedEntry[];
+  `).all(
+    ...clause.params, limit,
+    ...clause.params, limit,
+    ...clause.params, limit,
+    limit,
+  ) as FeedEntry[];
 
   return rows;
 }

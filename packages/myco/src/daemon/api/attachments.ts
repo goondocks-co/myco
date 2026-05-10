@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAttachmentByFilePath } from '@myco/db/queries/attachments.js';
+import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 
 // ---------------------------------------------------------------------------
@@ -46,8 +47,12 @@ export function createAttachmentHandler(deps: AttachmentDeps) {
       return { status: 400, body: { error: 'invalid_filename' } };
     }
 
-    // Try DB first (new path)
-    const att = getAttachmentByFilePath(filename);
+    // Try DB first (new path). Scope MUST come from request context — the
+    // attachments table holds rows for every project in the same Grove DB
+    // and an unscoped lookup would return a sibling project's bytes when
+    // a caller knows or guesses the file_path.
+    const scope = projectScopeFromRequestContext(req.requestContext);
+    const att = getAttachmentByFilePath(filename, scope);
     if (att?.data) {
       const contentType = att.media_type ?? 'application/octet-stream';
       return { status: 200, headers: { 'Content-Type': contentType }, body: att.data };
