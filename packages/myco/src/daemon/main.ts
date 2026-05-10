@@ -134,7 +134,7 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase, type Database } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
@@ -444,6 +444,7 @@ export async function main(): Promise<void> {
     requestContext: dataPaths.requestContext,
     env: process.env,
   });
+  setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
