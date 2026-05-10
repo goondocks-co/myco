@@ -33,6 +33,7 @@ import {
   forEachRegisteredProject,
   isProjectActive,
 } from './scope-iteration.js';
+import { isProjectPaused } from '@myco/grove/registry.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
@@ -338,6 +339,24 @@ export async function registerScheduledTasks(
           mycoHome,
           machineId,
           shouldVisit: (scope) => {
+            // Per-project pause gate. Long-running ops (move, vacuum) take
+            // a pause in `projects.toml`; while it's set, the scheduler
+            // skips this project so its DB stays untouched for the duration
+            // of the op.
+            const paused = isProjectPaused(scope.projectId, mycoHome);
+            if (paused.paused) {
+              logger.debug(
+                LOG_KINDS.AGENT_RUN,
+                'Skipping scheduled tasks for paused project',
+                {
+                  grove_id: scope.grove.id,
+                  project_id: scope.projectId,
+                  reason: paused.reason,
+                  owner_op: paused.owner_op,
+                },
+              );
+              return false;
+            }
             // Long-term cost backstop, separate from the per-project sleep
             // timer — keeps cold projects registered without burning tokens.
             const decision = decideColdProjectGate({

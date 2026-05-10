@@ -15,6 +15,8 @@ import {
   requestContextFromHttpHeaders,
   type MycoRequestContext,
 } from '../tools/request-context.js';
+import { isProjectPaused } from '../grove/registry.js';
+import { errorBody } from './api/error-envelope.js';
 import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -201,6 +203,30 @@ export class DaemonServer {
         const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
           expectedAuthToken: this.authToken,
         });
+        // Pause gate. Long-running ops (move, vacuum) take a per-project pause
+        // in `projects.toml`; while it's set, every writer for that project
+        // must be refused so the op holds an exclusive view of the data. Reads
+        // are unaffected so the dashboard can still show "this project is
+        // paused (reason)" with full context.
+        if (isWriteMethod(req.method) && requestContext.groveId) {
+          const paused = isProjectPaused(requestContext.projectId);
+          if (paused.paused) {
+            res.writeHead(409, { 'Content-Type': 'application/json', ...versionHeader });
+            res.end(JSON.stringify({
+              ...errorBody(
+                'project_paused',
+                `Project ${requestContext.projectId} is paused (${paused.reason})`,
+              ),
+              paused: {
+                reason: paused.reason,
+                since: paused.since,
+                owner_op: paused.owner_op,
+                grove_id: paused.grove_id,
+              },
+            }));
+            return;
+          }
+        }
         const invokeHandler = () => match.handler({
           body,
           query: match.query,
@@ -475,6 +501,12 @@ function injectDashboardBootstrap(html: string, authToken: string): string {
  * children inherit it; persisted into daemon.json so manually-invoked
  * children can fetch it without env inheritance.
  */
+function isWriteMethod(method: string | undefined): boolean {
+  if (!method) return false;
+  const upper = method.toUpperCase();
+  return upper === 'POST' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE';
+}
+
 function mintDaemonAuthToken(): string {
   // Honor an existing env-provided token (set by tests, or by a
   // previous daemon process this child was forked from) so the value
