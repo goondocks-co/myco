@@ -897,8 +897,8 @@ describe('vault tools', () => {
     });
 
     it('returns state entries after setting them', async () => {
-      setState(TEST_AGENT_ID, 'cursor', '42', epochNow());
-      setState(TEST_AGENT_ID, 'mode', 'full', epochNow());
+      setState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'cursor', '42', epochNow());
+      setState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'mode', 'full', epochNow());
 
       const t = findTool(tools, 'vault_state');
       const result = await t.handler({}, undefined);

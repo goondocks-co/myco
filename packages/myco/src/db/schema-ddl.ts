@@ -657,6 +657,7 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'skill_usage',
   'notifications',
   'log_entries',
+  'agent_state',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =

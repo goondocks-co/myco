@@ -280,6 +280,7 @@ interface SourceAgentTaskRow {
 
 interface SourceAgentStateRow {
   agent_id: string;
+  project_id: string | null;
   key: string;
   value: string;
   updated_at: number;
@@ -1196,12 +1197,12 @@ function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): ImportO
     return 'skipped';
   }
 
-  const existing = getAgentStateUpdatedAt(ctx.targetDb, agentId, row.key);
+  const existing = getAgentStateUpdatedAt(ctx.targetDb, agentId, ctx.targetProjectId, row.key);
   if (existing == null) {
     ctx.targetDb.prepare(
-      `INSERT INTO agent_state (agent_id, key, value, updated_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run(agentId, row.key, row.value, row.updated_at);
+      `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(agentId, ctx.targetProjectId, row.key, row.value, row.updated_at);
     markImported(ctx, 'agent_state', sourceId);
     return 'imported';
   }
@@ -1212,8 +1213,9 @@ function importAgentState(ctx: ImportContext, row: SourceAgentStateRow): ImportO
           SET value = ?,
               updated_at = ?
         WHERE agent_id = ?
+          AND project_id = ?
           AND key = ?`,
-    ).run(row.value, row.updated_at, agentId, row.key);
+    ).run(row.value, row.updated_at, agentId, ctx.targetProjectId, row.key);
     markImported(ctx, 'agent_state', sourceId);
     return 'imported';
   }
@@ -2810,14 +2812,20 @@ function canopyMapExists(db: Database, projectId: string, machineId: string): bo
   return row?.present === 1;
 }
 
-function getAgentStateUpdatedAt(db: Database, agentId: string, key: string): number | null {
+function getAgentStateUpdatedAt(
+  db: Database,
+  agentId: string,
+  projectId: string,
+  key: string,
+): number | null {
   const row = db.prepare(
     `SELECT updated_at
        FROM agent_state
       WHERE agent_id = ?
+        AND project_id = ?
         AND key = ?
       LIMIT 1`,
-  ).get(agentId, key) as { updated_at: number } | undefined;
+  ).get(agentId, projectId, key) as { updated_at: number } | undefined;
   return row?.updated_at ?? null;
 }
 
@@ -2897,7 +2905,7 @@ function listSourceAgentTasks(db: Database): SourceAgentTaskRow[] {
 
 function listSourceAgentState(db: Database): SourceAgentStateRow[] {
   return db.prepare(
-    `SELECT agent_id, key, value, updated_at
+    `SELECT agent_id, project_id, key, value, updated_at
      FROM agent_state
      ORDER BY agent_id ASC, key ASC`,
   ).all() as SourceAgentStateRow[];
