@@ -66,7 +66,11 @@ export const handleGetCanopyToolCallBlob: RouteHandler = async (req) => {
   const tcId = Number(tcIdRaw);
   if (!Number.isFinite(tcId)) return badRequest('invalid_tc_id');
 
-  const ctx = getCanopyToolCallContext(null, sessionId, tcId);
+  // Scope MUST come from request context: the previous null-scope read joined
+  // activities → sessions across the entire Grove DB and let a caller fetch
+  // a sibling project's source-code blob given only a session id + tcId.
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  const ctx = getCanopyToolCallContext(scope, sessionId, tcId);
   if (!ctx) return notFound('tool_call');
 
   // The blob is regenerated from the canopy_entries row at request time so
@@ -86,7 +90,10 @@ export const handleGetCanopyRollup: RouteHandler = async (req) => {
   const since = parseEpochSeconds(req.query.since);
   const until = parseEpochSeconds(req.query.until);
 
-  const r = rollupCanopy(null, { since, until });
+  // Scope MUST come from the request context: an unscoped rollup aggregates
+  // sessions across every project in the Grove DB.
+  const scope = projectScopeFromRequestContext(req.requestContext);
+  const r = rollupCanopy(scope, { since, until });
   // Reshape for the UI (see CanopyRollup in use-canopy.ts). Field renames +
   // two derived metrics that are cheaper to compute here than in React.
   const sessionsWithCanopy = r.sessions_with_data ?? 0;

@@ -12,6 +12,7 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { getActivityFeed } from '@myco/db/queries/feed.js';
+import { ALL_PROJECTS_SCOPE, assertGroveProjectId, projectScope } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -37,7 +38,7 @@ describe('getActivityFeed', () => {
   // ---------------------------------------------------------------------------
 
   it('returns empty array when no data exists', async () => {
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toEqual([]);
   });
 
@@ -76,7 +77,7 @@ describe('getActivityFeed', () => {
       created_at: base + 10,
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
 
     expect(feed).toHaveLength(3);
 
@@ -116,7 +117,7 @@ describe('getActivityFeed', () => {
       title: null,
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(1);
     expect(feed[0].summary).toBe('Session abcdefgh');
   });
@@ -137,7 +138,7 @@ describe('getActivityFeed', () => {
       created_at: now,
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(1);
     // summary = "decision: " + LEFT(content, 80) = "decision: " + 80 A's
     expect(feed[0].summary).toBe('decision: ' + 'A'.repeat(80));
@@ -168,7 +169,7 @@ describe('getActivityFeed', () => {
       status: 'superseded',
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(1);
     expect(feed[0].id).toBe('spore-active');
   });
@@ -190,7 +191,7 @@ describe('getActivityFeed', () => {
       });
     }
 
-    const feed = getActivityFeed(3);
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE, 3);
     expect(feed).toHaveLength(3);
   });
 
@@ -207,7 +208,7 @@ describe('getActivityFeed', () => {
       });
     }
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(50);
   });
 
@@ -227,7 +228,7 @@ describe('getActivityFeed', () => {
       completed_at: now + 100,
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(1);
     expect(feed[0].timestamp).toBe(now + 100);
   });
@@ -248,8 +249,62 @@ describe('getActivityFeed', () => {
       created_at: now,
     });
 
-    const feed = getActivityFeed();
+    const feed = getActivityFeed(ALL_PROJECTS_SCOPE);
     expect(feed).toHaveLength(1);
     expect(feed[0].type).toBe('spore');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Multi-tenancy — project scope MUST filter rows by project_id
+  // ---------------------------------------------------------------------------
+
+  it('returns only rows belonging to the scoped project (no cross-project leak)', async () => {
+    const now = epochNow();
+    const projectA = assertGroveProjectId('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const projectB = assertGroveProjectId('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+
+    upsertSession({
+      id: 'sess-A', agent: 'claude-code', started_at: now + 30, created_at: now + 30, title: 'A session',
+      project_id: projectA,
+    });
+    upsertSession({
+      id: 'sess-B', agent: 'claude-code', started_at: now + 31, created_at: now + 31, title: 'B session',
+      project_id: projectB,
+    });
+
+    insertRun({
+      id: 'run-A', agent_id: TEST_AGENT_ID, task: 'a-task', status: 'completed',
+      started_at: now + 20, completed_at: now + 20, project_id: projectA,
+    });
+    insertRun({
+      id: 'run-B', agent_id: TEST_AGENT_ID, task: 'b-task', status: 'completed',
+      started_at: now + 21, completed_at: now + 21, project_id: projectB,
+    });
+
+    insertSpore({
+      id: 'spore-A', agent_id: TEST_AGENT_ID, observation_type: 'gotcha',
+      content: 'A finding', created_at: now + 10, project_id: projectA,
+    });
+    insertSpore({
+      id: 'spore-B', agent_id: TEST_AGENT_ID, observation_type: 'gotcha',
+      content: 'B finding', created_at: now + 11, project_id: projectB,
+    });
+
+    const feedA = getActivityFeed(projectScope(projectA));
+    expect(feedA).toHaveLength(3);
+    for (const entry of feedA) {
+      expect(entry.id.endsWith('-A')).toBe(true);
+    }
+
+    const feedB = getActivityFeed(projectScope(projectB));
+    expect(feedB).toHaveLength(3);
+    for (const entry of feedB) {
+      expect(entry.id.endsWith('-B')).toBe(true);
+    }
+
+    // ALL_PROJECTS_SCOPE deliberately leaks for admin views — confirm it
+    // sees both sets so consumers can rely on the explicit-opt-in semantics.
+    const feedAll = getActivityFeed(ALL_PROJECTS_SCOPE);
+    expect(feedAll).toHaveLength(6);
   });
 });

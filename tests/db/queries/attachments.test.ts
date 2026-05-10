@@ -14,6 +14,7 @@ import {
   getAttachmentByFilePath,
   type AttachmentListRow,
 } from '@myco/db/queries/attachments.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 describe('attachment queries', () => {
   beforeAll(() => { setupTestDb(); });
@@ -164,7 +165,7 @@ describe('attachment queries', () => {
         created_at: now,
       });
 
-      const row = getAttachmentByFilePath('attachments/screenshot.png');
+      const row = getAttachmentByFilePath('attachments/screenshot.png', ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.id).toBe('att-1');
       expect(row!.file_path).toBe('attachments/screenshot.png');
@@ -172,7 +173,7 @@ describe('attachment queries', () => {
     });
 
     it('returns null for a non-existent file_path', async () => {
-      const row = getAttachmentByFilePath('attachments/does-not-exist.png');
+      const row = getAttachmentByFilePath('attachments/does-not-exist.png', ALL_PROJECTS_SCOPE);
       expect(row).toBeNull();
     });
 
@@ -195,11 +196,11 @@ describe('attachment queries', () => {
         created_at: now,
       });
 
-      const row = getAttachmentByFilePath('attachments/a.png');
+      const row = getAttachmentByFilePath('attachments/a.png', ALL_PROJECTS_SCOPE);
       expect(row).not.toBeNull();
       expect(row!.id).toBe('att-1');
 
-      const row2 = getAttachmentByFilePath('attachments/b.png');
+      const row2 = getAttachmentByFilePath('attachments/b.png', ALL_PROJECTS_SCOPE);
       expect(row2).not.toBeNull();
       expect(row2!.id).toBe('att-2');
     });
