@@ -2,11 +2,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import path from 'node:path';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { vaultDbPath } from '@myco/db/client.js';
-import {
-  loadProjectLocalManifest,
-  loadProjectManifest,
-  type ProjectManifest,
-} from '@myco/config/project-manifest.js';
+import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
 import {
   assertGroveProjectId,
   GLOBAL_SCOPE,
@@ -430,12 +426,10 @@ function resolveManifestRequestContext(
   cachedManifest?: ProjectManifest | null,
 ): MycoRequestContext | null {
   const manifest = cachedManifest ?? readManifest(fallback.projectVaultDir);
-  if (!manifest) return null;
-  const bindingId = readManifestBindingId(manifest, fallback.projectVaultDir);
-  if (!bindingId) return null;
+  if (!manifest?.grove?.binding_id) return null;
   const registered = findRegisteredProject({
     projectId: manifest.project.id,
-    bindingId,
+    bindingId: manifest.grove.binding_id,
     projectRoot: fallback.projectRoot,
   });
   if (!registered) return null;
@@ -460,11 +454,8 @@ function resolveManifestHeaderRequestContext(
   if (!inputProjectRoot && !input.projectId) return null;
 
   const projectRoot = inputProjectRoot ?? fallback.projectRoot;
-  const projectVaultDir = resolveProjectVaultDir(projectRoot);
-  const manifest = readManifest(projectVaultDir);
-  if (!manifest) return null;
-  const bindingId = readManifestBindingId(manifest, projectVaultDir);
-  if (!bindingId) return null;
+  const manifest = readManifest(resolveProjectVaultDir(projectRoot));
+  if (!manifest?.grove?.binding_id) return null;
 
   const projectId = input.projectId ?? manifest.project.id;
   if (!projectId) return null;
@@ -474,7 +465,7 @@ function resolveManifestHeaderRequestContext(
 
   const registered = findRegisteredProject({
     projectId,
-    bindingId,
+    bindingId: manifest.grove.binding_id,
     projectRoot,
   });
   if (!registered) {
@@ -499,10 +490,8 @@ function resolveRegisteredRequestContext(
   source: RequestContextSource,
 ): MycoRequestContext {
   const inputProjectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
-  const inputVaultDir = inputProjectRoot ? resolveProjectVaultDir(inputProjectRoot) : null;
-  const manifestFromInputRoot = inputVaultDir ? readManifest(inputVaultDir) : null;
-  const inputBindingId = manifestFromInputRoot && inputVaultDir
-    ? readManifestBindingId(manifestFromInputRoot, inputVaultDir)
+  const manifestFromInputRoot = inputProjectRoot
+    ? readManifest(resolveProjectVaultDir(inputProjectRoot))
     : null;
   const projectId = input.projectId ?? manifestFromInputRoot?.project.id;
   const groveId = input.groveId;
@@ -524,7 +513,7 @@ function resolveRegisteredRequestContext(
   const registered = findRegisteredProject({
     projectId: projectId!,
     groveId: grove.id,
-    bindingId: inputBindingId,
+    bindingId: manifestFromInputRoot?.grove?.binding_id ?? null,
     projectRoot: inputProjectRoot,
   }, mycoHome);
   if (!registered) {
@@ -532,18 +521,14 @@ function resolveRegisteredRequestContext(
   }
 
   const registeredRoot = path.resolve(registered.project.root);
-  const registeredVaultDir = resolveProjectVaultDir(registeredRoot);
-  const manifest = readManifest(registeredVaultDir);
+  const manifest = readManifest(resolveProjectVaultDir(registeredRoot));
   if (manifest && manifest.project.id !== projectId) {
     throw new Error(`Registered project ${projectId} does not match project.toml id ${manifest.project.id}`);
   }
-  const registeredManifestBindingId = manifest
-    ? readManifestBindingId(manifest, registeredVaultDir)
-    : null;
   if (
-    registeredManifestBindingId
+    manifest?.grove?.binding_id
     && registered.project.binding_id
-    && registeredManifestBindingId !== registered.project.binding_id
+    && manifest.grove.binding_id !== registered.project.binding_id
   ) {
     throw new Error(`Registered project ${projectId} binding does not match project.toml binding`);
   }
@@ -606,19 +591,12 @@ function readManifest(projectVaultDir: string): ProjectManifest | null {
   // those would silently route a grove-bound project to legacy-project
   // scope and create a divergent database — the bug class we keep getting
   // bitten by. Let the caller decide how to react to a corrupt manifest.
+  //
+  // `manifest.grove?.binding_id` is reconstituted from `project.local.toml`
+  // by `overlayLocalBinding` in `loadProjectManifest`; consumers must read
+  // that field from this loader rather than calling `loadProjectLocalManifest`
+  // directly so the legacy-vault and post-migration code paths stay unified.
   return loadProjectManifest(projectVaultDir);
-}
-
-function readManifestBindingId(
-  manifest: ProjectManifest | null,
-  projectVaultDir: string,
-): string | null {
-  // Binding id moved out of project.toml into project.local.toml during
-  // WB1 split. Pre-migration vaults (or hand-edited manifests) may still
-  // carry it inline on `manifest.grove`; we read either source.
-  if (manifest?.grove?.binding_id) return manifest.grove.binding_id;
-  const local = loadProjectLocalManifest(projectVaultDir);
-  return local?.grove_binding?.binding_id ?? null;
 }
 
 function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {

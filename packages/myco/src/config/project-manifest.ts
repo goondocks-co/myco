@@ -132,6 +132,16 @@ const localManifestCache = createMtimeCache((manifestPath: string): ProjectLocal
   return ProjectLocalManifestSchema.parse(parsed);
 });
 
+/**
+ * Read the project manifest with `grove.binding_id` and `grove.mode`
+ * reconstituted from `project.local.toml` via `overlayLocalBinding` (the
+ * single source of truth for those fields). Binding-resolution callers
+ * MUST go through this function — never `loadProjectLocalManifest`
+ * directly — so legacy and post-migration vaults present an identical
+ * shape. Remove this carve-out once activation writes the binding only
+ * into `project.local.toml` and `ProjectManifestSchema` drops the legacy
+ * `binding_id` / `mode` fields (WB2).
+ */
 export function loadProjectManifest(projectVaultDir: string): ProjectManifest | null {
   return manifestCache.get(resolveProjectManifestPath(projectVaultDir));
 }
@@ -244,7 +254,7 @@ function migrateCombinedManifest(
 
   const vaultDir = path.dirname(manifestPath);
   const localDbPath = typeof groveRaw?.local_db_path === 'string' ? groveRaw.local_db_path : undefined;
-  const mode: 'local' = groveRaw?.mode === 'local' ? 'local' : 'local';
+  const mode: 'local' = 'local';
 
   const newDoc: TomlTableWithoutBigInt = {
     project: {
