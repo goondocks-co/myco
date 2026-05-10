@@ -103,11 +103,18 @@ interface TeamConnectionContext {
     slug: string;
     mode: string;
   } | null;
+  /**
+   * Null when neither the request context nor the vault's `project.toml`
+   * supplies a project identity. Pre-Grove status pings hit this state
+   * legitimately. Connect/backfill paths must reject null explicitly
+   * rather than the previous behavior of silently using the project root
+   * filesystem path as a `proj_*` brand.
+   */
   project: {
     id: string;
     name: string;
     root: string;
-  };
+  } | null;
 }
 
 interface TeamHandoffSummary {
@@ -1142,6 +1149,12 @@ function resolveTeamConnectionContext(
   const groveScoped = isGroveScoped(requestContext);
   const grove = groveScoped ? loadGroveRecord(requestContext!.groveId!) : null;
 
+  // Project id must be a `proj_<32hex>` brand. Returning the project root
+  // path as the id (the previous behavior) silently corrupted the API
+  // surface — every typed consumer rejected the path-shaped string. Now
+  // we return `project: null` so callers branch explicitly on missing
+  // identity rather than misinterpreting a path as an id.
+  const projectId = requestContext?.projectId ?? manifest?.project.id;
   return {
     connection_scope: groveScoped ? 'grove' : 'legacy-project',
     grove: groveScoped
@@ -1152,10 +1165,12 @@ function resolveTeamConnectionContext(
           mode: grove?.mode ?? manifest?.grove?.mode ?? 'local',
         }
       : null,
-    project: {
-      id: requestContext?.projectId ?? manifest?.project.id ?? projectRoot,
-      name: manifest?.project.name ?? path.basename(projectRoot),
-      root: projectRoot,
-    },
+    project: projectId
+      ? {
+          id: projectId,
+          name: manifest?.project.name ?? path.basename(projectRoot),
+          root: projectRoot,
+        }
+      : null,
   };
 }

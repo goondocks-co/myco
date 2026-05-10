@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +8,35 @@ import {
   MACHINE_RUNTIME_TMP_DIRNAME,
 } from '../constants/update.js';
 import { assertGroveEraId } from './ids.js';
+
+/**
+ * True when two filesystem paths point at the same file or directory —
+ * across symlink chains AND across case-insensitive filesystems
+ * (macOS APFS, Windows NTFS) where `path.resolve` alone returns
+ * different strings for the same on-disk file.
+ *
+ * Compares inode + device after `path.resolve`. Returns false when
+ * either path doesn't exist (treat-as-different is what every caller
+ * wants — a registered root that no longer exists is effectively a
+ * different path).
+ *
+ * Use this anywhere two filesystem paths are compared for identity:
+ * registry-root vs daemon-resolved-root, marker.project_root vs
+ * expected.projectRoot, etc. Bare `path.resolve(a) === path.resolve(b)`
+ * is a foot-gun on macOS.
+ */
+export function pathsEquivalent(a: string, b: string): boolean {
+  const resolvedA = path.resolve(a);
+  const resolvedB = path.resolve(b);
+  if (resolvedA === resolvedB) return true;
+  try {
+    const statA = fs.statSync(resolvedA);
+    const statB = fs.statSync(resolvedB);
+    return statA.dev === statB.dev && statA.ino === statB.ino;
+  } catch {
+    return false;
+  }
+}
 
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
