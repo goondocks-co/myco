@@ -7,6 +7,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+import { projectScopeClause, type ProjectScope } from './project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -202,16 +203,27 @@ export function listAttachmentsBySession(sessionId: string): AttachmentListRow[]
 }
 
 /**
- * Find an attachment by its file_path.
+ * Find an attachment by its file_path within the given project scope.
  *
- * @returns the first matching attachment row, or null if none exists.
+ * Scope is required: post-Grove the `attachments` table holds rows for
+ * every project in the same Grove DB. Without a project filter a caller
+ * who knows or guesses a sibling project's file_path can fetch its bytes.
+ * Filenames are usually content-hash-derived (bounded exploit surface)
+ * but defense-in-depth requires the filter regardless. Pass
+ * `ALL_PROJECTS_SCOPE` only when an admin/aggregation read is intended.
+ *
+ * @returns the first matching attachment row in scope, or null if none exists.
  */
-export function getAttachmentByFilePath(filePath: string): AttachmentRow | null {
+export function getAttachmentByFilePath(
+  filePath: string,
+  scope: ProjectScope,
+): AttachmentRow | null {
   const db = getDatabase();
+  const scopeClause = projectScopeClause(scope);
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM attachments WHERE file_path = ? LIMIT 1`,
-  ).get(filePath) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM attachments WHERE file_path = ?${scopeClause.sql} LIMIT 1`,
+  ).get(filePath, ...scopeClause.params) as Record<string, unknown> | undefined;
 
   return row ? toAttachmentRow(row) : null;
 }

@@ -8,7 +8,7 @@
 import { getDatabase } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { syncRow } from '@myco/db/queries/team-outbox.js';
-import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
@@ -190,16 +190,21 @@ export function insertEntity(data: EntityInsert): EntityRow {
 }
 
 /**
- * Retrieve a single entity by id.
+ * Retrieve a single entity by id, scoped to a project.
  *
- * @returns the entity row, or null if not found.
+ * Scope is required for parity with `listEntities` and to prevent silent
+ * cross-project reads when this is consumed by an API handler. Pass
+ * `ALL_PROJECTS_SCOPE` only when an admin/aggregation read is intended.
+ *
+ * @returns the entity row in scope, or null if not found.
  */
-export function getEntity(id: string): EntityRow | null {
+export function getEntity(id: string, scope: ProjectScope): EntityRow | null {
   const db = getDatabase();
+  const scopeClause = projectScopeClause(scope);
 
   const row = db.prepare(
-    `SELECT ${SELECT_COLUMNS} FROM entities WHERE id = ?`,
-  ).get(id) as Record<string, unknown> | undefined;
+    `SELECT ${SELECT_COLUMNS} FROM entities WHERE id = ?${scopeClause.sql}`,
+  ).get(id, ...scopeClause.params) as Record<string, unknown> | undefined;
 
   if (!row) return null;
   return toEntityRow(row);

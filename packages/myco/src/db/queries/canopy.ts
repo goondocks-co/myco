@@ -12,6 +12,7 @@
 import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { CANOPY_SESSION_COLUMNS, CANOPY_ACTIVITY_COLUMN } from '@myco/db/schema-ddl.js';
+import { projectScopeClause, type ProjectScope } from './project-scope.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -267,14 +268,27 @@ export interface CanopyRollupOptions {
  * Cross-session Canopy rollup for the all-sessions UI surface. Only sessions
  * with non-NULL `canopy_injections_offered` contribute (pre-feature sessions
  * and disabled-injection sessions are excluded).
+ *
+ * Scope MUST be applied: post-Grove the `sessions` table holds rows for
+ * every project in the same Grove DB. An unscoped rollup leaks aggregate
+ * metrics across project boundaries. Pass `ALL_PROJECTS_SCOPE` only when
+ * a cross-project Grove-wide aggregate is genuinely intended.
  */
 export function rollupCanopy(
-  db: Database | null,
+  scope: ProjectScope,
   opts: CanopyRollupOptions = {},
+  db: Database | null = null,
 ): CanopyRollup {
   const handle = db ?? getDatabase();
   const clauses: string[] = ['canopy_injections_offered IS NOT NULL'];
-  const params: number[] = [];
+  const params: unknown[] = [];
+  const scopeClause = projectScopeClause(scope);
+  if (scopeClause.sql) {
+    // scopeClause.sql starts with " AND "; strip the leading " AND " since
+    // we're appending to a clauses array that's joined with ' AND '.
+    clauses.push(scopeClause.sql.replace(/^ AND /, ''));
+    params.push(...scopeClause.params);
+  }
   if (opts.since !== undefined) {
     clauses.push('started_at >= ?');
     params.push(opts.since);
@@ -435,11 +449,13 @@ export interface CanopyToolCallContext {
 }
 
 export function getCanopyToolCallContext(
-  db: Database | null,
+  scope: ProjectScope,
   sessionId: string,
   activityId: number,
+  db: Database | null = null,
 ): CanopyToolCallContext | null {
   const handle = db ?? getDatabase();
+  const scopeClause = projectScopeClause(scope, 'a');
   const row = handle
     .prepare(
       `
@@ -455,9 +471,10 @@ export function getCanopyToolCallContext(
           AND a.session_id = ?
           AND a.tool_name = 'Read'
           AND a.canopy_injection_tokens IS NOT NULL
+          ${scopeClause.sql}
       `,
     )
-    .get(activityId, sessionId) as CanopyToolCallContext | undefined;
+    .get(activityId, sessionId, ...scopeClause.params) as CanopyToolCallContext | undefined;
 
   if (!row || !row.file_path) return null;
   return row;
