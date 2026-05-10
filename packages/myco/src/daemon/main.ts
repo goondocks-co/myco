@@ -131,6 +131,7 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { resolveMycoHome } from '../grove/paths.js';
+import { isProjectPaused } from '../grove/registry.js';
 import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
@@ -331,7 +332,7 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
  * SessionStart's delta scan so idle Groves don't pay a full-scan cost
  * for projects nobody has used in weeks. Errors per project are isolated.
  */
-async function runInitialCanopyPopulateAcrossProjects(
+export async function runInitialCanopyPopulateAcrossProjects(
   cache: GroveRuntimeCache,
   logger: DaemonLogger,
   machineId: string,
@@ -343,6 +344,7 @@ async function runInitialCanopyPopulateAcrossProjects(
     const cutoffSeconds = thresholdDays > 0
       ? Math.floor((Date.now() - thresholdDays * MS_PER_DAY) / 1000)
       : 0;
+    const mycoHome = resolveMycoHome();
     await forEachRegisteredProject(
       cache,
       logger,
@@ -353,7 +355,12 @@ async function runInitialCanopyPopulateAcrossProjects(
         }
         await registry.initialPopulate({ databasePath, projectId, projectRoot, groveId: grove.id });
       },
-      { machineId },
+      {
+        machineId,
+        // Pause gate: skip projects under an in-flight move/vacuum so the
+        // initial populate doesn't write to a DB the op owns exclusively.
+        shouldVisit: (scope) => !isProjectPaused(scope.projectId, mycoHome).paused,
+      },
     );
   } catch (err) {
     logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate fan-out failed', {

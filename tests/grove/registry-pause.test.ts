@@ -171,7 +171,7 @@ describe('Grove registry pause primitive', () => {
 
     pauseProject(grove.id, 'proj_aaaa', 'grove-move', 'op-1', home);
     expect(() =>
-      forceResumeProject(grove.id, 'proj_aaaa', 'orphan-cleanup', home),
+      forceResumeProject(grove.id, 'proj_aaaa', home),
     ).not.toThrow();
     expect(isProjectPaused('proj_aaaa', home).paused).toBe(false);
   });

@@ -66,7 +66,7 @@ export function resumeOrphanedPauses(
         continue;
       }
       try {
-        forceResumeProject(grove.id, project.project_id, 'orphan-cleanup', mycoHome);
+        forceResumeProject(grove.id, project.project_id, mycoHome);
         resumed += 1;
         logger.warn(LOG_KINDS.DAEMON_START, 'Resumed orphaned pause on startup', {
           grove_id: grove.id,

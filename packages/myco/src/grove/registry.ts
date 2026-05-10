@@ -417,8 +417,9 @@ export function findRegisteredProjectByBinding(
  * Mark a project as paused. Idempotent for the same `ownerOp` (refreshes
  * `since` and returns); throws when a different op already holds the lock.
  *
- * Persisted via the same atomic temp+rename path as the rest of `projects.toml`,
- * so a daemon crash leaves the pause on disk for the next process to see.
+ * Persisted via the same `writeToml` path used elsewhere in this file.
+ * Writes are not atomic across multi-line changes — callers that need
+ * stronger durability should layer their own locking.
  */
 export function pauseProject(
   groveId: string,
@@ -510,18 +511,19 @@ export function resumeProject(
 }
 
 /**
- * Escape hatch for the startup orphan sweep — clears `paused` regardless
- * of who owns the lock. Used when the prior daemon died holding the pause.
+ * Force-resume a project, bypassing the owner_op check. Used by the
+ * startup health sweep to clear orphan pauses.
+ *
+ * No-op when the project isn't registered (consistent with
+ * `resumeProject`'s no-op-on-unpaused behavior).
  */
 export function forceResumeProject(
   groveId: string,
   projectId: string,
-  reason: string,
   mycoHome = resolveMycoHome(),
 ): void {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
-  void reason;
 
   const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
   const projectsDoc = readToml(projectsPath);
