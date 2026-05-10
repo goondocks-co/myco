@@ -6,6 +6,7 @@ import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, isGroveEraId } from './ids.js';
 import {
+  pathsEquivalent,
   resolveGlobalConfigPath,
   resolveGroveDir,
   resolveGroveMetadataPath,
@@ -310,7 +311,7 @@ export function findRegisteredProject(
   input: FindRegisteredProjectInput,
   mycoHome = resolveMycoHome(),
 ): ResolvedRegisteredProject | null {
-  const projectRoot = input.projectRoot ? path.resolve(input.projectRoot) : null;
+  const projectRoot = input.projectRoot ?? null;
   const groves = input.groveId
     ? [loadGroveRecord(input.groveId, mycoHome)].filter((grove): grove is GroveRecord => !!grove)
     : listGroves(mycoHome);
@@ -319,7 +320,12 @@ export function findRegisteredProject(
     const project = getRegisteredProjectInGrove(grove.id, input.projectId, mycoHome);
     if (!project) continue;
     if (input.bindingId && project.binding_id && project.binding_id !== input.bindingId) continue;
-    if (projectRoot && path.resolve(project.root) !== projectRoot) continue;
+    // pathsEquivalent uses inode comparison so case differences on macOS
+    // APFS (e.g. registered `~/repos/x` vs daemon-resolved `~/Repos/x`)
+    // and symlink chains both compare equal. Bare `path.resolve` would
+    // miss case differences and silently return null → daemon falls back
+    // to legacy mode → divergent database created.
+    if (projectRoot && !pathsEquivalent(project.root, projectRoot)) continue;
     return { grove, project };
   }
 

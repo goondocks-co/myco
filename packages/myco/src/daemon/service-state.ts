@@ -133,10 +133,11 @@ function usesGlobalDaemon(
 ): boolean {
   if (options.requestContext?.groveId) return true;
 
-  try {
-    const manifest = loadProjectManifest(vaultDir);
-    return Boolean(manifest?.grove?.binding_id);
-  } catch {
-    return false;
-  }
+  // Read directly via loadProjectManifest (which returns null on ENOENT but
+  // throws on parse error). Letting parse errors propagate is intentional —
+  // a corrupt project.toml on a grove-bound vault must NOT silently route
+  // the daemon to legacy-project scope and create a divergent database.
+  // Pre-Grove vaults are the legitimate "no manifest" case and return false.
+  const manifest = loadProjectManifest(vaultDir);
+  return Boolean(manifest?.grove?.binding_id);
 }

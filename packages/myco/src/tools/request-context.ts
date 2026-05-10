@@ -586,11 +586,12 @@ function buildRegisteredRequestContext(input: {
 }
 
 function readManifest(projectVaultDir: string): ProjectManifest | null {
-  try {
-    return loadProjectManifest(projectVaultDir);
-  } catch {
-    return null;
-  }
+  // No try/catch: loadProjectManifest returns null on ENOENT (legitimate
+  // pre-Grove vault) but throws on parse/validation errors. Swallowing
+  // those would silently route a grove-bound project to legacy-project
+  // scope and create a divergent database — the bug class we keep getting
+  // bitten by. Let the caller decide how to react to a corrupt manifest.
+  return loadProjectManifest(projectVaultDir);
 }
 
 function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {

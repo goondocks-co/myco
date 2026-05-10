@@ -11,6 +11,7 @@ import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import {
   activateProjectMigration,
+  activationMarkerPath,
   completeLegacyArchive,
   summarizeImportedRowCount,
 } from '../grove/activation.js';
@@ -171,19 +172,37 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
 
 /**
  * Lift a legacy (pre-0.25) project into the machine's default Grove on
- * its first `myco update`. Returns early once the project.toml binding
- * exists, so steady-state runs are an mtime-cached file read.
+ * its first `myco update`, AND repair partial-state vaults whose
+ * `project.toml` or registry row went missing post-activation.
  *
- * Tolerates fresh vaults: a `myco.yaml` without a `myco.db` is a
- * just-initialized project with nothing to migrate.
+ * Three states it handles:
+ *   1. Pre-Grove (no manifest, no marker): run full activation.
+ *   2. Already-activated and consistent (manifest binding present):
+ *      no-op return; steady-state mtime-cached read.
+ *   3. Marker present but manifest missing or mismatched: run
+ *      `activateProjectMigration` which detects the marker and rewrites
+ *      the missing leg from authoritative state.
+ *
+ * Tolerates fresh vaults: a `myco.yaml` without a `myco.db` AND no
+ * marker is a just-initialized project with nothing to migrate.
  */
 function ensureGroveActivation(vaultDir: string, projectRoot: string): void {
   const manifest = loadProjectManifest(vaultDir);
-  if (manifest?.grove?.binding_id) return;
+  const markerExists = fs.existsSync(activationMarkerPath(vaultDir));
 
-  if (!fs.existsSync(path.join(vaultDir, 'myco.db'))) return;
+  // Steady state: manifest binding present. activateProjectMigration would
+  // also detect this via marker, but skipping the function call keeps the
+  // hot path (every `myco update`) free of registry I/O.
+  if (manifest?.grove?.binding_id && markerExists) return;
 
-  console.log('  → Legacy project detected; running one-time Grove migration…');
+  // Fresh vault with nothing to migrate or repair.
+  if (!markerExists && !fs.existsSync(path.join(vaultDir, 'myco.db'))) return;
+
+  if (markerExists && !manifest?.grove?.binding_id) {
+    console.log('  → Activation marker present but project.toml binding missing; repairing…');
+  } else {
+    console.log('  → Legacy project detected; running one-time Grove migration…');
+  }
   const result = activateProjectMigration({ projectRoot });
   if (result.already_activated) {
     console.log(`  ✓ Project already activated in Grove ${result.grove.name} (${result.grove.slug})`);
