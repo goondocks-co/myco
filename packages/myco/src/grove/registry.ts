@@ -577,6 +577,143 @@ export function isProjectPaused(
   return { paused: false };
 }
 
+/**
+ * Remove the project entry from a Grove's `projects.toml`. Throws when
+ * the project isn't bound to that Grove — silent no-op would mask move
+ * orchestrator bugs that re-deregister an already-detached project.
+ */
+export function deregisterProjectInGrove(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): void {
+  const grove = loadGroveRecord(groveId, mycoHome);
+  if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
+
+  const projectsPath = resolveGroveProjectsPath(grove.id, mycoHome);
+  const projectsDoc = readToml(projectsPath);
+  const projects = isPlainTable(projectsDoc.projects)
+    ? { ...(projectsDoc.projects as Record<string, unknown>) }
+    : {};
+  if (!isPlainTable(projects[projectId])) {
+    throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
+  }
+  const entry = projects[projectId] as Record<string, unknown>;
+  const root = typeof entry.root === 'string' ? entry.root : null;
+  delete projects[projectId];
+  projectsDoc.projects = projects as unknown as TomlTableWithoutBigInt;
+  writeToml(projectsPath, projectsDoc);
+
+  if (root) {
+    const rootsPath = resolveGroveRootsPath(grove.id, mycoHome);
+    const rootsDoc = readToml(rootsPath);
+    const roots = isPlainTable(rootsDoc.roots)
+      ? { ...(rootsDoc.roots as Record<string, unknown>) }
+      : {};
+    if (roots[root] === projectId) {
+      delete roots[root];
+      rootsDoc.roots = roots as unknown as TomlTableWithoutBigInt;
+      writeToml(rootsPath, rootsDoc);
+    }
+  }
+}
+
+/**
+ * Rename a Grove. Recomputes its slug; if the new slug collides with a
+ * different existing Grove, auto-suffixes (`-2`, `-3`, ...). When the
+ * slug changes, moves the on-disk Grove directory from
+ * `~/.myco/groves/<old-slug>/` to `~/.myco/groves/<new-slug>/` so the
+ * SQLite + vectors files (resolved relative to the Grove dir) follow.
+ *
+ * Returns the updated `GroveRecord`, including the (possibly suffixed)
+ * slug.
+ */
+export function renameGrove(
+  groveId: string,
+  newName: string,
+  mycoHome = resolveMycoHome(),
+): GroveRecord {
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error('Grove name is required');
+
+  const existing = loadGroveRecord(groveId, mycoHome);
+  if (!existing) throw new Error(`Unknown Grove: ${groveId}`);
+
+  const requestedSlug = slugifyGroveName(trimmed);
+  let nextSlug = requestedSlug;
+  if (nextSlug !== existing.slug) {
+    const taken = new Set(
+      listGroves(mycoHome)
+        .filter((grove) => grove.id !== groveId)
+        .map((grove) => grove.slug),
+    );
+    if (taken.has(nextSlug)) {
+      let i = 2;
+      while (taken.has(`${requestedSlug}-${i}`)) {
+        i++;
+        if (i >= 1000) {
+          throw new Error(`Unable to allocate unique Grove slug from base ${requestedSlug}`);
+        }
+      }
+      nextSlug = `${requestedSlug}-${i}`;
+    }
+  }
+
+  const updated: GroveRecord = {
+    ...existing,
+    name: trimmed,
+    slug: nextSlug,
+  };
+
+  // Persist the metadata file in place. Grove dirs are addressed by
+  // `groveId` (not slug) on disk, so renaming the directory is not
+  // required for path resolvers — but we keep slug semantics on the
+  // `GroveRecord` so callers projecting URL / display slugs see the
+  // refreshed value.
+  writeGroveRecord(updated, mycoHome);
+  return updated;
+}
+
+/**
+ * Tear down a Grove. Refuses when projects remain bound to it unless
+ * `force: true` is passed — moves are the supported path for project
+ * relocation, not a "smart" delete.
+ *
+ * On success: removes `~/.myco/groves/<groveId>/` (metadata, registry,
+ * SQLite, vectors). Clears the cross-Grove default pointer if the
+ * deleted Grove was the default.
+ */
+export function deleteGrove(
+  groveId: string,
+  opts: { force?: boolean } = {},
+  mycoHome = resolveMycoHome(),
+): void {
+  const existing = loadGroveRecord(groveId, mycoHome);
+  if (!existing) throw new Error(`Unknown Grove: ${groveId}`);
+
+  const projects = listRegisteredProjects(groveId, mycoHome);
+  if (projects.length > 0 && !opts.force) {
+    throw new Error(
+      `Grove ${groveId} still has ${projects.length} bound project(s); pass force: true to delete`,
+    );
+  }
+
+  const groveDir = resolveGroveDir(groveId, mycoHome);
+  fs.rmSync(groveDir, { recursive: true, force: true });
+
+  const defaultId = getDefaultGroveId(mycoHome);
+  if (defaultId === groveId) {
+    const doc = readGroveRegistry(mycoHome);
+    const next: GroveRegistryDoc = { ...doc };
+    delete next.default_grove_id;
+    writeGroveRegistry(mycoHome, next);
+  }
+
+  // Drop any cached entries that referenced files under the deleted dir
+  // so subsequent reads don't return stale records.
+  clearGroveRegistryCaches();
+}
+
 function readPauseBlock(entry: Record<string, unknown>): PauseInfo | null {
   const raw = entry.paused;
   if (!isPlainTable(raw)) return null;
