@@ -12,6 +12,7 @@ import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import {
   ALL_PROJECTS_SCOPE,
+  assertGroveProjectId,
   projectScope,
   type ProjectScope,
 } from '@myco/grove/ids.js';
@@ -392,6 +393,91 @@ export function sweepLegacyBackupRoot(rootDir: string): LegacySweepResult {
     }
   }
   return { moved, legacyDir };
+}
+
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+
+/**
+ * Header metadata parsed from a snapshot file. The header is the first few
+ * lines emitted by `createBackup` (before any INSERTs).
+ *
+ * `scope` is `null` for legacy snapshots (pre-WB-A) that omit the
+ * `-- scope: ...` line — callers that require a project-scoped snapshot
+ * must reject `null` explicitly.
+ */
+export interface SnapshotHeader {
+  machine_id: string | null;
+  created_at: number | null;
+  protocol_version: number | null;
+  scope: ProjectScope | null;
+}
+
+const HEADER_SCAN_LIMIT = 16;
+
+/**
+ * Read and parse the comment header of a snapshot file. Reads a small
+ * prefix from disk and stops at the first non-comment, non-blank line.
+ */
+export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
+  const fd = fs.openSync(snapshotPath, 'r');
+  let raw = '';
+  try {
+    const buf = Buffer.alloc(4096);
+    const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+    raw = buf.toString('utf-8', 0, bytes);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const header: SnapshotHeader = {
+    machine_id: null,
+    created_at: null,
+    protocol_version: null,
+    scope: null,
+  };
+
+  const lines = raw.split('\n').slice(0, HEADER_SCAN_LIMIT);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    if (!trimmed.startsWith('--')) break;
+
+    const meta = trimmed.replace(/^--\s*/, '');
+    const machineMatch = /^Myco backup:\s*machine_id=([^,\s]+)(?:,\s*created_at=(\d+))?/.exec(meta);
+    if (machineMatch) {
+      header.machine_id = machineMatch[1];
+      header.created_at = machineMatch[2] ? Number(machineMatch[2]) : null;
+      continue;
+    }
+
+    const protocolMatch = /^Protocol version:\s*(\d+)/.exec(meta);
+    if (protocolMatch) {
+      header.protocol_version = Number(protocolMatch[1]);
+      continue;
+    }
+
+    const scopeMatch = /^scope:\s*(.+)$/.exec(meta);
+    if (scopeMatch) {
+      const value = scopeMatch[1].trim();
+      if (value === 'all-projects') {
+        header.scope = ALL_PROJECTS_SCOPE;
+      } else if (value.startsWith('project=')) {
+        const rawId = value.slice('project='.length);
+        try {
+          header.scope = projectScope(assertGroveProjectId(rawId));
+        } catch {
+          // A malformed `project=<id>` line is treated as an unknown scope
+          // (kept `null`) rather than throwing — the caller chooses whether
+          // an unknown scope is fatal.
+          header.scope = null;
+        }
+      }
+    }
+  }
+
+  return header;
 }
 
 // ---------------------------------------------------------------------------

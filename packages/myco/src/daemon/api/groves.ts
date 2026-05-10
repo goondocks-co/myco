@@ -1,15 +1,22 @@
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveProjectVaultDir } from '@myco/grove/paths.js';
 import {
+  createGrove,
+  deleteGrove,
+  findRegisteredProject,
   getDefaultGroveId,
   listGroves,
   listRegisteredProjects,
+  loadGroveRecord,
+  renameGrove,
   type GroveRecord,
   type RegisteredProject,
 } from '@myco/grove/registry.js';
+import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import { projectUrlSlug } from '@myco/grove/ids.js';
 import type { RouteHandler } from '@myco/daemon/router.js';
 import type { DaemonServiceScope } from '@myco/daemon/service-state.js';
+import { errorBody } from './error-envelope.js';
 
 export interface GroveProjectSummary {
   project_id: string;
@@ -106,6 +113,127 @@ function serializeProject(project: RegisteredProject): GroveProjectSummary {
 
 function projectSlug(project: RegisteredProject): string {
   return projectUrlSlug(project.name, project.project_id);
+}
+
+export function createCreateGroveHandler(): RouteHandler {
+  return async (req) => {
+    const body = (req.body ?? {}) as { name?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) {
+      return { status: 400, body: errorBody('name_required', 'Grove name is required') };
+    }
+    try {
+      const grove = createGrove(name);
+      return {
+        status: 201,
+        body: {
+          id: grove.id,
+          slug: grove.slug,
+          name: grove.name,
+          mode: grove.mode,
+          created_at: grove.created_at,
+        },
+      };
+    } catch (err) {
+      return { status: 500, body: errorBody('create_failed', (err as Error).message) };
+    }
+  };
+}
+
+export function createRenameGroveHandler(): RouteHandler {
+  return async (req) => {
+    const groveId = req.params.id;
+    const body = (req.body ?? {}) as { name?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) {
+      return { status: 400, body: errorBody('name_required', 'Grove name is required') };
+    }
+    if (!loadGroveRecord(groveId)) {
+      return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
+    }
+    try {
+      const updated = renameGrove(groveId, name);
+      return {
+        body: {
+          id: updated.id,
+          slug: updated.slug,
+          name: updated.name,
+          mode: updated.mode,
+          created_at: updated.created_at,
+        },
+      };
+    } catch (err) {
+      return { status: 500, body: errorBody('rename_failed', (err as Error).message) };
+    }
+  };
+}
+
+export function createDeleteGroveHandler(): RouteHandler {
+  return async (req) => {
+    const groveId = req.params.id;
+    if (!loadGroveRecord(groveId)) {
+      return { status: 404, body: errorBody('grove_not_found', `Unknown Grove: ${groveId}`) };
+    }
+    const projects = listRegisteredProjects(groveId);
+    if (projects.length > 0) {
+      return {
+        status: 409,
+        body: {
+          ...errorBody(
+            'grove_not_empty',
+            `Grove has ${projects.length} bound project(s); move or delete them first`,
+          ),
+          project_count: projects.length,
+        },
+      };
+    }
+    try {
+      // `force: false` is the explicit, non-destructive path. A `?force=true`
+      // query parameter is intentionally not exposed; force-delete is a
+      // CLI-side flag, not a URL trick.
+      deleteGrove(groveId, { force: false });
+      return { status: 204, body: undefined };
+    } catch (err) {
+      return { status: 500, body: errorBody('delete_failed', (err as Error).message) };
+    }
+  };
+}
+
+export function createMoveProjectHandler(): RouteHandler {
+  return async (req) => {
+    const targetGroveId = req.params.id;
+    const projectId = req.params.projectId;
+
+    const found = findRegisteredProject({ projectId });
+    if (!found) {
+      return {
+        status: 404,
+        body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+    const sourceGroveId = found.grove.id;
+
+    if (sourceGroveId === targetGroveId) {
+      return {
+        status: 400,
+        body: errorBody('same_grove', 'Source and target are the same Grove'),
+      };
+    }
+
+    if (!loadGroveRecord(targetGroveId)) {
+      return {
+        status: 404,
+        body: errorBody('target_grove_not_found', `Unknown target Grove: ${targetGroveId}`),
+      };
+    }
+
+    try {
+      const result = moveProjectBetweenGroves(sourceGroveId, targetGroveId, projectId);
+      return { body: { ok: true, move: result } };
+    } catch (err) {
+      return { status: 500, body: errorBody('move_failed', (err as Error).message) };
+    }
+  };
 }
 
 function manifestState(project: RegisteredProject): GroveProjectSummary['manifest_state'] {

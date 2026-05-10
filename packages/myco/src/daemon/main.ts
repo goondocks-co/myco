@@ -56,7 +56,19 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
-import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from './api/groves.js';
+import {
+  createCreateGroveHandler,
+  createDeleteGroveHandler,
+  createListGroveProjectsHandler,
+  createListGrovesHandler,
+  createMoveProjectHandler,
+  createRenameGroveHandler,
+  servedGroveScopeForDaemon,
+} from './api/groves.js';
+import {
+  createProjectBackupHandler,
+  createProjectRestoreHandler,
+} from './api/projects.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -1030,6 +1042,12 @@ export async function main(): Promise<void> {
   });
   server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
   server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
+  server.registerRoute('POST', '/api/groves', createCreateGroveHandler());
+  server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler());
+  server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler());
+  server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler());
+  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler());
+  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler());
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
