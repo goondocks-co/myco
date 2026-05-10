@@ -444,6 +444,7 @@ export const GROVE_REGISTRY_DIRNAME = 'registry';
 export const GROVE_REGISTRY_FILENAME = 'registry.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 export const SERVICE_DIRNAME = 'service';
+export const SERVICE_DEV_DIRNAME = 'service-dev';
 
 // Resolve Grove directories and service paths
 const groveHome = resolveMycoHome();
@@ -456,6 +457,43 @@ const daemonStatePath = resolveServiceDaemonStatePath();
 const runtimeDir = resolveMachineRuntimeDir(groveHome);
 const runtimeTmpDir = resolveMachineRuntimeTmpDir(groveHome);
 const runtimeCommandPath = resolveMachineRuntimeCommandPath(groveHome, commandName);
+```
+
+### Development Service Mode Management
+
+Use development service mode primitives for distinguishing between production and development daemon environments:
+```typescript
+import { SERVICE_DEV_DIRNAME, isDevServiceMode, pathsEquivalent, setDevServiceMode } from '../grove/paths.js';
+
+// Check current service mode
+function checkServiceMode(): boolean {
+  return isDevServiceMode();
+}
+
+// Switch to development mode (service-dev/, port 19344)
+function enableDevMode() {
+  setDevServiceMode(true);
+  console.log(`Switched to development service mode (${SERVICE_DEV_DIRNAME})`);
+}
+
+// Switch to production mode (service/, port 20915)
+function enableProdMode() {
+  setDevServiceMode(false);
+  console.log('Switched to production service mode');
+}
+
+// Path equivalence checking across service modes
+function checkPathEquivalence(path1: string, path2: string): boolean {
+  return pathsEquivalent(path1, path2);
+}
+
+// Service directory resolution based on current mode
+function resolveServiceDirectory(): string {
+  if (isDevServiceMode()) {
+    return resolveServiceDir().replace(SERVICE_DIRNAME, SERVICE_DEV_DIRNAME);
+  }
+  return resolveServiceDir();
+}
 ```
 
 ### Machine Runtime State Management
@@ -563,6 +601,11 @@ myco init --project "my-project" --grove "production"
 
 # Grove-only installation (no local daemon)
 myco init --grove-only --grove "production"
+
+# Development mode commands
+myco dev-mode enable   # Switch to service-dev/
+myco dev-mode disable  # Switch to service/
+myco dev-mode status   # Check current mode
 ```
 
 ### Grove Discovery Logic
@@ -614,3 +657,7 @@ async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
 **Registry File Naming**: Always use `GROVE_REGISTRY_FILENAME` constant ('registry.toml') for registry path resolution. Hardcoded filenames cause path mismatches when Grove path constants are updated.
 
 **Machine Runtime Directory Initialization**: Machine runtime directories must be created before Grove operations that require temporary state or command execution. Use `setupMachineRuntime()` pattern to ensure runtime directory availability.
+
+**Development Service Mode Isolation**: The development service mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production service mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution. Hardcoded service directory references bypass mode switching and cause service discovery failures.
+
+**Path Equivalence in Multi-Mode Environments**: Use `pathsEquivalent()` for path comparisons across development and production service modes. String equality comparisons fail when paths reference different service directories that resolve to the same logical location.
