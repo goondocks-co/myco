@@ -8,6 +8,7 @@ import {
   MACHINE_RUNTIME_TMP_DIRNAME,
 } from '../constants/update.js';
 import { assertGroveEraId } from './ids.js';
+import type { DaemonServiceDir } from './registry.js';
 
 /**
  * True when two filesystem paths point at the same file or directory —
@@ -88,6 +89,13 @@ export function setDevServiceMode(value: boolean): void {
 
 export function isDevServiceMode(): boolean {
   return devServiceMode;
+}
+
+export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonServiceDir {
+  const rel = path.relative(mycoHome, stateDir);
+  if (rel === 'service') return 'service';
+  if (rel === 'service-dev') return 'service-dev';
+  throw new Error(`Unrecognized daemon service dir: ${stateDir} (mycoHome=${mycoHome})`);
 }
 
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
