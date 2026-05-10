@@ -131,6 +131,7 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { resolveMycoHome } from '../grove/paths.js';
+import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -1662,6 +1663,25 @@ export async function main(): Promise<void> {
       });
     }
   })();
+
+  // Sweep orphaned per-project pauses before any worker loops start.
+  // A pause older than the staleness threshold is by definition abandoned —
+  // the previous daemon held the lock and died without resuming. See
+  // startup-pauses.ts for the carve-out + remove-when condition.
+  try {
+    const sweep = resumeOrphanedPauses(logger);
+    if (sweep.resumed > 0 || sweep.preserved > 0) {
+      logger.info(LOG_KINDS.DAEMON_START, 'Orphan pause sweep complete', {
+        scanned: sweep.scanned,
+        resumed: sweep.resumed,
+        preserved: sweep.preserved,
+      });
+    }
+  } catch (err) {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Orphan pause sweep failed', {
+      error: errorMessage(err),
+    });
+  }
 
   powerManager.start();
 
