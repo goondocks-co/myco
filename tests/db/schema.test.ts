@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(39);
+      expect(SCHEMA_VERSION).toBe(40);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -697,13 +697,13 @@ describe('Database schema', () => {
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         ).run();
         db.prepare(
-          `INSERT INTO agent_state (agent_id, key, value, updated_at)
-           VALUES ('c1', 'cursor', '42', 1000)`,
+          `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+           VALUES ('c1', 'proj_a', 'cursor', '42', 1000)`,
         ).run();
         expect(() =>
           db.prepare(
-            `INSERT INTO agent_state (agent_id, key, value, updated_at)
-             VALUES ('c1', 'cursor', '43', 1001)`,
+            `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+             VALUES ('c1', 'proj_a', 'cursor', '43', 1001)`,
           ).run(),
         ).toThrow();
       });
