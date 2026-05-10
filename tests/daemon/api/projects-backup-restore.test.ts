@@ -13,6 +13,8 @@ import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths.js
 import {
   clearGroveRegistryCaches,
   createGrove,
+  forceResumeProject,
+  pauseProject,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
 
@@ -267,5 +269,79 @@ describe('POST /api/projects/:projectId/restore', () => {
     );
     expect(response.status).toBe(404);
     expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+  });
+});
+
+describe('project-scoped pause gate', () => {
+  it('POST /api/projects/:projectId/backup returns 409 when paused', async () => {
+    const { grove, projectId } = seededProject();
+    pauseProject(grove.id, projectId, 'move-in-flight', 'move:test', mycoHome);
+
+    const response = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      { params: { projectId } },
+    );
+    expect(response.status).toBe(409);
+    const body = response.body as {
+      error: { code: string };
+      paused: { reason: string; since: number; owner_op: string; grove_id: string };
+    };
+    expect(body.error.code).toBe('project_paused');
+    expect(body.paused.reason).toBe('move-in-flight');
+    expect(body.paused.owner_op).toBe('move:test');
+    expect(body.paused.grove_id).toBe(grove.id);
+    expect(typeof body.paused.since).toBe('number');
+  });
+
+  it('POST /api/projects/:projectId/restore returns 409 when paused', async () => {
+    const { grove, projectId } = seededProject();
+    // Create a snapshot before pausing so the test exercises the pause gate
+    // rather than the snapshot-path checks.
+    const backup = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      { params: { projectId } },
+    );
+    const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
+
+    pauseProject(grove.id, projectId, 'move-in-flight', 'move:test', mycoHome);
+
+    const response = await call(
+      createProjectRestoreHandler({ mycoHome }),
+      { params: { projectId }, body: { snapshot_path: snapshotPath } },
+    );
+    expect(response.status).toBe(409);
+    const body = response.body as {
+      error: { code: string };
+      paused: { reason: string; owner_op: string; grove_id: string };
+    };
+    expect(body.error.code).toBe('project_paused');
+    expect(body.paused.reason).toBe('move-in-flight');
+    expect(body.paused.grove_id).toBe(grove.id);
+  });
+
+  it('both endpoints work again after force-resume', async () => {
+    const { grove, projectId } = seededProject();
+    const initialBackup = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      { params: { projectId } },
+    );
+    const snapshotPath = (initialBackup.body as { snapshot_path: string }).snapshot_path;
+
+    pauseProject(grove.id, projectId, 'move-in-flight', 'move:test', mycoHome);
+    forceResumeProject(grove.id, projectId, mycoHome);
+
+    const backupResponse = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      { params: { projectId } },
+    );
+    expect(backupResponse.status).toBeUndefined();
+    expect((backupResponse.body as { ok: boolean }).ok).toBe(true);
+
+    const restoreResponse = await call(
+      createProjectRestoreHandler({ mycoHome }),
+      { params: { projectId }, body: { snapshot_path: snapshotPath } },
+    );
+    expect(restoreResponse.status).toBeUndefined();
+    expect((restoreResponse.body as { ok: boolean }).ok).toBe(true);
   });
 });

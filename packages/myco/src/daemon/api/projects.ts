@@ -17,7 +17,7 @@ import {
   resolveGroveDbPath,
   resolveMycoHome,
 } from '@myco/grove/paths.js';
-import { findRegisteredProject } from '@myco/grove/registry.js';
+import { findRegisteredProject, isProjectPaused } from '@myco/grove/registry.js';
 import { createBackup, readSnapshotHeader, restoreBackup } from '../backup.js';
 import type { RouteHandler } from '../router.js';
 import { errorBody } from './error-envelope.js';
@@ -61,6 +61,29 @@ export function createProjectBackupHandler(
       return {
         status: 404,
         body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+
+    // Pause gate. The server-level gate keys on `requestContext.projectId`
+    // (sourced from headers); project-scoped routes resolve `projectId` from
+    // the URL, so we re-check here to keep backup/restore from racing a
+    // concurrent move on the same project.
+    const paused = isProjectPaused(projectId, mycoHome);
+    if (paused.paused) {
+      return {
+        status: 409,
+        body: {
+          ...errorBody(
+            'project_paused',
+            `Project ${projectId} is paused (${paused.reason})`,
+          ),
+          paused: {
+            reason: paused.reason,
+            since: paused.since,
+            owner_op: paused.owner_op,
+            grove_id: paused.grove_id,
+          },
+        },
       };
     }
 
@@ -132,6 +155,29 @@ export function createProjectRestoreHandler(
       return {
         status: 404,
         body: errorBody('project_not_found', `Project ${projectId} is not registered in any Grove`),
+      };
+    }
+
+    // Pause gate. The server-level gate keys on `requestContext.projectId`
+    // (sourced from headers); project-scoped routes resolve `projectId` from
+    // the URL, so we re-check here to keep backup/restore from racing a
+    // concurrent move on the same project.
+    const paused = isProjectPaused(projectId, mycoHome);
+    if (paused.paused) {
+      return {
+        status: 409,
+        body: {
+          ...errorBody(
+            'project_paused',
+            `Project ${projectId} is paused (${paused.reason})`,
+          ),
+          paused: {
+            reason: paused.reason,
+            since: paused.since,
+            owner_op: paused.owner_op,
+            grove_id: paused.grove_id,
+          },
+        },
       };
     }
 
