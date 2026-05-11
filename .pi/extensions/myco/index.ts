@@ -71,7 +71,7 @@ function resolveMycoHome(): string {
 function projectUsesGrove(directory: string): boolean {
   try {
     const raw = readFileSync(join(directory, ".myco", "project.toml"), "utf-8");
-    return /\[grove\]/.test(raw) && /binding_id\s*=/.test(raw);
+    return /\[grove\][^\[]*\bid\s*=/.test(raw);
   } catch {
     return false;
   }

@@ -3,6 +3,9 @@ dist/
 *.tsbuildinfo
 .env
 
+# Canonical lockfile is package-lock.json; bun is only used as a test runner.
+bun.lock
+
 # Bun migration — vendored native artifacts (built by CI / dev-link)
 packages/myco/vendor-src/
 packages/myco/vendor/
@@ -28,5 +31,6 @@ test-results/
 .agents/skills/myco
 docs/superpowers/specs/
 docs/superpowers/plans/
+docs/plans/
 docs/design/
 .wrangler/
