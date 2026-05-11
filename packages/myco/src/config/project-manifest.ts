@@ -9,6 +9,7 @@ import {
 } from '@myco/grove/paths.js';
 import { findRegisteredProjectByBinding } from '@myco/grove/registry-resolve.js';
 import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 
@@ -16,18 +17,15 @@ const SECRET_KEY_RE = /(secret|token|password|credential|api[_-]?key)/i;
 
 /**
  * Schema for the project's `project.toml`. Carries portable identity
- * (`project.id`, `project.name`) and the portable Grove identity
- * (`grove.id`, `grove.slug`, `grove.name`) — all of which are safe to
- * commit. The per-machine binding (binding_id, mode) lives in
+ * (`project.id`, `project.name`) and portable Grove identity
+ * (`grove.id`, `grove.slug`, `grove.name`) — all safe to commit. The
+ * per-machine binding (`binding_id`, `mode`) lives in
  * `project.local.toml` (see `ProjectLocalManifestSchema`).
  *
- * `binding_id`, `slug`, `mode`, `remote` remain accepted as optional fields
- * during the WB1→WB2 transition: legacy callers (activation,
- * request-context, binding) still read these off `manifest.grove`. The
- * migration path on disk strips them; this carve-out only keeps the
- * in-memory type compatible until consumers move to
- * `loadProjectLocalManifest`. Remove the optional legacy keys when no
- * caller reads `manifest.grove?.binding_id` any more.
+ * `binding_id`, `slug`, `mode`, `remote` are accepted as optional
+ * fields so the in-memory view exposed by `loadProjectManifest`
+ * remains a single shape regardless of whether the per-machine binding
+ * has migrated out of `project.toml` yet.
  */
 export const ProjectManifestSchema = z.object({
   project: z.object({
@@ -94,13 +92,9 @@ const manifestCache = createMtimeCache((manifestPath: string): ProjectManifest |
 
 /**
  * Overlay the per-machine binding (`grove.binding_id`, `grove.mode`) from
- * `project.local.toml` onto the in-memory manifest view. Keeps existing
- * call sites that read `manifest.grove?.binding_id` working transparently
- * through the WB1→WB2 transition, even though the binding has moved off
- * disk into `project.local.toml`.
- *
- * Remove this overlay (and the legacy `binding_id`/`mode` fields on
- * `ProjectManifestSchema`) once every consumer reads `loadProjectLocalManifest`.
+ * `project.local.toml` onto the in-memory manifest view so call sites
+ * that read `manifest.grove?.binding_id` see a single shape regardless
+ * of where the binding lives on disk.
  */
 function overlayLocalBinding(
   manifest: ProjectManifest,
@@ -136,13 +130,10 @@ const localManifestCache = createMtimeCache((manifestPath: string): ProjectLocal
 
 /**
  * Read the project manifest with `grove.binding_id` and `grove.mode`
- * reconstituted from `project.local.toml` via `overlayLocalBinding` (the
- * single source of truth for those fields). Binding-resolution callers
- * MUST go through this function — never `loadProjectLocalManifest`
- * directly — so legacy and post-migration vaults present an identical
- * shape. Remove this carve-out once activation writes the binding only
- * into `project.local.toml` and `ProjectManifestSchema` drops the legacy
- * `binding_id` / `mode` fields (WB2).
+ * reconstituted from `project.local.toml` (the single source of truth
+ * for the per-machine binding). Binding-resolution callers MUST go
+ * through this function — never `loadProjectLocalManifest` directly —
+ * so every vault shape presents identical fields.
  */
 export function loadProjectManifest(projectVaultDir: string): ProjectManifest | null {
   return manifestCache.get(resolveProjectManifestPath(projectVaultDir));
@@ -318,23 +309,15 @@ function readTomlDocument(filePath: string): TomlTableWithoutBigInt {
   return parsed as TomlTableWithoutBigInt;
 }
 
-function atomicWriteFileSync(filePath: string, contents: string): void {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmpPath, contents, 'utf-8');
-  fs.renameSync(tmpPath, filePath);
-}
-
 function mergeGroveTable(
   existing: unknown,
   grove: NonNullable<ProjectManifest['grove']>,
 ): TomlTableWithoutBigInt {
   const existingTable = isPlainTable(existing) ? existing as TomlTableWithoutBigInt : {};
   const table: TomlTableWithoutBigInt = { ...existingTable };
-  // `mode` and `binding_id` belong in `project.local.toml`. Persist them
-  // inline only when the caller passes them explicitly (legacy combined
-  // shape used as a test fixture or pre-WB2 callers); when absent, drop
-  // any stale inline copy so a re-save naturally migrates the file to
-  // the portable shape.
+  // `binding_id` and `mode` belong in `project.local.toml`. They are
+  // persisted inline only when the caller passes them explicitly; an
+  // implicit save drops any stale inline copy.
   if (grove.binding_id) table.binding_id = grove.binding_id;
   else delete table.binding_id;
   if (grove.binding_id) table.mode = grove.mode;

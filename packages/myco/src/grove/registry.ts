@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 import { createGroveId, isGroveEraId } from './ids.js';
@@ -32,10 +33,8 @@ export interface GroveRecord {
   mode: 'local';
   created_at: string;
   /**
-   * Which daemon's service dir is responsible for this Grove. Set at
-   * Grove creation. Reads default to `'service'` so existing Groves
-   * created before this field landed remain owned by the production
-   * daemon. Written into `grove.toml` on every subsequent write.
+   * Which daemon's service dir owns this Grove. Reads default to
+   * `'service'` for records that omit the field.
    */
   served_by: DaemonVariant;
 }
@@ -99,9 +98,8 @@ interface GroveRegistryDoc {
 }
 
 /**
- * Legacy shape for `~/.myco/config.yaml` — the registry block used to
- * live here as `grove.default_grove_id`. Kept so the migration path
- * can read it once and copy the value into the new file.
+ * Legacy shape for `~/.myco/config.yaml`. Read once during migration to
+ * pull `grove.default_grove_id` into the registry file.
  */
 interface LegacyGlobalConfigDoc {
   grove?: {
@@ -452,10 +450,6 @@ export function findRegisteredProjectByBinding(
 /**
  * Mark a project as paused. Idempotent for the same `ownerOp` (refreshes
  * `since` and returns); throws when a different op already holds the lock.
- *
- * Persisted via the same `writeToml` path used elsewhere in this file.
- * Writes are not atomic across multi-line changes — callers that need
- * stronger durability should layer their own locking.
  */
 export function pauseProject(
   groveId: string,
@@ -590,27 +584,53 @@ export function isProjectPaused(
   projectId: string,
   mycoHome = resolveMycoHome(),
 ): ProjectPauseStatus {
-  const groves = listGroves(mycoHome);
-  for (const grove of groves) {
-    const projectsDoc = readToml(resolveGroveProjectsPath(grove.id, mycoHome));
-    const projects = isPlainTable(projectsDoc.projects)
-      ? projectsDoc.projects as Record<string, unknown>
-      : {};
-    const entry = isPlainTable(projects[projectId])
-      ? projects[projectId] as Record<string, unknown>
-      : null;
-    if (!entry) continue;
-    const pause = readPauseBlock(entry);
-    if (!pause) return { paused: false };
-    return {
-      paused: true,
-      reason: pause.reason,
-      since: pause.since,
-      owner_op: pause.owner_op,
-      grove_id: grove.id,
-    };
+  // Scans every Grove: during a move, the project is registered in both
+  // source and target for a brief window. Returning at first-hit would let
+  // an alphabetically-first unpaused Grove mask a paused entry elsewhere.
+  for (const grove of listGroves(mycoHome)) {
+    const status = isProjectPausedInGrove(grove.id, projectId, mycoHome);
+    if (status.paused) return status;
   }
   return { paused: false };
+}
+
+/**
+ * Per-Grove pause lookup. Cheaper than `isProjectPaused` when the caller
+ * already knows the Grove (e.g. scope iteration) — skips the M×N
+ * cross-Grove scan.
+ */
+export function isProjectPausedInGrove(
+  groveId: string,
+  projectId: string,
+  mycoHome = resolveMycoHome(),
+): ProjectPauseStatus {
+  const projectsDoc = readToml(resolveGroveProjectsPath(groveId, mycoHome));
+  const projects = isPlainTable(projectsDoc.projects)
+    ? projectsDoc.projects as Record<string, unknown>
+    : {};
+  const entry = isPlainTable(projects[projectId])
+    ? projects[projectId] as Record<string, unknown>
+    : null;
+  if (!entry) return { paused: false };
+  const pause = readPauseBlock(entry);
+  if (!pause) return { paused: false };
+  return {
+    paused: true,
+    reason: pause.reason,
+    since: pause.since,
+    owner_op: pause.owner_op,
+    grove_id: groveId,
+  };
+}
+
+/**
+ * Predicate factory for scope iteration: returns `true` when the given
+ * scope's project is not paused in its bound Grove.
+ */
+export function pauseAwareShouldVisit(
+  mycoHome = resolveMycoHome(),
+): (scope: { projectId: string; grove: { id: string } }) => boolean {
+  return (scope) => !isProjectPausedInGrove(scope.grove.id, scope.projectId, mycoHome).paused;
 }
 
 /**
@@ -618,11 +638,9 @@ export function isProjectPaused(
  * the project isn't bound to that Grove — silent no-op would mask move
  * orchestrator bugs that re-deregister an already-detached project.
  *
- * Pass `{ force: true }` to make the call a no-op when the project is
- * already missing. The move orchestrator uses this on resume after a
- * partial commit (target registered, source deregistered, marker not yet
- * written): without `force`, the second pass would throw on the source
- * deregister and break resumability.
+ * `force: true` — idempotent on a missing entry. Required for the
+ * move-orchestrator resume path so a second pass after the source
+ * deregister doesn't throw.
  */
 export function deregisterProjectInGrove(
   groveId: string,
@@ -816,7 +834,7 @@ function writeGroveRecord(record: GroveRecord, mycoHome: string): void {
     grove: record as unknown as TomlTableWithoutBigInt,
   };
   const metadataPath = resolveGroveMetadataPath(record.id, mycoHome);
-  fs.writeFileSync(metadataPath, stringify(doc), 'utf-8');
+  atomicWriteFileSync(metadataPath, stringify(doc));
   groveRecordCache.invalidate(metadataPath);
   groveDirEntriesCache.invalidate(resolveGrovesDir(mycoHome));
 }
@@ -828,7 +846,7 @@ function readGroveRegistry(mycoHome: string): GroveRegistryDoc {
 function writeGroveRegistry(mycoHome: string, doc: GroveRegistryDoc): void {
   const filePath = resolveGroveRegistryPath(mycoHome);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, YAML.stringify(doc), 'utf-8');
+  atomicWriteFileSync(filePath, YAML.stringify(doc));
   groveRegistryCache.invalidate(filePath);
 }
 
@@ -847,7 +865,7 @@ function readToml(filePath: string): TomlTableWithoutBigInt {
 
 function writeToml(filePath: string, doc: TomlTableWithoutBigInt): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, stringify(doc), 'utf-8');
+  atomicWriteFileSync(filePath, stringify(doc));
   tomlDocCache.invalidate(filePath);
 }
 
