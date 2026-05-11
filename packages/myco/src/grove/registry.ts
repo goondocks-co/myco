@@ -719,6 +719,27 @@ export function renameGrove(
 }
 
 /**
+ * Set a Grove's `served_by` daemon variant. Atomic write via the
+ * shared `writeGroveRecord` path. Used by the dogfood claim/release
+ * workflow to flip ownership between the production daemon and the
+ * dev daemon.
+ */
+export function setGroveServedBy(
+  groveId: string,
+  servedBy: DaemonVariant,
+  mycoHome = resolveMycoHome(),
+): GroveRecord {
+  if (servedBy !== 'service' && servedBy !== 'service-dev') {
+    throw new Error(`Invalid served_by variant: ${servedBy}`);
+  }
+  const existing = loadGroveRecord(groveId, mycoHome);
+  if (!existing) throw new Error(`Unknown Grove: ${groveId}`);
+  const updated: GroveRecord = { ...existing, served_by: servedBy };
+  writeGroveRecord(updated, mycoHome);
+  return updated;
+}
+
+/**
  * Tear down a Grove. Refuses when projects remain bound to it unless
  * `force: true` is passed — moves are the supported path for project
  * relocation, not a "smart" delete.
