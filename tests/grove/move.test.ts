@@ -42,6 +42,9 @@ beforeEach(() => {
   fs.mkdirSync(projectRoot, { recursive: true });
   vaultDir = resolveProjectVaultDir(projectRoot);
   fs.mkdirSync(vaultDir, { recursive: true });
+  // Pre-seed machine_id so the move orchestrator skips its `gh api user`
+  // probe — that probe can take several seconds and is irrelevant here.
+  fs.writeFileSync(path.join(vaultDir, 'machine_id'), 'test-user_deadbeef', 'utf-8');
   clearGroveRegistryCaches();
 });
 

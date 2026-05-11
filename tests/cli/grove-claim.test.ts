@@ -355,14 +355,14 @@ describe('myco grove claim/release', () => {
     }
   });
 
-  it('rejects a legacy schema-2 manifest with a clear error', async () => {
-    const grove = createGrove('LegacyManifestV2', home);
+  it('rejects a manifest with an unsupported schema version', async () => {
+    const grove = createGrove('UnknownSchema', home);
     const projectId = createProjectId();
-    const projectRoot = path.join(home, 'project-legacy-v2');
+    const projectRoot = path.join(home, 'project-unknown-schema');
     fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
     registerProjectInGrove(grove.id, {
       projectId,
-      projectName: 'Legacy V2',
+      projectName: 'UnknownSchema',
       projectRoot,
     }, home);
     seedGroveDb(grove.id, home, projectId);
@@ -372,7 +372,7 @@ describe('myco grove claim/release', () => {
     fs.writeFileSync(
       path.join(claimDir, 'claim.json'),
       JSON.stringify({
-        schema: 2,
+        schema: 999,
         grove_id: grove.id,
         grove_slug: grove.slug,
         grove_name: grove.name,
@@ -380,48 +380,13 @@ describe('myco grove claim/release', () => {
         snapshot_db_path: path.join(claimDir, 'grove-claim.db'),
         claim_root: claimDir,
         claimed_at: 67890,
-        owner_op: 'legacy-v2',
-        phase: 'flipped',
+        owner_op: 'unknown-schema',
+        claim_phase: 'flipped',
       }),
     );
     fs.writeFileSync(path.join(claimDir, 'grove-claim.db'), 'PRETEND-DB');
 
-    await expect(run(['release', grove.slug])).rejects.toThrow(/schema=2/);
-  });
-
-  it('rejects a legacy schema-1 manifest with a clear error', async () => {
-    const grove = createGrove('LegacyManifest', home);
-    const projectId = createProjectId();
-    const projectRoot = path.join(home, 'project-legacy');
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    registerProjectInGrove(grove.id, {
-      projectId,
-      projectName: 'Legacy',
-      projectRoot,
-    }, home);
-    seedGroveDb(grove.id, home, projectId);
-
-    // Hand-write a v1 manifest.
-    const claimDir = path.join(backupsDir, 'claims', grove.slug, '12345');
-    fs.mkdirSync(claimDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(claimDir, 'claim.json'),
-      JSON.stringify({
-        schema: 1,
-        grove_id: grove.id,
-        grove_slug: grove.slug,
-        grove_name: grove.name,
-        original_served_by: 'service',
-        snapshot_path: path.join(claimDir, 'grove-claim.sql'),
-        claim_root: claimDir,
-        claimed_at: 12345,
-        owner_op: 'legacy',
-        phase: 'flipped',
-      }),
-    );
-    fs.writeFileSync(path.join(claimDir, 'grove-claim.sql'), '-- legacy\n');
-
-    await expect(run(['release', grove.slug])).rejects.toThrow(/Legacy claim manifest/);
+    await expect(run(['release', grove.slug])).rejects.toThrow(/Unsupported claim manifest schema/);
   });
 
   it('recovers from a flipped-but-incomplete claim by running release', async () => {

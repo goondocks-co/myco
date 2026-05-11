@@ -2,21 +2,19 @@
  * moveProjectBetweenGroves — relocate a registered project's data and
  * binding from one Grove to another on the same machine.
  *
- * Phases (recorded on a marker file under
+ * State machine, recorded on a marker file under
  * `<projectVaultDir>/.myco/migration/<moveOpId>.json` so a crash mid-move
- * is recoverable on the next call):
+ * is recoverable on the next call:
  *
- *   pause -> snapshot -> snapshot_complete -> restored -> verified
- *     -> committed -> cleaned -> completed
+ *   pause → snapshot → snapshot_complete → restored → verified
+ *     → committed → cleaned → completed
  *
- * The marker is the source of truth for resumability. If a marker exists
- * for the same project on entry, the orchestrator picks up from the
- * recorded phase. A marker for a different project (or a different
- * source/target pair) refuses to proceed.
+ * The marker is the source of truth for resumability. A marker for the
+ * same (project, from, to) tuple is resumed; any other open marker
+ * refuses to proceed.
  */
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
@@ -30,6 +28,7 @@ import {
   createBackup,
   restoreBackup,
 } from '@myco/daemon/backup.js';
+import { getMachineId } from '@myco/daemon/machine-id.js';
 import {
   assertGroveProjectId,
   createGroveBindingId,
@@ -37,7 +36,9 @@ import {
   projectUrlSlug,
 } from './ids.js';
 import { ensureGroveDatabase } from './database.js';
+import { findMarkerFiles, readMarkerJson, writeMarkerJson } from './marker.js';
 import {
+  resolveBackupsRoot,
   resolveGroveDbPath,
   resolveMycoHome,
   resolveProjectVaultDir,
@@ -225,9 +226,8 @@ export function moveProjectBetweenGroves(
   const sourceDbPath = resolveGroveDbPath(sourceGroveId, mycoHome);
   const targetDbPath = resolveGroveDbPath(targetGroveId, mycoHome);
 
-  const machineId = readMachineId(vaultDir);
-  const snapshotsRoot = options.snapshotsRoot
-    ?? path.join(os.homedir(), 'myco_backups');
+  const machineId = getMachineId(vaultDir);
+  const snapshotsRoot = resolveBackupsRoot(options.snapshotsRoot);
   const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
   fs.mkdirSync(snapshotDir, { recursive: true });
 
@@ -306,10 +306,7 @@ export function moveProjectBetweenGroves(
       projectRoot,
       bindingId: newBindingId,
     }, mycoHome);
-    // `force: true` is the resume-idempotent path: a crash between the
-    // source deregister and writing phase=committed would otherwise cause
-    // the next call to throw "not registered" here. With force, the second
-    // attempt is a no-op and we advance the marker.
+    // force: idempotent on resume after a partial commit
     deregisterProjectInGrove(sourceGroveId, projectId, mycoHome, { force: true });
     saveProjectManifest(vaultDir, {
       project: { id: projectId, name: projectName },
@@ -368,21 +365,44 @@ function orderOf(phase: MovePhase): number {
 }
 
 function writeMarker(markerPath: string, marker: MoveMarker): void {
-  // Atomic write: a torn JSON file would parse as null and the orchestrator
-  // would silently start a fresh move op on top of partial work, defeating
-  // resumability. Temp+rename keeps `markerPath` either at its prior valid
-  // state or fully replaced with the new one.
-  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-  const tmp = `${markerPath}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(marker, null, 2), 'utf-8');
-  fs.renameSync(tmp, markerPath);
+  writeMarkerJson(markerPath, marker);
+}
+
+function validateMarker(raw: unknown): MoveMarker | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as Partial<MoveMarker>;
+  if (
+    typeof parsed.move_op_id !== 'string'
+    || typeof parsed.from_grove_id !== 'string'
+    || typeof parsed.to_grove_id !== 'string'
+    || typeof parsed.project_id !== 'string'
+    || typeof parsed.started_at !== 'string'
+    || typeof parsed.phase !== 'string'
+    || !PHASE_ORDER.includes(parsed.phase as MovePhase)
+  ) {
+    return null;
+  }
+  return {
+    move_op_id: parsed.move_op_id,
+    from_grove_id: parsed.from_grove_id,
+    to_grove_id: parsed.to_grove_id,
+    project_id: parsed.project_id,
+    project_name: typeof parsed.project_name === 'string' ? parsed.project_name : '',
+    project_root: typeof parsed.project_root === 'string' ? parsed.project_root : '',
+    started_at: parsed.started_at,
+    phase: parsed.phase as MovePhase,
+    ...(typeof parsed.snapshot_path === 'string' ? { snapshot_path: parsed.snapshot_path } : {}),
+    ...(parsed.table_counts ? { table_counts: parsed.table_counts as Record<string, number> } : {}),
+    ...(typeof parsed.new_binding_id === 'string' ? { new_binding_id: parsed.new_binding_id } : {}),
+  };
+}
+
+function readMarker(markerPath: string): MoveMarker | null {
+  return readMarkerJson<MoveMarker>(markerPath, validateMarker);
 }
 
 function findExistingMarkerForProject(migrationDir: string, projectId: string): MoveMarker | null {
-  if (!fs.existsSync(migrationDir)) return null;
-  for (const entry of fs.readdirSync(migrationDir)) {
-    if (!entry.endsWith('.json')) continue;
-    const full = path.join(migrationDir, entry);
+  for (const full of findMarkerFiles(migrationDir, () => true)) {
     const parsed = readMarker(full);
     if (parsed && parsed.project_id === projectId && parsed.phase !== 'completed') {
       return parsed;
@@ -392,12 +412,9 @@ function findExistingMarkerForProject(migrationDir: string, projectId: string): 
 }
 
 function findCompletedMarkerForProject(migrationDir: string, projectId: string): MoveMarker | null {
-  if (!fs.existsSync(migrationDir)) return null;
   let latest: MoveMarker | null = null;
   let latestStarted = '';
-  for (const entry of fs.readdirSync(migrationDir)) {
-    if (!entry.endsWith('.json')) continue;
-    const full = path.join(migrationDir, entry);
+  for (const full of findMarkerFiles(migrationDir, () => true)) {
     const parsed = readMarker(full);
     if (!parsed || parsed.project_id !== projectId) continue;
     if (parsed.phase !== 'completed') continue;
@@ -410,62 +427,13 @@ function findCompletedMarkerForProject(migrationDir: string, projectId: string):
 }
 
 function findMarkerForOtherProject(migrationDir: string, projectId: string): MoveMarker | null {
-  if (!fs.existsSync(migrationDir)) return null;
-  for (const entry of fs.readdirSync(migrationDir)) {
-    if (!entry.endsWith('.json')) continue;
-    const full = path.join(migrationDir, entry);
+  for (const full of findMarkerFiles(migrationDir, () => true)) {
     const parsed = readMarker(full);
     if (parsed && parsed.project_id !== projectId && parsed.phase !== 'completed') {
       return parsed;
     }
   }
   return null;
-}
-
-function readMarker(markerPath: string): MoveMarker | null {
-  try {
-    const raw = fs.readFileSync(markerPath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<MoveMarker>;
-    if (
-      typeof parsed.move_op_id === 'string'
-      && typeof parsed.from_grove_id === 'string'
-      && typeof parsed.to_grove_id === 'string'
-      && typeof parsed.project_id === 'string'
-      && typeof parsed.started_at === 'string'
-      && typeof parsed.phase === 'string'
-      && PHASE_ORDER.includes(parsed.phase as MovePhase)
-    ) {
-      const result: MoveMarker = {
-        move_op_id: parsed.move_op_id,
-        from_grove_id: parsed.from_grove_id,
-        to_grove_id: parsed.to_grove_id,
-        project_id: parsed.project_id,
-        project_name: typeof parsed.project_name === 'string' ? parsed.project_name : '',
-        project_root: typeof parsed.project_root === 'string' ? parsed.project_root : '',
-        started_at: parsed.started_at,
-        phase: parsed.phase as MovePhase,
-        ...(typeof parsed.snapshot_path === 'string' ? { snapshot_path: parsed.snapshot_path } : {}),
-        ...(parsed.table_counts ? { table_counts: parsed.table_counts as Record<string, number> } : {}),
-        ...(typeof parsed.new_binding_id === 'string' ? { new_binding_id: parsed.new_binding_id } : {}),
-      };
-      return result;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function readMachineId(vaultDir: string): string {
-  const cachePath = path.join(vaultDir, 'machine_id');
-  try {
-    const cached = fs.readFileSync(cachePath, 'utf-8').trim();
-    if (cached.length > 0) return cached;
-  } catch {
-    // fall through
-  }
-  const fallback = 'move-orchestrator_local';
-  return fallback;
 }
 
 function withDb<T>(dbPath: string, fn: (db: Database) => T): T {

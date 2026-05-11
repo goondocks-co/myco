@@ -192,4 +192,34 @@ describe('Grove registry pause primitive', () => {
     if (!status.paused) throw new Error('unreachable');
     expect(status.owner_op).toBe('op-1');
   });
+
+  it('returns paused when any Grove pauses the project (mid-move window)', () => {
+    // During a move's commit window the project is registered in both
+    // source and target. The alphabetically-first Grove may be the
+    // unpaused target — isProjectPaused must scan every Grove and
+    // report paused if any holds the lock.
+    const source = createGrove('aardvark', home);
+    const target = createGrove('zebra', home);
+    registerProjectInGrove(source.id, {
+      projectId: 'proj_aaaa',
+      projectName: 'Demo',
+      projectRoot: '/tmp/demo',
+    }, home);
+    registerProjectInGrove(target.id, {
+      projectId: 'proj_aaaa',
+      projectName: 'Demo',
+      projectRoot: '/tmp/demo',
+    }, home);
+
+    // Pause the alphabetically-later Grove. If the implementation
+    // returned on the first hit, the unpaused first Grove would mask
+    // the paused entry on the second.
+    pauseProject(target.id, 'proj_aaaa', 'grove-move', 'op-move', home);
+
+    const status = isProjectPaused('proj_aaaa', home);
+    expect(status.paused).toBe(true);
+    if (!status.paused) throw new Error('unreachable');
+    expect(status.grove_id).toBe(target.id);
+    expect(status.owner_op).toBe('op-move');
+  });
 });

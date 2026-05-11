@@ -68,6 +68,19 @@ export function resolveMycoHome(options: MycoHomeOptions = {}): string {
   return path.join(options.homeDir ?? os.homedir(), '.myco');
 }
 
+/**
+ * Resolve the root directory for project-scoped backups. Precedence:
+ *   1. Explicit `override` argument.
+ *   2. `MYCO_BACKUPS_DIR` environment variable.
+ *   3. `~/myco_backups`.
+ */
+export function resolveBackupsRoot(override?: string): string {
+  if (override && override.trim().length > 0) return path.resolve(override);
+  const env = process.env.MYCO_BACKUPS_DIR?.trim();
+  if (env) return path.resolve(env);
+  return path.join(os.homedir(), 'myco_backups');
+}
+
 export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, GLOBAL_CONFIG_FILENAME);
 }
