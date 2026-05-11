@@ -11,6 +11,10 @@ import type { EmbeddingManager } from './embedding/manager.js';
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
+import {
+  tryResolveRequestContextForVault,
+  type MycoRequestContext,
+} from '@myco/tools/request-context.js';
 
 export interface TriggerTitleSummaryDeps {
   vaultDir: string;
@@ -20,6 +24,14 @@ export interface TriggerTitleSummaryDeps {
   // without a daemon restart.
   liveConfig: { current: MycoConfig };
   logger: DaemonLogger;
+  /**
+   * Caller-supplied request context. The title-summary task runs through
+   * `runAgent`, which threads context into `projectScopeFromRequestContext`
+   * for project-scoped reads/writes. When omitted, we fall back to deriving
+   * a context from `vaultDir` so the task doesn't crash on the first call
+   * — see the catch in the body for the legacy-vault case.
+   */
+  requestContext?: MycoRequestContext;
 }
 
 /**
@@ -43,6 +55,21 @@ export async function triggerTitleSummary(
   if (config.agent.summary_batch_interval <= 0) return;
   if (config.agent.event_tasks_enabled === false) return;
 
+  // runAgent calls projectScopeFromRequestContext, which throws when no
+  // context is supplied. The Stop pipeline used to pass no context here
+  // and every title-summary task failed with that exact error. Supply the
+  // caller's context if we got one; otherwise resolve from vaultDir with
+  // the sessionId as an override so the task gets project-scoped reads.
+  let requestContext = deps.requestContext;
+  if (!requestContext) {
+    const resolved = tryResolveRequestContextForVault(vaultDir, { sessionId });
+    if (resolved.kind === 'grove') {
+      requestContext = resolved.context;
+    }
+    // Legacy non-Grove vaults fall through with requestContext undefined;
+    // runAgent will surface the underlying error via its own try/catch.
+  }
+
   try {
     const { runAgent } = await import('../agent/executor.js');
     runAgent(vaultDir, {
@@ -50,6 +77,7 @@ export async function triggerTitleSummary(
       instruction: `Process session ${sessionId} only`,
       embeddingManager,
       logger,
+      requestContext,
     }).catch((err) => {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Title-summary task failed', {
         session_id: sessionId,

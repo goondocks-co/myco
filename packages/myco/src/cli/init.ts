@@ -1,6 +1,6 @@
 import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
 import { createSchema } from '../db/schema.js';
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
 import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
 import { ensureGroveDatabase } from '../grove/database.js';
@@ -46,6 +46,20 @@ export async function run(args: string[]): Promise<void> {
   const explicitProjectRoot = projectArg ? path.resolve(projectArg) : undefined;
   const vaultDir = explicitProjectRoot ? resolveProjectVaultDir(explicitProjectRoot) : resolveVaultDir();
   const projectRoot = explicitProjectRoot ?? resolveProjectRoot(vaultDir);
+
+  // Refuse to register obviously-too-broad project roots ($HOME, /,
+  // /Users/<user>, etc.) before we touch the registry. A bad root here
+  // cascades into canopy-scan event-loop wedges and a poisoned project
+  // entry that's hard to clean up after the fact.
+  try {
+    assertSafeProjectRoot(projectRoot);
+  } catch (err) {
+    if (err instanceof UnsafeProjectRootError) {
+      console.error(`\nmyco init: ${err.message}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
 
   const alreadyInitialized = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
 
