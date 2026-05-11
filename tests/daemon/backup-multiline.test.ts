@@ -76,16 +76,10 @@ function roundTrip(sporeId: string, sessionId: string, body: string, tmpDir: str
 
   const snapshotPath = createBackup(getDatabase(), tmpDir, MACHINE, ALL_PROJECTS_SCOPE);
 
-  // The whole file must be safe to re-parse line-by-line — verify
-  // structurally before restoring.
-  const dump = fs.readFileSync(snapshotPath, 'utf-8');
-  for (const line of dump.split('\n')) {
-    if (line.startsWith('INSERT OR IGNORE')) {
-      expect(line.endsWith(');')).toBe(true);
-    }
-  }
-
-  // Drop the source row, then restore and re-read.
+  // Drop the source row, then restore and re-read. Multi-line payloads
+  // are emitted inline (single SQL string literal spanning newlines) —
+  // restore relies on SQLite's own multi-statement parser, not a
+  // line-based regex.
   getDatabase().prepare('DELETE FROM spores WHERE id = ?').run(sporeId);
   expect(readSpore(sporeId)).toBeFalsy();
 

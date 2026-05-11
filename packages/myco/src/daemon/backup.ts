@@ -119,36 +119,23 @@ function escapeSql(value: string): string {
 }
 
 /**
- * Format a string for inclusion as a SQL value expression. Single-line strings
- * are emitted as a plain quoted literal; strings containing `\n` or `\r` are
- * split into segments concatenated via `char(10)` / `char(13)` so the entire
- * INSERT stays on one line. The line-based restore parser relies on every
- * INSERT being a single line — embedded newlines in the literal would break
- * the parse and drop data.
+ * Format a string for inclusion as a SQL value expression. The literal
+ * is emitted as a single quoted string with embedded newlines preserved
+ * inline — SQLite's parser handles multi-line string literals natively.
+ *
+ * Earlier versions of this function split newlines into `char(10)`
+ * concatenations so every INSERT stayed on one line, because the
+ * line-based restore parser couldn't span newlines. That parser is gone
+ * (restore now feeds the whole dump to `db.exec()`); the concatenation
+ * scheme produced expression trees deeper than SQLite's 1000-node
+ * limit on rows with long multi-line payloads (prompt batches, plans),
+ * which made the affected dumps unreloadable.
+ *
+ * Old `char(10)` / `char(13)` concatenations in legacy dumps still
+ * restore correctly because SQLite evaluates those at parse time.
  */
 function formatSqlString(value: string): string {
-  if (!value.includes('\n') && !value.includes('\r')) {
-    return `'${escapeSql(value)}'`;
-  }
-  const segments: string[] = [];
-  let current = '';
-  for (const ch of value) {
-    if (ch === '\n') {
-      segments.push(`'${escapeSql(current)}'`);
-      segments.push('char(10)');
-      current = '';
-    } else if (ch === '\r') {
-      segments.push(`'${escapeSql(current)}'`);
-      segments.push('char(13)');
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-  segments.push(`'${escapeSql(current)}'`);
-  const filtered = segments.filter((s) => s !== "''");
-  if (filtered.length === 0) return "''";
-  return filtered.join(' || ');
+  return `'${escapeSql(value)}'`;
 }
 
 /**

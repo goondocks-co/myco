@@ -53,12 +53,15 @@ const KNOWN_PROJECTS: Record<string, string> = {
 const COUNT_TABLES = ['spores', 'activities', 'prompt_batches', 'canopy_maps', 'digest_extracts', 'sessions'] as const;
 
 function assertNoDaemon(): void {
+  if (process.argv.includes('--force')) return;
   try {
     const out = execFileSync('pgrep', ['-fl', 'myco daemon'], { encoding: 'utf-8' });
     if (out.trim()) {
       console.error('Found running myco daemon(s):');
       console.error(out);
       console.error('Stop all daemons before running this recovery script.');
+      console.error('Or pass --force if you have already killed them and they are');
+      console.error('respawning faster than the check can confirm.');
       process.exit(1);
     }
   } catch {
