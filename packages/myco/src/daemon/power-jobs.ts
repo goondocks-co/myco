@@ -35,7 +35,7 @@ import {
   resolveGroveDbPath,
 } from '@myco/grove/paths.js';
 import {
-  isProjectPaused,
+  pauseAwareShouldVisit,
   listGroves,
   listRegisteredProjects,
 } from '@myco/grove/registry.js';
@@ -510,10 +510,9 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           mycoHome,
           daemonStateDir,
           machineId,
-          // Pause gate: a paused project's vault is owned by an in-flight
-          // op (move, vacuum); skip GC against it so the op gets the
-          // exclusive view it relies on.
-          shouldVisit: (scope) => !isProjectPaused(scope.projectId, mycoHome).paused,
+          // Skip projects under an in-flight move/vacuum so GC doesn't
+          // race the op's exclusive view of the DB.
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.staging_gc_failed',
             'Staging GC',
@@ -546,9 +545,9 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           mycoHome,
           daemonStateDir,
           machineId,
-          // Pause gate: skip projects under an in-flight move/vacuum so
-          // the canopy scan doesn't write to a DB the op owns exclusively.
-          shouldVisit: (scope) => !isProjectPaused(scope.projectId, mycoHome).paused,
+          // Skip projects under an in-flight move/vacuum so the canopy
+          // scan doesn't write to a DB the op owns exclusively.
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.canopy_dispatch_failed',
             'Canopy background scan',

@@ -119,20 +119,9 @@ function escapeSql(value: string): string {
 }
 
 /**
- * Format a string for inclusion as a SQL value expression. The literal
- * is emitted as a single quoted string with embedded newlines preserved
- * inline — SQLite's parser handles multi-line string literals natively.
- *
- * Earlier versions of this function split newlines into `char(10)`
- * concatenations so every INSERT stayed on one line, because the
- * line-based restore parser couldn't span newlines. That parser is gone
- * (restore now feeds the whole dump to `db.exec()`); the concatenation
- * scheme produced expression trees deeper than SQLite's 1000-node
- * limit on rows with long multi-line payloads (prompt batches, plans),
- * which made the affected dumps unreloadable.
- *
- * Old `char(10)` / `char(13)` concatenations in legacy dumps still
- * restore correctly because SQLite evaluates those at parse time.
+ * Format a string as a SQL value expression: a single quoted literal
+ * with embedded newlines preserved inline. The whole dump is later fed
+ * to `db.exec()`, which handles multi-line literals natively.
  */
 function formatSqlString(value: string): string {
   return `'${escapeSql(value)}'`;
@@ -142,9 +131,9 @@ function formatSqlString(value: string): string {
  * Serialize a JavaScript value into a SQL literal.
  *
  * - null / undefined → NULL
- * - number → numeric literal
- * - Buffer → X'hex'
- * - string → 'escaped string' (multi-line values use char(10)/char(13) concat)
+ * - number / bigint → numeric literal
+ * - Buffer / Uint8Array → X'hex'
+ * - string → 'escaped string' (newlines preserved inline)
  */
 function toSqlLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'NULL';

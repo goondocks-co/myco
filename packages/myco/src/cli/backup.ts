@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '@myco/db/client.js';
 import {
@@ -9,21 +8,15 @@ import {
   restoreBackup,
 } from '@myco/daemon/backup.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
-import { resolveGroveDbPath, resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import {
+  resolveBackupsRoot,
+  resolveGroveDbPath,
+  resolveMycoHome,
+  resolveProjectVaultDir,
+} from '@myco/grove/paths.js';
 import { findRegisteredProject, isProjectPaused } from '@myco/grove/registry.js';
 import { assertGroveProjectId, projectUrlSlug } from '@myco/grove/ids.js';
 import { findProjectByRef } from './grove.js';
-
-/**
- * Root directory for project-scoped backup snapshots. Defaults to
- * `~/myco_backups/`; tests override via MYCO_BACKUPS_DIR because
- * `os.homedir()` caches at process start and ignores later `HOME` changes.
- */
-function resolveBackupRoot(): string {
-  const override = process.env.MYCO_BACKUPS_DIR?.trim();
-  if (override) return path.resolve(override);
-  return path.join(os.homedir(), 'myco_backups');
-}
 
 const USAGE = `Usage: myco backup <command>
 
@@ -57,7 +50,7 @@ export async function run(args: string[]): Promise<void> {
     const vaultDir = resolveProjectVaultDir(found.project.root);
     const machineId = getMachineId(vaultDir);
     const slug = projectUrlSlug(found.project.name, found.project.project_id);
-    const backupDir = path.join(resolveBackupRoot(), slug);
+    const backupDir = path.join(resolveBackupsRoot(), slug);
     fs.mkdirSync(backupDir, { recursive: true });
 
     const groveDbPath = resolveGroveDbPath(found.grove.id, mycoHome);
