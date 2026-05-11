@@ -4,14 +4,22 @@ import * as __orig__myco_agent_loader_js_2__ns from '@myco/agent/loader.js';
 const __orig__myco_agent_loader_js_2 = { ...__orig__myco_agent_loader_js_2__ns };
 import * as __orig__myco_db_client_js_3__ns from '@myco/db/client.js';
 const __orig__myco_db_client_js_3 = { ...__orig__myco_db_client_js_3__ns };
+import * as __orig__myco_agent_harness_openai_js__ns from '@myco/agent/harness/openai.js';
+const __orig__myco_agent_harness_openai_js = { ...__orig__myco_agent_harness_openai_js__ns };
 /**
  * Executor tests that exercise the openai-agents harness path.
  *
  * Addresses findings #27 (dryRun not E2E tested for openai-agents) and
  * #28 (resume semantics untested for openai-agents). The Claude SDK harness
  * has its own coverage in executor.test.ts and executor-dry-run.test.ts;
- * this file stands up the parallel @openai/agents Runner mock and verifies
- * the executor threads dryRun + resumes lastResponseId correctly.
+ * this file verifies the executor threads dryRun + resumes lastResponseId
+ * correctly through the openai-agents harness.
+ *
+ * The test injects a stub ModelProvider via the harness's `testOverrides`
+ * constructor option — see the wrapped OpenAIAgentsHarness mock below. This
+ * lets the real @openai/agents Runner drive the execution against canned
+ * model responses, so SDK shape drift (e.g. the 0.9 MCP alignment) surfaces
+ * in tests immediately instead of being masked by module-level mocks.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from 'bun:test';
@@ -24,6 +32,12 @@ import { getRun, insertRun } from '@myco/db/queries/runs.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { epochSeconds } from '@myco/constants.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import type {
+  Model,
+  ModelProvider,
+  ModelRequest,
+  ModelResponse,
+} from '@openai/agents';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 // ---------------------------------------------------------------------------
@@ -37,64 +51,68 @@ const TEST_TASK_PROMPT = 'Do the thing.';
 const TEST_SYSTEM_PROMPT = 'You are a vault agent.';
 
 // ---------------------------------------------------------------------------
-// Mock: @openai/agents Runner — capture args + lastResponseId propagation
+// Stub ModelProvider — injected into the real @openai/agents Runner via the
+// harness's testOverrides constructor option (see mock for harness/openai.js
+// below). Captures every request so tests can assert on inputs threaded
+// through the executor → harness → runner pipeline.
 // ---------------------------------------------------------------------------
 
-interface MockRunOptions {
-  session?: {
-    addItems: (items: unknown[]) => Promise<void>;
-    getItems: () => Promise<unknown[]>;
-  };
-  signal?: AbortSignal;
-  maxTurns?: number;
+interface StubResponseTemplate {
+  text: string;
+  responseId: string;
 }
 
-const runnerCalls: Array<{ agent: unknown; input: string; options: MockRunOptions; priorSessionItems: unknown[] }> = [];
-let mockLastResponseId = 'resp_openai_final';
+const stubRequests: ModelRequest[] = [];
+let stubResponseQueue: StubResponseTemplate[] = [{ text: 'Agent run complete.', responseId: 'resp_openai_final' }];
 
-mock.module('@openai/agents', () => {
-  class Agent {
-    constructor(public readonly config: Record<string, unknown>) {}
-  }
-  class OpenAIProvider {
-    constructor(public readonly config: Record<string, unknown>) {}
-  }
-  class Runner {
-    constructor(public readonly config: Record<string, unknown>) {}
-    async run(agent: unknown, input: string, options: MockRunOptions = {}) {
-      const priorItems = options.session ? await options.session.getItems() : [];
-      runnerCalls.push({ agent, input, options, priorSessionItems: priorItems });
-      if (options.session) {
-        await options.session.addItems([{ type: 'assistant', content: 'ok' }]);
-      }
+const stubProvider: ModelProvider = {
+  getModel: (): Model => ({
+    async getResponse(req: ModelRequest): Promise<ModelResponse> {
+      stubRequests.push(req);
+      const idx = Math.min(stubRequests.length - 1, stubResponseQueue.length - 1);
+      const template = stubResponseQueue[idx];
       return {
-        finalOutput: 'Agent run complete.',
-        lastResponseId: mockLastResponseId,
-        rawResponses: [
+        usage: {
+          requests: 1,
+          inputTokens: 42,
+          outputTokens: 7,
+          totalTokens: 49,
+          inputTokensDetails: [],
+          outputTokensDetails: [],
+        } as ModelResponse['usage'],
+        output: [
           {
-            usage: {
-              requests: 1,
-              inputTokens: 42,
-              outputTokens: 7,
-              totalTokens: 49,
-            },
-          },
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: template.text }],
+          } as never,
         ],
+        responseId: template.responseId,
       };
-    }
-  }
-  return { Agent, Runner, OpenAIProvider };
+    },
+    // eslint-disable-next-line require-yield
+    async *getStreamedResponse(_req: ModelRequest) {
+      throw new Error('streamed responses not supported in stub');
+    },
+  }),
+};
+
+// Wrap OpenAIAgentsHarness so the executor's registry-driven factory always
+// constructs it with the stub provider. This is the seam that replaces the
+// old module-level @openai/agents mock — bun's mock.module can't intercept
+// the 0.9+ `export *` re-exports, so we override at our own module boundary.
+mock.module('@myco/agent/harness/openai.js', () => {
+  const original = __orig__myco_agent_harness_openai_js;
+  return {
+    ...original,
+    OpenAIAgentsHarness: class extends original.OpenAIAgentsHarness {
+      constructor(_overrides?: unknown) {
+        super({ modelProvider: stubProvider });
+      }
+    },
+  };
 });
-
-// ---------------------------------------------------------------------------
-// Mock: openai
-// ---------------------------------------------------------------------------
-
-mock.module('openai', () => ({
-  default: class OpenAI {
-    constructor(public readonly config: Record<string, unknown>) {}
-  },
-}));
 
 // ---------------------------------------------------------------------------
 // Mock: local provider prep
@@ -198,9 +216,20 @@ mock.module('@myco/agent/harness/openai-local-mcp.js', () => ({
         created_at: epochSeconds(),
       });
     }
+    // Real Runner reaches into the mcpServer during run (since the 0.9
+    // Python-SDK MCP alignment), so the stub must implement the full
+    // MCPServer surface — not just connect/close.
     return {
+      name: 'myco-vault-mock',
+      cacheToolsList: true,
       connect: async () => {},
       close: async () => {},
+      invalidateToolsCache: async () => {},
+      listTools: async () => [],
+      callTool: async () => [],
+      listResources: async () => ({ resources: [] }),
+      listResourceTemplates: async () => ({ resourceTemplates: [] }),
+      readResource: async () => ({ contents: [] }),
     };
   },
 }));
@@ -276,9 +305,9 @@ describe('executor with openai-agents harness', () => {
     cleanTestDb();
     createTestAgent();
     createTestTask();
-    runnerCalls.length = 0;
+    stubRequests.length = 0;
     localMcpCalls = [];
-    mockLastResponseId = 'resp_openai_final';
+    stubResponseQueue = [{ text: 'Agent run complete.', responseId: 'resp_openai_final' }];
   });
 
   it('runs the openai-agents harness and persists harness=openai-agents on the row', async () => {
@@ -294,7 +323,7 @@ describe('executor with openai-agents harness', () => {
     expect(result.status).toBe('completed');
     const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');
-    expect(runnerCalls).toHaveLength(1);
+    expect(stubRequests).toHaveLength(1);
   });
 
   it('infers openai-agents when a per-run provider override is OpenAI-only', async () => {
@@ -310,7 +339,7 @@ describe('executor with openai-agents harness', () => {
     expect(result.harness).toBe('openai-agents');
     const run = getRun(result.runId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');
-    expect(runnerCalls).toHaveLength(1);
+    expect(stubRequests).toHaveLength(1);
   });
 
   it('persists dry_run=true and forwards dryRun to the openai-local MCP server', async () => {
@@ -336,7 +365,7 @@ describe('executor with openai-agents harness', () => {
     const { runAgent } = await import('@myco/agent/executor.js');
 
     // First run — establishes checkpoint state with harness=openai-agents
-    mockLastResponseId = 'resp_first_call';
+    stubResponseQueue = [{ text: 'first reply', responseId: 'resp_first_call' }];
     const first = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       executionOverrides: {
@@ -365,14 +394,15 @@ describe('executor with openai-agents harness', () => {
         harness: 'openai-agents',
         phases: {},
         rawRuntimeMetadata: { lastResponseId: 'resp_abc_prior' },
-        sessionData: [{ type: 'user', content: 'first turn before failure' }],
+        sessionData: [{ type: 'message', role: 'user', content: 'first turn before failure' }],
       }),
       started_at: now - 60,
       completed_at: now - 30,
       error: 'earlier failure',
     });
 
-    mockLastResponseId = 'resp_abc_next';
+    stubResponseQueue = [{ text: 'resumed reply', responseId: 'resp_abc_next' }];
+    const stubRequestsBeforeResume = stubRequests.length;
     const resumed = await runAgent(TEST_VAULT_DIR, { requestContext: TEST_REQUEST_CONTEXT,
       task: TEST_TASK_NAME,
       instruction: 'Resume me',
@@ -385,11 +415,15 @@ describe('executor with openai-agents harness', () => {
     });
     expect(resumed.status).toBe('completed');
 
-    // The second Runner invocation should have been fed the prior session items.
-    const resumeCall = runnerCalls[runnerCalls.length - 1];
-    expect(resumeCall.priorSessionItems).toEqual([
-      { type: 'user', content: 'first turn before failure' },
-    ]);
+    // The resume run should have fed the prior session items to the model
+    // via request.input (Runner reads them from PersistedSession).
+    const resumeRequest = stubRequests[stubRequestsBeforeResume];
+    expect(resumeRequest).toBeDefined();
+    expect(resumeRequest.input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: 'first turn before failure' }),
+      ]),
+    );
 
     const run = getRun(existingRunId, ALL_PROJECTS_SCOPE);
     expect(run?.harness).toBe('openai-agents');

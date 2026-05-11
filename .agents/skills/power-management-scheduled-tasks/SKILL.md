@@ -10,7 +10,7 @@ allowed-tools: [Read, Edit, Write, Bash, Grep, Glob]
 
 # Power Management and Scheduled Task Development
 
-Comprehensive procedures for authoring, configuring, and maintaining Myco's PowerManager infrastructure and scheduled task system within Grove multi-tenant architecture.
+Comprehensive procedures for authoring, configuring, and maintaining Myco's PowerManager infrastructure and scheduled task system within Grove multi-tenant architecture, including the new portable project identity model.
 
 ## PowerManager Job Registration and Lifecycle
 
@@ -135,15 +135,33 @@ import { ProjectPowerStateTracker } from './project-power-state.js';
 
 const tracker = new ProjectPowerStateTracker();
 
-// Get current state
-const state = tracker.getState(groveId, projectId);
+// Get current state using portable project identity
+const state = tracker.getState(groveId, bindingId);
 // Returns: 'active' | 'idle' | 'sleep' | 'deep_sleep'
 
 // Get state with hold information  
-const { state, hold } = tracker.getStateWithHold(groveId, projectId);
+const { state, hold } = tracker.getStateWithHold(groveId, bindingId);
 
 // Record activity to bump to active state
-tracker.recordActivity(groveId, projectId);
+tracker.recordActivity(groveId, bindingId);
+```
+
+### Project Identity Resolution via binding_id
+
+Power state tracking now uses stable `binding_id` from `.myco/project.toml` rather than transient project identifiers:
+
+```typescript
+// Read binding_id from project.toml for stable project identity
+import { readProjectConfig } from '../grove/project-config.js';
+
+async function resolveProjectIdentity(projectPath: string): Promise<string> {
+  const projectConfig = await readProjectConfig(projectPath);
+  return projectConfig.binding_id; // Stable across machines and clones
+}
+
+// Use binding_id in power state operations
+const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+tracker.recordActivity(groveScope.grove.id, bindingId);
 ```
 
 ### Active/Idle/Sleep/Deep-Sleep State Management
@@ -158,7 +176,7 @@ interface ProjectPowerStateConfig {
 }
 ```
 
-State machine is per `(groveId, projectId)` tuple for independent project tracking.
+State machine is per `(groveId, bindingId)` tuple for portable project tracking across machine boundaries.
 
 ### Activity Recording at Key Lifecycle Events
 
@@ -168,7 +186,8 @@ Wire activity recording at daemon event dispatch points:
 2. **User prompt dispatch** in `packages/myco/src/daemon/event-dispatch.ts`:
 ```typescript
 if (event.type === 'user_prompt') {
-  tracker.recordActivity(groveId, projectId);
+  const bindingId = await resolveProjectIdentity(event.projectPath);
+  tracker.recordActivity(groveId, bindingId);
 }
 ```
 
@@ -197,9 +216,11 @@ await forEachGrove(cache, logger, async (groveScope) => {
   // Level 2: All registered projects in this Grove  
   await forEachRegisteredProject(cache, logger, async (projectScope) => {
     
-    // Level 3: Check if project is active
+    // Level 3: Check if project is active via binding_id
+    const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
     if (isProjectActive(projectScope.project)) {
-      // Dispatch task for this (grove, project) combination
+      // Dispatch task for this (grove, binding_id) combination
+      await dispatchTask(groveScope.grove.id, bindingId, projectScope);
     }
   });
 });
@@ -213,8 +234,9 @@ Critical pattern for fire-and-forget dispatch safety:
 await forEachRegisteredProject(cache, logger, async (projectScope) => {
   return cache.withPinned(projectScope.grove.databasePath, async () => {
     // Task starts with pinned handle
+    const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
     await runAgent(task.name, { 
-      projectId: projectScope.project.id,
+      projectId: bindingId,  // Use binding_id for portable identity
       databasePath: projectScope.grove.databasePath 
     });
     // Handle stays open during async startup
@@ -229,7 +251,7 @@ The `ProjectScope` object provides all necessary context for task dispatch:
 ```typescript
 interface ProjectScope {
   grove: GroveDetails;        // Grove metadata and paths
-  project: ProjectDetails;    // Project configuration
+  project: ProjectDetails;    // Project configuration with binding_id
   db: Database;              // Open database connection
   projectVaultDir: string;   // Resolved vault directory path
 }
@@ -245,16 +267,19 @@ Use the `decideColdProjectGate()` function from `packages/myco/src/daemon/task-s
 import type { ColdProjectGateDecision, ColdProjectGateInput } from './task-scheduling.js';
 import { decideColdProjectGate } from './task-scheduling.js';
 
+// Resolve binding_id for stable project identity
+const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
+
 const gateResult: ColdProjectGateDecision = decideColdProjectGate({
   db: projectScope.db,
-  projectId: projectScope.project.id,
+  projectId: bindingId,  // Use binding_id for consistent gating across machines
   thresholdDays: config.maintenance.agent.cold_project_threshold_days,
   now: Date.now()
 });
 
 if (!gateResult.should_run) {
   logger.info('Skipping cold project', {
-    projectId: projectScope.project.id,
+    projectId: bindingId,
     state: gateResult.state
   });
   return;
@@ -293,8 +318,9 @@ Tasks execute in isolated processes via the agent harness system:
 
 ```typescript
 // Fire-and-forget - returns immediately
+const bindingId = await resolveProjectIdentity(projectScope.projectVaultDir);
 await runAgent(taskName, {
-  projectId: projectScope.project.id,
+  projectId: bindingId,  // Use binding_id for portable project identity
   databasePath: projectScope.grove.databasePath,
   ...taskConfig
 });
@@ -326,7 +352,7 @@ await Promise.all(grovePromises);
 The `ScheduledJobContext` and `ScheduledJobKicker` prevent resource contention through:
 
 - **Per-project running flags**: Prevents concurrent task execution per project via `ProjectTaskLastRunMap`
-- **Independent throttle timers**: Each project maintains separate `lastRun` timestamp
+- **Independent throttle timers**: Each project maintains separate `lastRun` timestamp using binding_id
 - **Broadcast semantics**: Multiple events for same project coalesce into single dispatch via kick deduplication
 
 ## Gotchas
@@ -375,4 +401,40 @@ await manualGroveIteration(groveId, projectId);
 await forEachRegisteredProject(cache, logger, async (projectScope) => {
   // projectScope contains all necessary context
 });
+```
+
+### Project Identity Migration from Legacy IDs
+
+When migrating from legacy project identifiers to `binding_id`:
+
+```typescript
+// Migration pattern for existing power state data
+async function migrateProjectPowerState(
+  tracker: ProjectPowerStateTracker,
+  legacyProjectId: string,
+  bindingId: string
+): Promise<void> {
+  const legacyState = tracker.getState(groveId, legacyProjectId);
+  
+  if (legacyState !== 'deep_sleep') {
+    // Preserve active/idle/sleep state for binding_id
+    tracker.recordActivity(groveId, bindingId);
+    
+    // Clean up legacy entry
+    tracker.clearState(groveId, legacyProjectId);
+  }
+}
+```
+
+### Portable Project Identity Consistency
+
+Always use `binding_id` from `.myco/project.toml` for project identification rather than derived identifiers:
+
+```typescript
+// WRONG - derived project identifier
+const projectId = path.basename(projectPath);
+
+// RIGHT - stable binding_id from project.toml
+const projectConfig = await readProjectConfig(projectPath);
+const projectId = projectConfig.binding_id;
 ```

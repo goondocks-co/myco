@@ -5,6 +5,7 @@ import {
   Runner,
   OpenAIProvider,
   type AgentInputItem,
+  type ModelProvider,
   type Session,
 } from '@openai/agents';
 import {
@@ -320,8 +321,21 @@ async function runOpenAIAgent(
   };
 }
 
+/**
+ * Test-only override slots. The single legitimate use is injecting a stub
+ * ModelProvider so tests can exercise the real Agent/Runner against canned
+ * responses (see tests/agent/runtime-openai.test.ts). Production callers
+ * never pass overrides — `harness/index.ts` constructs the harness with no
+ * arguments.
+ */
+export interface OpenAIAgentsHarnessTestOverrides {
+  modelProvider?: ModelProvider;
+}
+
 export class OpenAIAgentsHarness implements AgentHarness {
   readonly id = HARNESS_OPENAI_AGENTS;
+
+  constructor(private readonly testOverrides: OpenAIAgentsHarnessTestOverrides = {}) {}
 
   supports(capability: HarnessCapability): boolean {
     return capability === 'supportsSessionResume' || capability === 'supportsMcp';
@@ -342,7 +356,7 @@ export class OpenAIAgentsHarness implements AgentHarness {
       toolSurface: input.toolSurface,
       logger: input.logger,
     };
-    const prepared = await prepareOpenAIRun(setup);
+    const prepared = await prepareOpenAIRun(setup, this.testOverrides);
     try {
       return await runOpenAIAgent(prepared.runner, prepared.agent, input.prompt, {
         maxTurns: input.maxTurns,
@@ -356,7 +370,7 @@ export class OpenAIAgentsHarness implements AgentHarness {
   }
 
   async openScope(setup: HarnessScopeSetup): Promise<HarnessScope> {
-    const prepared = await prepareOpenAIRun(setup);
+    const prepared = await prepareOpenAIRun(setup, this.testOverrides);
     let closed = false;
     return {
       async run(input: HarnessScopeRunInput): Promise<HarnessExecuteResult> {
@@ -383,7 +397,10 @@ export class OpenAIAgentsHarness implements AgentHarness {
  * closes) and `openScope` (long-lived, scope.run() called N times) share
  * this — they only diverge in resource lifetime.
  */
-async function prepareOpenAIRun(setup: HarnessScopeSetup): Promise<{
+async function prepareOpenAIRun(
+  setup: HarnessScopeSetup,
+  testOverrides: OpenAIAgentsHarnessTestOverrides = {},
+): Promise<{
   agent: Agent;
   runner: Runner;
   mcpServer: ReturnType<typeof createLocalVaultMcpServer>;
@@ -398,7 +415,7 @@ async function prepareOpenAIRun(setup: HarnessScopeSetup): Promise<{
     mcpServers: [mcpServer],
   });
   const runner = new Runner({
-    modelProvider: createProvider(preparedExecution.provider),
+    modelProvider: testOverrides.modelProvider ?? createProvider(preparedExecution.provider),
   });
   return { agent, runner, mcpServer };
 }
