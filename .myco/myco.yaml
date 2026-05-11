@@ -9,6 +9,7 @@ capture:
     - docs/superpowers/specs/
     - docs/superpowers/plans/
     - docs/design/
+    - docs/plans
   ignore_plan_dirs_in_git: true
   artifact_extensions:
     - .md
