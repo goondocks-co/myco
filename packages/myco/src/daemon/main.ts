@@ -144,7 +144,7 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { isProjectPaused } from '../grove/registry.js';
+import { pauseAwareShouldVisit } from '../grove/registry.js';
 import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
@@ -373,9 +373,9 @@ export async function runInitialCanopyPopulateAcrossProjects(
       {
         machineId,
         daemonStateDir,
-        // Pause gate: skip projects under an in-flight move/vacuum so the
-        // initial populate doesn't write to a DB the op owns exclusively.
-        shouldVisit: (scope) => !isProjectPaused(scope.projectId, mycoHome).paused,
+        // Skip projects under an in-flight move/vacuum so the initial
+        // populate doesn't write to a DB the op owns exclusively.
+        shouldVisit: pauseAwareShouldVisit(mycoHome),
       },
     );
   } catch (err) {
@@ -1055,8 +1055,8 @@ export async function main(): Promise<void> {
   server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
   server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
-  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler());
-  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler());
+  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
+  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);

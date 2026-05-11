@@ -16,16 +16,21 @@ import {
   forceResumeProject,
   pauseProject,
   registerProjectInGrove,
+  setGroveServedBy,
 } from '@myco/grove/registry.js';
 
 let testDir: string;
 let mycoHome: string;
+let daemonStateDir: string;
+let devDaemonStateDir: string;
 let backupsRoot: string;
 let previousHome: string | undefined;
 
 beforeEach(() => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-projects-api-'));
   mycoHome = path.join(testDir, 'home');
+  daemonStateDir = path.join(mycoHome, 'service');
+  devDaemonStateDir = path.join(mycoHome, 'service-dev');
   backupsRoot = path.join(testDir, 'backups');
   previousHome = process.env.MYCO_HOME;
   process.env.MYCO_HOME = mycoHome;
@@ -90,7 +95,9 @@ function seededProject(): {
   ensureGroveSchema(grove.id);
   const projectId = createProjectId();
   const projectRoot = path.join(testDir, 'project');
-  fs.mkdirSync(resolveProjectVaultDir(projectRoot), { recursive: true });
+  const vaultDir = resolveProjectVaultDir(projectRoot);
+  fs.mkdirSync(vaultDir, { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, 'machine_id'), 'test-user_deadbeef', 'utf-8');
   registerProjectInGrove(grove.id, {
     projectId,
     projectName: 'Backup Subject',
@@ -117,7 +124,7 @@ describe('POST /api/projects/:projectId/backup', () => {
     const { projectId, grove } = seededProject();
 
     const response = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     expect(response.status).toBeUndefined();
@@ -137,7 +144,7 @@ describe('POST /api/projects/:projectId/backup', () => {
 
   it('returns 404 for an unregistered project', async () => {
     const response = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId: createProjectId() } },
     );
     expect(response.status).toBe(404);
@@ -149,7 +156,7 @@ describe('POST /api/projects/:projectId/restore', () => {
   it('restores a project-scoped snapshot', async () => {
     const { projectId } = seededProject();
     const backup = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
@@ -157,7 +164,7 @@ describe('POST /api/projects/:projectId/restore', () => {
     // Wipe the row so restore has work to do.
     const dbPath = resolveGroveDbPath(
       ((await call(
-        createProjectBackupHandler({ backupsRoot, mycoHome }),
+        createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
         { params: { projectId } },
       )).body as { grove_id: string }).grove_id,
       mycoHome,
@@ -170,7 +177,7 @@ describe('POST /api/projects/:projectId/restore', () => {
     }
 
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId }, body: { snapshot_path: snapshotPath } },
     );
     expect(response.status).toBeUndefined();
@@ -182,7 +189,7 @@ describe('POST /api/projects/:projectId/restore', () => {
   it('returns 400 when snapshot_path is missing', async () => {
     const { projectId } = seededProject();
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId }, body: {} },
     );
     expect(response.status).toBe(400);
@@ -192,7 +199,7 @@ describe('POST /api/projects/:projectId/restore', () => {
   it('returns 404 when snapshot file does not exist', async () => {
     const { projectId } = seededProject();
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       {
         params: { projectId },
         body: { snapshot_path: path.join(testDir, 'no-such-snapshot.sql') },
@@ -205,7 +212,7 @@ describe('POST /api/projects/:projectId/restore', () => {
   it('returns 400 when snapshot scope targets a different project', async () => {
     const { projectId: projectA } = seededProject();
     const backup = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId: projectA } },
     );
     const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
@@ -223,7 +230,7 @@ describe('POST /api/projects/:projectId/restore', () => {
     });
 
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId: projectB }, body: { snapshot_path: snapshotPath } },
     );
     expect(response.status).toBe(400);
@@ -245,7 +252,7 @@ describe('POST /api/projects/:projectId/restore', () => {
     }
 
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId }, body: { snapshot_path: snapshotPath } },
     );
     expect(response.status).toBe(400);
@@ -255,13 +262,13 @@ describe('POST /api/projects/:projectId/restore', () => {
   it('returns 404 when target project is not registered', async () => {
     const { projectId } = seededProject();
     const backup = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
 
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       {
         params: { projectId: createProjectId() },
         body: { snapshot_path: snapshotPath },
@@ -278,7 +285,7 @@ describe('project-scoped pause gate', () => {
     pauseProject(grove.id, projectId, 'move-in-flight', 'move:test', mycoHome);
 
     const response = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     expect(response.status).toBe(409);
@@ -298,7 +305,7 @@ describe('project-scoped pause gate', () => {
     // Create a snapshot before pausing so the test exercises the pause gate
     // rather than the snapshot-path checks.
     const backup = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
@@ -306,7 +313,7 @@ describe('project-scoped pause gate', () => {
     pauseProject(grove.id, projectId, 'move-in-flight', 'move:test', mycoHome);
 
     const response = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId }, body: { snapshot_path: snapshotPath } },
     );
     expect(response.status).toBe(409);
@@ -322,7 +329,7 @@ describe('project-scoped pause gate', () => {
   it('both endpoints work again after force-resume', async () => {
     const { grove, projectId } = seededProject();
     const initialBackup = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     const snapshotPath = (initialBackup.body as { snapshot_path: string }).snapshot_path;
@@ -331,17 +338,61 @@ describe('project-scoped pause gate', () => {
     forceResumeProject(grove.id, projectId, mycoHome);
 
     const backupResponse = await call(
-      createProjectBackupHandler({ backupsRoot, mycoHome }),
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
       { params: { projectId } },
     );
     expect(backupResponse.status).toBeUndefined();
     expect((backupResponse.body as { ok: boolean }).ok).toBe(true);
 
     const restoreResponse = await call(
-      createProjectRestoreHandler({ mycoHome }),
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
       { params: { projectId }, body: { snapshot_path: snapshotPath } },
     );
     expect(restoreResponse.status).toBeUndefined();
     expect((restoreResponse.body as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+describe('project-scoped cross-daemon boundary', () => {
+  it('backup against a project in a cross-daemon Grove returns 404', async () => {
+    const { grove, projectId } = seededProject();
+    setGroveServedBy(grove.id, 'service-dev', mycoHome);
+
+    const response = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
+      { params: { projectId } },
+    );
+    expect(response.status).toBe(404);
+    expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+  });
+
+  it('restore against a project in a cross-daemon Grove returns 404', async () => {
+    const { grove, projectId } = seededProject();
+    const backup = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }, daemonStateDir),
+      { params: { projectId } },
+    );
+    const snapshotPath = (backup.body as { snapshot_path: string }).snapshot_path;
+
+    setGroveServedBy(grove.id, 'service-dev', mycoHome);
+
+    const response = await call(
+      createProjectRestoreHandler({ mycoHome }, daemonStateDir),
+      { params: { projectId }, body: { snapshot_path: snapshotPath } },
+    );
+    expect(response.status).toBe(404);
+    expect((response.body as { error: { code: string } }).error.code).toBe('project_not_found');
+  });
+
+  it('the dev daemon sees the same Grove and succeeds', async () => {
+    const { grove, projectId } = seededProject();
+    setGroveServedBy(grove.id, 'service-dev', mycoHome);
+
+    const response = await call(
+      createProjectBackupHandler({ backupsRoot, mycoHome }, devDaemonStateDir),
+      { params: { projectId } },
+    );
+    expect(response.status).toBeUndefined();
+    expect((response.body as { ok: boolean }).ok).toBe(true);
   });
 });

@@ -69,7 +69,7 @@ export function RenameGroveModal({ open, onOpenChange, groveId, currentName }: R
               className="w-full rounded-md border border-outline-variant/40 bg-surface-container-low px-3 py-1.5 text-sm text-on-surface focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
             />
             <p className="text-xs text-on-surface-variant">
-              The Grove slug stays the same — only the display name changes.
+              The Grove slug may change if the new name slugifies differently. Auto-suffixes on collision.
             </p>
           </div>
           <DialogFooter>
