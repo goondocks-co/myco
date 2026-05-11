@@ -223,6 +223,35 @@ describe('moveProjectBetweenGroves', () => {
     expect(isProjectPaused(projectId, mycoHome).paused).toBe(false);
   });
 
+  it('initializes target Grove DB on demand when it has never been activated', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    // Only the source DB gets a schema. The target is registered but
+    // its SQLite file has never been opened — the orchestrator must
+    // initialize it before restore.
+    ensureGroveDb(source.id);
+    seedAgent(source.id);
+    expect(fs.existsSync(resolveGroveDbPath(target.id, mycoHome))).toBe(false);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    const result = moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, {
+      snapshotsRoot,
+    });
+
+    expect(result.table_counts.sessions).toBe(1);
+    expect(countRows(target.id, 'sessions', projectId)).toBe(1);
+    expect(countRows(target.id, 'plans', projectId)).toBe(1);
+    expect(countRows(target.id, 'spores', projectId)).toBe(1);
+    expect(countRows(source.id, 'sessions', projectId)).toBe(0);
+  });
+
   it('throws when source and target Grove ids are the same', () => {
     const grove = createGrove('Solo', mycoHome);
     ensureGroveDb(grove.id);

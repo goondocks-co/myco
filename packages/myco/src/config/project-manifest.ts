@@ -61,7 +61,9 @@ export type ProjectLocalManifest = z.infer<typeof ProjectLocalManifestSchema>;
 
 export interface EnsureProjectManifestOptions {
   projectName: string;
+  groveId?: string;
   groveSlug?: string;
+  groveName?: string;
   groveBindingId?: string;
 }
 
@@ -211,6 +213,8 @@ export function ensureProjectManifest(
         ...existing,
         grove: {
           ...existing.grove,
+          id: existing.grove?.id ?? options.groveId,
+          name: existing.grove?.name ?? options.groveName,
           slug: existing.grove?.slug ?? options.groveSlug,
           mode: existing.grove?.mode ?? 'local',
         },
@@ -237,6 +241,8 @@ export function ensureProjectManifest(
     },
     grove: options.groveSlug
       ? {
+        ...(options.groveId ? { id: options.groveId } : {}),
+        ...(options.groveName ? { name: options.groveName } : {}),
         slug: options.groveSlug,
         mode: 'local',
       }

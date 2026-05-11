@@ -36,6 +36,7 @@ import {
   projectScope,
   projectUrlSlug,
 } from './ids.js';
+import { ensureGroveDatabase } from './database.js';
 import {
   resolveGroveDbPath,
   resolveMycoHome,
@@ -250,6 +251,10 @@ export function moveProjectBetweenGroves(
   }
 
   if (orderOf(marker.phase) <= orderOf('snapshot_complete')) {
+    // Target DB may be uninitialized (Grove registered but never activated).
+    // `openDatabase` only creates an empty file; restoreBackup needs the
+    // schema present before its INSERT OR IGNORE statements run.
+    ensureGroveDatabase(targetGroveId, mycoHome);
     withDb(targetDbPath, (targetDb) => {
       restoreBackup(targetDb, snapshotPath);
     });
