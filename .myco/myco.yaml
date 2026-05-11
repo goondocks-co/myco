@@ -9,6 +9,7 @@ capture:
     - docs/superpowers/specs/
     - docs/superpowers/plans/
     - docs/design/
+    - docs/plans
   ignore_plan_dirs_in_git: true
   artifact_extensions:
     - .md
@@ -64,7 +65,7 @@ agent:
     canopy-describe:
       provider:
         type: lmstudio
-        base_url: http://localhost:1234
+        base_url: http://10.29.13.49:1234
         model: google/gemma-4-26b-a4b
         reasoning_map:
           low: openai/gpt-oss-20b

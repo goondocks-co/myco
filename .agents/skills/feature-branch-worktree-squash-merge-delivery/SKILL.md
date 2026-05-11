@@ -176,6 +176,8 @@ The single squashed commit becomes the PR commit.
 
 - **Native modules fail to build inside worktrees** — packages with native dependencies (sqlite-vec, better-sqlite3) cannot compile inside git worktrees. All test failures trace to native module build errors, not code issues. Use `npm rebuild` after creating worktrees to force recompilation.
 
+- **Nested UI workspace installs required** — new worktrees need `npm install` inside each `packages/*/ui` directory. The root install doesn't cover nested UI workspaces. Run manually after worktree creation to prevent build failures in UI components.
+
 - **Daemon segfault on worktree activation** — activating a worktree while the daemon is running can cause segmentation faults. Stop the daemon before creating or switching worktrees: `pkill -f "myco-daemon"` then restart after worktree setup.
 
 - **Wrong daemon takeover** — worktrees can spawn duplicate daemon processes that compete for the same vault. Check for phantom processes with `ps aux | grep myco` before starting work in a worktree.
