@@ -694,6 +694,95 @@ describe('moveProjectBetweenGroves', () => {
     expect(restored.crlf.content).toBe(crlfBody);
   });
 
+  it('verify phase counts source and target from live DBs (catches truncated snapshots)', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    const brandedProjectId = assertGroveProjectId(projectId);
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+    // Add a second spore so we can prune one out of the snapshot and
+    // produce a real source/target mismatch.
+    withGroveDb(source.id, (db) => {
+      db.prepare(
+        `INSERT INTO spores (
+           id, agent_id, session_id, observation_type, content,
+           created_at, machine_id, project_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        `spore-${projectId}-2`,
+        'claude-code',
+        `sess-${projectId}-1`,
+        'gotcha',
+        'Second spore',
+        225,
+        'test-machine',
+        projectId,
+      );
+    });
+
+    // Take a snapshot ourselves and corrupt it (drop one spore INSERT)
+    // before letting moveProjectBetweenGroves resume from it.
+    const moveOpId = `grove-move-${projectId}-fault-${Date.now()}`;
+    const projectSlug = projectUrlSlug('Demo', projectId);
+    const snapshotDir = path.join(snapshotsRoot, projectSlug, moveOpId);
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    const snapshotPath = withGroveDb(source.id, (sourceDb) =>
+      createBackup(
+        sourceDb,
+        snapshotDir,
+        'test-machine',
+        projectScope(brandedProjectId),
+        projectSlug,
+      ),
+    );
+    // Remove every INSERT line for the second spore — simulates a
+    // truncated/broken dump where the source/target row counts must
+    // diverge.
+    const dump = fs.readFileSync(snapshotPath, 'utf-8');
+    const tampered = dump
+      .split('\n')
+      .filter((line) => !line.includes(`spore-${projectId}-2`))
+      .join('\n');
+    fs.writeFileSync(snapshotPath, tampered, 'utf-8');
+
+    // Plant a marker that points the orchestrator at the broken snapshot.
+    const migrationDir = path.join(vaultDir, 'migration');
+    fs.mkdirSync(migrationDir, { recursive: true });
+    const markerPath = path.join(migrationDir, `${moveOpId}.json`);
+    pauseProject(source.id, projectId, 'grove-move', moveOpId, mycoHome);
+    fs.writeFileSync(
+      markerPath,
+      JSON.stringify({
+        move_op_id: moveOpId,
+        from_grove_id: source.id,
+        to_grove_id: target.id,
+        project_id: projectId,
+        project_name: 'Demo',
+        project_root: projectRoot,
+        started_at: new Date().toISOString(),
+        phase: 'snapshot_complete',
+        snapshot_path: snapshotPath,
+      }),
+    );
+
+    expect(() =>
+      moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot }),
+    ).toThrow(/move verification failed/);
+
+    // Source data was never modified (verify aborted before commit).
+    expect(countRows(source.id, 'spores', projectId)).toBe(2);
+  });
+
   it('pauses the source project after entry, before snapshot completes', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);

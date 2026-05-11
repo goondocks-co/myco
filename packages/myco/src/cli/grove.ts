@@ -247,7 +247,7 @@ export async function run(args: string[]): Promise<void> {
     const result = claimGroveForDogfood(grove.id, mycoHome);
     console.log('Grove claimed for dogfooding:');
     console.log(`  Grove:    ${grove.name} (${grove.slug})`);
-    console.log(`  Snapshot: ${result.manifest.snapshot_path}`);
+    console.log(`  Snapshot: ${result.manifest.snapshot_db_path}`);
     console.log(`  Projects: ${projects.length} paused → resumed under dev ownership`);
     console.log('');
     console.log(`The dev daemon now serves this Grove. Run \`myco grove release ${grove.slug}\``);
@@ -268,7 +268,7 @@ export async function run(args: string[]): Promise<void> {
     const result = releaseClaimedGrove(grove.id, mycoHome);
     console.log('Grove released:');
     console.log(`  Grove:    ${grove.name} (${grove.slug})`);
-    console.log(`  Restored: ${result.manifest.snapshot_path}`);
+    console.log(`  Restored: ${result.manifest.snapshot_db_path}`);
     console.log(`  Archive:  ${result.archive_dir}`);
     console.log(`  served_by → ${result.manifest.original_served_by}`);
     return;

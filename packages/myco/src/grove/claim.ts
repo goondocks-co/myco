@@ -1,15 +1,22 @@
 /**
  * Grove dogfood claim/release — flip a Grove's `served_by` between the
  * production daemon (`service`) and the dev daemon (`service-dev`), with
- * a full-Grove snapshot taken at claim time and replayed on release so
- * the production state is restored after dogfooding.
+ * a full-Grove file-copy snapshot taken at claim time and copied back on
+ * release so the production state is restored after dogfooding.
+ *
+ * Snapshots are byte-for-byte copies of the Grove `myco.db` and
+ * `vectors.db` files. SQLite's own file format is the format we trust:
+ * file copy can't lose data the way the previous SQL-dump approach did
+ * (multi-line text values were silently truncated by the line-based
+ * restore parser).
  *
  * Phases (recorded on a manifest file under
  * `<claimRoot>/claim.json` so a crash is recoverable on the next call):
  *
- *   claim:    pause -> snapshot -> manifest written (phase=claimed)
- *               -> served_by flipped (phase=flipped) -> resume (done)
- *   release:  pause -> purge+restore (phase=restored)
+ *   claim:    pause -> file-copy snapshot -> manifest written
+ *               (phase=claimed) -> served_by flipped (phase=flipped)
+ *               -> resume (done)
+ *   release:  pause -> file-copy restore (phase=restored)
  *               -> served_by flipped (phase=flipped)
  *               -> archive (phase=archived) -> resume (done)
  */
@@ -17,20 +24,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Database } from 'bun:sqlite';
 import { openDatabase } from '@myco/db/client.js';
 import { epochSeconds } from '@myco/constants.js';
 import {
-  BACKUP_TABLES,
-  createBackup,
-  restoreBackup,
-} from '@myco/daemon/backup.js';
-import { getMachineId } from '@myco/daemon/machine-id.js';
-import { ALL_PROJECTS_SCOPE } from './ids.js';
-import {
   resolveGroveDbPath,
+  resolveGroveVectorsPath,
   resolveMycoHome,
-  resolveProjectVaultDir,
 } from './paths.js';
 import {
   type DaemonVariant,
@@ -46,12 +45,19 @@ export type ClaimPhase = 'claimed' | 'flipped';
 export type ReleasePhase = 'restored' | 'flipped' | 'archived';
 
 export interface ClaimManifest {
-  schema: 1;
+  schema: 2;
   grove_id: string;
   grove_slug: string;
   grove_name: string;
   original_served_by: DaemonVariant;
-  snapshot_path: string;
+  /** Absolute path to the byte-for-byte copy of the Grove `myco.db`. */
+  snapshot_db_path: string;
+  /**
+   * Absolute path to the byte-for-byte copy of the Grove `vectors.db`.
+   * Optional because some pre-WB Groves never created a vectors file —
+   * if the source has no vectors.db, the snapshot just omits it.
+   */
+  snapshot_vectors_path?: string;
   claim_root: string;
   claimed_at: number;
   owner_op: string;
@@ -86,7 +92,8 @@ export interface ClaimOptions {
 const CLAIMS_DIRNAME = 'claims';
 const ARCHIVE_DIRNAME = 'archive';
 const MANIFEST_FILENAME = 'claim.json';
-const SNAPSHOT_FILENAME = 'grove-claim.sql';
+const SNAPSHOT_DB_FILENAME = 'grove-claim.db';
+const SNAPSHOT_VECTORS_FILENAME = 'vectors-claim.db';
 const ARCHIVE_RETENTION_DAYS = 30;
 
 function resolveBackupRoot(override?: string): string {
@@ -135,14 +142,29 @@ function writeManifestAtomic(manifestPath: string, manifest: ClaimManifest): voi
 function readManifest(manifestPath: string): ClaimManifest | null {
   try {
     const raw = fs.readFileSync(manifestPath, 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<ClaimManifest>;
+    const parsed = JSON.parse(raw) as Partial<Omit<ClaimManifest, 'schema'>> & {
+      schema?: number;
+      // Legacy schema-1 field, retained here only so we can detect and
+      // reject it cleanly. Remove when no v1 manifests can plausibly
+      // exist on disk anywhere.
+      snapshot_path?: string;
+    };
+    if (parsed.schema === 1) {
+      throw new Error(
+        `Legacy claim manifest (schema=1) at ${manifestPath}: this file `
+        + `was produced by an older claim/release flow whose SQL-dump snapshot `
+        + `is no longer supported. Restore it manually with `
+        + `\`myco grove set-served-by <slug> --force\` after recovering the `
+        + `affected Grove DB from your routine backups.`,
+      );
+    }
     if (
-      parsed.schema === 1
+      parsed.schema === 2
       && typeof parsed.grove_id === 'string'
       && typeof parsed.grove_slug === 'string'
       && typeof parsed.grove_name === 'string'
       && (parsed.original_served_by === 'service' || parsed.original_served_by === 'service-dev')
-      && typeof parsed.snapshot_path === 'string'
+      && typeof parsed.snapshot_db_path === 'string'
       && typeof parsed.claim_root === 'string'
       && typeof parsed.claimed_at === 'number'
       && typeof parsed.owner_op === 'string'
@@ -150,32 +172,64 @@ function readManifest(manifestPath: string): ClaimManifest | null {
     ) {
       return parsed as ClaimManifest;
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Legacy claim manifest')) {
+      throw err;
+    }
     return null;
   }
   return null;
 }
 
-function machineIdForGrove(grove: GroveRecord, mycoHome: string): string {
-  const projects = listRegisteredProjects(grove.id, mycoHome);
-  for (const project of projects) {
-    try {
-      const vaultDir = resolveProjectVaultDir(project.root);
-      return getMachineId(vaultDir);
-    } catch {
-      // Try the next project.
-    }
+/**
+ * Flush WAL into the main DB file and copy it byte-for-byte. The copy
+ * is the snapshot; SQLite's own file format is the format we trust.
+ *
+ * SQL-dump snapshots (the previous design) lost data on any row whose
+ * text payload spanned multiple lines, because the restore parser was
+ * line-based. File copy can't lose data — every byte that was in the
+ * source file ends up in the snapshot.
+ */
+function snapshotSqliteFile(sourcePath: string, destPath: string): void {
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`Source SQLite file does not exist: ${sourcePath}`);
   }
-  return 'grove-claim_local';
+  // Checkpoint the WAL so the main file is up-to-date, then copy it.
+  // Best-effort: a non-SQLite file (test fixture) or a DB without a WAL
+  // sidecar just skips this step — the file copy below is the actual
+  // snapshot contract.
+  try {
+    const db = openDatabase(sourcePath);
+    try {
+      db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Not a SQLite DB, or unable to open. Fall through to plain copy.
+  }
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.copyFileSync(sourcePath, destPath);
 }
 
-function withDb<T>(dbPath: string, fn: (db: Database) => T): T {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = openDatabase(dbPath);
-  try {
-    return fn(db);
-  } finally {
-    db.close();
+/**
+ * Replace a live SQLite file with the snapshot. The caller must ensure
+ * no DB connections are open against `destPath` at the moment of copy —
+ * the daemon is paused (projects paused; daemon variant flipped) so
+ * the only writer is the dev daemon, which is what's flipping.
+ *
+ * Also removes any leftover `-wal` / `-shm` sidecars so a stale journal
+ * can't reattach to the freshly copied main file.
+ */
+function restoreSqliteFile(snapshotPath: string, destPath: string): void {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.copyFileSync(snapshotPath, destPath);
+  for (const sidecar of [`${destPath}-wal`, `${destPath}-shm`]) {
+    try {
+      fs.unlinkSync(sidecar);
+    } catch {
+      // Sidecar may not exist; that's fine.
+    }
   }
 }
 
@@ -295,16 +349,17 @@ export function claimGroveForDogfood(
     throw err;
   }
 
-  const snapshotPath = path.join(claimRoot, SNAPSHOT_FILENAME);
-  const machineId = machineIdForGrove(grove, mycoHome);
   const dbPath = resolveGroveDbPath(grove.id, mycoHome);
+  const vectorsPath = resolveGroveVectorsPath(grove.id, mycoHome);
+  const snapshotDbPath = path.join(claimRoot, SNAPSHOT_DB_FILENAME);
+  const snapshotVectorsPath = path.join(claimRoot, SNAPSHOT_VECTORS_FILENAME);
+  let vectorsSnapshotted = false;
 
   try {
-    const written = withDb(dbPath, (db) =>
-      createBackup(db, claimRoot, machineId, ALL_PROJECTS_SCOPE),
-    );
-    if (written !== snapshotPath) {
-      fs.renameSync(written, snapshotPath);
+    snapshotSqliteFile(dbPath, snapshotDbPath);
+    if (fs.existsSync(vectorsPath)) {
+      snapshotSqliteFile(vectorsPath, snapshotVectorsPath);
+      vectorsSnapshotted = true;
     }
   } catch (err) {
     for (const id of pausedProjectIds) {
@@ -319,12 +374,13 @@ export function claimGroveForDogfood(
   }
 
   let manifest: ClaimManifest = {
-    schema: 1,
+    schema: 2,
     grove_id: grove.id,
     grove_slug: grove.slug,
     grove_name: grove.name,
     original_served_by: grove.served_by,
-    snapshot_path: snapshotPath,
+    snapshot_db_path: snapshotDbPath,
+    ...(vectorsSnapshotted ? { snapshot_vectors_path: snapshotVectorsPath } : {}),
     claim_root: claimRoot,
     claimed_at: ts,
     owner_op: ownerOp,
@@ -408,9 +464,9 @@ export function releaseClaimedGrove(
       + `but the resolved Grove is ${grove.id}`,
     );
   }
-  if (!fs.existsSync(open.manifest.snapshot_path)) {
+  if (!fs.existsSync(open.manifest.snapshot_db_path)) {
     throw new Error(
-      `Claim snapshot is missing at ${open.manifest.snapshot_path}; cannot restore. `
+      `Claim snapshot is missing at ${open.manifest.snapshot_db_path}; cannot restore. `
       + `Use \`myco grove set-served-by --force\` to reset served_by manually.`,
     );
   }
@@ -431,12 +487,13 @@ export function releaseClaimedGrove(
     }
 
     const dbPath = resolveGroveDbPath(grove.id, mycoHome);
+    const vectorsPath = resolveGroveVectorsPath(grove.id, mycoHome);
 
     if (manifest.phase === 'claimed' || manifest.phase === 'flipped') {
-      withDb(dbPath, (db) => {
-        purgeGroveTables(db, projects.map((p) => p.project_id));
-        restoreBackup(db, manifest.snapshot_path);
-      });
+      restoreSqliteFile(manifest.snapshot_db_path, dbPath);
+      if (manifest.snapshot_vectors_path && fs.existsSync(manifest.snapshot_vectors_path)) {
+        restoreSqliteFile(manifest.snapshot_vectors_path, vectorsPath);
+      }
       manifest = { ...manifest, phase: 'restored' };
       writeManifestAtomic(open.manifestPath, manifest);
     }
@@ -492,60 +549,3 @@ export function releaseClaimedGrove(
   }
 }
 
-function purgeGroveTables(db: Database, projectIds: string[]): void {
-  if (projectIds.length === 0) {
-    // Still purge grove-scoped tables so a release on an empty Grove
-    // doesn't leave stray team_members rows from dev experimentation.
-    db.run('PRAGMA foreign_keys = OFF');
-    try {
-      const tx = db.transaction(() => {
-        for (const table of BACKUP_TABLES) {
-          try {
-            db.prepare(`DELETE FROM ${table}`).run();
-          } catch {
-            // Table may not exist.
-          }
-        }
-        try {
-          db.prepare(`DELETE FROM entity_mentions`).run();
-        } catch {
-          // Table may not exist.
-        }
-      });
-      tx();
-    } finally {
-      db.run('PRAGMA foreign_keys = ON');
-    }
-    return;
-  }
-
-  const placeholders = projectIds.map(() => '?').join(', ');
-  db.run('PRAGMA foreign_keys = OFF');
-  try {
-    const tx = db.transaction(() => {
-      for (const table of BACKUP_TABLES) {
-        try {
-          if (table === 'team_members') {
-            db.prepare(`DELETE FROM ${table}`).run();
-          } else {
-            db.prepare(
-              `DELETE FROM ${table} WHERE project_id IN (${placeholders})`,
-            ).run(...projectIds);
-          }
-        } catch {
-          // Table may not exist on older schemas.
-        }
-      }
-      try {
-        db.prepare(
-          `DELETE FROM entity_mentions WHERE project_id IN (${placeholders})`,
-        ).run(...projectIds);
-      } catch {
-        // Table may not exist.
-      }
-    });
-    tx();
-  } finally {
-    db.run('PRAGMA foreign_keys = ON');
-  }
-}

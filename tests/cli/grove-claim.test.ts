@@ -110,7 +110,7 @@ describe('myco grove claim/release', () => {
     const activeClaims = fs.readdirSync(claimDir).filter((n) => n !== 'archive');
     expect(activeClaims.length).toBe(1);
     expect(fs.existsSync(path.join(claimDir, activeClaims[0], 'claim.json'))).toBe(true);
-    expect(fs.existsSync(path.join(claimDir, activeClaims[0], 'grove-claim.sql'))).toBe(true);
+    expect(fs.existsSync(path.join(claimDir, activeClaims[0], 'grove-claim.db'))).toBe(true);
 
     deleteSession(grove.id, home, 'sess-prod-1');
     expect(countSessions(grove.id, home)).toBe(0);
@@ -210,6 +210,140 @@ describe('myco grove claim/release', () => {
 
     await expect(run(['claim', grove.slug])).rejects.toThrow(/dev daemon/);
     await expect(run(['release', grove.slug])).rejects.toThrow(/dev daemon/);
+  });
+
+  it('snapshot is a literal byte-for-byte file copy of the source DB', async () => {
+    const grove = createGrove('FileCopy', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'project-filecopy');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'FileCopy',
+      projectRoot,
+    }, home);
+    seedGroveDb(grove.id, home, projectId);
+    // Also drop a vectors.db sidecar so we can prove it round-trips too.
+    const vectorsPath = path.join(
+      path.dirname(resolveGroveDbPath(grove.id, home)),
+      'vectors.db',
+    );
+    fs.writeFileSync(vectorsPath, 'PRETEND-VECTORS-DATA\nwith newlines\n');
+
+    const sourceDbPath = resolveGroveDbPath(grove.id, home);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['claim', grove.slug]);
+    log.mockRestore();
+
+    const claimDir = path.join(backupsDir, 'claims', grove.slug);
+    const claimRoot = path.join(
+      claimDir,
+      fs.readdirSync(claimDir).find((n) => n !== 'archive')!,
+    );
+    const snapshotDb = path.join(claimRoot, 'grove-claim.db');
+    const snapshotVectors = path.join(claimRoot, 'vectors-claim.db');
+
+    expect(fs.existsSync(snapshotDb)).toBe(true);
+    expect(fs.existsSync(snapshotVectors)).toBe(true);
+    // Compare to source AFTER claim — claim's WAL checkpoint and the
+    // copy happen atomically (claim takes a pause first), so the bytes
+    // on disk at the moment of copy are what we measure here.
+    const sourceDbBytes = fs.readFileSync(sourceDbPath);
+    const sourceVectorsBytes = fs.readFileSync(vectorsPath);
+    expect(fs.readFileSync(snapshotDb).equals(sourceDbBytes)).toBe(true);
+    expect(fs.readFileSync(snapshotVectors).equals(sourceVectorsBytes)).toBe(true);
+  });
+
+  it('preserves multi-line content across claim/release round-trip', async () => {
+    const grove = createGrove('Multiline', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'project-multiline');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Multiline',
+      projectRoot,
+    }, home);
+    seedGroveDb(grove.id, home, projectId);
+
+    // Insert a spore with a multi-line body that the previous line-based
+    // restore parser would have silently truncated.
+    const dbPath = resolveGroveDbPath(grove.id, home);
+    const body = `## A multi-line body\n\n- with bullets\n- and a 'quote'\n\nEnd.`;
+    const db = openDatabase(dbPath);
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(
+        `INSERT INTO spores (id, project_id, session_id, agent_id, observation_type, content, created_at, machine_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('spore-multi', projectId, 'sess-prod-1', 'claude-code', 'gotcha', body, now, 'local');
+    } finally {
+      db.close();
+    }
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['claim', grove.slug]);
+
+    // Mutate the live DB after claim — multi-line body should be restored
+    // exactly on release.
+    {
+      const live = openDatabase(dbPath);
+      try {
+        live.prepare(`UPDATE spores SET content = ? WHERE id = ?`).run('mutated', 'spore-multi');
+        live.prepare(`DELETE FROM spores WHERE id = ?`).run('spore-multi');
+      } finally {
+        live.close();
+      }
+    }
+
+    await run(['release', grove.slug]);
+    log.mockRestore();
+
+    const after = openDatabase(dbPath);
+    try {
+      const row = after.prepare(`SELECT content FROM spores WHERE id = ?`).get('spore-multi') as
+        | { content: string }
+        | undefined;
+      expect(row?.content).toBe(body);
+    } finally {
+      after.close();
+    }
+  });
+
+  it('rejects a legacy schema-1 manifest with a clear error', async () => {
+    const grove = createGrove('LegacyManifest', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'project-legacy');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Legacy',
+      projectRoot,
+    }, home);
+    seedGroveDb(grove.id, home, projectId);
+
+    // Hand-write a v1 manifest.
+    const claimDir = path.join(backupsDir, 'claims', grove.slug, '12345');
+    fs.mkdirSync(claimDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claimDir, 'claim.json'),
+      JSON.stringify({
+        schema: 1,
+        grove_id: grove.id,
+        grove_slug: grove.slug,
+        grove_name: grove.name,
+        original_served_by: 'service',
+        snapshot_path: path.join(claimDir, 'grove-claim.sql'),
+        claim_root: claimDir,
+        claimed_at: 12345,
+        owner_op: 'legacy',
+        phase: 'flipped',
+      }),
+    );
+    fs.writeFileSync(path.join(claimDir, 'grove-claim.sql'), '-- legacy\n');
+
+    await expect(run(['release', grove.slug])).rejects.toThrow(/Legacy claim manifest/);
   });
 
   it('recovers from a flipped-but-incomplete claim by running release', async () => {
