@@ -375,10 +375,11 @@ const AGENT_TASKS_TABLE = `
 const AGENT_STATE_TABLE = `
   CREATE TABLE IF NOT EXISTS agent_state (
     agent_id    TEXT NOT NULL REFERENCES agents(id),
+    project_id  TEXT NOT NULL,
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     updated_at  INTEGER NOT NULL,
-    PRIMARY KEY (agent_id, key)
+    PRIMARY KEY (agent_id, project_id, key)
   )`;
 
 // -- Sync Layer -------------------------------------------------------------
@@ -656,6 +657,9 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'skill_usage',
   'notifications',
   'log_entries',
+  'agent_state',
+  'canopy_entries',
+  'canopy_maps',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
@@ -837,6 +841,9 @@ export const SECONDARY_INDEXES = [
 
   // Agent tasks
   'CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_id ON agent_tasks (agent_id)',
+
+  // Agent state
+  'CREATE INDEX IF NOT EXISTS idx_agent_state_project ON agent_state (project_id, agent_id)',
 
   // Plans
   ...PLAN_LOGICAL_KEY_INDEX_DDLS,

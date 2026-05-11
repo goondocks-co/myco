@@ -321,7 +321,7 @@ export async function runAgent(
   }
 
   const systemPrompt = loadSystemPrompt(definitionsDir, config.systemPromptPath);
-  const vaultContext = buildVaultContext(agentId);
+  const vaultContext = buildVaultContext(agentId, options!.requestContext!.projectId);
 
   // Resolve Ollama context variants across task + phase scopes. Applies
   // DEFAULT_OLLAMA_CONTEXT_LENGTH when no value is set, and reconciles

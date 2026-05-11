@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import * as childProcessActual__ns from 'node:child_process';
 
 // Mock child_process.spawn at module-boundary so the `spawn` import inside
@@ -22,19 +23,24 @@ const { DaemonClient } = await import('@myco/hooks/client');
 // must still trigger a real spawn.
 describe('DaemonClient.spawnDaemon — coalesce guard', () => {
   let vaultDir: string;
+  let statePath: string;
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-spawn-coalesce-'));
+    statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    try { fs.unlinkSync(statePath); } catch { /* gone */ }
     spawnMock.mockClear();
   });
 
   afterEach(() => {
+    try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
   function writeDaemonJson(pid: number): void {
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      statePath,
       JSON.stringify({ pid, port: 21039 }),
     );
   }
@@ -62,9 +68,8 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
 
   it('still spawns when daemon.json is older than the coalesce window', () => {
     writeDaemonJson(process.pid);
-    const jsonPath = path.join(vaultDir, 'daemon.json');
     const ancientSec = (Date.now() - DAEMON_SPAWN_COALESCE_MS - 1_000) / 1_000;
-    fs.utimesSync(jsonPath, ancientSec, ancientSec);
+    fs.utimesSync(statePath, ancientSec, ancientSec);
     new DaemonClient(vaultDir).spawnDaemon();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
@@ -75,13 +80,18 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
 // reboot. The coalesce guard still dedupes per 3s window.
 describe('DaemonClient — auto-spawn on request failure', () => {
   let vaultDir: string;
+  let statePath: string;
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-auto-spawn-'));
+    statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    try { fs.unlinkSync(statePath); } catch { /* gone */ }
     spawnMock.mockClear();
   });
 
   afterEach(() => {
+    try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
 
@@ -103,7 +113,7 @@ describe('DaemonClient — auto-spawn on request failure', () => {
   it('post spawns after fetch failure to a stale daemon.json pointing at a dead port', async () => {
     // Reserved pid + unbound high port so fetch throws ECONNREFUSED.
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      statePath,
       JSON.stringify({ pid: 0x7fffffff, port: 1 }),
     );
     const client = new DaemonClient(vaultDir);

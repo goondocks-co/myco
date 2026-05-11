@@ -69,11 +69,12 @@ function countRows(
  * - Last digest timestamp (if any)
  *
  * @param agentId — the agent to build context for.
+ * @param projectId — the project scope for agent state lookups.
  * @returns a markdown-formatted string.
  */
-export function buildVaultContext(agentId: string): string {
+export function buildVaultContext(agentId: string, projectId: string): string {
   // All queries are synchronous
-  const states = getStatesForAgent(agentId);
+  const states = getStatesForAgent(agentId, projectId);
   const totalSessions = countRows('sessions');
   const totalActiveSpores = countRows('spores', [{ clause: 'status = ?', value: SPORE_STATUS_ACTIVE }]);
   const totalEntities = countRows('entities');

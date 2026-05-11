@@ -1,8 +1,10 @@
 import {
   loadProjectManifest,
+  saveProjectLocalManifest,
   saveProjectManifest,
   type ProjectManifest,
 } from '../config/project-manifest.js';
+import { loadGroveRecord } from './registry.js';
 import { pathsEquivalent, resolveMycoHome, resolveProjectVaultDir } from './paths.js';
 import {
   activationMarkerPath,
@@ -171,12 +173,24 @@ function resolveAfterRepair(
 
   // Repair 1: marker + registry exist, manifest is missing → recreate from marker.
   if (!nextManifest && marker && nextRegistered) {
+    const groveRecord = loadGroveRecord(marker.grove_id, mycoHome);
     const restored: ProjectManifest = {
       project: { id: marker.project_id, name: marker.project_name },
-      grove: { mode: 'local', slug: marker.grove_slug, binding_id: marker.grove_binding_id },
+      grove: {
+        mode: 'local',
+        id: marker.grove_id,
+        slug: marker.grove_slug,
+        ...(groveRecord ? { name: groveRecord.name } : {}),
+      },
     };
     saveProjectManifest(vaultDir, restored);
-    nextManifest = restored;
+    saveProjectLocalManifest(vaultDir, {
+      grove_binding: { binding_id: marker.grove_binding_id, mode: 'local' },
+    });
+    nextManifest = {
+      ...restored,
+      grove: { ...restored.grove, mode: 'local', binding_id: marker.grove_binding_id },
+    };
   }
 
   // Repair 2: manifest + marker exist, registry row missing → re-register.

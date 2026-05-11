@@ -13,6 +13,7 @@ describe('DaemonClient', () => {
   let vaultDir: string;
   let mockServer: http.Server;
   let mockPort: number;
+  let globalStatePath: string;
 
   beforeEach(async () => {
     // Suppress the fire-and-forget spawnDaemon side effect that post/get/put/
@@ -39,8 +40,10 @@ describe('DaemonClient', () => {
     await new Promise<void>((resolve) => {
       mockServer.listen(0, '127.0.0.1', () => {
         mockPort = (mockServer.address() as { port: number }).port;
+        globalStatePath = resolveServiceDaemonStatePath();
+        fs.mkdirSync(path.dirname(globalStatePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          globalStatePath,
           JSON.stringify({ pid: process.pid, port: mockPort }),
         );
         resolve();
@@ -51,6 +54,7 @@ describe('DaemonClient', () => {
   afterEach(async () => {
     await new Promise<void>((r) => mockServer.close(() => r()));
     fs.rmSync(vaultDir, { recursive: true, force: true });
+    try { fs.unlinkSync(globalStatePath); } catch { /* gone */ }
     delete process.env.MYCO_NO_AUTO_SPAWN;
     delete process.env[REQUEST_CONTEXT_ENV.projectRoot];
     delete process.env[REQUEST_CONTEXT_ENV.projectId];
@@ -146,7 +150,9 @@ describe('DaemonClient', () => {
   });
 
   it('returns ok: false when daemon is not running', async () => {
+    fs.unlinkSync(globalStatePath);
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-empty-'));
+    ensureProjectManifest(emptyDir, { projectName: 'empty-test' });
     const client = new DaemonClient(emptyDir);
     const result = await client.post('/events', { type: 'test' });
     expect(result.ok).toBe(false);
@@ -219,7 +225,10 @@ describe('DaemonClient Grove service state', () => {
       expect(result.ok).toBe(true);
       expect(result.data.port).toBe(globalPort);
       expect(result.data.received.type).toBe('test');
-      expect(fs.existsSync(localStatePath)).toBe(false);
+      // localStatePath is the legacy daemon.json — the client now routes via the
+      // global daemon state path and ignores any project-local file. We just
+      // confirm the local file did not influence the resolved port.
+      void localStatePath;
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -241,10 +250,12 @@ describe('DaemonClient error-body propagation', () => {
   let vaultDir: string;
   let mockServer: http.Server;
   let mode: ErrorBodyMode;
+  let errStatePath: string;
 
   beforeEach(async () => {
     process.env.MYCO_NO_AUTO_SPAWN = '1';
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-err-'));
+    ensureProjectManifest(vaultDir, { projectName: 'client-err-test' });
     mode = { kind: 'json', payload: { error: { code: 'boom', message: 'test' } } };
 
     mockServer = http.createServer((_req, res) => {
@@ -267,8 +278,10 @@ describe('DaemonClient error-body propagation', () => {
     await new Promise<void>((resolve) => {
       mockServer.listen(0, '127.0.0.1', () => {
         const port = (mockServer.address() as { port: number }).port;
+        errStatePath = resolveServiceDaemonStatePath();
+        fs.mkdirSync(path.dirname(errStatePath), { recursive: true });
         fs.writeFileSync(
-          path.join(vaultDir, 'daemon.json'),
+          errStatePath,
           JSON.stringify({ pid: process.pid, port }),
         );
         resolve();
@@ -278,6 +291,7 @@ describe('DaemonClient error-body propagation', () => {
 
   afterEach(async () => {
     await new Promise<void>((r) => mockServer.close(() => r()));
+    try { fs.unlinkSync(errStatePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
     delete process.env.MYCO_NO_AUTO_SPAWN;
   });

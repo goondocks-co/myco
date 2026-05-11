@@ -272,7 +272,7 @@ describe('executeContextQueries', () => {
       expect(results).toHaveLength(1);
       expect(results[0].tool).toBe('vault_state');
       expect(results[0].data).toEqual([MOCK_STATE]);
-      expect(getStatesForAgent).toHaveBeenCalledWith(TEST_AGENT_ID);
+      expect(getStatesForAgent).toHaveBeenCalledWith(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId);
     });
   });
 

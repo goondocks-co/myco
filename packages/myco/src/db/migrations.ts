@@ -93,6 +93,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 37, migrate: (db) => migrateV36ToV37(db) },
   { version: 38, migrate: (db) => migrateV37ToV38(db) },
   { version: 39, migrate: (db) => migrateV38ToV39(db) },
+  { version: 40, migrate: (db) => migrateV39ToV40(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2203,8 +2204,38 @@ const V36_DELETE_ONLY_TABLES: readonly string[] = ['canopy_entries', 'canopy_map
  * For these tables: when exactly one Grove-era `project_id` is present
  * in the table, backfill orphans to that id (preserving the audit data),
  * then DELETE any remaining orphans (multiple Grove ids → can't infer).
+ *
+ * Frozen snapshot of GROVE_PROJECT_SCOPED_TABLES as it stood at v36.
+ * Migrations must never reference live constants — later additions to
+ * GROVE_PROJECT_SCOPED_TABLES (canopy_*, agent_state, …) would silently
+ * change the historical migration's semantics.
  */
-const V36_BACKFILL_TABLES: readonly string[] = GROVE_PROJECT_SCOPED_TABLES;
+const V36_BACKFILL_TABLES: readonly string[] = [
+  'sessions',
+  'prompt_batches',
+  'activities',
+  'plans',
+  'artifacts',
+  'attachments',
+  'spores',
+  'entities',
+  'graph_edges',
+  'entity_mentions',
+  'resolution_events',
+  'digest_extracts',
+  'cortex_instructions',
+  'agent_runs',
+  'agent_reports',
+  'agent_turns',
+  'agent_run_write_intents',
+  'digest_extract_revisions',
+  'skill_candidates',
+  'skill_records',
+  'skill_lineage',
+  'skill_usage',
+  'notifications',
+  'log_entries',
+];
 
 function migrateV35ToV36(db: Database): void {
   // Suspend FK enforcement for the duration of the sweep. Several FK
@@ -2408,5 +2439,89 @@ function migrateV38ToV39(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+/**
+ * Version 40 fixes a multi-project leak in `agent_state`. The pre-v40
+ * schema keyed by (agent_id, key) shared watermarks across every project
+ * in a multi-project Grove. v40 adds `project_id`, backfills it from the
+ * most recent matching `agent_runs` row, drops rows that cannot be
+ * resolved to a project, rebuilds the primary key as
+ * (agent_id, project_id, key), and adds a covering index.
+ */
+function migrateV39ToV40(db: Database): void {
+  if (!tableExists(db, 'agent_state')) {
+    db.prepare('BEGIN').run();
+    try {
+      db.prepare(
+        `INSERT INTO schema_version (version, applied_at)
+         VALUES (?, ?)
+         ON CONFLICT (version) DO NOTHING`,
+      ).run(40, epochSeconds());
+      db.prepare('COMMIT').run();
+    } catch (err) {
+      db.prepare('ROLLBACK').run();
+      throw err;
+    }
+    return;
+  }
+
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  setPragmaBoolean(db, 'foreign_keys', 0);
+
+  db.prepare('BEGIN').run();
+  try {
+    const cols = getTableColumnSet(db, 'agent_state');
+    if (!cols.has('project_id')) {
+      db.prepare('ALTER TABLE agent_state ADD COLUMN project_id TEXT').run();
+    }
+
+    db.prepare(
+      `UPDATE agent_state
+          SET project_id = (
+            SELECT project_id
+              FROM agent_runs
+             WHERE agent_id = agent_state.agent_id
+               AND project_id IS NOT NULL
+          ORDER BY started_at DESC
+             LIMIT 1
+          )
+        WHERE project_id IS NULL`,
+    ).run();
+
+    db.prepare('DELETE FROM agent_state WHERE project_id IS NULL').run();
+
+    db.prepare(`
+      CREATE TABLE agent_state_v40 (
+        agent_id    TEXT NOT NULL REFERENCES agents(id),
+        project_id  TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        value       TEXT NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (agent_id, project_id, key)
+      )
+    `).run();
+    db.prepare(
+      `INSERT INTO agent_state_v40 (agent_id, project_id, key, value, updated_at)
+       SELECT agent_id, project_id, key, value, updated_at FROM agent_state`,
+    ).run();
+    db.prepare('DROP TABLE agent_state').run();
+    db.prepare('ALTER TABLE agent_state_v40 RENAME TO agent_state').run();
+    db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_agent_state_project ON agent_state (project_id, agent_id)',
+    ).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(40, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
   }
 }

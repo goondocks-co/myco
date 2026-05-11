@@ -34,6 +34,8 @@ export interface DatabaseMaintenanceRouteDeps {
   logger: Logger;
   /** Vault dir used for the VACUUM disk precheck. */
   vaultDir: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   /** Override Myco home (tests). */
   mycoHome?: string;
 }
@@ -92,7 +94,7 @@ export function createDatabaseMaintenanceHandlers(deps: DatabaseMaintenanceRoute
       },
       // Each Grove has its own DB file; cross-Grove parallelism is safe
       // (per-DB write locks don't span Groves).
-      { mycoHome, jobName: 'database-action', parallel: true },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'database-action', parallel: true },
     );
     return results;
   }

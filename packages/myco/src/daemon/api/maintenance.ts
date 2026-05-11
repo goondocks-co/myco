@@ -90,6 +90,8 @@ export interface MaintenanceHandlersDeps {
   liveConfig: { current: MycoConfig };
   cache: GroveRuntimeCache;
   embeddingRuntimeFactory: EmbeddingRuntimeFactory;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   mycoHome?: string;
 }
 
@@ -312,7 +314,7 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
           groves.push(emptySummary(scope.grove, errorMessage(err)));
         }
       },
-      { mycoHome, jobName: 'maintenance-summary', parallel: true },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'maintenance-summary', parallel: true },
     );
 
     const thresholds = {

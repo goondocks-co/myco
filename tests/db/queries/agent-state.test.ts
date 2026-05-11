@@ -10,6 +10,7 @@ import {
   setState,
   getStatesForAgent,
 } from '@myco/db/queries/agent-state.js';
+import { createProjectId } from '@myco/grove/ids.js';
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -26,6 +27,7 @@ function createAgent(id: string): string {
 
 describe('agent state query helpers', () => {
   let agentId: string;
+  let projectId: string;
 
   beforeAll(() => { setupTestDb(); });
   afterAll(() => { teardownTestDb(); });
@@ -34,6 +36,7 @@ describe('agent state query helpers', () => {
 
     // Create an agent for FK references
     agentId = createAgent('agent-test');
+    projectId = createProjectId();
   });
 
   // ---------------------------------------------------------------------------
@@ -43,37 +46,38 @@ describe('agent state query helpers', () => {
   describe('setState', () => {
     it('sets a new key-value pair and retrieves it', () => {
       const now = epochNow();
-      const row = setState(agentId, 'last_run', '2026-03-22', now);
+      const row = setState(agentId, projectId, 'last_run', '2026-03-22', now);
 
       expect(row.agent_id).toBe(agentId);
+      expect(row.project_id).toBe(projectId);
       expect(row.key).toBe('last_run');
       expect(row.value).toBe('2026-03-22');
       expect(row.updated_at).toBe(now);
 
-      const fetched = getState(agentId, 'last_run');
+      const fetched = getState(agentId, projectId, 'last_run');
       expect(fetched).not.toBeNull();
       expect(fetched!.value).toBe('2026-03-22');
     });
 
     it('overwrites existing value on conflict', () => {
       const now = epochNow();
-      setState(agentId, 'counter', '1', now);
+      setState(agentId, projectId, 'counter', '1', now);
 
       const laterTime = now + 10;
-      const updated = setState(agentId, 'counter', '2', laterTime);
+      const updated = setState(agentId, projectId, 'counter', '2', laterTime);
 
       expect(updated.value).toBe('2');
       expect(updated.updated_at).toBe(laterTime);
 
-      const fetched = getState(agentId, 'counter');
+      const fetched = getState(agentId, projectId, 'counter');
       expect(fetched).not.toBeNull();
       expect(fetched!.value).toBe('2');
     });
 
     it('is idempotent — same data produces same result', () => {
       const now = epochNow();
-      const first = setState(agentId, 'mode', 'active', now);
-      const second = setState(agentId, 'mode', 'active', now);
+      const first = setState(agentId, projectId, 'mode', 'active', now);
+      const second = setState(agentId, projectId, 'mode', 'active', now);
 
       expect(first).toEqual(second);
     });
@@ -82,11 +86,11 @@ describe('agent state query helpers', () => {
       const agentId2 = createAgent('agent-other');
       const now = epochNow();
 
-      setState(agentId, 'theme', 'dark', now);
-      setState(agentId2, 'theme', 'light', now);
+      setState(agentId, projectId, 'theme', 'dark', now);
+      setState(agentId2, projectId, 'theme', 'light', now);
 
-      const state1 = getState(agentId, 'theme');
-      const state2 = getState(agentId2, 'theme');
+      const state1 = getState(agentId, projectId, 'theme');
+      const state2 = getState(agentId2, projectId, 'theme');
 
       expect(state1!.value).toBe('dark');
       expect(state2!.value).toBe('light');
@@ -99,12 +103,12 @@ describe('agent state query helpers', () => {
 
   describe('getState', () => {
     it('returns null for non-existent key', () => {
-      const row = getState(agentId, 'nonexistent');
+      const row = getState(agentId, projectId, 'nonexistent');
       expect(row).toBeNull();
     });
 
     it('returns null for non-existent agent', () => {
-      const row = getState('no-such-agent', 'key');
+      const row = getState('no-such-agent', projectId, 'key');
       expect(row).toBeNull();
     });
   });
@@ -116,11 +120,11 @@ describe('agent state query helpers', () => {
   describe('getStatesForAgent', () => {
     it('returns all key-value pairs for an agent', () => {
       const now = epochNow();
-      setState(agentId, 'alpha', 'one', now);
-      setState(agentId, 'beta', 'two', now + 1);
-      setState(agentId, 'gamma', 'three', now + 2);
+      setState(agentId, projectId, 'alpha', 'one', now);
+      setState(agentId, projectId, 'beta', 'two', now + 1);
+      setState(agentId, projectId, 'gamma', 'three', now + 2);
 
-      const rows = getStatesForAgent(agentId);
+      const rows = getStatesForAgent(agentId, projectId);
       expect(rows).toHaveLength(3);
 
       // Verify all expected keys are present
@@ -134,28 +138,28 @@ describe('agent state query helpers', () => {
       const agentId2 = createAgent('agent-other');
       const now = epochNow();
 
-      setState(agentId, 'shared_key', 'value1', now);
-      setState(agentId2, 'shared_key', 'value2', now);
-      setState(agentId2, 'extra', 'value3', now);
+      setState(agentId, projectId, 'shared_key', 'value1', now);
+      setState(agentId2, projectId, 'shared_key', 'value2', now);
+      setState(agentId2, projectId, 'extra', 'value3', now);
 
-      const rows = getStatesForAgent(agentId);
+      const rows = getStatesForAgent(agentId, projectId);
       expect(rows).toHaveLength(1);
       expect(rows[0].key).toBe('shared_key');
       expect(rows[0].value).toBe('value1');
     });
 
     it('returns empty array when agent has no state', () => {
-      const rows = getStatesForAgent(agentId);
+      const rows = getStatesForAgent(agentId, projectId);
       expect(rows).toEqual([]);
     });
 
     it('returns rows ordered by key ASC', () => {
       const now = epochNow();
-      setState(agentId, 'zebra', 'z', now);
-      setState(agentId, 'apple', 'a', now);
-      setState(agentId, 'mango', 'm', now);
+      setState(agentId, projectId, 'zebra', 'z', now);
+      setState(agentId, projectId, 'apple', 'a', now);
+      setState(agentId, projectId, 'mango', 'm', now);
 
-      const rows = getStatesForAgent(agentId);
+      const rows = getStatesForAgent(agentId, projectId);
       expect(rows).toHaveLength(3);
       expect(rows[0].key).toBe('apple');
       expect(rows[1].key).toBe('mango');

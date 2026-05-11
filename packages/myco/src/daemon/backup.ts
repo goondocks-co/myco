@@ -9,29 +9,38 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { SYNC_PROTOCOL_VERSION, epochSeconds } from '@myco/constants.js';
+import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
+import {
+  ALL_PROJECTS_SCOPE,
+  assertGroveProjectId,
+  projectScope,
+  type ProjectScope,
+} from '@myco/grove/ids.js';
+
+export { ALL_PROJECTS_SCOPE, projectScope, type ProjectScope };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /**
- * Tables included in backup dumps (all synced tables).
+ * Tables that cannot participate in the row-by-row backup format.
  *
- * `cortex_instructions` is intentionally excluded: it's local-only
- * operating guidance (see schema v19 migration + LOCAL_ONLY_OUTBOX_TABLES)
- * and must not move across machines via backup/restore.
+ * `entity_mentions` has no `id` column (gotcha_entity_mentions_not_synced):
+ * the dump format addresses rows by primary key for `INSERT OR IGNORE`
+ * idempotency, and a keyless table can't be addressed that way. Adding
+ * an `id` column to `entity_mentions` removes this carve-out.
+ */
+const BACKUP_EXCLUSIONS = new Set<string>(['entity_mentions']);
+
+/**
+ * Tables included in backup dumps. Derived from GROVE_PROJECT_SCOPED_TABLES
+ * so backup coverage and project-scope coverage stay in lockstep, plus
+ * `team_members` which is grove-scoped (not project-scoped) but still
+ * needs to round-trip through backup/restore.
  */
 export const BACKUP_TABLES = [
-  'sessions',
-  'prompt_batches',
-  'spores',
-  'entities',
-  'graph_edges',
-  'entity_mentions',
-  'resolution_events',
-  'plans',
-  'artifacts',
-  'digest_extracts',
+  ...GROVE_PROJECT_SCOPED_TABLES.filter((t) => !BACKUP_EXCLUSIONS.has(t)),
   'team_members',
 ] as const;
 
@@ -56,6 +65,24 @@ const BACKUP_HEADER_TEMPLATE = '-- Myco backup';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Backup uses the canonical `ProjectScope` from `@myco/grove/ids.js`:
+ *   - `{ kind: 'project', id }`  — single-project dump (filter `project_id = ?`)
+ *   - `{ kind: 'global' }`        — daemon-wide rows (no project filter applies
+ *                                   at the dump level; project-scoped tables
+ *                                   are emitted unfiltered, same as `'all'`)
+ *   - `{ kind: 'all' }`           — vault-wide dump, no project filter
+ *
+ * For backup purposes `'global'` and `'all'` are equivalent: both produce a
+ * no-op `WHERE` clause so every row of every BACKUP_TABLES table is dumped.
+ */
+function projectScopeClause(scope: ProjectScope): { sql: string; params: unknown[] } {
+  if (scope.kind === 'project') {
+    return { sql: ' WHERE project_id = ?', params: [scope.id] };
+  }
+  return { sql: '', params: [] };
+}
 
 /** Metadata for a backup file on disk. */
 export interface BackupMeta {
@@ -92,31 +119,51 @@ function escapeSql(value: string): string {
 }
 
 /**
+ * Format a string as a SQL value expression: a single quoted literal
+ * with embedded newlines preserved inline. The whole dump is later fed
+ * to `db.exec()`, which handles multi-line literals natively.
+ */
+function formatSqlString(value: string): string {
+  return `'${escapeSql(value)}'`;
+}
+
+/**
  * Serialize a JavaScript value into a SQL literal.
  *
  * - null / undefined → NULL
- * - number → numeric literal
- * - Buffer → X'hex'
- * - string → 'escaped string'
+ * - number / bigint → numeric literal
+ * - Buffer / Uint8Array → X'hex'
+ * - string → 'escaped string' (newlines preserved inline)
  */
 function toSqlLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') return String(value);
+  if (typeof value === 'bigint') return String(value);
   if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`;
-  return `'${escapeSql(String(value))}'`;
+  if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString('hex')}'`;
+  return formatSqlString(String(value));
 }
 
 // ---------------------------------------------------------------------------
 // Backup
 // ---------------------------------------------------------------------------
 
+/** Tables that carry a `project_id` column and so accept project scoping. */
+const PROJECT_SCOPED_BACKUP_TABLES = new Set<string>(GROVE_PROJECT_SCOPED_TABLES);
+
 /**
  * Create a SQL dump backup of all synced tables.
  *
- * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES to
- * `{backupDir}/{machineId}__{epochSeconds}.sql`. Each invocation produces
- * a new file; old ones are reclaimed by `pruneBackups` per the configured
- * retention policy.
+ * Writes `INSERT OR IGNORE` statements for every row in BACKUP_TABLES.
+ * The default scope is vault-wide; pass `projectScope(projectId)` to
+ * filter every per-table SELECT by `project_id`.
+ *
+ * Filename scheme:
+ * - all-projects: `{machineId}__{epochSeconds}.sql`
+ * - single-project: `{machineId}__{projectSlug}__{epochSeconds}.sql`
+ *
+ * Each invocation produces a new file; old ones are reclaimed by
+ * `pruneBackups` per the configured retention policy.
  *
  * @returns the absolute path of the created backup file.
  */
@@ -124,19 +171,30 @@ export function createBackup(
   db: Database,
   backupDir: string,
   machineId: string,
+  scope: ProjectScope = ALL_PROJECTS_SCOPE,
+  projectSlug?: string,
 ): string {
   fs.mkdirSync(backupDir, { recursive: true });
 
   const lines: string[] = [];
   const timestamp = epochSeconds();
+  const clause = projectScopeClause(scope);
+  const scopeLabel = scope.kind === 'project'
+    ? `project=${scope.id}`
+    : 'all-projects';
 
   // Header
   lines.push(`${BACKUP_HEADER_TEMPLATE}: machine_id=${machineId}, created_at=${timestamp}`);
   lines.push(`-- Protocol version: ${SYNC_PROTOCOL_VERSION}`);
+  lines.push(`-- scope: ${scopeLabel}`);
   lines.push('');
 
   for (const table of BACKUP_TABLES) {
-    const rows = db.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
+    const useScope = clause.sql !== '' && PROJECT_SCOPED_BACKUP_TABLES.has(table);
+    const sql = `SELECT * FROM ${table}${useScope ? clause.sql : ''}`;
+    const rows = useScope
+      ? db.prepare(sql).all(...clause.params) as Record<string, unknown>[]
+      : db.prepare(sql).all() as Record<string, unknown>[];
     if (rows.length === 0) continue;
 
     lines.push(`-- Table: ${table} (${rows.length} rows)`);
@@ -153,7 +211,10 @@ export function createBackup(
     lines.push('');
   }
 
-  const filePath = path.join(backupDir, `${machineId}__${timestamp}${BACKUP_EXTENSION}`);
+  const filename = scope.kind === 'project'
+    ? `${machineId}__${projectSlug ?? 'unknown'}__${timestamp}${BACKUP_EXTENSION}`
+    : `${machineId}__${timestamp}${BACKUP_EXTENSION}`;
+  const filePath = path.join(backupDir, filename);
   fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
 
   return filePath;
@@ -346,38 +407,138 @@ export function sweepLegacyBackupRoot(rootDir: string): LegacySweepResult {
 }
 
 // ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+
+/**
+ * Header metadata parsed from a snapshot file. The header is the first few
+ * lines emitted by `createBackup` (before any INSERTs).
+ *
+ * `scope` is `null` for legacy snapshots (pre-WB-A) that omit the
+ * `-- scope: ...` line — callers that require a project-scoped snapshot
+ * must reject `null` explicitly.
+ */
+export interface SnapshotHeader {
+  machine_id: string | null;
+  created_at: number | null;
+  protocol_version: number | null;
+  scope: ProjectScope | null;
+}
+
+const HEADER_SCAN_LIMIT = 16;
+
+/**
+ * Read and parse the comment header of a snapshot file. Reads a small
+ * prefix from disk and stops at the first non-comment, non-blank line.
+ */
+export function readSnapshotHeader(snapshotPath: string): SnapshotHeader {
+  const fd = fs.openSync(snapshotPath, 'r');
+  let raw = '';
+  try {
+    const buf = Buffer.alloc(4096);
+    const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+    raw = buf.toString('utf-8', 0, bytes);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const header: SnapshotHeader = {
+    machine_id: null,
+    created_at: null,
+    protocol_version: null,
+    scope: null,
+  };
+
+  const lines = raw.split('\n').slice(0, HEADER_SCAN_LIMIT);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    if (!trimmed.startsWith('--')) break;
+
+    const meta = trimmed.replace(/^--\s*/, '');
+    const machineMatch = /^Myco backup:\s*machine_id=([^,\s]+)(?:,\s*created_at=(\d+))?/.exec(meta);
+    if (machineMatch) {
+      header.machine_id = machineMatch[1];
+      header.created_at = machineMatch[2] ? Number(machineMatch[2]) : null;
+      continue;
+    }
+
+    const protocolMatch = /^Protocol version:\s*(\d+)/.exec(meta);
+    if (protocolMatch) {
+      header.protocol_version = Number(protocolMatch[1]);
+      continue;
+    }
+
+    const scopeMatch = /^scope:\s*(.+)$/.exec(meta);
+    if (scopeMatch) {
+      const value = scopeMatch[1].trim();
+      if (value === 'all-projects') {
+        header.scope = ALL_PROJECTS_SCOPE;
+      } else if (value.startsWith('project=')) {
+        const rawId = value.slice('project='.length);
+        try {
+          header.scope = projectScope(assertGroveProjectId(rawId));
+        } catch {
+          // A malformed `project=<id>` line is treated as an unknown scope
+          // (kept `null`) rather than throwing — the caller chooses whether
+          // an unknown scope is fatal.
+          header.scope = null;
+        }
+      }
+    }
+  }
+
+  return header;
+}
+
+// ---------------------------------------------------------------------------
 // Restore helpers
 // ---------------------------------------------------------------------------
 
-/** Regex matching INSERT OR IGNORE statements generated by createBackup. */
-const INSERT_REGEX = /^INSERT OR IGNORE INTO (\w+)\s+\(([^)]+)\)\s+VALUES\s+\((.+)\);$/;
+/**
+ * Header line marking the start of a table's INSERT block in a dump.
+ * Used to discover *which* tables a given dump touches so post-restore
+ * verification queries the live DB for those tables — never trusting
+ * the dump's claimed row counts.
+ */
+const TABLE_HEADER_REGEX = /^-- Table:\s+(\w+)\s+\(/;
 
-/** Parsed INSERT statement. */
-interface ParsedInsert {
-  table: string;
-  columns: string[];
-  valueSql: string;
+/** Extract the set of table names a dump claims to write to. */
+function extractTableNames(content: string): string[] {
+  const tables = new Set<string>();
+  for (const line of content.split('\n')) {
+    const match = TABLE_HEADER_REGEX.exec(line);
+    if (match) tables.add(match[1]);
+  }
+  return Array.from(tables);
+}
+
+function countRows(db: Database, table: string): number {
+  try {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as
+      | { n: number }
+      | undefined;
+    return row?.n ?? 0;
+  } catch {
+    // Table may not exist on a brand-new target DB; treat as zero.
+    return 0;
+  }
 }
 
 /**
- * Parse all INSERT statements from a backup file.
+ * True if `content` has at least one non-comment, non-blank line.
+ * Used as a guard before `db.exec(content)` — bun:sqlite throws on a
+ * script that contains nothing but comments + blank lines, so an
+ * empty-but-header-only dump (a no-rows backup) would otherwise fail.
  */
-function parseBackupFile(backupPath: string): ParsedInsert[] {
-  const content = fs.readFileSync(backupPath, 'utf-8');
-  const inserts: ParsedInsert[] = [];
-
+function hasSqlStatements(content: string): boolean {
   for (const line of content.split('\n')) {
-    const match = INSERT_REGEX.exec(line);
-    if (!match) continue;
-
-    inserts.push({
-      table: match[1],
-      columns: match[2].split(',').map((c) => c.trim().replace(/"/g, '')),
-      valueSql: match[3],
-    });
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    if (trimmed.startsWith('--')) continue;
+    return true;
   }
-
-  return inserts;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,54 +548,66 @@ function parseBackupFile(backupPath: string): ParsedInsert[] {
 /**
  * Preview what a restore would do without making changes.
  *
- * For each INSERT in the backup, checks if a conflicting row already exists
- * (via INSERT OR IGNORE in a savepoint that gets rolled back).
- *
- * Returns per-table counts of new vs existing records.
+ * Runs the whole dump inside a savepoint, counts rows before and after,
+ * then rolls back. The diff per table is the `new` count; the difference
+ * between the dump's INSERT count and `new` is `existing` (rows that
+ * already existed and were skipped by INSERT OR IGNORE).
  */
 export function restorePreview(
   db: Database,
   backupPath: string,
 ): TableCounts[] {
-  const inserts = parseBackupFile(backupPath);
-  const counts = new Map<string, { new: number; existing: number }>();
+  const content = fs.readFileSync(backupPath, 'utf-8');
+  const tableNames = extractTableNames(content);
+  const before = new Map<string, number>();
+  for (const table of tableNames) before.set(table, countRows(db, table));
 
   // Defer FK checks — backup may reference rows in non-synced tables
   db.run('PRAGMA foreign_keys = OFF');
-  // Use a savepoint so we can test INSERTs without persisting
   db.exec('SAVEPOINT restore_preview');
+  const after = new Map<string, number>();
   try {
-    for (const insert of inserts) {
-      if (!counts.has(insert.table)) {
-        counts.set(insert.table, { new: 0, existing: 0 });
-      }
-      const tableCounts = counts.get(insert.table)!;
-
-      try {
-        const columnList = insert.columns.map((c) => `"${c}"`).join(', ');
-        const stmt = `INSERT OR IGNORE INTO ${insert.table} (${columnList}) VALUES (${insert.valueSql})`;
-        const result = db.prepare(stmt).run();
-
-        if (result.changes > 0) {
-          tableCounts.new++;
-        } else {
-          tableCounts.existing++;
-        }
-      } catch {
-        tableCounts.existing++;
-      }
+    if (hasSqlStatements(content)) {
+      // SQLite's own parser handles multi-line string literals correctly,
+      // so feed it the entire dump as one multi-statement script. This
+      // closes the line-based-parser bug class that silently dropped
+      // every INSERT whose value contained an unescaped newline.
+      db.exec(content);
     }
+    for (const table of tableNames) after.set(table, countRows(db, table));
   } finally {
     db.exec('ROLLBACK TO restore_preview');
     db.exec('RELEASE restore_preview');
     db.run('PRAGMA foreign_keys = ON');
   }
 
-  return Array.from(counts.entries()).map(([table, c]) => ({
-    table,
-    new: c.new,
-    existing: c.existing,
-  }));
+  const result: TableCounts[] = [];
+  for (const table of tableNames) {
+    const beforeN = before.get(table) ?? 0;
+    const afterN = after.get(table) ?? 0;
+    const newRows = Math.max(0, afterN - beforeN);
+    const claimedInserts = countTableInserts(content, table);
+    const existing = Math.max(0, claimedInserts - newRows);
+    result.push({ table, new: newRows, existing });
+  }
+  return result;
+}
+
+/**
+ * Count INSERT statements in `content` that target `table`. Naive
+ * substring match is safe because INSERT statements emitted by
+ * `createBackup` start at column 0 of their line and the table name is
+ * a SQL identifier (no spaces).
+ */
+function countTableInserts(content: string, table: string): number {
+  const needle = `INSERT OR IGNORE INTO ${table} (`;
+  let count = 0;
+  let idx = content.indexOf(needle);
+  while (idx !== -1) {
+    count++;
+    idx = content.indexOf(needle, idx + needle.length);
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,51 +615,46 @@ export function restorePreview(
 // ---------------------------------------------------------------------------
 
 /**
- * Restore a backup by running all INSERTs in a transaction.
+ * Restore a backup by feeding the entire dump to SQLite's own parser as
+ * one multi-statement script. SQLite's parser understands string literals
+ * with embedded newlines, so multi-line text values round-trip byte-exact.
+ *
+ * Per-table counts are computed by querying the live DB before and
+ * after the restore — never from the dump's `(N rows)` comments. A
+ * broken dump cannot fool the gate this way.
  *
  * Uses `INSERT OR IGNORE` — existing records are skipped, new records
- * are inserted. Returns per-table counts.
+ * are inserted.
  */
 export function restoreBackup(
   db: Database,
   backupPath: string,
 ): RestoreResult {
-  const inserts = parseBackupFile(backupPath);
-  const counts = new Map<string, { new: number; existing: number }>();
+  const content = fs.readFileSync(backupPath, 'utf-8');
+  const tableNames = extractTableNames(content);
+  const before = new Map<string, number>();
+  for (const table of tableNames) before.set(table, countRows(db, table));
 
   // Defer FK checks — backup may reference rows in non-synced tables (e.g. agents)
-  // that don't exist yet. Re-enable after the transaction.
+  // that don't exist yet. Re-enable after the dump runs.
   db.run('PRAGMA foreign_keys = OFF');
   try {
-    const runRestore = db.transaction(() => {
-      for (const insert of inserts) {
-        if (!counts.has(insert.table)) {
-          counts.set(insert.table, { new: 0, existing: 0 });
-        }
-        const tableCounts = counts.get(insert.table)!;
-
-        const columnList = insert.columns.map((c) => `"${c}"`).join(', ');
-        const stmt = `INSERT OR IGNORE INTO ${insert.table} (${columnList}) VALUES (${insert.valueSql})`;
-        const result = db.prepare(stmt).run();
-
-        if (result.changes > 0) {
-          tableCounts.new++;
-        } else {
-          tableCounts.existing++;
-        }
-      }
-    });
-
-    runRestore();
+    if (hasSqlStatements(content)) {
+      db.exec(content);
+    }
   } finally {
     db.run('PRAGMA foreign_keys = ON');
   }
 
-  const tables = Array.from(counts.entries()).map(([table, c]) => ({
-    table,
-    new: c.new,
-    existing: c.existing,
-  }));
+  const tables: TableCounts[] = [];
+  for (const table of tableNames) {
+    const beforeN = before.get(table) ?? 0;
+    const afterN = countRows(db, table);
+    const newRows = Math.max(0, afterN - beforeN);
+    const claimedInserts = countTableInserts(content, table);
+    const existing = Math.max(0, claimedInserts - newRows);
+    tables.push({ table, new: newRows, existing });
+  }
 
   const total_restored = tables.reduce((sum, t) => sum + t.new, 0);
   const total_skipped = tables.reduce((sum, t) => sum + t.existing, 0);

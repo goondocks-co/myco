@@ -65,6 +65,7 @@ describe('team-sync flush fan-out across Groves', () => {
     mycoHome = path.join(tmpDir, 'home');
     bootVaultDir = path.join(tmpDir, '.myco');
     fs.mkdirSync(mycoHome, { recursive: true });
+    fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
     fs.mkdirSync(bootVaultDir, { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
@@ -157,6 +158,7 @@ describe('team-sync flush fan-out across Groves', () => {
       logger: logger as never,
       vaultDir: bootVaultDir,
       serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
 
     // Reconcile first so the TeamSyncClient exists for each Grove. Then
@@ -203,6 +205,7 @@ describe('team-sync flush fan-out across Groves', () => {
       logger: logger as never,
       vaultDir: bootVaultDir,
       serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
 
     // Only reconcile Grove Two. Grove One has no live client so its
@@ -240,6 +243,7 @@ describe('team-sync flush fan-out across Groves', () => {
       logger: logger as never,
       vaultDir: bootVaultDir,
       serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
     await reconcile(teamSync, grove, cache);
     seedOutbox(grove, cache, ['x1', 'x2']);
@@ -264,6 +268,7 @@ describe('team-sync flush fan-out across Groves', () => {
       logger: logger as never,
       vaultDir: bootVaultDir,
       serverVersion: '1.2.3',
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
 
     const aggregate = await teamSync.flushAllGroves(cache);

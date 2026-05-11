@@ -94,7 +94,13 @@ describe('projects activity API', () => {
   function makeHandler(coldDays = 14) {
     const cache = new GroveRuntimeCache();
     const liveConfig = { current: makeConfig(coldDays) };
-    const handler = createProjectsActivityHandler({ logger, liveConfig, cache, mycoHome });
+    const handler = createProjectsActivityHandler({
+      logger,
+      liveConfig,
+      cache,
+      mycoHome,
+      daemonStateDir: path.join(mycoHome, 'service'),
+    });
     return { cache, handler };
   }
 

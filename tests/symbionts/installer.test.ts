@@ -1043,7 +1043,7 @@ describe('installMcp (TOML)', () => {
     expect(result).toBe(true);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain('[mcp_servers.myco]');
-    expect(content).toContain(`url = "http://127.0.0.1:${derivePort(path.join(projectRoot, '.myco'))}/mcp"`);
+    expect(content).toContain(`url = "http://127.0.0.1:${resolveGlobalDaemonPort(mycoHome)}/mcp"`);
     expect(content).not.toContain('command = "myco-run"');
     expect(content).not.toContain('args = ["mcp"]');
     expect(content).not.toContain('cwd = "."');
@@ -1076,15 +1076,15 @@ describe('installMcp (TOML)', () => {
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     installer.installMcp();
 
-    const expectedPort = derivePort(path.join(projectRoot, '.myco'));
+    const expectedPort = resolveGlobalDaemonPort(mycoHome);
     const content = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(content).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
     expect(content).not.toContain('21039');
   });
 
-  it('uses derivePort(vaultDir) for Codex MCP URL on a legacy (non-grove) project', () => {
-    // Sandbox MYCO_HOME so we don't read or write the user's real
-    // ~/.myco/config.yaml during this test.
+  it('uses the global service-dir derived port for Codex MCP URL on a project without an explicit Grove binding', () => {
+    // Post-Grove there is no per-vault daemon fallback; the canonical
+    // port is always derived from the global service dir.
     const mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-home-'));
     process.env.MYCO_HOME = mycoHome;
 
@@ -1095,7 +1095,7 @@ describe('installMcp (TOML)', () => {
     const installer = new SymbiontInstaller(CODEX_MANIFEST, projectRoot, packageRoot);
     installer.installMcp();
 
-    const expectedPort = derivePort(path.join(projectRoot, '.myco'));
+    const expectedPort = resolveGlobalDaemonPort(mycoHome);
     const codexConfig = fs.readFileSync(path.join(projectRoot, '.codex/config.toml'), 'utf-8');
     expect(codexConfig).toContain(`url = "http://127.0.0.1:${expectedPort}/mcp"`);
   });

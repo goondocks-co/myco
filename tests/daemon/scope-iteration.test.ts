@@ -31,6 +31,8 @@ describe('scope-iteration', () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-iteration-'));
     mycoHome = path.join(workDir, 'home');
     fs.mkdirSync(mycoHome, { recursive: true });
+    // The service dir must exist so resolveServiceDirName can validate it.
+    fs.mkdirSync(path.join(mycoHome, 'service'), { recursive: true });
     previousMycoHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = mycoHome;
     logger = makeLogger(workDir);
@@ -71,7 +73,7 @@ describe('scope-iteration', () => {
       const cache = new GroveRuntimeCache();
       const summary = await forEachGrove(cache, logger, () => {
         throw new Error('body should not run');
-      }, { mycoHome });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service') });
       expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0, skipped: 0 });
       cache.closeAll();
     });
@@ -85,7 +87,7 @@ describe('scope-iteration', () => {
         seen.push({ id: grove.id, databasePath });
         // Schema is real — we should be able to query.
         db.prepare('SELECT 1').get();
-      }, { mycoHome });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service') });
       expect(summary).toEqual({ attempted: 2, ok: 2, failed: 0, skipped: 0 });
       const ids = seen.map((s) => s.id).sort();
       expect(ids).toEqual([a.id, b.id].sort());
@@ -108,7 +110,7 @@ describe('scope-iteration', () => {
           .prepare('SELECT k FROM marker WHERE k = ?')
           .get(grove.id) as { k: string } | undefined;
         observed.set(databasePath, row?.k ?? '');
-      }, { mycoHome });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service') });
       expect(observed.get(resolveGroveDbPath(a.id, mycoHome))).toBe(a.id);
       expect(observed.get(resolveGroveDbPath(b.id, mycoHome))).toBe(b.id);
       cache.closeAll();
@@ -123,7 +125,7 @@ describe('scope-iteration', () => {
       const summary = await forEachGrove(cache, logger, ({ grove }) => {
         visited.push(grove.id);
         if (grove.id === b.id) throw new Error('boom');
-      }, { mycoHome });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service') });
       expect(summary.attempted).toBe(3);
       expect(summary.ok).toBe(2);
       expect(summary.failed).toBe(1);
@@ -141,6 +143,7 @@ describe('scope-iteration', () => {
         visited.push(grove.id);
       }, {
         mycoHome,
+        daemonStateDir: path.join(mycoHome, 'service'),
         shouldVisitGrove: (grove) => grove.id !== b.id,
       });
       expect(summary.attempted).toBe(2);
@@ -160,6 +163,7 @@ describe('scope-iteration', () => {
         bodyCalls += 1;
       }, {
         mycoHome,
+        daemonStateDir: path.join(mycoHome, 'service'),
         shouldVisitGrove: () => false,
       });
       expect(bodyCalls).toBe(0);
@@ -188,7 +192,7 @@ describe('scope-iteration', () => {
         await Promise.resolve();
         // Original handle is still usable.
         expect(() => db.prepare('SELECT 1').get()).not.toThrow();
-      }, { mycoHome });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service') });
       expect(dbHandlesByGrove.size).toBe(2);
       cache.closeAll();
     });
@@ -209,7 +213,7 @@ describe('scope-iteration', () => {
       const seen: Array<{ groveId: string; projectId: string }> = [];
       const summary = await forEachRegisteredProject(cache, logger, ({ grove, projectId }) => {
         seen.push({ groveId: grove.id, projectId });
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(summary.attempted).toBe(3);
       expect(summary.ok).toBe(3);
       expect(seen.length).toBe(3);
@@ -227,7 +231,7 @@ describe('scope-iteration', () => {
       let captured: ReturnType<typeof JSON.parse> | null = null;
       await forEachRegisteredProject(cache, logger, ({ requestContext }) => {
         captured = JSON.parse(JSON.stringify(requestContext));
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(captured).toMatchObject({
         projectRoot: path.resolve(root),
         projectId: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -248,7 +252,7 @@ describe('scope-iteration', () => {
       const handles = new Set<unknown>();
       await forEachRegisteredProject(cache, logger, ({ db }) => {
         handles.add(db);
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(handles.size).toBe(1);
       cache.closeAll();
     });
@@ -262,7 +266,7 @@ describe('scope-iteration', () => {
         if (projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
           throw new Error('boom');
         }
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(summary).toEqual({ attempted: 2, ok: 1, failed: 1 });
       cache.closeAll();
     });
@@ -277,7 +281,7 @@ describe('scope-iteration', () => {
       const cache = new GroveRuntimeCache();
       const summary = await forEachRegisteredProject(cache, logger, () => {
         throw new Error('body should not run');
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0 });
       cache.closeAll();
     });
@@ -291,7 +295,7 @@ describe('scope-iteration', () => {
       const cache = new GroveRuntimeCache();
       const summary = await forEachRegisteredProject(cache, logger, () => {
         throw new Error('body should not run');
-      }, { mycoHome, machineId: MACHINE_ID });
+      }, { mycoHome, daemonStateDir: path.join(mycoHome, 'service'), machineId: MACHINE_ID });
       expect(summary).toEqual({ attempted: 0, ok: 0, failed: 0 });
       cache.closeAll();
     });
@@ -312,6 +316,7 @@ describe('scope-iteration', () => {
         },
         {
           mycoHome,
+          daemonStateDir: path.join(mycoHome, 'service'),
           machineId: MACHINE_ID,
           notifyOnProjectFailure: (scope, message) => {
             notified.push({ projectId: scope.projectId, message });
@@ -342,6 +347,7 @@ describe('scope-iteration', () => {
         },
         {
           mycoHome,
+          daemonStateDir: path.join(mycoHome, 'service'),
           machineId: MACHINE_ID,
           notifyOnProjectFailure: () => {
             throw new Error('notifier-boom');
@@ -365,6 +371,7 @@ describe('scope-iteration', () => {
         visited.push(projectId);
       }, {
         mycoHome,
+        daemonStateDir: path.join(mycoHome, 'service'),
         machineId: MACHINE_ID,
         shouldVisit: ({ projectId }) => projectId === 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       });

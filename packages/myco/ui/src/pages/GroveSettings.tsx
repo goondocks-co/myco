@@ -1,14 +1,19 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
+import { Copy } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Switch } from '../components/ui/switch';
+import { Button } from '../components/ui/button';
 import { FieldShell } from '../components/config/FieldShell';
 import { ScopeBadge } from '../components/config/ScopePill';
 import { BackupCard } from '../components/operations/BackupCard';
 import { useProjectSelection } from '../hooks/use-project-selection';
 import { useGroveConfig, useUpdateGroveConfig, type GroveConfig } from '../hooks/use-grove-config';
+import { useRenameGrove } from '../hooks/use-grove-mutations';
+import { DeleteGroveModal } from '../components/groves/DeleteGroveModal';
+import { showToast } from '../components/groves/toast';
 import { setAtPath } from '@myco/utils/dot-path';
 
 /* ---------- Helpers ---------- */
@@ -223,6 +228,69 @@ export default function GroveSettings() {
     update.mutate(buildPatch(path, value));
   }
 
+  return <GroveSettingsContent
+    groveId={selection.grove.id}
+    groveSlug={selection.grove.slug}
+    groveName={groveName}
+    projectCount={selection.grove.project_count}
+    config={config}
+    saving={saving}
+    patch={patch}
+    update={update}
+  />;
+}
+
+interface GroveSettingsContentProps {
+  groveId: string;
+  groveSlug: string;
+  groveName: string;
+  projectCount: number;
+  config: GroveConfig;
+  saving: boolean;
+  patch: (path: string, value: unknown) => void;
+  update: ReturnType<typeof useUpdateGroveConfig>;
+}
+
+function GroveSettingsContent({
+  groveId,
+  groveSlug,
+  groveName,
+  projectCount,
+  config,
+  saving,
+  patch,
+  update,
+}: GroveSettingsContentProps) {
+  const [nameDraft, setNameDraft] = useState(groveName);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const renameGrove = useRenameGrove();
+
+  useEffect(() => {
+    setNameDraft(groveName);
+  }, [groveName]);
+
+  const renamed = nameDraft.trim() !== groveName && nameDraft.trim().length > 0;
+
+  function handleSaveName() {
+    if (!renamed) return;
+    renameGrove.mutate(
+      { id: groveId, name: nameDraft.trim() },
+      {
+        onSuccess: () => showToast({ level: 'success', title: 'Grove renamed' }),
+        onError: (err) => showToast({ level: 'error', title: 'Rename failed', detail: err.message }),
+      },
+    );
+  }
+
+  function copyToClipboard(value: string, label: string) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(value).then(
+        () => showToast({ level: 'info', title: `${label} copied` }),
+        () => showToast({ level: 'error', title: 'Copy failed' }),
+      );
+    }
+  }
+
   return (
     <div className="p-6">
       <PageHeader
@@ -236,6 +304,73 @@ export default function GroveSettings() {
       </p>
 
       <div className="space-y-6">
+      {/* Identity — name (editable), slug + id (read-only), members placeholder. */}
+      <Surface level="low" className="rounded-lg p-6 space-y-5 border-t-2 border-t-primary transition-all duration-300">
+        <SectionHeader>Identity</SectionHeader>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label htmlFor="grove-name" className="text-sm font-medium text-on-surface">
+              Name
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id="grove-name"
+                type="text"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                disabled={renameGrove.isPending}
+                className="w-full rounded-md border border-outline-variant/40 bg-surface-container-low px-2 py-1.5 text-sm text-on-surface focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
+              />
+              <Button
+                size="sm"
+                onClick={handleSaveName}
+                disabled={!renamed || renameGrove.isPending}
+              >
+                {renameGrove.isPending ? 'Saving…' : 'Save'}
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-on-surface">Slug</span>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-md border border-outline-variant/40 bg-surface-container-low px-2 py-1.5 font-mono text-xs text-on-surface-variant">
+                {groveSlug}
+              </code>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Copy slug"
+                onClick={() => copyToClipboard(groveSlug, 'Slug')}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-2 lg:col-span-2">
+            <span className="text-sm font-medium text-on-surface">ID</span>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-md border border-outline-variant/40 bg-surface-container-low px-2 py-1.5 font-mono text-xs text-on-surface-variant">
+                {groveId}
+              </code>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Copy ID"
+                onClick={() => copyToClipboard(groveId, 'ID')}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Surface>
+
+      {/* Members — placeholder until multi-machine team membership lands. */}
+      <Surface level="low" className="rounded-lg p-6 space-y-3 border-t-2 border-t-outline-variant transition-all duration-300">
+        <SectionHeader>Members</SectionHeader>
+        <p className="text-sm text-on-surface-variant">Local-only Grove.</p>
+      </Surface>
+
       {/* Backups — full-width card. Hosts the auto-backup config
           (directory + retention) AND the per-Grove backup list with
           create/preview/restore controls (lifted from the old
@@ -397,6 +532,37 @@ export default function GroveSettings() {
           </p>
         </Surface>
       )}
+
+      {/* Danger zone — delete trigger. Project-count gating lives in the modal. */}
+      <Surface level="low" className="rounded-lg p-6 space-y-3 border-t-2 border-t-tertiary transition-all duration-300">
+        <SectionHeader>Danger zone</SectionHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-on-surface">Delete this Grove</p>
+            <p className="text-xs text-on-surface-variant">
+              Removes the Grove from the local registry. Move or remove its projects first.
+            </p>
+          </div>
+          <span title={projectCount > 0 ? 'Grove still has projects' : undefined}>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={projectCount > 0}
+              onClick={() => setDeleteOpen(true)}
+            >
+              Delete Grove
+            </Button>
+          </span>
+        </div>
+      </Surface>
+
+      <DeleteGroveModal
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        groveId={groveId}
+        groveName={groveName}
+        projectCount={projectCount}
+      />
       </div>{/* end space-y-6 wrapper */}
     </div>
   );

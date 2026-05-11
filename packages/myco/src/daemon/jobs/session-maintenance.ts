@@ -24,12 +24,20 @@ import { LOG_KINDS } from '../../constants/log-kinds.js';
 /**
  * Complete active sessions whose last prompt is older than the stale threshold.
  *
- * Uses COALESCE to fall back to the session's started_at when no prompt
- * batches exist (session was registered but never received a prompt).
+ * The freshness predicate considers two timestamp sources:
+ *   - prompt_batches.started_at  — when the last user prompt arrived
+ *   - activities.timestamp       — when the last tool_use / subagent event was
+ *                                  recorded (emitted continuously during long
+ *                                  agentic turns even within a single open batch)
  *
- * The activity-timestamp predicate itself is the only protection: sessions
- * with recent work fall outside the stale window and won't be swept. A
- * previously-registered session that's been idle past the threshold is
+ * A session is only swept if BOTH sources are beyond the stale window.
+ * The COALESCE falls back to sessions.started_at when neither table has rows.
+ *
+ * This prevents the bug where a session running many tool calls under a single
+ * long prompt batch (opened >60 min ago) was incorrectly swept mid-flight
+ * because the sweep saw only prompt_batches.started_at.
+ *
+ * A previously-registered session that's been idle past the threshold is
  * swept normally — if it later receives a new event, `event-dispatch.ts`
  * upserts it back to `status='active'`, so marking completed is reversible.
  *
@@ -47,7 +55,15 @@ export function completeStaleActiveSessions(
      SET status = 'completed', ended_at = COALESCE(ended_at, ?)
      WHERE status = 'active'
        AND COALESCE(
-         (SELECT MAX(pb.started_at) FROM prompt_batches pb WHERE pb.session_id = sessions.id),
+         (SELECT MAX(touch) FROM (
+           SELECT MAX(pb.started_at) AS touch
+             FROM prompt_batches pb
+            WHERE pb.session_id = sessions.id
+           UNION ALL
+           SELECT MAX(a.timestamp) AS touch
+             FROM activities a
+            WHERE a.session_id = sessions.id
+         )),
          sessions.started_at
        ) < ?`,
   ).run(epochSeconds(), cutoff);

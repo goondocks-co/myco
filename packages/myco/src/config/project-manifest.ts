@@ -3,20 +3,40 @@ import path from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { z } from 'zod';
 import { createGroveBindingId, createProjectId } from '@myco/grove/ids.js';
-import { resolveProjectManifestPath } from '@myco/grove/paths.js';
+import {
+  resolveProjectLocalManifestPath,
+  resolveProjectManifestPath,
+} from '@myco/grove/paths.js';
+import { findRegisteredProjectByBinding } from '@myco/grove/registry-resolve.js';
+import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { isPlainTable } from '@myco/utils/is-plain-table.js';
 import { createMtimeCache } from '@myco/utils/mtime-cache.js';
 
 const SECRET_KEY_RE = /(secret|token|password|credential|api[_-]?key)/i;
 
+/**
+ * Schema for the project's `project.toml`. Carries portable identity
+ * (`project.id`, `project.name`) and portable Grove identity
+ * (`grove.id`, `grove.slug`, `grove.name`) — all safe to commit. The
+ * per-machine binding (`binding_id`, `mode`) lives in
+ * `project.local.toml` (see `ProjectLocalManifestSchema`).
+ *
+ * `binding_id`, `slug`, `mode`, `remote` are accepted as optional
+ * fields so the in-memory view exposed by `loadProjectManifest`
+ * remains a single shape regardless of whether the per-machine binding
+ * has migrated out of `project.toml` yet.
+ */
 export const ProjectManifestSchema = z.object({
   project: z.object({
     id: z.string().min(1),
     name: z.string().min(1).optional(),
   }),
   grove: z.object({
-    binding_id: z.string().min(1).optional(),
+    id: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
     slug: z.string().min(1).optional(),
+    binding_id: z.string().min(1).optional(),
     mode: z.enum(['local']).default('local'),
     remote: z.object({
       provider: z.string().min(1).optional(),
@@ -27,9 +47,21 @@ export const ProjectManifestSchema = z.object({
 
 export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
 
+export const ProjectLocalManifestSchema = z.object({
+  grove_binding: z.object({
+    binding_id: z.string().min(1),
+    mode: z.literal('local'),
+    local_db_path: z.string().min(1).optional(),
+  }).optional(),
+});
+
+export type ProjectLocalManifest = z.infer<typeof ProjectLocalManifestSchema>;
+
 export interface EnsureProjectManifestOptions {
   projectName: string;
+  groveId?: string;
   groveSlug?: string;
+  groveName?: string;
   groveBindingId?: string;
 }
 
@@ -41,15 +73,79 @@ const manifestCache = createMtimeCache((manifestPath: string): ProjectManifest |
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
-  return parseProjectManifest(content);
+  const parsed = parse(content) as Record<string, unknown>;
+  assertNoSecretLikeKeys(parsed);
+
+  const groveRaw = parsed.grove as Record<string, unknown> | undefined;
+  const isOldShape = !!groveRaw
+    && (groveRaw.binding_id !== undefined || groveRaw.mode !== undefined)
+    && groveRaw.id === undefined;
+
+  let manifest: ProjectManifest | null = null;
+  if (isOldShape) {
+    manifest = migrateCombinedManifest(manifestPath, parsed);
+  }
+  if (!manifest) manifest = ProjectManifestSchema.parse(parsed);
+
+  return overlayLocalBinding(manifest, manifestPath);
 });
 
+/**
+ * Overlay the per-machine binding (`grove.binding_id`, `grove.mode`) from
+ * `project.local.toml` onto the in-memory manifest view so call sites
+ * that read `manifest.grove?.binding_id` see a single shape regardless
+ * of where the binding lives on disk.
+ */
+function overlayLocalBinding(
+  manifest: ProjectManifest,
+  manifestPath: string,
+): ProjectManifest {
+  const vaultDir = path.dirname(manifestPath);
+  const localPath = path.join(vaultDir, 'project.local.toml');
+  if (!fs.existsSync(localPath)) return manifest;
+  const local = localManifestCache.get(localPath);
+  const binding = local?.grove_binding;
+  if (!binding) return manifest;
+  return {
+    ...manifest,
+    grove: {
+      ...(manifest.grove ?? { mode: 'local' }),
+      binding_id: binding.binding_id,
+      mode: binding.mode,
+    },
+  };
+}
+
+const localManifestCache = createMtimeCache((manifestPath: string): ProjectLocalManifest | null => {
+  let content: string;
+  try {
+    content = fs.readFileSync(manifestPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  const parsed = parse(content);
+  return ProjectLocalManifestSchema.parse(parsed);
+});
+
+/**
+ * Read the project manifest with `grove.binding_id` and `grove.mode`
+ * reconstituted from `project.local.toml` (the single source of truth
+ * for the per-machine binding). Binding-resolution callers MUST go
+ * through this function — never `loadProjectLocalManifest` directly —
+ * so every vault shape presents identical fields.
+ */
 export function loadProjectManifest(projectVaultDir: string): ProjectManifest | null {
   return manifestCache.get(resolveProjectManifestPath(projectVaultDir));
 }
 
+export function loadProjectLocalManifest(projectVaultDir: string): ProjectLocalManifest | null {
+  return localManifestCache.get(resolveProjectLocalManifestPath(projectVaultDir));
+}
+
 export function clearProjectManifestCache(): void {
   manifestCache.clear();
+  localManifestCache.clear();
 }
 
 export function parseProjectManifest(content: string): ProjectManifest {
@@ -77,8 +173,23 @@ export function saveProjectManifest(projectVaultDir: string, manifest: ProjectMa
   }
 
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-  fs.writeFileSync(manifestPath, stringify(doc), 'utf-8');
+  atomicWriteFileSync(manifestPath, stringify(doc));
   manifestCache.invalidate(manifestPath);
+}
+
+export function saveProjectLocalManifest(
+  projectVaultDir: string,
+  manifest: ProjectLocalManifest,
+): void {
+  const filePath = resolveProjectLocalManifestPath(projectVaultDir);
+  const validated = ProjectLocalManifestSchema.parse(manifest);
+  const doc: TomlTableWithoutBigInt = {};
+  if (validated.grove_binding) {
+    doc.grove_binding = compactTable(validated.grove_binding as unknown as TomlTableWithoutBigInt);
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  atomicWriteFileSync(filePath, stringify(doc));
+  localManifestCache.invalidate(filePath);
 }
 
 export function ensureProjectManifest(
@@ -88,36 +199,107 @@ export function ensureProjectManifest(
   const existing = loadProjectManifest(projectVaultDir);
   if (existing) {
     if (options.groveSlug && !existing.grove?.binding_id) {
-      const updated: ProjectManifest = {
+      const bindingId = options.groveBindingId ?? createGroveBindingId();
+      const portable: ProjectManifest = {
         ...existing,
         grove: {
           ...existing.grove,
-          binding_id: options.groveBindingId ?? createGroveBindingId(),
+          id: existing.grove?.id ?? options.groveId,
+          name: existing.grove?.name ?? options.groveName,
           slug: existing.grove?.slug ?? options.groveSlug,
           mode: existing.grove?.mode ?? 'local',
         },
       };
-      saveProjectManifest(projectVaultDir, updated);
-      return updated;
+      saveProjectManifest(projectVaultDir, portable);
+      saveProjectLocalManifest(projectVaultDir, {
+        grove_binding: { binding_id: bindingId, mode: 'local' },
+      });
+      return {
+        ...portable,
+        grove: { ...portable.grove, mode: 'local', binding_id: bindingId },
+      };
     }
     return existing;
   }
 
-  const manifest: ProjectManifest = {
+  const bindingId = options.groveSlug
+    ? (options.groveBindingId ?? createGroveBindingId())
+    : null;
+  const portable: ProjectManifest = {
     project: {
       id: createProjectId(),
       name: options.projectName,
     },
     grove: options.groveSlug
       ? {
-        binding_id: options.groveBindingId ?? createGroveBindingId(),
+        ...(options.groveId ? { id: options.groveId } : {}),
+        ...(options.groveName ? { name: options.groveName } : {}),
         slug: options.groveSlug,
         mode: 'local',
       }
       : undefined,
   };
-  saveProjectManifest(projectVaultDir, manifest);
-  return manifest;
+  saveProjectManifest(projectVaultDir, portable);
+  if (bindingId) {
+    saveProjectLocalManifest(projectVaultDir, {
+      grove_binding: { binding_id: bindingId, mode: 'local' },
+    });
+  }
+  return bindingId
+    ? { ...portable, grove: { ...portable.grove, mode: 'local', binding_id: bindingId } }
+    : portable;
+}
+
+function migrateCombinedManifest(
+  manifestPath: string,
+  parsed: Record<string, unknown>,
+): ProjectManifest | null {
+  const groveRaw = parsed.grove as Record<string, unknown> | undefined;
+  const bindingId = typeof groveRaw?.binding_id === 'string' ? groveRaw.binding_id : null;
+  if (!bindingId) return null;
+
+  const resolved = findRegisteredProjectByBinding(bindingId);
+  if (!resolved) return null;
+
+  const projectRaw = parsed.project as Record<string, unknown> | undefined;
+  if (!projectRaw || typeof projectRaw.id !== 'string') return null;
+
+  const vaultDir = path.dirname(manifestPath);
+  const localDbPath = typeof groveRaw?.local_db_path === 'string' ? groveRaw.local_db_path : undefined;
+  const mode: 'local' = 'local';
+
+  const newDoc: TomlTableWithoutBigInt = {
+    project: {
+      ...projectRaw,
+    } as TomlTableWithoutBigInt,
+    grove: {
+      id: resolved.grove.id,
+      slug: resolved.grove.slug,
+      name: resolved.grove.name,
+    } as TomlTableWithoutBigInt,
+  };
+
+  if (groveRaw?.remote && isPlainTable(groveRaw.remote)) {
+    (newDoc.grove as TomlTableWithoutBigInt).remote = groveRaw.remote as TomlTableWithoutBigInt;
+  }
+
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  atomicWriteFileSync(manifestPath, stringify(newDoc));
+
+  const localPath = path.join(vaultDir, 'project.local.toml');
+  const localDoc: TomlTableWithoutBigInt = {
+    grove_binding: compactTable({
+      binding_id: bindingId,
+      mode,
+      ...(localDbPath ? { local_db_path: localDbPath } : {}),
+    } as TomlTableWithoutBigInt),
+  };
+  atomicWriteFileSync(localPath, stringify(localDoc));
+  localManifestCache.invalidate(localPath);
+
+  ensureVaultGitignoreCurrent(vaultDir);
+
+  return ProjectManifestSchema.parse(newDoc);
 }
 
 function readTomlDocument(filePath: string): TomlTableWithoutBigInt {
@@ -132,11 +314,16 @@ function mergeGroveTable(
   grove: NonNullable<ProjectManifest['grove']>,
 ): TomlTableWithoutBigInt {
   const existingTable = isPlainTable(existing) ? existing as TomlTableWithoutBigInt : {};
-  const table: TomlTableWithoutBigInt = {
-    ...existingTable,
-    mode: grove.mode,
-  };
+  const table: TomlTableWithoutBigInt = { ...existingTable };
+  // `binding_id` and `mode` belong in `project.local.toml`. They are
+  // persisted inline only when the caller passes them explicitly; an
+  // implicit save drops any stale inline copy.
   if (grove.binding_id) table.binding_id = grove.binding_id;
+  else delete table.binding_id;
+  if (grove.binding_id) table.mode = grove.mode;
+  else delete table.mode;
+  if (grove.id) table.id = grove.id;
+  if (grove.name) table.name = grove.name;
   if (grove.slug) table.slug = grove.slug;
   if (grove.remote) {
     table.remote = {
@@ -170,4 +357,3 @@ function assertNoSecretLikeKeys(value: unknown, pathParts: string[] = []): void 
     assertNoSecretLikeKeys(child, nextPath);
   }
 }
-

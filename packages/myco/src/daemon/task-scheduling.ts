@@ -33,6 +33,7 @@ import {
   forEachRegisteredProject,
   isProjectActive,
 } from './scope-iteration.js';
+import { isProjectPausedInGrove } from '@myco/grove/registry.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { assertGroveProjectId, isGroveEraId, projectScope as toProjectScope, type GroveProjectId, type ProjectScope } from '@myco/grove/ids.js';
@@ -98,6 +99,8 @@ export interface TaskSchedulingDeps {
   getTeamClient?: () => import('./team-sync.js').TeamSyncClient | null;
   cache: GroveRuntimeCache;
   mycoHome: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   machineId: string;
   projectStateTracker: ProjectPowerStateTracker;
 }
@@ -115,6 +118,7 @@ async function seedInitialLastRuns(
   cache: GroveRuntimeCache,
   logger: DaemonLogger,
   mycoHome: string,
+  daemonStateDir: string,
 ): Promise<ProjectTaskLastRunMap> {
   const seed: ProjectTaskLastRunMap = {};
   const floorSeconds = Math.floor((Date.now() - SEED_FLOOR_DAYS * MS_PER_DAY) / 1000);
@@ -133,7 +137,7 @@ async function seedInitialLastRuns(
       const projectId = assertGroveProjectId(row.project_id);
       seed[lastRunKey(grove.id, projectId, row.task)] = row.last_completed * 1000;
     }
-  }, { mycoHome, jobName: 'seed-last-runs' });
+  }, { mycoHome, daemonStateDir, jobName: 'seed-last-runs' });
   return seed;
 }
 
@@ -154,6 +158,7 @@ export async function registerScheduledTasks(
     getTeamClient,
     cache,
     mycoHome,
+    daemonStateDir,
     machineId,
     projectStateTracker,
   } = deps;
@@ -190,7 +195,7 @@ export async function registerScheduledTasks(
   // Boot-time seed across all registered Groves, keyed by
   // `${projectId}:${taskName}` so warm projects don't double-fire on
   // restart. Failures are best-effort; an empty seed is fine.
-  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome).catch((err) => {
+  const initialLastRuns = await seedInitialLastRuns(cache, logger, mycoHome, daemonStateDir).catch((err) => {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to seed scheduled-task lastRun map', {
       error: errorMessage(err),
     });
@@ -336,8 +341,25 @@ export async function registerScheduledTasks(
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
           shouldVisit: (scope) => {
+            // Long-running ops (move, vacuum) take a per-project pause;
+            // skip the project so its DB stays untouched for the op.
+            const paused = isProjectPausedInGrove(scope.grove.id, scope.projectId, mycoHome);
+            if (paused.paused) {
+              logger.debug(
+                LOG_KINDS.AGENT_RUN,
+                'Skipping scheduled tasks for paused project',
+                {
+                  grove_id: scope.grove.id,
+                  project_id: scope.projectId,
+                  reason: paused.reason,
+                  owner_op: paused.owner_op,
+                },
+              );
+              return false;
+            }
             // Long-term cost backstop, separate from the per-project sleep
             // timer — keeps cold projects registered without burning tokens.
             const decision = decideColdProjectGate({

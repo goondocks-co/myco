@@ -116,7 +116,9 @@ export async function run(args: string[]): Promise<void> {
 
   const projectManifest = ensureProjectManifest(vaultDir, {
     projectName: path.basename(projectRoot),
+    groveId: grove.id,
     groveSlug: grove.slug,
+    groveName: grove.name,
     groveBindingId: existingProjectManifest?.grove?.binding_id,
   });
   registerProjectInGrove(grove.id, {

@@ -6,6 +6,7 @@ import { vi } from '../helpers/vi-shim.js';
 import { createMycoTools } from '@myco/tools/index.js';
 import { resolveLegacyRequestContext } from '@myco/tools/request-context.js';
 import { assertGroveProjectId, createProjectId } from '@myco/grove/ids.js';
+import { resolveDaemonLogDir } from '@myco/daemon/service-state.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
 
 const FIXTURE_VAULT = '/tmp/myco-vault';
@@ -121,7 +122,8 @@ describe('Myco tools dispatcher', () => {
     async function readLastLog(vaultDir: string): Promise<Record<string, unknown>> {
       // logActivity uses fs.appendFile (callback-style, no promise to await).
       // Poll until the file appears rather than guessing a fixed delay.
-      const file = path.join(vaultDir, 'logs', 'mcp.jsonl');
+      const logDir = resolveDaemonLogDir(vaultDir, { env: process.env });
+      const file = path.join(logDir, 'mcp.jsonl');
       for (let i = 0; i < 50; i++) {
         if (fs.existsSync(file) && fs.statSync(file).size > 0) break;
         await new Promise((resolve) => setTimeout(resolve, 10));

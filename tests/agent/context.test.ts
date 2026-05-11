@@ -13,12 +13,14 @@ import { insertBatch, type BatchInsert } from '@myco/db/queries/batches.js';
 import { insertSpore, type SporeInsert } from '@myco/db/queries/spores.js';
 import { setState } from '@myco/db/queries/agent-state.js';
 import { buildVaultContext } from '@myco/agent/context.js';
+import { createProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const TEST_AGENT_ID = 'test-agent';
+const TEST_PROJECT_ID = createProjectId();
 
 /** Epoch seconds helper. */
 const epochNow = () => Math.floor(Date.now() / 1000);
@@ -61,7 +63,7 @@ describe('buildVaultContext', () => {
   });
 
   it('returns context with all zeros for empty vault', () => {
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('## Current Vault State');
     expect(context).toContain(`agent_id: ${TEST_AGENT_ID}`);
@@ -76,9 +78,9 @@ describe('buildVaultContext', () => {
 
   it('includes cursor position from agent state', () => {
     const now = epochNow();
-    setState(TEST_AGENT_ID, 'last_processed_batch_id', '42', now);
+    setState(TEST_AGENT_ID, TEST_PROJECT_ID, 'last_processed_batch_id', '42', now);
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('last_processed_batch_id: 42');
   });
@@ -88,7 +90,7 @@ describe('buildVaultContext', () => {
     upsertSession(makeSession());
     upsertSession(makeSession());
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('total_sessions: 3');
   });
@@ -121,7 +123,7 @@ describe('buildVaultContext', () => {
       created_at: now,
     });
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('total_active_spores: 2');
   });
@@ -135,7 +137,7 @@ describe('buildVaultContext', () => {
     insertBatch({ session_id: session.id, created_at: now, processed: 0 });
     insertBatch({ session_id: session.id, created_at: now, processed: 1 });
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('unprocessed_batches: 2');
   });
@@ -157,7 +159,7 @@ describe('buildVaultContext', () => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run('edge-1', TEST_AGENT_ID, 'e1', 'entity', 'e2', 'entity', 'depends_on', now);
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('total_entities: 2');
     expect(context).toContain('total_edges: 1');
@@ -176,7 +178,7 @@ describe('buildVaultContext', () => {
        VALUES (?, ?, ?, ?)`,
     ).run(TEST_AGENT_ID, 5000, 'more context', digestTime + 100);
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain(`last_digest_at: ${digestTime + 100}`);
   });
@@ -205,9 +207,9 @@ describe('buildVaultContext', () => {
     ).run('e1', TEST_AGENT_ID, 'concept', 'PGlite', now, now);
 
     // Set cursor state
-    setState(TEST_AGENT_ID, 'last_processed_batch_id', '99', now);
+    setState(TEST_AGENT_ID, TEST_PROJECT_ID, 'last_processed_batch_id', '99', now);
 
-    const context = buildVaultContext(TEST_AGENT_ID);
+    const context = buildVaultContext(TEST_AGENT_ID, TEST_PROJECT_ID);
 
     expect(context).toContain('agent_id: test-agent');
     expect(context).toContain('last_processed_batch_id: 99');

@@ -88,6 +88,7 @@ describe('maintenance API', () => {
       cache,
       embeddingRuntimeFactory: noopEmbeddingFactory,
       mycoHome,
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
     return { cache, handlers, liveConfig };
   }

@@ -83,7 +83,7 @@ function classifyEmbeddingProviderError(message: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 export function createReadTools(deps: VaultToolDeps) {
-  const { agentId, embeddingManager, teamClient, machineId } = deps;
+  const { agentId, embeddingManager, teamClient, machineId, requestContext } = deps;
   const scope = projectScopeFromVaultToolDeps(deps);
 
   const vaultUnprocessed = tool(
@@ -434,7 +434,7 @@ export function createReadTools(deps: VaultToolDeps) {
     'Get all state key-value pairs for the current agent.',
     {},
     async () => {
-      const states = getStatesForAgent(agentId);
+      const states = getStatesForAgent(agentId, requestContext!.projectId);
       return textResult(states);
     },
     { annotations: { readOnlyHint: true } },
