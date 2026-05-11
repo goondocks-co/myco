@@ -626,6 +626,74 @@ describe('moveProjectBetweenGroves', () => {
     expect(targetMoving).toBe(0);
   });
 
+  it('moves a multi-line spore body through snapshot+restore without truncation', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const projectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, projectId);
+
+    // Real-world spore bodies contain Markdown with newlines and single
+    // quotes — the dump must round-trip these byte-for-byte.
+    const multiLineBody = `## Heading\n\nA paragraph with 'apostrophes'.\n- bullet one\n- bullet two\n\nTrailing line.`;
+    const crlfBody = 'first\r\nsecond\r\nthird';
+    withGroveDb(source.id, (db) => {
+      db.prepare(
+        `INSERT INTO spores (
+           id, agent_id, session_id, observation_type, content,
+           created_at, machine_id, project_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        `spore-${projectId}-multiline`,
+        'claude-code',
+        `sess-${projectId}-1`,
+        'gotcha',
+        multiLineBody,
+        221,
+        'test-machine',
+        projectId,
+      );
+      db.prepare(
+        `INSERT INTO spores (
+           id, agent_id, session_id, observation_type, content,
+           created_at, machine_id, project_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        `spore-${projectId}-crlf`,
+        'claude-code',
+        `sess-${projectId}-1`,
+        'gotcha',
+        crlfBody,
+        222,
+        'test-machine',
+        projectId,
+      );
+    });
+
+    moveProjectBetweenGroves(source.id, target.id, projectId, mycoHome, { snapshotsRoot });
+
+    // All three spores (single-line seed + multi-line + CRLF) survive.
+    expect(countRows(target.id, 'spores', projectId)).toBe(3);
+
+    const restored = withGroveDb(target.id, (db) => ({
+      multiline: db.prepare('SELECT content FROM spores WHERE id = ?')
+        .get(`spore-${projectId}-multiline`) as { content: string },
+      crlf: db.prepare('SELECT content FROM spores WHERE id = ?')
+        .get(`spore-${projectId}-crlf`) as { content: string },
+    }));
+    expect(restored.multiline.content).toBe(multiLineBody);
+    expect(restored.crlf.content).toBe(crlfBody);
+  });
+
   it('pauses the source project after entry, before snapshot completes', () => {
     const source = createGrove('Source', mycoHome);
     const target = createGrove('Target', mycoHome);

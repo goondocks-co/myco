@@ -119,18 +119,53 @@ function escapeSql(value: string): string {
 }
 
 /**
+ * Format a string for inclusion as a SQL value expression. Single-line strings
+ * are emitted as a plain quoted literal; strings containing `\n` or `\r` are
+ * split into segments concatenated via `char(10)` / `char(13)` so the entire
+ * INSERT stays on one line. The line-based restore parser relies on every
+ * INSERT being a single line — embedded newlines in the literal would break
+ * the parse and drop data.
+ */
+function formatSqlString(value: string): string {
+  if (!value.includes('\n') && !value.includes('\r')) {
+    return `'${escapeSql(value)}'`;
+  }
+  const segments: string[] = [];
+  let current = '';
+  for (const ch of value) {
+    if (ch === '\n') {
+      segments.push(`'${escapeSql(current)}'`);
+      segments.push('char(10)');
+      current = '';
+    } else if (ch === '\r') {
+      segments.push(`'${escapeSql(current)}'`);
+      segments.push('char(13)');
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  segments.push(`'${escapeSql(current)}'`);
+  const filtered = segments.filter((s) => s !== "''");
+  if (filtered.length === 0) return "''";
+  return filtered.join(' || ');
+}
+
+/**
  * Serialize a JavaScript value into a SQL literal.
  *
  * - null / undefined → NULL
  * - number → numeric literal
  * - Buffer → X'hex'
- * - string → 'escaped string'
+ * - string → 'escaped string' (multi-line values use char(10)/char(13) concat)
  */
 function toSqlLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') return String(value);
+  if (typeof value === 'bigint') return String(value);
   if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`;
-  return `'${escapeSql(String(value))}'`;
+  if (value instanceof Uint8Array) return `X'${Buffer.from(value).toString('hex')}'`;
+  return formatSqlString(String(value));
 }
 
 // ---------------------------------------------------------------------------
