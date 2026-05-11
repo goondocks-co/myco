@@ -1,11 +1,27 @@
 import path from 'node:path';
 import {
   createGrove,
+  deleteGrove,
+  findRegisteredProject,
+  forceResumeProject,
   getDefaultGroveId,
   listGroves,
+  listRegisteredProjects,
+  renameGrove,
+  resolveGrove,
   setDefaultGrove,
+  setGroveServedBy,
+  type DaemonVariant,
+  type ResolvedRegisteredProject,
 } from '@myco/grove/registry.js';
-import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
+import { moveProjectBetweenGroves } from '@myco/grove/move.js';
+import { claimGroveForDogfood, releaseClaimedGrove } from '@myco/grove/claim.js';
+import { projectUrlSlug } from '@myco/grove/ids.js';
+import {
+  isDevServiceMode,
+  resolveMycoHome,
+  resolveProjectVaultDir,
+} from '@myco/grove/paths.js';
 import {
   activateProjectMigration,
   completeLegacyArchive,
@@ -14,14 +30,50 @@ import {
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { parseStringFlag } from './shared.js';
 
+const PROJECT_ID_RE = /^proj_[0-9a-f]{32}$/i;
+
+/**
+ * Locate a registered project from a CLI reference. Accepts:
+ *   - a project id (`proj_<32hex>`) — looked up directly via the registry,
+ *   - a project URL slug (`<name>-<id-suffix>`) — matched across Groves,
+ *   - a plain project name — matched across Groves.
+ */
+export function findProjectByRef(
+  projectRef: string,
+  mycoHome = resolveMycoHome(),
+): ResolvedRegisteredProject | null {
+  if (PROJECT_ID_RE.test(projectRef)) {
+    return findRegisteredProject({ projectId: projectRef }, mycoHome);
+  }
+  const groves = listGroves(mycoHome);
+  let nameMatch: ResolvedRegisteredProject | null = null;
+  for (const grove of groves) {
+    const projects = listRegisteredProjects(grove.id, mycoHome);
+    for (const project of projects) {
+      if (projectUrlSlug(project.name, project.project_id) === projectRef) {
+        return { grove, project };
+      }
+      if (project.name === projectRef && !nameMatch) {
+        nameMatch = { grove, project };
+      }
+    }
+  }
+  return nameMatch;
+}
+
 const USAGE = `Usage: myco grove <command>
 
 Commands:
-  list                                  List local Groves
-  create <name>                         Create a local Grove
-  use <name|id>                         Set the default Grove for future init/update
-  migrate-project [--grove <name|id>]   Import and activate an existing project vault
-  archive-legacy [--project <path>]     Move post-activation legacy data into .myco/.archive-<ts>/
+  list                                       List local Groves
+  create <name>                              Create a local Grove
+  use <name|id>                              Set the default Grove for future init/update
+  rename <name|id> <new-name>                Rename a Grove
+  delete <name|id> [--force]                 Delete a Grove (use --force to drop a non-empty Grove)
+  move <project-id-or-slug> --grove <ref>    Move a registered project into another Grove
+  claim <name|id>                            Claim a Grove for dogfooding with the dev daemon
+  release <name|id>                          Release a claimed Grove and restore its pre-claim state
+  migrate-project [--grove <name|id>]        Import and activate an existing project vault
+  archive-legacy [--project <path>]          Move post-activation legacy data into .myco/.archive-<ts>/
 
 Migration options:
   --project <path>                      Project root to migrate (default: cwd)
@@ -48,15 +100,19 @@ export async function run(args: string[]): Promise<void> {
     }
     for (const grove of groves) {
       const marker = grove.id === defaultId ? '*' : ' ';
-      console.log(`${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode}`);
+      console.log(
+        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode} ${grove.served_by}`,
+      );
     }
     return;
   }
 
   if (cmd === 'create') {
     const name = rest.join(' ').trim();
-    const grove = createGrove(name, mycoHome);
-    console.log(`Created Grove ${grove.name} (${grove.id})`);
+    if (!name) throw new Error('Grove name is required');
+    const servedBy: DaemonVariant = isDevServiceMode() ? 'service-dev' : 'service';
+    const grove = createGrove(name, mycoHome, { servedBy });
+    console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
     return;
   }
 
@@ -110,6 +166,147 @@ export async function run(args: string[]): Promise<void> {
         console.log(`Dashboard: ${dashboardUrl}`);
       }
     }
+    return;
+  }
+
+  if (cmd === 'rename') {
+    const ref = rest[0];
+    const newName = rest.slice(1).join(' ').trim();
+    if (!ref) throw new Error('Grove name or id is required');
+    if (!newName) throw new Error('New Grove name is required');
+    const grove = resolveGrove(ref, mycoHome);
+    const updated = renameGrove(grove.id, newName, mycoHome);
+    console.log(`Renamed: ${updated.name} (${updated.slug})`);
+    return;
+  }
+
+  if (cmd === 'delete') {
+    const ref = rest[0];
+    if (!ref) throw new Error('Grove name or id is required');
+    const force = rest.includes('--force');
+    const grove = resolveGrove(ref, mycoHome);
+    try {
+      deleteGrove(grove.id, { force }, mycoHome);
+      console.log(`Deleted Grove ${grove.name} (${grove.slug})`);
+    } catch (err) {
+      const message = (err as Error).message;
+      console.error(message);
+      if (/bound project/.test(message)) {
+        console.error('Use --force to delete a Grove with bound projects.');
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (cmd === 'move') {
+    const projectRef = rest[0];
+    const groveRef = parseStringFlag(rest, '--grove');
+    if (!projectRef) throw new Error('Project id or slug is required');
+    if (!groveRef) throw new Error('--grove <name|id> is required');
+
+    const found = findProjectByRef(projectRef, mycoHome);
+    if (!found) throw new Error(`Project not found: ${projectRef}`);
+
+    const targetGrove = resolveGrove(groveRef, mycoHome);
+    if (found.grove.id === targetGrove.id) {
+      console.error(`Project is already in Grove ${targetGrove.name}`);
+      process.exit(1);
+    }
+
+    console.log(`Moving project ${found.project.name} (${found.project.project_id})`);
+    console.log(`  from: ${found.grove.name} (${found.grove.slug})`);
+    console.log(`  to:   ${targetGrove.name} (${targetGrove.slug})`);
+    const result = moveProjectBetweenGroves(
+      found.grove.id,
+      targetGrove.id,
+      found.project.project_id,
+      mycoHome,
+    );
+    console.log(`Move complete. Snapshot: ${result.snapshot_path}`);
+    return;
+  }
+
+  if (cmd === 'claim') {
+    const ref = rest[0];
+    if (!ref) throw new Error('Grove name or id is required');
+    if (!isDevServiceMode()) {
+      throw new Error(
+        'myco grove claim must run under the dev daemon (service-dev). '
+        + 'Use the dogfood build of `myco` to claim a Grove.',
+      );
+    }
+    const grove = resolveGrove(ref, mycoHome);
+    if (grove.served_by !== 'service') {
+      throw new Error(
+        `Grove ${grove.name} is served by ${grove.served_by}; only Groves served by `
+        + `'service' can be claimed for dogfood.`,
+      );
+    }
+    const projects = listRegisteredProjects(grove.id, mycoHome);
+    const result = claimGroveForDogfood(grove.id, mycoHome);
+    console.log('Grove claimed for dogfooding:');
+    console.log(`  Grove:    ${grove.name} (${grove.slug})`);
+    console.log(`  Snapshot: ${result.manifest.snapshot_db_path}`);
+    console.log(`  Projects: ${projects.length} paused → resumed under dev ownership`);
+    console.log(`  ${result.snapshot_size_summary}`);
+    console.log('');
+    console.log(`The dev daemon now serves this Grove. Run \`myco grove release ${grove.slug}\``);
+    console.log("when you're done to restore the Grove to its pre-claim state.");
+    console.log('Release will also undo any new Groves, project moves, and project');
+    console.log('manifest edits made during the claim window.');
+    return;
+  }
+
+  if (cmd === 'release') {
+    const ref = rest[0];
+    if (!ref) throw new Error('Grove name or id is required');
+    if (!isDevServiceMode()) {
+      throw new Error(
+        'myco grove release must run under the dev daemon (service-dev). '
+        + 'Use the dogfood build of `myco` to release a claimed Grove.',
+      );
+    }
+    const grove = resolveGrove(ref, mycoHome);
+    const result = releaseClaimedGrove(grove.id, mycoHome);
+    console.log('Grove released:');
+    console.log(`  Grove:    ${grove.name} (${grove.slug})`);
+    console.log(`  Restored: ${result.manifest.snapshot_db_path}`);
+    console.log(`  Archive:  ${result.archive_dir}`);
+    console.log(`  served_by → ${result.manifest.original_served_by}`);
+    return;
+  }
+
+  if (cmd === 'force-resume-project') {
+    const projectRef = rest[0];
+    if (!projectRef) throw new Error('Project id or slug is required');
+    if (!rest.includes('--force')) {
+      throw new Error('force-resume-project is a recovery command. Pass --force to confirm.');
+    }
+    const found = findProjectByRef(projectRef, mycoHome);
+    if (!found) throw new Error(`Project not found: ${projectRef}`);
+    forceResumeProject(found.grove.id, found.project.project_id, mycoHome);
+    console.log(
+      `Force-resumed project ${found.project.name} in Grove ${found.grove.name} (${found.grove.slug})`,
+    );
+    return;
+  }
+
+  if (cmd === 'set-served-by') {
+    const ref = rest[0];
+    const variant = rest[1];
+    if (!ref) throw new Error('Grove name or id is required');
+    if (!rest.includes('--force')) {
+      throw new Error('set-served-by is a recovery command. Pass --force to confirm.');
+    }
+    if (variant !== 'service' && variant !== 'service-dev') {
+      throw new Error(
+        `Invalid served_by variant: ${variant ?? '(none)'} (expected 'service' or 'service-dev')`,
+      );
+    }
+    const grove = resolveGrove(ref, mycoHome);
+    const updated = setGroveServedBy(grove.id, variant as DaemonVariant, mycoHome);
+    console.log(`Grove ${updated.name} served_by → ${updated.served_by}`);
     return;
   }
 

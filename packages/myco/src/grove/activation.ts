@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   loadProjectManifest,
   saveProjectManifest,
+  saveProjectLocalManifest,
   type ProjectManifest,
 } from '@myco/config/project-manifest.js';
 import { openDatabase, openReadonly, SQLITE_DB_FILE, vaultDbPath, type Database } from '@myco/db/client.js';
@@ -16,7 +17,7 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { importProjectCoreRows, type ImportProjectCoreResult } from '@myco/grove/importer.js';
-import { createGroveBindingId, createMigrationId, createProjectId } from '@myco/grove/ids.js';
+import { createGroveBindingId, createGroveId, createMigrationId, createProjectId } from '@myco/grove/ids.js';
 import {
   GROVE_VECTORS_FILENAME,
   pathsEquivalent,
@@ -24,12 +25,15 @@ import {
   resolveMycoHome,
 } from '@myco/grove/paths.js';
 import {
+  ensureGroveExistsLocally,
   findRegisteredProject,
   findRegisteredProjectByBinding,
+  loadGroveRecord,
   registerProjectInGrove,
   resolveGrove,
   type GroveRecord,
 } from '@myco/grove/registry.js';
+import { slugifyGroveName } from '@myco/grove/ids.js';
 import { ensureVaultGitignoreCurrent } from '@myco/vault/gitignore.js';
 
 export const GROVE_ACTIVATION_MARKER = 'grove-activation.json';
@@ -135,6 +139,7 @@ interface PreparedIdentity {
   projectName: string;
   bindingId: string;
   manifest: ProjectManifest;
+  localManifest: { grove_binding: { binding_id: string; mode: 'local' } };
 }
 
 const PROJECT_SCOPED_RESULT_TABLES: ReadonlyArray<readonly [keyof ImportProjectCoreResult, string]> = [
@@ -198,18 +203,26 @@ export function activateProjectMigration(
   const sourceDbPath = vaultDbPath(projectVaultDir);
 
   const mycoHome = input.mycoHome ?? resolveMycoHome();
-  const grove = resolveGrove(input.groveRef, mycoHome);
+  const earlyManifest = loadProjectManifest(projectVaultDir);
+  const earlyMarker = readActivationMarker(activationMarkerPath(projectVaultDir));
+  const grove = resolveActivationGrove({
+    groveRef: input.groveRef,
+    existingManifest: earlyManifest,
+    existingMarker: earlyMarker,
+    projectRoot,
+    mycoHome,
+  });
   const markerPath = activationMarkerPath(projectVaultDir);
   // Once activation has run, the legacy DB is moved into `.archive-…/`
   // by the post-import sweep — so the source-DB existence check only
   // applies to a true first-run activation. Reading the marker first
   // keeps re-runs idempotent after the archive step lands.
-  const existingMarkerEarly = readActivationMarker(markerPath);
+  const existingMarkerEarly = earlyMarker;
   if (!existingMarkerEarly && !fs.existsSync(sourceDbPath)) {
     throw new Error(`Legacy project database not found: ${sourceDbPath}`);
   }
 
-  const existingManifest = loadProjectManifest(projectVaultDir);
+  const existingManifest = earlyManifest;
   const identity = prepareIdentity({
     existingManifest,
     existingMarker: existingMarkerEarly,
@@ -235,8 +248,11 @@ export function activateProjectMigration(
     // to legacy mode and create a divergent database.
     if (!input.dryRun) {
       ensureVaultGitignoreCurrent(projectVaultDir);
-      if (!existingManifest || !existingManifest.grove?.binding_id) {
+      if (!existingManifest) {
         saveProjectManifest(projectVaultDir, identity.manifest);
+      }
+      if (!existingManifest?.grove?.binding_id) {
+        saveProjectLocalManifest(projectVaultDir, identity.localManifest);
       }
       const registered = findRegisteredProject({
         projectId: existingMarker.project_id,
@@ -327,6 +343,7 @@ export function activateProjectMigration(
       // activation run.
       ensureVaultGitignoreCurrent(projectVaultDir);
       saveProjectManifest(projectVaultDir, identity.manifest);
+      saveProjectLocalManifest(projectVaultDir, identity.localManifest);
       registerProjectInGrove(grove.id, {
         projectId: identity.projectId,
         projectName: identity.projectName,
@@ -383,6 +400,36 @@ export function activateProjectMigration(
     validation,
     marker_path: markerPath,
   };
+}
+
+function resolveActivationGrove(input: {
+  groveRef: string | undefined;
+  existingManifest: ProjectManifest | null;
+  existingMarker: ActivationMarker | null;
+  projectRoot: string;
+  mycoHome: string;
+}): GroveRecord {
+  if (input.groveRef) return resolveGrove(input.groveRef, input.mycoHome);
+
+  const manifestGroveId = input.existingManifest?.grove?.id;
+  const markerGroveId = input.existingMarker?.grove_id;
+  const candidateId = manifestGroveId ?? markerGroveId;
+  if (candidateId) {
+    const local = loadGroveRecord(candidateId, input.mycoHome);
+    if (local) return local;
+    const fallbackName = input.existingManifest?.grove?.name
+      ?? input.existingManifest?.project.name
+      ?? path.basename(input.projectRoot);
+    const fallbackSlug = input.existingManifest?.grove?.slug
+      ?? slugifyGroveName(fallbackName);
+    return ensureGroveExistsLocally(
+      candidateId,
+      { name: fallbackName, slug: fallbackSlug },
+      input.mycoHome,
+    );
+  }
+
+  return resolveGrove(undefined, input.mycoHome);
 }
 
 function openMigratedSourceSnapshot(sourceDbPath: string, machineId: string): SourceSnapshot {
@@ -466,11 +513,22 @@ function prepareIdentity(input: {
   }
 
   const manifestSlug = input.existingManifest?.grove?.slug;
-  if (manifestSlug && manifestSlug !== input.grove.slug) {
+  const manifestGroveId = input.existingManifest?.grove?.id;
+  const slugReconciledByGroveId = manifestGroveId && manifestGroveId === input.grove.id;
+  if (manifestSlug && !slugReconciledByGroveId && manifestSlug !== input.grove.slug) {
     throw new Error(
       `Existing project.toml targets Grove ${manifestSlug}; refusing migration into Grove ${input.grove.slug}.`,
     );
   }
+
+  const existingGrove = input.existingManifest?.grove;
+  const portableGrove: NonNullable<ProjectManifest['grove']> = {
+    mode: 'local',
+    id: input.grove.id,
+    slug: input.grove.slug,
+    name: input.grove.name,
+    ...(existingGrove?.remote ? { remote: existingGrove.remote } : {}),
+  };
 
   return {
     projectId,
@@ -483,10 +541,11 @@ function prepareIdentity(input: {
         id: projectId,
         name: projectName,
       },
-      grove: {
-        ...(input.existingManifest?.grove ?? {}),
+      grove: portableGrove,
+    },
+    localManifest: {
+      grove_binding: {
         binding_id: bindingId,
-        slug: input.grove.slug,
         mode: 'local',
       },
     },

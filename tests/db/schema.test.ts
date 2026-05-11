@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(39);
+      expect(SCHEMA_VERSION).toBe(40);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -157,6 +157,24 @@ describe('Database schema', () => {
 
         expect(getColumnNames(db, 'team_members')).not.toContain('project_id');
         expect(getColumnNames(db, 'team_outbox')).not.toContain('project_id');
+      });
+
+      it('every table with a project_id column is registered in GROVE_PROJECT_SCOPED_TABLES', () => {
+        createSchema(db);
+        const tables = db.prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+        ).all() as Array<{ name: string }>;
+
+        const projectScoped = tables
+          .map((t) => t.name)
+          .filter((name) => {
+            const cols = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+            return cols.some((c) => c.name === 'project_id');
+          });
+
+        const registered = new Set<string>(GROVE_PROJECT_SCOPED_TABLES);
+        const missing = projectScoped.filter((name) => !registered.has(name));
+        expect(missing).toEqual([]);
       });
 
       it('sessions table has correct columns', () => {
@@ -697,13 +715,13 @@ describe('Database schema', () => {
           `INSERT INTO agents (id, name, created_at) VALUES ('c1', 'Test', 1000)`,
         ).run();
         db.prepare(
-          `INSERT INTO agent_state (agent_id, key, value, updated_at)
-           VALUES ('c1', 'cursor', '42', 1000)`,
+          `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+           VALUES ('c1', 'proj_a', 'cursor', '42', 1000)`,
         ).run();
         expect(() =>
           db.prepare(
-            `INSERT INTO agent_state (agent_id, key, value, updated_at)
-             VALUES ('c1', 'cursor', '43', 1001)`,
+            `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+             VALUES ('c1', 'proj_a', 'cursor', '43', 1001)`,
           ).run(),
         ).toThrow();
       });

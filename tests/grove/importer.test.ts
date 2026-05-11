@@ -994,13 +994,13 @@ describe('Grove project core importer', () => {
   it('keeps newer target agent state when legacy imports collide', () => {
     seedTargetAgent(targetDb);
     targetDb.prepare(
-      `INSERT INTO agent_state (agent_id, key, value, updated_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run('myco-agent', 'skill-evolve-current-phase', 'target-newer-phase', 999);
+      `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('myco-agent', TARGET_PROJECT_ID, 'skill-evolve-current-phase', 'target-newer-phase', 999);
     targetDb.prepare(
-      `INSERT INTO agent_state (agent_id, key, value, updated_at)
-       VALUES (?, ?, ?, ?)`,
-    ).run('myco-agent', 'skill-evolve-assessment-cursor', 'target-older-cursor', 100);
+      `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('myco-agent', TARGET_PROJECT_ID, 'skill-evolve-assessment-cursor', 'target-older-cursor', 100);
 
     const result = importProjectCoreRows({
       migrationId: createMigrationId(),
@@ -1181,13 +1181,13 @@ function seedSourceProject(db: Database): void {
   );
 
   db.prepare(
-    `INSERT INTO agent_state (agent_id, key, value, updated_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run('myco-agent', 'skill-evolve-current-phase', 'assess', 490);
+    `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('myco-agent', SOURCE_PROJECT_ROOT, 'skill-evolve-current-phase', 'assess', 490);
   db.prepare(
-    `INSERT INTO agent_state (agent_id, key, value, updated_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run('myco-agent', 'skill-evolve-assessment-cursor', 'skill-a,skill-b', 492);
+    `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('myco-agent', SOURCE_PROJECT_ROOT, 'skill-evolve-assessment-cursor', 'skill-a,skill-b', 492);
 
   db.run('PRAGMA foreign_keys = OFF');
   db.prepare(
@@ -1211,9 +1211,9 @@ function seedSourceProject(db: Database): void {
     488,
   );
   db.prepare(
-    `INSERT INTO agent_state (agent_id, key, value, updated_at)
-     VALUES (?, ?, ?, ?)`,
-  ).run('missing-agent', 'orphan-state', 'skip me', 493);
+    `INSERT INTO agent_state (agent_id, project_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run('missing-agent', SOURCE_PROJECT_ROOT, 'orphan-state', 'skip me', 493);
   db.run('PRAGMA foreign_keys = ON');
 
   db.prepare(

@@ -34,7 +34,11 @@ import {
   resolveProjectVaultDir,
   resolveGroveDbPath,
 } from '@myco/grove/paths.js';
-import { listGroves, listRegisteredProjects } from '@myco/grove/registry.js';
+import {
+  pauseAwareShouldVisit,
+  listGroves,
+  listRegisteredProjects,
+} from '@myco/grove/registry.js';
 import { withDatabase } from '@myco/db/client.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
@@ -73,6 +77,8 @@ export interface PowerJobDeps {
   embeddingRuntimeFactory: EmbeddingRuntimeFactory;
   /** Override Myco home (tests); defaults to the resolved global home. */
   mycoHome?: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
@@ -214,6 +220,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     embeddingRuntimeFactory,
     onCanopyMassAdd,
     daemonVaultDir,
+    daemonStateDir,
   } = deps;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
@@ -312,7 +319,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   };
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
-    () => forEachGrove(cache, logger, body, { mycoHome, jobName }).then(() => undefined);
+    () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.
@@ -501,7 +508,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
+          // Skip projects under an in-flight move/vacuum so GC doesn't
+          // race the op's exclusive view of the DB.
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.staging_gc_failed',
             'Staging GC',
@@ -532,7 +543,11 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         },
         {
           mycoHome,
+          daemonStateDir,
           machineId,
+          // Skip projects under an in-flight move/vacuum so the canopy
+          // scan doesn't write to a DB the op owns exclusively.
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
           notifyOnProjectFailure: buildProjectFailureNotifier(
             'daemon.canopy_dispatch_failed',
             'Canopy background scan',

@@ -142,4 +142,44 @@ describe('project-scoped layout routing', () => {
     expect(maintenanceLink?.getAttribute('href')).toBe('/g/work/maintenance');
     expect(screen.getByText('Dashboard content')).toBeTruthy();
   });
+
+  it('exposes the Groves management page between Dashboard and Maintenance in the GROVE nav section', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/g/work/p/project-a-123abc']}>
+          <Routes>
+            <Route
+              path="/g/work/p/project-a-123abc"
+              element={(
+                <ProjectSelectionBoundary selection={selection}>
+                  <Layout />
+                </ProjectSelectionBoundary>
+              )}
+            >
+              <Route index element={<div>Dashboard content</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const grovesLink = screen.getAllByText('Groves')[0]?.closest('a');
+    expect(grovesLink?.getAttribute('href')).toBe('/groves');
+
+    // Verify ordering: Dashboard -> Groves -> Maintenance -> Settings within
+    // the GROVE section. The Grove-scoped Dashboard and Maintenance links
+    // route under /g/:groveSlug/, while the cross-Grove index lives at
+    // /groves and is inserted right after Dashboard.
+    const hrefs = Array.from(document.querySelectorAll('a'))
+      .map((a) => a.getAttribute('href'))
+      .filter((href): href is string => href !== null);
+    const dashboardIdx = hrefs.indexOf('/g/work/dashboard');
+    const grovesIdx = hrefs.indexOf('/groves');
+    const maintenanceIdx = hrefs.indexOf('/g/work/maintenance');
+    expect(dashboardIdx).toBeGreaterThanOrEqual(0);
+    expect(grovesIdx).toBeGreaterThan(dashboardIdx);
+    expect(maintenanceIdx).toBeGreaterThan(grovesIdx);
+  });
 });

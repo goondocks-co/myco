@@ -27,8 +27,8 @@ describe('canopy_maps migration v27', () => {
     expect(c?.dflt_value).toBe('0');
   });
 
-  it('SCHEMA_VERSION is 39', () => {
-    expect(SCHEMA_VERSION).toBe(39);
+  it('SCHEMA_VERSION is 40', () => {
+    expect(SCHEMA_VERSION).toBe(40);
   });
 
   it('idempotent re-apply', () => {

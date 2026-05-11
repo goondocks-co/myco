@@ -8,6 +8,7 @@ import {
   MACHINE_RUNTIME_TMP_DIRNAME,
 } from '../constants/update.js';
 import { assertGroveEraId } from './ids.js';
+import type { DaemonVariant } from './registry.js';
 
 /**
  * True when two filesystem paths point at the same file or directory —
@@ -52,6 +53,7 @@ export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GLOBAL_CONFIG_FILENAME = 'config.yaml';
 export const GROVE_REGISTRY_FILENAME = 'registry.yaml';
 export const PROJECT_MANIFEST_FILENAME = 'project.toml';
+export const PROJECT_LOCAL_MANIFEST_FILENAME = 'project.local.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 
 export interface MycoHomeOptions {
@@ -64,6 +66,19 @@ export function resolveMycoHome(options: MycoHomeOptions = {}): string {
   const configured = env[MYCO_HOME_ENV]?.trim();
   if (configured) return path.resolve(expandHome(configured, options.homeDir));
   return path.join(options.homeDir ?? os.homedir(), '.myco');
+}
+
+/**
+ * Resolve the root directory for project-scoped backups. Precedence:
+ *   1. Explicit `override` argument.
+ *   2. `MYCO_BACKUPS_DIR` environment variable.
+ *   3. `~/myco_backups`.
+ */
+export function resolveBackupsRoot(override?: string): string {
+  if (override && override.trim().length > 0) return path.resolve(override);
+  const env = process.env.MYCO_BACKUPS_DIR?.trim();
+  if (env) return path.resolve(env);
+  return path.join(os.homedir(), 'myco_backups');
 }
 
 export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
@@ -87,6 +102,13 @@ export function setDevServiceMode(value: boolean): void {
 
 export function isDevServiceMode(): boolean {
   return devServiceMode;
+}
+
+export function resolveServiceDirName(stateDir: string, mycoHome: string): DaemonVariant {
+  const rel = path.relative(mycoHome, stateDir);
+  if (rel === 'service') return 'service';
+  if (rel === 'service-dev') return 'service-dev';
+  throw new Error(`Unrecognized daemon service dir: ${stateDir} (mycoHome=${mycoHome})`);
 }
 
 export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
@@ -164,6 +186,10 @@ export function resolveProjectVaultDir(projectRoot: string): string {
 
 export function resolveProjectManifestPath(projectVaultDir: string): string {
   return path.join(projectVaultDir, PROJECT_MANIFEST_FILENAME);
+}
+
+export function resolveProjectLocalManifestPath(projectVaultDir: string): string {
+  return path.join(projectVaultDir, PROJECT_LOCAL_MANIFEST_FILENAME);
 }
 
 /**

@@ -15,6 +15,8 @@ import {
   requestContextFromHttpHeaders,
   type MycoRequestContext,
 } from '../tools/request-context.js';
+import { isProjectPaused } from '../grove/registry.js';
+import { pausedErrorResponse } from './api/error-envelope.js';
 import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
@@ -196,11 +198,24 @@ export class DaemonServer {
       this.onRequest?.();
       const versionHeader = { 'X-Myco-Api-Version': this.version };
       try {
-        const needsBody = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
+        const needsBody = isWriteMethod(req.method);
         const body = needsBody ? await readBody(req) : undefined;
         const requestContext = requestContextFromHttpHeaders(req.headers, this.vaultDir, {
           expectedAuthToken: this.authToken,
         });
+        // Long-running ops (move, vacuum) take a per-project pause in
+        // `projects.toml`; while set, every writer for that project must
+        // be refused. Reads stay open so the UI can still surface "this
+        // project is paused (reason)".
+        if (isWriteMethod(req.method) && requestContext.groveId) {
+          const paused = isProjectPaused(requestContext.projectId);
+          if (paused.paused) {
+            const response = pausedErrorResponse(requestContext.projectId, paused);
+            res.writeHead(response.status, { 'Content-Type': 'application/json', ...versionHeader });
+            res.end(JSON.stringify(response.body));
+            return;
+          }
+        }
         const invokeHandler = () => match.handler({
           body,
           query: match.query,
@@ -468,13 +483,20 @@ function injectDashboardBootstrap(html: string, authToken: string): string {
   return html.replace('</head>', `${bootstrap}</head>`);
 }
 
+/** True for HTTP methods that may write state (POST/PUT/PATCH/DELETE). */
+function isWriteMethod(method: string | undefined): boolean {
+  if (!method) return false;
+  const upper = method.toUpperCase();
+  return upper === 'POST' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE';
+}
+
 /**
  * Generate a fresh per-daemon-process bearer token. 32 random bytes
- * encoded as hex gives 256 bits of entropy — same shape as the
- * MCP/team-sync tokens the worker uses. Exported via env so spawned
+ * encoded as hex gives 256 bits of entropy. Exported via env so spawned
  * children inherit it; persisted into daemon.json so manually-invoked
  * children can fetch it without env inheritance.
  */
+
 function mintDaemonAuthToken(): string {
   // Honor an existing env-provided token (set by tests, or by a
   // previous daemon process this child was forked from) so the value
@@ -554,9 +576,7 @@ export function validateLoopbackRequest(
     return { status: 403, error: 'forbidden_origin' };
   }
 
-  const method = (req.method ?? '').toUpperCase();
-  const isMutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
-  if (!isMutating) return null;
+  if (!isWriteMethod(req.method)) return null;
 
   // DELETE with an empty body is the common case (e.g. /api/plans/:id) and
   // is allowed without Content-Type. For any non-empty body on a mutating

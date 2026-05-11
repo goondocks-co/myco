@@ -40,10 +40,11 @@ describe('resolveDaemonDataPaths', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('uses legacy project-local data paths when no Grove binding exists', () => {
+  it('falls back to vault paths for data and the global service dir for logs when no Grove binding exists', () => {
     // A project manifest is required (Grove brand) but the manifest
-    // need not carry a grove binding — the daemon falls back to the
-    // legacy vault DB path in that case.
+    // need not carry a Grove binding — the per-request data paths fall
+    // back to the legacy vault DB/vector locations, while the daemon log
+    // dir is always under the global service dir post-Grove.
     saveProjectManifest(vaultDir, {
       project: { id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', name: 'project' },
     });
@@ -60,7 +61,7 @@ describe('resolveDaemonDataPaths', () => {
     expect(resolveDaemonLogDir(vaultDir, {
       requestContext: paths.requestContext,
       env: { MYCO_HOME: mycoHome },
-    })).toBe(path.join(vaultDir, 'logs'));
+    })).toBe(path.join(resolveServiceDir(mycoHome), 'logs'));
   });
 
   it('uses Grove data paths for a registered bound project', () => {

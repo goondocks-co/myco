@@ -591,6 +591,11 @@ function readManifest(projectVaultDir: string): ProjectManifest | null {
   // those would silently route a grove-bound project to legacy-project
   // scope and create a divergent database — the bug class we keep getting
   // bitten by. Let the caller decide how to react to a corrupt manifest.
+  //
+  // `manifest.grove?.binding_id` is reconstituted from `project.local.toml`
+  // by `overlayLocalBinding` in `loadProjectManifest`; consumers must read
+  // that field from this loader rather than calling `loadProjectLocalManifest`
+  // directly so the legacy-vault and post-migration code paths stay unified.
   return loadProjectManifest(projectVaultDir);
 }
 

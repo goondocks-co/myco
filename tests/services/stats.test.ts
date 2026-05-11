@@ -16,6 +16,7 @@ import { upsertDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { ALL_PROJECTS_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 import { markEmbedded } from '@myco/db/queries/embeddings.js';
 import { gatherStats } from '@myco/services/stats.js';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 
 const AGENT_ID = 'stats-agent';
 
@@ -104,8 +105,10 @@ describe('gatherStats', () => {
 
     markEmbedded('sessions', 'sess-1');
 
+    const statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      statePath,
       JSON.stringify({
         pid: process.pid,
         port: 19200,

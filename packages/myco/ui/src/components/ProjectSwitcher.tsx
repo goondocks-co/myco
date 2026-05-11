@@ -8,6 +8,7 @@ import {
   monogramFor,
   projectPath,
   projectRouteSuffix,
+  selectionFromLast,
   type GroveProjectSummary,
   type GroveSummary,
   type ProjectSelection,
@@ -15,7 +16,7 @@ import {
 import { cn } from '../lib/cn';
 
 export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) {
-  const selection = useProjectSelection();
+  const contextSelection = useProjectSelection();
   const { data } = useGroves();
   const navigate = useNavigate();
   const location = useLocation();
@@ -24,6 +25,11 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const groves = data?.groves ?? [];
   const projectCount = groves.reduce((total, grove) => total + grove.projects.length, 0);
+  const rememberedSelection = useMemo(
+    () => (contextSelection ? null : selectionFromLast(groves)),
+    [contextSelection, groves],
+  );
+  const selection = contextSelection ?? rememberedSelection;
 
   const filteredGroves = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -142,16 +148,6 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
               </div>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              navigate('/groves');
-              setOpen(false);
-            }}
-            className="mt-1 w-full rounded-md px-2 py-2 text-left text-xs text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
-          >
-            Manage Groves
-          </button>
         </div>
       )}
     </div>

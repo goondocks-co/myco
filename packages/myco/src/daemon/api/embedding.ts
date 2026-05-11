@@ -215,6 +215,8 @@ export interface EmbeddingActionDeps {
    * existing per-request runtime instead of re-opening the DB.
    */
   resolveRequestRuntime: (req: RouteRequest) => { manager: EmbeddingManager; db?: Database };
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   mycoHome?: string;
 }
 
@@ -266,7 +268,7 @@ export function createEmbeddingActionHandlers(deps: EmbeddingActionDeps): {
       },
       // Each Grove has its own vectors.db + DB file; cross-Grove
       // parallelism is safe.
-      { mycoHome, jobName: 'embedding-action', parallel: true },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'embedding-action', parallel: true },
     );
     return results;
   }

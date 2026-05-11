@@ -56,7 +56,20 @@ import { initTeamSync } from './team-sync-init.js';
 import { ProgressTracker, handleGetProgress } from './api/progress.js';
 import { handleGetModels } from './api/models.js';
 import { computeConfigHash, createLiveStatsHandler } from './api/stats.js';
-import { createListGroveProjectsHandler, createListGrovesHandler, servedGroveScopeForDaemon } from './api/groves.js';
+import {
+  createCreateGroveHandler,
+  createDeleteGroveHandler,
+  createListGroveProjectsHandler,
+  createListGrovesHandler,
+  createMoveProjectHandler,
+  createRenameGroveHandler,
+  createSetDefaultGroveHandler,
+  servedGroveScopeForDaemon,
+} from './api/groves.js';
+import {
+  createProjectBackupHandler,
+  createProjectRestoreHandler,
+} from './api/projects.js';
 import {
   handleListSessions,
   createGetSessionHandler,
@@ -122,7 +135,7 @@ import {
   handlePutProviderSecret,
 } from './api/provider-secrets.js';
 import { registerScheduledTasks } from './task-scheduling.js';
-import { initDatabase, closeDatabase, getDatabase, type Database } from '../db/client.js';
+import { initDatabase, closeDatabase, getDatabase, setOwnedServiceDirForCurrentProcess, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove, forEachRegisteredProject, isProjectActive } from './scope-iteration.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
@@ -131,6 +144,8 @@ import {
   readProjectActivitySeed,
 } from './project-power-state.js';
 import { resolveMycoHome } from '../grove/paths.js';
+import { pauseAwareShouldVisit } from '../grove/registry.js';
+import { resumeOrphanedPauses } from './startup-pauses.js';
 import { createSchema } from '../db/schema.js';
 import { insertLogEntry, getMaxTimestamp } from '../db/queries/logs.js';
 import { createStreamableMcpHttpHandler } from '../mcp/http.js';
@@ -172,6 +187,7 @@ import {
   daemonStateMtimeMs,
   readDaemonState,
   removeDaemonState,
+  assertGroveBound,
   resolveDaemonLogDir,
   resolveDaemonServiceState,
   type DaemonServiceState,
@@ -330,18 +346,20 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
  * SessionStart's delta scan so idle Groves don't pay a full-scan cost
  * for projects nobody has used in weeks. Errors per project are isolated.
  */
-async function runInitialCanopyPopulateAcrossProjects(
+export async function runInitialCanopyPopulateAcrossProjects(
   cache: GroveRuntimeCache,
   logger: DaemonLogger,
   machineId: string,
   registry: CanopyJobsRegistry,
   liveConfig: { current: MycoConfig },
+  daemonStateDir: string,
 ): Promise<void> {
   try {
     const thresholdDays = liveConfig.current.agent.cold_project_threshold_days ?? 14;
     const cutoffSeconds = thresholdDays > 0
       ? Math.floor((Date.now() - thresholdDays * MS_PER_DAY) / 1000)
       : 0;
+    const mycoHome = resolveMycoHome();
     await forEachRegisteredProject(
       cache,
       logger,
@@ -352,7 +370,13 @@ async function runInitialCanopyPopulateAcrossProjects(
         }
         await registry.initialPopulate({ databasePath, projectId, projectRoot, groveId: grove.id });
       },
-      { machineId },
+      {
+        machineId,
+        daemonStateDir,
+        // Skip projects under an in-flight move/vacuum so the initial
+        // populate doesn't write to a DB the op owns exclusively.
+        shouldVisit: pauseAwareShouldVisit(mycoHome),
+      },
     );
   } catch (err) {
     logger.warn(LOG_KINDS.CANOPY_ERROR, 'Initial canopy populate fan-out failed', {
@@ -418,10 +442,15 @@ export async function main(): Promise<void> {
     projectRoot,
     extensions: config.capture.artifact_extensions,
   };
+  assertGroveBound(bootstrapVaultDir, {
+    requestContext: dataPaths.requestContext,
+    env: process.env,
+  });
   const daemonService = resolveDaemonServiceState(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
   });
+  setOwnedServiceDirForCurrentProcess(daemonService.stateDir, resolveMycoHome());
   const logger = new DaemonLogger(resolveDaemonLogDir(bootstrapVaultDir, {
     requestContext: dataPaths.requestContext,
     env: process.env,
@@ -448,7 +477,6 @@ export async function main(): Promise<void> {
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
     vault: bootstrapVaultDir,
-    daemon_scope: daemonService.scope,
     daemon_state: daemonService.statePath,
     embedding_provider: config.embedding.provider,
   });
@@ -604,6 +632,7 @@ export async function main(): Promise<void> {
     cache: runtimeCache,
     logger,
     vaultDir: bootstrapVaultDir,
+    daemonStateDir: daemonService.stateDir,
   });
   /**
    * Build a per-Grove embedding runtime for any DB handle the runtime
@@ -927,6 +956,7 @@ export async function main(): Promise<void> {
       getTeamClient: () => teamSync.getTeamClient(),
       cache: runtimeCache,
       mycoHome,
+      daemonStateDir: daemonService.stateDir,
       machineId,
       projectStateTracker,
     });
@@ -1016,12 +1046,17 @@ export async function main(): Promise<void> {
     server,
     configHash: configHashRef,
   }));
-  const groveScope = servedGroveScopeForDaemon({
-    daemonScope: daemonService.scope,
-    startupGroveId: dataPaths.requestContext.groveId,
-  });
-  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope));
-  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope));
+  const groveScope = servedGroveScopeForDaemon();
+  const groveDaemonStateDir = daemonService.stateDir;
+  server.registerRoute('GET', '/api/groves', createListGrovesHandler(groveScope, groveDaemonStateDir));
+  server.registerRoute('GET', '/api/groves/:id/projects', createListGroveProjectsHandler(groveScope, groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves', createCreateGroveHandler(groveDaemonStateDir));
+  server.registerRoute('PATCH', '/api/groves/:id', createRenameGroveHandler(groveDaemonStateDir));
+  server.registerRoute('DELETE', '/api/groves/:id', createDeleteGroveHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/projects/:projectId', createMoveProjectHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/groves/:id/default', createSetDefaultGroveHandler(groveDaemonStateDir));
+  server.registerRoute('POST', '/api/projects/:projectId/backup', createProjectBackupHandler({}, groveDaemonStateDir));
+  server.registerRoute('POST', '/api/projects/:projectId/restore', createProjectRestoreHandler({}, groveDaemonStateDir));
 
   server.registerRoute('GET', '/api/logs', handleLogStream);
   server.registerRoute('GET', '/api/logs/search', handleLogSearch);
@@ -1331,6 +1366,7 @@ export async function main(): Promise<void> {
     logger,
     vaultDir: bootstrapVaultDir,
     serverVersion: server.version,
+    daemonStateDir: daemonService.stateDir,
     requestContext: dataPaths.requestContext,
   });
   reactions.on(['team'], async () => {
@@ -1473,6 +1509,7 @@ export async function main(): Promise<void> {
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
     logger,
     resolveRequestRuntime: (req) => getEmbeddingRuntime(req.requestContext),
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('POST', '/api/embedding/rebuild', embeddingActionHandlers.handleRebuild);
   server.registerRoute('POST', '/api/embedding/reconcile', embeddingActionHandlers.handleReconcile);
@@ -1499,6 +1536,7 @@ export async function main(): Promise<void> {
     liveConfig,
     cache: runtimeCache,
     embeddingRuntimeFactory: buildGroveEmbeddingRuntime,
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('GET', '/api/maintenance/summary', maintenanceHandlers.handleSummary);
   server.registerRoute('GET', '/api/groves/:id/maintenance', maintenanceHandlers.handleGroveMaintenance);
@@ -1507,6 +1545,7 @@ export async function main(): Promise<void> {
     logger,
     liveConfig,
     cache: runtimeCache,
+    daemonStateDir: daemonService.stateDir,
   });
   server.registerRoute('GET', '/api/projects/activity', projectsActivityHandler);
 
@@ -1587,7 +1626,7 @@ export async function main(): Promise<void> {
   try {
     await forEachGrove(runtimeCache, logger, ({ grove, db }) => {
       projectStateTracker.seed(readProjectActivitySeed(db, grove.id));
-    });
+    }, { daemonStateDir: daemonService.stateDir });
   } catch (err) {
     logger.warn(LOG_KINDS.DAEMON_START, 'Project power-state seed failed', {
       error: errorMessage(err),
@@ -1612,6 +1651,7 @@ export async function main(): Promise<void> {
     onCanopyMassAdd: (groveId, projectId) =>
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: bootstrapVaultDir,
+    daemonStateDir: daemonService.stateDir,
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
@@ -1633,6 +1673,7 @@ export async function main(): Promise<void> {
     machineId,
     powerJobs.canopy.registry,
     liveConfig,
+    daemonService.stateDir,
   );
 
   // Fan markRunningRunsInterrupted across every registered Grove so a
@@ -1654,7 +1695,7 @@ export async function main(): Promise<void> {
             });
           }
         },
-        { jobName: 'mark-stale-running-runs' },
+        { daemonStateDir: daemonService.stateDir, jobName: 'mark-stale-running-runs' },
       );
     } catch (err) {
       logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to fan stale-run sweep across Groves', {
@@ -1662,6 +1703,25 @@ export async function main(): Promise<void> {
       });
     }
   })();
+
+  // Sweep orphaned per-project pauses before any worker loops start.
+  // A pause older than the staleness threshold is by definition abandoned —
+  // the previous daemon held the lock and died without resuming. See
+  // startup-pauses.ts for the carve-out + remove-when condition.
+  try {
+    const sweep = resumeOrphanedPauses(logger);
+    if (sweep.resumed > 0 || sweep.preserved > 0) {
+      logger.info(LOG_KINDS.DAEMON_START, 'Orphan pause sweep complete', {
+        scanned: sweep.scanned,
+        resumed: sweep.resumed,
+        preserved: sweep.preserved,
+      });
+    }
+  } catch (err) {
+    logger.warn(LOG_KINDS.DAEMON_START, 'Orphan pause sweep failed', {
+      error: errorMessage(err),
+    });
+  }
 
   powerManager.start();
 

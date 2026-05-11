@@ -7,13 +7,20 @@ import YAML from 'yaml';
 import {
   clearGroveRegistryCaches,
   createGrove,
+  deleteGrove,
+  deregisterProjectInGrove,
   ensureDefaultGrove,
+  ensureGroveExistsLocally,
   getDefaultGroveId,
   listGroves,
+  listRegisteredProjects,
+  loadGroveRecord,
   registerProjectInGrove,
+  renameGrove,
   resolveGrove,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
+import { createGroveId } from '@myco/grove/ids.js';
 
 let home: string;
 
@@ -100,5 +107,188 @@ describe('Grove registry', () => {
 
     expect(projects.projects.proj_1.binding_id).toBe('gbind_1');
     expect(roots.roots['/tmp/myco']).toBe('proj_1');
+  });
+
+  describe('ensureGroveExistsLocally', () => {
+    it('returns the existing record without touching disk when already registered', () => {
+      const created = createGrove('Already Here', home);
+      const metadataPath = path.join(home, 'groves', created.id, 'grove.toml');
+      const beforeStat = fs.statSync(metadataPath);
+
+      const result = ensureGroveExistsLocally(created.id, { name: 'Other Name', slug: 'other-slug' }, home);
+
+      expect(result.id).toBe(created.id);
+      expect(result.name).toBe(created.name);
+      expect(result.slug).toBe(created.slug);
+      const afterStat = fs.statSync(metadataPath);
+      expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    });
+
+    it('lazy-provisions a Grove with the supplied id when none exists locally', () => {
+      const portableId = createGroveId();
+
+      const result = ensureGroveExistsLocally(portableId, { name: 'Imported Grove', slug: 'imported-grove' }, home);
+
+      expect(result.id).toBe(portableId);
+      expect(result.name).toBe('Imported Grove');
+      expect(result.slug).toBe('imported-grove');
+      expect(loadGroveRecord(portableId, home)?.id).toBe(portableId);
+      expect(fs.existsSync(path.join(home, 'groves', portableId, 'grove.toml'))).toBe(true);
+    });
+
+    it('suffixes the slug when it collides with a different existing Grove', () => {
+      createGrove('Work', home);
+      const portableId = createGroveId();
+
+      const result = ensureGroveExistsLocally(portableId, { name: 'Work', slug: 'work' }, home);
+
+      expect(result.id).toBe(portableId);
+      expect(result.slug).toBe('work-2');
+    });
+  });
+
+  describe('deregisterProjectInGrove', () => {
+    it('removes the project entry and root pointer', () => {
+      const grove = createGrove('Work', home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_demo',
+        projectName: 'Demo',
+        projectRoot: '/tmp/demo',
+        bindingId: 'gbind_demo',
+      }, home);
+
+      expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).toContain('proj_demo');
+
+      deregisterProjectInGrove(grove.id, 'proj_demo', home);
+
+      expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).not.toContain('proj_demo');
+
+      const rootsRaw = fs.readFileSync(path.join(home, 'groves', grove.id, 'registry', 'roots.toml'), 'utf-8');
+      expect(rootsRaw).not.toContain('/tmp/demo');
+    });
+
+    it('throws when the project is not bound to that Grove', () => {
+      const grove = createGrove('Work', home);
+
+      expect(() => deregisterProjectInGrove(grove.id, 'proj_missing', home)).toThrow(/not registered/);
+    });
+
+    it('with force: true is a no-op when the project is already missing', () => {
+      const grove = createGrove('Work', home);
+
+      // Move-orchestrator resume path: the project was already deregistered
+      // on a prior partial commit; force makes the second attempt a no-op
+      // instead of throwing and breaking resumability.
+      expect(() =>
+        deregisterProjectInGrove(grove.id, 'proj_missing', home, { force: true }),
+      ).not.toThrow();
+    });
+
+    it('reflects deregistration in listRegisteredProjects without manual cache clear', () => {
+      const grove = createGrove('Work', home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_a',
+        projectName: 'A',
+        projectRoot: '/tmp/a',
+      }, home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_b',
+        projectName: 'B',
+        projectRoot: '/tmp/b',
+      }, home);
+
+      expect(listRegisteredProjects(grove.id, home)).toHaveLength(2);
+      deregisterProjectInGrove(grove.id, 'proj_a', home);
+      expect(listRegisteredProjects(grove.id, home).map((p) => p.project_id)).toEqual(['proj_b']);
+    });
+  });
+
+  describe('renameGrove', () => {
+    it('updates the name only when the slug is unchanged', () => {
+      const grove = createGrove('My Project', home);
+
+      const renamed = renameGrove(grove.id, 'My Project!!', home);
+
+      expect(renamed.id).toBe(grove.id);
+      expect(renamed.name).toBe('My Project!!');
+      expect(renamed.slug).toBe('my-project');
+      expect(loadGroveRecord(grove.id, home)?.name).toBe('My Project!!');
+      expect(fs.existsSync(path.join(home, 'groves', grove.id, 'grove.toml'))).toBe(true);
+    });
+
+    it('updates the slug; loadGroveRecord still resolves by id', () => {
+      const grove = createGrove('Original Name', home);
+
+      const renamed = renameGrove(grove.id, 'Renamed Project', home);
+
+      expect(renamed.slug).toBe('renamed-project');
+      expect(loadGroveRecord(grove.id, home)?.slug).toBe('renamed-project');
+      expect(loadGroveRecord(grove.id, home)?.name).toBe('Renamed Project');
+    });
+
+    it('auto-suffixes when the new slug collides with another Grove', () => {
+      createGrove('Existing', home);
+      const grove = createGrove('Other', home);
+
+      const renamed = renameGrove(grove.id, 'Existing', home);
+
+      expect(renamed.slug).toBe('existing-2');
+      expect(renamed.name).toBe('Existing');
+    });
+
+    it('throws when the Grove id does not exist', () => {
+      expect(() => renameGrove(createGroveId(), 'Anything', home)).toThrow(/Unknown Grove/);
+    });
+  });
+
+  describe('deleteGrove', () => {
+    it('refuses to delete a Grove with bound projects unless force is set', () => {
+      const grove = createGrove('Work', home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_demo',
+        projectName: 'Demo',
+        projectRoot: '/tmp/demo',
+      }, home);
+
+      expect(() => deleteGrove(grove.id, {}, home)).toThrow(/bound project/);
+      expect(loadGroveRecord(grove.id, home)).not.toBeNull();
+    });
+
+    it('deletes a Grove when force is true even with bound projects', () => {
+      const grove = createGrove('Work', home);
+      registerProjectInGrove(grove.id, {
+        projectId: 'proj_demo',
+        projectName: 'Demo',
+        projectRoot: '/tmp/demo',
+      }, home);
+
+      deleteGrove(grove.id, { force: true }, home);
+
+      expect(loadGroveRecord(grove.id, home)).toBeNull();
+      expect(listGroves(home).find((g) => g.id === grove.id)).toBeUndefined();
+      expect(fs.existsSync(path.join(home, 'groves', grove.id))).toBe(false);
+    });
+
+    it('clears the default pointer when the deleted Grove was the default', () => {
+      const a = createGrove('Alpha', home);
+      const b = createGrove('Beta', home);
+      setDefaultGrove(b.id, home);
+      expect(getDefaultGroveId(home)).toBe(b.id);
+
+      deleteGrove(b.id, {}, home);
+
+      expect(getDefaultGroveId(home)).toBeNull();
+      expect(loadGroveRecord(a.id, home)?.id).toBe(a.id);
+    });
+
+    it('removes the on-disk Grove directory', () => {
+      const grove = createGrove('Lonely', home);
+      const groveDir = path.join(home, 'groves', grove.id);
+      expect(fs.existsSync(groveDir)).toBe(true);
+
+      deleteGrove(grove.id, {}, home);
+
+      expect(fs.existsSync(groveDir)).toBe(false);
+    });
   });
 });

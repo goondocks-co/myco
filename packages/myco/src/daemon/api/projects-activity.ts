@@ -47,6 +47,8 @@ export interface ProjectsActivityHandlersDeps {
   logger: Logger;
   liveConfig: { current: MycoConfig };
   cache: GroveRuntimeCache;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   mycoHome?: string;
 }
 
@@ -142,7 +144,7 @@ export function createProjectsActivityHandler(deps: ProjectsActivityHandlersDeps
           }
         }
       },
-      { mycoHome, jobName: 'projects-activity', parallel: true },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'projects-activity', parallel: true },
     );
 
     // Active first, then by last activity desc — cold projects sink to bottom.

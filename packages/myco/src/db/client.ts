@@ -10,6 +10,8 @@ import { Database } from 'bun:sqlite';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { resolveDevNativeDeps } from '../runtime/native-deps.js';
+import { resolveServiceDirName } from '../grove/paths.js';
+import { loadGroveRecord } from '../grove/registry.js';
 
 const NOT_INITIALIZED_MSG = 'Database not initialized -- call initDatabase() first';
 
@@ -20,14 +22,72 @@ export const SQLITE_DB_FILE = 'myco.db';
 let instance: Database | null = null;
 const scopedDatabase = new AsyncLocalStorage<Database>();
 
+/**
+ * Process-scoped declaration of which service dir owns this daemon.
+ * Set once at daemon startup via `setOwnedServiceDirForCurrentProcess`.
+ * When null, `assertOwnsDatabase` is a no-op (tests, one-shot scripts).
+ */
+let ownedServiceDir: { stateDir: string; mycoHome: string } | null = null;
+
+/**
+ * Declare that the current process is a daemon whose state dir is
+ * `stateDir` (an absolute path such as `~/.myco/service`), operating
+ * within `mycoHome`. Call once at daemon startup before any Grove DB
+ * is opened. Subsequent calls overwrite the previous value.
+ */
+export function setOwnedServiceDirForCurrentProcess(stateDir: string, mycoHome: string): void {
+  ownedServiceDir = { stateDir, mycoHome };
+}
+
+/**
+ * Clear the process-scoped ownership declaration. After this call
+ * `withDatabase` skips the ownership check. Intended for tests that
+ * need to opt out of ownership enforcement.
+ */
+export function clearOwnedServiceDirForCurrentProcess(): void {
+  ownedServiceDir = null;
+}
+
+/**
+ * Throw when `databasePath` belongs to a Grove that is NOT served by
+ * the current daemon. No-op when no owner is declared.
+ */
+function assertOwnsDatabase(databasePath: string): void {
+  if (!ownedServiceDir) return;
+  const groveId = path.basename(path.dirname(databasePath));
+  const record = loadGroveRecord(groveId, ownedServiceDir.mycoHome);
+  if (!record) return; // non-Grove DB or Grove not yet registered; surfaced elsewhere
+  const expected = resolveServiceDirName(ownedServiceDir.stateDir, ownedServiceDir.mycoHome);
+  if (record.served_by !== expected) {
+    throw new Error(
+      `Daemon at ${ownedServiceDir.stateDir} attempted to open Grove ${record.slug} (${record.id}), `
+      + `which is served by ${record.served_by}. Cross-Grove access is forbidden.`,
+    );
+  }
+}
+
 function ensureNativeDepsResolved(): void {
   resolveDevNativeDeps();
 }
 
 function configureDatabase(db: Database): Database {
-  db.run('PRAGMA journal_mode = WAL');
-  db.run('PRAGMA foreign_keys = ON');
+  const currentMode = (db.prepare('PRAGMA journal_mode').get() as { journal_mode?: string } | undefined)?.journal_mode;
+  if (currentMode?.toLowerCase() !== 'wal') {
+    // WAL switch needs an EXCLUSIVE lock and the WAL/SHM infrastructure. On
+    // Linux that initialization can stall when the file was just replaced
+    // (e.g. claim/release restore). Bound the wait to 200ms so the
+    // configure step can't dominate a test's 5s budget; if we can't switch,
+    // run in whatever mode the file is in. The daemon's primary open at
+    // startup sets WAL once for its long-lived connection.
+    db.run('PRAGMA busy_timeout = 200');
+    try {
+      db.run('PRAGMA journal_mode = WAL');
+    } catch {
+      // Keep the existing journal mode.
+    }
+  }
   db.run('PRAGMA busy_timeout = 5000');
+  db.run('PRAGMA foreign_keys = ON');
   db.run('PRAGMA cache_size = -64000');
   db.run('PRAGMA temp_store = MEMORY');
   return db;
@@ -58,8 +118,14 @@ export function openDatabase(dbPath?: string): Database {
  * Run work against an explicit Database connection. Query helpers that call
  * `getDatabase()` inside the callback see this scoped connection instead of
  * the process-wide singleton.
+ *
+ * When a process-scoped daemon ownership is declared (via
+ * `setOwnedServiceDirForCurrentProcess`), asserts that the DB's Grove is
+ * owned by the current daemon before running `fn`. Throws on mismatch to
+ * prevent cross-Grove access from code paths that bypass `forEachGrove`.
  */
 export function withDatabase<T>(db: Database, fn: () => T): T {
+  assertOwnsDatabase(db.filename);
   return scopedDatabase.run(db, fn);
 }
 

@@ -119,6 +119,7 @@ export function getSkillSurveyEligibility(
   requestContext?: MycoRequestContext,
 ): SkillSurveyEligibility {
   const scope = projectScopeFromRequestContext(requestContext);
+  const projectId = requestContext!.projectId;
   const settledSessionCount = countSessions({ ...scopedOptions(scope), includeActive: false });
   if (settledSessionCount < SURVEY_MIN_SETTLED_SESSIONS) {
     return { eligible: false, reason: 'insufficient-settled-sessions' };
@@ -133,7 +134,7 @@ export function getSkillSurveyEligibility(
     return { eligible: true, reason: null };
   }
 
-  const watermarkState = getState(agentId, SURVEY_WATERMARK_KEY);
+  const watermarkState = getState(agentId, projectId, SURVEY_WATERMARK_KEY);
   const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
   if (watermarkEpoch <= 0) {
     return { eligible: true, reason: null };
@@ -238,6 +239,7 @@ export function buildSkillSurveyInstruction(
   requestContext?: MycoRequestContext,
 ): BuiltTaskInstruction | undefined {
   const scope = projectScopeFromRequestContext(requestContext);
+  const projectId = requestContext!.projectId;
   const eligibility = getSkillSurveyEligibility(agentId, requestContext);
   if (!eligibility.eligible) {
     return undefined;
@@ -246,7 +248,7 @@ export function buildSkillSurveyInstruction(
   const now = epochSeconds();
 
   // Read watermark — 0 means "never surveyed, scan everything"
-  const watermarkState = getState(agentId, SURVEY_WATERMARK_KEY);
+  const watermarkState = getState(agentId, projectId, SURVEY_WATERMARK_KEY);
   const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
   const sinceFilter = watermarkEpoch > 0 ? { since: watermarkEpoch } : {};
 
@@ -340,7 +342,7 @@ export function buildSkillSurveyInstruction(
   parts.push('');
 
   // Advance watermark
-  setState(agentId, SURVEY_WATERMARK_KEY, String(now), now);
+  setState(agentId, projectId, SURVEY_WATERMARK_KEY, String(now), now);
 
   return { instruction: parts.join('\n') };
 }

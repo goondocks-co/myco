@@ -99,26 +99,30 @@ describe('backup engine', () => {
   });
 
   describe('BACKUP_TABLES', () => {
-    it('includes all synced tables', () => {
+    it('includes the project-scoped capture surface plus team_members', () => {
+      // Sample of tables we expect every backup to carry. The full set is
+      // derived from GROVE_PROJECT_SCOPED_TABLES so the assertion list does
+      // not need to mirror it exhaustively.
       expect(BACKUP_TABLES).toContain('sessions');
       expect(BACKUP_TABLES).toContain('spores');
       expect(BACKUP_TABLES).toContain('plans');
       expect(BACKUP_TABLES).toContain('entities');
       expect(BACKUP_TABLES).toContain('graph_edges');
       expect(BACKUP_TABLES).toContain('team_members');
+      expect(BACKUP_TABLES).toContain('canopy_entries');
+      expect(BACKUP_TABLES).toContain('canopy_maps');
     });
 
-    it('excludes non-synced tables', () => {
-      expect(BACKUP_TABLES).not.toContain('activities');
-      expect(BACKUP_TABLES).not.toContain('log_entries');
+    it('excludes tables that cannot participate in row-by-row dumps', () => {
+      // The dump format addresses rows by primary key for INSERT OR IGNORE
+      // idempotency. `entity_mentions` has no `id` column
+      // (gotcha_entity_mentions_not_synced) so it is carved out explicitly.
+      expect(BACKUP_TABLES).not.toContain('entity_mentions');
+
+      // Tables outside the project-scoped surface (and not team_members)
+      // do not appear in BACKUP_TABLES.
       expect(BACKUP_TABLES).not.toContain('agents');
-      expect(BACKUP_TABLES).not.toContain('agent_runs');
-    });
-
-    it('excludes cortex_instructions (local-only per v19) (#56)', () => {
-      // cortex_instructions is operating guidance specific to the local
-      // machine; restoreBackup on another machine must NEVER ingest it.
-      expect(BACKUP_TABLES).not.toContain('cortex_instructions');
+      expect(BACKUP_TABLES).not.toContain('team_outbox');
     });
   });
 

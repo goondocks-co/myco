@@ -26,7 +26,7 @@ function createGroveProjectDir(home: string): string {
   fs.mkdirSync(path.join(home, 'service'), { recursive: true });
   fs.writeFileSync(
     path.join(directory, '.myco', 'project.toml'),
-    '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n\n[grove]\nbinding_id = "gbind-a"\nslug = "work"\nmode = "local"\n',
+    '[project]\nid = "proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n\n[grove]\nid = "grv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\nslug = "work"\nname = "Work"\n',
     'utf-8',
   );
   fs.writeFileSync(

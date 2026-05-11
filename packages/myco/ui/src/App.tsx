@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
 import Layout from './layout/Layout';
+import { ToastViewport } from './components/groves/toast';
 import Dashboard from './pages/Dashboard';
 import Sessions from './pages/Sessions';
 import Cortex from './pages/Cortex';
@@ -27,6 +28,8 @@ import {
 
 export default function App() {
   return (
+    <>
+    <ToastViewport />
     <Routes>
       <Route path="/" element={<RootRedirect />} />
       <Route element={<GlobalSelectionBoundary><Layout /></GlobalSelectionBoundary>}>
@@ -85,6 +88,7 @@ export default function App() {
       <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }
 

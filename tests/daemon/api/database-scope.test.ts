@@ -76,6 +76,7 @@ describe('database scope-aware actions', () => {
       logger,
       vaultDir: workDir,
       mycoHome,
+      daemonStateDir: path.join(mycoHome, 'service'),
     });
   }
 

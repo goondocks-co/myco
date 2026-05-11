@@ -47,6 +47,8 @@ export interface TeamSyncDeps {
   logger: DaemonLogger;
   vaultDir: string;
   serverVersion: string;
+  /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
+  daemonStateDir: string;
   requestContext?: MycoRequestContext;
 }
 
@@ -85,7 +87,7 @@ export interface TeamFlushAggregate {
 // ---------------------------------------------------------------------------
 
 export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
-  const { machineId, logger, vaultDir, serverVersion, requestContext: defaultRequestContext } = deps;
+  const { machineId, logger, vaultDir, serverVersion, daemonStateDir, requestContext: defaultRequestContext } = deps;
   const teamClients = new Map<string, TeamSyncClient>();
   const clientSignatures = new Map<string, string>();
 
@@ -264,7 +266,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
           if (result.error) aggregate.errors += 1;
         });
       },
-      { jobName: 'team-sync-flush' },
+      { daemonStateDir, jobName: 'team-sync-flush' },
     );
     return aggregate;
   }

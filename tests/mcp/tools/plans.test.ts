@@ -15,6 +15,7 @@ import os from 'node:os';
 import { handleMycoPlans } from '@myco/tools/plans.js';
 import { DaemonClient } from '@myco/hooks/client.js';
 import { DaemonServer } from '@myco/daemon/server.js';
+import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { DaemonLogger } from '@myco/daemon/logger.js';
 import { createSessionMutationHandlers } from '@myco/daemon/api/sessions.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
@@ -227,8 +228,10 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
 
     await server.start();
 
+    const statePath = resolveServiceDaemonStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(
-      path.join(vaultDir, 'daemon.json'),
+      statePath,
       JSON.stringify({ pid: process.pid, port: server.port }),
     );
 
@@ -238,6 +241,7 @@ describe('myco_plans op: delete (integration against real HTTP router)', () => {
   afterAll(async () => {
     await server.stop();
     logger.close();
+    try { fs.unlinkSync(resolveServiceDaemonStatePath()); } catch { /* gone */ }
     teardownTestDb();
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });

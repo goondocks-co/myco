@@ -275,6 +275,49 @@ describe('migration v36 — project_id orphan cleanup', () => {
     for (const row of turns) expect(row.project_id).toBe(goodId);
   });
 
+  // -------------------------------------------------------------------------
+  // Freeze regression: V36_BACKFILL_TABLES must remain a frozen v36-era
+  // snapshot, NOT an alias for the live GROVE_PROJECT_SCOPED_TABLES.
+  //
+  // If a future change reverts the freeze (e.g. `V36_BACKFILL_TABLES =
+  // GROVE_PROJECT_SCOPED_TABLES`), `canopy_entries` (a delete-only table)
+  // would be pulled into the backfill loop. Path-string orphans would be
+  // rewritten to the surviving Grove id and then survive the delete-only
+  // pass, silently preserving rows the v36 cleanup is designed to drop.
+  //
+  // This test seeds the exact divergence shape:
+  //   - one good Grove-id row (qualifies as a "Grove row" for both
+  //     branches and produces groveIds.length === 1 for the backfill
+  //     branch);
+  //   - one path-string-id row (the legacy junk v36 deletes).
+  //
+  // Frozen v36 (canopy NOT in V36_BACKFILL_TABLES): backfill skips
+  // canopy_entries → delete-only branch deletes the path-string row →
+  // 1 row remains. Reverted freeze: backfill rewrites the path-string
+  // row to the Grove id → delete-only finds no orphan → 2 rows remain.
+  // -------------------------------------------------------------------------
+
+  it('v36 freeze: canopy_entries stays delete-only, not audit-backfilled', () => {
+    const db = freshDbAtV35();
+    const goodId = createProjectId();
+    insertCanopyRow(db, goodId, 'src/keep.ts');
+    insertCanopyRow(db, '/Users/chris/Repos/myco', 'src/legacy.ts');
+
+    runV36(db);
+
+    const rows = db
+      .prepare('SELECT project_id, path FROM canopy_entries')
+      .all() as Array<{ project_id: string; path: string }>;
+
+    // The path-string row must be DELETED, not preserved by backfill.
+    // If this assertion fails with rows.length === 2, the v36 freeze
+    // has been reverted to alias GROVE_PROJECT_SCOPED_TABLES — restore
+    // the literal snapshot in V36_BACKFILL_TABLES.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].project_id).toBe(goodId);
+    expect(rows[0].path).toBe('src/keep.ts');
+  });
+
   it('deletes orphans on every backfill table when multiple Grove ids exist', () => {
     // Mirrors the existing log_entries multi-Grove case but for two
     // additional tables — proves the "groveIds.length > 1 → DELETE"
