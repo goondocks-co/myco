@@ -71,20 +71,22 @@ function ensureNativeDepsResolved(): void {
 }
 
 function configureDatabase(db: Database): Database {
-  db.run('PRAGMA busy_timeout = 5000');
   const currentMode = (db.prepare('PRAGMA journal_mode').get() as { journal_mode?: string } | undefined)?.journal_mode;
   if (currentMode?.toLowerCase() !== 'wal') {
     // WAL switch needs an EXCLUSIVE lock and the WAL/SHM infrastructure. On
-    // Linux that initialization can stall when a sibling test or daemon
-    // process recently touched the file. Best-effort: if we can't switch,
+    // Linux that initialization can stall when the file was just replaced
+    // (e.g. claim/release restore). Bound the wait to 200ms so the
+    // configure step can't dominate a test's 5s budget; if we can't switch,
     // run in whatever mode the file is in. The daemon's primary open at
-    // startup gets WAL set once; ephemeral connections don't need it.
+    // startup sets WAL once for its long-lived connection.
+    db.run('PRAGMA busy_timeout = 200');
     try {
       db.run('PRAGMA journal_mode = WAL');
     } catch {
       // Keep the existing journal mode.
     }
   }
+  db.run('PRAGMA busy_timeout = 5000');
   db.run('PRAGMA foreign_keys = ON');
   db.run('PRAGMA cache_size = -64000');
   db.run('PRAGMA temp_store = MEMORY');
