@@ -5,11 +5,15 @@ description: Procedure for safely claiming a production Grove for local dogfoodi
 
 # Dogfood Grove Claim
 
-Claim/release is a transaction with rollback. Claim takes a full Grove
-snapshot, transfers `served_by` from `service` to `service-dev`, and lets
-the dev daemon serve the Grove. Release replays the snapshot (purge +
-INSERT OR IGNORE) and hands `served_by` back to `service`. Any data the
-dev daemon wrote during the claim window is discarded.
+Claim/release is a transaction with rollback. Claim takes a byte-for-byte
+file-copy snapshot of the Grove `myco.db` and `vectors.db`, transfers
+`served_by` from `service` to `service-dev`, and lets the dev daemon
+serve the Grove. Release copies the snapshot files back over the live
+Grove DB and hands `served_by` back to `service`. Any data the dev
+daemon wrote during the claim window is discarded.
+
+Vectors round-trip alongside the main DB — no re-embed is needed on
+release.
 
 ## Pre-flight checks
 
@@ -37,12 +41,16 @@ Successful output:
 ```
 Grove claimed for dogfooding:
   Grove:    Production Grove (prod-grove)
-  Snapshot: ~/myco_backups/claims/prod-grove/<ts>/grove-claim.sql
+  Snapshot: ~/myco_backups/claims/prod-grove/<ts>/grove-claim.db
   Projects: 3 paused → resumed under dev ownership
 
 The dev daemon now serves this Grove. Run `myco grove release prod-grove`
 when you're done to restore the Grove to its pre-claim state.
 ```
+
+The snapshot directory contains `grove-claim.db` and (if the source had
+embeddings) `vectors-claim.db` — both byte-for-byte copies of the live
+files.
 
 Verify the dev daemon picked up the Grove:
 
@@ -76,7 +84,7 @@ Successful output:
 ```
 Grove released:
   Grove:    Production Grove (prod-grove)
-  Restored: ~/myco_backups/claims/prod-grove/<ts>/grove-claim.sql
+  Restored: ~/myco_backups/claims/prod-grove/<ts>/grove-claim.db
   Archive:  ~/myco_backups/claims/prod-grove/archive/<ts>/
   served_by → service
 ```
@@ -109,7 +117,8 @@ release: claimed/flipped → restored → flipped → archived
   when ready.
 - **Release crashed mid-restore**: `served_by` still `service-dev`,
   manifest at `phase=claimed` or `flipped`. Re-run `myco grove release`
-  — purge + restore is idempotent.
+  — file copy is idempotent (overwrites the live DB with the snapshot
+  again, no harm in repeating).
 - **Release crashed after restore but before flip**: `phase=restored`.
   Re-run release; it picks up from the flip step.
 - **Release crashed after flip but before archive**: `served_by=service`,
@@ -127,7 +136,26 @@ This is a hidden command. `--force` is required. It flips `served_by`
 without touching the snapshot or the manifest. After running it,
 delete the orphan claim directory by hand.
 
+## Legacy manifests
+
+Manifests are at **schema 2** (file-copy snapshots). Older `schema=1`
+manifests on disk pointed at a `.sql` dump and used a line-based restore
+parser that silently dropped any row with multi-line text content — they
+are not supported by release. If you encounter a v1 manifest:
+
+1. The release command surfaces a hard error citing the legacy manifest
+   path.
+2. Recover the affected Grove DB from your routine `~/myco_backups`
+   dumps (the dump file is intact; only the previous restore code was
+   lossy).
+3. Then use `myco grove set-served-by <ref> service --force` to reset
+   `served_by` manually.
+4. Move the legacy claim directory aside or delete it.
+
 ## Reference
 
 Architectural background:
 [`docs/superpowers/specs/2026-05-10-portable-grove-identity-design.md`](../../../docs/superpowers/specs/2026-05-10-portable-grove-identity-design.md)
+
+Snapshot mechanism: `packages/myco/src/grove/claim.ts` — `snapshotSqliteFile`
+and `restoreSqliteFile` are the file-copy primitives.
