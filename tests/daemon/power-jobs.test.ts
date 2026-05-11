@@ -322,6 +322,24 @@ describe('registerPowerJobs — staging-gc', () => {
   });
 });
 
+describe('release-provenance power job', () => {
+  let fx: GroveFixture;
+  let pm: FakePowerManager;
+
+  beforeEach(() => {
+    fx = setupGrove();
+    pm = new FakePowerManager();
+  });
+
+  afterEach(() => fx.cleanup());
+
+  it('registers a release-provenance-reconcile job that runs in active/idle/sleep', () => {
+    registerPowerJobs(pm as never, buildDeps(fx));
+    const job = pm.find('release-provenance-reconcile');
+    expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // embedding-reconcile — runs in active/idle/sleep, fans out per Grove
 // ---------------------------------------------------------------------------

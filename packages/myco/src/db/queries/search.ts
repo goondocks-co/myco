@@ -16,6 +16,11 @@ import {
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
+import {
+  releaseStateAnnotation,
+  applyReleaseStateFields,
+  type ReleaseStateAnnotation,
+} from '@myco/release-provenance/annotations.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,6 +59,7 @@ export interface SearchResult {
   path?: string | null;
   language?: string | null;
   llm_description?: string | null;
+  release_state?: ReleaseStateAnnotation;
 }
 
 /** Options for fullTextSearch. */
@@ -170,6 +176,7 @@ export function fullTextSearch(
 
     for (const row of batchRows) {
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('prompt_batches', String(row.id), options.scope, db)),
         id: String(row.id),
         type: 'prompt_batch',
         title: row.prompt_number != null
@@ -210,6 +217,9 @@ export function fullTextSearch(
     for (const row of activityRows) {
       const preview = (row.tool_input ?? row.file_path ?? '').slice(0, SEARCH_PREVIEW_CHARS);
       results.push({
+        ...applyReleaseStateFields({}, row.session_id
+          ? releaseStateAnnotation('sessions', row.session_id, options.scope, db)
+          : null),
         id: String(row.id),
         type: 'activity',
         title: row.tool_name,
@@ -250,6 +260,7 @@ export function fullTextSearch(
 
     for (const row of sporeRows) {
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('spores', String(row.id), options.scope, db)),
         id: String(row.id),
         type: 'spore',
         title: row.observation_type,
@@ -286,6 +297,7 @@ export function fullTextSearch(
 
     for (const row of sessionRows) {
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('sessions', String(row.id), options.scope, db)),
         id: String(row.id),
         type: 'session',
         title: row.title ?? `Session ${row.id.slice(-6)}`,
@@ -381,6 +393,7 @@ export function hydrateSearchResults(
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('sessions', row.id, options.scope, db)),
         id: row.id,
         type: 'session',
         title: row.title ?? `Session ${row.id.slice(-6)}`,
@@ -405,6 +418,7 @@ export function hydrateSearchResults(
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('spores', row.id, options.scope, db)),
         id: row.id,
         type: 'spore',
         title: row.observation_type,
@@ -430,6 +444,7 @@ export function hydrateSearchResults(
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('plans', row.id, options.scope, db)),
         id: row.id,
         type: 'plan',
         title: row.title ?? `Plan ${row.id.slice(-6)}`,
@@ -455,6 +470,7 @@ export function hydrateSearchResults(
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('artifacts', row.id, options.scope, db)),
         id: row.id,
         type: 'artifact',
         title: row.title,
@@ -502,6 +518,7 @@ export function hydrateSearchResults(
         const row = rowMap.get(p.id);
         if (!row) continue;
         results.push({
+          ...applyReleaseStateFields({}, releaseStateAnnotation('canopy_entries', p.id, options.scope, db)),
           id: p.id,
           type: 'canopy',
           title: row.path,
@@ -531,6 +548,7 @@ export function hydrateSearchResults(
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
+        ...applyReleaseStateFields({}, releaseStateAnnotation('skill_records', row.id, options.scope, db)),
         id: row.id,
         type: 'skill',
         title: row.display_name || row.name,

@@ -88,6 +88,7 @@ const SYNCED_TABLES = [
   'skill_candidates',
   'skill_records',
   'skill_usage',
+  'knowledge_release_state',
 ] as const;
 
 const SYNCED_TABLES_SET = new Set<string>(SYNCED_TABLES);
@@ -1307,6 +1308,8 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     source_path: url.searchParams.get('source_path') ?? undefined,
     name: url.searchParams.get('name') ?? undefined,
     project_id: url.searchParams.get('project_id') ?? undefined,
+    release_state: url.searchParams.get('release_state') ?? undefined,
+    release_confidence: url.searchParams.get('release_confidence') ?? undefined,
   });
 
   return jsonResponse({ results: results.map(toCloudSearchResult) });

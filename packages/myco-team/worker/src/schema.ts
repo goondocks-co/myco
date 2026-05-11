@@ -256,6 +256,30 @@ const SKILL_USAGE_TABLE = `
     PRIMARY KEY (id, machine_id)
   )`;
 
+const KNOWLEDGE_RELEASE_STATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS knowledge_release_state (
+    id                       INTEGER NOT NULL,
+    machine_id               TEXT NOT NULL,
+    project_id               TEXT,
+    identity_key             TEXT NOT NULL,
+    namespace                TEXT NOT NULL,
+    record_id                TEXT NOT NULL,
+    source_session_id        TEXT,
+    source_prompt_batch_id   INTEGER,
+    state                    TEXT NOT NULL,
+    confidence               TEXT NOT NULL,
+    basis_kind               TEXT,
+    basis_ref                TEXT,
+    basis_sha                TEXT,
+    release_pr_number        INTEGER,
+    reason                   TEXT,
+    checked_at               INTEGER NOT NULL,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER,
+    synced_at                INTEGER,
+    PRIMARY KEY (id, machine_id)
+  )`;
+
 const NODES_TABLE = `
   CREATE TABLE IF NOT EXISTS nodes (
     machine_id              TEXT PRIMARY KEY,
@@ -286,6 +310,8 @@ const BASE_SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_records_status ON skill_records (status)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_name ON skill_records (name, machine_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id ON skill_usage (skill_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_record ON knowledge_release_state (namespace, record_id, machine_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_state ON knowledge_release_state (state, confidence)',
 ];
 
 const POST_MIGRATION_INDEXES = [
@@ -313,6 +339,7 @@ const PROJECT_SCOPE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_candidates_project_id ON skill_candidates (project_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_records_project_id ON skill_records (project_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_project_id ON skill_usage (project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_project_id ON knowledge_release_state (project_id)',
 ];
 
 const ALL_DDLS = [
@@ -329,6 +356,7 @@ const ALL_DDLS = [
   SKILL_CANDIDATES_TABLE,
   SKILL_RECORDS_TABLE,
   SKILL_USAGE_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE,
   NODES_TABLE,
   TEAM_CONFIG_TABLE,
 ];
@@ -505,6 +533,7 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
       'skill_candidates',
       'skill_records',
       'skill_usage',
+      'knowledge_release_state',
     ];
     for (const table of tablesToPrune) {
       try {

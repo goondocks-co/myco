@@ -49,6 +49,9 @@ import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { captureGitProvenance } from '@myco/release-provenance/capture.js';
+import { primaryProductionRef } from '@myco/release-provenance/config.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,6 +67,7 @@ export interface StopProcessorDeps {
   vaultDir: string;
   /** Daemon-resolved Grove project id used for every per-session insert. */
   projectId: GroveProjectId;
+  machineId?: string;
   /** Plan tag names to extract from transcript responses. Merged from all symbiont manifests. */
   planTags: string[];
   planWatchConfig: PlanWatchConfig;
@@ -175,6 +179,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     liveConfig,
     vaultDir,
     projectId: defaultProjectId,
+    machineId = 'local',
     planWatchConfig,
   } = deps;
 
@@ -236,6 +241,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     sessionMeta: RegisteredSession | undefined,
     requestProjectId: GroveProjectId,
     requestRowProjectId: string | null,
+    requestProjectRoot: string,
+    requestMachineId: string,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
   ): Promise<void> {
@@ -335,6 +342,18 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // after every assistant turn, not just session end. The session is closed
     // when the SessionEnd hook fires (via /sessions/unregister).
     closeOpenBatches(sessionId, epochSeconds());
+    if (latestBatch) {
+      captureGitProvenance({
+        projectRoot: requestProjectRoot,
+        projectId: requestRowProjectId,
+        machineId: requestMachineId,
+        sessionId,
+        promptBatchId: latestBatch.id,
+        capturePoint: 'prompt_batch_stop',
+        productionRef: primaryProductionRef(liveConfig.current),
+        logger,
+      });
+    }
 
     // Derive a simple title from the first user prompt — but only if the
     // session has no title yet. Once the LLM (or anything else) sets a title,
@@ -567,6 +586,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const requestProjectId = req.requestContext?.projectId ?? defaultProjectId;
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
     const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
+    const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
+    const requestMachineId = req.requestContext?.machineId ?? machineId;
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';
@@ -643,6 +664,8 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       sessionMeta,
       requestProjectId,
       requestRowProjectId,
+      requestProjectRoot,
+      requestMachineId,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
     ).catch((err) => {

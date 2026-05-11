@@ -34,6 +34,7 @@ export const LOG_KINDS = {
   CAPTURE_PLAN: 'capture.plan',
   CAPTURE_ATTACHMENT: 'capture.attachment',
   CAPTURE_BUFFER: 'capture.buffer',
+  CAPTURE_RELEASE_PROVENANCE: 'capture.release-provenance',
 
   // Processor (stop-event session processing)
   PROCESSOR_SESSION: 'processor.session',
@@ -114,6 +115,9 @@ export const LOG_KINDS = {
   TEAM_SYNC_COMPLETE: 'team-sync.complete',
   TEAM_SYNC_ERROR: 'team-sync.error',
   TEAM_SYNC_REJECTED: 'team-sync.rejected',
+
+  // Release provenance
+  RELEASE_PROVENANCE_RECONCILE: 'release-provenance.reconcile',
 } as const;
 
 export type LogKind = (typeof LOG_KINDS)[keyof typeof LOG_KINDS];

@@ -41,6 +41,9 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
   // digest substrate. Removed from team sync at schema v19. See
   // migrateV18ToV19 for the corresponding safety-net DELETE.
   'cortex_instructions',
+  // Raw release provenance carries branch names, changed paths, and local Git
+  // evidence. Only the derived knowledge_release_state rows are team-safe.
+  'knowledge_git_provenance',
 ]);
 
 export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
@@ -54,6 +57,9 @@ export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
     'canopy_redundant_reads',
     'canopy_map_tool_calls',
   ],
+  knowledge_release_state: [
+    'evidence_json',
+  ],
 };
 
 /**
@@ -64,7 +70,9 @@ export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
  */
 export const LOCAL_ONLY_RATIONALES: Record<string, string> = {
   cortex_instructions: 'Per-machine operating guidance generated from local digest substrate; never synced to the team.',
+  knowledge_git_provenance: 'Raw local Git provenance can include branch names, changed paths, and patch evidence; only derived release state syncs.',
   sessions: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
+  knowledge_release_state: 'Derived release state syncs, but raw evidence summaries stay local to avoid leaking repository details.',
 };
 
 // ---------------------------------------------------------------------------
@@ -311,6 +319,7 @@ export const TEAM_SYNC_BACKFILL_TABLES = [
   'digest_extracts',
   'skill_candidates',
   'skill_records',
+  'knowledge_release_state',
 ] as const;
 // entity_mentions excluded — no `id` column (composite key entity_id+note_id+note_type)
 // skill_usage excluded — no `synced_at` column (syncs via syncRow on insert)
@@ -329,6 +338,7 @@ export const TEAM_SYNC_OBSERVED_TABLES = [
   'skill_candidates',
   'skill_records',
   'skill_usage',
+  'knowledge_release_state',
 ] as const;
 
 export type TeamSyncObservedTable = (typeof TEAM_SYNC_OBSERVED_TABLES)[number];

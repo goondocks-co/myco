@@ -131,7 +131,8 @@ export const KNOWLEDGE_RELEASE_STATE_TABLE = `
     evidence_json            TEXT,
     checked_at               INTEGER NOT NULL,
     created_at               INTEGER NOT NULL,
-    updated_at               INTEGER
+    updated_at               INTEGER,
+    synced_at                INTEGER
   )`;
 
 export const ACTIVITIES_TABLE = `

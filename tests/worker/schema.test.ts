@@ -167,6 +167,21 @@ describe('initD1Schema', () => {
       values: [],
     });
   });
+
+  it('creates the derived release-state sync table and indexes', async () => {
+    const fake = createFakeD1();
+
+    await initD1Schema(fake.db as never);
+
+    expect(fake.batchedSql).toContainEqual(expect.stringContaining('CREATE TABLE IF NOT EXISTS knowledge_release_state'));
+    expect(fake.batchedSql).toContainEqual(
+      'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_record ON knowledge_release_state (namespace, record_id, machine_id)',
+    );
+    expect(fake.runs).toContainEqual({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_project_id ON knowledge_release_state (project_id)',
+      values: [],
+    });
+  });
 });
 
 describe('initD1Schema v36 project_id orphan-row prune (cross-machine compat gate)', () => {

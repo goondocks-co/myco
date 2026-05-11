@@ -7,6 +7,7 @@ import { GroveRuntimeCache } from '@myco/daemon/grove-runtime-cache.js';
 import { createMaintenanceHandlers, __testing } from '@myco/daemon/api/maintenance.js';
 import { ensureGroveDatabase } from '@myco/grove/database.js';
 import { resolveGroveDir } from '@myco/grove/paths.js';
+import { resolveGroveDbPath } from '@myco/grove/paths.js';
 import {
   createGrove,
   registerProjectInGrove,
@@ -14,6 +15,8 @@ import {
 } from '@myco/grove/registry.js';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { withDatabase } from '@myco/db/client.js';
+import { upsertReleaseState } from '@myco/db/queries/release-provenance.js';
 
 function makeLogger(workDir: string): DaemonLogger {
   return new DaemonLogger(path.join(workDir, 'logs'), { level: 'error' });
@@ -248,6 +251,34 @@ describe('maintenance API', () => {
       expect(byId.get(a.id)?.project_count).toBe(2);
       expect(byId.get(b.id)?.project_count).toBe(1);
       expect(byId.get(a.id)?.error).toBeNull();
+      cache.closeAll();
+    });
+
+    it('includes release provenance counts for each Grove', async () => {
+      const grove = createGroveWithDb('Alpha');
+      const { cache, handlers } = makeHandlers();
+      const db = cache.getDatabase(resolveGroveDbPath(grove.id, mycoHome));
+      withDatabase(db, () => {
+        upsertReleaseState({
+          namespace: 'sessions',
+          record_id: 'session-maintenance-release',
+          state: 'unknown',
+          confidence: 'low',
+          basis_kind: 'missing_git_evidence',
+          checked_at: 1_800_000_000,
+          created_at: 1_800_000_000,
+        });
+      });
+
+      const response = await handlers.handleSummary(emptyRequest());
+      const body = response.body as {
+        groves: Array<{ release_provenance?: { derived_count: number; unknown_count: number; last_checked_at: string | null } }>;
+      };
+      expect(body.groves[0]?.release_provenance).toMatchObject({
+        derived_count: 1,
+        unknown_count: 1,
+        last_checked_at: '2027-01-15T08:00:00.000Z',
+      });
       cache.closeAll();
     });
 

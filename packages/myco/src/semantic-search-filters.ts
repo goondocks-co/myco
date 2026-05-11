@@ -8,6 +8,8 @@ export interface SemanticSearchFilters {
   project_root?: string;
   name?: string;
   source_path?: string;
+  release_state?: string;
+  release_confidence?: string;
   created_at_gte?: number;
   created_at_lte?: number;
   created_at_gt?: number;
@@ -31,6 +33,8 @@ export function matchesSemanticSearchFilters(
   if (filters.project_root !== undefined && metadata?.project_root !== filters.project_root) return false;
   if (filters.name !== undefined && metadata?.name !== filters.name) return false;
   if (filters.source_path !== undefined && metadata?.source_path !== filters.source_path) return false;
+  if (filters.release_state !== undefined && metadata?.release_state !== filters.release_state) return false;
+  if (filters.release_confidence !== undefined && metadata?.release_confidence !== filters.release_confidence) return false;
 
   const createdAt = typeof metadata?.created_at === 'number' ? metadata.created_at : undefined;
   if (filters.created_at_gte !== undefined && (createdAt === undefined || createdAt < filters.created_at_gte)) return false;

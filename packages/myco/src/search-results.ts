@@ -25,6 +25,7 @@ export interface SearchResultRow {
   source?: string;
   metadata?: Record<string, unknown> | null;
   data?: Record<string, unknown> | null;
+  release_state?: Record<string, unknown> | null;
   [key: string]: unknown;
 }
 

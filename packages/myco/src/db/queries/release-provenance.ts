@@ -9,6 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { appendProjectCondition, type ProjectScope } from '@myco/db/queries/project-scope.js';
+import { syncRow } from '@myco/db/queries/team-outbox.js';
 
 export const RELEASE_CAPTURE_POINTS = [
   'session_start',
@@ -388,7 +389,9 @@ export function upsertReleaseState(input: ReleaseStateUpsert, dbArg?: Database):
   const row = db.prepare(
     'SELECT * FROM knowledge_release_state WHERE identity_key = ?',
   ).get(identityKey) as Record<string, unknown>;
-  return toReleaseStateRow(row);
+  const releaseState = toReleaseStateRow(row);
+  syncRow('knowledge_release_state', releaseState);
+  return releaseState;
 }
 
 export function getReleaseState(

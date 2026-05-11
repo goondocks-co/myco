@@ -20,6 +20,7 @@ import type { BatchInsert } from '@myco/db/queries/batches.js';
 import type { ActivityInsert } from '@myco/db/queries/activities.js';
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 import { ALL_PROJECTS_SCOPE, GLOBAL_SCOPE, projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { upsertReleaseState } from '@myco/db/queries/release-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +164,35 @@ describe('fullTextSearch', () => {
     const results = fullTextSearch('refactor', { limit: 2, scope: ALL_PROJECTS_SCOPE });
 
     expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  it('annotates prompt batch FTS results with release state when available', () => {
+    const batch = insertBatch(makeBatch(sessionId, {
+      user_prompt: 'release provenance search annotation',
+      prompt_number: 1,
+    }));
+    upsertReleaseState({
+      namespace: 'prompt_batches',
+      record_id: String(batch.id),
+      source_session_id: sessionId,
+      source_prompt_batch_id: batch.id,
+      state: 'released',
+      confidence: 'high',
+      basis_kind: 'git_ancestry',
+      basis_ref: 'prod',
+      basis_sha: 'a'.repeat(40),
+      reason: 'test release state',
+      checked_at: epochNow(),
+      created_at: epochNow(),
+    });
+
+    const results = fullTextSearch('provenance', { scope: ALL_PROJECTS_SCOPE });
+    const result = results.find((row) => row.type === 'prompt_batch' && row.id === String(batch.id));
+    expect(result?.release_state).toMatchObject({
+      state: 'released',
+      confidence: 'high',
+      basis_kind: 'git_ancestry',
+    });
   });
 
   it('filters FTS results by project_id across batches and activities', () => {

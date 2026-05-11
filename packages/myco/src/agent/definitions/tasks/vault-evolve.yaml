@@ -64,7 +64,10 @@ prompt: >
   Each phase has its own scoped tools — only use the tools available to you.
   Do NOT report on tools or work outside your current phase.
   Focus on quality over quantity — one precise observation is worth more
-  than ten vague ones.
+  than ten vague ones. Use release state as conservative context:
+  released/high-confidence knowledge is strongest for general guidance,
+  while unknown, unreconciled, or unreleased knowledge can still be useful
+  in-flight evidence.
 
 phases:
   - name: read-state
@@ -82,6 +85,7 @@ phases:
       - vault_state
       - vault_unprocessed
       - vault_spores
+      - vault_release_state
       - vault_report
     maxTurns: 20
     required: true
@@ -132,6 +136,7 @@ phases:
       - vault_spores
       - vault_search_fts
       - vault_search_semantic
+      - vault_release_state
       - vault_create_spore
       - vault_resolve_spore
       - vault_mark_processed
@@ -190,6 +195,7 @@ phases:
       - vault_sessions
       - vault_unprocessed
       - vault_spores
+      - vault_release_state
       - vault_update_session
       - vault_report
     maxTurns: 10
@@ -255,6 +261,7 @@ phases:
     tools:
       - vault_spores
       - vault_search_semantic
+      - vault_release_state
       - vault_create_spore
       - vault_resolve_spore
       - vault_report
@@ -337,6 +344,7 @@ phases:
       - vault_spores
       - vault_sessions
       - vault_search_semantic
+      - vault_release_state
       - vault_read_digest
       - vault_report
     maxTurns: 12
@@ -373,6 +381,7 @@ phases:
       `vault_report` with action "skip" for this tier.
     tools:
       - vault_search_semantic
+      - vault_release_state
       - vault_read_digest
       - vault_write_digest
       - vault_report
@@ -409,6 +418,7 @@ phases:
       `vault_report` with action "skip" for this tier.
     tools:
       - vault_search_semantic
+      - vault_release_state
       - vault_read_digest
       - vault_write_digest
       - vault_report

@@ -28,6 +28,8 @@ import { errorMessage } from '@myco/utils/error-message.js';
 import type { CanopyJobsRegistry } from '../jobs/canopy-scan.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from '../project-power-state.js';
+import { captureGitProvenance } from '@myco/release-provenance/capture.js';
+import { primaryProductionRef } from '@myco/release-provenance/config.js';
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -150,7 +152,20 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     // Reconcile buffer against DB — recover prompts lost if daemon was down mid-session.
     reconciler.reconcileSession(session_id);
 
-    logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch, started_at: started_at ?? null });
+    const provenance = captureGitProvenance({
+      projectRoot,
+      projectId,
+      machineId: requestMachineId,
+      sessionId: session_id,
+      capturePoint: 'session_start',
+      productionRef: primaryProductionRef(liveConfig.current),
+      logger,
+    });
+    if (!branch && provenance?.branch) {
+      updateSession(session_id, { branch: provenance.branch }, projectScopeFromRequestContext(req.requestContext));
+    }
+
+    logger.info(LOG_KINDS.LIFECYCLE_REGISTER, 'Session registered', { session_id, branch: branch ?? provenance?.branch ?? null, started_at: started_at ?? null });
 
     notify(vaultDir, {
       domain: 'sessions',
@@ -197,8 +212,17 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
   }
 
   /** POST /sessions/unregister */
-  async function handleUnregister(req: { body: unknown }): Promise<RouteResponse> {
+  async function handleUnregister(req: RouteRequest): Promise<RouteResponse> {
     const { session_id } = UnregisterBody.parse(req.body);
+    captureGitProvenance({
+      projectRoot: req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir),
+      projectId: rowProjectIdFromRequestContext(req.requestContext),
+      machineId: req.requestContext?.machineId ?? machineId,
+      sessionId: session_id,
+      capturePoint: 'session_end',
+      productionRef: primaryProductionRef(liveConfig.current),
+      logger,
+    });
     registry.unregister(session_id);
     // Opportunistically clean stale buffers for OTHER sessions (>24h).
     // We do NOT delete THIS session's buffer — session reload reuses the same ID.

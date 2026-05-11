@@ -817,6 +817,7 @@ export async function main(): Promise<void> {
     liveConfig,
     vaultDir: bootstrapVaultDir,
     projectId: dataPaths.requestContext.projectId,
+    machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
   });

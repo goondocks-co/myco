@@ -12,6 +12,7 @@ import { countActivities } from '@myco/db/queries/activities.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { listPlansBySession } from '@myco/db/queries/plans.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
+import { listGitProvenance } from '@myco/db/queries/release-provenance.js';
 
 import { TEST_REQUEST_CONTEXT } from '../helpers/request-context';
 function makeHandler() {
@@ -155,6 +156,11 @@ describe('createEventDispatcher', () => {
     expect(batches).toHaveLength(1);
     expect(batches[0].user_prompt).toBe(prompt);
     expect(res.body).toMatchObject({ batchId: batches[0].id });
+    expect(listGitProvenance({
+      scope: ALL_PROJECTS_SCOPE,
+      session_id: sessionId,
+      capture_point: 'prompt_batch_start',
+    })).toHaveLength(1);
 
     const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
     expect(plans).toHaveLength(1);

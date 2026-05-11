@@ -30,6 +30,8 @@ export interface TeamSearchOptions {
   limit?: number;
   tables?: string[];
   status?: string;
+  release_state?: string;
+  release_confidence?: string;
   observation_type?: string;
   since?: number;
   until?: number;
@@ -290,6 +292,8 @@ export class TeamSyncClient {
       if (options.limit) params.set('limit', String(options.limit));
       if (options.tables) params.set('tables', options.tables.join(','));
       if (options.status) params.set('status', options.status);
+      if (options.release_state) params.set('release_state', options.release_state);
+      if (options.release_confidence) params.set('release_confidence', options.release_confidence);
       if (options.observation_type) params.set('observation_type', options.observation_type);
       if (options.since !== undefined) params.set('since', String(options.since));
       if (options.until !== undefined) params.set('until', String(options.until));

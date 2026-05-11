@@ -52,6 +52,10 @@ const FILTERABLE_DOMAIN_METADATA_KEYS = new Set([
   'project_id',
   'path',
   'language',
+  'release_state',
+  'release_confidence',
+  'release_basis_kind',
+  'release_checked_at',
 ]);
 const FILTER_SUFFIX_TO_OPERATOR: Record<string, string> = {
   _gte: '>=',

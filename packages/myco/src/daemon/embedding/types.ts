@@ -23,6 +23,10 @@ export interface DomainMetadata {
   project_id?: string;
   path?: string;
   language?: string;
+  release_state?: string;
+  release_confidence?: string;
+  release_basis_kind?: string | null;
+  release_checked_at?: number;
 }
 
 /** Full metadata stored per vector in the VectorStore. */
@@ -44,6 +48,10 @@ export interface EmbeddingMetadata {
   project_id?: string;
   path?: string;
   language?: string;
+  release_state?: string;
+  release_confidence?: string;
+  release_basis_kind?: string | null;
+  release_checked_at?: number;
 }
 
 /** Result from similarity search. */

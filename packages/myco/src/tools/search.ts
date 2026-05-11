@@ -21,6 +21,8 @@ interface SearchInput {
   limit?: number;
   observation_type?: string;
   status?: string;
+  release_state?: string;
+  release_confidence?: string;
   since?: number;
   until?: number;
   /** Canopy-only: optional language filter (e.g. "typescript"). */
@@ -32,6 +34,8 @@ function requiresSemanticMode(input: SearchInput): boolean {
   if (input.type === 'canopy') return true;
   return input.observation_type !== undefined
     || input.status !== undefined
+    || input.release_state !== undefined
+    || input.release_confidence !== undefined
     || input.since !== undefined
     || input.until !== undefined;
 }
@@ -54,6 +58,8 @@ export async function handleMycoSearch(
     type: input.type,
     observation_type: input.observation_type,
     status: input.status,
+    release_state: input.release_state,
+    release_confidence: input.release_confidence,
     since: input.since,
     until: input.until,
     language: input.language,
