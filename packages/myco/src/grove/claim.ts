@@ -260,9 +260,24 @@ function copyRegistryTree(sourceDir: string, destDir: string): void {
       if (entry.name === 'backups') continue;
       copyRegistryTree(source, dest);
     } else if (entry.isFile() && isRegistryFile(entry.name)) {
-      fs.copyFileSync(source, dest);
+      if (entry.name === 'projects.toml') {
+        copyProjectsTomlStrippingPauses(source, dest);
+      } else {
+        fs.copyFileSync(source, dest);
+      }
     }
   }
+}
+
+/**
+ * Copies `projects.toml` but strips `[projects.<id>.paused]` blocks.
+ * Pauses are transient operational state; on rollback the release runs
+ * its own pause/resume cycle and shouldn't replay the claim's own pauses.
+ */
+function copyProjectsTomlStrippingPauses(source: string, dest: string): void {
+  const raw = fs.readFileSync(source, 'utf-8');
+  const stripped = raw.replace(/\n\[projects\.[^\.\]]+\.paused\][^\[]*/g, '\n');
+  fs.writeFileSync(dest, stripped, 'utf-8');
 }
 
 function snapshotProjectManifests(

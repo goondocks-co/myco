@@ -455,6 +455,19 @@ describe('myco grove claim/release', () => {
     expect(loadGroveRecord(sourceGrove.id, home)?.served_by).toBe('service');
     expect(countSessions(sourceGrove.id, home)).toBe(1);
 
+    // Regression: registry snapshot must strip transient pause blocks so
+    // restore doesn't re-introduce claim-owned pauses (which release's
+    // resume can't clear due to owner_op mismatch).
+    const projectsTomlPath = path.join(
+      home,
+      'groves',
+      sourceGrove.id,
+      'registry',
+      'projects.toml',
+    );
+    const projectsTomlContent = fs.readFileSync(projectsTomlPath, 'utf-8');
+    expect(projectsTomlContent).not.toContain('.paused]');
+
     log.mockRestore();
     errSpy.mockRestore();
   });
