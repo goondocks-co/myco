@@ -256,7 +256,7 @@ describe('myco grove claim/release', () => {
     await expect(run(['release', grove.slug])).rejects.toThrow(/dev daemon/);
   });
 
-  it('snapshot is a literal byte-for-byte file copy of the source DB', async () => {
+  it('snapshot preserves source DB contents and copies non-SQLite sidecars byte-for-byte', async () => {
     const grove = createGrove('FileCopy', home);
     const projectId = createProjectId();
     const projectRoot = path.join(home, 'project-filecopy');
@@ -267,7 +267,6 @@ describe('myco grove claim/release', () => {
       projectRoot,
     }, home);
     seedGroveDb(grove.id, home, projectId);
-    // Also drop a vectors.db sidecar so we can prove it round-trips too.
     const vectorsPath = path.join(
       path.dirname(resolveGroveDbPath(grove.id, home)),
       'vectors.db',
@@ -275,6 +274,14 @@ describe('myco grove claim/release', () => {
     fs.writeFileSync(vectorsPath, 'PRETEND-VECTORS-DATA\nwith newlines\n');
 
     const sourceDbPath = resolveGroveDbPath(grove.id, home);
+    const sourceSessions = (() => {
+      const db = openDatabase(sourceDbPath);
+      try {
+        return db.prepare(`SELECT id, project_id, agent, status FROM sessions ORDER BY id`).all();
+      } finally {
+        db.close();
+      }
+    })();
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await run(['claim', grove.slug]);
@@ -290,12 +297,22 @@ describe('myco grove claim/release', () => {
 
     expect(fs.existsSync(snapshotDb)).toBe(true);
     expect(fs.existsSync(snapshotVectors)).toBe(true);
-    // Compare to source AFTER claim — claim's WAL checkpoint and the
-    // copy happen atomically (claim takes a pause first), so the bytes
-    // on disk at the moment of copy are what we measure here.
-    const sourceDbBytes = fs.readFileSync(sourceDbPath);
+
+    // SQLite snapshot is via VACUUM INTO: same row contents, possibly
+    // different bytes. Assert semantic equivalence on the data.
+    const snapshotSessions = (() => {
+      const db = openDatabase(snapshotDb);
+      try {
+        return db.prepare(`SELECT id, project_id, agent, status FROM sessions ORDER BY id`).all();
+      } finally {
+        db.close();
+      }
+    })();
+    expect(snapshotSessions).toEqual(sourceSessions);
+
+    // The vectors sidecar fixture is not a SQLite DB, so it falls back
+    // to a raw byte copy and must match exactly.
     const sourceVectorsBytes = fs.readFileSync(vectorsPath);
-    expect(fs.readFileSync(snapshotDb).equals(sourceDbBytes)).toBe(true);
     expect(fs.readFileSync(snapshotVectors).equals(sourceVectorsBytes)).toBe(true);
   });
 

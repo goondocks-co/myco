@@ -204,27 +204,33 @@ function readManifest(manifestPath: string): ClaimManifest | null {
 }
 
 /**
- * Flush WAL into the main DB file and copy it byte-for-byte. SQLite's
- * file format is the snapshot format. A best-effort wal_checkpoint
- * keeps the main file current; a non-SQLite source (test fixture) just
- * skips that step.
+ * Atomic clean copy of a SQLite DB via VACUUM INTO. Produces a single
+ * self-contained file (no WAL/SHM). Falls back to a raw byte copy when
+ * the source is not a SQLite DB (test fixtures only).
  */
 function snapshotSqliteFile(sourcePath: string, destPath: string): void {
   if (!fs.existsSync(sourcePath)) {
     throw new Error(`Source SQLite file does not exist: ${sourcePath}`);
   }
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  if (fs.existsSync(destPath)) {
+    fs.unlinkSync(destPath);
+  }
   try {
     const db = openDatabase(sourcePath);
     try {
-      db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+      const escaped = destPath.replace(/'/g, "''");
+      db.run(`VACUUM INTO '${escaped}'`);
     } finally {
       db.close();
     }
-  } catch {
-    // Not a SQLite DB; the file copy below is the snapshot contract.
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('not a database') && !msg.includes('file is not a database')) {
+      throw err;
+    }
+    fs.copyFileSync(sourcePath, destPath);
   }
-  fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.copyFileSync(sourcePath, destPath);
 }
 
 /**
@@ -235,7 +241,7 @@ function snapshotSqliteFile(sourcePath: string, destPath: string): void {
  */
 function restoreSqliteFile(snapshotPath: string, destPath: string): void {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.copyFileSync(snapshotPath, destPath);
+  // Unlink WAL/SHM before overwriting main DB — no stale-sidecar window.
   for (const sidecar of [`${destPath}-wal`, `${destPath}-shm`]) {
     try {
       fs.unlinkSync(sidecar);
@@ -243,6 +249,7 @@ function restoreSqliteFile(snapshotPath: string, destPath: string): void {
       // Sidecar may not exist.
     }
   }
+  fs.copyFileSync(snapshotPath, destPath);
 }
 
 /** Registry-file filter: TOML/YAML metadata only; excludes DBs, journals, dumps. */
