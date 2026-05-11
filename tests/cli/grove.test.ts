@@ -7,15 +7,22 @@ import { createSchema } from '@myco/db/schema.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
+  isProjectPaused,
+  listGroves,
   listRegisteredProjects,
   loadGroveRecord,
+  pauseProject,
   registerProjectInGrove,
   setDefaultGrove,
 } from '@myco/grove/registry.js';
-import { resolveGroveDbPath } from '@myco/grove/paths.js';
+import { resolveGroveDbPath, setDevServiceMode } from '@myco/grove/paths.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import { vi } from '../helpers/vi-shim.js';
 import { run } from '@myco/cli/grove.js';
+
+function listGrovesByName(name: string): ReturnType<typeof listGroves>[number] | undefined {
+  return listGroves(home).find((g) => g.name === name);
+}
 
 function ensureGroveDb(groveId: string, mycoHome: string): void {
   const dbPath = resolveGroveDbPath(groveId, mycoHome);
@@ -193,6 +200,73 @@ describe('myco grove CLI', () => {
       .toContain(projectId);
 
     log.mockRestore();
+  });
+
+  it('grove create stamps served_by from the running daemon variant', async () => {
+    setDevServiceMode(true);
+    try {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await run(['create', 'DevOne']);
+      const created = listGrovesByName('DevOne');
+      expect(created?.served_by).toBe('service-dev');
+      expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('served_by service-dev');
+      log.mockRestore();
+    } finally {
+      setDevServiceMode(false);
+    }
+
+    const log2 = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['create', 'ProdOne']);
+    const prod = listGrovesByName('ProdOne');
+    expect(prod?.served_by).toBe('service');
+    expect(log2.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('served_by service');
+    log2.mockRestore();
+  });
+
+  it('grove list includes served_by per row', async () => {
+    createGrove('Alpha', home, { servedBy: 'service' });
+    createGrove('Beta', home, { servedBy: 'service-dev' });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['list']);
+    const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(out).toMatch(/Alpha \(alpha\).*service\b/);
+    expect(out).toMatch(/Beta \(beta\).*service-dev/);
+    log.mockRestore();
+  });
+
+  it('grove force-resume-project clears a stuck per-project pause', async () => {
+    const grove = createGrove('Stuck', home);
+    ensureGroveDb(grove.id, home);
+    const projectRoot = path.join(home, 'project-stuck');
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const projectId = createProjectId();
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Stuck',
+      projectRoot,
+    }, home);
+    pauseProject(grove.id, projectId, 'grove-move', 'op-stuck-1', home);
+    expect(isProjectPaused(projectId, home).paused).toBe(true);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await run(['force-resume-project', projectId, '--force']);
+    expect(isProjectPaused(projectId, home).paused).toBe(false);
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('Force-resumed project Stuck');
+    log.mockRestore();
+  });
+
+  it('grove force-resume-project refuses without --force', async () => {
+    const grove = createGrove('NeedsForce', home);
+    const projectRoot = path.join(home, 'project-needs-force');
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const projectId = createProjectId();
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'NeedsForce',
+      projectRoot,
+    }, home);
+
+    await expect(run(['force-resume-project', projectId])).rejects.toThrow(/--force/);
   });
 
   it('rejects move when project is already in the target Grove', async () => {

@@ -3,6 +3,7 @@ import {
   createGrove,
   deleteGrove,
   findRegisteredProject,
+  forceResumeProject,
   getDefaultGroveId,
   listGroves,
   listRegisteredProjects,
@@ -99,15 +100,19 @@ export async function run(args: string[]): Promise<void> {
     }
     for (const grove of groves) {
       const marker = grove.id === defaultId ? '*' : ' ';
-      console.log(`${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode}`);
+      console.log(
+        `${marker} ${grove.name} (${grove.slug}) ${grove.id} ${grove.mode} ${grove.served_by}`,
+      );
     }
     return;
   }
 
   if (cmd === 'create') {
     const name = rest.join(' ').trim();
-    const grove = createGrove(name, mycoHome);
-    console.log(`Created Grove ${grove.name} (${grove.id})`);
+    if (!name) throw new Error('Grove name is required');
+    const servedBy: DaemonVariant = isDevServiceMode() ? 'service-dev' : 'service';
+    const grove = createGrove(name, mycoHome, { servedBy });
+    console.log(`Created Grove ${grove.name} (${grove.id}) — served_by ${grove.served_by}`);
     return;
   }
 
@@ -266,6 +271,21 @@ export async function run(args: string[]): Promise<void> {
     console.log(`  Restored: ${result.manifest.snapshot_path}`);
     console.log(`  Archive:  ${result.archive_dir}`);
     console.log(`  served_by → ${result.manifest.original_served_by}`);
+    return;
+  }
+
+  if (cmd === 'force-resume-project') {
+    const projectRef = rest[0];
+    if (!projectRef) throw new Error('Project id or slug is required');
+    if (!rest.includes('--force')) {
+      throw new Error('force-resume-project is a recovery command. Pass --force to confirm.');
+    }
+    const found = findProjectByRef(projectRef, mycoHome);
+    if (!found) throw new Error(`Project not found: ${projectRef}`);
+    forceResumeProject(found.grove.id, found.project.project_id, mycoHome);
+    console.log(
+      `Force-resumed project ${found.project.name} in Grove ${found.grove.name} (${found.grove.slug})`,
+    );
     return;
   }
 
