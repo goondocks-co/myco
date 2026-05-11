@@ -249,9 +249,12 @@ export async function run(args: string[]): Promise<void> {
     console.log(`  Grove:    ${grove.name} (${grove.slug})`);
     console.log(`  Snapshot: ${result.manifest.snapshot_db_path}`);
     console.log(`  Projects: ${projects.length} paused → resumed under dev ownership`);
+    console.log(`  ${result.snapshot_size_summary}`);
     console.log('');
     console.log(`The dev daemon now serves this Grove. Run \`myco grove release ${grove.slug}\``);
     console.log("when you're done to restore the Grove to its pre-claim state.");
+    console.log('Release will also undo any new Groves, project moves, and project');
+    console.log('manifest edits made during the claim window.');
     return;
   }
 

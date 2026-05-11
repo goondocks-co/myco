@@ -2,21 +2,65 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { stringify as stringifyToml } from 'smol-toml';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import {
   clearGroveRegistryCaches,
   createGrove,
+  listGroves,
+  listRegisteredProjects,
   loadGroveRecord,
   registerProjectInGrove,
 } from '@myco/grove/registry.js';
+import { moveProjectBetweenGroves } from '@myco/grove/move.js';
 import { createProjectId } from '@myco/grove/ids.js';
 import {
   resolveGroveDbPath,
+  resolveProjectManifestPath,
+  resolveProjectVaultDir,
   setDevServiceMode,
 } from '@myco/grove/paths.js';
 import { vi } from '../helpers/vi-shim.js';
 import { run } from '@myco/cli/grove.js';
+
+function writeProjectManifest(
+  projectRoot: string,
+  projectId: string,
+  projectName: string,
+  grove: { id: string; slug: string; name: string },
+): void {
+  const vault = resolveProjectVaultDir(projectRoot);
+  fs.mkdirSync(vault, { recursive: true });
+  fs.writeFileSync(
+    resolveProjectManifestPath(vault),
+    stringifyToml({
+      project: { id: projectId, name: projectName },
+      grove: { id: grove.id, slug: grove.slug, name: grove.name },
+    }),
+    'utf-8',
+  );
+}
+
+function readManifestGrove(projectRoot: string): { id?: string; slug?: string; name?: string } {
+  const text = fs.readFileSync(
+    resolveProjectManifestPath(resolveProjectVaultDir(projectRoot)),
+    'utf-8',
+  );
+  const out: { id?: string; slug?: string; name?: string } = {};
+  let inGrove = false;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('[')) {
+      inGrove = trimmed === '[grove]';
+      continue;
+    }
+    if (!inGrove) continue;
+    const m = trimmed.match(/^(id|slug|name)\s*=\s*"([^"]+)"$/);
+    if (m) out[m[1] as 'id' | 'slug' | 'name'] = m[2];
+  }
+  return out;
+}
 
 function seedGroveDb(
   groveId: string,
@@ -311,6 +355,40 @@ describe('myco grove claim/release', () => {
     }
   });
 
+  it('rejects a legacy schema-2 manifest with a clear error', async () => {
+    const grove = createGrove('LegacyManifestV2', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'project-legacy-v2');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Legacy V2',
+      projectRoot,
+    }, home);
+    seedGroveDb(grove.id, home, projectId);
+
+    const claimDir = path.join(backupsDir, 'claims', grove.slug, '67890');
+    fs.mkdirSync(claimDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claimDir, 'claim.json'),
+      JSON.stringify({
+        schema: 2,
+        grove_id: grove.id,
+        grove_slug: grove.slug,
+        grove_name: grove.name,
+        original_served_by: 'service',
+        snapshot_db_path: path.join(claimDir, 'grove-claim.db'),
+        claim_root: claimDir,
+        claimed_at: 67890,
+        owner_op: 'legacy-v2',
+        phase: 'flipped',
+      }),
+    );
+    fs.writeFileSync(path.join(claimDir, 'grove-claim.db'), 'PRETEND-DB');
+
+    await expect(run(['release', grove.slug])).rejects.toThrow(/schema=2/);
+  });
+
   it('rejects a legacy schema-1 manifest with a clear error', async () => {
     const grove = createGrove('LegacyManifest', home);
     const projectId = createProjectId();
@@ -369,6 +447,85 @@ describe('myco grove claim/release', () => {
 
     expect(countSessions(grove.id, home)).toBe(1);
     expect(loadGroveRecord(grove.id, home)?.served_by).toBe('service');
+
+    log.mockRestore();
+  });
+
+  it('release rolls back a Grove created and a project moved during the claim window', async () => {
+    const sourceGrove = createGrove('TransactionalSource', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'tx-source-project');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(sourceGrove.id, {
+      projectId,
+      projectName: 'TX Source Project',
+      projectRoot,
+    }, home);
+    seedGroveDb(sourceGrove.id, home, projectId);
+    writeProjectManifest(projectRoot, projectId, 'TX Source Project', sourceGrove);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await run(['claim', sourceGrove.slug]);
+
+    // Create a new Grove during the claim window and move the project into it.
+    const newGrove = createGrove('CreatedDuringClaim', home);
+    moveProjectBetweenGroves(sourceGrove.id, newGrove.id, projectId, home, {
+      snapshotsRoot: path.join(backupsDir, 'move-snapshots'),
+    });
+
+    expect(listGroves(home).map((g) => g.id).sort())
+      .toEqual([sourceGrove.id, newGrove.id].sort());
+    expect(listRegisteredProjects(sourceGrove.id, home).length).toBe(0);
+    expect(listRegisteredProjects(newGrove.id, home).length).toBe(1);
+    expect(readManifestGrove(projectRoot).id).toBe(newGrove.id);
+
+    await run(['release', sourceGrove.slug]);
+
+    expect(listGroves(home).map((g) => g.id)).toEqual([sourceGrove.id]);
+    expect(listRegisteredProjects(sourceGrove.id, home).map((p) => p.project_id))
+      .toEqual([projectId]);
+    expect(readManifestGrove(projectRoot).id).toBe(sourceGrove.id);
+    expect(loadGroveRecord(sourceGrove.id, home)?.served_by).toBe('service');
+    expect(countSessions(sourceGrove.id, home)).toBe(1);
+
+    log.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('release restores a project manifest that was edited during the claim window', async () => {
+    const grove = createGrove('ManifestEditTest', home);
+    const projectId = createProjectId();
+    const projectRoot = path.join(home, 'manifest-edit-project');
+    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
+    registerProjectInGrove(grove.id, {
+      projectId,
+      projectName: 'Manifest Edit',
+      projectRoot,
+    }, home);
+    seedGroveDb(grove.id, home, projectId);
+    writeProjectManifest(projectRoot, projectId, 'Manifest Edit', grove);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await run(['claim', grove.slug]);
+
+    const manifestPath = resolveProjectManifestPath(resolveProjectVaultDir(projectRoot));
+    fs.writeFileSync(
+      manifestPath,
+      stringifyToml({
+        project: { id: projectId, name: 'Manifest Edit' },
+        grove: { id: grove.id, slug: grove.slug, name: 'RENAMED-DURING-CLAIM' },
+      }),
+      'utf-8',
+    );
+
+    expect(readManifestGrove(projectRoot).name).toBe('RENAMED-DURING-CLAIM');
+
+    await run(['release', grove.slug]);
+
+    expect(readManifestGrove(projectRoot).name).toBe(grove.name);
 
     log.mockRestore();
   });
