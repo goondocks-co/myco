@@ -24,6 +24,7 @@ import {
   Bell,
   Brain,
   Trees,
+  FolderTree,
   Cpu,
 } from 'lucide-react';
 import { useUpdateStatus } from '../hooks/use-update-status';
@@ -63,6 +64,7 @@ const PROJECT_NAV_ITEMS: readonly NavItem[] = [
 ];
 
 const GROVE_NAV_ITEMS: readonly NavItem[] = [
+  { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine' },
   { to: '/g/:groveSlug/dashboard', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
   { to: '/g/:groveSlug/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
   { to: '/g/:groveSlug/settings', label: 'Settings', icon: Trees, scope: 'grove' },

@@ -142,16 +142,6 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
               </div>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              navigate('/groves');
-              setOpen(false);
-            }}
-            className="mt-1 w-full rounded-md px-2 py-2 text-left text-xs text-on-surface-variant transition-colors hover:bg-surface-container hover:text-on-surface"
-          >
-            Manage Groves
-          </button>
         </div>
       )}
     </div>

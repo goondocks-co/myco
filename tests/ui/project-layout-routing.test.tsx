@@ -142,4 +142,30 @@ describe('project-scoped layout routing', () => {
     expect(maintenanceLink?.getAttribute('href')).toBe('/g/work/maintenance');
     expect(screen.getByText('Dashboard content')).toBeTruthy();
   });
+
+  it('exposes the Groves management page as the first item in the GROVE nav section', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/g/work/p/project-a-123abc']}>
+          <Routes>
+            <Route
+              path="/g/work/p/project-a-123abc"
+              element={(
+                <ProjectSelectionBoundary selection={selection}>
+                  <Layout />
+                </ProjectSelectionBoundary>
+              )}
+            >
+              <Route index element={<div>Dashboard content</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const grovesLink = screen.getAllByText('Groves')[0]?.closest('a');
+    expect(grovesLink?.getAttribute('href')).toBe('/groves');
+  });
 });
