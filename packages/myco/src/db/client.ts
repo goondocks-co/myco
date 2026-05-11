@@ -71,9 +71,15 @@ function ensureNativeDepsResolved(): void {
 }
 
 function configureDatabase(db: Database): Database {
-  db.run('PRAGMA journal_mode = WAL');
-  db.run('PRAGMA foreign_keys = ON');
+  // Set busy_timeout FIRST so any subsequent PRAGMA that needs an exclusive
+  // lock (notably journal_mode change) waits instead of immediately failing
+  // with SQLITE_BUSY on Linux.
   db.run('PRAGMA busy_timeout = 5000');
+  const currentMode = (db.prepare('PRAGMA journal_mode').get() as { journal_mode?: string } | undefined)?.journal_mode;
+  if (currentMode?.toLowerCase() !== 'wal') {
+    db.run('PRAGMA journal_mode = WAL');
+  }
+  db.run('PRAGMA foreign_keys = ON');
   db.run('PRAGMA cache_size = -64000');
   db.run('PRAGMA temp_store = MEMORY');
   return db;
