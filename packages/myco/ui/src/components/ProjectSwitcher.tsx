@@ -8,6 +8,7 @@ import {
   monogramFor,
   projectPath,
   projectRouteSuffix,
+  selectionFromLast,
   type GroveProjectSummary,
   type GroveSummary,
   type ProjectSelection,
@@ -15,7 +16,7 @@ import {
 import { cn } from '../lib/cn';
 
 export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) {
-  const selection = useProjectSelection();
+  const contextSelection = useProjectSelection();
   const { data } = useGroves();
   const navigate = useNavigate();
   const location = useLocation();
@@ -24,6 +25,11 @@ export function ProjectSwitcher({ collapsed = false }: { collapsed?: boolean }) 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const groves = data?.groves ?? [];
   const projectCount = groves.reduce((total, grove) => total + grove.projects.length, 0);
+  const rememberedSelection = useMemo(
+    () => (contextSelection ? null : selectionFromLast(groves)),
+    [contextSelection, groves],
+  );
+  const selection = contextSelection ?? rememberedSelection;
 
   const filteredGroves = useMemo(() => {
     const needle = query.trim().toLowerCase();
