@@ -73,6 +73,7 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
     case 'install': {
       const spec = buildServiceSpec({ variant: parsed.variant, executable: resolveServiceExecutable(parsed.variant) });
       await mgr.install(spec);
+      await mgr.start(label);
       console.log(`Installed ${label} via ${mgr.platformName}`);
       return;
     }

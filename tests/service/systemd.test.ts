@@ -49,14 +49,14 @@ describe('SystemdUserServiceManager', () => {
     mgr = new SystemdUserServiceManager({ runner, unitDir });
   });
 
-  test('install writes <label>.service, daemon-reloads, enables, starts', async () => {
+  test('install writes <label>.service, daemon-reloads, enables (no auto-start)', async () => {
     const s = spec(home);
     await mgr.install(s);
     const unitPath = path.join(unitDir, `${s.label}.service`);
     expect(fs.existsSync(unitPath)).toBe(true);
     expect(runner.calls[0]).toEqual(['--user', 'daemon-reload']);
     expect(runner.calls[1]).toEqual(['--user', 'enable', `${s.label}.service`]);
-    expect(runner.calls[2]).toEqual(['--user', 'start', `${s.label}.service`]);
+    expect(runner.calls.length).toBe(2);
   });
 
   test('install is idempotent on identical spec', async () => {

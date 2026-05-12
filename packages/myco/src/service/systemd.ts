@@ -55,7 +55,6 @@ export class SystemdUserServiceManager implements ServiceManager {
 
     await this.runner.run(['--user', 'daemon-reload']);
     await this.runner.run(['--user', 'enable', `${spec.label}.service`]);
-    await this.runner.run(['--user', 'start', `${spec.label}.service`]);
   }
 
   async uninstall(label: string): Promise<void> {
