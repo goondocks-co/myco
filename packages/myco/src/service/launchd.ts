@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { renderLaunchdPlist } from './launchd-plist.js';
 import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
@@ -37,7 +38,7 @@ export class LaunchdServiceManager implements ServiceManager {
 
   constructor(opts: LaunchdManagerOptions = {}) {
     this.runner = opts.runner ?? new RealLaunchctlRunner();
-    this.agentsDir = opts.agentsDir ?? path.join(process.env.HOME ?? '', 'Library', 'LaunchAgents');
+    this.agentsDir = opts.agentsDir ?? path.join(os.homedir(), 'Library', 'LaunchAgents');
     this.uid = opts.uid ?? process.getuid?.() ?? 501;
   }
 

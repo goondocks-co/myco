@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { renderSystemdUnit } from './systemd-unit.js';
 import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
@@ -34,7 +35,7 @@ export class SystemdUserServiceManager implements ServiceManager {
 
   constructor(opts: SystemdManagerOptions = {}) {
     this.runner = opts.runner ?? new RealSystemctlRunner();
-    this.unitDir = opts.unitDir ?? path.join(process.env.HOME ?? '', '.config', 'systemd', 'user');
+    this.unitDir = opts.unitDir ?? path.join(os.homedir(), '.config', 'systemd', 'user');
   }
 
   private unitPath(label: string): string {
