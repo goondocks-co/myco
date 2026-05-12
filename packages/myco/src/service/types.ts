@@ -43,6 +43,8 @@ export interface ServiceManager {
   readonly supported: boolean;
   /** Human-readable platform name (e.g. "launchd", "systemd --user"). */
   readonly platformName: string;
+  /** Cheap existence check — file-system level, no shell-out. */
+  isInstalled(label: string): Promise<boolean>;
   install(spec: ServiceSpec): Promise<void>;
   uninstall(label: string): Promise<void>;
   start(label: string): Promise<void>;

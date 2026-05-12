@@ -21,6 +21,9 @@ class FakeManager implements ServiceManager {
     this.installed = opts.preInstalled ?? false;
   }
 
+  async isInstalled(_label: string): Promise<boolean> {
+    return this.installed;
+  }
   async install(spec: ServiceSpec): Promise<void> {
     this.installCalls.push(spec);
     this.installed = true;
@@ -87,7 +90,7 @@ describe('ensureSelfInstalledAsService', () => {
     const logger = new CapturingLogger();
     await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
     expect(mgr.installCalls).toHaveLength(0);
-    expect(mgr.statusCalls).toBe(1);
+    expect(mgr.statusCalls).toBe(0);
   });
 
   test('skips and logs info when the platform is unsupported', async () => {

@@ -44,8 +44,7 @@ export async function ensureSelfInstalledAsService(
 
     const variant = opts.variant ?? (isDevServiceMode() ? 'dev' : 'prod');
     const label = serviceLabel(variant);
-    const status = await mgr.status(label);
-    if (status.installed) return;
+    if (await mgr.isInstalled(label)) return;
 
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });

@@ -12,6 +12,7 @@ export class UnsupportedServiceManager implements ServiceManager {
     throw new Error(`Service management not yet supported on ${this.platformName}. Run \`myco daemon\` manually or wait for a future release.`);
   }
 
+  async isInstalled(_label: string): Promise<boolean> { return false; }
   async install(_spec: ServiceSpec): Promise<void> { this.fail(); }
   async uninstall(_label: string): Promise<void> { this.fail(); }
   async start(_label: string): Promise<void> { this.fail(); }

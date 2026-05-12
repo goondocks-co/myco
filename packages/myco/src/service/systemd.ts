@@ -42,6 +42,10 @@ export class SystemdUserServiceManager implements ServiceManager {
     return path.join(this.unitDir, `${label}.service`);
   }
 
+  async isInstalled(label: string): Promise<boolean> {
+    return fs.existsSync(this.unitPath(label));
+  }
+
   async install(spec: ServiceSpec): Promise<void> {
     const unitPath = this.unitPath(spec.label);
     const rendered = renderSystemdUnit(spec);

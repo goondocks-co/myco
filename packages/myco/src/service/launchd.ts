@@ -50,6 +50,10 @@ export class LaunchdServiceManager implements ServiceManager {
     return `gui/${this.uid}/${label}`;
   }
 
+  async isInstalled(label: string): Promise<boolean> {
+    return fs.existsSync(this.plistPath(label));
+  }
+
   async install(spec: ServiceSpec): Promise<void> {
     const plistPath = this.plistPath(spec.label);
     const rendered = renderLaunchdPlist(spec);

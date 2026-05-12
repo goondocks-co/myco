@@ -104,4 +104,13 @@ describe('SystemdUserServiceManager', () => {
   test('platformName is "systemd --user"', () => {
     expect(mgr.platformName).toBe('systemd --user');
   });
+
+  test('isInstalled returns true after install, false after uninstall', async () => {
+    const s = spec(home);
+    expect(await mgr.isInstalled(s.label)).toBe(false);
+    await mgr.install(s);
+    expect(await mgr.isInstalled(s.label)).toBe(true);
+    await mgr.uninstall(s.label);
+    expect(await mgr.isInstalled(s.label)).toBe(false);
+  });
 });
