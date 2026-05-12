@@ -28,9 +28,31 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import type { PowerManager } from '../power.js';
 import { scanProject } from '@myco/canopy/scanner/scan-project.js';
 import { deltaScan } from '@myco/canopy/scanner/delta-scan.js';
+import type { CanopyScanResult } from '@myco/canopy/types.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { POWER_JOB_NAMES } from '@myco/constants/power-jobs.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+
+/**
+ * Surface a one-line warning when the walker tripped a safety cap. The
+ * scanner already returns partial data — operators need a clear signal
+ * that the project root is likely misconfigured (typically $HOME or `/`)
+ * so they can investigate instead of trusting the truncated counts.
+ */
+function logScanLimitHit(
+  logger: DaemonLogger,
+  projectId: string,
+  projectRoot: string,
+  limitHit: CanopyScanResult['limitHit'],
+): void {
+  if (!limitHit) return;
+  logger.warn(LOG_KINDS.CANOPY_SCAN, 'Canopy scan stopped at safety cap — project root may be too broad', {
+    project_id: projectId,
+    project_root: projectRoot,
+    limit_kind: limitHit.kind,
+    limit_value: limitHit.value,
+  });
+}
 
 /**
  * Threshold above which a scan's `added` count counts as a "mass re-add"
@@ -141,6 +163,7 @@ export class CanopyDeltaScanRunner {
         ...result,
         project_id: this.identity.projectId,
       });
+      logScanLimitHit(this.shared.logger, this.identity.projectId, this.identity.projectRoot, result.limitHit);
       // Mass-add detection: a delta scan that re-adds many rows means
       // either initial populate just landed or something earlier wiped
       // rows that have now been restored. New rows have NULL
@@ -321,6 +344,7 @@ export class CanopyJobsRegistry {
         ...result,
         project_id: identity.projectId,
       });
+      logScanLimitHit(this.shared.logger, identity.projectId, identity.projectRoot, result.limitHit);
       if (result.added > DELTA_SCAN_MASS_ADD_KICK_THRESHOLD) {
         this.shared.onCanopyMassAdd?.(identity.groveId, identity.projectId);
       }

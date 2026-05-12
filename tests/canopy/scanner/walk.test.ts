@@ -59,4 +59,49 @@ describe('walkProject', () => {
     const missing = path.join(tmp, 'missing-root');
     expect(() => [...walkProject({ projectRoot: missing, isExcluded: () => false })]).toThrow(/Cannot read project root/);
   });
+
+  it('caps yield at maxFiles and fires onLimitHit', () => {
+    for (let i = 0; i < 50; i++) write(`f${i}.ts`);
+    const limits: Array<{ kind: string; value: number }> = [];
+    const results = [...walkProject({
+      projectRoot: tmp,
+      isExcluded: () => false,
+      maxFiles: 10,
+      onLimitHit: (kind, value) => limits.push({ kind, value }),
+    })];
+    expect(results.length).toBe(10);
+    expect(limits).toEqual([{ kind: 'maxFiles', value: 10 }]);
+  });
+
+  it('caps directory descent at maxDepth and fires onLimitHit', () => {
+    // Build /tmp/a/b/c/d/leaf.ts → depth 4
+    write('a/b/c/d/leaf.ts');
+    write('a/top.ts');
+    const limits: Array<{ kind: string; value: number }> = [];
+    const results = [...walkProject({
+      projectRoot: tmp,
+      isExcluded: () => false,
+      maxDepth: 2,
+      onLimitHit: (kind, value) => limits.push({ kind, value }),
+    })].sort();
+    // a/top.ts is at depth 1 → kept. a/b/c/d/leaf.ts at depth 4 → pruned.
+    expect(results).toContain('a/top.ts');
+    expect(results.every((p) => !p.includes('/c/'))).toBe(true);
+    expect(limits.some((l) => l.kind === 'maxDepth' && l.value === 2)).toBe(true);
+  });
+
+  it('does not call onLimitHit when caps are not reached', () => {
+    write('a.ts');
+    write('b.ts');
+    const limits: Array<{ kind: string; value: number }> = [];
+    const results = [...walkProject({
+      projectRoot: tmp,
+      isExcluded: () => false,
+      maxFiles: 100,
+      maxDepth: 100,
+      onLimitHit: (kind, value) => limits.push({ kind, value }),
+    })];
+    expect(results.length).toBe(2);
+    expect(limits).toEqual([]);
+  });
 });

@@ -44,9 +44,19 @@ mock.module('@myco/hooks/client.js', () => ({
   },
 }));
 
+class UnsafeProjectRootError extends Error {
+  constructor(public readonly projectRoot: string, public readonly reason: string) {
+    super(`unsafe: ${reason}`);
+  }
+}
 mock.module('@myco/vault/resolve.js', () => ({
   resolveVaultDir: vi.fn(),
   resolveProjectRoot: vi.fn((vaultDir: string) => path.dirname(vaultDir)),
+  // Test vaults sit in /tmp/myco-init-*, which the real guard would
+  // accept — stub the assertion as a no-op so we don't have to thread
+  // safe-path fixtures through every test case.
+  assertSafeProjectRoot: vi.fn(),
+  UnsafeProjectRootError,
 }));
 
 import { run } from '@myco/cli/init.js';

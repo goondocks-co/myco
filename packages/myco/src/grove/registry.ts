@@ -23,6 +23,7 @@ import {
   findRegisteredProjectByBinding as findRegisteredProjectByBindingResolve,
   type RegistryResolvedProject,
 } from './registry-resolve.js';
+import { assertSafeProjectRoot } from '../vault/resolve.js';
 
 export type DaemonVariant = 'service' | 'service-dev';
 
@@ -348,6 +349,11 @@ export function registerProjectInGrove(
 ): RegisteredProject {
   const grove = loadGroveRecord(groveId, mycoHome);
   if (!grove) throw new Error(`Unknown Grove: ${groveId}`);
+
+  // Defense in depth: even if a CLI / MCP caller skipped the same check,
+  // refuse to register $HOME / `/` / a likely-home-dir as a project root.
+  // See `assertSafeProjectRoot` for the rationale.
+  assertSafeProjectRoot(input.projectRoot);
 
   const root = path.resolve(input.projectRoot);
   const now = new Date().toISOString();

@@ -25,9 +25,19 @@ mock.module('@myco/symbionts/installer.js', () => {
 });
 
 let testVaultDir = '';
+class UnsafeProjectRootError extends Error {
+  constructor(public readonly projectRoot: string, public readonly reason: string) {
+    super(`unsafe: ${reason}`);
+  }
+}
 mock.module('@myco/vault/resolve.js', () => ({
   resolveVaultDir: vi.fn(() => testVaultDir),
   resolveProjectRoot: vi.fn((vaultDir: string) => path.dirname(vaultDir)),
+  // Tests run with synthetic /tmp project roots that are always safe — the
+  // real guard would let them through too. Stub as a no-op so cli paths
+  // that import this module don't fail at import time.
+  assertSafeProjectRoot: vi.fn(),
+  UnsafeProjectRootError,
 }));
 
 describe('myco remove --symbiont', () => {

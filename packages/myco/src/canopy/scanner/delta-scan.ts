@@ -52,7 +52,12 @@ export function deltaScan(opts: DeltaScanOptions): CanopyScanResult {
   let updated = 0;
   let errored = 0;
 
-  for (const relPath of walkProject({ projectRoot: opts.projectRoot, isExcluded })) {
+  let limitHit: { kind: 'maxFiles' | 'maxDepth'; value: number } | null = null;
+  for (const relPath of walkProject({
+    projectRoot: opts.projectRoot,
+    isExcluded,
+    onLimitHit: (kind, value) => { limitHit ??= { kind, value }; },
+  })) {
     scanned++;
     const prior = existing.get(relPath);
 
@@ -94,7 +99,12 @@ export function deltaScan(opts: DeltaScanOptions): CanopyScanResult {
     else added++;
   }
 
-  const removed = deleteMissingEntries(opts.db, opts.projectId, visited);
+  // When the walk capped at maxFiles, skip `deleteMissingEntries` — `visited`
+  // is incomplete, so a tombstone pass would wrongly delete entries that
+  // simply weren't visited this round.
+  const removed = limitHit
+    ? 0
+    : deleteMissingEntries(opts.db, opts.projectId, visited);
   return {
     scanned,
     added,
@@ -102,5 +112,6 @@ export function deltaScan(opts: DeltaScanOptions): CanopyScanResult {
     removed,
     errored,
     durationMs: Date.now() - start,
+    limitHit: limitHit ?? undefined,
   };
 }
