@@ -5,7 +5,7 @@ import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec } from '../service/spec-builder.js';
 import { serviceLabel } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
-import { isDevServiceMode } from '../grove/paths.js';
+export { detectInstallVariant } from '../service/labels.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'status';
 
@@ -57,10 +57,6 @@ function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
   } catch {
     return null;
   }
-}
-
-export function detectInstallVariant(): ServiceVariant {
-  return isDevServiceMode() ? 'dev' : 'prod';
 }
 
 export async function run(args: string[], _vaultDir: string): Promise<void> {
