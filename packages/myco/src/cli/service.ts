@@ -3,6 +3,7 @@ import { buildServiceSpec } from '../service/spec-builder.js';
 import { serviceLabel } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
 import { resolveCliEntryPath } from '../hooks/client.js';
+import { isDevServiceMode } from '../grove/paths.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'status';
 
@@ -29,6 +30,10 @@ export function parseServiceArgs(args: string[]): ParsedServiceArgs {
 export function resolveServiceExecutable(): string {
   const { execPath } = resolveCliEntryPath();
   return execPath;
+}
+
+export function detectInstallVariant(): ServiceVariant {
+  return isDevServiceMode() ? 'dev' : 'prod';
 }
 
 export async function run(args: string[], _vaultDir: string): Promise<void> {
