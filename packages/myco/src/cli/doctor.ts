@@ -7,6 +7,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { findPackageRoot } from '../utils/find-package-root.js';
+import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive } from './shared.js';
@@ -266,6 +268,45 @@ function isHooksRegistered(
 }
 
 /** Check the daemon state file and process liveness. */
+/**
+ * Compare the running binary's baked version (`getPluginVersion()`, set at
+ * compile time via `setPluginVersion(pkg.version)`) against the package.json
+ * sitting next to the binary on disk. They diverge when an upgrade refreshed
+ * the package files but not the platform-specific compiled binary — a class
+ * of bug that has historically silently broken `myco --version` and masked
+ * stale code running in the daemon. See PR #263 incident postmortem.
+ */
+function checkBinaryVersionSkew(): DoctorCheck {
+  const baked = getPluginVersion();
+  // The binary lives at <pkgRoot>/vendor/<target>/myco. Walk up from
+  // process.argv[0] to find the package.json on disk; that's the manifest
+  // npm/install actually shipped. (For source checkouts, this finds the
+  // monorepo's packages/myco/package.json — also correct.)
+  const argv0 = process.argv[0];
+  const installedRoot = argv0 ? findPackageRoot(path.dirname(argv0)) : null;
+  if (!installedRoot) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, fixable: false };
+  }
+  let installedVersion = '';
+  try {
+    installedVersion = (JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf-8')) as { version?: string }).version ?? '';
+  } catch (err) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, fixable: false };
+  }
+  if (!installedVersion) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, fixable: false };
+  }
+  if (installedVersion !== baked) {
+    return {
+      name: 'Binary version',
+      status: 'fail',
+      detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (npm upgrade refreshed JS but not the compiled binary; reinstall with \`npm install -g @goondocks/myco@${installedVersion}\` to fix)`,
+      fixable: false,
+    };
+  }
+  return { name: 'Binary version', status: 'ok', detail: baked, fixable: false };
+}
+
 async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
   const daemonFile = resolveDaemonServiceState(vaultDir, { env: process.env }).statePath;
   if (!fs.existsSync(daemonFile)) {
@@ -312,6 +353,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkEmbeddings(config));
   checks.push(...await checkAgents(vaultDir, config));
   checks.push(await checkDaemon(vaultDir));
+  checks.push(checkBinaryVersionSkew());
 
   return checks;
 }
