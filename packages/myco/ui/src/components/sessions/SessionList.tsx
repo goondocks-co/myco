@@ -12,7 +12,7 @@ import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
-import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
+import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { cn } from '../../lib/cn';
 import { useMemo, useState } from 'react';
 
@@ -90,8 +90,8 @@ function SessionTableRow({
       </td>
 
       {/* Release */}
-      <td className="px-4 py-3">
-        <ReleaseStateBadge annotation={session.release_state} />
+      <td className="px-4 py-3 text-center">
+        <ReleaseStateDot annotation={session.release_state} className="mx-auto" />
       </td>
 
       {/* Turns */}
@@ -136,7 +136,7 @@ function SkeletonTableRow() {
       <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
       <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
       <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3 text-center"><div className="h-2.5 w-2.5 rounded-full bg-surface-container-high animate-pulse mx-auto" /></td>
       <td className="px-4 py-3"><div className="h-3 w-8 rounded bg-surface-container-high animate-pulse mx-auto" /></td>
       <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
     </tr>
@@ -234,7 +234,7 @@ export function SessionList() {
         <ColHeader>Title</ColHeader>
         <ColHeader>Symbiont</ColHeader>
         <ColHeader>Status</ColHeader>
-        <ColHeader>Release</ColHeader>
+        <ColHeader className="w-16 text-center">Release</ColHeader>
         <ColHeader className="text-center">Turns</ColHeader>
         <ColHeader>Date</ColHeader>
       </tr>
