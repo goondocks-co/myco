@@ -460,6 +460,12 @@ export async function main(): Promise<void> {
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
 
+  // Self-install as a managed OS service so launchd / systemd starts the
+  // daemon at every login. Idempotent: no-ops when the unit is already
+  // installed; logs and continues on failure (lazy spawn stays usable).
+  const { ensureSelfInstalledAsService } = await import('../service/self-install.js');
+  await ensureSelfInstalledAsService(logger);
+
   // When debug logging is on, surface per-turn tool_use / tool_result detail
   // from the agent executor. The executor reads this env var directly because
   // it has no logger handle. Used to diagnose turn-budget exhaustion (e.g.
