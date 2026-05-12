@@ -4,6 +4,12 @@
 // Checks:
 //   1. UI bundle exists at dist/ui/index.html.
 //   2. The host-target binary exists at vendor/<host>/myco (or myco.exe).
+//   3. The host-target binary's baked --version matches package.json.
+//      (Catches the version-skew class of bug where sync-package-versions
+//      ran AFTER the binary was already built — the binary embeds
+//      `pkg.version` at compile time via setPluginVersion in
+//      entries/cli.<target>.ts, so a stale binary keeps reporting an
+//      old version even after the manifest is bumped.)
 //
 // For CI/release builds, you should additionally verify all 5 targets —
 // that loop lives in the workflow, not here.
@@ -11,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -35,7 +42,24 @@ const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
 const binaryPath = path.join(pkgRoot, 'vendor', target, binaryName);
 if (!fs.existsSync(binaryPath)) fail(`missing host binary: ${binaryPath}`);
 
+const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
+const expectedVersion = pkg.version;
+let bakedVersion;
+try {
+  bakedVersion = execFileSync(binaryPath, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+} catch (err) {
+  fail(`cannot probe binary --version (${binaryPath}): ${err.message}`);
+}
+if (bakedVersion !== expectedVersion) {
+  fail(
+    `binary version mismatch — package.json says ${expectedVersion} but ` +
+    `${binaryPath} --version reports ${bakedVersion}. The binary was likely ` +
+    `compiled before \`sync-package-versions.mjs\` bumped the manifest. ` +
+    `Re-run \`npm run build:binary\` after the version bump.`,
+  );
+}
+
 const stat = fs.statSync(binaryPath);
 process.stdout.write(
-  `[build:verify] OK — UI bundle + ${target} binary (${Math.round(stat.size / 1024 / 1024)} MB)\n`,
+  `[build:verify] OK — UI bundle + ${target} binary (${Math.round(stat.size / 1024 / 1024)} MB, version ${bakedVersion})\n`,
 );

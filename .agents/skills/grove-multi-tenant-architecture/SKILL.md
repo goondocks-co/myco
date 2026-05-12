@@ -9,7 +9,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 
 # Grove Multi-Tenant Architecture and Request Context Management
 
-Comprehensive guide for implementing Myco's Grove multi-tenant architecture, covering request context threading, project identity management, schema design, and transport unification. Use this when setting up new Grove projects, implementing multi-tenant features, or debugging context isolation issues.
+Comprehensive guide for implementing Myco's Grove multi-tenant architecture, covering request context threading, project identity management, schema design, transport unification, and security patterns. Use this when setting up new Grove projects, implementing multi-tenant features, or debugging context isolation issues.
 
 ## Prerequisites
 
@@ -32,7 +32,6 @@ All requests carry a normalized context object:
 ### Transport-Specific Context Extraction
 
 **CLI Transport (`packages/myco/src/cli/tool.ts`)**:
-Extract from environment variables and daemon client:
 ```typescript
 import { requestContextFromEnvironment } from '@myco/tools/request-context.js';
 
@@ -41,7 +40,6 @@ const tools = createMycoTools(vaultDir, new DaemonClient(vaultDir), { requestCon
 ```
 
 **MCP Stdio Bridge (via `myco mcp`)**:
-Context propagated through CLI command to daemon:
 ```typescript
 // Context passed from CLI environment to MCP bridge
 const requestContext = requestContextFromEnvironment(process.env, vaultDir);
@@ -61,16 +59,6 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
   // All tools receive scoped context
   // Enforces project_id isolation at tool level
 }
-```
-
-### Global Daemon Context Wiring
-
-Ensure context propagation in global daemon calls:
-```typescript
-// All daemon client calls include context headers
-const response = await fetch('/api/endpoint', {
-  headers: requestContextHeaders(requestContext)
-})
 ```
 
 ## Procedure B: Project Identity Binding via .myco/project.toml
@@ -105,10 +93,10 @@ grove:
 
 Use Grove paths infrastructure in `packages/myco/src/grove/paths.ts`:
 ```typescript
-import { PROJECT_MANIFEST_FILENAME, resolveProjectVaultDir } from '../grove/paths.js';
+import { PROJECT_LOCAL_MANIFEST_FILENAME, resolveProjectVaultDir } from '../grove/paths.js';
 
 function resolveProjectIdentity(workingDir: string) {
-  const projectToml = path.join(workingDir, '.myco', PROJECT_MANIFEST_FILENAME);
+  const projectToml = path.join(workingDir, '.myco', PROJECT_LOCAL_MANIFEST_FILENAME);
   if (!fs.existsSync(projectToml)) {
     throw new Error('No project identity found - run myco init');
   }
@@ -150,29 +138,6 @@ myco grove use "grove-staging"
 
 # Grove-only installation (no local vault)
 myco init --grove-only --grove "grove-production"
-```
-
-### Mode A UI Switcher Integration
-
-Support UI mode switching for Grove-connected projects:
-```typescript
-import { resolveServiceDaemonStatePath } from '../grove/paths.js';
-
-// Mode A: Grove-connected project with daemon state management
-function configureUIMode(projectPath: string, groveBinding: string) {
-  const daemonStatePath = resolveServiceDaemonStatePath();
-  
-  // Configure UI to use Mode A (Grove-connected) interface
-  const uiConfig = {
-    mode: 'grove-connected',
-    groveBinding,
-    daemonStatePath,
-    enableRemoteSync: true,
-    showGroveIndicator: true
-  };
-  
-  return uiConfig;
-}
 ```
 
 ## Procedure C: Multi-Tenant Database Schema Design
@@ -240,32 +205,6 @@ async function importCoreRows(sourceDb: Database, targetDb: Database, projectId:
 }
 ```
 
-**Slice 2: Attachments/Artifacts**
-```typescript
-async function importAttachments(journal: ImportJournal, targetDb: Database) {
-  // Import with journal-mapped foreign keys
-  for (const [oldSessionId, newSessionId] of journal.sessionMappings) {
-    // Import attachments with remapped session references
-  }
-}
-```
-
-**Slice 3: Semantic State**
-```typescript
-async function importSemanticState(journal: ImportJournal, targetDb: Database) {
-  // Import embeddings and semantic relationships
-  // Maintain consistency with remapped IDs
-}
-```
-
-**Slice 4: Spores/Lineage**
-```typescript
-async function importSporesAndLineage(journal: ImportJournal, targetDb: Database) {
-  // Import observations with lineage preservation
-  // Use journal mappings for all foreign key references
-}
-```
-
 ## Procedure D: Request Context Enforcement Across Six Layers
 
 Implement comprehensive context isolation across all system layers.
@@ -283,18 +222,6 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       return db.all('SELECT * FROM sessions WHERE project_id = ?', [requestContext.projectId]);
     }
   };
-}
-```
-
-### Layer 2: Daemon Read Filtering
-
-Filter all daemon reads by project_id:
-```typescript
-class DaemonQueryService {
-  async getSessions(projectId: string) {
-    // All queries include project_id filter
-    return this.db.all('SELECT * FROM sessions WHERE project_id = ?', [projectId]);
-  }
 }
 ```
 
@@ -329,32 +256,6 @@ const headers = {
   'x-project-id': process.env.MYCO_PROJECT_ID,
   'x-machine-id': process.env.MYCO_MACHINE_ID
 };
-```
-
-### Layer 5: Transport Parity Verification
-
-Ensure consistent context handling across transports:
-```typescript
-function verifyTransportParity(requestContext1: MycoRequestContext, requestContext2: MycoRequestContext) {
-  if (requestContext1.projectId !== requestContext2.projectId) {
-    throw new Error('Transport context mismatch');
-  }
-}
-```
-
-### Layer 6: Agent Runtime Scoping
-
-Scope agent runtime across digest/cortex/instructions/tools:
-```typescript
-class AgentRuntime {
-  constructor(private requestContext: MycoRequestContext) {}
-
-  async runDigestTask() {
-    // All agent operations scoped to requestContext.projectId
-    const tools = createMycoTools(vaultDir, client, { requestContext: this.requestContext });
-    // ... digest logic
-  }
-}
 ```
 
 ## Procedure E: MCP Transport Unification and Parity
@@ -409,26 +310,9 @@ const toolDefinitions = {
 };
 ```
 
-### Parity Gate Enforcement
-
-Verify consistent behavior across CLI and MCP transports:
-```typescript
-class TransportParityGate {
-  async verifyToolBehavior(toolName: string, params: any, expectedContext: MycoRequestContext) {
-    // Test both CLI and MCP paths return identical results
-    const cliResult = await this.executeViaCli(toolName, params);
-    const mcpResult = await this.executeViaMcp(toolName, params, expectedContext);
-
-    if (!deepEqual(cliResult, mcpResult)) {
-      throw new Error(`Transport parity violation for ${toolName}`);
-    }
-  }
-}
-```
-
 ## Procedure F: Grove Registry Management and Home Path Primitives
 
-Implement standardized Grove paths and registry management with comprehensive machine runtime support.
+Implement standardized Grove paths and registry management with comprehensive machine runtime support and development service mode coordination.
 
 ### Grove Home and Machine Runtime Primitives
 
@@ -445,6 +329,7 @@ export const GROVE_REGISTRY_FILENAME = 'registry.toml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 export const SERVICE_DIRNAME = 'service';
 export const SERVICE_DEV_DIRNAME = 'service-dev';
+export const PROJECT_LOCAL_MANIFEST_FILENAME = 'project.toml';
 
 // Resolve Grove directories and service paths
 const groveHome = resolveMycoHome();
@@ -480,50 +365,6 @@ function enableDevMode() {
 function enableProdMode() {
   setDevServiceMode(false);
   console.log('Switched to production service mode');
-}
-
-// Path equivalence checking across service modes
-function checkPathEquivalence(path1: string, path2: string): boolean {
-  return pathsEquivalent(path1, path2);
-}
-
-// Service directory resolution based on current mode
-function resolveServiceDirectory(): string {
-  if (isDevServiceMode()) {
-    return resolveServiceDir().replace(SERVICE_DIRNAME, SERVICE_DEV_DIRNAME);
-  }
-  return resolveServiceDir();
-}
-```
-
-### Machine Runtime State Management
-
-Use machine runtime paths for temporary state, command execution, and machine-local resources:
-```typescript
-import { resolveMachineRuntimeDir, resolveMachineRuntimeTmpDir, resolveMachineRuntimeCommandPath } from '../grove/paths.js';
-
-// Machine runtime directory setup for Grove operations
-async function setupMachineRuntime(groveHome: string) {
-  const runtimeDir = resolveMachineRuntimeDir(groveHome);
-  const tmpDir = resolveMachineRuntimeTmpDir(groveHome);
-  
-  // Ensure machine runtime directories exist
-  await fs.promises.mkdir(runtimeDir, { recursive: true });
-  await fs.promises.mkdir(tmpDir, { recursive: true });
-  
-  return { runtimeDir, tmpDir };
-}
-
-// Command path resolution for machine-local executables
-function resolveRuntimeCommand(groveHome: string, commandName: string): string {
-  return resolveMachineRuntimeCommandPath(groveHome, commandName);
-}
-
-// Temporary file management during Grove operations
-async function createRuntimeTempFile(groveHome: string, suffix: string): Promise<string> {
-  const tmpDir = resolveMachineRuntimeTmpDir(groveHome);
-  const tempPath = path.join(tmpDir, `grove-temp-${Date.now()}-${suffix}`);
-  return tempPath;
 }
 ```
 
@@ -608,25 +449,151 @@ myco dev-mode disable  # Switch to service/
 myco dev-mode status   # Check current mode
 ```
 
-### Grove Discovery Logic
+## Procedure G: Security and Authorization Patterns
 
-Implement Grove resolution with machine runtime support:
-```typescript
-async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
-  const availableGroves = await loadAvailableGroves();
+Implement security enforcement across Grove multi-tenant architecture with proper authentication, authorization, and tenant isolation.
 
-  if (!nameOrId) {
-    // Use default Grove from current project or global config
-    const defaultGrove = await getDefaultGrove();
-    if (!defaultGrove) throw new Error('No default Grove configured');
-    return defaultGrove;
+### Multi-Tenant Request Context Validation
+
+Secure authentication header processing and Grove ID validation:
+
+```javascript
+// Extract x-myco-* headers with strict validation for Grove context
+const groveId = req.headers['x-myco-grove-id'];
+const projectId = req.headers['x-myco-project-id'];
+const bearerToken = req.headers['authorization']?.replace('Bearer ', '');
+
+if (!groveId || !projectId || !bearerToken) {
+  return res.status(401).json({ error: 'Missing authentication headers' });
+}
+
+// Validate Grove ID format (prevent injection)
+if (!/^grove_[0-9a-f]{32}$/.test(groveId)) {
+  return res.status(400).json({ error: 'Invalid Grove ID format' });
+}
+
+// Validate project ID format
+if (!/^proj_[0-9a-f]{32}$/.test(projectId)) {
+  return res.status(400).json({ error: 'Invalid Project ID format' });
+}
+
+// Create isolated request context with Grove and project scope
+const requestContext = {
+  groveId,
+  projectId,
+  userId: null,  // Set after token validation
+  permissions: [],
+  isolationLevel: 'grove',
+  binding: null  // Set after Grove binding validation
+};
+```
+
+### File Permission Hardening
+
+Secure Grove-scoped configuration files with proper permissions:
+
+```bash
+# Set restrictive permissions on Grove project secrets file
+chmod 0o600 .myco/secrets.env
+
+# Verify permissions across all projects in Grove
+find ~/.myco/groves/grove_*/projects/*/.myco/ -name "secrets.env" -exec ls -la {} \;
+```
+
+Update gitignore patterns for Grove-sensitive files:
+```gitignore
+# Add to .gitignore for Grove multi-project architecture
+.myco/secrets.env
+.myco/vault.db
+.myco/vault.db-*
+.myco/grove.toml
+~/.myco/groves/
+*.pem
+*.key
+auth-tokens.json
+grove-binding.json
+```
+
+### Grove Isolation Boundary Enforcement
+
+Ensure proper tenant isolation and prevent cross-Grove data access:
+
+```javascript
+// Prefix database queries with Grove and Project ID
+async function getGroveProjectData(groveId, projectId, resourceId) {
+  // Always scope queries to the requesting Grove and project
+  const query = `
+    SELECT * FROM resources 
+    WHERE grove_id = ? AND project_id = ? AND resource_id = ?
+  `;
+  return db.query(query, [groveId, projectId, resourceId]);
+}
+
+// Check if operation crosses Grove or project boundaries
+function validateGroveProjectAccess(requestGrove, requestProject, targetGrove, targetProject) {
+  if (requestGrove !== targetGrove) {
+    throw new Error(`Cross-Grove access denied: ${requestGrove} -> ${targetGrove}`);
   }
+  if (requestProject !== targetProject) {
+    throw new Error(`Cross-project access denied: ${requestProject} -> ${targetProject}`);
+  }
+}
+```
 
-  // Find by name or ID
-  const grove = availableGroves.find(g => g.name === nameOrId || g.id === nameOrId);
-  if (!grove) throw new Error(`Grove not found: ${nameOrId}`);
+### Path Validation for Filesystem Operations
 
-  return grove;
+Prevent directory traversal within Grove project boundaries:
+
+```javascript
+function sanitizeGrovePath(userPath, groveId, projectId) {
+  // Get Grove project base directory
+  const groveProjectRoot = getGroveProjectPath(groveId, projectId);
+  
+  // Resolve relative paths and check Grove boundaries
+  const resolvedPath = path.resolve(groveProjectRoot, userPath);
+  const normalizedBase = path.resolve(groveProjectRoot);
+  
+  // Ensure resolved path is within Grove project directory
+  if (!resolvedPath.startsWith(normalizedBase + path.sep)) {
+    throw new Error('Grove path traversal attempt detected');
+  }
+  
+  return resolvedPath;
+}
+```
+
+### Timing-Safe Authentication Comparisons
+
+Implement constant-time comparisons to prevent timing oracle attacks:
+
+```javascript
+const crypto = require('crypto');
+
+function timingSafeEqual(a, b) {
+  // Ensure strings are same length (pad if necessary)
+  const maxLength = Math.max(a.length, b.length);
+  const normalizedA = a.padEnd(maxLength, '\0');
+  const normalizedB = b.padEnd(maxLength, '\0');
+  
+  // Use Node.js built-in timing-safe comparison
+  return crypto.timingSafeEqual(
+    Buffer.from(normalizedA, 'utf8'),
+    Buffer.from(normalizedB, 'utf8')
+  );
+}
+
+async function validateGroveBearerToken(providedToken, groveId, projectId) {
+  // Get expected token for Grove/project combination
+  const expectedToken = await getGroveProjectToken(groveId, projectId);
+  
+  // Always perform full validation even if obviously invalid
+  const isValid = timingSafeEqual(providedToken || '', expectedToken);
+  
+  // Add consistent delay to prevent timing analysis
+  const minDelay = 10; // milliseconds
+  await new Promise(resolve => setTimeout(resolve, minDelay));
+  
+  return isValid;
 }
 ```
 
@@ -650,14 +617,24 @@ async function resolveGrove(nameOrId?: string): Promise<GroveRecord> {
 
 **Grove-Only Mode State Management**: When running in Grove-only mode (no local daemon), ensure all state paths resolve correctly using `resolveServiceDaemonStatePath()` to prevent file not found errors during UI initialization.
 
-**Mode A UI Context Isolation**: The Mode A UI switcher must properly isolate Grove-connected project contexts. Failure to thread context through UI state management causes cross-project data leakage in multi-Grove environments.
-
 **Machine Runtime Path Resolution**: Use machine runtime path primitives (`resolveMachineRuntimeDir`, `resolveMachineRuntimeCommandPath`, `resolveMachineRuntimeTmpDir`) for any operations requiring machine-local runtime state. Direct path construction bypasses Grove home resolution and causes path inconsistencies across environments.
 
 **Registry File Naming**: Always use `GROVE_REGISTRY_FILENAME` constant ('registry.toml') for registry path resolution. Hardcoded filenames cause path mismatches when Grove path constants are updated.
 
-**Machine Runtime Directory Initialization**: Machine runtime directories must be created before Grove operations that require temporary state or command execution. Use `setupMachineRuntime()` pattern to ensure runtime directory availability.
-
 **Development Service Mode Isolation**: The development service mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production service mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution. Hardcoded service directory references bypass mode switching and cause service discovery failures.
 
 **Path Equivalence in Multi-Mode Environments**: Use `pathsEquivalent()` for path comparisons across development and production service modes. String equality comparisons fail when paths reference different service directories that resolve to the same logical location.
+
+**Grove Secret File Permissions Reset**: File permissions on Grove-scoped `.myco/secrets.env` can be reset by git operations or deployment scripts. Always verify permissions after deployment and include Grove-scoped permission checks in startup validation.
+
+**Grove ID Case Sensitivity**: Grove IDs are case-sensitive in the database but may be normalized differently in headers. Always use consistent casing (lowercase) and validate format before database operations across all Grove contexts.
+
+**Path Traversal in Grove Project Imports**: Node.js `require()` statements with relative paths can be exploited for directory traversal across Grove boundaries. Use absolute paths or validated relative paths for dynamic imports within Grove projects.
+
+**Timing Attack via Grove Error Messages**: Different error messages for "Grove not found" vs "invalid Grove token" can leak timing information. Use generic error messages and consistent processing times for all Grove authentication failures.
+
+**Cross-Grove Session Pollution**: Session storage can accidentally leak data between Groves if session keys don't include Grove and Project IDs. Always prefix session keys with both Grove ID and Project ID to ensure proper isolation.
+
+**Grove Binding Validation Bypass**: Grove binding IDs must be validated against the Grove registration table, not just the request headers. Attackers may attempt to spoof binding IDs to bypass Grove isolation boundaries.
+
+**Grove Registration State Races**: Grove registration status can change during request processing. Always re-validate Grove registration status before performing sensitive operations, especially file system access.
