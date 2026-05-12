@@ -9,9 +9,13 @@ class FakeRunner implements LaunchctlRunner {
   calls: string[][] = [];
   printResponse = '';
   printExitCode = 0;
+  /** Map from first arg ("kickstart", "kill", ...) to forced exit code+stdout. */
+  exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
     if (args[0] === 'print') return { stdout: this.printResponse, exitCode: this.printExitCode };
+    const override = this.exitOverrides.get(args[0]);
+    if (override) return override;
     return { stdout: '', exitCode: 0 };
   }
 }
@@ -122,6 +126,16 @@ describe('LaunchdServiceManager', () => {
   test('platformName is "launchd"', () => {
     expect(mgr.platformName).toBe('launchd');
     expect(mgr.supported).toBe(true);
+  });
+
+  test('restart issues `kickstart -k gui/<uid>/<label>` and succeeds on exit 0', async () => {
+    await mgr.restart('co.goondocks.myco');
+    expect(runner.calls).toEqual([['kickstart', '-k', 'gui/501/co.goondocks.myco']]);
+  });
+
+  test('restart throws when launchctl exits non-zero', async () => {
+    runner.exitOverrides.set('kickstart', { stdout: 'Could not find specified service', exitCode: 3 });
+    await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/kickstart failed.*exit 3/i);
   });
 
   test('isInstalled returns true after install, false after uninstall', async () => {

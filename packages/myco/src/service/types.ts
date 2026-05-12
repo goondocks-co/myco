@@ -49,5 +49,10 @@ export interface ServiceManager {
   uninstall(label: string): Promise<void>;
   start(label: string): Promise<void>;
   stop(label: string): Promise<void>;
+  /** Restart the service in place via the platform's native primitive
+   *  (faster than stop+start, and more importantly atomic — no window where
+   *  KeepAlive/Restart could fire and spawn an unwanted instance).
+   *  Throws if the service is not installed. */
+  restart(label: string): Promise<void>;
   status(label: string): Promise<ServiceStatus>;
 }

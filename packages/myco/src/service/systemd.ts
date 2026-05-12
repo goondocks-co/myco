@@ -77,6 +77,14 @@ export class SystemdUserServiceManager implements ServiceManager {
     await this.runner.run(['--user', 'stop', `${label}.service`]);
   }
 
+  async restart(label: string): Promise<void> {
+    const unit = `${label}.service`;
+    const result = await this.runner.run(['--user', 'restart', unit]);
+    if (result.exitCode !== 0) {
+      throw new Error(`systemctl --user restart ${unit} failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
+    }
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const unitPath = this.unitPath(label);
     if (!fs.existsSync(unitPath)) {

@@ -18,6 +18,14 @@ describe('parseServiceArgs', () => {
     expect(parseServiceArgs(['status'])).toEqual({ action: 'status', variant: 'prod' });
   });
 
+  test('restart (no flags) → variant=prod', () => {
+    expect(parseServiceArgs(['restart'])).toEqual({ action: 'restart', variant: 'prod' });
+  });
+
+  test('restart --dev → variant=dev', () => {
+    expect(parseServiceArgs(['restart', '--dev'])).toEqual({ action: 'restart', variant: 'dev' });
+  });
+
   test('rejects unknown action', () => {
     expect(() => parseServiceArgs(['frobnicate'])).toThrow(/unknown.*frobnicate/i);
   });

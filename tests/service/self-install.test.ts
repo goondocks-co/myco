@@ -13,6 +13,7 @@ class FakeManager implements ServiceManager {
   uninstallCalls: string[] = [];
   startCalls: string[] = [];
   stopCalls: string[] = [];
+  restartCalls: string[] = [];
   statusCalls = 0;
 
   constructor(opts: { supported?: boolean; platformName?: string; preInstalled?: boolean } = {}) {
@@ -31,6 +32,7 @@ class FakeManager implements ServiceManager {
   async uninstall(label: string): Promise<void> { this.uninstallCalls.push(label); this.installed = false; }
   async start(label: string): Promise<void> { this.startCalls.push(label); }
   async stop(label: string): Promise<void> { this.stopCalls.push(label); }
+  async restart(label: string): Promise<void> { this.restartCalls.push(label); }
   async status(_label: string): Promise<ServiceStatus> {
     this.statusCalls++;
     return {

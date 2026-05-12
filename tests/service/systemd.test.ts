@@ -8,9 +8,14 @@ import type { ServiceSpec } from '../../packages/myco/src/service/types';
 class FakeRunner implements SystemctlRunner {
   calls: string[][] = [];
   showResponse = '';
+  /** Map from systemctl subcommand (e.g. "restart") to forced exit code+stdout. */
+  exitOverrides: Map<string, { stdout: string; exitCode: number }> = new Map();
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
     if (args.includes('show')) return { stdout: this.showResponse, exitCode: 0 };
+    for (const [key, override] of this.exitOverrides) {
+      if (args.includes(key)) return override;
+    }
     return { stdout: '', exitCode: 0 };
   }
 }
@@ -103,6 +108,16 @@ describe('SystemdUserServiceManager', () => {
 
   test('platformName is "systemd --user"', () => {
     expect(mgr.platformName).toBe('systemd --user');
+  });
+
+  test('restart issues `--user restart <label>.service` and succeeds on exit 0', async () => {
+    await mgr.restart('co.goondocks.myco');
+    expect(runner.calls).toEqual([['--user', 'restart', 'co.goondocks.myco.service']]);
+  });
+
+  test('restart throws when systemctl exits non-zero', async () => {
+    runner.exitOverrides.set('restart', { stdout: 'Unit not loaded', exitCode: 5 });
+    await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/systemctl.*restart.*exit 5/i);
   });
 
   test('isInstalled returns true after install, false after uninstall', async () => {
