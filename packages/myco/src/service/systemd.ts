@@ -80,10 +80,9 @@ export class SystemdUserServiceManager implements ServiceManager {
       return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
     }
     const { stdout } = await this.runner.run([
-      'show', '--user', `${label}.service`,
+      '--user', 'show', `${label}.service`,
       '--property=MainPID',
       '--property=ExecMainStatus',
-      '--property=ActiveState',
     ]);
     const pidMatch = stdout.match(/MainPID=(\d+)/);
     const exitMatch = stdout.match(/ExecMainStatus=(-?\d+)/);

@@ -10,7 +10,7 @@ class FakeRunner implements SystemctlRunner {
   showResponse = '';
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     this.calls.push(args);
-    if (args[0] === 'show') return { stdout: this.showResponse, exitCode: 0 };
+    if (args.includes('show')) return { stdout: this.showResponse, exitCode: 0 };
     return { stdout: '', exitCode: 0 };
   }
 }
