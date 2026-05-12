@@ -408,7 +408,8 @@ export async function main(): Promise<void> {
   // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
   // case (a) handlers move to a dedicated daemon-paths struct. Until then,
   // do NOT use this value as a stand-in for the request-scoped vault.
-  const bootstrapVaultDir = resolveVaultDir();
+  const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
+  const bootstrapVaultDir = resolveBootstrapVaultDir();
 
   // Load API keys from secrets.env into process.env before any provider init
   loadSecrets(bootstrapVaultDir);
@@ -458,6 +459,12 @@ export async function main(): Promise<void> {
     level: config.daemon.log_level,
   });
   logger.info(LOG_KINDS.DAEMON_START, 'Machine ID resolved', { machine_id: machineId });
+
+  // Self-install as a managed OS service so launchd / systemd starts the
+  // daemon at every login. Idempotent: no-ops when the unit is already
+  // installed; logs and continues on failure (lazy spawn stays usable).
+  const { ensureSelfInstalledAsService } = await import('../service/self-install.js');
+  await ensureSelfInstalledAsService(logger);
 
   // When debug logging is on, surface per-turn tool_use / tool_result detail
   // from the agent executor. The executor reads this env var directly because

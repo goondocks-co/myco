@@ -14,6 +14,7 @@ import { resolveProjectRoot } from '../vault/resolve.js';
 import { isProcessAlive } from './shared.js';
 import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
+import type { ServiceStatus } from '../service/types.js';
 
 // --- Named constants (no magic literals) ---
 
@@ -330,6 +331,65 @@ async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
 }
 
 
+export function evaluateServiceCheck(
+  label: string,
+  status: ServiceStatus,
+  expectedExecutable: string,
+): DoctorCheck {
+  if (!status.installed) {
+    return {
+      name: 'Service',
+      status: 'warn',
+      detail: `${label} not installed — run \`myco service install\` to auto-start at login`,
+      fixable: true,
+    };
+  }
+  if (!fs.existsSync(expectedExecutable)) {
+    return {
+      name: 'Service',
+      status: 'fail',
+      detail: `${label} executable not found: ${expectedExecutable} (last exit code ${status.lastExitCode ?? 'unknown'} — EX_CONFIG=78 means stale path) — run \`myco service install\` to repair`,
+      fixable: true,
+    };
+  }
+  if (status.lastExitCode !== null && status.lastExitCode !== 0) {
+    return {
+      name: 'Service',
+      status: 'warn',
+      detail: `${label} last exit code ${status.lastExitCode} (running=${status.running}) — check ${status.unitPath ?? 'service unit'} logs`,
+      fixable: false,
+    };
+  }
+  if (!status.running) {
+    return {
+      name: 'Service',
+      status: 'warn',
+      detail: `${label} installed but not running — run \`myco service start\``,
+      fixable: false,
+    };
+  }
+  return {
+    name: 'Service',
+    status: 'ok',
+    detail: `${label} running (pid ${status.pid ?? '?'}) via ${status.unitPath ?? 'service unit'}`,
+    fixable: false,
+  };
+}
+
+async function checkService(): Promise<DoctorCheck> {
+  const { getServiceManager } = await import('../service/manager.js');
+  const { serviceLabel } = await import('../service/labels.js');
+  const { detectInstallVariant, resolveServiceExecutable } = await import('./service.js');
+  const mgr = getServiceManager();
+  if (!mgr.supported) {
+    return { name: 'Service', status: 'warn', detail: `unsupported platform (${mgr.platformName}) — daemon uses lazy spawn`, fixable: false };
+  }
+  const variant = detectInstallVariant();
+  const label = serviceLabel(variant);
+  const status = await mgr.status(label);
+  return evaluateServiceCheck(label, status, resolveServiceExecutable(variant));
+}
+
 // --- Public API ---
 
 /** Run all health checks against a vault directory. */
@@ -353,6 +413,7 @@ export async function runChecks(vaultDir: string): Promise<DoctorCheck[]> {
   checks.push(await checkEmbeddings(config));
   checks.push(...await checkAgents(vaultDir, config));
   checks.push(await checkDaemon(vaultDir));
+  checks.push(await checkService());
   checks.push(checkBinaryVersionSkew());
 
   return checks;
