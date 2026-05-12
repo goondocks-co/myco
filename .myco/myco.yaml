@@ -14,6 +14,17 @@ capture:
   artifact_extensions:
     - .md
   buffer_max_events: 500
+release_provenance:
+  enabled: true
+  production_refs: []
+  integration_refs: []
+  reconcile_interval_minutes: 15
+  production_debug_include_unknown: true
+  github:
+    repo: ""
+    token_env: GITHUB_TOKEN
+    max_lookups_per_run: 20
+  package_map: []
 agent:
   summary_batch_interval: 5
   scheduled_tasks_enabled: true
@@ -37,6 +48,9 @@ agent:
       provider:
         type: anthropic
       harness: claude-sdk
+      phases:
+        explore:
+          maxTurns: 20
       schedule:
         enabled: true
         runIn:
@@ -111,7 +125,7 @@ cortex:
   instructions:
     inject_on_session_start: true
   digest:
-    tier: 5000
+    tier: 1500
     inject_on_session_start: false
   spores:
     inject_on_prompt_submit: true
