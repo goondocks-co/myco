@@ -81,6 +81,60 @@ export const PROMPT_BATCHES_TABLE = `
     synced_at              INTEGER
   )`;
 
+export const KNOWLEDGE_GIT_PROVENANCE_TABLE = `
+  CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id                 TEXT,
+    machine_id                 TEXT NOT NULL DEFAULT 'local',
+    identity_key               TEXT NOT NULL UNIQUE,
+    session_id                 TEXT REFERENCES sessions(id),
+    prompt_batch_id            INTEGER REFERENCES prompt_batches(id),
+    capture_point              TEXT NOT NULL,
+    captured_at                INTEGER NOT NULL,
+    project_root               TEXT,
+    branch                     TEXT,
+    head_sha                   TEXT,
+    upstream_ref               TEXT,
+    upstream_sha               TEXT,
+    production_ref             TEXT,
+    production_sha             TEXT,
+    is_dirty                   INTEGER NOT NULL DEFAULT 0,
+    staged_count               INTEGER NOT NULL DEFAULT 0,
+    unstaged_count             INTEGER NOT NULL DEFAULT 0,
+    untracked_count            INTEGER NOT NULL DEFAULT 0,
+    changed_paths_json         TEXT,
+    tracked_blob_hashes_json   TEXT,
+    patch_ids_json             TEXT,
+    status_hash                TEXT NOT NULL,
+    evidence_json              TEXT,
+    error                      TEXT,
+    created_at                 INTEGER NOT NULL
+  )`;
+
+export const KNOWLEDGE_RELEASE_STATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS knowledge_release_state (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id               TEXT,
+    machine_id               TEXT NOT NULL DEFAULT 'local',
+    identity_key             TEXT NOT NULL UNIQUE,
+    namespace                TEXT NOT NULL,
+    record_id                TEXT NOT NULL,
+    source_session_id        TEXT REFERENCES sessions(id),
+    source_prompt_batch_id   INTEGER REFERENCES prompt_batches(id),
+    state                    TEXT NOT NULL,
+    confidence               TEXT NOT NULL,
+    basis_kind               TEXT,
+    basis_ref                TEXT,
+    basis_sha                TEXT,
+    release_pr_number        INTEGER,
+    reason                   TEXT,
+    evidence_json            TEXT,
+    checked_at               INTEGER NOT NULL,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER,
+    synced_at                INTEGER
+  )`;
+
 export const ACTIVITIES_TABLE = `
   CREATE TABLE IF NOT EXISTS activities (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -635,6 +689,8 @@ export const MIGRATION_IMPORT_JOURNAL_INDEX_DDLS: readonly string[] = [
 export const GROVE_PROJECT_SCOPED_TABLES = [
   'sessions',
   'prompt_batches',
+  'knowledge_git_provenance',
+  'knowledge_release_state',
   'activities',
   'plans',
   'artifacts',
@@ -786,6 +842,18 @@ export const SECONDARY_INDEXES = [
   // to use the wider (project_id, origin, created_at) index.
   'CREATE INDEX IF NOT EXISTS idx_prompt_batches_project_created ON prompt_batches (project_id, created_at)',
 
+  // Release provenance
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_project_captured ON knowledge_git_provenance (project_id, captured_at)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_session ON knowledge_git_provenance (session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_prompt_batch ON knowledge_git_provenance (prompt_batch_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_head_sha ON knowledge_git_provenance (head_sha)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_git_provenance_status_hash ON knowledge_git_provenance (status_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_project_checked ON knowledge_release_state (project_id, checked_at)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_record ON knowledge_release_state (namespace, record_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_state ON knowledge_release_state (state, confidence)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_session ON knowledge_release_state (source_session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_release_state_prompt_batch ON knowledge_release_state (source_prompt_batch_id)',
+
   // Activities
   'CREATE INDEX IF NOT EXISTS idx_activities_session_id ON activities (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_activities_prompt_batch_id ON activities (prompt_batch_id)',
@@ -921,6 +989,8 @@ export const TABLE_DDLS = [
   // Capture layer (order matters for FK references)
   SESSIONS_TABLE,
   PROMPT_BATCHES_TABLE,
+  KNOWLEDGE_GIT_PROVENANCE_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE,
   ACTIVITIES_TABLE,
   PLANS_TABLE,
   ARTIFACTS_TABLE,

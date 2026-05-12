@@ -1,9 +1,9 @@
 /**
  * Read-only vault tools.
  *
- * 10 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
+ * 11 tools: vault_unprocessed, vault_batches, vault_session_summary_material,
  * vault_spores, vault_sessions, vault_search_fts, vault_search_semantic,
- * vault_search_canopy, vault_state, vault_edges
+ * vault_search_canopy, vault_release_state, vault_state, vault_edges
  */
 
 import { z } from 'zod/v4';
@@ -15,6 +15,17 @@ import { getSpore, listSpores } from '@myco/db/queries/spores.js';
 import { getSession, listSessions, getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getStatesForAgent } from '@myco/db/queries/agent-state.js';
 import { fullTextSearch, hydrateSearchResults, sanitizeFtsQuery } from '@myco/db/queries/search.js';
+import {
+  getReleaseState,
+  listReleaseStates,
+  RELEASE_CONFIDENCE,
+  RELEASE_NAMESPACES,
+  RELEASE_STATES,
+} from '@myco/db/queries/release-provenance.js';
+import {
+  releaseStateAnnotation,
+  releaseStateAnnotationMap,
+} from '@myco/release-provenance/annotations.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
@@ -102,10 +113,11 @@ export function createReadTools(deps: VaultToolDeps) {
         includeActive: args.include_active === true,
         scope,
       });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
       return projectToolRows(
         batches,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectBatchForAgent,
+        (batch) => projectBatchForAgent(batch, { release: releases.get(String(batch.id)) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -126,10 +138,11 @@ export function createReadTools(deps: VaultToolDeps) {
         offset: args.offset,
         scope,
       });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
       return projectToolRows(
         batches,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectBatchForAgent,
+        (batch) => projectBatchForAgent(batch, { release: releases.get(String(batch.id)) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -151,6 +164,8 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ session_id: args.session_id, found: false, message: 'Session is still active' });
       }
       const batches = listBatchesBySession(args.session_id, { scope });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
+      const sessionRelease = releaseStateAnnotation('sessions', session.id, scope);
       return textResult({
         session_id: session.id,
         status: session.status,
@@ -158,7 +173,8 @@ export function createReadTools(deps: VaultToolDeps) {
         ...(session.summary ? { current_summary: session.summary } : {}),
         prompt_count: session.prompt_count,
         batch_count: batches.length,
-        batches: batches.map(projectBatchForSessionSummary),
+        ...(sessionRelease ? { release_state: { state: sessionRelease.state, confidence: sessionRelease.confidence } } : {}),
+        batches: batches.map((b) => projectBatchForSessionSummary(b, { release: releases.get(String(b.id)) })),
       });
     },
     { annotations: { readOnlyHint: true } },
@@ -183,10 +199,11 @@ export function createReadTools(deps: VaultToolDeps) {
         const spores = args.ids
           .map((id) => getSpore(id, scope))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
+        const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
         return projectToolRows(
           spores,
           includeMetadata,
-          (spore) => projectSporeForAgent(spore, { exact: true }),
+          (spore) => projectSporeForAgent(spore, { exact: true, release: releases.get(spore.id) }),
         );
       }
       const spores = listSpores({
@@ -198,10 +215,11 @@ export function createReadTools(deps: VaultToolDeps) {
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
         includeActive: args.include_active === true,
       });
+      const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
       return projectToolRows(
         spores,
         includeMetadata,
-        (spore) => projectSporeForAgent(spore, { exact: false }),
+        (spore) => projectSporeForAgent(spore, { exact: false, release: releases.get(spore.id) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -225,10 +243,11 @@ export function createReadTools(deps: VaultToolDeps) {
         status: args.status,
         includeActive: args.include_active === true,
       });
+      const releases = releaseStateAnnotationMap('sessions', sessions.map((s) => s.id), scope);
       return projectToolRows(
         sessions,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectSessionForAgent,
+        (session) => projectSessionForAgent(session, { release: releases.get(session.id) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -281,6 +300,8 @@ export function createReadTools(deps: VaultToolDeps) {
       limit: z.number().optional().describe('Maximum results to return'),
       include_active: z.boolean().optional().describe('Include results from sessions still in active status (default: false)'),
       status: z.string().optional().describe('Optional metadata filter, e.g. active/superseded for spores and skill_records.'),
+      release_state: z.enum(RELEASE_STATES).optional().describe('Optional release provenance state filter.'),
+      release_confidence: z.enum(RELEASE_CONFIDENCE).optional().describe('Optional release provenance confidence filter.'),
       session_id: z.string().optional().describe('Optional metadata filter for a linked session id.'),
       observation_type: z.string().optional().describe('Optional metadata filter for spore observation type.'),
       since: z.number().optional().describe('Optional created_at lower bound (epoch seconds).'),
@@ -300,6 +321,8 @@ export function createReadTools(deps: VaultToolDeps) {
         const activeIds = excludeActive ? getActiveSessionIds(scope) : new Set<string>();
         const metadataFilters = {
           ...(args.status !== undefined ? { status: args.status } : {}),
+          ...(args.release_state !== undefined ? { release_state: args.release_state } : {}),
+          ...(args.release_confidence !== undefined ? { release_confidence: args.release_confidence } : {}),
           ...(args.session_id !== undefined ? { session_id: args.session_id } : {}),
           ...(args.observation_type !== undefined ? { observation_type: args.observation_type } : {}),
           ...(scope.kind === 'project' ? { project_id: scope.id } : {}),
@@ -323,6 +346,8 @@ export function createReadTools(deps: VaultToolDeps) {
                 limit: searchLimit,
                 tables: args.namespace ? [args.namespace] : undefined,
                 status: args.status,
+                release_state: args.release_state,
+                release_confidence: args.release_confidence,
                 observation_type: args.observation_type,
                 since: args.since,
                 until: args.until,
@@ -429,6 +454,42 @@ export function createReadTools(deps: VaultToolDeps) {
     { annotations: { readOnlyHint: true, openWorldHint: true } },
   );
 
+  const vaultReleaseState = tool(
+    'vault_release_state',
+    'Read derived release provenance state. Use exact namespace+record_id lookup for rich evidence, or filtered list mode for compact state rows. This is read-only derived state; raw local Git evidence stays outside the agent write surface.',
+    {
+      namespace: z.enum(RELEASE_NAMESPACES).optional().describe('Record namespace: sessions, prompt_batches, spores, plans, artifacts, skill_records, or canopy_entries'),
+      record_id: z.string().optional().describe('Exact record id to inspect; requires namespace'),
+      state: z.enum(RELEASE_STATES).optional().describe('Filter by release state'),
+      confidence: z.enum(RELEASE_CONFIDENCE).optional().describe('Filter by confidence'),
+      session_id: z.string().optional().describe('Filter by source session id'),
+      prompt_batch_id: z.number().optional().describe('Filter by source prompt batch id'),
+      checked_before: z.number().optional().describe('Only include rows checked before this epoch second'),
+      limit: z.number().optional().describe('Maximum rows to return'),
+    },
+    async (args) => {
+      if (args.record_id && !args.namespace) {
+        return textResult({ error: 'namespace is required when record_id is provided' });
+      }
+      if (args.record_id && args.namespace) {
+        const row = getReleaseState(args.namespace, args.record_id, scope);
+        return textResult({ found: row !== null, release_state: row });
+      }
+      const rows = listReleaseStates({
+        scope,
+        namespace: args.namespace,
+        state: args.state,
+        confidence: args.confidence,
+        source_session_id: args.session_id,
+        source_prompt_batch_id: args.prompt_batch_id,
+        checked_before: args.checked_before,
+        limit: args.limit ?? DEFAULT_SEARCH_LIMIT,
+      });
+      return textResult({ results: rows });
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   const vaultState = tool(
     'vault_state',
     'Get all state key-value pairs for the current agent.',
@@ -477,6 +538,7 @@ export function createReadTools(deps: VaultToolDeps) {
     vaultSearchFts,
     vaultSearchSemantic,
     vaultSearchCanopy,
+    vaultReleaseState,
     vaultState,
     vaultEdges,
   ];

@@ -46,6 +46,10 @@ prompt: |
   The existing digest is your baseline — your goal is to integrate new
   material into it, not start from scratch.
 
+  Prefer released/high-confidence observations when writing general guidance.
+  Keep unknown or unreconciled observations as useful recent context, but frame
+  them as needing verification instead of presenting them as shipped behavior.
+
   ## Phase 3 — Update Extracts (budget: 25 turns)
 
   Update ALL 3 tiers in this order (largest first — each subsequent tier
@@ -78,6 +82,7 @@ toolOverrides:
   - vault_spores
   - vault_sessions
   - vault_search_semantic
+  - vault_release_state
   - vault_state
   - vault_read_digest
   - vault_write_digest

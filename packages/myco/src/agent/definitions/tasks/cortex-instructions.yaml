@@ -67,7 +67,9 @@ phases:
       disambiguate. Prefer active plans and the last 3 settled sessions
       as anchors. If the input names a hotspot, verify it's still live
       before keeping it — stale hotspots (work that has shipped and
-      moved on) are worse than no hotspot.
+      moved on) are worse than no hotspot. Use release state to distinguish
+      shipped guidance from active unreleased work; unknown evidence can still
+      be mentioned when it is the best current signal.
 
       If you cannot identify 2-3 genuine hotspots, emit fewer — never
       pad with boilerplate.
@@ -78,6 +80,7 @@ phases:
       - vault_spores
       - vault_search_fts
       - vault_search_semantic
+      - vault_release_state
     maxTurns: 10
     required: true
     readOnly: true

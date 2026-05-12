@@ -21,6 +21,15 @@ const DIGEST_STALE_TIME = 60_000;
 
 /* ---------- Types ---------- */
 
+export interface SporeReleaseState {
+  state: string;
+  confidence?: string | null;
+  basis_kind?: string | null;
+  basis_ref?: string | null;
+  checked_at?: number;
+  reason?: string | null;
+}
+
 export interface SporeSummary {
   id: string;
   observation_type: string;
@@ -32,6 +41,7 @@ export interface SporeSummary {
   tags: string | null;
   created_at: number;
   updated_at: number;
+  release_state?: SporeReleaseState;
 }
 
 export interface SporeDetail extends SporeSummary {

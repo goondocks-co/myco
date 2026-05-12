@@ -26,6 +26,7 @@
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -417,6 +418,25 @@ async function postEventWithBuffer(
 }
 // </myco:shared-helpers>
 
+/**
+ * Cheap best-effort branch detection so opencode session registrations carry
+ * the same branch hint hook-based symbionts already supply. Failures (no Git,
+ * stale repo, timeout) return undefined — the daemon handles authoritative
+ * provenance capture asynchronously regardless.
+ */
+function detectGitBranch(directory: string): string | undefined {
+  try {
+    const out = execFileSync("git", ["-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf-8",
+      timeout: 1000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return out && out !== "HEAD" ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Register an opencode session with the daemon. */
 async function mycoRegisterSession(
   directory: string,
@@ -427,6 +447,7 @@ async function mycoRegisterSession(
     session_id: sessionId,
     agent: "opencode",
     parent_session_id: parentSessionId,
+    branch: detectGitBranch(directory),
     started_at: new Date().toISOString(),
   });
 }

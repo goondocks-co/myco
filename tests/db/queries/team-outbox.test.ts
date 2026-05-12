@@ -70,6 +70,23 @@ describe('team outbox query helpers', () => {
         canopy_tokens_saved: 500,
       });
     });
+
+    it('strips release evidence from synced derived release state', () => {
+      expect(sanitizeSyncPayload('knowledge_release_state', {
+        id: 1,
+        namespace: 'sessions',
+        record_id: 'session-1',
+        state: 'released',
+        confidence: 'high',
+        evidence_json: '{"checked_refs":["refs/heads/main"]}',
+      })).toEqual({
+        id: 1,
+        namespace: 'sessions',
+        record_id: 'session-1',
+        state: 'released',
+        confidence: 'high',
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -112,6 +129,12 @@ describe('team outbox query helpers', () => {
     it('rejects local-only table names (#58)', () => {
       expect(() =>
         enqueueOutbox(makeOutbox({ table_name: 'cortex_instructions' })),
+      ).toThrow(/local-only and must not be synced/);
+    });
+
+    it('rejects raw release provenance table names', () => {
+      expect(() =>
+        enqueueOutbox(makeOutbox({ table_name: 'knowledge_git_provenance' })),
       ).toThrow(/local-only and must not be synced/);
     });
   });

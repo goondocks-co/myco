@@ -6,6 +6,11 @@ import { getGraphForNode } from '@myco/db/queries/graph-edges.js';
 import { getDatabase } from '@myco/db/client.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import {
+  releaseStateAnnotation,
+  releaseStateAnnotationMap,
+  releaseStateField,
+} from '@myco/release-provenance/annotations.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 
@@ -63,8 +68,10 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
     search,
   };
 
-  const spores = listSpores({ ...filterOpts, limit, offset });
+  const rawSpores = listSpores({ ...filterOpts, limit, offset });
   const total = countSpores(filterOpts);
+  const states = releaseStateAnnotationMap('spores', rawSpores.map((s) => s.id), scope);
+  const spores = rawSpores.map((s) => ({ ...s, ...releaseStateField(states.get(s.id)) }));
 
   return { body: { spores, total, offset, limit } };
 }
@@ -74,7 +81,15 @@ export function createGetSporeHandler(deps: TeamFallbackDeps = {}) {
   return async function handleGetSpore(req: RouteRequest): Promise<RouteResponse> {
     const scope = projectScopeFromRequestContext(req.requestContext);
     const spore = getSpore(req.params.id, scope);
-    if (spore) return { body: { ...spore, source: 'local' } };
+    if (spore) {
+      return {
+        body: {
+          ...spore,
+          ...releaseStateField(releaseStateAnnotation('spores', spore.id, scope)),
+          source: 'local',
+        },
+      };
+    }
 
     const fallback = await fetchTeamFallback(deps, 'spores', req.params.id);
     if (fallback) {

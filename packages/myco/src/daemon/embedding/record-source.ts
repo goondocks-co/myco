@@ -18,6 +18,8 @@ import {
 } from '@myco/db/queries/embeddings.js';
 import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import type { DomainMetadata, EmbeddableRecordSource } from '@myco/daemon/embedding/types.js';
+import { releaseStateAnnotation, releaseStateMetadata } from '@myco/release-provenance/annotations.js';
+import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,6 +34,7 @@ function sessionMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.project_root != null ? { project_root: row.project_root as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('sessions', String(row.id), ALL_PROJECTS_SCOPE)),
   };
 }
 
@@ -43,6 +46,7 @@ function sporeMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.observation_type != null ? { observation_type: row.observation_type as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('spores', String(row.id), ALL_PROJECTS_SCOPE)),
   };
 }
 
@@ -51,6 +55,7 @@ function artifactMetadata(row: Record<string, unknown>): DomainMetadata {
   return {
     ...(row.project_id != null ? { project_id: row.project_id as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('artifacts', String(row.id), ALL_PROJECTS_SCOPE)),
   };
 }
 
@@ -61,6 +66,7 @@ function planMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.session_id != null ? { session_id: row.session_id as string } : {}),
     ...(row.source_path != null ? { source_path: row.source_path as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('plans', String(row.id), ALL_PROJECTS_SCOPE)),
   };
 }
 
@@ -71,6 +77,7 @@ function skillRecordMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.status != null ? { status: row.status as string } : {}),
     ...(row.name != null ? { name: row.name as string } : {}),
     ...(row.created_at != null ? { created_at: row.created_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('skill_records', String(row.id), ALL_PROJECTS_SCOPE)),
   };
 }
 
@@ -81,6 +88,7 @@ function canopyEntryMetadata(row: Record<string, unknown>): DomainMetadata {
     ...(row.path != null ? { path: row.path as string } : {}),
     ...(row.language != null ? { language: row.language as string } : {}),
     ...(row.llm_updated_at != null ? { created_at: row.llm_updated_at as number } : {}),
+    ...releaseStateMetadata(releaseStateAnnotation('canopy_entries', `${row.project_id}:${row.path}`, ALL_PROJECTS_SCOPE)),
   };
 }
 

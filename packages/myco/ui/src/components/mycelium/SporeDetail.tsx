@@ -8,6 +8,7 @@ import { useSpore } from '../../hooks/use-spores';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, formatEpochAbsolute } from '../../lib/format';
 import { observationTypeClass, statusClass, formatLabel } from './helpers';
+import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 
 /* ---------- Constants ---------- */
 
@@ -115,6 +116,7 @@ export function SporeDetail({ id, onBack, onNavigateToSpore, onNavigateToGraph: 
       <div className="flex items-center gap-3 flex-wrap">
         <TypeBadge type={spore.observation_type} />
         <StatusBadge status={spore.status} />
+        <ReleaseStateBadge annotation={spore.release_state} />
         {spore.importance !== null && (
           <span className="font-sans text-xs text-on-surface-variant">
             Importance: <span className="text-on-surface font-medium">{spore.importance.toFixed(1)}</span>

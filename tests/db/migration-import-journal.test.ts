@@ -36,7 +36,7 @@ describe('migration import journal', () => {
   });
 
   it('is installed by the current schema', () => {
-    expect(SCHEMA_VERSION).toBe(40);
+    expect(SCHEMA_VERSION).toBe(41);
     expect(tableExists('migration_import_journal')).toBe(true);
     expect(indexExists('idx_migration_import_journal_source')).toBe(true);
     expect(indexExists('idx_migration_import_journal_target')).toBe(true);
@@ -170,7 +170,7 @@ describe('migration import journal', () => {
 
     expect(tableExists('migration_import_journal')).toBe(true);
     const version = db.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number };
-    expect(version.version).toBe(40);
+    expect(version.version).toBe(SCHEMA_VERSION);
   });
 
   // The base "schema_version=38" assertion above proves the migration

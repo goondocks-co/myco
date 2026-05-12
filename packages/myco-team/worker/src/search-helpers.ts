@@ -19,6 +19,10 @@ export interface TeamVectorMetadata {
   source_path?: string;
   name?: string;
   project_root?: string;
+  release_state?: string;
+  release_confidence?: string;
+  release_basis_kind?: string;
+  release_checked_at?: number;
 }
 
 export interface SemanticSearchArgs {
@@ -33,6 +37,8 @@ export interface SemanticSearchArgs {
   source_path?: string;
   name?: string;
   project_id?: string;
+  release_state?: string;
+  release_confidence?: string;
 }
 
 /**
@@ -62,6 +68,29 @@ interface VectorMatch {
   score: number;
 }
 
+interface ReleaseStateRow {
+  machine_id: string;
+  record_id: string;
+  state: string;
+  confidence: string;
+  basis_kind?: string | null;
+  checked_at: number;
+  reason?: string | null;
+}
+
+// Mirrors RELEASE_NAMESPACES in packages/myco/src/db/queries/release-provenance.ts.
+// Keep these in lockstep — the worker is deployed independently and cannot
+// import from @myco at runtime.
+const RELEASE_STATE_NAMESPACES = new Set([
+  'sessions',
+  'prompt_batches',
+  'spores',
+  'plans',
+  'artifacts',
+  'skill_records',
+  'canopy_entries',
+]);
+
 function isTeamVectorMetadata(metadata: unknown): metadata is TeamVectorMetadata {
   if (!metadata || typeof metadata !== 'object') return false;
   const candidate = metadata as Record<string, unknown>;
@@ -87,6 +116,74 @@ function matchesFilters(metadata: TeamVectorMetadata, args: Omit<SemanticSearchA
   if (args.since !== undefined && (createdAt === undefined || createdAt < args.since)) return false;
   if (args.until !== undefined && (createdAt === undefined || createdAt > args.until)) return false;
 
+  return true;
+}
+
+function releaseStateKey(recordId: unknown, machineId: unknown): string {
+  return `${String(recordId)}:${String(machineId)}`;
+}
+
+function releaseStateAnnotation(row: ReleaseStateRow): Record<string, unknown> {
+  // basis_ref / basis_sha are stripped before sync (release-provenance plan
+  // §R13) so the worker never sees branch names or commit SHAs.
+  return {
+    state: row.state,
+    confidence: row.confidence,
+    basis_kind: row.basis_kind ?? null,
+    checked_at: row.checked_at,
+    reason: row.reason ?? null,
+  };
+}
+
+async function fetchReleaseStateMap(
+  db: D1Database,
+  table: string,
+  items: Array<{ id: string; machine_id: string }>,
+): Promise<Map<string, ReleaseStateRow>> {
+  if (!RELEASE_STATE_NAMESPACES.has(table) || items.length === 0) {
+    return new Map();
+  }
+  const placeholders = items.map(() => '(?, ?)').join(', ');
+  const binds = items.flatMap((item) => [item.id, item.machine_id]);
+  const { results } = await db.prepare(
+    `SELECT machine_id, record_id, state, confidence, basis_kind, checked_at, reason
+       FROM knowledge_release_state
+      WHERE namespace = ?
+        AND (record_id, machine_id) IN (VALUES ${placeholders})`,
+  ).bind(table, ...binds).all<ReleaseStateRow>();
+
+  const map = new Map<string, ReleaseStateRow>();
+  for (const row of results ?? []) {
+    map.set(releaseStateKey(row.record_id, row.machine_id), row);
+  }
+  return map;
+}
+
+function withReleaseState(
+  row: Record<string, unknown>,
+  metadata: TeamVectorMetadata,
+  releaseState: ReleaseStateRow | undefined,
+): { data: Record<string, unknown>; metadata: TeamVectorMetadata } {
+  if (!releaseState) return { data: row, metadata };
+  const annotation = releaseStateAnnotation(releaseState);
+  return {
+    data: { ...row, release_state: annotation },
+    metadata: {
+      ...metadata,
+      release_state: releaseState.state,
+      release_confidence: releaseState.confidence,
+      ...(releaseState.basis_kind ? { release_basis_kind: releaseState.basis_kind } : {}),
+      release_checked_at: releaseState.checked_at,
+    },
+  };
+}
+
+function matchesReleaseFilters(result: HydratedResult, args: SemanticSearchArgs): boolean {
+  if (!args.release_state && !args.release_confidence) return true;
+  const annotation = result.data.release_state as Record<string, unknown> | undefined;
+  if (!annotation) return false;
+  if (args.release_state && annotation.state !== args.release_state) return false;
+  if (args.release_confidence && annotation.confidence !== args.release_confidence) return false;
   return true;
 }
 
@@ -119,18 +216,24 @@ export async function hydrateVectorMatches(
     for (const row of rows as Record<string, unknown>[]) {
       rowMap.set(`${row.id}:${row.machine_id}`, row);
     }
+    const releaseStateMap = await fetchReleaseStateMap(db, table, items);
 
     const results: HydratedResult[] = [];
     for (const item of items) {
       const row = rowMap.get(`${item.id}:${item.machine_id}`);
       if (row) {
+        const annotated = withReleaseState(
+          row,
+          item.metadata,
+          releaseStateMap.get(releaseStateKey(item.id, item.machine_id)),
+        );
         results.push({
           id: item.id,
           machine_id: item.machine_id,
           type: table,
           score: item.score,
-          data: row,
-          metadata: item.metadata,
+          data: annotated.data,
+          metadata: annotated.metadata,
         });
       }
     }
@@ -161,5 +264,5 @@ export async function searchKnowledge(
   });
 
   const results = await hydrateVectorMatches(db, validMatches);
-  return results.slice(0, limit);
+  return results.filter((result) => matchesReleaseFilters(result, args)).slice(0, limit);
 }
