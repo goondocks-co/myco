@@ -5,6 +5,7 @@
  */
 import { MCP_SEARCH_DEFAULT_LIMIT, MCP_SESSIONS_DEFAULT_LIMIT, MCP_SKILLS_DEFAULT_LIMIT } from '../constants.js';
 import { OBSERVATION_TYPES, PLAN_STATUSES, SPORE_STATUSES } from '../vault/types.js';
+import { RELEASE_CONFIDENCE, RELEASE_STATES } from '../db/queries/release-provenance.js';
 
 /** Plan statuses plus 'all' for filtering. */
 const PLAN_STATUS_FILTER = [...PLAN_STATUSES, 'all'] as const;
@@ -101,8 +102,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         limit: { type: 'number', description: `Max results (default: ${MCP_SEARCH_DEFAULT_LIMIT})` },
         observation_type: { type: 'string', description: 'Optional semantic filter for spore observation type (decision, gotcha, discovery, etc.)' },
         status: { type: 'string', description: 'Optional semantic filter for record status (for example active)' },
-        release_state: { type: 'string', enum: ['unreconciled', 'released', 'merged_unreleased', 'not_on_release_line', 'unknown'], description: 'Optional semantic filter for release provenance state' },
-        release_confidence: { type: 'string', enum: ['high', 'medium', 'low'], description: 'Optional semantic filter for release provenance confidence' },
+        release_state: { type: 'string', enum: [...RELEASE_STATES], description: 'Optional semantic filter for release provenance state' },
+        release_confidence: { type: 'string', enum: [...RELEASE_CONFIDENCE], description: 'Optional semantic filter for release provenance confidence' },
         since: { type: 'number', description: 'Optional created_at lower bound in epoch seconds' },
         until: { type: 'number', description: 'Optional created_at upper bound in epoch seconds' },
         language: { type: 'string', description: 'Canopy-only: optional language filter (e.g. "typescript")' },

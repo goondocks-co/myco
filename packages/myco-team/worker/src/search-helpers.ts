@@ -74,17 +74,21 @@ interface ReleaseStateRow {
   state: string;
   confidence: string;
   basis_kind?: string | null;
-  basis_ref?: string | null;
   checked_at: number;
   reason?: string | null;
 }
 
+// Mirrors RELEASE_NAMESPACES in packages/myco/src/db/queries/release-provenance.ts.
+// Keep these in lockstep — the worker is deployed independently and cannot
+// import from @myco at runtime.
 const RELEASE_STATE_NAMESPACES = new Set([
   'sessions',
+  'prompt_batches',
   'spores',
   'plans',
   'artifacts',
   'skill_records',
+  'canopy_entries',
 ]);
 
 function isTeamVectorMetadata(metadata: unknown): metadata is TeamVectorMetadata {
@@ -120,11 +124,12 @@ function releaseStateKey(recordId: unknown, machineId: unknown): string {
 }
 
 function releaseStateAnnotation(row: ReleaseStateRow): Record<string, unknown> {
+  // basis_ref / basis_sha are stripped before sync (release-provenance plan
+  // §R13) so the worker never sees branch names or commit SHAs.
   return {
     state: row.state,
     confidence: row.confidence,
     basis_kind: row.basis_kind ?? null,
-    basis_ref: row.basis_ref ?? null,
     checked_at: row.checked_at,
     reason: row.reason ?? null,
   };
@@ -141,7 +146,7 @@ async function fetchReleaseStateMap(
   const placeholders = items.map(() => '(?, ?)').join(', ');
   const binds = items.flatMap((item) => [item.id, item.machine_id]);
   const { results } = await db.prepare(
-    `SELECT machine_id, record_id, state, confidence, basis_kind, basis_ref, checked_at, reason
+    `SELECT machine_id, record_id, state, confidence, basis_kind, checked_at, reason
        FROM knowledge_release_state
       WHERE namespace = ?
         AND (record_id, machine_id) IN (VALUES ${placeholders})`,

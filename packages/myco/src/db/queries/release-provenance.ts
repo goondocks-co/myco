@@ -46,6 +46,18 @@ export const RELEASE_NAMESPACES = [
 
 export type ReleaseNamespace = typeof RELEASE_NAMESPACES[number];
 
+export const RELEASE_BASIS_KINDS = [
+  'git_ancestry',
+  'git_patch_id',
+  'github_pr_squash',
+  'dirty_worktree',
+  'configuration',
+  'missing_git_evidence',
+  'ref_check_failed',
+] as const;
+
+export type ReleaseBasisKind = typeof RELEASE_BASIS_KINDS[number];
+
 const CAPTURE_POINT_SET = new Set<string>(RELEASE_CAPTURE_POINTS);
 const RELEASE_STATE_SET = new Set<string>(RELEASE_STATES);
 const RELEASE_CONFIDENCE_SET = new Set<string>(RELEASE_CONFIDENCE);
@@ -257,6 +269,14 @@ function toReleaseStateRow(row: Record<string, unknown>): ReleaseStateRow {
   };
 }
 
+export function gitProvenanceExists(identityKey: string, dbArg?: Database): boolean {
+  const db = dbArg ?? getDatabase();
+  const row = db.prepare(
+    'SELECT 1 FROM knowledge_git_provenance WHERE identity_key = ? LIMIT 1',
+  ).get(identityKey);
+  return row !== undefined && row !== null;
+}
+
 export function insertGitProvenance(input: GitProvenanceInsert, dbArg?: Database): GitProvenanceRow {
   assertKnown(input.capture_point, CAPTURE_POINT_SET, 'release provenance capture_point');
   if (!input.status_hash) throw new Error('status_hash is required');
@@ -394,6 +414,26 @@ export function upsertReleaseState(input: ReleaseStateUpsert, dbArg?: Database):
   return releaseState;
 }
 
+/**
+ * Bump checked_at on an existing release-state row without rewriting the
+ * derived classification fields. Used when reconciliation re-evaluates a row
+ * and reaches the same conclusion — avoids needless team-outbox churn.
+ */
+export function touchReleaseStateCheckedAt(identityKey: string, checkedAt: number, dbArg?: Database): void {
+  const db = dbArg ?? getDatabase();
+  db.prepare(
+    'UPDATE knowledge_release_state SET checked_at = ? WHERE identity_key = ?',
+  ).run(checkedAt, identityKey);
+}
+
+export function getReleaseStateByIdentityKey(identityKey: string, dbArg?: Database): ReleaseStateRow | null {
+  const db = dbArg ?? getDatabase();
+  const row = db.prepare(
+    'SELECT * FROM knowledge_release_state WHERE identity_key = ?',
+  ).get(identityKey) as Record<string, unknown> | undefined;
+  return row ? toReleaseStateRow(row) : null;
+}
+
 export function getReleaseState(
   namespace: ReleaseNamespace,
   recordId: string,
@@ -409,6 +449,36 @@ export function getReleaseState(
     `SELECT * FROM knowledge_release_state WHERE ${conditions.join(' AND ')} LIMIT 1`,
   ).get(...params) as Record<string, unknown> | undefined;
   return row ? toReleaseStateRow(row) : null;
+}
+
+/**
+ * Bulk-fetch release-state annotations for many record_ids in a single
+ * namespace. Used by search hydration to avoid an N+1 lookup per result row.
+ *
+ * Returns a Map keyed by record_id; absent ids simply don't appear in the
+ * map. Empty input returns an empty map without hitting SQLite.
+ */
+export function getReleaseStatesForRecords(
+  namespace: ReleaseNamespace,
+  recordIds: readonly string[],
+  scope: ProjectScope,
+  dbArg?: Database,
+): Map<string, ReleaseStateRow> {
+  const out = new Map<string, ReleaseStateRow>();
+  if (recordIds.length === 0) return out;
+  assertKnown(namespace, RELEASE_NAMESPACE_SET, 'release namespace');
+  const db = dbArg ?? getDatabase();
+  const conditions = ['namespace = ?', `record_id IN (SELECT value FROM json_each(?))`];
+  const params: unknown[] = [namespace, JSON.stringify([...new Set(recordIds)])];
+  appendProjectCondition(conditions, params, scope);
+  const rows = db.prepare(
+    `SELECT * FROM knowledge_release_state WHERE ${conditions.join(' AND ')}`,
+  ).all(...params) as Array<Record<string, unknown>>;
+  for (const raw of rows) {
+    const row = toReleaseStateRow(raw);
+    out.set(row.record_id, row);
+  }
+  return out;
 }
 
 export function listGitProvenance(options: ListGitProvenanceOptions): GitProvenanceRow[] {

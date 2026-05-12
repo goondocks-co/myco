@@ -1,6 +1,8 @@
 import { epochSeconds } from '@myco/constants.js';
 import type { DaemonLogger } from '@myco/daemon/logger.js';
 import {
+  buildGitProvenanceIdentityKey,
+  gitProvenanceExists,
   insertGitProvenance,
   type GitProvenanceRow,
   type ReleaseCapturePoint,
@@ -21,12 +23,60 @@ export interface CaptureGitProvenanceInput {
   snapshotProvider?: (projectRoot: string, options: { productionRef?: string | null }) => GitSnapshot;
 }
 
+/**
+ * Schedule a Git provenance capture off the current event-loop tick so request
+ * handlers don't pay the cost (15+ blocking git commands per call) on the hot
+ * path. `onCaptured` runs after capture with the resulting row (or null on
+ * failure) so callers can backfill derived fields like `session.branch`.
+ *
+ * Capture remains synchronous internally — this only shifts when it runs.
+ * Errors are already swallowed inside captureGitProvenance, so a failed
+ * setImmediate body cannot leak into request handling.
+ */
+export function deferGitProvenance(
+  input: CaptureGitProvenanceInput,
+  onCaptured?: (row: GitProvenanceRow | null) => void,
+): void {
+  setImmediate(() => {
+    const row = captureGitProvenance(input);
+    if (onCaptured) {
+      try {
+        onCaptured(row);
+      } catch (err) {
+        input.logger?.warn(LOG_KINDS.CAPTURE_RELEASE_PROVENANCE, 'Deferred provenance callback failed', {
+          session_id: input.sessionId ?? null,
+          error: (err as Error).message,
+        });
+      }
+    }
+  });
+}
+
 export function captureGitProvenance(input: CaptureGitProvenanceInput): GitProvenanceRow | null {
   const capturedAt = input.capturedAt ?? epochSeconds();
   const snapshotProvider = input.snapshotProvider ?? captureGitSnapshot;
 
   try {
     const snapshot = snapshotProvider(input.projectRoot, { productionRef: input.productionRef });
+    // Repeated hook deliveries at the same boundary (e.g., retried Stop events)
+    // would otherwise rewrite identical rows and churn the team outbox. Skip
+    // the write when the identity key already exists for this status hash.
+    const identityKey = buildGitProvenanceIdentityKey({
+      project_id: input.projectId ?? null,
+      session_id: input.sessionId ?? null,
+      prompt_batch_id: input.promptBatchId ?? null,
+      capture_point: input.capturePoint,
+      status_hash: snapshot.status_hash,
+    });
+    if (gitProvenanceExists(identityKey)) {
+      input.logger?.debug(LOG_KINDS.CAPTURE_RELEASE_PROVENANCE, 'Git provenance unchanged; skip write', {
+        session_id: input.sessionId ?? null,
+        prompt_batch_id: input.promptBatchId ?? null,
+        capture_point: input.capturePoint,
+        status_hash: snapshot.status_hash,
+      });
+      return null;
+    }
     const row = insertGitProvenance({
       project_id: input.projectId ?? null,
       machine_id: input.machineId ?? 'local',

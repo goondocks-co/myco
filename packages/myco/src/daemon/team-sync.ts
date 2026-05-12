@@ -6,6 +6,10 @@
  */
 
 import type { OutboxRow } from '@myco/db/queries/team-outbox.js';
+import type {
+  ReleaseConfidence,
+  ReleaseStateValue,
+} from '@myco/db/queries/release-provenance.js';
 import {
   TEAM_SEARCH_TIMEOUT_MS,
   TEAM_HEALTH_TIMEOUT_MS,
@@ -30,8 +34,8 @@ export interface TeamSearchOptions {
   limit?: number;
   tables?: string[];
   status?: string;
-  release_state?: string;
-  release_confidence?: string;
+  release_state?: ReleaseStateValue;
+  release_confidence?: ReleaseConfidence;
   observation_type?: string;
   since?: number;
   until?: number;

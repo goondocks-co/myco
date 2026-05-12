@@ -156,6 +156,10 @@ describe('createEventDispatcher', () => {
     expect(batches).toHaveLength(1);
     expect(batches[0].user_prompt).toBe(prompt);
     expect(res.body).toMatchObject({ batchId: batches[0].id });
+
+    // Provenance capture runs via setImmediate to keep the event handler hot
+    // path non-blocking; yield once so the deferred write lands before assertion.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(listGitProvenance({
       scope: ALL_PROJECTS_SCOPE,
       session_id: sessionId,

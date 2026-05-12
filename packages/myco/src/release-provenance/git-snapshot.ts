@@ -1,10 +1,24 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import {
+  mergeBase,
+  patchIdFromDiff,
+  readOptionalRef,
+  runGit,
+} from './git-cmd.js';
 
-const GIT_TIMEOUT_MS = 5_000;
+export const PATCH_KINDS = [
+  'head',
+  'upstream_range',
+  'production_range',
+  'staged',
+  'unstaged',
+  'dynamic_range',
+] as const;
+
+export type PatchKind = typeof PATCH_KINDS[number];
 
 export interface GitPatchId {
-  kind: 'head' | 'upstream_range' | 'production_range' | 'staged' | 'unstaged';
+  kind: PatchKind;
   patch_id: string;
   base_ref?: string | null;
   base_sha?: string | null;
@@ -36,72 +50,65 @@ export interface CaptureGitSnapshotOptions {
   productionRef?: string | null;
 }
 
-interface GitCommandResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-function runGit(projectRoot: string, args: string[], input?: string): GitCommandResult {
-  try {
-    const stdout = execFileSync('git', ['-C', projectRoot, ...args], {
-      encoding: 'utf-8',
-      timeout: GIT_TIMEOUT_MS,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      input,
-    });
-    return { ok: true, stdout: stdout.trimEnd(), stderr: '' };
-  } catch (err) {
-    const failure = err as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
-    return {
-      ok: false,
-      stdout: String(failure.stdout ?? '').trimEnd(),
-      stderr: String(failure.stderr ?? failure.message ?? '').trimEnd(),
-    };
-  }
-}
-
 function sha256Json(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-function parseStatusPath(line: string): { path: string; untracked: boolean; staged: boolean; unstaged: boolean } | null {
-  if (line.length < 4) return null;
-  const status = line.slice(0, 2);
-  const rawPath = line.slice(3);
-  const path = rawPath.includes(' -> ') ? rawPath.split(' -> ').at(-1)! : rawPath;
-  return {
-    path,
-    untracked: status === '??',
-    staged: status[0] !== ' ' && status[0] !== '?',
-    unstaged: status[1] !== ' ' && status[1] !== '?',
-  };
-}
-
-function parseStatus(statusOutput: string): {
+interface ParsedStatus {
   changedPaths: string[];
   trackedPaths: string[];
   stagedCount: number;
   unstagedCount: number;
   untrackedCount: number;
-} {
+}
+
+// Parse `git status --porcelain=v2 -z` output. NUL-separated entries avoid the
+// rename ambiguity of porcelain v1 (where filenames containing " -> " parse
+// wrong). Rename/copy entries carry an extra origin-path field that is NUL-
+// separated from the destination path.
+function parseStatusV2(statusOutput: string): ParsedStatus {
   const changedPaths = new Set<string>();
   const trackedPaths = new Set<string>();
   let stagedCount = 0;
   let unstagedCount = 0;
   let untrackedCount = 0;
 
-  for (const line of statusOutput.split('\n')) {
-    if (!line) continue;
-    const parsed = parseStatusPath(line);
-    if (!parsed) continue;
-    changedPaths.add(parsed.path);
-    if (parsed.untracked) {
+  const tokens = statusOutput.split('\0');
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (!entry) continue;
+    const recordType = entry[0];
+    if (recordType === '1') {
+      const fields = entry.split(' ');
+      const xy = fields[1] ?? '  ';
+      const path = fields.slice(8).join(' ');
+      if (!path) continue;
+      changedPaths.add(path);
+      trackedPaths.add(path);
+      if (xy[0] !== '.' && xy[0] !== ' ') stagedCount++;
+      if (xy[1] !== '.' && xy[1] !== ' ') unstagedCount++;
+    } else if (recordType === '2') {
+      const fields = entry.split(' ');
+      const xy = fields[1] ?? '  ';
+      const path = fields.slice(9).join(' ');
+      i++;
+      if (!path) continue;
+      changedPaths.add(path);
+      trackedPaths.add(path);
+      if (xy[0] !== '.' && xy[0] !== ' ') stagedCount++;
+      if (xy[1] !== '.' && xy[1] !== ' ') unstagedCount++;
+    } else if (recordType === '?') {
+      const path = entry.slice(2);
+      if (!path) continue;
+      changedPaths.add(path);
       untrackedCount++;
-    } else {
-      trackedPaths.add(parsed.path);
-      if (parsed.staged) stagedCount++;
-      if (parsed.unstaged) unstagedCount++;
+    } else if (recordType === 'u') {
+      const fields = entry.split(' ');
+      const path = fields.slice(10).join(' ');
+      if (!path) continue;
+      changedPaths.add(path);
+      trackedPaths.add(path);
+      unstagedCount++;
     }
   }
 
@@ -128,14 +135,7 @@ function readTrackedBlobHashes(projectRoot: string, trackedPaths: string[]): Rec
   return hashes;
 }
 
-function patchIdFromDiff(projectRoot: string, diffOutput: string): string | null {
-  if (!diffOutput.trim()) return null;
-  const patchId = runGit(projectRoot, ['patch-id', '--stable'], `${diffOutput}\n`);
-  if (!patchId.ok || !patchId.stdout.trim()) return null;
-  return patchId.stdout.trim().split(/\s+/)[0] ?? null;
-}
-
-function patchIdForDiff(projectRoot: string, kind: GitPatchId['kind'], diffArgs: string[]): GitPatchId | null {
+function patchIdForDiff(projectRoot: string, kind: PatchKind, diffArgs: string[]): GitPatchId | null {
   const diff = runGit(projectRoot, diffArgs);
   if (!diff.ok || !diff.stdout.trim()) return null;
   const id = patchIdFromDiff(projectRoot, diff.stdout);
@@ -160,17 +160,6 @@ function patchIdForRange(
   const diff = runGit(projectRoot, ['diff', '--find-renames', baseSha, headSha]);
   const id = diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
   return id ? { kind, patch_id: id, base_ref: baseRef, base_sha: baseSha, head_sha: headSha } : null;
-}
-
-function readOptionalRef(projectRoot: string, ref: string): string | null {
-  const result = runGit(projectRoot, ['rev-parse', ref]);
-  return result.ok && result.stdout ? result.stdout : null;
-}
-
-function mergeBase(projectRoot: string, left: string | null, right: string | null): string | null {
-  if (!left || !right) return null;
-  const result = runGit(projectRoot, ['merge-base', left, right]);
-  return result.ok && result.stdout ? result.stdout : null;
 }
 
 export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnapshotOptions = {}): GitSnapshot {
@@ -205,23 +194,24 @@ export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnaps
   const upstreamSha = readOptionalRef(projectRoot, '@{u}');
   const productionRef = options.productionRef ?? null;
   const productionSha = productionRef ? readOptionalRef(projectRoot, productionRef) : null;
-  const status = runGit(projectRoot, ['status', '--porcelain=v1']);
-  const parsedStatus = parseStatus(status.stdout);
+  const status = runGit(projectRoot, ['status', '--porcelain=v2', '-z']);
+  const parsedStatus = parseStatusV2(status.stdout);
+  const headSha = head.ok ? head.stdout : null;
   const patchIds = [
-    patchIdForCommit(projectRoot, head.ok ? head.stdout : null),
+    patchIdForCommit(projectRoot, headSha),
     patchIdForRange(
       projectRoot,
       'upstream_range',
       upstreamRef.ok ? upstreamRef.stdout : null,
-      mergeBase(projectRoot, head.ok ? head.stdout : null, upstreamSha),
-      head.ok ? head.stdout : null,
+      mergeBase(projectRoot, headSha, upstreamSha),
+      headSha,
     ),
     patchIdForRange(
       projectRoot,
       'production_range',
       productionRef,
-      mergeBase(projectRoot, head.ok ? head.stdout : null, productionSha),
-      head.ok ? head.stdout : null,
+      mergeBase(projectRoot, headSha, productionSha),
+      headSha,
     ),
     patchIdForDiff(projectRoot, 'staged', ['diff', '--cached']),
     patchIdForDiff(projectRoot, 'unstaged', ['diff']),
@@ -230,7 +220,7 @@ export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnaps
 
   const statusBasis = {
     branch: branch.ok ? branch.stdout : null,
-    head_sha: head.ok ? head.stdout : null,
+    head_sha: headSha,
     upstream_ref: upstreamRef.ok ? upstreamRef.stdout : null,
     upstream_sha: upstreamSha,
     production_ref: productionRef,
@@ -247,7 +237,7 @@ export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnaps
     is_git_repository: true,
     project_root: projectRoot,
     branch: branch.ok ? branch.stdout : null,
-    head_sha: head.ok ? head.stdout : null,
+    head_sha: headSha,
     upstream_ref: upstreamRef.ok ? upstreamRef.stdout : null,
     upstream_sha: upstreamSha,
     production_ref: productionRef,
@@ -262,7 +252,6 @@ export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnaps
     status_hash: sha256Json(statusBasis),
     evidence: {
       git_repository: true,
-      status_porcelain: status.stdout,
       status_basis: statusBasis,
     },
     error: status.ok ? null : 'git_status_failed',

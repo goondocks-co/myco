@@ -7,6 +7,10 @@
 
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type {
+  ReleaseConfidence,
+  ReleaseStateValue,
+} from '@myco/db/queries/release-provenance.js';
 import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
 import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import { buildEndpoint } from './shared.js';
@@ -21,8 +25,8 @@ interface SearchInput {
   limit?: number;
   observation_type?: string;
   status?: string;
-  release_state?: string;
-  release_confidence?: string;
+  release_state?: ReleaseStateValue;
+  release_confidence?: ReleaseConfidence;
   since?: number;
   until?: number;
   /** Canopy-only: optional language filter (e.g. "typescript"). */

@@ -50,7 +50,7 @@ import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
-import { captureGitProvenance } from '@myco/release-provenance/capture.js';
+import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
 
 // ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // when the SessionEnd hook fires (via /sessions/unregister).
     closeOpenBatches(sessionId, epochSeconds());
     if (latestBatch) {
-      captureGitProvenance({
+      deferGitProvenance({
         projectRoot: requestProjectRoot,
         projectId: requestRowProjectId,
         machineId: requestMachineId,

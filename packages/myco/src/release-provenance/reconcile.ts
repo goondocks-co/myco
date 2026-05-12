@@ -1,9 +1,12 @@
-import { execFileSync } from 'node:child_process';
 import type { DaemonLogger } from '@myco/daemon/logger.js';
 import {
+  buildReleaseStateIdentityKey,
+  getReleaseStateByIdentityKey,
   listGitProvenance,
+  touchReleaseStateCheckedAt,
   upsertReleaseState,
   type GitProvenanceRow,
+  type ReleaseBasisKind,
   type ReleaseConfidence,
   type ReleaseNamespace,
   type ReleaseStateValue,
@@ -12,9 +15,28 @@ import type { ProjectScope } from '@myco/db/queries/project-scope.js';
 import { epochSeconds } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { ReleaseProvenanceRuntimeConfig } from './config.js';
+import { mergeBase, patchIdForCommit, patchIdForRange, runGit } from './git-cmd.js';
+import type { PatchKind } from './git-snapshot.js';
+import { findDerivedRecords } from './record-lineage.js';
+import { filterRefsByPackagePatterns, tagPatternsForChangedPaths } from './package-map.js';
+import { findSquashMergeForCommit, readGithubToken } from './github.js';
 
-const GIT_TIMEOUT_MS = 5_000;
+export interface ReleaseStateChange {
+  namespace: ReleaseNamespace;
+  recordId: string;
+  state: ReleaseStateValue;
+  confidence: ReleaseConfidence;
+  basisKind: ReleaseBasisKind;
+  checkedAt: number;
+}
+
 const PATCH_SCAN_MAX_COMMITS = 500;
+const MAX_EVIDENCE_REF_CHECKS = 8;
+
+interface PullRequestSquashEvidence {
+  number: number;
+  merge_commit_sha: string;
+}
 
 interface CapturedPatchId {
   kind?: string;
@@ -45,7 +67,7 @@ interface PatchMatch {
 interface Classification {
   state: ReleaseStateValue;
   confidence: ReleaseConfidence;
-  basis_kind: string;
+  basis_kind: ReleaseBasisKind;
   basis_ref: string | null;
   basis_sha: string | null;
   reason: string;
@@ -61,38 +83,55 @@ export interface ReconcileReleaseProvenanceInput {
   limit?: number;
   now?: number;
   logger?: Pick<DaemonLogger, 'debug' | 'warn' | 'info'>;
+  /**
+   * Callback fired once per source row whose classification changed. Receives
+   * the source change AND any derived records (spores/plans inheriting via
+   * session/batch lineage). Used to propagate metadata into the vector store
+   * so semantic-search filters stay current.
+   */
+  onReleaseStateChanged?: (changes: ReleaseStateChange[]) => void;
 }
 
 export interface ReconcileReleaseProvenanceResult {
   scanned: number;
   reconciled: number;
   skipped: number;
+  unchanged: number;
+  failed: number;
   disabled: boolean;
 }
 
-function runGit(projectRoot: string, args: string[], input?: string): { ok: boolean; stdout: string; error?: string; status?: number } {
-  try {
-    const stdout = execFileSync('git', ['-C', projectRoot, ...args], {
-      encoding: 'utf-8',
-      timeout: GIT_TIMEOUT_MS,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      input,
-    }).trim();
-    return { ok: true, stdout };
-  } catch (err) {
-    const failure = err as Error & { status?: number };
-    return { ok: false, stdout: '', error: failure.message, status: failure.status };
+/**
+ * Cache commit_sha -> patch_id across rows within a single reconcile pass.
+ * Many provenance rows reference the same release/integration refs, so commits
+ * are revisited dozens or hundreds of times per pass. `null` marks a confirmed
+ * miss so we don't shell out for a `git show` that already failed.
+ */
+class PatchIdCache {
+  private readonly commitToPatchId = new Map<string, string | null>();
+
+  patchIdForCommit(projectRoot: string, commitSha: string): string | null {
+    const cached = this.commitToPatchId.get(commitSha);
+    if (cached !== undefined) return cached;
+    const value = patchIdForCommit(projectRoot, commitSha);
+    this.commitToPatchId.set(commitSha, value);
+    return value;
   }
 }
 
 function targetFor(row: GitProvenanceRow): ReleaseTarget | null {
-  if ((row.capture_point === 'session_start' || row.capture_point === 'session_end') && row.session_id) {
-    return { namespace: 'sessions', recordId: row.session_id };
+  switch (row.capture_point) {
+    case 'session_start':
+    case 'session_end':
+      return row.session_id ? { namespace: 'sessions', recordId: row.session_id } : null;
+    case 'prompt_batch_start':
+    case 'prompt_batch_stop':
+      return row.prompt_batch_id !== null
+        ? { namespace: 'prompt_batches', recordId: String(row.prompt_batch_id) }
+        : null;
+    default:
+      return null;
   }
-  if ((row.capture_point === 'prompt_batch_start' || row.capture_point === 'prompt_batch_stop') && row.prompt_batch_id !== null) {
-    return { namespace: 'prompt_batches', recordId: String(row.prompt_batch_id) };
-  }
-  return null;
 }
 
 function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): RefCheck[] {
@@ -106,26 +145,8 @@ function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]
   });
 }
 
-function patchIdFromDiff(projectRoot: string, diffOutput: string): string | null {
-  if (!diffOutput.trim()) return null;
-  const patchId = runGit(projectRoot, ['patch-id', '--stable'], `${diffOutput}\n`);
-  if (!patchId.ok || !patchId.stdout.trim()) return null;
-  return patchId.stdout.trim().split(/\s+/)[0] ?? null;
-}
-
-function patchIdForCommit(projectRoot: string, commitSha: string): string | null {
-  const diff = runGit(projectRoot, ['show', '--format=', '--patch', '--find-renames', commitSha]);
-  return diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
-}
-
-function patchIdForRange(projectRoot: string, baseSha: string, headSha: string): string | null {
-  const diff = runGit(projectRoot, ['diff', '--find-renames', baseSha, headSha]);
-  return diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
-}
-
-function mergeBase(projectRoot: string, left: string, right: string): string | null {
-  const result = runGit(projectRoot, ['merge-base', left, right]);
-  return result.ok && result.stdout ? result.stdout : null;
+function boundedChecks(checks: RefCheck[]): RefCheck[] {
+  return checks.length <= MAX_EVIDENCE_REF_CHECKS ? checks : checks.slice(0, MAX_EVIDENCE_REF_CHECKS);
 }
 
 function parseCapturedPatchIds(row: GitProvenanceRow): CapturedPatchId[] {
@@ -160,8 +181,9 @@ function capturedPatchCandidates(
       if (!baseSha) continue;
       const patchId = patchIdForRange(projectRoot, baseSha, row.head_sha);
       if (!patchId) continue;
-      byKey.set(`dynamic_range:${patchId}`, {
-        kind: 'dynamic_range',
+      const kind: PatchKind = 'dynamic_range';
+      byKey.set(`${kind}:${patchId}`, {
+        kind,
         patch_id: patchId,
         base_ref: ref,
         base_sha: baseSha,
@@ -177,6 +199,7 @@ function findPatchMatch(
   projectRoot: string,
   row: GitProvenanceRow,
   refs: readonly string[],
+  cache: PatchIdCache,
 ): { matches: PatchMatch[]; errors: RefCheck[] } {
   const patches = capturedPatchCandidates(row, projectRoot, refs);
   const wanted = new Map<string, CapturedPatchId>();
@@ -187,7 +210,6 @@ function findPatchMatch(
 
   const matches: PatchMatch[] = [];
   const errors: RefCheck[] = [];
-  const seenCommits = new Set<string>();
 
   for (const ref of refs) {
     const revList = runGit(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
@@ -196,9 +218,8 @@ function findPatchMatch(
       continue;
     }
     for (const commitSha of revList.stdout.split('\n')) {
-      if (!commitSha || seenCommits.has(commitSha)) continue;
-      seenCommits.add(commitSha);
-      const patchId = patchIdForCommit(projectRoot, commitSha);
+      if (!commitSha) continue;
+      const patchId = cache.patchIdForCommit(projectRoot, commitSha);
       if (!patchId) continue;
       const captured = wanted.get(patchId);
       if (!captured) continue;
@@ -210,12 +231,56 @@ function findPatchMatch(
       });
       break;
     }
+    if (matches.length > 0) break;
   }
 
   return { matches, errors };
 }
 
-function classify(row: GitProvenanceRow, input: ReconcileReleaseProvenanceInput): Classification {
+function buildClassification(
+  state: ReleaseStateValue,
+  confidence: ReleaseConfidence,
+  basis_kind: ReleaseBasisKind,
+  basis_ref: string | null,
+  basis_sha: string | null,
+  reason: string,
+  evidence: Record<string, unknown>,
+): Classification {
+  return { state, confidence, basis_kind, basis_ref, basis_sha, reason, evidence };
+}
+
+function parseChangedPaths(row: GitProvenanceRow): string[] {
+  if (!row.changed_paths_json) return [];
+  try {
+    const parsed = JSON.parse(row.changed_paths_json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function selectRefsForRow(
+  row: GitProvenanceRow,
+  config: ReleaseProvenanceRuntimeConfig,
+): { production: string[]; integration: string[] } {
+  const changed = parseChangedPaths(row);
+  const packageMap = config.package_map ?? [];
+  if (packageMap.length === 0 || changed.length === 0) {
+    return { production: [...config.production_refs], integration: [...config.integration_refs] };
+  }
+  const patterns = tagPatternsForChangedPaths(changed, packageMap);
+  return {
+    production: filterRefsByPackagePatterns(config.production_refs, patterns),
+    integration: filterRefsByPackagePatterns(config.integration_refs, patterns),
+  };
+}
+
+function classify(
+  row: GitProvenanceRow,
+  input: ReconcileReleaseProvenanceInput,
+  cache: PatchIdCache,
+  prSquash: PullRequestSquashEvidence | null,
+): Classification {
   const baseEvidence = {
     provenance_id: row.id,
     capture_point: row.capture_point,
@@ -228,151 +293,170 @@ function classify(row: GitProvenanceRow, input: ReconcileReleaseProvenanceInput)
   };
 
   if (row.error || !row.head_sha) {
-    return {
-      state: 'unknown',
-      confidence: 'low',
-      basis_kind: 'missing_git_evidence',
-      basis_ref: null,
-      basis_sha: row.head_sha,
-      reason: row.error ?? 'No captured Git HEAD SHA',
-      evidence: baseEvidence,
-    };
+    return buildClassification(
+      'unknown', 'low', 'missing_git_evidence', null, row.head_sha,
+      row.error ?? 'No captured Git HEAD SHA',
+      baseEvidence,
+    );
   }
 
-  const productionRefs = input.config.production_refs;
-  const integrationRefs = input.config.integration_refs;
+  const { production: productionRefs, integration: integrationRefs } = selectRefsForRow(row, input.config);
   if (productionRefs.length === 0 && integrationRefs.length === 0) {
-    return {
-      state: 'unreconciled',
-      confidence: 'low',
-      basis_kind: 'configuration',
-      basis_ref: null,
-      basis_sha: row.head_sha,
-      reason: 'No release provenance refs configured',
-      evidence: baseEvidence,
-    };
+    return buildClassification(
+      'unreconciled', 'low', 'configuration', null, row.head_sha,
+      'No release provenance refs configured',
+      baseEvidence,
+    );
   }
 
   if (row.is_dirty) {
-    return {
-      state: 'unknown',
-      confidence: 'low',
-      basis_kind: 'dirty_worktree',
-      basis_ref: null,
-      basis_sha: row.head_sha,
-      reason: 'Captured working tree had uncommitted changes',
-      evidence: baseEvidence,
-    };
+    return buildClassification(
+      'unknown', 'low', 'dirty_worktree', null, row.head_sha,
+      'Captured working tree had uncommitted changes',
+      baseEvidence,
+    );
   }
 
+  // Direct ancestry against production refs (highest confidence).
   const productionChecks = checkRefs(input.projectRoot, row.head_sha, productionRefs);
   const released = productionChecks.find((check) => check.ok);
   if (released) {
-    return {
-      state: 'released',
-      confidence: 'high',
-      basis_kind: 'git_ancestry',
-      basis_ref: released.ref,
-      basis_sha: row.head_sha,
-      reason: `Captured HEAD is contained in production ref ${released.ref}`,
-      evidence: { ...baseEvidence, checked_refs: productionChecks },
-    };
+    return buildClassification(
+      'released', 'high', 'git_ancestry', released.ref, row.head_sha,
+      `Captured HEAD is contained in production ref ${released.ref}`,
+      { ...baseEvidence, checked_refs: boundedChecks(productionChecks) },
+    );
   }
 
-  const productionPatchMatch = findPatchMatch(input.projectRoot, row, productionRefs);
+  // Patch-id equivalence against production refs (squash-merge case).
+  const productionPatchMatch = findPatchMatch(input.projectRoot, row, productionRefs, cache);
   const releasedByPatch = productionPatchMatch.matches[0];
   if (releasedByPatch) {
-    return {
-      state: 'released',
-      confidence: 'medium',
-      basis_kind: 'git_patch_id',
-      basis_ref: releasedByPatch.ref,
-      basis_sha: releasedByPatch.commit_sha,
-      reason: `Captured patch is equivalent to a commit in production ref ${releasedByPatch.ref}`,
-      evidence: {
+    return buildClassification(
+      'released', 'medium', 'git_patch_id', releasedByPatch.ref, releasedByPatch.commit_sha,
+      `Captured patch is equivalent to a commit in production ref ${releasedByPatch.ref}`,
+      {
         ...baseEvidence,
-        checked_refs: productionChecks,
+        checked_refs: boundedChecks(productionChecks),
         patch_match: releasedByPatch,
         patch_scan: {
           max_commits_per_ref: PATCH_SCAN_MAX_COMMITS,
           errors: productionPatchMatch.errors,
         },
       },
-    };
+    );
   }
 
+  // PR squash-merge evidence: when the captured HEAD was a feature-branch
+  // tip and the PR was squash-merged onto a base branch, the squash commit
+  // has a different SHA. Re-check ancestry against the squash commit before
+  // falling through to integration refs.
+  if (prSquash) {
+    const squashAncestry = checkRefs(input.projectRoot, prSquash.merge_commit_sha, productionRefs);
+    const releasedBySquash = squashAncestry.find((check) => check.ok);
+    if (releasedBySquash) {
+      return buildClassification(
+        'released', 'high', 'github_pr_squash', releasedBySquash.ref, prSquash.merge_commit_sha,
+        `PR #${prSquash.number} squash-merge commit is contained in production ref ${releasedBySquash.ref}`,
+        {
+          ...baseEvidence,
+          checked_refs: boundedChecks(productionChecks),
+          pull_request: { number: prSquash.number, merge_commit_sha: prSquash.merge_commit_sha },
+          checked_refs_after_squash: boundedChecks(squashAncestry),
+        },
+      );
+    }
+  }
+
+  // Same checks against integration refs (merged but not released).
   const integrationChecks = checkRefs(input.projectRoot, row.head_sha, integrationRefs);
   const merged = integrationChecks.find((check) => check.ok);
   if (merged) {
-    return {
-      state: 'merged_unreleased',
-      confidence: 'medium',
-      basis_kind: 'git_ancestry',
-      basis_ref: merged.ref,
-      basis_sha: row.head_sha,
-      reason: `Captured HEAD is contained in integration ref ${merged.ref} but not a production ref`,
-      evidence: { ...baseEvidence, checked_refs: [...productionChecks, ...integrationChecks] },
-    };
+    return buildClassification(
+      'merged_unreleased', 'medium', 'git_ancestry', merged.ref, row.head_sha,
+      `Captured HEAD is contained in integration ref ${merged.ref} but not a production ref`,
+      { ...baseEvidence, checked_refs: boundedChecks([...productionChecks, ...integrationChecks]) },
+    );
   }
 
-  const integrationPatchMatch = findPatchMatch(input.projectRoot, row, integrationRefs);
+  const integrationPatchMatch = findPatchMatch(input.projectRoot, row, integrationRefs, cache);
   const mergedByPatch = integrationPatchMatch.matches[0];
   if (mergedByPatch) {
-    return {
-      state: 'merged_unreleased',
-      confidence: 'medium',
-      basis_kind: 'git_patch_id',
-      basis_ref: mergedByPatch.ref,
-      basis_sha: mergedByPatch.commit_sha,
-      reason: `Captured patch is equivalent to a commit in integration ref ${mergedByPatch.ref} but not a production ref`,
-      evidence: {
+    return buildClassification(
+      'merged_unreleased', 'medium', 'git_patch_id', mergedByPatch.ref, mergedByPatch.commit_sha,
+      `Captured patch is equivalent to a commit in integration ref ${mergedByPatch.ref} but not a production ref`,
+      {
         ...baseEvidence,
-        checked_refs: [...productionChecks, ...integrationChecks],
+        checked_refs: boundedChecks([...productionChecks, ...integrationChecks]),
         patch_match: mergedByPatch,
         patch_scan: {
           max_commits_per_ref: PATCH_SCAN_MAX_COMMITS,
           errors: [...productionPatchMatch.errors, ...integrationPatchMatch.errors],
         },
       },
-    };
+    );
   }
 
-  const checks = [...productionChecks, ...integrationChecks];
-  if (checks.length > 0 && checks.every((check) => check.error)) {
-    return {
-      state: 'unknown',
-      confidence: 'low',
-      basis_kind: 'ref_check_failed',
-      basis_ref: null,
-      basis_sha: row.head_sha,
-      reason: 'Configured release refs could not be checked',
-      evidence: { ...baseEvidence, checked_refs: checks },
-    };
+  const allChecks = [...productionChecks, ...integrationChecks];
+  if (allChecks.length > 0 && allChecks.every((check) => check.error)) {
+    return buildClassification(
+      'unknown', 'low', 'ref_check_failed', null, row.head_sha,
+      'Configured release refs could not be checked',
+      { ...baseEvidence, checked_refs: boundedChecks(allChecks) },
+    );
   }
 
-  return {
-    state: 'not_on_release_line',
-    confidence: 'medium',
-    basis_kind: 'git_ancestry',
-    basis_ref: null,
-    basis_sha: row.head_sha,
-    reason: 'Captured HEAD is not contained in configured release refs',
-    evidence: { ...baseEvidence, checked_refs: checks },
-  };
+  return buildClassification(
+    'not_on_release_line', 'medium', 'git_ancestry', null, row.head_sha,
+    'Captured HEAD is not contained in configured release refs',
+    { ...baseEvidence, checked_refs: boundedChecks(allChecks) },
+  );
 }
 
-export function reconcileReleaseProvenance(
+function classificationUnchanged(
+  existing: ReturnType<typeof getReleaseStateByIdentityKey>,
+  next: Classification,
+): boolean {
+  if (!existing) return false;
+  return existing.state === next.state
+    && existing.confidence === next.confidence
+    && existing.basis_kind === next.basis_kind
+    && existing.basis_ref === next.basis_ref
+    && existing.basis_sha === next.basis_sha
+    && existing.reason === next.reason;
+}
+
+async function resolvePullRequestSquash(
+  row: GitProvenanceRow,
   input: ReconcileReleaseProvenanceInput,
-): ReconcileReleaseProvenanceResult {
+  remainingBudget: { value: number },
+): Promise<PullRequestSquashEvidence | null> {
+  if (remainingBudget.value <= 0 || !row.head_sha) return null;
+  const github = input.config.github;
+  if (!github || !github.repo) return null;
+  const token = readGithubToken(github);
+  if (!token) return null;
+  remainingBudget.value--;
+  const pr = await findSquashMergeForCommit(row.head_sha, { repo: github.repo, token });
+  return pr ? { number: pr.number, merge_commit_sha: pr.merge_commit_sha } : null;
+}
+
+export async function reconcileReleaseProvenance(
+  input: ReconcileReleaseProvenanceInput,
+): Promise<ReconcileReleaseProvenanceResult> {
   if (!input.config.enabled) {
-    return { scanned: 0, reconciled: 0, skipped: 0, disabled: true };
+    return { scanned: 0, reconciled: 0, skipped: 0, unchanged: 0, failed: 0, disabled: true };
   }
 
   const now = input.now ?? epochSeconds();
   const rows = listGitProvenance({ scope: input.scope, limit: input.limit ?? 500 });
   const seen = new Set<string>();
+  const cache = new PatchIdCache();
+  const githubBudget = { value: input.config.github?.max_lookups_per_run ?? 0 };
   let reconciled = 0;
   let skipped = 0;
+  let unchanged = 0;
+  let failed = 0;
 
   for (const row of rows) {
     const target = targetFor(row);
@@ -387,34 +471,107 @@ export function reconcileReleaseProvenance(
     }
     seen.add(key);
 
-    const result = classify(row, input);
-    upsertReleaseState({
-      project_id: input.projectId ?? row.project_id,
-      machine_id: input.machineId ?? row.machine_id,
-      namespace: target.namespace,
-      record_id: target.recordId,
-      source_session_id: row.session_id,
-      source_prompt_batch_id: row.prompt_batch_id,
-      state: result.state,
-      confidence: result.confidence,
-      basis_kind: result.basis_kind,
-      basis_ref: result.basis_ref,
-      basis_sha: result.basis_sha,
-      reason: result.reason,
-      evidence_json: JSON.stringify(result.evidence),
-      checked_at: now,
-      created_at: now,
-      updated_at: now,
-    });
-    reconciled++;
+    try {
+      const prSquash = await resolvePullRequestSquash(row, input, githubBudget);
+      const result = classify(row, input, cache, prSquash);
+      const projectId = input.projectId ?? row.project_id;
+      const identityKey = buildReleaseStateIdentityKey({
+        project_id: projectId,
+        namespace: target.namespace,
+        record_id: target.recordId,
+      });
+      const existing = getReleaseStateByIdentityKey(identityKey);
+      if (classificationUnchanged(existing, result)) {
+        touchReleaseStateCheckedAt(identityKey, now);
+        unchanged++;
+        continue;
+      }
+
+      upsertReleaseState({
+        project_id: projectId,
+        machine_id: input.machineId ?? row.machine_id,
+        namespace: target.namespace,
+        record_id: target.recordId,
+        source_session_id: row.session_id,
+        source_prompt_batch_id: row.prompt_batch_id,
+        state: result.state,
+        confidence: result.confidence,
+        basis_kind: result.basis_kind,
+        basis_ref: result.basis_ref,
+        basis_sha: result.basis_sha,
+        reason: result.reason,
+        evidence_json: JSON.stringify(result.evidence),
+        checked_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+
+      // Materialize the same classification onto derived embeddable records
+      // (spores/plans inheriting via session/batch lineage). Annotation
+      // lookups and vector-metadata patches both key by (namespace, record_id),
+      // so the only way for derived records to surface release_state today is
+      // a materialized row.
+      const changes: ReleaseStateChange[] = [{
+        namespace: target.namespace,
+        recordId: target.recordId,
+        state: result.state,
+        confidence: result.confidence,
+        basisKind: result.basis_kind,
+        checkedAt: now,
+      }];
+      const derived = findDerivedRecords({
+        sourceNamespace: target.namespace,
+        sourceRecordId: target.recordId,
+        scope: input.scope,
+      });
+      for (const record of derived) {
+        upsertReleaseState({
+          project_id: projectId,
+          machine_id: input.machineId ?? row.machine_id,
+          namespace: record.namespace,
+          record_id: record.recordId,
+          source_session_id: row.session_id,
+          source_prompt_batch_id: row.prompt_batch_id,
+          state: result.state,
+          confidence: result.confidence,
+          basis_kind: result.basis_kind,
+          basis_ref: result.basis_ref,
+          basis_sha: result.basis_sha,
+          reason: result.reason,
+          evidence_json: JSON.stringify(result.evidence),
+          checked_at: now,
+          created_at: now,
+          updated_at: now,
+        });
+        changes.push({
+          namespace: record.namespace,
+          recordId: record.recordId,
+          state: result.state,
+          confidence: result.confidence,
+          basisKind: result.basis_kind,
+          checkedAt: now,
+        });
+      }
+      input.onReleaseStateChanged?.(changes);
+      reconciled++;
+    } catch (err) {
+      failed++;
+      input.logger?.warn(LOG_KINDS.RELEASE_PROVENANCE_RECONCILE, 'Release provenance row failed', {
+        provenance_id: row.id,
+        target: key,
+        error: (err as Error).message,
+      });
+    }
   }
 
   input.logger?.debug(LOG_KINDS.RELEASE_PROVENANCE_RECONCILE, 'Release provenance reconciled', {
     scanned: rows.length,
     reconciled,
+    unchanged,
     skipped,
+    failed,
     project_id: input.projectId ?? null,
   });
 
-  return { scanned: rows.length, reconciled, skipped, disabled: false };
+  return { scanned: rows.length, reconciled, skipped, unchanged, failed, disabled: false };
 }

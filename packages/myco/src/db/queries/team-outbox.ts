@@ -58,6 +58,11 @@ export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
     'canopy_map_tool_calls',
   ],
   knowledge_release_state: [
+    // basis_ref can be a local branch name (e.g., `feat/secret-name`) and
+    // basis_sha pinpoints an internal commit. Neither belongs in team sync
+    // per release-provenance plan §R13.
+    'basis_ref',
+    'basis_sha',
     'evidence_json',
   ],
 };
@@ -72,7 +77,7 @@ export const LOCAL_ONLY_RATIONALES: Record<string, string> = {
   cortex_instructions: 'Per-machine operating guidance generated from local digest substrate; never synced to the team.',
   knowledge_git_provenance: 'Raw local Git provenance can include branch names, changed paths, and patch evidence; only derived release state syncs.',
   sessions: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
-  knowledge_release_state: 'Derived release state syncs, but raw evidence summaries stay local to avoid leaking repository details.',
+  knowledge_release_state: 'Derived release state syncs, but local branch names, commit SHAs, and evidence summaries stay on the originating machine.',
 };
 
 // ---------------------------------------------------------------------------

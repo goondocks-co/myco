@@ -17,8 +17,8 @@ import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@
 import type { VectorSearchResult } from '@myco/daemon/embedding/types.js';
 import { parseCanopyRecordId } from '@myco/canopy/hydrate.js';
 import {
-  releaseStateAnnotation,
-  applyReleaseStateFields,
+  releaseStateAnnotationMap,
+  releaseStateField,
   type ReleaseStateAnnotation,
 } from '@myco/release-provenance/annotations.js';
 
@@ -174,9 +174,12 @@ export function fullTextSearch(
       rank: number;
     }>;
 
+    const batchReleaseStates = releaseStateAnnotationMap(
+      'prompt_batches', batchRows.map((r) => String(r.id)), options.scope, db,
+    );
     for (const row of batchRows) {
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('prompt_batches', String(row.id), options.scope, db)),
+        ...releaseStateField(batchReleaseStates.get(String(row.id))),
         id: String(row.id),
         type: 'prompt_batch',
         title: row.prompt_number != null
@@ -214,12 +217,16 @@ export function fullTextSearch(
       rank: number;
     }>;
 
+    const activitySessionIds = activityRows
+      .map((r) => r.session_id)
+      .filter((id): id is string => id != null);
+    const activityReleaseStates = releaseStateAnnotationMap(
+      'sessions', activitySessionIds, options.scope, db,
+    );
     for (const row of activityRows) {
       const preview = (row.tool_input ?? row.file_path ?? '').slice(0, SEARCH_PREVIEW_CHARS);
       results.push({
-        ...applyReleaseStateFields({}, row.session_id
-          ? releaseStateAnnotation('sessions', row.session_id, options.scope, db)
-          : null),
+        ...releaseStateField(row.session_id ? activityReleaseStates.get(row.session_id) : null),
         id: String(row.id),
         type: 'activity',
         title: row.tool_name,
@@ -258,9 +265,12 @@ export function fullTextSearch(
       rank: number;
     }>;
 
+    const sporeReleaseStates = releaseStateAnnotationMap(
+      'spores', sporeRows.map((r) => String(r.id)), options.scope, db,
+    );
     for (const row of sporeRows) {
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('spores', String(row.id), options.scope, db)),
+        ...releaseStateField(sporeReleaseStates.get(String(row.id))),
         id: String(row.id),
         type: 'spore',
         title: row.observation_type,
@@ -295,9 +305,12 @@ export function fullTextSearch(
       rank: number;
     }>;
 
+    const sessionReleaseStates = releaseStateAnnotationMap(
+      'sessions', sessionRows.map((r) => String(r.id)), options.scope, db,
+    );
     for (const row of sessionRows) {
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('sessions', String(row.id), options.scope, db)),
+        ...releaseStateField(sessionReleaseStates.get(String(row.id))),
         id: String(row.id),
         type: 'session',
         title: row.title ?? `Session ${row.id.slice(-6)}`,
@@ -389,11 +402,12 @@ export function hydrateSearchResults(
     ).all(JSON.stringify(ids), ...sessionScope.params) as SessionRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    const sessionReleaseStates = releaseStateAnnotationMap('sessions', ids, options.scope, db);
     for (const vr of sessionResults) {
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('sessions', row.id, options.scope, db)),
+        ...releaseStateField(sessionReleaseStates.get(row.id)),
         id: row.id,
         type: 'session',
         title: row.title ?? `Session ${row.id.slice(-6)}`,
@@ -414,11 +428,12 @@ export function hydrateSearchResults(
     ).all(JSON.stringify(ids), ...sporeScope.params) as SporeRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    const sporeReleaseStates = releaseStateAnnotationMap('spores', ids, options.scope, db);
     for (const vr of sporeResults) {
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('spores', row.id, options.scope, db)),
+        ...releaseStateField(sporeReleaseStates.get(row.id)),
         id: row.id,
         type: 'spore',
         title: row.observation_type,
@@ -440,11 +455,12 @@ export function hydrateSearchResults(
     ).all(JSON.stringify(ids), ...planScope.params) as PlanRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    const planReleaseStates = releaseStateAnnotationMap('plans', ids, options.scope, db);
     for (const vr of planResults) {
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('plans', row.id, options.scope, db)),
+        ...releaseStateField(planReleaseStates.get(row.id)),
         id: row.id,
         type: 'plan',
         title: row.title ?? `Plan ${row.id.slice(-6)}`,
@@ -466,11 +482,12 @@ export function hydrateSearchResults(
     ).all(JSON.stringify(ids), ...artifactScope.params) as ArtifactRow[];
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    const artifactReleaseStates = releaseStateAnnotationMap('artifacts', ids, options.scope, db);
     for (const vr of artifactResults) {
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('artifacts', row.id, options.scope, db)),
+        ...releaseStateField(artifactReleaseStates.get(row.id)),
         id: row.id,
         type: 'artifact',
         title: row.title,
@@ -514,11 +531,14 @@ export function hydrateSearchResults(
       }>;
 
       const rowMap = new Map(rows.map((r) => [`${r.project_id}:${r.path}`, r]));
+      const canopyReleaseStates = releaseStateAnnotationMap(
+        'canopy_entries', scopedParsed.map((p) => p.id), options.scope, db,
+      );
       for (const p of scopedParsed) {
         const row = rowMap.get(p.id);
         if (!row) continue;
         results.push({
-          ...applyReleaseStateFields({}, releaseStateAnnotation('canopy_entries', p.id, options.scope, db)),
+          ...releaseStateField(canopyReleaseStates.get(p.id)),
           id: p.id,
           type: 'canopy',
           title: row.path,
@@ -544,11 +564,12 @@ export function hydrateSearchResults(
     ).all(JSON.stringify(ids), ...skillScope.params) as Array<{ id: string; name: string; display_name: string; description: string }>;
 
     const rowMap = new Map(rows.map((r) => [r.id, r]));
+    const skillReleaseStates = releaseStateAnnotationMap('skill_records', ids, options.scope, db);
     for (const vr of skillResults) {
       const row = rowMap.get(vr.id);
       if (!row) continue;
       results.push({
-        ...applyReleaseStateFields({}, releaseStateAnnotation('skill_records', row.id, options.scope, db)),
+        ...releaseStateField(skillReleaseStates.get(row.id)),
         id: row.id,
         type: 'skill',
         title: row.display_name || row.name,

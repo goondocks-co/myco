@@ -1,8 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import {
   getReleaseState,
+  getReleaseStatesForRecords,
   type ReleaseConfidence,
   type ReleaseNamespace,
+  type ReleaseStateRow,
   type ReleaseStateValue,
 } from '@myco/db/queries/release-provenance.js';
 import type { ProjectScope } from '@myco/db/queries/project-scope.js';
@@ -16,14 +18,7 @@ export interface ReleaseStateAnnotation {
   reason?: string | null;
 }
 
-export function releaseStateAnnotation(
-  namespace: ReleaseNamespace,
-  recordId: string,
-  scope: ProjectScope,
-  db?: Database,
-): ReleaseStateAnnotation | null {
-  const row = getReleaseState(namespace, recordId, scope, db);
-  if (!row) return null;
+function annotationFromRow(row: ReleaseStateRow): ReleaseStateAnnotation {
   return {
     state: row.state,
     confidence: row.confidence,
@@ -34,15 +29,40 @@ export function releaseStateAnnotation(
   };
 }
 
-export function applyReleaseStateFields<T extends Record<string, unknown>>(
-  target: T,
-  annotation: ReleaseStateAnnotation | null,
-): T {
-  if (!annotation) return target;
-  return {
-    ...target,
-    release_state: annotation,
-  };
+export function releaseStateAnnotation(
+  namespace: ReleaseNamespace,
+  recordId: string,
+  scope: ProjectScope,
+  db?: Database,
+): ReleaseStateAnnotation | null {
+  const row = getReleaseState(namespace, recordId, scope, db);
+  return row ? annotationFromRow(row) : null;
+}
+
+/**
+ * Bulk-load annotations for many record ids in one namespace. Use this in
+ * search/list hot paths to avoid an N+1 lookup per result row.
+ */
+export function releaseStateAnnotationMap(
+  namespace: ReleaseNamespace,
+  recordIds: readonly string[],
+  scope: ProjectScope,
+  db?: Database,
+): Map<string, ReleaseStateAnnotation> {
+  const rows = getReleaseStatesForRecords(namespace, recordIds, scope, db);
+  const out = new Map<string, ReleaseStateAnnotation>();
+  for (const [id, row] of rows) out.set(id, annotationFromRow(row));
+  return out;
+}
+
+/**
+ * Spread helper for result-shape construction. Returns an object that, when
+ * spread, contributes either `{ release_state }` or nothing.
+ */
+export function releaseStateField(
+  annotation: ReleaseStateAnnotation | undefined | null,
+): { release_state?: ReleaseStateAnnotation } {
+  return annotation ? { release_state: annotation } : {};
 }
 
 export function releaseStateMetadata(annotation: ReleaseStateAnnotation | null): Record<string, unknown> {
