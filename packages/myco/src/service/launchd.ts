@@ -99,6 +99,13 @@ export class LaunchdServiceManager implements ServiceManager {
     }
   }
 
+  restartShellCommand(label: string): string {
+    // Literal command the detached update / restart script invokes after the
+    // daemon exits. Mirrors restart() above so launchd's KeepAlive cannot race
+    // a manually-spawned daemon child for the canonical port.
+    return `launchctl kickstart -k ${this.domainTarget(label)}`;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const plistPath = this.plistPath(label);
     if (!fs.existsSync(plistPath)) {

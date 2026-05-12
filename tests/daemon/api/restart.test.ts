@@ -52,6 +52,7 @@ class FakeServiceManager implements ServiceManager {
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
   async restart(label: string): Promise<void> { this.restartCalls.push(label); }
+  restartShellCommand(label: string): string { return `fake-restart ${label}`; }
   async status(label: string): Promise<ServiceStatus> {
     return this.statuses.get(label) ?? { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
   }

@@ -138,6 +138,18 @@ describe('LaunchdServiceManager', () => {
     await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/kickstart failed.*exit 3/i);
   });
 
+  test('restartShellCommand returns the literal `launchctl kickstart -k gui/<uid>/<label>`', () => {
+    // Baked into the detached update / restart script after the daemon exits.
+    // Must include the resolved uid so the script can run without env-var
+    // dependencies.
+    expect(mgr.restartShellCommand('co.goondocks.myco')).toBe(
+      'launchctl kickstart -k gui/501/co.goondocks.myco',
+    );
+    expect(mgr.restartShellCommand('co.goondocks.myco-dev')).toBe(
+      'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
+    );
+  });
+
   test('isInstalled returns true after install, false after uninstall', async () => {
     const s = spec(home);
     expect(await mgr.isInstalled(s.label)).toBe(false);

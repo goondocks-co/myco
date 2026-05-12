@@ -85,6 +85,13 @@ export class SystemdUserServiceManager implements ServiceManager {
     }
   }
 
+  restartShellCommand(label: string): string {
+    // Literal command the detached update / restart script invokes after the
+    // daemon exits. Mirrors restart() above so systemd's Restart=always cannot
+    // race a manually-spawned daemon child for the canonical port.
+    return `systemctl --user restart ${label}.service`;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const unitPath = this.unitPath(label);
     if (!fs.existsSync(unitPath)) {

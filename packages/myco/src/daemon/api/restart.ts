@@ -52,15 +52,22 @@ export function buildRestartShellCommand(
 }
 
 /** Probe whether THIS process is the currently-running service-managed daemon.
- *  Returns the label if so, otherwise null. */
-async function detectServiceManagedLabel(mgr: ServiceManager): Promise<string | null> {
+ *  Returns the label if so, otherwise null.
+ *
+ *  Exported so other detached-script paths (update-installer post-install
+ *  respawn, sibling-version-sync restart) can share a single detection
+ *  implementation. Pass `process.pid` from the caller; defaults to it. */
+export async function detectServiceManagedLabel(
+  mgr: ServiceManager,
+  myPid: number = process.pid,
+): Promise<string | null> {
   if (!mgr.supported) return null;
   for (const variant of ['dev', 'prod'] as ServiceVariant[]) {
     const label = serviceLabel(variant);
     const installed = await mgr.isInstalled(label).catch(() => false);
     if (!installed) continue;
     const st = await mgr.status(label).catch(() => null);
-    if (st?.running && st.pid === process.pid) return label;
+    if (st?.running && st.pid === myPid) return label;
   }
   return null;
 }

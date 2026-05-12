@@ -120,6 +120,16 @@ describe('SystemdUserServiceManager', () => {
     await expect(mgr.restart('co.goondocks.missing')).rejects.toThrow(/systemctl.*restart.*exit 5/i);
   });
 
+  test('restartShellCommand returns the literal `systemctl --user restart <label>.service`', () => {
+    // Baked into the detached update / restart script after the daemon exits.
+    expect(mgr.restartShellCommand('co.goondocks.myco')).toBe(
+      'systemctl --user restart co.goondocks.myco.service',
+    );
+    expect(mgr.restartShellCommand('co.goondocks.myco-dev')).toBe(
+      'systemctl --user restart co.goondocks.myco-dev.service',
+    );
+  });
+
   test('isInstalled returns true after install, false after uninstall', async () => {
     const s = spec(home);
     expect(await mgr.isInstalled(s.label)).toBe(false);

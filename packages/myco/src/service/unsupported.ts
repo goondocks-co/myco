@@ -18,6 +18,7 @@ export class UnsupportedServiceManager implements ServiceManager {
   async start(_label: string): Promise<void> { this.fail(); }
   async stop(_label: string): Promise<void> { this.fail(); }
   async restart(_label: string): Promise<void> { this.fail(); }
+  restartShellCommand(_label: string): string { this.fail(); }
 
   async status(_label: string): Promise<ServiceStatus> {
     return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
