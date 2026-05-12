@@ -47,15 +47,21 @@ node .agents/myco-cli.cjs tool call <tool-name> --json --input '<json>'
 node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
 ```
 
-**Prefer the `@file` form for any payload containing backticks, code fences, multi-line strings, or markdown.** Agent shells often re-wrap commands through an outer `eval`, and backticks inside the inner single-quoted JSON get command-substituted before the CLI sees them — what you intended as literal `` `foo.ts` `` in spore content becomes the shell trying to execute `foo.ts`. The `@file` form sidesteps this entirely because the JSON never travels through shell escape resolution. Reserve the inline form for short single-line payloads with no special characters (e.g. `{"op":"get","id":"..."}`).
+**For payloads containing backticks, code fences, multi-line strings, or markdown — call the MCP tool directly when the host has Myco MCP loaded; otherwise use `--input @file.json`. Reserve inline `--input '<json>'` for short single-line payloads with no special characters (e.g. `{"op":"get","id":"..."}`).** Agent shells often re-wrap commands through an outer `eval`, and backticks inside the inner single-quoted JSON get command-substituted before the CLI sees them — what you intended as literal `` `foo.ts` `` in spore content becomes the shell trying to execute `foo.ts`. The MCP path skips the shell entirely; the `@file` form bypasses shell escape resolution for the payload.
 
-```bash
-# Robust pattern for spore content, plan content, skill content, etc.
-cat > /tmp/payload.json <<'EOF'
-{ "op": "save", "type": "gotcha", "content": "Use `npm test`, not `bun test <subset>`..." }
-EOF
-node .agents/myco-cli.cjs tool call myco_spores --json --input @/tmp/payload.json
-```
+Preference order, most to least robust:
+
+1. **MCP tool call** (when available) — e.g. invoke `myco_spores` directly through the host's MCP layer. No shell, no escaping. Check the available-tools list for `myco_*` or `mcp__*myco*` entries.
+2. **CLI with `@file` payload:**
+
+   ```bash
+   cat > /tmp/payload.json <<'EOF'
+   { "op": "save", "type": "gotcha", "content": "Use `npm test`, not `bun test <subset>`..." }
+   EOF
+   node .agents/myco-cli.cjs tool call myco_spores --json --input @/tmp/payload.json
+   ```
+
+3. **CLI with inline JSON** — only for trivial payloads.
 
 Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failures return `{ "ok": false, "tool": "<name>", "error": { "code": "...", "message": "..." } }`.
 
