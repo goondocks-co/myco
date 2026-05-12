@@ -201,15 +201,12 @@ registration:
 capabilities:
   # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
-  # Codex emits 'PreToolUse' hooks with payload { tool_name, tool_input }.
-  # The hooks-engine output channel accepts a JSON envelope with
-  # hookSpecificOutput.additionalContext; the response.ts envelope path
-  # serializes that automatically once this flag is on.
+  # Emit hookSpecificOutput envelope on PreToolUse so Canopy anatomy reaches
+  # the agent's context.
   preToolUseInjection: true
-  # File reads in Codex go through the canonical 'Bash' tool with the path
-  # embedded in the command string. The resolver uses shlex to extract the
-  # first non-flag positional argument when the command name is in this
-  # allowlist. Tune the allowlist based on Phase 3 dogfood observations.
+  # File reads come through Codex's canonical 'Bash' tool with the path
+  # embedded in the command string. The resolver shlex-parses and picks the
+  # first non-flag positional arg when the command name is in this allowlist.
   canopyReadTools:
     - tool: Bash
       pathField: command
