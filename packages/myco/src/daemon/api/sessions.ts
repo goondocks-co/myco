@@ -13,6 +13,11 @@ import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import {
+  releaseStateAnnotation,
+  releaseStateAnnotationMap,
+  releaseStateField,
+} from '@myco/release-provenance/annotations.js';
 import { fetchTeamFallback, type TeamFallbackDeps } from './team-fallback.js';
 import { errorBody } from './error-envelope.js';
 
@@ -29,7 +34,9 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
 
   const filterOpts = { scope, status, agent, search };
 
-  const sessions = listSessions({ ...filterOpts, limit, offset }).map((s) => ({
+  const rawSessions = listSessions({ ...filterOpts, limit, offset });
+  const states = releaseStateAnnotationMap('sessions', rawSessions.map((s) => s.id), scope);
+  const sessions = rawSessions.map((s) => ({
     id: s.id,
     date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
     title: s.title || s.id.slice(0, 8),
@@ -39,6 +46,7 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
     tool_count: s.tool_count,
     started_at: s.started_at,
     ended_at: s.ended_at,
+    ...releaseStateField(states.get(s.id)),
   }));
   const total = countSessions(filterOpts);
 
@@ -64,6 +72,7 @@ export function createGetSessionHandler(deps: TeamFallbackDeps = {}) {
           ...session,
           prompt_count: promptCount,
           tool_count: toolCount,
+          ...releaseStateField(releaseStateAnnotation('sessions', session.id, scope)),
           source: 'local',
         },
       };
@@ -105,7 +114,9 @@ export async function handleGetSessionBatches(req: RouteRequest): Promise<RouteR
   const scope = projectScopeFromRequestContext(req.requestContext);
   if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
   const origins = parseOriginsQuery(req.query.origins);
-  const batches = listBatchesBySession(req.params.id, { scope, origins });
+  const rawBatches = listBatchesBySession(req.params.id, { scope, origins });
+  const states = releaseStateAnnotationMap('prompt_batches', rawBatches.map((b) => String(b.id)), scope);
+  const batches = rawBatches.map((b) => ({ ...b, ...releaseStateField(states.get(String(b.id))) }));
   return { body: batches };
 }
 
@@ -128,7 +139,9 @@ export async function handleGetSessionAttachments(req: RouteRequest): Promise<Ro
 export async function handleGetSessionPlans(req: RouteRequest): Promise<RouteResponse> {
   const scope = projectScopeFromRequestContext(req.requestContext);
   if (!getSession(req.params.id, scope)) return { status: 404, body: { error: 'not_found' } };
-  const plans = listPlansBySession(req.params.id, scope);
+  const rawPlans = listPlansBySession(req.params.id, scope);
+  const states = releaseStateAnnotationMap('plans', rawPlans.map((p) => p.id), scope);
+  const plans = rawPlans.map((p) => ({ ...p, ...releaseStateField(states.get(p.id)) }));
   return { body: { plans } };
 }
 

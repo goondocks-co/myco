@@ -363,6 +363,75 @@ function ScheduledMaintenanceCard({
   );
 }
 
+interface ReleaseProvenanceReconcileResponse {
+  ok: boolean;
+  disabled?: boolean;
+  results?: Array<{
+    grove_id: string;
+    project_id: string;
+    reconciled: number;
+    scanned: number;
+    unchanged: number;
+    failed: number;
+    error?: string;
+  }>;
+}
+
+function ReleaseProvenanceCard({
+  onActionResult,
+}: {
+  onActionResult: (r: { type: 'success' | 'error'; text: string }) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function handleReconcile() {
+    setBusy(true);
+    try {
+      const result = await postJson<ReleaseProvenanceReconcileResponse>(
+        '/api/maintenance/release-provenance/reconcile',
+        {},
+      );
+      if (result.disabled) {
+        onActionResult({ type: 'success', text: 'Release provenance reconciliation is disabled in config.' });
+        return;
+      }
+      const results = result.results ?? [];
+      const totals = results.reduce(
+        (acc, r) => ({
+          reconciled: acc.reconciled + r.reconciled,
+          unchanged: acc.unchanged + r.unchanged,
+          failed: acc.failed + r.failed,
+          errors: acc.errors + (r.error ? 1 : 0),
+        }),
+        { reconciled: 0, unchanged: 0, failed: 0, errors: 0 },
+      );
+      const text = `Release reconcile: ${results.length} project(s), ${totals.reconciled} updated, ${totals.unchanged} unchanged${totals.failed ? `, ${totals.failed} rows failed` : ''}${totals.errors ? `, ${totals.errors} project errors` : ''}.`;
+      onActionResult({ type: totals.errors > 0 ? 'error' : 'success', text });
+    } catch (err) {
+      onActionResult({ type: 'error', text: 'Error: ' + errorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Surface level="low" className="p-6 space-y-3">
+      <SectionHeader>Release provenance</SectionHeader>
+      <p className="font-sans text-sm text-on-surface-variant">
+        Re-runs ancestry, patch-id, and (when configured) GitHub PR squash
+        evidence checks for every served project. Reconciliation is idempotent
+        — safe to invoke repeatedly. Status counts surface in each
+        Grove&apos;s maintenance summary.
+      </p>
+      <div className="flex justify-end">
+        <Button onClick={handleReconcile} disabled={busy} variant="outline" size="sm">
+          {busy ? 'Reconciling...' : 'Reconcile now'}
+        </Button>
+      </div>
+    </Surface>
+  );
+}
+
 function DatabaseActions({
   onActionResult,
 }: {
@@ -943,6 +1012,8 @@ function DatabaseTab() {
           the database stats. */}
 
       <ScheduledMaintenanceCard details={data} onActionResult={setActionResult} />
+
+      <ReleaseProvenanceCard onActionResult={setActionResult} />
 
       <DatabaseActions onActionResult={setActionResult} />
 

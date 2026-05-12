@@ -28,6 +28,11 @@ import {
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveGroveBackupDir } from './backup.js';
 import { listBackups } from '../backup.js';
+import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
+import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
+import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
+import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
+import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -403,7 +408,91 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
     return { body: summary };
   }
 
-  return { handleSummary, handleGroveMaintenance };
+  /**
+   * Trigger a manual release-provenance reconcile across every project served
+   * by every Grove this daemon owns. Reconciliation is idempotent and
+   * rebuildable, so repeated invocations are safe. Per-project failures are
+   * isolated — one bad project does not abort the rest.
+   */
+  async function handleReleaseProvenanceReconcile(_req: RouteRequest): Promise<RouteResponse> {
+    const config = releaseProvenanceConfig(deps.liveConfig.current);
+    if (!config.enabled) {
+      return { body: { ok: true, disabled: true, results: [] } };
+    }
+    interface PerProjectResult {
+      grove_id: string;
+      project_id: string;
+      reconciled: number;
+      scanned: number;
+      unchanged: number;
+      failed: number;
+      error?: string;
+    }
+    const results: PerProjectResult[] = [];
+    await forEachGrove(
+      deps.cache,
+      deps.logger,
+      async (scope) => {
+        const projects = listRegisteredProjectsForGrove(scope.grove.id, mycoHome);
+        for (const project of projects) {
+          const projectId = project.project_id as GroveProjectId;
+          try {
+            const entry = deps.cache.getEmbeddingRuntime(scope.databasePath, deps.embeddingRuntimeFactory);
+            const vectorStore = entry.vectorStore;
+            const result = await reconcileReleaseProvenance({
+              projectRoot: project.root,
+              projectId,
+              machineId: 'local',
+              scope: projectScope(projectId),
+              config,
+              logger: deps.logger,
+              onReleaseStateChanged: vectorStore
+                ? (changes) => {
+                    for (const change of changes) {
+                      refreshReleaseVectorMetadata({
+                        store: vectorStore,
+                        db: scope.db,
+                        scope: projectScope(projectId),
+                        sourceNamespace: change.namespace,
+                        sourceRecordId: change.recordId,
+                        patch: {
+                          state: change.state,
+                          confidence: change.confidence,
+                          basis_kind: change.basisKind,
+                          checked_at: change.checkedAt,
+                        },
+                      });
+                    }
+                  }
+                : undefined,
+            });
+            results.push({
+              grove_id: scope.grove.id,
+              project_id: projectId,
+              reconciled: result.reconciled,
+              scanned: result.scanned,
+              unchanged: result.unchanged,
+              failed: result.failed,
+            });
+          } catch (err) {
+            results.push({
+              grove_id: scope.grove.id,
+              project_id: projectId,
+              reconciled: 0,
+              scanned: 0,
+              unchanged: 0,
+              failed: 0,
+              error: errorMessage(err),
+            });
+          }
+        }
+      },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'release-provenance-manual-reconcile', parallel: false },
+    );
+    return { body: { ok: true, results } };
+  }
+
+  return { handleSummary, handleGroveMaintenance, handleReleaseProvenanceReconcile };
 }
 
 // ---------------------------------------------------------------------------

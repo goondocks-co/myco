@@ -98,6 +98,16 @@ export interface VectorStore {
   getStaleIds(namespace: string, currentModel: string, limit: number): string[];
   getEmbeddedIds(namespace: string): string[];
   pairwiseSimilarity(namespace: string, threshold?: number): Array<{ idA: string; idB: string; similarity: number }>;
+  /**
+   * Patch the `domain_metadata` JSON column for one record without re-embedding.
+   * Used by release-provenance reconciliation to propagate state/confidence
+   * changes into vector metadata so semantic-search filters stay in sync.
+   *
+   * Returns true when a row existed; false when the record is not embedded
+   * yet (no metadata row to patch). Implementations must perform a metadata-
+   * only UPDATE; they must not touch the embedding column.
+   */
+  patchDomainMetadata(namespace: string, recordId: string, patch: Partial<DomainMetadata>): boolean;
 }
 
 /** Generates vectors from text. Wraps the existing EmbeddingProvider. */

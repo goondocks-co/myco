@@ -22,6 +22,10 @@ import {
   RELEASE_NAMESPACES,
   RELEASE_STATES,
 } from '@myco/db/queries/release-provenance.js';
+import {
+  releaseStateAnnotation,
+  releaseStateAnnotationMap,
+} from '@myco/release-provenance/annotations.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { hasSemanticSearchFilters, matchesSemanticSearchFilters } from '@myco/semantic-search-filters.js';
 import { listGraphEdges } from '@myco/db/queries/graph-edges.js';
@@ -109,10 +113,11 @@ export function createReadTools(deps: VaultToolDeps) {
         includeActive: args.include_active === true,
         scope,
       });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
       return projectToolRows(
         batches,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectBatchForAgent,
+        (batch) => projectBatchForAgent(batch, { release: releases.get(String(batch.id)) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -133,10 +138,11 @@ export function createReadTools(deps: VaultToolDeps) {
         offset: args.offset,
         scope,
       });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
       return projectToolRows(
         batches,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectBatchForAgent,
+        (batch) => projectBatchForAgent(batch, { release: releases.get(String(batch.id)) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -158,6 +164,8 @@ export function createReadTools(deps: VaultToolDeps) {
         return textResult({ session_id: args.session_id, found: false, message: 'Session is still active' });
       }
       const batches = listBatchesBySession(args.session_id, { scope });
+      const releases = releaseStateAnnotationMap('prompt_batches', batches.map((b) => String(b.id)), scope);
+      const sessionRelease = releaseStateAnnotation('sessions', session.id, scope);
       return textResult({
         session_id: session.id,
         status: session.status,
@@ -165,7 +173,8 @@ export function createReadTools(deps: VaultToolDeps) {
         ...(session.summary ? { current_summary: session.summary } : {}),
         prompt_count: session.prompt_count,
         batch_count: batches.length,
-        batches: batches.map(projectBatchForSessionSummary),
+        ...(sessionRelease ? { release_state: { state: sessionRelease.state, confidence: sessionRelease.confidence } } : {}),
+        batches: batches.map((b) => projectBatchForSessionSummary(b, { release: releases.get(String(b.id)) })),
       });
     },
     { annotations: { readOnlyHint: true } },
@@ -190,10 +199,11 @@ export function createReadTools(deps: VaultToolDeps) {
         const spores = args.ids
           .map((id) => getSpore(id, scope))
           .filter((spore): spore is NonNullable<typeof spore> => spore !== null);
+        const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
         return projectToolRows(
           spores,
           includeMetadata,
-          (spore) => projectSporeForAgent(spore, { exact: true }),
+          (spore) => projectSporeForAgent(spore, { exact: true, release: releases.get(spore.id) }),
         );
       }
       const spores = listSpores({
@@ -205,10 +215,11 @@ export function createReadTools(deps: VaultToolDeps) {
         limit: args.limit ?? DEFAULT_SPORES_LIMIT,
         includeActive: args.include_active === true,
       });
+      const releases = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
       return projectToolRows(
         spores,
         includeMetadata,
-        (spore) => projectSporeForAgent(spore, { exact: false }),
+        (spore) => projectSporeForAgent(spore, { exact: false, release: releases.get(spore.id) }),
       );
     },
     { annotations: { readOnlyHint: true } },
@@ -232,10 +243,11 @@ export function createReadTools(deps: VaultToolDeps) {
         status: args.status,
         includeActive: args.include_active === true,
       });
+      const releases = releaseStateAnnotationMap('sessions', sessions.map((s) => s.id), scope);
       return projectToolRows(
         sessions,
         args.include_metadata ?? DEFAULT_INCLUDE_METADATA,
-        projectSessionForAgent,
+        (session) => projectSessionForAgent(session, { release: releases.get(session.id) }),
       );
     },
     { annotations: { readOnlyHint: true } },

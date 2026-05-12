@@ -14,6 +14,7 @@ import { getVec0Path, resolveDevNativeDeps } from '../../runtime/native-deps.js'
 import { EMBEDDING_DIMENSIONS } from '@myco/db/schema.js';
 import {
   EMBEDDABLE_NAMESPACES,
+  type DomainMetadata,
   type EmbeddableNamespace,
   type VectorStore,
   type VectorSearchResult,
@@ -245,6 +246,20 @@ export class SqliteVecVectorStore implements VectorStore {
     });
 
     txn();
+  }
+
+  patchDomainMetadata(namespace: string, id: string, patch: Partial<DomainMetadata>): boolean {
+    this.validateNamespace(namespace);
+    if (!patch || Object.keys(patch).length === 0) return false;
+    // json_patch merges objects; null values delete keys. Build a partial
+    // JSON literal that only contains the fields we want to overwrite.
+    const patchJson = JSON.stringify(patch);
+    const result = this.db.prepare(
+      `UPDATE embedding_metadata
+          SET domain_metadata = json_patch(COALESCE(domain_metadata, '{}'), ?)
+        WHERE namespace = ? AND record_id = ?`,
+    ).run(patchJson, namespace, id);
+    return result.changes > 0;
   }
 
   clear(namespace?: string): { cleared: number } {

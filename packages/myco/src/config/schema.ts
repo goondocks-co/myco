@@ -51,6 +51,36 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
 });
 
+/**
+ * Map a glob over project paths to a release tag family. Used so a monorepo
+ * record changed inside `packages/myco-team/` classifies against
+ * `myco-team-v*` instead of the umbrella `v*` tags, avoiding false-positive
+ * "released" annotations.
+ */
+const PackageTagMappingSchema = z.object({
+  /** Glob-like prefix on the project path (e.g. "packages/myco-team/"). */
+  path_glob: z.string().min(1),
+  /** Tag pattern (e.g. "myco-team-v*") matched against integration/production refs. */
+  tag_pattern: z.string().min(1),
+});
+
+const ReleaseGithubSchema = z.object({
+  /** GitHub owner/name. Empty disables PR-evidence lookup. */
+  repo: z.string().default(''),
+  /** Env var holding the GitHub token. Token VALUES must never appear in YAML. */
+  token_env: z.string().default('GITHUB_TOKEN'),
+  /** Cap per-reconcile PR lookups so a noisy backlog can't drain the rate limit. */
+  max_lookups_per_run: z.number().int().min(0).max(200).default(20),
+}).superRefine((value, ctx) => {
+  if (/^(gh[pous]_|github_pat_)[A-Za-z0-9_-]/.test(value.repo)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'release_provenance.github.repo looks like a token value; tokens belong in env, not config',
+      path: ['repo'],
+    });
+  }
+});
+
 const ReleaseProvenanceSchema = z.object({
   enabled: z.boolean().default(true),
   /**
@@ -67,6 +97,10 @@ const ReleaseProvenanceSchema = z.object({
   reconcile_interval_minutes: z.number().int().min(1).max(1440).default(15),
   /** Production-debug retrieval may include unknown clues alongside released hits. */
   production_debug_include_unknown: z.boolean().default(true),
+  /** Optional GitHub PR squash-merge evidence; degraded gracefully when absent. */
+  github: ReleaseGithubSchema.default(() => ReleaseGithubSchema.parse({})),
+  /** Monorepo package-map entries; absent maps fall back to the umbrella refs. */
+  package_map: z.array(PackageTagMappingSchema).default([]),
 });
 
 const GroveReleaseProvenanceSchema = z.object({

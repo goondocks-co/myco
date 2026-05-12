@@ -153,7 +153,7 @@ async function executeQuery(
         limit,
         includeActive: false,
         scope,
-      }).map(projectBatchForAgent);
+      }).map((batch) => projectBatchForAgent(batch));
 
     case 'vault_spores':
       return listSpores({
@@ -169,7 +169,7 @@ async function executeQuery(
         scope,
         limit,
         includeActive: false,
-      }).map(projectSessionForAgent);
+      }).map((session) => projectSessionForAgent(session));
 
     case 'vault_state':
       return getStatesForAgent(agentId, projectId);

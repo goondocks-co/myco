@@ -343,15 +343,20 @@ export function createPromptContextHandler(deps: ContextDeps) {
  * Format hydrated spore search results as markdown context for injection.
  * Respects PROMPT_CONTEXT_MAX_TOKENS budget.
  */
+function releaseLabel(release: { state?: string; confidence?: string } | undefined): string {
+  if (!release?.state) return '';
+  return release.confidence ? ` [${release.state}/${release.confidence}]` : ` [${release.state}]`;
+}
+
 function formatSporeContext(
-  spores: Array<{ title: string; preview: string; score: number }>,
+  spores: Array<{ title: string; preview: string; score: number; release_state?: { state?: string; confidence?: string } }>,
 ): string {
   const header = 'Relevant vault observations:';
   let text = header;
   let tokens = estimateTokens(text);
 
   for (const spore of spores) {
-    const line = `\n- (${spore.title}) ${spore.preview}`;
+    const line = `\n- (${spore.title})${releaseLabel(spore.release_state)} ${spore.preview}`;
     const lineTokens = estimateTokens(line);
 
     if (tokens + lineTokens > PROMPT_CONTEXT_MAX_TOKENS) break;

@@ -78,12 +78,12 @@ describe('reconcileReleaseProvenance', () => {
   beforeEach(() => { cleanTestDb(); });
   afterAll(() => { teardownTestDb(); });
 
-  it('marks a clean captured head as released when it is contained in a production ref', () => {
+  it('marks a clean captured head as released when it is contained in a production ref', async () => {
     const { repo, first } = makeRepo();
     try {
       const batchId = insertPromptProvenance(first);
 
-      const result = reconcileReleaseProvenance({
+      const result = await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
         config: {
@@ -105,12 +105,12 @@ describe('reconcileReleaseProvenance', () => {
     }
   });
 
-  it('keeps missing release configuration as unreconciled instead of guessing', () => {
+  it('keeps missing release configuration as unreconciled instead of guessing', async () => {
     const { repo, first } = makeRepo();
     try {
       const batchId = insertPromptProvenance(first);
 
-      reconcileReleaseProvenance({
+      await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
         config: {
@@ -130,12 +130,12 @@ describe('reconcileReleaseProvenance', () => {
     }
   });
 
-  it('does not claim dirty working-tree evidence is on a release line', () => {
+  it('does not claim dirty working-tree evidence is on a release line', async () => {
     const { repo, first } = makeRepo();
     try {
       const batchId = insertPromptProvenance(first, { is_dirty: true, staged_count: 1 });
 
-      reconcileReleaseProvenance({
+      await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
         config: {
@@ -155,7 +155,7 @@ describe('reconcileReleaseProvenance', () => {
     }
   });
 
-  it('marks squash-merged feature work as released through stable range patch identity', () => {
+  it('marks squash-merged feature work as released through stable range patch identity', async () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-squash-'));
     try {
       git(repo, ['init', '-q']);
@@ -191,7 +191,7 @@ describe('reconcileReleaseProvenance', () => {
         }]),
       });
 
-      reconcileReleaseProvenance({
+      await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,
         config: {
