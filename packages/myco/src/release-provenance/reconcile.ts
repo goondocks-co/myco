@@ -418,6 +418,14 @@ function classificationUnchanged(
   next: Classification,
 ): boolean {
   if (!existing) return false;
+  // A row whose synced_at is null was written before team sync came online
+  // (or before the reconciler started enqueuing). Treat it as "changed" so
+  // the full upsert path runs and syncRow re-enqueues it. Without this guard,
+  // such orphans stay invisible to remote teammates indefinitely because the
+  // touch-only path skips the outbox. Verified live: 19 release_state rows
+  // stuck unsynced because they were written by an earlier daemon binary,
+  // and the reconciler kept shortcircuiting through touchReleaseStateCheckedAt.
+  if (existing.synced_at === null) return false;
   return existing.state === next.state
     && existing.confidence === next.confidence
     && existing.basis_kind === next.basis_kind
