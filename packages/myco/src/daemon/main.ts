@@ -817,6 +817,7 @@ export async function main(): Promise<void> {
     liveConfig,
     vaultDir: bootstrapVaultDir,
     projectId: dataPaths.requestContext.projectId,
+    machineId,
     planTags: symbiontPlanTags,
     planWatchConfig,
   });
@@ -1540,6 +1541,7 @@ export async function main(): Promise<void> {
   });
   server.registerRoute('GET', '/api/maintenance/summary', maintenanceHandlers.handleSummary);
   server.registerRoute('GET', '/api/groves/:id/maintenance', maintenanceHandlers.handleGroveMaintenance);
+  server.registerRoute('POST', '/api/maintenance/release-provenance/reconcile', maintenanceHandlers.handleReleaseProvenanceReconcile);
 
   const projectsActivityHandler = createProjectsActivityHandler({
     logger,

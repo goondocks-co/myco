@@ -29,6 +29,8 @@ import {
   MIGRATION_TASKS_TABLE,
   CANOPY_ENTRIES_TABLE,
   CANOPY_MAPS_TABLE,
+  KNOWLEDGE_GIT_PROVENANCE_TABLE,
+  KNOWLEDGE_RELEASE_STATE_TABLE,
   CANOPY_SESSION_COLUMNS,
   CANOPY_ACTIVITY_COLUMN,
   CANOPY_INDEX_DDLS,
@@ -94,6 +96,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 38, migrate: (db) => migrateV37ToV38(db) },
   { version: 39, migrate: (db) => migrateV38ToV39(db) },
   { version: 40, migrate: (db) => migrateV39ToV40(db) },
+  { version: 41, migrate: (db) => migrateV40ToV41(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2523,5 +2526,33 @@ function migrateV39ToV40(db: Database): void {
     throw err;
   } finally {
     setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+/**
+ * Version 41 adds release-provenance tables:
+ *   - knowledge_git_provenance: raw, append-oriented Git evidence captured
+ *     at session and prompt-batch boundaries
+ *   - knowledge_release_state: rebuildable release classification for
+ *     retrievable knowledge records
+ *
+ * Both tables are project-scoped and use deterministic identity keys so
+ * idempotent writers do not depend on nullable UNIQUE column behavior.
+ */
+function migrateV40ToV41(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(KNOWLEDGE_GIT_PROVENANCE_TABLE).run();
+    db.prepare(KNOWLEDGE_RELEASE_STATE_TABLE).run();
+    for (const ddl of SECONDARY_INDEXES) db.prepare(ddl).run();
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(41, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }

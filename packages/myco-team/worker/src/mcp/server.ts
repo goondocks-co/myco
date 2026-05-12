@@ -33,6 +33,9 @@ export function createMcpServerInstance(env: Env): McpServer {
     session_id: z.string().optional().describe('Optional session id metadata filter'),
     source_path: z.string().optional().describe('Optional source path metadata filter'),
     name: z.string().optional().describe('Optional name metadata filter'),
+    project_id: z.string().optional().describe('Optional Grove project id metadata filter'),
+    release_state: z.string().optional().describe('Optional derived release-state filter: unreconciled, released, merged_unreleased, not_on_release_line, unknown'),
+    release_confidence: z.string().optional().describe('Optional derived release-confidence filter: high, medium, low'),
   }, async (args) => handleSearch(args, env));
 
   server.tool('myco_cortex', 'Retrieve Cortex project intelligence. This team surface currently supports op="digest". Three tiers: 1500 (executive), 5000 (deep onboarding), 10000 (comprehensive).', {

@@ -29,6 +29,15 @@ const PLANS_POLL_INTERVAL = POLL_INTERVALS.STATS;
 
 /* ---------- Types ---------- */
 
+export interface SessionReleaseState {
+  state: string;
+  confidence?: string | null;
+  basis_kind?: string | null;
+  basis_ref?: string | null;
+  checked_at?: number;
+  reason?: string | null;
+}
+
 /** Simplified shape returned by the list endpoint. */
 export interface SessionSummary {
   id: string;
@@ -40,6 +49,7 @@ export interface SessionSummary {
   tool_count: number;
   started_at: number;
   ended_at: number | null;
+  release_state?: SessionReleaseState;
 }
 
 /** Full session row returned by the detail endpoint. */
@@ -62,6 +72,7 @@ export interface SessionDetail {
   processed: number;
   content_hash: string | null;
   created_at: number;
+  release_state?: SessionReleaseState;
 }
 
 export interface SessionsResponse {
@@ -90,6 +101,7 @@ export interface BatchRow {
   parent_prompt_batch_id: number | null;
   kind: string;
   origin: PromptBatchOrigin;
+  release_state?: SessionReleaseState;
 }
 
 export interface ActivityRow {

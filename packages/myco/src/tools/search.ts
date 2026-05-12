@@ -7,6 +7,10 @@
 
 import { MCP_SEARCH_DEFAULT_LIMIT } from '@myco/constants.js';
 import type { DaemonClient } from '@myco/hooks/client.js';
+import type {
+  ReleaseConfidence,
+  ReleaseStateValue,
+} from '@myco/db/queries/release-provenance.js';
 import { normalizeSearchResults, type NormalizedSearchResult } from '@myco/search-results.js';
 import { requestContextHeaders, type MycoRequestContext } from './request-context.js';
 import { buildEndpoint } from './shared.js';
@@ -21,6 +25,8 @@ interface SearchInput {
   limit?: number;
   observation_type?: string;
   status?: string;
+  release_state?: ReleaseStateValue;
+  release_confidence?: ReleaseConfidence;
   since?: number;
   until?: number;
   /** Canopy-only: optional language filter (e.g. "typescript"). */
@@ -32,6 +38,8 @@ function requiresSemanticMode(input: SearchInput): boolean {
   if (input.type === 'canopy') return true;
   return input.observation_type !== undefined
     || input.status !== undefined
+    || input.release_state !== undefined
+    || input.release_confidence !== undefined
     || input.since !== undefined
     || input.until !== undefined;
 }
@@ -54,6 +62,8 @@ export async function handleMycoSearch(
     type: input.type,
     observation_type: input.observation_type,
     status: input.status,
+    release_state: input.release_state,
+    release_confidence: input.release_confidence,
     since: input.since,
     until: input.until,
     language: input.language,

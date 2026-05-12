@@ -13,6 +13,7 @@ import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { SessionPlans } from './SessionPlans';
 import { CanopyEfficiencyTile } from './CanopyEfficiencyTile';
+import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 import { StatusBadge } from './status-helpers';
 import { formatTimeAgo, formatDuration as formatDurationSec, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
@@ -179,6 +180,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
             {session.title ?? shortSession(session.id)}
           </h1>
           <StatusBadge status={session.status} />
+          <ReleaseStateBadge annotation={session.release_state} />
           {session.agent && (
             <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
               {session.agent}

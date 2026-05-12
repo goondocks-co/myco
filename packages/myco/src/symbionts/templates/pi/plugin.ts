@@ -25,7 +25,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { Type } from "@sinclair/typebox";
 
@@ -360,6 +360,25 @@ async function postEventWithBuffer(
 // Daemon API wrappers
 // ---------------------------------------------------------------------------
 
+/**
+ * Cheap best-effort branch detection so pi session registrations carry the
+ * same branch hint hook-based symbionts already supply. Failures (no Git,
+ * stale repo, timeout) return undefined — the daemon handles authoritative
+ * provenance capture asynchronously regardless.
+ */
+function detectGitBranch(directory: string): string | undefined {
+  try {
+    const out = execFileSync("git", ["-C", directory, "rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf-8",
+      timeout: 1000,
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return out && out !== "HEAD" ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function mycoRegisterSession(
   directory: string,
   sessionId: string,
@@ -367,6 +386,7 @@ async function mycoRegisterSession(
   await postJson(directory, "/sessions/register", {
     session_id: sessionId,
     agent: "pi",
+    branch: detectGitBranch(directory),
     started_at: new Date().toISOString(),
   });
 }

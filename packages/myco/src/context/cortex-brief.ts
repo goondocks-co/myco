@@ -22,6 +22,7 @@ import { getDigestExtract } from '@myco/db/queries/digest-extracts.js';
 import { listPlans } from '@myco/db/queries/plans.js';
 import { listSessions } from '@myco/db/queries/sessions.js';
 import { listSpores } from '@myco/db/queries/spores.js';
+import { releaseStateAnnotationMap } from '@myco/release-provenance/annotations.js';
 import { readCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
 import {
@@ -234,6 +235,11 @@ function scopedOptions(scope: ProjectScope): { scope: ProjectScope } {
   return { scope };
 }
 
+function releaseLabel(state: string | undefined, confidence: string | undefined): string {
+  if (!state) return '';
+  return confidence ? ` [${state}/${confidence}]` : ` [${state}]`;
+}
+
 function formatRecentSessions(scope: ProjectScope): string {
   const sessions = listSessions({
     ...scopedOptions(scope),
@@ -242,8 +248,11 @@ function formatRecentSessions(scope: ProjectScope): string {
   });
   if (sessions.length === 0) return 'No recent sessions are available.';
 
+  const states = releaseStateAnnotationMap('sessions', sessions.map((s) => s.id), scope);
   return sessions.map((session) => {
-    const head = `- ${session.title ?? session.id}${session.branch ? ` (branch=${session.branch})` : ''}`;
+    const annotation = states.get(session.id);
+    const label = releaseLabel(annotation?.state, annotation?.confidence);
+    const head = `- ${session.title ?? session.id}${session.branch ? ` (branch=${session.branch})` : ''}${label}`;
     const body = truncatePreview(session.summary);
     return body ? `${head}\n  ${body}` : head;
   }).join('\n');
@@ -263,9 +272,12 @@ function formatSporesOfType(
   });
   if (spores.length === 0) return `No recent ${observationType} spores are available.`;
 
+  const states = releaseStateAnnotationMap('spores', spores.map((s) => s.id), scope);
   return spores.map((spore) => {
+    const annotation = states.get(spore.id);
+    const label = releaseLabel(annotation?.state, annotation?.confidence);
     const parts = [
-      `- ${truncatePreview(spore.content)}`,
+      `-${label} ${truncatePreview(spore.content)}`,
       spore.session_id ? `session=${spore.session_id}` : null,
     ].filter(Boolean);
     return parts.join(' — ');

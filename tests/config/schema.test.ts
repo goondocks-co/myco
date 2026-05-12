@@ -63,6 +63,27 @@ describe('MycoConfigSchema v3', () => {
     expect(config.capture.buffer_max_events).toBe(1000);
   });
 
+  it('defaults release provenance to enabled but unreconciled until refs are configured', () => {
+    const config = MycoConfigSchema.parse({ version: 3 });
+    expect(config.release_provenance.enabled).toBe(true);
+    expect(config.release_provenance.production_refs).toEqual([]);
+    expect(config.release_provenance.integration_refs).toEqual([]);
+    expect(config.release_provenance.reconcile_interval_minutes).toBe(15);
+    expect(config.release_provenance.production_debug_include_unknown).toBe(true);
+  });
+
+  it('accepts project release provenance refs', () => {
+    const config = MycoConfigSchema.parse({
+      version: 3,
+      release_provenance: {
+        production_refs: ['refs/tags/v1.2.3'],
+        integration_refs: ['origin/main'],
+      },
+    });
+    expect(config.release_provenance.production_refs).toEqual(['refs/tags/v1.2.3']);
+    expect(config.release_provenance.integration_refs).toEqual(['origin/main']);
+  });
+
   it('does not include removed v2 sections', () => {
     const config = MycoConfigSchema.parse({ version: 3 });
     const raw = config as Record<string, unknown>;

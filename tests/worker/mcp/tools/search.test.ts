@@ -194,6 +194,67 @@ describe('handleSearch', () => {
     expect(parsed.results[0].metadata.project_id).toBe('proj-a');
   });
 
+  it('hydrates and filters derived release state from D1', async () => {
+    const fake = createFakeD1();
+    const vectorize = createFakeVectorize([
+      {
+        id: 'sessions:sess-released:m1',
+        score: 0.95,
+        metadata: { table: 'sessions', id: 'sess-released', machine_id: 'm1' },
+      },
+      {
+        id: 'sessions:sess-unknown:m1',
+        score: 0.9,
+        metadata: { table: 'sessions', id: 'sess-unknown', machine_id: 'm1' },
+      },
+    ]);
+    const ai = createFakeAI();
+
+    fake.addResult([
+      { id: 'sess-released', machine_id: 'm1', summary: 'released session' },
+      { id: 'sess-unknown', machine_id: 'm1', summary: 'unknown session' },
+    ]);
+    fake.addResult([
+      {
+        record_id: 'sess-released',
+        machine_id: 'm1',
+        state: 'released',
+        confidence: 'high',
+        basis_kind: 'git_ancestry',
+        basis_ref: 'refs/heads/main',
+        checked_at: 1_800_000_000,
+        reason: 'head is reachable from production ref',
+      },
+      {
+        record_id: 'sess-unknown',
+        machine_id: 'm1',
+        state: 'unknown',
+        confidence: 'low',
+        checked_at: 1_800_000_001,
+      },
+    ]);
+
+    const result = await handleSearch(
+      { query: 'release query', release_state: 'released', release_confidence: 'high' },
+      { MYCO_TEAM_DB: fake.db, MYCO_TEAM_VECTORS: vectorize, AI: ai },
+    );
+
+    const parsed = parseToolResult(result);
+    expect(parsed.results).toHaveLength(1);
+    expect(parsed.results[0].id).toBe('sess-released');
+    expect(parsed.results[0].data.release_state).toEqual(expect.objectContaining({
+      state: 'released',
+      confidence: 'high',
+      basis_kind: 'git_ancestry',
+    }));
+    expect(parsed.results[0].metadata).toEqual(expect.objectContaining({
+      release_state: 'released',
+      release_confidence: 'high',
+      release_basis_kind: 'git_ancestry',
+      release_checked_at: 1_800_000_000,
+    }));
+  });
+
   it('uses overfetch so filtered searches can still fill the requested limit', async () => {
     const fake = createFakeD1();
     const query = async (_vector: number[], options?: { topK?: number }) => ({

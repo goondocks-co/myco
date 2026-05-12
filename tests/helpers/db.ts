@@ -36,6 +36,8 @@ const DELETE_TABLES = [
   'activities',
   'spores',
   'plans',
+  'knowledge_release_state',
+  'knowledge_git_provenance',
   'prompt_batches',
   'artifacts',
   'team_members',

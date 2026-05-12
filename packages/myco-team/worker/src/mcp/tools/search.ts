@@ -14,6 +14,8 @@ interface SearchArgs {
   source_path?: string;
   name?: string;
   project_id?: string;
+  release_state?: string;
+  release_confidence?: string;
 }
 
 export async function handleSearch(args: SearchArgs, env: Pick<Env, 'MYCO_TEAM_DB' | 'MYCO_TEAM_VECTORS' | 'AI'>) {

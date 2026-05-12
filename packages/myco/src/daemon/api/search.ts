@@ -103,6 +103,8 @@ async function handleSearchWithDatabase(
       ...(req.query.session_id ? { session_id: req.query.session_id } : {}),
       ...(req.query.observation_type ? { observation_type: req.query.observation_type } : {}),
       ...(typeof projectId === 'string' ? { project_id: projectId } : {}),
+      ...(req.query.release_state ? { release_state: req.query.release_state } : {}),
+      ...(req.query.release_confidence ? { release_confidence: req.query.release_confidence } : {}),
       ...(req.query.since ? { created_at_gte: Number(req.query.since) } : {}),
       ...(req.query.until ? { created_at_lte: Number(req.query.until) } : {}),
     };

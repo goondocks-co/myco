@@ -41,7 +41,10 @@ import {
 } from '@myco/grove/registry.js';
 import { withDatabase } from '@myco/db/client.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from './grove-runtime-cache.js';
-import type { GroveProjectId } from '@myco/grove/ids.js';
+import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
+import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
+import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
+import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
 
 const STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -256,6 +259,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
   );
 
   const totalPendingProbe = makeTotalPendingProbe(deps);
+  const lastReleaseReconcileAt = new Map<string, number>();
 
   // Daemon-scope notification (project_id = NULL) so failures surface in
   // the dashboard regardless of which project the user is viewing.
@@ -519,6 +523,83 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
           ),
         },
       );
+    },
+  });
+
+  powerManager.register({
+    name: POWER_JOB_NAMES.RELEASE_PROVENANCE_RECONCILE,
+    runIn: ['active', 'idle', 'sleep'],
+    fn: async () => {
+      const config = releaseProvenanceConfig(liveConfig.current);
+      if (!config.enabled) return;
+      const intervalMs = config.reconcile_interval_minutes * 60 * 1000;
+      const now = Date.now();
+      const visited = new Set<string>();
+      await forEachRegisteredProject(
+        cache,
+        logger,
+        ({ projectId, projectRoot, databasePath }: RegisteredProjectScope) => {
+          const key = String(projectId);
+          visited.add(key);
+          const lastRun = lastReleaseReconcileAt.get(key) ?? 0;
+          if (now - lastRun < intervalMs) return;
+          const projectScopeValue = projectScope(projectId);
+          const entry = cache.getEmbeddingRuntime(databasePath, embeddingRuntimeFactory);
+          const vectorStore = entry.vectorStore;
+          const recordDb = cache.getDatabase(databasePath);
+          return reconcileReleaseProvenance({
+            projectRoot,
+            projectId,
+            machineId,
+            scope: projectScopeValue,
+            config,
+            logger,
+            onReleaseStateChanged: vectorStore
+              ? (changes) => {
+                  for (const change of changes) {
+                    refreshReleaseVectorMetadata({
+                      store: vectorStore,
+                      db: recordDb,
+                      scope: projectScopeValue,
+                      sourceNamespace: change.namespace,
+                      sourceRecordId: change.recordId,
+                      patch: {
+                        state: change.state,
+                        confidence: change.confidence,
+                        basis_kind: change.basisKind,
+                        checked_at: change.checkedAt,
+                      },
+                    });
+                  }
+                }
+              : undefined,
+          }).then((result) => {
+            lastReleaseReconcileAt.set(key, now);
+            if (result.reconciled > 0) {
+              logger.info(
+                LOG_KINDS.RELEASE_PROVENANCE_RECONCILE,
+                'Release provenance reconcile processed rows',
+                { project_id: projectId, reconciled: result.reconciled, scanned: result.scanned },
+              );
+            }
+          });
+        },
+        {
+          mycoHome,
+          daemonStateDir,
+          machineId,
+          shouldVisit: pauseAwareShouldVisit(mycoHome),
+          notifyOnProjectFailure: buildProjectFailureNotifier(
+            'daemon.release_provenance_failed',
+            'Release provenance reconcile',
+          ),
+        },
+      );
+      // Drop throttle entries for projects no longer registered so the map
+      // can't grow unbounded across long-running daemons.
+      for (const key of lastReleaseReconcileAt.keys()) {
+        if (!visited.has(key)) lastReleaseReconcileAt.delete(key);
+      }
     },
   });
 

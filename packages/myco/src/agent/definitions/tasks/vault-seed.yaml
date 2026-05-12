@@ -223,6 +223,10 @@ phases:
       - prompt_batch_id: null
       - context: "Seeded from vault-seed exploration pass"
 
+      Seed spores have no session provenance. Do not invent release
+      confidence for them; use release state only when file or package
+      evidence has already been reconciled.
+
       ## Quality rules
 
       - One observation per spore — specific, not vague
@@ -234,6 +238,7 @@ phases:
         abstract statements
     tools:
       - vault_search_semantic
+      - vault_release_state
       - vault_create_spore
       - vault_report
     maxTurns: 80
@@ -252,8 +257,8 @@ phases:
       ## Your tools this phase
 
       You have these tools and ONLY these tools:
-      `vault_spores`, `vault_search_semantic`, `vault_read_digest`,
-      `vault_write_digest`, `vault_report`. They are registered and
+      `vault_spores`, `vault_search_semantic`, `vault_release_state`,
+      `vault_read_digest`, `vault_write_digest`, `vault_report`. They are registered and
       available. Call them directly. Filesystem tools from earlier
       phases are NOT in scope here — the spores created in seed-spores
       contain everything you need.
@@ -276,6 +281,7 @@ phases:
     tools:
       - vault_spores
       - vault_search_semantic
+      - vault_release_state
       - vault_read_digest
       - vault_write_digest
       - vault_report

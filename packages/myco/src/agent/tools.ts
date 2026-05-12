@@ -3,9 +3,10 @@
  *
  * Creates vault tools that expose SQLite query helpers to the agent
  * via the Claude Agent SDK. Tools are grouped into:
- * - Read tools (9): vault_unprocessed, vault_batches, vault_session_summary_material,
+ * - Read tools (11): vault_unprocessed, vault_batches, vault_session_summary_material,
  *                   vault_spores, vault_sessions, vault_search_fts,
- *                   vault_search_semantic, vault_state, vault_edges
+ *                   vault_search_semantic, vault_search_canopy, vault_release_state,
+ *                   vault_state, vault_edges
  * - Write tools (7): vault_create_spore, vault_resolve_spore, vault_update_session,
  *                    vault_set_state, vault_read_digest, vault_write_digest,
  *                    vault_mark_processed
@@ -169,7 +170,7 @@ const DRY_RUN_STUB_TOOLS = new Map<string, StubToolSpec>([
 const READ_TOOL_NAMES = new Set([
   'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores',
   'vault_sessions', 'vault_search_fts', 'vault_search_semantic', 'vault_search_canopy',
-  'vault_state', 'vault_edges',
+  'vault_release_state', 'vault_state', 'vault_edges',
 ]);
 
 const WRITE_TOOL_NAMES = new Set([

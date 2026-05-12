@@ -51,6 +51,62 @@ const CaptureSchema = z.object({
   buffer_max_events: z.number().int().positive().default(500),
 });
 
+/**
+ * Map a glob over project paths to a release tag family. Used so a monorepo
+ * record changed inside `packages/myco-team/` classifies against
+ * `myco-team-v*` instead of the umbrella `v*` tags, avoiding false-positive
+ * "released" annotations.
+ */
+const PackageTagMappingSchema = z.object({
+  /** Glob-like prefix on the project path (e.g. "packages/myco-team/"). */
+  path_glob: z.string().min(1),
+  /** Tag pattern (e.g. "myco-team-v*") matched against integration/production refs. */
+  tag_pattern: z.string().min(1),
+});
+
+const ReleaseGithubSchema = z.object({
+  /** GitHub owner/name. Empty disables PR-evidence lookup. */
+  repo: z.string().default(''),
+  /** Env var holding the GitHub token. Token VALUES must never appear in YAML. */
+  token_env: z.string().default('GITHUB_TOKEN'),
+  /** Cap per-reconcile PR lookups so a noisy backlog can't drain the rate limit. */
+  max_lookups_per_run: z.number().int().min(0).max(200).default(20),
+}).superRefine((value, ctx) => {
+  if (/^(gh[pous]_|github_pat_)[A-Za-z0-9_-]/.test(value.repo)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'release_provenance.github.repo looks like a token value; tokens belong in env, not config',
+      path: ['repo'],
+    });
+  }
+});
+
+const ReleaseProvenanceSchema = z.object({
+  enabled: z.boolean().default(true),
+  /**
+   * Project-owned refs that represent shipped/production code. Empty keeps
+   * derived state unreconciled rather than guessing from branch names.
+   */
+  production_refs: z.array(z.string().min(1)).default([]),
+  /** Project-owned refs that represent merged-but-not-yet-shipped code. */
+  integration_refs: z.array(z.string().min(1)).default([]),
+  /**
+   * Grove-operational cadence for the PowerManager reconciler. Grove config
+   * may set this; project/personal overlays can override when needed.
+   */
+  reconcile_interval_minutes: z.number().int().min(1).max(1440).default(15),
+  /** Production-debug retrieval may include unknown clues alongside released hits. */
+  production_debug_include_unknown: z.boolean().default(true),
+  /** Optional GitHub PR squash-merge evidence; degraded gracefully when absent. */
+  github: ReleaseGithubSchema.default(() => ReleaseGithubSchema.parse({})),
+  /** Monorepo package-map entries; absent maps fall back to the umbrella refs. */
+  package_map: z.array(PackageTagMappingSchema).default([]),
+});
+
+const GroveReleaseProvenanceSchema = z.object({
+  reconcile_interval_minutes: z.number().int().min(1).max(1440).default(15),
+});
+
 /** Provider config shape used in both task-level and phase-level overrides. */
 const ProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
   type: z.enum(['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible']),
@@ -455,6 +511,7 @@ export const GroveConfigSchema = z.object({
   maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
   embedding: GroveEmbeddingSchema.default(() => GroveEmbeddingSchema.parse({})),
   agent: GroveAgentSchema.default(() => GroveAgentSchema.parse({})),
+  release_provenance: GroveReleaseProvenanceSchema.default(() => GroveReleaseProvenanceSchema.parse({})),
   /** Team sync activation — Grove-scoped per the migration plan. */
   team: TeamSchema.default(() => TeamSchema.parse({})),
 }).strict();
@@ -470,6 +527,7 @@ export const ProjectConfigSchema = z.object({
   config_version: z.number().int().nonnegative().default(0),
   embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+  release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
   agent: AgentSchema.default(() => AgentSchema.parse({})),
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
@@ -521,6 +579,7 @@ export const MycoConfigSchema = z.preprocess(
     embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
     daemon: DaemonSchema.default(() => DaemonSchema.parse({})),
     capture: CaptureSchema.default(() => CaptureSchema.parse({})),
+    release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
     agent: AgentSchema.default(() => AgentSchema.parse({})),
     backup: BackupSchema.default(() => BackupSchema.parse({})),
     maintenance: MaintenanceSchema.default(() => MaintenanceSchema.parse({})),
@@ -536,6 +595,7 @@ export const MycoConfigSchema = z.preprocess(
 
 export type MycoConfig = z.output<typeof MycoConfigSchema>;
 export type EmbeddingProviderConfig = z.infer<typeof EmbeddingProviderSchema>;
+export type ReleaseProvenanceConfig = z.infer<typeof ReleaseProvenanceSchema>;
 export type TaskProviderOverride = z.infer<typeof TaskProviderOverrideSchema>;
 export type PhaseOverride = z.infer<typeof PhaseOverrideSchema>;
 export type ScheduleOverride = z.infer<typeof ScheduleOverrideSchema>;

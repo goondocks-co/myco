@@ -67,7 +67,9 @@ prompt: |
   - reason: explain what changed
 
   Only supersede or consolidate when the new information genuinely replaces
-  the old. When in doubt, keep both.
+  the old. Release state is supporting evidence only: do not archive or
+  supersede solely because a spore is unreleased, unknown, or unreconciled.
+  When in doubt, keep both.
 
   ## Phase 4 — Report (budget: 2 turns)
 
@@ -80,6 +82,7 @@ prompt: |
 toolOverrides:
   - vault_spores
   - vault_search_semantic
+  - vault_release_state
   - vault_state
   - vault_create_spore
   - vault_resolve_spore

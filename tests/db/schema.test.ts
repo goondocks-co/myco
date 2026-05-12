@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(40);
+      expect(SCHEMA_VERSION).toBe(41);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -217,6 +217,43 @@ describe('Database schema', () => {
         expect(colNames).toContain('processed');
         expect(colNames).toContain('content_hash');
         expect(colNames).toContain('created_at');
+      });
+
+      it('creates release provenance tables with expected columns and indexes', () => {
+        createSchema(db);
+
+        expect(tableExists(db, 'knowledge_git_provenance')).toBe(true);
+        expect(tableExists(db, 'knowledge_release_state')).toBe(true);
+
+        expect(getColumnNames(db, 'knowledge_git_provenance')).toEqual(expect.arrayContaining([
+          'project_id',
+          'machine_id',
+          'identity_key',
+          'session_id',
+          'prompt_batch_id',
+          'capture_point',
+          'captured_at',
+          'head_sha',
+          'status_hash',
+          'evidence_json',
+        ]));
+        expect(getColumnNames(db, 'knowledge_release_state')).toEqual(expect.arrayContaining([
+          'project_id',
+          'machine_id',
+          'identity_key',
+          'namespace',
+          'record_id',
+          'state',
+          'confidence',
+          'basis_ref',
+          'basis_sha',
+          'checked_at',
+        ]));
+
+        expect(indexExists(db, 'idx_knowledge_git_provenance_project_id')).toBe(true);
+        expect(indexExists(db, 'idx_knowledge_git_provenance_project_captured')).toBe(true);
+        expect(indexExists(db, 'idx_knowledge_release_state_project_id')).toBe(true);
+        expect(indexExists(db, 'idx_knowledge_release_state_state')).toBe(true);
       });
 
       it('activities table has correct columns', () => {

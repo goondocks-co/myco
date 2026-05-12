@@ -28,6 +28,11 @@ import {
 import { errorMessage } from '@myco/utils/error-message.js';
 import { resolveGroveBackupDir } from './backup.js';
 import { listBackups } from '../backup.js';
+import { listRegisteredProjects as listRegisteredProjectsForGrove } from '@myco/grove/registry.js';
+import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.js';
+import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
+import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
+import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,6 +63,13 @@ export interface GroveMaintenanceSummary {
   last_optimize_at: string | null;
   last_vacuum_at: string | null;
   last_integrity_check: MaintenanceLastIntegrity | null;
+  release_provenance?: {
+    raw_count: number;
+    derived_count: number;
+    unreconciled_count: number;
+    unknown_count: number;
+    last_checked_at: string | null;
+  };
   /**
    * Set when the per-Grove gather threw. Other fields fall back to
    * neutral defaults so the UI can still render the row inline.
@@ -212,6 +224,37 @@ function embeddingPending(
   }
 }
 
+function releaseProvenanceSummary(db: Database): GroveMaintenanceSummary['release_provenance'] {
+  try {
+    const raw = db.prepare('SELECT COUNT(*) AS c FROM knowledge_git_provenance').get() as { c: number };
+    const derived = db.prepare('SELECT COUNT(*) AS c FROM knowledge_release_state').get() as { c: number };
+    const unreconciled = db.prepare(
+      `SELECT COUNT(*) AS c FROM knowledge_release_state WHERE state = 'unreconciled'`,
+    ).get() as { c: number };
+    const unknown = db.prepare(
+      `SELECT COUNT(*) AS c FROM knowledge_release_state WHERE state = 'unknown'`,
+    ).get() as { c: number };
+    const last = db.prepare(
+      'SELECT MAX(checked_at) AS checked_at FROM knowledge_release_state',
+    ).get() as { checked_at: number | null };
+    return {
+      raw_count: raw.c,
+      derived_count: derived.c,
+      unreconciled_count: unreconciled.c,
+      unknown_count: unknown.c,
+      last_checked_at: last.checked_at ? new Date(last.checked_at * 1000).toISOString() : null,
+    };
+  } catch {
+    return {
+      raw_count: 0,
+      derived_count: 0,
+      unreconciled_count: 0,
+      unknown_count: 0,
+      last_checked_at: null,
+    };
+  }
+}
+
 // Caller must run this inside `forEachGrove` (or equivalent withDatabase
 // scope) — log-timestamp/log-count helpers go through getDatabase().
 function buildGroveSummary(
@@ -240,6 +283,7 @@ function buildGroveSummary(
     last_optimize_at: ts.optimize ? new Date(ts.optimize).toISOString() : null,
     last_vacuum_at: ts.vacuum ? new Date(ts.vacuum).toISOString() : null,
     last_integrity_check: resolveLastIntegrity(ts.integrity_ok, ts.integrity_issues),
+    release_provenance: releaseProvenanceSummary(scope.db),
     error: null,
   };
 }
@@ -255,6 +299,13 @@ function emptySummary(grove: GroveRecord, error: string): GroveMaintenanceSummar
     last_optimize_at: null,
     last_vacuum_at: null,
     last_integrity_check: null,
+    release_provenance: {
+      raw_count: 0,
+      derived_count: 0,
+      unreconciled_count: 0,
+      unknown_count: 0,
+      last_checked_at: null,
+    },
     error,
   };
 }
@@ -357,7 +408,91 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
     return { body: summary };
   }
 
-  return { handleSummary, handleGroveMaintenance };
+  /**
+   * Trigger a manual release-provenance reconcile across every project served
+   * by every Grove this daemon owns. Reconciliation is idempotent and
+   * rebuildable, so repeated invocations are safe. Per-project failures are
+   * isolated — one bad project does not abort the rest.
+   */
+  async function handleReleaseProvenanceReconcile(_req: RouteRequest): Promise<RouteResponse> {
+    const config = releaseProvenanceConfig(deps.liveConfig.current);
+    if (!config.enabled) {
+      return { body: { ok: true, disabled: true, results: [] } };
+    }
+    interface PerProjectResult {
+      grove_id: string;
+      project_id: string;
+      reconciled: number;
+      scanned: number;
+      unchanged: number;
+      failed: number;
+      error?: string;
+    }
+    const results: PerProjectResult[] = [];
+    await forEachGrove(
+      deps.cache,
+      deps.logger,
+      async (scope) => {
+        const projects = listRegisteredProjectsForGrove(scope.grove.id, mycoHome);
+        for (const project of projects) {
+          const projectId = project.project_id as GroveProjectId;
+          try {
+            const entry = deps.cache.getEmbeddingRuntime(scope.databasePath, deps.embeddingRuntimeFactory);
+            const vectorStore = entry.vectorStore;
+            const result = await reconcileReleaseProvenance({
+              projectRoot: project.root,
+              projectId,
+              machineId: 'local',
+              scope: projectScope(projectId),
+              config,
+              logger: deps.logger,
+              onReleaseStateChanged: vectorStore
+                ? (changes) => {
+                    for (const change of changes) {
+                      refreshReleaseVectorMetadata({
+                        store: vectorStore,
+                        db: scope.db,
+                        scope: projectScope(projectId),
+                        sourceNamespace: change.namespace,
+                        sourceRecordId: change.recordId,
+                        patch: {
+                          state: change.state,
+                          confidence: change.confidence,
+                          basis_kind: change.basisKind,
+                          checked_at: change.checkedAt,
+                        },
+                      });
+                    }
+                  }
+                : undefined,
+            });
+            results.push({
+              grove_id: scope.grove.id,
+              project_id: projectId,
+              reconciled: result.reconciled,
+              scanned: result.scanned,
+              unchanged: result.unchanged,
+              failed: result.failed,
+            });
+          } catch (err) {
+            results.push({
+              grove_id: scope.grove.id,
+              project_id: projectId,
+              reconciled: 0,
+              scanned: 0,
+              unchanged: 0,
+              failed: 0,
+              error: errorMessage(err),
+            });
+          }
+        }
+      },
+      { mycoHome, daemonStateDir: deps.daemonStateDir, jobName: 'release-provenance-manual-reconcile', parallel: false },
+    );
+    return { body: { ok: true, results } };
+  }
+
+  return { handleSummary, handleGroveMaintenance, handleReleaseProvenanceReconcile };
 }
 
 // ---------------------------------------------------------------------------
