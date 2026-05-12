@@ -147,27 +147,6 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
     daemonError = err instanceof Error ? err.message : String(err);
   }
 
-  if (daemonHealthy) {
-    try {
-      const { getServiceManager } = await import('../service/manager.js');
-      const { buildServiceSpec } = await import('../service/spec-builder.js');
-      const { serviceLabel } = await import('../service/labels.js');
-      const { detectInstallVariant, resolveServiceExecutable } = await import('./service.js');
-      const mgr = getServiceManager();
-      if (mgr.supported) {
-        const variant = detectInstallVariant();
-        const status = await mgr.status(serviceLabel(variant));
-        if (!status.installed) {
-          const spec = buildServiceSpec({ variant, executable: resolveServiceExecutable(variant) });
-          await mgr.install(spec);
-          console.log(`Service installed: ${spec.label} (${mgr.platformName})`);
-        }
-      }
-    } catch (err) {
-      console.log(`Service install skipped: ${(err as Error).message}`);
-    }
-  }
-
   // --- Summary ---
 
   console.log('');
