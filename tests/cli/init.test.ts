@@ -88,12 +88,19 @@ describe('myco init', () => {
     expect(fs.existsSync(path.join(vault, '.gitignore'))).toBe(true);
   });
 
-  it('initializes SQLite database', async () => {
+  it('does not create a legacy vault-local myco.db', async () => {
     await run(['--embedding-model', 'bge-m3']);
 
-    expect(initDatabase).toHaveBeenCalled();
+    // Post-Grove projects route DB access through the Grove DB at
+    // ~/.myco/groves/<id>/myco.db. A vault-local myco.db at .myco/myco.db
+    // is never read by any post-Grove code path; its presence trips
+    // ensureGroveActivation's legacy-detection heuristic on the next
+    // `myco update`, causing a false migration attempt.
+    expect(fs.existsSync(path.join(vault, 'myco.db'))).toBe(false);
+    expect(initDatabase).not.toHaveBeenCalled();
+    expect(closeDatabase).not.toHaveBeenCalled();
+    // Grove database is still initialized (openDatabase, not initDatabase)
     expect(openDatabase).toHaveBeenCalled();
-    expect(closeDatabase).toHaveBeenCalled();
   });
 
   it('initializes the Grove database under the global Myco home', async () => {

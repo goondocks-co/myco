@@ -1,5 +1,3 @@
-import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
-import { createSchema } from '../db/schema.js';
 import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
 import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
@@ -120,10 +118,6 @@ export async function run(args: string[]): Promise<void> {
 
     saveConfig(vaultDir, config);
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
-
-    const db = initDatabase(vaultDbPath(vaultDir));
-    createSchema(db);
-    closeDatabase();
   }
 
   // --- Symbiont selection and registration ---
