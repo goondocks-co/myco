@@ -66,37 +66,33 @@ function resolveShellArg(
   const first = tokens[0] as string;
   if (!entry.readCommands.includes(first)) return null;
 
+  // The path is the LAST non-flag positional argument. This handles both
+  // first-arg readers (`cat file`, `head -10 file`, `tail -n 5 file`) and
+  // trailing-arg readers where a script or pattern precedes the path
+  // (`sed -n '1,5p' file`, `rg pattern file`, `perl -ne '…' file`,
+  // `awk '/pat/' file`). For commands taking multiple paths
+  // (`wc a.txt b.txt`), this captures the last one — acceptable since one
+  // Bash call only registers one read regardless.
   let endOfOptions = false;
-  let prevWasShortLetterFlag = false;
+  let lastPositional: string | null = null;
   for (let i = 1; i < tokens.length; i++) {
     const tok = tokens[i] as string;
     // Empty-string tokens come from unset env-var expansion (`$FILE` → "").
     // Treat as "not a simple read".
     if (tok.length === 0) return null;
-
     if (endOfOptions) {
-      return { filePath: tok };
+      lastPositional = tok;
+      continue;
     }
     if (tok === '--') {
       endOfOptions = true;
-      prevWasShortLetterFlag = false;
       continue;
     }
     if (tok.length >= 2 && tok.startsWith('-')) {
-      // Single-letter short flags (-n, -c, -B) commonly take a separate value
-      // (e.g. `tail -n 5 path`). Recognize this so the value isn't mistaken
-      // for the path. `-10` and `--long` and `-abc` are not single-letter
-      // flags and never consume an argument here.
-      prevWasShortLetterFlag = tok.length === 2 && !tok.startsWith('--') && /^-[A-Za-z]$/.test(tok);
       continue;
     }
-    if (prevWasShortLetterFlag && /^\d+$/.test(tok)) {
-      // Numeric value bound to the previous short flag.
-      prevWasShortLetterFlag = false;
-      continue;
-    }
-    return { filePath: tok };
+    lastPositional = tok;
   }
 
-  return null;
+  return lastPositional ? { filePath: lastPositional } : null;
 }

@@ -17,7 +17,8 @@ const codexManifest = {
         tool: 'Bash',
         pathField: 'command',
         extract: 'shell-arg',
-        readCommands: ['cat', 'head', 'tail', 'less', 'bat', 'more', 'wc'],
+        readCommands: ['cat', 'head', 'tail', 'less', 'bat', 'more', 'wc',
+          'file', 'nl', 'sed', 'awk', 'grep', 'rg', 'perl'],
       },
     ],
   },
@@ -93,7 +94,36 @@ describe('resolveCanopyReadTool — shell-arg variant', () => {
   });
   it('returns null when the command is not in readCommands', () => {
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'ls -la src/' })).toBeNull();
-    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'rg foo src/' })).toBeNull();
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'find src/ -name "*.ts"' })).toBeNull();
+  });
+
+  it('extracts path as last positional for sed -n (script then path)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: "sed -n '1,220p' src/x.ts" }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('extracts path as last positional for rg (pattern then path)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'rg pattern src/x.ts' }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('extracts path as last positional for perl -ne (script then path)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: "perl -ne 'print if /foo/' src/x.ts" }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('extracts path as last positional for awk (script then path)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: "awk '/pat/' src/x.ts" }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('extracts path as last positional for grep (pattern then path)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'grep PATTERN src/x.ts' }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('extracts path as last positional for nl (with flag)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'nl -ba src/x.ts' }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('picks the LAST path for multi-path reads (wc a b)', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'wc a.txt b.txt' }))
+      .toEqual({ filePath: 'b.txt' });
   });
   it('returns null on pipe / redirect / control operators', () => {
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'cat src/x.ts | grep foo' })).toBeNull();

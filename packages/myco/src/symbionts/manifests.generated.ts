@@ -335,7 +335,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "more",
             "bat",
             "wc",
-            "file"
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
           ]
         }
       ]
