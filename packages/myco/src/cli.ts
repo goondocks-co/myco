@@ -118,6 +118,7 @@ async function main(): Promise<void> {
     case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
     case 'open': return (await import('./cli/open.js')).run(args, vaultDir);
     case 'restart': return (await import('./cli/restart.js')).run(args, vaultDir);
+    case 'service': return (await import('./cli/service.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);

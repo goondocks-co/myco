@@ -67,6 +67,20 @@ export async function run(args: string[]): Promise<void> {
 
   console.log(`Removing Myco from ${projectRoot}\n`);
 
+  // --- Uninstall OS service (before stopping daemon so launchd/systemd won't restart it) ---
+
+  try {
+    const { getServiceManager } = await import('../service/manager.js');
+    const { detectInstallVariant } = await import('./service.js');
+    const { serviceLabel } = await import('../service/labels.js');
+    const mgr = getServiceManager();
+    if (mgr.supported) {
+      await mgr.uninstall(serviceLabel(detectInstallVariant()));
+    }
+  } catch (err) {
+    console.log(`Service uninstall skipped: ${(err as Error).message}`);
+  }
+
   // --- Stop daemon ---
 
   const daemonPath = path.join(vaultDir, 'daemon.json');
