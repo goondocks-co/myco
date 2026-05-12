@@ -1,10 +1,10 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec } from '../service/spec-builder.js';
-import { serviceLabel } from '../service/labels.js';
+import { serviceLabel, serviceVariantToDirName } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
+import { resolveMycoHome, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 export { detectInstallVariant } from '../service/labels.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'status';
@@ -47,9 +47,8 @@ export function resolveServiceExecutable(variant: ServiceVariant): string {
 
 function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
   try {
-    const mycoHome = process.env.MYCO_HOME?.trim() || path.join(os.homedir(), '.myco');
-    const serviceDir = variant === 'dev' ? 'service-dev' : 'service';
-    const daemonJsonPath = path.join(mycoHome, serviceDir, 'daemon.json');
+    const mycoHome = resolveMycoHome();
+    const daemonJsonPath = path.join(mycoHome, serviceVariantToDirName(variant), DAEMON_STATE_FILENAME);
     if (!fs.existsSync(daemonJsonPath)) return null;
     const raw = fs.readFileSync(daemonJsonPath, 'utf-8');
     const parsed = JSON.parse(raw) as { command?: string | null };
