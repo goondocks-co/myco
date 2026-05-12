@@ -274,3 +274,66 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.mcpFormat).toBe('json');
   });
 });
+
+describe('CapabilitiesSchema.canopyReadTools', () => {
+  it('parses a structured read-tool entry', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{ tool: 'Read', pathField: 'file_path' }],
+      },
+    });
+    expect(m.capabilities?.canopyReadTools).toEqual([
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+    ]);
+  });
+
+  it('parses a shell-arg read-tool entry with readCommands allowlist', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{
+          tool: 'Bash',
+          pathField: 'command',
+          extract: 'shell-arg',
+          readCommands: ['cat', 'head', 'tail'],
+        }],
+      },
+    });
+    expect(m.capabilities?.canopyReadTools?.[0]).toMatchObject({
+      tool: 'Bash', pathField: 'command', extract: 'shell-arg',
+      readCommands: ['cat', 'head', 'tail'],
+    });
+  });
+
+  it('defaults canopyReadTools to empty array when capabilities omits it', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {},
+    });
+    expect(m.capabilities?.canopyReadTools).toEqual([]);
+  });
+
+  it('rejects a shell-arg entry without readCommands', () => {
+    expect(() => SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{ tool: 'Bash', pathField: 'command', extract: 'shell-arg' }],
+      },
+    })).toThrow();
+  });
+
+  it('rejects an empty readCommands array', () => {
+    expect(() => SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{ tool: 'Bash', pathField: 'command', extract: 'shell-arg', readCommands: [] }],
+      },
+    })).toThrow();
+  });
+});

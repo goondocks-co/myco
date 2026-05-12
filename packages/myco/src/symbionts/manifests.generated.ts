@@ -130,7 +130,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": true,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -314,7 +315,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -365,7 +367,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -405,7 +408,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -444,7 +448,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -480,7 +485,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -516,7 +522,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": []
     }
   },
   {
@@ -552,7 +559,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": false
+      "sessionStartInjection": false,
+      "canopyReadTools": []
     }
   }
 ] as const;

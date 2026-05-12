@@ -157,6 +157,39 @@ const RegistrationSchema = z.object({
 });
 
 /**
+ * Declarative description of a tool call that performs a file read, used by
+ * Canopy's PreToolUse hook to recognize reads across heterogeneous agent tool
+ * surfaces. Two variants:
+ *
+ *  - structured: the path lives at a top-level field on `tool_input` (e.g.
+ *    Claude Code's `Read` tool puts the absolute path at `tool_input.file_path`).
+ *  - shell-arg: the path is embedded in a shell command string and must be
+ *    extracted via shlex; the entry's `readCommands` allowlist names the
+ *    commands whose first non-flag argument is a path (e.g. Codex's `Bash`
+ *    with `cat`, `head`, `tail`).
+ *
+ * `pathKind` is reserved for future image/URL support and defaults to `'file'`.
+ */
+const CanopyReadToolStructured = z.strictObject({
+  tool: z.string().min(1),
+  pathField: z.string().min(1),
+  pathKind: z.literal('file').default('file'),
+});
+
+const CanopyReadToolShellArg = z.strictObject({
+  tool: z.string().min(1),
+  pathField: z.string().min(1),
+  extract: z.literal('shell-arg'),
+  readCommands: z.array(z.string().min(1)).min(1),
+});
+
+const CanopyReadToolSchema = z.union([
+  // More-specific first — z.union picks the first matching variant.
+  CanopyReadToolShellArg,
+  CanopyReadToolStructured,
+]);
+
+/**
  * Optional capability flags that gate Myco features per symbiont. All
  * capabilities default to `false` when the field is absent so adding a new
  * capability never silently activates it for existing symbionts.
@@ -175,9 +208,16 @@ const CapabilitiesSchema = z.object({
    * `injection-support.ts` is retained as a drift check.
    */
   sessionStartInjection: z.boolean().default(false),
-}).default(() => ({ preToolUseInjection: false, sessionStartInjection: false }));
+  /**
+   * Declarations of tool calls that Canopy should treat as file reads. The
+   * PreToolUse resolver consults this list to decide whether to inject context
+   * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
+   */
+  canopyReadTools: z.array(CanopyReadToolSchema).default([]),
+}).default(() => ({ preToolUseInjection: false, sessionStartInjection: false, canopyReadTools: [] }));
 
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
+export type SymbiontCanopyReadTool = z.infer<typeof CanopyReadToolSchema>;
 
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
