@@ -347,3 +347,24 @@ describe('claude-code manifest declares its file-read tool', () => {
     ]);
   });
 });
+
+describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
+  it('parses with preToolUseInjection=true and one Bash shell-arg entry', () => {
+    const yamlPath = path.join(MANIFESTS_DIR, 'codex.yaml');
+    const raw = YAML.parse(fs.readFileSync(yamlPath, 'utf8'));
+    const m = SymbiontManifestSchema.parse(raw);
+
+    expect(m.capabilities?.preToolUseInjection).toBe(true);
+    expect(m.capabilities?.canopyReadTools).toHaveLength(1);
+
+    const entry = m.capabilities!.canopyReadTools![0];
+    expect(entry).toMatchObject({
+      tool: 'Bash',
+      pathField: 'command',
+      extract: 'shell-arg',
+    });
+    // Verify the allowlist isn't empty and contains the core read commands.
+    expect((entry as { readCommands: string[] }).readCommands)
+      .toEqual(expect.arrayContaining(['cat', 'head', 'tail']));
+  });
+});

@@ -320,9 +320,25 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "toml"
     },
     "capabilities": {
-      "preToolUseInjection": false,
+      "preToolUseInjection": true,
       "sessionStartInjection": true,
-      "canopyReadTools": []
+      "canopyReadTools": [
+        {
+          "tool": "Bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file"
+          ]
+        }
+      ]
     }
   },
   {

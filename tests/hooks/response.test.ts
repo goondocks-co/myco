@@ -95,12 +95,14 @@ describe('writeHookResponse (manifest-driven)', () => {
   });
 
   describe('pre-tool-use envelope is capability-driven', () => {
-    it('codex pre-tool-use does not emit the envelope until preToolUseInjection is enabled', () => {
-      // Codex declares format: json (see hook-config). Without the
-      // preToolUseInjection capability, it must fall through to the
-      // manifest-driven JSON serializer — not the claude-style envelope.
+    it('codex pre-tool-use emits the hookSpecificOutput envelope (preToolUseInjection enabled)', () => {
       writeHookResponse('codex', 'pre-tool-use', { additionalContext: 'BLOB' });
-      expect(captured).not.toContain('hookSpecificOutput');
+      expect(JSON.parse(captured)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: 'BLOB',
+        },
+      });
     });
 
     it('cursor pre-tool-use does not emit the envelope (no preToolUseInjection capability)', () => {
