@@ -9,6 +9,7 @@ import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { truncate, shortSession } from '../../lib/format';
 import { cn } from '../../lib/cn';
 import { observationTypeClass, statusClass, formatLabel } from './helpers';
+import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 
 /* ---------- Constants ---------- */
 
@@ -101,6 +102,7 @@ function SporeRow({
                 {spore.importance.toFixed(1)}
               </span>
             )}
+            <ReleaseStateBadge annotation={spore.release_state} />
           </div>
           <MarkdownContent
             content={spore.content}

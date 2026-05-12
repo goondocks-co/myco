@@ -12,6 +12,7 @@ import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
+import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 import { cn } from '../../lib/cn';
 import { useMemo, useState } from 'react';
 
@@ -88,6 +89,11 @@ function SessionTableRow({
         <StatusBadge status={session.status} />
       </td>
 
+      {/* Release */}
+      <td className="px-4 py-3">
+        <ReleaseStateBadge annotation={session.release_state} />
+      </td>
+
       {/* Turns */}
       <td className="px-4 py-3 text-center">
         <span className="font-mono text-xs text-on-surface-variant">
@@ -130,6 +136,7 @@ function SkeletonTableRow() {
       <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
       <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
       <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
+      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
       <td className="px-4 py-3"><div className="h-3 w-8 rounded bg-surface-container-high animate-pulse mx-auto" /></td>
       <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
     </tr>
@@ -227,6 +234,7 @@ export function SessionList() {
         <ColHeader>Title</ColHeader>
         <ColHeader>Symbiont</ColHeader>
         <ColHeader>Status</ColHeader>
+        <ColHeader>Release</ColHeader>
         <ColHeader className="text-center">Turns</ColHeader>
         <ColHeader>Date</ColHeader>
       </tr>
