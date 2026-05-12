@@ -35,6 +35,8 @@ The primary supported agent with full capture capabilities.
 | Auto-approve | `permissions.allow` in `.claude/settings.json` |
 | Plans | `.claude/plans/` |
 
+**Canopy:** receives file-anatomy hints — exports, imports, and a short summary — just before reading source files, so the agent can orient on what's in a file without paying for the full read.
+
 ### Cursor
 
 Full MCP and skills support. Hooks are pending Cursor's hook system maturation.
@@ -55,6 +57,8 @@ Hooks and MCP via JSON and TOML configuration. Skills via the `.agents/skills/` 
 | Hooks | `.codex/hooks.json` |
 | MCP | `.codex/config.toml` |
 | Skills | `.agents/skills/` (native) |
+
+**Canopy:** receives file-anatomy hints — exports, imports, and a short summary — just before reading source files, so the agent can orient on what's in a file without paying for the full read.
 
 ### VS Code Copilot
 
