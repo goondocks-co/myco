@@ -408,7 +408,8 @@ export async function main(): Promise<void> {
   // takes a ProjectScope, the bootstrap fallback in case (b) goes away and
   // case (a) handlers move to a dedicated daemon-paths struct. Until then,
   // do NOT use this value as a stand-in for the request-scoped vault.
-  const bootstrapVaultDir = resolveVaultDir();
+  const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
+  const bootstrapVaultDir = resolveBootstrapVaultDir();
 
   // Load API keys from secrets.env into process.env before any provider init
   loadSecrets(bootstrapVaultDir);
