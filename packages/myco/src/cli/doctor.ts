@@ -360,6 +360,14 @@ export function evaluateServiceCheck(
       fixable: false,
     };
   }
+  if (!status.running) {
+    return {
+      name: 'Service',
+      status: 'warn',
+      detail: `${label} installed but not running — run \`myco service start\``,
+      fixable: false,
+    };
+  }
   return {
     name: 'Service',
     status: 'ok',

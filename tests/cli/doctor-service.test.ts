@@ -43,4 +43,12 @@ describe('evaluateServiceCheck', () => {
     expect(check.status).toBe('warn');
     expect(check.detail).toMatch(/last exit code/i);
   });
+
+  test('installed but not running → warn', () => {
+    const bin = goodBin();
+    const status: ServiceStatus = { installed: true, running: false, pid: null, lastExitCode: null, unitPath: '/x' };
+    const check = evaluateServiceCheck('co.goondocks.myco', status, bin);
+    expect(check.status).toBe('warn');
+    expect(check.detail).toMatch(/not running/i);
+  });
 });
