@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Cpu, RefreshCw, ScrollText, ArrowUpCircle } from 'lucide-react';
+import { Cpu, ScrollText } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import {
   useMachineConfig,
@@ -7,16 +7,10 @@ import {
   type MachineConfig,
   type MachineConfigPatch,
 } from '../hooks/use-machine-config';
-import {
-  useUpdateStatus,
-  useUpdateCheck,
-} from '../hooks/use-update-status';
 import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Input } from '../components/ui/input';
-import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import {
   Select,
   SelectContent,
@@ -25,7 +19,7 @@ import {
   SelectValue,
 } from '../components/ui/select';
 import { FieldShell } from '../components/config/FieldShell';
-import { cn } from '../lib/cn';
+import { UpdateCard } from '../components/operations/UpdateCard';
 
 /* ---------- Helpers ---------- */
 
@@ -56,84 +50,6 @@ function Field({
 }
 
 /* ---------- Cards ---------- */
-
-function DaemonConfigurationCard({
-  config,
-  onPatch,
-  isSaving,
-}: {
-  config: MachineConfig;
-  onPatch: (patch: MachineConfigPatch) => void;
-  isSaving: boolean;
-}) {
-  const { data: stats } = useDaemon();
-  const runningPort = stats?.daemon.port ?? null;
-  const configuredPort = config.daemon.port;
-
-  // Local string state so the user can clear the field while typing.
-  const [draft, setDraft] = useState<string>(
-    configuredPort === null ? '' : String(configuredPort),
-  );
-  useEffect(() => {
-    setDraft(configuredPort === null ? '' : String(configuredPort));
-  }, [configuredPort]);
-
-  const portMismatch =
-    configuredPort !== null && runningPort !== null && configuredPort !== runningPort;
-
-  const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === '') {
-      if (configuredPort !== null) {
-        onPatch({ daemon: { port: null } });
-      }
-      return;
-    }
-    const parsed = Number(trimmed);
-    if (!Number.isInteger(parsed) || parsed < 1024 || parsed > 65535) {
-      // Reject — snap back to the saved value so the user sees that we
-      // refused the change.
-      setDraft(configuredPort === null ? '' : String(configuredPort));
-      return;
-    }
-    if (parsed !== configuredPort) {
-      onPatch({ daemon: { port: parsed } });
-    }
-  };
-
-  return (
-    <Surface level="low" className="rounded-lg p-6 space-y-5">
-      <SectionHeader>Daemon Configuration</SectionHeader>
-      <Field
-        id="machine-daemon-port"
-        label="Port"
-        helper="Restart-required to take effect."
-      >
-        <div className="flex items-center gap-2">
-          <Input
-            id="machine-daemon-port"
-            inputMode="numeric"
-            placeholder="Auto"
-            value={draft}
-            disabled={isSaving}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                (e.currentTarget as HTMLInputElement).blur();
-              }
-            }}
-            className="max-w-[10rem]"
-          />
-          {portMismatch && (
-            <Badge variant="warning">Restart required</Badge>
-          )}
-        </div>
-      </Field>
-    </Surface>
-  );
-}
 
 function LoggingCard({
   config,
@@ -215,75 +131,6 @@ function LoggingCard({
   );
 }
 
-function UpdatesCard({
-  config,
-  onPatch,
-  isSaving,
-}: {
-  config: MachineConfig;
-  onPatch: (patch: MachineConfigPatch) => void;
-  isSaving: boolean;
-}) {
-  const { data: status } = useUpdateStatus();
-  const checkMutation = useUpdateCheck();
-  return (
-    <Surface level="low" className="rounded-lg p-6 space-y-5">
-      <div className="flex items-center gap-2">
-        <ArrowUpCircle className="h-4 w-4 text-primary" />
-        <SectionHeader>Updates</SectionHeader>
-      </div>
-      <Field
-        id="machine-update-channel"
-        label="Update channel"
-        helper="Channel determines which release lane the daemon pulls from on the next update check."
-      >
-        <Select
-          value={config.daemon.update_channel}
-          onValueChange={(value) => {
-            if (value !== config.daemon.update_channel) {
-              onPatch({
-                daemon: {
-                  update_channel: value as MachineConfig['daemon']['update_channel'],
-                },
-              });
-            }
-          }}
-          disabled={isSaving}
-        >
-          <SelectTrigger id="machine-update-channel" className="max-w-[14rem]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="stable">stable</SelectItem>
-            <SelectItem value="beta">beta</SelectItem>
-          </SelectContent>
-        </Select>
-      </Field>
-      <div className="flex items-center gap-3 pt-1">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => checkMutation.mutate()}
-          disabled={checkMutation.isPending}
-        >
-          <RefreshCw
-            className={cn(
-              'mr-1.5 h-3.5 w-3.5',
-              checkMutation.isPending && 'animate-spin',
-            )}
-          />
-          Check Now
-        </Button>
-        {status?.running_version && (
-          <span className="font-mono text-xs text-outline">
-            {status.running_version}
-          </span>
-        )}
-      </div>
-    </Surface>
-  );
-}
-
 function MachineIdentityCard() {
   const { data: stats } = useDaemon();
   const machineId = stats?.context.request.machine_id ?? '—';
@@ -335,21 +182,12 @@ export default function MachineSettings() {
         />
       </div>
 
-      <DaemonConfigurationCard
-        config={config}
-        onPatch={onPatch}
-        isSaving={update.isPending}
-      />
       <LoggingCard
         config={config}
         onPatch={onPatch}
         isSaving={update.isPending}
       />
-      <UpdatesCard
-        config={config}
-        onPatch={onPatch}
-        isSaving={update.isPending}
-      />
+      <UpdateCard />
       <MachineIdentityCard />
     </div>
   );
