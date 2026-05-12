@@ -25,6 +25,14 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
       + `Use /opt/homebrew/bin/<name> or a vendored binary instead — Cellar paths break on every brew upgrade.`,
     );
   }
+  const exeBase = path.basename(executable);
+  if (exeBase === 'bun' || exeBase === 'bun.exe' || exeBase === 'node' || exeBase === 'node.exe') {
+    throw new Error(
+      `Refusing to install service with a script-runner executable: ${executable}. `
+      + `Service install requires a standalone daemon binary (e.g. ~/.local/bin/myco or the vendored binary at packages/myco/vendor/<arch>/myco). `
+      + `Start the daemon at least once with \`myco daemon\` so it records its own binary path in daemon.json, then retry.`,
+    );
+  }
 
   const serviceDirName = opts.variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME;
   const logDir = path.join(mycoHome, serviceDirName, 'logs');

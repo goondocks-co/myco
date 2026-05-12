@@ -223,7 +223,7 @@ export async function run(args: string[]): Promise<void> {
         const variant = detectInstallVariant();
         const status = await mgr.status(serviceLabel(variant));
         if (!status.installed) {
-          const spec = buildServiceSpec({ variant, executable: resolveServiceExecutable() });
+          const spec = buildServiceSpec({ variant, executable: resolveServiceExecutable(variant) });
           await mgr.install(spec);
           console.log(`Service installed: ${spec.label} (${mgr.platformName})`);
         }

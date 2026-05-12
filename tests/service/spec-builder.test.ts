@@ -62,4 +62,18 @@ describe('buildServiceSpec', () => {
     expect(spec.env.PATH).toContain('/opt/homebrew/bin');
     expect(spec.env.PATH).toContain('/usr/local/bin');
   });
+
+  test('rejects bun/bun.exe/node/node.exe wrapper paths', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const mkExecutable = (name: string): string => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-wrapper-'));
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      return file;
+    };
+    for (const name of ['bun', 'bun.exe', 'node', 'node.exe']) {
+      const exe = mkExecutable(name);
+      expect(() => buildServiceSpec({ variant: 'prod', mycoHome: home, executable: exe })).toThrow(/script-runner|standalone daemon binary/);
+    }
+  });
 });

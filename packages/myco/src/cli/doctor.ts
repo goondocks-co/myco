@@ -376,9 +376,10 @@ async function checkService(): Promise<DoctorCheck> {
   if (!mgr.supported) {
     return { name: 'Service', status: 'warn', detail: `unsupported platform (${mgr.platformName}) — daemon uses lazy spawn`, fixable: false };
   }
-  const label = serviceLabel(detectInstallVariant());
+  const variant = detectInstallVariant();
+  const label = serviceLabel(variant);
   const status = await mgr.status(label);
-  return evaluateServiceCheck(label, status, resolveServiceExecutable());
+  return evaluateServiceCheck(label, status, resolveServiceExecutable(variant));
 }
 
 // --- Public API ---

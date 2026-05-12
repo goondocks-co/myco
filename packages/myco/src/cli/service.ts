@@ -1,8 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
 import { buildServiceSpec } from '../service/spec-builder.js';
 import { serviceLabel } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
-import { resolveCliEntryPath } from '../hooks/client.js';
 import { isDevServiceMode } from '../grove/paths.js';
 
 export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'status';
@@ -26,10 +28,35 @@ export function parseServiceArgs(args: string[]): ParsedServiceArgs {
   return { action, variant };
 }
 
-/** Resolve the executable that should run inside the service. */
-export function resolveServiceExecutable(): string {
-  const { execPath } = resolveCliEntryPath();
-  return execPath;
+/**
+ * Resolve the standalone daemon binary path to install into a service unit.
+ *
+ * Priority order:
+ *  1. The currently-running daemon's self-recorded `command` (read from
+ *     `<mycoHome>/<service|service-dev>/daemon.json`). The daemon writes its
+ *     own resolved binary path at startup, so this is the authoritative source.
+ *  2. `process.execPath` as a fallback. Works for compiled prod binaries; for
+ *     dev-mode invocations through bun/node it returns the wrapper path, which
+ *     `buildServiceSpec` will reject downstream.
+ */
+export function resolveServiceExecutable(variant: ServiceVariant): string {
+  const recorded = readRecordedDaemonCommand(variant);
+  if (recorded) return recorded;
+  return process.execPath;
+}
+
+function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
+  try {
+    const mycoHome = process.env.MYCO_HOME?.trim() || path.join(os.homedir(), '.myco');
+    const serviceDir = variant === 'dev' ? 'service-dev' : 'service';
+    const daemonJsonPath = path.join(mycoHome, serviceDir, 'daemon.json');
+    if (!fs.existsSync(daemonJsonPath)) return null;
+    const raw = fs.readFileSync(daemonJsonPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { command?: string | null };
+    return parsed.command ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function detectInstallVariant(): ServiceVariant {
@@ -49,7 +76,7 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
 
   switch (parsed.action) {
     case 'install': {
-      const spec = buildServiceSpec({ variant: parsed.variant, executable: resolveServiceExecutable() });
+      const spec = buildServiceSpec({ variant: parsed.variant, executable: resolveServiceExecutable(parsed.variant) });
       await mgr.install(spec);
       console.log(`Installed ${label} via ${mgr.platformName}`);
       return;
