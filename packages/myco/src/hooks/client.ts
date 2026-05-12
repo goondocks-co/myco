@@ -18,6 +18,9 @@ import {
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
+import { findInstalledServiceLabel } from '../daemon/api/restart.js';
+import { getServiceManager } from '../service/manager.js';
+import type { ServiceManager } from '../service/types.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -67,6 +70,10 @@ interface ClientOptions {
 interface DaemonClientOptions {
   requestContext?: MycoRequestContext;
   headers?: Record<string, string>;
+  /** Optional override for the platform service manager. Defaults to
+   *  `getServiceManager()`. Tests inject a fake to bypass real launchd /
+   *  systemd state on the host. */
+  serviceManager?: ServiceManager;
 }
 
 interface HookRequestContextInput {
@@ -107,6 +114,7 @@ export class DaemonClient {
   private vaultDir: string;
   private defaultHeaders: Record<string, string>;
   private daemonService: DaemonServiceState;
+  private serviceManager: ServiceManager | null;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
@@ -119,6 +127,7 @@ export class DaemonClient {
       ...resolveDaemonAuthHeader(this.daemonService.statePath),
       ...(options.headers ?? {}),
     };
+    this.serviceManager = options.serviceManager ?? null;
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
@@ -322,7 +331,7 @@ export class DaemonClient {
     return this.ensureRunning(opts);
   }
 
-  spawnDaemon(): void {
+  async spawnDaemon(): Promise<void> {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.
     if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
@@ -333,6 +342,30 @@ export class DaemonClient {
     // any hook activity — not just session-start — resurrects a dead daemon.
     // The daemon's own step-aside guard backs this up.
     if (this.spawnIsInFlight()) return;
+
+    // Service-managed daemons: defer to the supervisor. Spawning a raw child
+    // here would race with launchd's KeepAlive / systemd's Restart=always —
+    // the challenger comes up, fails to bind the port the service owns, and
+    // self-SIGTERMs via the sibling-stepping-aside path. Same root cause as
+    // the /restart and update-flow bypasses fixed earlier in this branch.
+    try {
+      const mgr = this.serviceManager ?? getServiceManager();
+      const installed = await findInstalledServiceLabel(mgr);
+      if (installed) {
+        if (!installed.status.running) {
+          // Supervisor knows about the service but isn't running it (cold
+          // boot, throttle window). Ask it to start; the supervisor handles
+          // port / lifecycle correctly. Fire-and-forget — the next probe
+          // will discover whether the start succeeded.
+          await mgr.start(installed.label).catch(() => { /* best-effort */ });
+        }
+        return;
+      }
+    } catch {
+      // Service manager unavailable on this platform, or transient lookup
+      // failure. Fall through to the legacy raw-spawn path so manual dev
+      // runs and test fixtures keep working.
+    }
 
     const { execPath, cliEntry } = resolveCliEntryPath();
     const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {

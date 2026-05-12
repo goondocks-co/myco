@@ -30,7 +30,7 @@ function restoreProcessKill() {
   (process as any).kill = realKill;
 }
 
-import { buildRestartShellCommand, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
+import { buildRestartShellCommand, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import type { ServiceManager, ServiceStatus } from '@myco/service/types.js';
 
@@ -86,6 +86,50 @@ describe('buildRestartShellCommand', () => {
   test('service-managed dev: invokes `service restart --dev`', () => {
     const cmd = buildRestartShellCommand('co.goondocks.myco-dev', '/usr/bin/myco', null);
     expect(cmd).toBe('sleep 0.5 && /usr/bin/myco service restart --dev');
+  });
+});
+
+// Process-agnostic sibling of detectServiceManagedLabel — used by client-side
+// surfaces (DaemonClient.spawnDaemon) that need to know "is a supervisor
+// installed for our variant" without checking the PID match.
+describe('findInstalledServiceLabel', () => {
+  test('returns null when service manager is unsupported', async () => {
+    const mgr = new FakeServiceManager({ supported: false });
+    expect(await findInstalledServiceLabel(mgr)).toBeNull();
+  });
+
+  test('returns null when no variant is installed', async () => {
+    const mgr = new FakeServiceManager();
+    expect(await findInstalledServiceLabel(mgr)).toBeNull();
+  });
+
+  test('returns label + status when prod is installed (running)', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: 4242, lastExitCode: 0, unitPath: '/x.plist' });
+    const found = await findInstalledServiceLabel(mgr);
+    expect(found?.label).toBe('co.goondocks.myco');
+    expect(found?.status.running).toBe(true);
+    expect(found?.status.pid).toBe(4242);
+  });
+
+  test('returns label + not-running status when service is installed but stopped', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco-dev');
+    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: false, pid: null, lastExitCode: 1, unitPath: '/x.plist' });
+    const found = await findInstalledServiceLabel(mgr);
+    expect(found?.label).toBe('co.goondocks.myco-dev');
+    expect(found?.status.running).toBe(false);
+  });
+
+  test('does NOT require PID match (process-agnostic)', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco');
+    // PID intentionally different from process.pid — findInstalledServiceLabel
+    // must still return the entry; only detectServiceManagedLabel checks PID.
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x.plist' });
+    const found = await findInstalledServiceLabel(mgr);
+    expect(found?.label).toBe('co.goondocks.myco');
   });
 });
 

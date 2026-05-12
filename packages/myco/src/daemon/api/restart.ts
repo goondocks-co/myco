@@ -7,7 +7,7 @@ import type { ProgressTracker } from './progress.js';
 import { RESTART_RESPONSE_FLUSH_MS } from '../../constants.js';
 import { getServiceManager } from '../../service/manager.js';
 import { serviceLabel } from '../../service/labels.js';
-import type { ServiceManager, ServiceVariant } from '../../service/types.js';
+import type { ServiceManager, ServiceStatus, ServiceVariant } from '../../service/types.js';
 
 const RestartBodySchema = z.object({
   force: z.boolean().optional(),
@@ -51,6 +51,28 @@ export function buildRestartShellCommand(
   return `sleep ${RESTART_CHILD_DELAY_SECONDS} && ${execPath}${entryPart} daemon`;
 }
 
+/** Find the first installed service across variants and return its label and
+ *  current status. Process-agnostic — used by client-side surfaces
+ *  (DaemonClient.spawnDaemon) that only need to know "is there a service
+ *  supervisor that owns the daemon for our variant" without checking PID. */
+export async function findInstalledServiceLabel(
+  mgr: ServiceManager,
+): Promise<{ label: string; status: ServiceStatus } | null> {
+  if (!mgr.supported) return null;
+  for (const variant of ['dev', 'prod'] as ServiceVariant[]) {
+    const label = serviceLabel(variant);
+    const installed = await mgr.isInstalled(label).catch(() => false);
+    if (!installed) continue;
+    const status = await mgr.status(label).catch(() => null);
+    if (status) return { label, status };
+    return {
+      label,
+      status: { installed: true, running: false, pid: null, lastExitCode: null, unitPath: null },
+    };
+  }
+  return null;
+}
+
 /** Probe whether THIS process is the currently-running service-managed daemon.
  *  Returns the label if so, otherwise null.
  *
@@ -61,15 +83,9 @@ export async function detectServiceManagedLabel(
   mgr: ServiceManager,
   myPid: number = process.pid,
 ): Promise<string | null> {
-  if (!mgr.supported) return null;
-  for (const variant of ['dev', 'prod'] as ServiceVariant[]) {
-    const label = serviceLabel(variant);
-    const installed = await mgr.isInstalled(label).catch(() => false);
-    if (!installed) continue;
-    const st = await mgr.status(label).catch(() => null);
-    if (st?.running && st.pid === myPid) return label;
-  }
-  return null;
+  const found = await findInstalledServiceLabel(mgr);
+  if (!found) return null;
+  return found.status.running && found.status.pid === myPid ? found.label : null;
 }
 
 export async function handleRestart(
