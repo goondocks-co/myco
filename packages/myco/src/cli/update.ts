@@ -258,7 +258,9 @@ function dashboardUrlForVault(vaultDir: string): string | null {
  * exit non-zero if any project failed so callers can see the rollup.
  */
 async function runAllProjects(): Promise<void> {
-  const groves = listGroves();
+  const { detectInstallVariant, serviceVariantToDirName } = await import('../service/labels.js');
+  const variant = detectInstallVariant();
+  const groves = listGroves(undefined, { servedBy: serviceVariantToDirName(variant) });
   const targets: { groveSlug: string; projectName: string; root: string }[] = [];
   for (const grove of groves) {
     for (const project of listRegisteredProjects(grove.id)) {
@@ -271,7 +273,7 @@ async function runAllProjects(): Promise<void> {
     return;
   }
 
-  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'}.\n`);
+  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'} served_by ${serviceVariantToDirName(variant)}.\n`);
 
   const failures: { target: typeof targets[number]; error: unknown }[] = [];
   for (const target of targets) {

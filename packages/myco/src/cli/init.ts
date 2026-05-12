@@ -1,5 +1,3 @@
-import { initDatabase, vaultDbPath, closeDatabase } from '../db/client.js';
-import { createSchema } from '../db/schema.js';
 import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
 import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
@@ -120,10 +118,6 @@ export async function run(args: string[]): Promise<void> {
 
     saveConfig(vaultDir, config);
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');
-
-    const db = initDatabase(vaultDbPath(vaultDir));
-    createSchema(db);
-    closeDatabase();
   }
 
   // --- Symbiont selection and registration ---
@@ -147,9 +141,10 @@ export async function run(args: string[]): Promise<void> {
   const detected = detectSymbionts(projectRoot);
   const detectedNames = new Set(detected.map((d) => d.manifest.name));
 
-  // Load existing symbiont config for pre-checking on re-init (interactive only)
+  // Load existing symbiont config for pre-checking (interactive UI) and
+  // reconciliation (always — needed to detect newly-disabled symbionts).
   let existingSymbionts: Record<string, { enabled: boolean }> | undefined;
-  if (alreadyInitialized && isInteractive) {
+  if (alreadyInitialized) {
     try {
       const { loadMergedConfig } = await import('../config/loader.js');
       const existing = loadMergedConfig(vaultDir);
@@ -181,12 +176,39 @@ export async function run(args: string[]): Promise<void> {
         choices,
       });
       selectedManifests = allManifests.filter((m) => selectedNames.includes(m.name));
-      if (selectedManifests.length === 0) {
+      if (selectedManifests.length === 0 && isInteractive) {
         console.log('  Skipped agent configuration.');
       }
     }
 
-    if (selectedManifests.length > 0) {
+    // Always reconcile: uninstall newly-disabled symbionts before registering
+    // newly-selected ones. Mirrors cli/remove.ts for unchecked items.
+    const previouslyEnabled = new Set(
+      existingSymbionts
+        ? Object.entries(existingSymbionts).filter(([, v]) => v.enabled).map(([k]) => k)
+        : [],
+    );
+    const newlySelected = new Set(selectedManifests.map((m) => m.name));
+    const newlyDisabled = [...previouslyEnabled].filter((n) => !newlySelected.has(n));
+
+    const pkgRoot = resolvePackageRoot();
+    for (const name of newlyDisabled) {
+      const manifest = allManifests.find((m) => m.name === name);
+      if (!manifest) continue;
+      const { SymbiontInstaller } = await import('../symbionts/installer.js');
+      const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
+      installer.uninstall();
+      console.log(`  ✓ Removed ${manifest.displayName}: files no longer referenced in config`);
+    }
+
+    if (newlySelected.size === 0) {
+      // User unchecked everything (or auto-selection found nothing). Drop the
+      // symbionts block from myco.yaml — matches cli/remove.ts behavior.
+      updateConfig(vaultDir, (config) => {
+        const { symbionts: _, ...rest } = config;
+        return rest;
+      });
+    } else {
       const symbiontsConfig: Record<string, { enabled: boolean }> = {};
       for (const m of selectedManifests) {
         symbiontsConfig[m.name] = { enabled: true };
@@ -195,8 +217,6 @@ export async function run(args: string[]): Promise<void> {
         ...config,
         symbionts: symbiontsConfig,
       }));
-
-      const pkgRoot = resolvePackageRoot();
       registerSymbionts(selectedManifests, projectRoot, pkgRoot, 'Registered');
     }
   }

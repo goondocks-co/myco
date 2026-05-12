@@ -194,6 +194,63 @@ Coordinate binary updates and environment transitions without disrupting active 
    myco groves list
    ```
 
+### Daemon Upgrade Failure Recovery
+
+1. **Detect daemon event loop wedge after upgrade**:
+   ```bash
+   # Check if daemon port is bound but not responding
+   netstat -tuln | grep 20915
+   curl -s --connect-timeout 3 http://127.0.0.1:20915/api/stats || echo "Daemon wedged"
+   
+   # Check for stale daemon processes
+   ps aux | grep myco | grep -v grep
+   ```
+
+2. **Force daemon restart with SIGKILL** (when daemon.stop fails):
+   ```bash
+   # Get daemon PID holding port 20915
+   DAEMON_PID=$(lsof -ti:20915)
+   
+   # Preserve daemon.json before killing process
+   cp ~/.myco/daemon.json ~/.myco/daemon.json.backup 2>/dev/null || true
+   
+   # Force kill wedged process
+   kill -9 $DAEMON_PID
+   
+   # Verify port is released
+   sleep 2
+   netstat -tuln | grep 20915 || echo "Port released"
+   ```
+
+3. **Handle restart false positives and version-skew detection**:
+   ```bash
+   # Start daemon and check for version-skew warnings
+   myco daemon start
+   
+   # Verify daemon serves correct version after restart
+   BINARY_VERSION=$(myco --version)
+   DAEMON_VERSION=$(curl -s http://127.0.0.1:20915/api/stats | jq -r '.version' 2>/dev/null)
+   
+   if [ "$BINARY_VERSION" != "$DAEMON_VERSION" ]; then
+       echo "Version skew detected: binary=$BINARY_VERSION daemon=$DAEMON_VERSION"
+       echo "Restarting daemon to sync versions..."
+       myco daemon stop
+       myco daemon start
+   fi
+   ```
+
+4. **Restore daemon configuration after forced restart**:
+   ```bash
+   # Restore daemon.json if it was corrupted during forced kill
+   if [ ! -s ~/.myco/daemon.json ] && [ -f ~/.myco/daemon.json.backup ]; then
+       cp ~/.myco/daemon.json.backup ~/.myco/daemon.json
+       echo "Restored daemon.json from backup"
+   fi
+   
+   # Validate daemon configuration integrity
+   myco doctor # Should show no configuration errors
+   ```
+
 ### Binary Replacement Procedures
 
 1. **Atomic binary replacement**:
@@ -263,3 +320,7 @@ Handle Bun-specific compilation constraints and deployment patterns for Grove mu
 **Machine-scoped runtime persistence**: The runtime.command file has been moved from project-scoped (`.myco/runtime.command`) to machine-scoped (`~/.myco/runtime.command`). Procedures must account for this architectural change when managing multi-Grove environments.
 
 **Grove registration runtime inheritance**: When registering new Groves, they inherit the machine-wide runtime configuration. Ensure the machine-wide runtime.command is properly set before Grove registration to avoid runtime resolution issues.
+
+**Event loop wedge after daemon upgrades**: Post-upgrade daemons can enter an event loop wedge where the port is bound but the daemon is unresponsive. This requires SIGKILL termination followed by daemon restart. Always preserve daemon.json during forced restarts to avoid configuration corruption.
+
+**Restart false positives during version-skew**: Daemon restart commands may report success even when the daemon failed to start due to version mismatches between the binary and cached daemon state. Always verify daemon responsiveness after restart and check for version-skew between `myco --version` and daemon API responses.

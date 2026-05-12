@@ -518,6 +518,89 @@ if myco daemon check-hub-dependency --version-target "$NEW_VERSION"; then
 fi
 ```
 
+## Procedure G: Multi-Environment Isolation and Grove Ownership
+
+### Grove Ownership Enforcement
+
+Implement ownership filtering and validation to prevent cross-Grove mutations:
+
+```typescript
+// Add ownership validation to Grove iteration
+forEachGrove((grove) => {
+  if (grove.served_by !== currentDaemonVariant) {
+    return; // Skip groves not owned by this daemon
+  }
+  // Proceed with grove operations
+});
+```
+
+**Ownership validation patterns:**
+- Ensure every Grove has a `served_by` field matching its daemon variant (`'service'` or `'service-dev'`)
+- Validate variant consistency during Grove loading
+- Reject operations on Groves with mismatched ownership
+
+### Multi-Environment Service Directory Isolation
+
+Coordinate separate service directories with mutual eviction prevention:
+
+```bash
+# Production: ~/.myco/service/ (default daemon variant 'service')
+# Development: ~/.myco/service-dev/ (dogfood daemon variant 'service-dev')
+```
+
+**Environment-specific isolation:**
+- Use environment-specific lock files
+- Prevent binding conflicts between daemon variants  
+- Validate service directory ownership before startup using `daemonVariant(daemonStateDir)`
+
+### Scope-Aware Daemon Operations
+
+Implement daemon-scope-aware operations that respect ownership boundaries:
+
+```typescript
+async function resolveAfterRepair(grove: Grove) {
+  // Add ownership gate
+  const currentVariant = daemonVariant(daemonStateDir);
+  if (grove.served_by !== currentVariant) {
+    throw new Error(`Cannot repair grove ${grove.id}: owned by ${grove.served_by}, not ${currentVariant}`);
+  }
+  // Proceed with repair operation
+}
+```
+
+**Ownership gates in shared code paths:**
+- Add ownership checks to vault mutation operations
+- Validate scope before database writes using `validateOwnership()`
+- Prevent dogfood daemons from mutating production vaults
+
+### Multi-Tenant Daemon Coordination
+
+Coordinate multiple daemon instances with isolation guarantees and cross-project query leak prevention:
+
+```typescript
+// Add request context to all database operations
+async function queryWithProjectScoping(query: string, params: any[], requestContext: MycoRequestContext) {
+  // Ensure project_id is always included in queries
+  const projectId = rowProjectIdFromRequestContext(requestContext);
+  const scopedQuery = `${query} AND project_id = ?`;
+  const scopedParams = [...params, projectId];
+  
+  return await db.all(scopedQuery, scopedParams);
+}
+
+// Validate request context propagation in daemon operations
+function validateRequestContextPropagation(operation: string, context: MycoRequestContext) {
+  if (!context || !context.projectId) {
+    throw new Error(`Request context missing for operation ${operation} - potential cross-project data leak`);
+  }
+}
+```
+
+**Multi-tenancy isolation requirements:**
+- Thread request context through all database query paths to prevent cross-project data leakage
+- Add isolation verification tests using `isProjectActive()` checks
+- Implement request context validation at database query entry points
+
 ## Cross-Cutting Gotchas
 
 ### Global Daemon Race Conditions
@@ -577,5 +660,15 @@ else
   echo "Hub migration not complete - preserving Hub artifacts"
 fi
 ```
+
+### Grove Ownership and Multi-Environment Coordination
+
+**Always validate Grove ownership** before any mutation operation - shared code paths can easily bypass scope boundaries
+
+**Service directory isolation** requires careful path management - ensure environment-specific directories are properly isolated using `SERVICE_DEV_DIRNAME` constant
+
+**Legacy scope elimination** must be systematic - any remaining `'legacy-project'` references in connection scopes can create ownership bypass vulnerabilities
+
+**Request context propagation gaps** - any database query path without request context creates potential cross-project data leakage in multi-tenant environments. All DB operations must validate and include project scoping to prevent query leaks across project boundaries
 
 **Additional gotchas**: Global daemon port scanning must account for grove-specific coordination requirements. Machine runtime preference compatibility with global daemon version-sync operations prevents infinite restart loops. The global daemon state must stay synchronized with grove-specific configuration to prevent coordination failures.

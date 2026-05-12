@@ -47,6 +47,18 @@ node .agents/myco-cli.cjs tool call <tool-name> --json --input '<json>'
 node .agents/myco-cli.cjs tool call <tool-name> --json --input @payload.json
 ```
 
+**Use `--input @file.json` whenever the payload contains backticks, code fences, multi-line strings, or markdown.** Agent shells often re-wrap commands through an outer `eval`, and backticks inside the inner single-quoted JSON get command-substituted before the CLI sees them — what you intended as literal `` `foo.ts` `` in spore content becomes the shell trying to execute `foo.ts`. The `@file` form sidesteps this entirely because the JSON never travels through shell escape resolution. Reserve the inline form for short single-line payloads with no special characters (e.g. `{"op":"get","id":"..."}`).
+
+```bash
+# Robust pattern for spore content, plan content, skill content, etc.
+cat > /tmp/payload.json <<'EOF'
+{ "op": "save", "type": "gotcha", "content": "Use `npm test`, not `bun test <subset>`..." }
+EOF
+node .agents/myco-cli.cjs tool call myco_spores --json --input @/tmp/payload.json
+```
+
+If the CLI is genuinely unavailable or both inline and `@file` forms fail repeatedly for the same payload, the host's MCP tool call (when Myco MCP is loaded — look for `myco_*` or `mcp__*myco*` entries in the available-tools list) is the fallback. Don't reach for MCP first — the CLI is the deliberate primary path; this skill is written around it.
+
 Successful calls return `{ "ok": true, "tool": "<name>", "result": ... }`; failures return `{ "ok": false, "tool": "<name>", "error": { "code": "...", "message": "..." } }`.
 
 The local Myco tool surface registers 7 core tools. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also available. Tools are defined in `packages/myco/src/tools/definitions.ts` — that file is the source of truth. MCP registers the same names when available.

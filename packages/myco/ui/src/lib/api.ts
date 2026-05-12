@@ -53,9 +53,56 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   checkApiVersion(res);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    maybeReloadForStaleAuth(res.status, body);
     throw new ApiError(res.status, body);
   }
   return res.json();
+}
+
+/**
+ * The daemon mints a fresh `auth_token` on every process start and injects
+ * it into the dashboard HTML via `window.__MYCO_AUTH__` (see
+ * `daemon/server.ts:injectDashboardBootstrap`). When the daemon restarts
+ * mid-session — auto-update, manual restart, crash-recovery — the in-page
+ * token goes stale and every subsequent API call returns
+ * 401 `unauthorized_context_switch`. The token can only be refreshed by
+ * re-fetching the HTML, so the recovery is a page reload.
+ *
+ * Reload is gated on sessionStorage so a genuinely-down daemon (returning
+ * 401 indefinitely) doesn't loop the page.
+ */
+const AUTH_RELOAD_TIMESTAMP_KEY = 'myco:auth-reload-ts';
+const AUTH_RELOAD_COOLDOWN_MS = 10_000;
+
+let reloadPageImpl: () => void = () => { window.location.reload(); };
+
+/** Test seam: override the reload action. Restore by calling without args. */
+export function __setReloadPageForTests(impl?: () => void): void {
+  reloadPageImpl = impl ?? (() => { window.location.reload(); });
+}
+
+function maybeReloadForStaleAuth(status: number, body: unknown): void {
+  if (status !== 401) return;
+  const errorCode = typeof body === 'object' && body !== null && 'error' in body
+    ? (body as { error: unknown }).error
+    : null;
+  if (errorCode !== 'unauthorized_context_switch') return;
+  if (typeof window === 'undefined' || typeof window.sessionStorage === 'undefined') return;
+
+  try {
+    const last = Number(window.sessionStorage.getItem(AUTH_RELOAD_TIMESTAMP_KEY) ?? '0');
+    if (Number.isFinite(last) && Date.now() - last < AUTH_RELOAD_COOLDOWN_MS) {
+      // Recently reloaded; the new token also got rejected → daemon is
+      // genuinely unreachable (down, wrong port, network). Let the UI
+      // show the error instead of looping the page.
+      return;
+    }
+    window.sessionStorage.setItem(AUTH_RELOAD_TIMESTAMP_KEY, String(Date.now()));
+  } catch {
+    // sessionStorage write may throw under privacy modes; skip reload.
+    return;
+  }
+  reloadPageImpl();
 }
 
 /**
