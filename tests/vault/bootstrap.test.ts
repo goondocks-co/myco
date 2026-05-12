@@ -61,6 +61,7 @@ describe('resolveBootstrapVaultDir', () => {
     const groveId = 'grove_65b606b9665228ac5f1812d645cdf6fe';
     const projRoot = makeProject('reg1');
     writeRegistry(groveId);
+    writeGroveToml(groveId, 'service');
     writeProjectsToml(groveId, [{ id: 'proj_test', root: projRoot }]);
     // cwd has no enclosing project, registry has one
     expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(projRoot, '.myco'));
@@ -71,6 +72,7 @@ describe('resolveBootstrapVaultDir', () => {
     const goodRoot = makeProject('good');
     const ghostRoot = '/this/path/does/not/exist';
     writeRegistry(groveId);
+    writeGroveToml(groveId, 'service');
     writeProjectsToml(groveId, [
       { id: 'proj_ghost', root: ghostRoot },
       { id: 'proj_good', root: goodRoot },
