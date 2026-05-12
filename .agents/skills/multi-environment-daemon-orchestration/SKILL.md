@@ -125,19 +125,40 @@ Remove legacy scope patterns and prevent ownership bypass:
 
 ## Procedure E: Multi-Tenant Daemon Coordination
 
-Coordinate multiple daemon instances with isolation guarantees:
+Coordinate multiple daemon instances with isolation guarantees and cross-project query leak prevention:
 
 1. **Implement inter-daemon communication protocols**:
    - Use variant-specific service directories for coordination
    - Implement daemon discovery and registration using Grove manifests
    - Add coordination for shared resource access via claim/release operations
 
-2. **Ensure isolation guarantees**:
+2. **Ensure isolation guarantees with request context propagation**:
    - Validate Grove ownership before any mutation using `validateOwnership()`
-   - Implement cross-environment data corruption prevention
+   - **Thread request context through all database query paths** to prevent cross-project data leakage
    - Add isolation verification tests using `isProjectActive()` checks
+   - Implement request context validation at database query entry points
 
-3. **Coordinate daemon lifecycle events**:
+3. **Prevent multi-tenancy query leaks**:
+   ```typescript
+   // Add request context to all database operations
+   async function queryWithProjectScoping(query: string, params: any[], requestContext: MycoRequestContext) {
+     // Ensure project_id is always included in queries
+     const projectId = rowProjectIdFromRequestContext(requestContext);
+     const scopedQuery = `${query} AND project_id = ?`;
+     const scopedParams = [...params, projectId];
+     
+     return await db.all(scopedQuery, scopedParams);
+   }
+   
+   // Validate request context propagation in daemon operations
+   function validateRequestContextPropagation(operation: string, context: MycoRequestContext) {
+     if (!context || !context.projectId) {
+       throw new Error(`Request context missing for operation ${operation} - potential cross-project data leak`);
+     }
+   }
+   ```
+
+4. **Coordinate daemon lifecycle events**:
    - Implement graceful shutdown with environment cleanup
    - Handle daemon restart scenarios with ownership validation
    - Ensure proper resource cleanup on daemon termination using `forEachGrove` cleanup patterns
@@ -149,3 +170,4 @@ Coordinate multiple daemon instances with isolation guarantees:
 - **Legacy scope elimination** must be systematic - any remaining `'legacy-project'` references in connection scopes can create ownership bypass vulnerabilities
 - **Daemon variant coordination** between environments prevents binding conflicts but requires careful startup sequencing
 - **Ownership validation performance** - cache ownership checks for frequently accessed Groves to avoid performance degradation in `forEachGrove` iterations
+- **Request context propagation gaps** - any database query path without request context creates potential cross-project data leakage in multi-tenant environments. All DB operations must validate and include project scoping to prevent query leaks across project boundaries
