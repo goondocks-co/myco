@@ -81,4 +81,59 @@ describe('resolveBootstrapVaultDir', () => {
   test('throws when neither cwd nor registry yields a project', () => {
     expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/no enclosing project.*no projects registered/i);
   });
+
+  function writeGroveToml(groveId: string, servedBy: 'service' | 'service-dev'): void {
+    const dir = path.join(tmpHome, 'groves', groveId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'grove.toml'),
+      `[grove]\nid = "${groveId}"\nname = "${groveId}"\nslug = "${groveId}"\nmode = "local"\ncreated_at = "2026-01-01T00:00:00.000Z"\nserved_by = "${servedBy}"\n`,
+    );
+  }
+
+  test('dev variant picks a Grove with served_by = service-dev', () => {
+    const prodGrove = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const devGrove = 'grove_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const prodRoot = makeProject('prod');
+    const devRoot = makeProject('dev');
+    writeRegistry(prodGrove); // default = prod
+    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    try {
+      expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(devRoot, '.myco'));
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('prod variant (default) still picks the default Grove', () => {
+    const prodGrove = 'grove_cccccccccccccccccccccccccccccccc';
+    const devGrove = 'grove_dddddddddddddddddddddddddddddddd';
+    const prodRoot = makeProject('prod2');
+    const devRoot = makeProject('dev2');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+    // MYCO_SERVICE_VARIANT unset — should pick prod
+    expect(resolveBootstrapVaultDir(tmpCwd)).toBe(path.join(prodRoot, '.myco'));
+  });
+
+  test('dev variant fails clearly when no dev Grove exists', () => {
+    const prodGrove = 'grove_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const prodRoot = makeProject('prod3');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    try {
+      expect(() => resolveBootstrapVaultDir(tmpCwd)).toThrow(/service-dev/);
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
 });
