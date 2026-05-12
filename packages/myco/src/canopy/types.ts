@@ -28,4 +28,10 @@ export interface CanopyScanResult {
   removed: number;
   errored: number;
   durationMs: number;
+  /**
+   * Set when the walker stopped early because it hit the `maxFiles` or
+   * `maxDepth` cap. Callers should log a warning naming the project so
+   * an operator can investigate (typically a too-broad project root).
+   */
+  limitHit?: { kind: 'maxFiles' | 'maxDepth'; value: number };
 }

@@ -11,7 +11,29 @@ export interface WalkOptions {
    * a single-purpose matcher can ignore it.
    */
   isExcluded: (relPath: string, isDir?: boolean) => boolean;
+  /**
+   * Hard cap on how many file paths the walker yields per call. Prevents
+   * a misconfigured project root (e.g., $HOME accidentally registered as
+   * a project) from blocking the event loop on a multi-million-file
+   * traversal. Default 50,000. Set to `Infinity` to disable.
+   *
+   * When the cap is reached, an `onLimitHit` callback fires (if provided)
+   * and the generator stops. The caller is responsible for logging.
+   */
+  maxFiles?: number;
+  /**
+   * Hard cap on directory descent depth. Prevents pathological symlink
+   * loops (we already skip symlinks, but defense in depth) and runaway
+   * deep trees from blocking the walk. Default 24. Set to `Infinity`
+   * to disable.
+   */
+  maxDepth?: number;
+  /** Called once when `maxFiles` or `maxDepth` is hit, for caller logging. */
+  onLimitHit?: (kind: 'maxFiles' | 'maxDepth', value: number) => void;
 }
+
+const DEFAULT_MAX_FILES = 50_000;
+const DEFAULT_MAX_DEPTH = 24;
 
 /**
  * Recursive file walk yielding repo-relative, forward-slash paths.
@@ -23,9 +45,14 @@ export interface WalkOptions {
  * scan; the caller logs in aggregate.
  */
 export function* walkProject(opts: WalkOptions): Generator<string> {
-  const stack: string[] = ['']; // empty string represents projectRoot itself
+  const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
+  const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
+  // Stack carries (relDir, depth). Empty string represents projectRoot itself.
+  const stack: Array<{ relDir: string; depth: number }> = [{ relDir: '', depth: 0 }];
+  let yielded = 0;
+  let hitDepthLimit = false;
   while (stack.length > 0) {
-    const relDir = stack.pop()!;
+    const { relDir, depth } = stack.pop()!;
     const absDir = relDir === '' ? opts.projectRoot : path.join(opts.projectRoot, relDir);
 
     let entries: fs.Dirent[];
@@ -45,12 +72,24 @@ export function* walkProject(opts: WalkOptions): Generator<string> {
 
       if (e.isDirectory()) {
         if (opts.isExcluded(relChild, true)) continue;
-        stack.push(relChild);
+        if (depth + 1 > maxDepth) {
+          if (!hitDepthLimit) {
+            hitDepthLimit = true;
+            opts.onLimitHit?.('maxDepth', maxDepth);
+          }
+          continue;
+        }
+        stack.push({ relDir: relChild, depth: depth + 1 });
         continue;
       }
       if (!e.isFile()) continue;
       if (opts.isExcluded(relChild, false)) continue;
       yield relChild;
+      yielded++;
+      if (yielded >= maxFiles) {
+        opts.onLimitHit?.('maxFiles', maxFiles);
+        return;
+      }
     }
   }
 }
