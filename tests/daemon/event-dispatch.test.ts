@@ -251,4 +251,98 @@ describe('createEventDispatcher', () => {
       fs.rmSync(vaultDir, { recursive: true, force: true });
     });
   });
+
+  describe('event-dedup window', () => {
+    it('suppresses identical user_prompt POSTs that arrive within the dedup window', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'dedup-prompt-burst-001';
+      // Use auto-register path (with transcript_path) so the DB session row
+      // exists before handleUserPrompt fires. Mirrors the live hook flow.
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dedup-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+      const baseEvent = {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'claude-code',
+        prompt: 'Help me debug the recurring daemon wedge — it survives SIGTERM but stops responding to /health',
+        transcript_path: transcriptPath,
+      };
+
+      const first = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: baseEvent, query: {}, params: {}, pathname: '/events' });
+      const second = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: baseEvent, query: {}, params: {}, pathname: '/events' });
+      const third = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: baseEvent, query: {}, params: {}, pathname: '/events' });
+
+      expect(first.body).toMatchObject({ ok: true });
+      expect(first.body).not.toMatchObject({ ignored: 'duplicate' });
+      expect(second.body).toEqual({ ok: true, ignored: 'duplicate' });
+      expect(third.body).toEqual({ ok: true, ignored: 'duplicate' });
+
+      // Without the guard, three identical user_prompt POSTs would create
+      // three batches (the bug we're fixing). With it, exactly one batch.
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length).toBe(1);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('lets a different prompt for the same session through (only identical content is deduped)', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'dedup-distinct-prompts-001';
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dedup-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+      const make = (prompt: string) => ({
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent: 'claude-code',
+        prompt,
+        transcript_path: transcriptPath,
+      });
+
+      const a = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: make('first distinct prompt with enough text to feel like a real turn'), query: {}, params: {}, pathname: '/events' });
+      const b = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: make('second distinct prompt with completely different wording'), query: {}, params: {}, pathname: '/events' });
+
+      expect(a.body).not.toMatchObject({ ignored: 'duplicate' });
+      expect(b.body).not.toMatchObject({ ignored: 'duplicate' });
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length).toBe(2);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('suppresses repeated tool_use events with the same tool_input', async () => {
+      const { handler, logger, vaultDir, sessionBuffers } = makeHandler();
+      const sessionId = 'dedup-tool-burst-001';
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dedup-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+      const event = {
+        type: 'tool_use',
+        session_id: sessionId,
+        agent: 'claude-code',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello world from a duplicate-burst test', description: 'echo' },
+        transcript_path: transcriptPath,
+      };
+
+      const r1 = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: event, query: {}, params: {}, pathname: '/events' });
+      const r2 = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: event, query: {}, params: {}, pathname: '/events' });
+      const r3 = await handler({ requestContext: TEST_REQUEST_CONTEXT, body: event, query: {}, params: {}, pathname: '/events' });
+
+      expect(r1.body).toMatchObject({ ok: true });
+      expect(r1.body).not.toMatchObject({ ignored: 'duplicate' });
+      expect(r2.body).toEqual({ ok: true, ignored: 'duplicate' });
+      expect(r3.body).toEqual({ ok: true, ignored: 'duplicate' });
+
+      expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
+      expect(sessionBuffers.get(sessionId)?.readAll().length ?? 0).toBe(1);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+  });
 });
