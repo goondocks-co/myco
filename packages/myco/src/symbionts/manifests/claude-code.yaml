@@ -170,3 +170,10 @@ capabilities:
   # Hook template registers a session-start hook that fetches Cortex context
   # and emits it as additional system context.
   sessionStartInjection: true
+  # File-read tools this symbiont exposes for Canopy PreToolUse injection.
+  # Each entry tells the resolver how to recognize the tool and locate the
+  # file path on tool_input. The hardcoded 'Read' check in pre-tool-use.ts
+  # is replaced in Phase 1.4 by manifest-driven lookup against this list.
+  canopyReadTools:
+    - tool: Read
+      pathField: file_path

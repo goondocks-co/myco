@@ -337,3 +337,13 @@ describe('CapabilitiesSchema.canopyReadTools', () => {
     })).toThrow();
   });
 });
+
+describe('claude-code manifest declares its file-read tool', () => {
+  it('parses with one canopyReadTools entry: Read / file_path', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
+    const m = SymbiontManifestSchema.parse(YAML.parse(raw));
+    expect(m.capabilities?.canopyReadTools).toEqual([
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+    ]);
+  });
+});

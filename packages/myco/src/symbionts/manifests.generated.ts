@@ -131,7 +131,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
-      "canopyReadTools": []
+      "canopyReadTools": [
+        {
+          "tool": "Read",
+          "pathField": "file_path",
+          "pathKind": "file"
+        }
+      ]
     }
   },
   {
