@@ -80,12 +80,32 @@ describe('writeHookResponse (manifest-driven)', () => {
       expect(captured).toBe('');
     });
 
+    it('emits empty stdout (not `{}`) for pre-tool-use with no additionalContext', () => {
+      writeHookResponse('claude-code', 'pre-tool-use');
+      expect(captured).toBe('');
+    });
+
     it('ignores non-context fields in plain-text mode', () => {
       writeHookResponse('claude-code', 'subagent-stop', {
         additionalContext: 'ctx',
         followupMessage: 'ignored here',
       });
       expect(captured).toBe('ctx');
+    });
+  });
+
+  describe('pre-tool-use envelope is capability-driven', () => {
+    it('codex pre-tool-use does not emit the envelope until preToolUseInjection is enabled', () => {
+      // Codex declares format: json (see hook-config). Without the
+      // preToolUseInjection capability, it must fall through to the
+      // manifest-driven JSON serializer — not the claude-style envelope.
+      writeHookResponse('codex', 'pre-tool-use', { additionalContext: 'BLOB' });
+      expect(captured).not.toContain('hookSpecificOutput');
+    });
+
+    it('cursor pre-tool-use does not emit the envelope (no preToolUseInjection capability)', () => {
+      writeHookResponse('cursor', 'pre-tool-use', { additionalContext: 'BLOB' });
+      expect(captured).not.toContain('hookSpecificOutput');
     });
   });
 

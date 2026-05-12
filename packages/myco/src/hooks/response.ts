@@ -1,5 +1,6 @@
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import type { SymbiontRegistration } from '../symbionts/manifest-schema.js';
+import { symbiontHasCapability } from '../symbionts/capabilities.js';
 
 export interface HookResponse {
   additionalContext?: string;
@@ -17,8 +18,8 @@ export function writeHookResponse(
   hookEvent: string,
   response: HookResponse = {},
 ): void {
-  if (symbiont === 'claude-code' && hookEvent === 'pre-tool-use') {
-    process.stdout.write(serializeClaudePreToolUse(response));
+  if (hookEvent === 'pre-tool-use' && symbiontHasCapability(symbiont, 'preToolUseInjection')) {
+    process.stdout.write(serializePreToolUseEnvelope(response));
     return;
   }
 
@@ -57,8 +58,8 @@ function serializeJson(
   return JSON.stringify(body);
 }
 
-function serializeClaudePreToolUse(response: HookResponse): string {
-  if (!response.additionalContext) return '{}';
+function serializePreToolUseEnvelope(response: HookResponse): string {
+  if (!response.additionalContext) return '';
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
