@@ -4,8 +4,11 @@ import { execFileSync } from 'node:child_process';
 const GIT_TIMEOUT_MS = 5_000;
 
 export interface GitPatchId {
-  kind: 'staged' | 'unstaged';
+  kind: 'head' | 'upstream_range' | 'production_range' | 'staged' | 'unstaged';
   patch_id: string;
+  base_ref?: string | null;
+  base_sha?: string | null;
+  head_sha?: string | null;
 }
 
 export interface GitSnapshot {
@@ -125,17 +128,48 @@ function readTrackedBlobHashes(projectRoot: string, trackedPaths: string[]): Rec
   return hashes;
 }
 
+function patchIdFromDiff(projectRoot: string, diffOutput: string): string | null {
+  if (!diffOutput.trim()) return null;
+  const patchId = runGit(projectRoot, ['patch-id', '--stable'], `${diffOutput}\n`);
+  if (!patchId.ok || !patchId.stdout.trim()) return null;
+  return patchId.stdout.trim().split(/\s+/)[0] ?? null;
+}
+
 function patchIdForDiff(projectRoot: string, kind: GitPatchId['kind'], diffArgs: string[]): GitPatchId | null {
   const diff = runGit(projectRoot, diffArgs);
   if (!diff.ok || !diff.stdout.trim()) return null;
-  const patchId = runGit(projectRoot, ['patch-id', '--stable'], `${diff.stdout}\n`);
-  if (!patchId.ok || !patchId.stdout.trim()) return null;
-  const id = patchId.stdout.trim().split(/\s+/)[0];
+  const id = patchIdFromDiff(projectRoot, diff.stdout);
   return id ? { kind, patch_id: id } : null;
+}
+
+function patchIdForCommit(projectRoot: string, headSha: string | null): GitPatchId | null {
+  if (!headSha) return null;
+  const diff = runGit(projectRoot, ['show', '--format=', '--patch', '--find-renames', headSha]);
+  const id = diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
+  return id ? { kind: 'head', patch_id: id, head_sha: headSha } : null;
+}
+
+function patchIdForRange(
+  projectRoot: string,
+  kind: 'upstream_range' | 'production_range',
+  baseRef: string | null,
+  baseSha: string | null,
+  headSha: string | null,
+): GitPatchId | null {
+  if (!baseSha || !headSha) return null;
+  const diff = runGit(projectRoot, ['diff', '--find-renames', baseSha, headSha]);
+  const id = diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
+  return id ? { kind, patch_id: id, base_ref: baseRef, base_sha: baseSha, head_sha: headSha } : null;
 }
 
 function readOptionalRef(projectRoot: string, ref: string): string | null {
   const result = runGit(projectRoot, ['rev-parse', ref]);
+  return result.ok && result.stdout ? result.stdout : null;
+}
+
+function mergeBase(projectRoot: string, left: string | null, right: string | null): string | null {
+  if (!left || !right) return null;
+  const result = runGit(projectRoot, ['merge-base', left, right]);
   return result.ok && result.stdout ? result.stdout : null;
 }
 
@@ -174,6 +208,21 @@ export function captureGitSnapshot(projectRoot: string, options: CaptureGitSnaps
   const status = runGit(projectRoot, ['status', '--porcelain=v1']);
   const parsedStatus = parseStatus(status.stdout);
   const patchIds = [
+    patchIdForCommit(projectRoot, head.ok ? head.stdout : null),
+    patchIdForRange(
+      projectRoot,
+      'upstream_range',
+      upstreamRef.ok ? upstreamRef.stdout : null,
+      mergeBase(projectRoot, head.ok ? head.stdout : null, upstreamSha),
+      head.ok ? head.stdout : null,
+    ),
+    patchIdForRange(
+      projectRoot,
+      'production_range',
+      productionRef,
+      mergeBase(projectRoot, head.ok ? head.stdout : null, productionSha),
+      head.ok ? head.stdout : null,
+    ),
     patchIdForDiff(projectRoot, 'staged', ['diff', '--cached']),
     patchIdForDiff(projectRoot, 'unstaged', ['diff']),
   ].filter((entry): entry is GitPatchId => entry !== null);

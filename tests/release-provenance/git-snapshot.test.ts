@@ -21,6 +21,31 @@ function makeRepo(): string {
 }
 
 describe('captureGitSnapshot', () => {
+  it('captures stable patch IDs for clean HEAD and upstream range', () => {
+    const repo = makeRepo();
+    try {
+      git(repo, ['branch', '-m', 'main']);
+      git(repo, ['checkout', '-qb', 'feature']);
+      git(repo, ['branch', '--set-upstream-to', 'main']);
+      fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\ntwo\n', 'utf-8');
+      git(repo, ['commit', '-am', 'feature change', '-q']);
+
+      const snapshot = captureGitSnapshot(repo);
+
+      expect(snapshot.is_dirty).toBe(false);
+      expect(snapshot.patch_ids).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'head', patch_id: expect.stringMatching(/^[0-9a-f]{40}$/) }),
+        expect.objectContaining({
+          kind: 'upstream_range',
+          base_ref: 'main',
+          patch_id: expect.stringMatching(/^[0-9a-f]{40}$/),
+        }),
+      ]));
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('captures branch, head, dirty counts, tracked blobs, and patch IDs', () => {
     const repo = makeRepo();
     try {
@@ -38,9 +63,10 @@ describe('captureGitSnapshot', () => {
       expect(snapshot.untracked_count).toBe(1);
       expect(snapshot.changed_paths).toEqual(['tracked.txt', 'untracked.txt']);
       expect(snapshot.tracked_blob_hashes['tracked.txt']).toMatch(/^[0-9a-f]{40}$/);
-      expect(snapshot.patch_ids).toEqual([
+      expect(snapshot.patch_ids).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'head', patch_id: expect.stringMatching(/^[0-9a-f]{40}$/) }),
         expect.objectContaining({ kind: 'unstaged', patch_id: expect.stringMatching(/^[0-9a-f]{40}$/) }),
-      ]);
+      ]));
       expect(snapshot.status_hash).toMatch(/^[0-9a-f]{64}$/);
       expect(snapshot.error).toBeNull();
     } finally {

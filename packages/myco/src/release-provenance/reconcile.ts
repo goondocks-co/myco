@@ -14,6 +14,15 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { ReleaseProvenanceRuntimeConfig } from './config.js';
 
 const GIT_TIMEOUT_MS = 5_000;
+const PATCH_SCAN_MAX_COMMITS = 500;
+
+interface CapturedPatchId {
+  kind?: string;
+  patch_id?: string;
+  base_ref?: string | null;
+  base_sha?: string | null;
+  head_sha?: string | null;
+}
 
 interface ReleaseTarget {
   namespace: ReleaseNamespace;
@@ -24,6 +33,13 @@ interface RefCheck {
   ref: string;
   ok: boolean;
   error?: string;
+}
+
+interface PatchMatch {
+  ref: string;
+  commit_sha: string;
+  patch_id: string;
+  patch_kind: string | null;
 }
 
 interface Classification {
@@ -54,16 +70,18 @@ export interface ReconcileReleaseProvenanceResult {
   disabled: boolean;
 }
 
-function runGit(projectRoot: string, args: string[]): { ok: boolean; stdout: string; error?: string } {
+function runGit(projectRoot: string, args: string[], input?: string): { ok: boolean; stdout: string; error?: string; status?: number } {
   try {
     const stdout = execFileSync('git', ['-C', projectRoot, ...args], {
       encoding: 'utf-8',
       timeout: GIT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
+      input,
     }).trim();
     return { ok: true, stdout };
   } catch (err) {
-    return { ok: false, stdout: '', error: (err as Error).message };
+    const failure = err as Error & { status?: number };
+    return { ok: false, stdout: '', error: failure.message, status: failure.status };
   }
 }
 
@@ -80,8 +98,121 @@ function targetFor(row: GitProvenanceRow): ReleaseTarget | null {
 function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): RefCheck[] {
   return refs.map((ref) => {
     const result = runGit(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
-    return { ref, ok: result.ok, ...(result.ok ? {} : { error: result.error }) };
+    return {
+      ref,
+      ok: result.ok,
+      ...(result.ok || result.status === 1 ? {} : { error: result.error }),
+    };
   });
+}
+
+function patchIdFromDiff(projectRoot: string, diffOutput: string): string | null {
+  if (!diffOutput.trim()) return null;
+  const patchId = runGit(projectRoot, ['patch-id', '--stable'], `${diffOutput}\n`);
+  if (!patchId.ok || !patchId.stdout.trim()) return null;
+  return patchId.stdout.trim().split(/\s+/)[0] ?? null;
+}
+
+function patchIdForCommit(projectRoot: string, commitSha: string): string | null {
+  const diff = runGit(projectRoot, ['show', '--format=', '--patch', '--find-renames', commitSha]);
+  return diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
+}
+
+function patchIdForRange(projectRoot: string, baseSha: string, headSha: string): string | null {
+  const diff = runGit(projectRoot, ['diff', '--find-renames', baseSha, headSha]);
+  return diff.ok ? patchIdFromDiff(projectRoot, diff.stdout) : null;
+}
+
+function mergeBase(projectRoot: string, left: string, right: string): string | null {
+  const result = runGit(projectRoot, ['merge-base', left, right]);
+  return result.ok && result.stdout ? result.stdout : null;
+}
+
+function parseCapturedPatchIds(row: GitProvenanceRow): CapturedPatchId[] {
+  if (!row.patch_ids_json) return [];
+  try {
+    const parsed = JSON.parse(row.patch_ids_json) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is CapturedPatchId => (
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as CapturedPatchId).patch_id === 'string'
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function capturedPatchCandidates(
+  row: GitProvenanceRow,
+  projectRoot: string,
+  refs: readonly string[],
+): CapturedPatchId[] {
+  const byKey = new Map<string, CapturedPatchId>();
+  for (const patch of parseCapturedPatchIds(row)) {
+    if (!patch.patch_id) continue;
+    byKey.set(`${patch.kind ?? 'unknown'}:${patch.patch_id}`, patch);
+  }
+
+  if (row.head_sha) {
+    for (const ref of refs) {
+      const baseSha = mergeBase(projectRoot, row.head_sha, ref);
+      if (!baseSha) continue;
+      const patchId = patchIdForRange(projectRoot, baseSha, row.head_sha);
+      if (!patchId) continue;
+      byKey.set(`dynamic_range:${patchId}`, {
+        kind: 'dynamic_range',
+        patch_id: patchId,
+        base_ref: ref,
+        base_sha: baseSha,
+        head_sha: row.head_sha,
+      });
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function findPatchMatch(
+  projectRoot: string,
+  row: GitProvenanceRow,
+  refs: readonly string[],
+): { matches: PatchMatch[]; errors: RefCheck[] } {
+  const patches = capturedPatchCandidates(row, projectRoot, refs);
+  const wanted = new Map<string, CapturedPatchId>();
+  for (const patch of patches) {
+    if (patch.patch_id) wanted.set(patch.patch_id, patch);
+  }
+  if (wanted.size === 0) return { matches: [], errors: [] };
+
+  const matches: PatchMatch[] = [];
+  const errors: RefCheck[] = [];
+  const seenCommits = new Set<string>();
+
+  for (const ref of refs) {
+    const revList = runGit(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
+    if (!revList.ok) {
+      errors.push({ ref, ok: false, error: revList.error });
+      continue;
+    }
+    for (const commitSha of revList.stdout.split('\n')) {
+      if (!commitSha || seenCommits.has(commitSha)) continue;
+      seenCommits.add(commitSha);
+      const patchId = patchIdForCommit(projectRoot, commitSha);
+      if (!patchId) continue;
+      const captured = wanted.get(patchId);
+      if (!captured) continue;
+      matches.push({
+        ref,
+        commit_sha: commitSha,
+        patch_id: patchId,
+        patch_kind: captured.kind ?? null,
+      });
+      break;
+    }
+  }
+
+  return { matches, errors };
 }
 
 function classify(row: GitProvenanceRow, input: ReconcileReleaseProvenanceInput): Classification {
@@ -148,6 +279,28 @@ function classify(row: GitProvenanceRow, input: ReconcileReleaseProvenanceInput)
     };
   }
 
+  const productionPatchMatch = findPatchMatch(input.projectRoot, row, productionRefs);
+  const releasedByPatch = productionPatchMatch.matches[0];
+  if (releasedByPatch) {
+    return {
+      state: 'released',
+      confidence: 'medium',
+      basis_kind: 'git_patch_id',
+      basis_ref: releasedByPatch.ref,
+      basis_sha: releasedByPatch.commit_sha,
+      reason: `Captured patch is equivalent to a commit in production ref ${releasedByPatch.ref}`,
+      evidence: {
+        ...baseEvidence,
+        checked_refs: productionChecks,
+        patch_match: releasedByPatch,
+        patch_scan: {
+          max_commits_per_ref: PATCH_SCAN_MAX_COMMITS,
+          errors: productionPatchMatch.errors,
+        },
+      },
+    };
+  }
+
   const integrationChecks = checkRefs(input.projectRoot, row.head_sha, integrationRefs);
   const merged = integrationChecks.find((check) => check.ok);
   if (merged) {
@@ -159,6 +312,28 @@ function classify(row: GitProvenanceRow, input: ReconcileReleaseProvenanceInput)
       basis_sha: row.head_sha,
       reason: `Captured HEAD is contained in integration ref ${merged.ref} but not a production ref`,
       evidence: { ...baseEvidence, checked_refs: [...productionChecks, ...integrationChecks] },
+    };
+  }
+
+  const integrationPatchMatch = findPatchMatch(input.projectRoot, row, integrationRefs);
+  const mergedByPatch = integrationPatchMatch.matches[0];
+  if (mergedByPatch) {
+    return {
+      state: 'merged_unreleased',
+      confidence: 'medium',
+      basis_kind: 'git_patch_id',
+      basis_ref: mergedByPatch.ref,
+      basis_sha: mergedByPatch.commit_sha,
+      reason: `Captured patch is equivalent to a commit in integration ref ${mergedByPatch.ref} but not a production ref`,
+      evidence: {
+        ...baseEvidence,
+        checked_refs: [...productionChecks, ...integrationChecks],
+        patch_match: mergedByPatch,
+        patch_scan: {
+          max_commits_per_ref: PATCH_SCAN_MAX_COMMITS,
+          errors: [...productionPatchMatch.errors, ...integrationPatchMatch.errors],
+        },
+      },
     };
   }
 

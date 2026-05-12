@@ -16,6 +16,15 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
 }
 
+function gitWithInput(cwd: string, args: string[], input: string): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', input }).trim();
+}
+
+function patchIdForRange(cwd: string, base: string, head: string): string {
+  const diff = git(cwd, ['diff', '--find-renames', base, head]);
+  return gitWithInput(cwd, ['patch-id', '--stable'], `${diff}\n`).split(/\s+/)[0];
+}
+
 function makeRepo(): { repo: string; first: string; second: string } {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-reconcile-'));
   git(repo, ['init', '-q']);
@@ -141,6 +150,65 @@ describe('reconcileReleaseProvenance', () => {
       const state = getReleaseState('prompt_batches', String(batchId), ALL_PROJECTS_SCOPE);
       expect(state?.state).toBe('unknown');
       expect(state?.basis_kind).toBe('dirty_worktree');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('marks squash-merged feature work as released through stable range patch identity', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-squash-'));
+    try {
+      git(repo, ['init', '-q']);
+      git(repo, ['config', 'user.email', 'test@example.com']);
+      git(repo, ['config', 'user.name', 'Test User']);
+      fs.writeFileSync(path.join(repo, 'file.txt'), 'one\n', 'utf-8');
+      git(repo, ['add', 'file.txt']);
+      git(repo, ['commit', '-qm', 'initial']);
+      git(repo, ['branch', '-m', 'main']);
+      const base = git(repo, ['rev-parse', 'HEAD']);
+
+      git(repo, ['checkout', '-qb', 'feature']);
+      fs.writeFileSync(path.join(repo, 'file.txt'), 'one\ntwo\n', 'utf-8');
+      git(repo, ['commit', '-am', 'feature part one', '-q']);
+      fs.writeFileSync(path.join(repo, 'file.txt'), 'one\ntwo\nthree\n', 'utf-8');
+      git(repo, ['commit', '-am', 'feature part two', '-q']);
+      const featureHead = git(repo, ['rev-parse', 'HEAD']);
+      const rangePatchId = patchIdForRange(repo, base, featureHead);
+
+      git(repo, ['checkout', '-q', 'main']);
+      git(repo, ['merge', '--squash', 'feature', '-q']);
+      git(repo, ['commit', '-qm', 'feat: squash feature']);
+      const squashCommit = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, ['tag', 'prod-squash']);
+
+      const batchId = insertPromptProvenance(featureHead, {
+        patch_ids_json: JSON.stringify([{
+          kind: 'upstream_range',
+          patch_id: rangePatchId,
+          base_ref: 'main',
+          base_sha: base,
+          head_sha: featureHead,
+        }]),
+      });
+
+      reconcileReleaseProvenance({
+        projectRoot: repo,
+        scope: ALL_PROJECTS_SCOPE,
+        config: {
+          enabled: true,
+          production_refs: ['prod-squash'],
+          integration_refs: [],
+          reconcile_interval_minutes: 15,
+        },
+        now: NOW + 1,
+      });
+
+      const state = getReleaseState('prompt_batches', String(batchId), ALL_PROJECTS_SCOPE);
+      expect(state?.state).toBe('released');
+      expect(state?.confidence).toBe('medium');
+      expect(state?.basis_kind).toBe('git_patch_id');
+      expect(state?.basis_ref).toBe('prod-squash');
+      expect(state?.basis_sha).toBe(squashCommit);
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }
