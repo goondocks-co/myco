@@ -339,6 +339,13 @@ describe('release provenance E2E', () => {
       expect(LOCAL_ONLY_SYNC_COLUMNS.knowledge_release_state).toContain('evidence_json');
 
       // ---------- Phase 9: idempotency on re-run ----------
+      // Mark the existing release_state rows as synced. The reconciler's
+      // unchanged short-circuit only fires for rows that have completed a
+      // sync round-trip; pre-sync rows go through the full upsert path so
+      // syncRow re-enqueues them (orphan-protection guard).
+      const { getDatabase } = await import('@myco/db/client');
+      getDatabase().prepare('UPDATE knowledge_release_state SET synced_at = ?').run(NOW + 150);
+
       const second = await reconcileReleaseProvenance({
         projectRoot: repo,
         scope: ALL_PROJECTS_SCOPE,

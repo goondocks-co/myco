@@ -155,6 +155,12 @@ export interface ReleaseStateRow extends Required<Omit<ReleaseStateUpsert,
   reason: string | null;
   evidence_json: string | null;
   updated_at: number | null;
+  /** Epoch seconds when this row was handed off to the team sync outbox.
+   * `null` means the row has never been enqueued — either team sync was
+   * disabled when it was written, or the write predates that integration.
+   * The reconciler treats `null` as a sync-debt signal and re-enqueues even
+   * when classification is unchanged. */
+  synced_at: number | null;
 }
 
 export interface ListGitProvenanceOptions {
@@ -266,6 +272,7 @@ function toReleaseStateRow(row: Record<string, unknown>): ReleaseStateRow {
     checked_at: row.checked_at as number,
     created_at: row.created_at as number,
     updated_at: (row.updated_at as number) ?? null,
+    synced_at: (row.synced_at as number) ?? null,
   };
 }
 
