@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,6 +16,12 @@ mock.module('node:child_process', () => ({
     return { unref: () => {}, on: () => {}, kill: () => {} } as any;
   }),
 }));
+
+// bun:test's mock.module() is process-scoped — restore the real module after
+// this file so later files in the same `bun test` run see a real spawn().
+afterAll(() => {
+  mock.module('node:child_process', () => childProcessActual);
+});
 
 // Restart handler triggers a `setTimeout(... process.kill, ...)`. Stub kill so
 // the test process is never SIGTERMed by its own units.

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +14,15 @@ import type { ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/t
 const spawnMock = vi.fn(() => ({ unref: () => {} }));
 const childProcessActual = { ...childProcessActual__ns };
 mock.module('node:child_process', () => ({ ...childProcessActual, spawn: spawnMock }));
+
+// bun:test's mock.module() is process-scoped. Without an explicit restore,
+// the spawn spy leaks into every later test file that imports node:child_process
+// in the same `bun test` invocation (the canonical runner uses --isolate, but
+// the restore stays correct under any caller). Restore the real module after
+// this file finishes.
+afterAll(() => {
+  mock.module('node:child_process', () => childProcessActual);
+});
 
 // Late import so the mock is in place before client.ts evaluates.
 const { DaemonClient } = await import('@myco/hooks/client');

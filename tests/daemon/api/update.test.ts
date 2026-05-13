@@ -8,7 +8,7 @@
  * - handleUpdateChannel: writes config + clears cache, 400 for invalid channel
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,6 +16,14 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------
+
+// Capture the real modules BEFORE replacing them, so afterAll can put them
+// back. bun:test's mock.module() is process-scoped — without this restore,
+// the stub modules below leak into every later test file that imports them
+// in the same `bun test` invocation (the canonical npm test runner uses
+// --isolate, which masks the leak; the restore stays correct regardless).
+const realUpdateChecker = await import('@myco/daemon/update-checker.js');
+const realUpdateInstaller = await import('@myco/daemon/update-installer.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
@@ -37,6 +45,11 @@ mock.module('@myco/daemon/update-installer.js', () => ({
   spawnUpdateScript: vi.fn(() => '/tmp/myco-update-123.sh'),
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
+
+afterAll(() => {
+  mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
+  mock.module('@myco/daemon/update-installer.js', () => realUpdateInstaller);
+});
 
 import {
   isUpdateExempt,
