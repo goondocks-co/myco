@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   deleteSecrets,
+  loadLayeredSecrets,
   loadSecrets,
   readSecrets,
   tightenSecretsPermissions,
@@ -97,6 +98,46 @@ describe('secrets', () => {
     it('is a no-op when secrets.env does not exist', () => {
       // Should not throw
       loadSecrets(testDir);
+    });
+  });
+
+  describe('loadLayeredSecrets', () => {
+    it('loads later stores with higher precedence', () => {
+      const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-legacy-'));
+      const machineDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-machine-'));
+      const groveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-grove-'));
+      const envKey = `MYCO_TEST_LAYERED_${Date.now()}`;
+      const env: NodeJS.ProcessEnv = {};
+
+      try {
+        writeSecret(legacyDir, envKey, 'legacy');
+        writeSecret(machineDir, envKey, 'machine');
+        writeSecret(groveDir, envKey, 'grove');
+
+        loadLayeredSecrets([legacyDir, machineDir, groveDir], env);
+
+        expect(env[envKey]).toBe('grove');
+      } finally {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+        fs.rmSync(machineDir, { recursive: true, force: true });
+        fs.rmSync(groveDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not overwrite env vars that were already present', () => {
+      const machineDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-machine-'));
+      const envKey = `MYCO_TEST_LAYERED_EXISTING_${Date.now()}`;
+      const env: NodeJS.ProcessEnv = { [envKey]: 'external' };
+
+      try {
+        writeSecret(machineDir, envKey, 'machine');
+
+        loadLayeredSecrets([machineDir], env);
+
+        expect(env[envKey]).toBe('external');
+      } finally {
+        fs.rmSync(machineDir, { recursive: true, force: true });
+      }
     });
   });
 

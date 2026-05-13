@@ -2,7 +2,8 @@ import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { VAULT_GITIGNORE, registerSymbionts } from './shared.js';
 import { resolveProjectDashboardUrl } from './dashboard-url.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { loadConfig, getEnabledSymbiontNames } from '../config/loader.js';
+import { loadConfig, updateConfig, getEnabledSymbiontNames } from '../config/loader.js';
+import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
@@ -89,6 +90,12 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   const pkgRoot = resolvePackageRoot();
 
   const config = loadConfig(vaultDir);
+  const withReleaseDefaults = withInferredReleaseProvenanceDefaults(config, resolvedProjectRoot);
+  if (withReleaseDefaults !== config) {
+    updateConfig(vaultDir, () => withReleaseDefaults);
+    console.log('  ✓ Updated release provenance defaults');
+    updatedCount++;
+  }
   let configured: typeof allManifests;
 
   const enabledNames = getEnabledSymbiontNames(config);

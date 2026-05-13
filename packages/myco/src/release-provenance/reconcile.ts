@@ -20,6 +20,7 @@ import type { PatchKind } from './git-snapshot.js';
 import { findDerivedRecords } from './record-lineage.js';
 import { filterRefsByPackagePatterns, tagPatternsForChangedPaths } from './package-map.js';
 import { findSquashMergeForCommit, readGithubToken } from './github.js';
+import { resolveConfiguredRefs } from './refs.js';
 
 export interface ReleaseStateChange {
   namespace: ReleaseNamespace;
@@ -456,11 +457,19 @@ export async function reconcileReleaseProvenance(
     return { scanned: 0, reconciled: 0, skipped: 0, unchanged: 0, failed: 0, disabled: true };
   }
 
+  const reconcilerInput: ReconcileReleaseProvenanceInput = {
+    ...input,
+    config: {
+      ...input.config,
+      production_refs: resolveConfiguredRefs(input.projectRoot, input.config.production_refs),
+      integration_refs: resolveConfiguredRefs(input.projectRoot, input.config.integration_refs),
+    },
+  };
   const now = input.now ?? epochSeconds();
   const rows = listGitProvenance({ scope: input.scope, limit: input.limit ?? 500 });
   const seen = new Set<string>();
   const cache = new PatchIdCache();
-  const githubBudget = { value: input.config.github?.max_lookups_per_run ?? 0 };
+  const githubBudget = { value: reconcilerInput.config.github?.max_lookups_per_run ?? 0 };
   let reconciled = 0;
   let skipped = 0;
   let unchanged = 0;
@@ -480,8 +489,8 @@ export async function reconcileReleaseProvenance(
     seen.add(key);
 
     try {
-      const prSquash = await resolvePullRequestSquash(row, input, githubBudget);
-      const result = classify(row, input, cache, prSquash);
+      const prSquash = await resolvePullRequestSquash(row, reconcilerInput, githubBudget);
+      const result = classify(row, reconcilerInput, cache, prSquash);
       const projectId = input.projectId ?? row.project_id;
       const identityKey = buildReleaseStateIdentityKey({
         project_id: projectId,
