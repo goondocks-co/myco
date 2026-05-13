@@ -22,6 +22,33 @@ import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
 const DEFAULT_STATUS = 200;
+/** How long we wait after `closeIdleConnections()` before force-yanking
+ *  any sockets that still haven't closed. Long enough for an in-flight
+ *  request to finish its response, short enough that a stale UI
+ *  keep-alive doesn't make restart look broken. */
+const SERVER_STOP_FORCE_CLOSE_GRACE_MS = 2_000;
+
+/**
+ * Protective limits applied to the daemon's HTTP server. Node's defaults
+ * are tuned for public-internet clients (long keep-alive, slow-loris
+ * tolerance, no cap on per-socket request count). On loopback we can be
+ * much tighter — every legitimate client is on the same machine. Without
+ * these, a misbehaving client (or even a stress test from a developer
+ * shell) can pile up sockets in CLOSE_WAIT until the daemon's fd table
+ * is exhausted and `accept()` starts returning EMFILE.
+ */
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const HTTP_HEADERS_TIMEOUT_MS = 10_000;
+/** Cap how many requests reuse a single keep-alive socket before we
+ *  force a close. Without this, a single client can hold one fd open
+ *  forever no matter how many requests it sends. */
+const HTTP_MAX_REQUESTS_PER_SOCKET = 1_000;
+/** Explicit TCP listen backlog. Node defaults to 511, which the macOS
+ *  kernel further caps at `kern.ipc.somaxconn` (often 128). 4096 keeps
+ *  the kernel's SYN queue deep enough that a burst of concurrent
+ *  loopback connections doesn't get rejected during the brief window
+ *  the daemon takes to call `accept()` on each. */
+const HTTP_LISTEN_BACKLOG = 4_096;
 
 export interface DaemonServerConfig {
   vaultDir: string;
@@ -110,7 +137,13 @@ export class DaemonServer {
       });
       this.server.on('error', reject);
 
-      this.server.listen(port, '127.0.0.1', () => {
+      // Tighten Node's default HTTP server limits — see the helper
+      // docstring for the load-bearing reasoning. Defaults let a single
+      // misbehaving client camp on sockets long enough to exhaust the
+      // daemon's fd table.
+      applyDaemonHttpServerLimits(this.server);
+
+      this.server.listen(port, '127.0.0.1', HTTP_LISTEN_BACKLOG, () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
@@ -121,19 +154,16 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
-      this.removeDaemonJson();
-      if (this.server) {
-        this.server.close(() => {
-          this.closeRequestDatabases();
-          this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
-          resolve();
-        });
-      } else {
-        this.closeRequestDatabases();
-        resolve();
-      }
+    this.removeDaemonJson();
+    if (!this.server) {
+      this.closeRequestDatabases();
+      return;
+    }
+    await gracefullyCloseHttpServer(this.server, {
+      gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS,
     });
+    this.closeRequestDatabases();
+    this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
   }
 
   private registerDefaultRoutes(): void {
@@ -643,4 +673,90 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
     origin === `http://127.0.0.1:${portStr}` ||
     origin === `http://localhost:${portStr}`
   );
+}
+
+/**
+ * Apply the daemon's protective HTTP server limits.
+ *
+ * Node's HTTP server defaults are tuned for serving public-internet
+ * clients — long keep-alive, generous slow-loris tolerance, no cap on
+ * how many requests reuse a single socket. The daemon listens only on
+ * loopback, so every legitimate client is on the same machine and we
+ * can be much tighter.
+ *
+ * The motivating incident: 250 concurrent `curl` probes against
+ * `/health` filled the kernel's accept queue and the daemon's fd table
+ * (launchd capped at 256 NOFILE) faster than the server could drain
+ * them. Once the fd table was full, `accept()` returned EMFILE and the
+ * SYN queue overflowed — new clients couldn't even complete the TCP
+ * handshake. With these limits in place, idle keep-alives are reaped
+ * every 5s, slow-header attackers drop after 10s, and one client can't
+ * monopolize a socket past `HTTP_MAX_REQUESTS_PER_SOCKET` reuses.
+ *
+ * Exported so the regression test can verify the limits are applied
+ * without standing up a full `DaemonServer`.
+ */
+export function applyDaemonHttpServerLimits(server: http.Server): void {
+  server.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+  server.maxRequestsPerSocket = HTTP_MAX_REQUESTS_PER_SOCKET;
+}
+
+/** TCP listen backlog used by the daemon. Exported so service installers
+ *  / consumers that bind their own listener can match it. */
+export const DAEMON_HTTP_LISTEN_BACKLOG = HTTP_LISTEN_BACKLOG;
+
+/**
+ * Force a Node HTTP server through a fast, deterministic shutdown.
+ *
+ * `http.Server.close()` only stops accepting *new* connections — it
+ * waits for every existing connection to disconnect on its own before
+ * invoking its callback. UI keep-alives, MCP HTTP clients, and
+ * WebSocket upgrades happily hold sockets open for ~90s after we asked
+ * them to leave, which makes every daemon restart look broken (old
+ * daemon still holding the port, new daemon unable to bind).
+ *
+ *   1. `closeIdleConnections()` drops sockets that aren't mid-request
+ *      immediately (Node 18.2+).
+ *   2. A short grace window lets an in-flight request finish its
+ *      response cycle.
+ *   3. `closeAllConnections()` yanks anything still holding a socket —
+ *      WebSocket upgrades, long-poll clients, anything that wouldn't
+ *      otherwise notice we said goodbye.
+ *
+ * After that, the `close()` callback fires immediately because the
+ * sockets are gone. Exported so the regression test can exercise the
+ * timing property without standing up a full `DaemonServer`.
+ */
+export function gracefullyCloseHttpServer(
+  server: http.Server,
+  options: { gracePeriodMs: number },
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    server.closeIdleConnections();
+    // `server.close(cb)` invokes its callback only after every existing
+    // socket has finished. With bun's HTTP runtime that callback is not
+    // reliably fired even after `closeAllConnections()` has destroyed
+    // the sockets, so we don't depend on it: we drive completion from
+    // the operations we control. The callback path is still wired so
+    // we resolve on the fast path (no force-close needed) when the
+    // runtime does fire it.
+    server.close(finish);
+    const forceClose = setTimeout(() => {
+      server.closeAllConnections();
+      // closeAllConnections returns synchronously after destroying
+      // every socket — the server has now stopped accepting new
+      // connections (close() was called above) and severed every
+      // existing one. Anything still waiting on the close() callback
+      // is the runtime, not real work; resolve and move on.
+      finish();
+    }, options.gracePeriodMs);
+    forceClose.unref?.();
+  });
 }

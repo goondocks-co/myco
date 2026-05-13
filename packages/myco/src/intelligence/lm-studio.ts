@@ -1,5 +1,20 @@
 import type { LlmProvider, EmbeddingProvider, LlmResponse, EmbeddingResponse, LlmRequestOptions } from './llm.js';
 import { LLM_REQUEST_TIMEOUT_MS, EMBEDDING_REQUEST_TIMEOUT_MS, DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
+import { createInstrumentedFetch } from '../utils/instrumented-fetch.js';
+
+/**
+ * Module-level instrumented fetch for every LMStudio request — adds the
+ * no-progress watchdog and per-chunk loop yields on top of the existing
+ * `AbortSignal.timeout(...)` wall-clock cap. The previous wall-clock
+ * timeout protects only the *total* duration; the watchdog catches
+ * "stream drips one byte every 30 minutes" and any sync work inside
+ * undici's chunk delivery is interleaved with `setImmediate`.
+ */
+const lmStudioFetch = createInstrumentedFetch({
+  component: 'intelligence.lm-studio',
+  responseHeadersTimeoutMs: 60_000,
+  idleTimeoutMs: 30_000,
+});
 
 interface LmStudioConfig {
   model?: string;
@@ -92,7 +107,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.reasoning = opts!.reasoning;
     }
 
-    let response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
+    let response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -107,7 +122,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       if (sendReasoning && /does not support reasoning|"param"\s*:\s*"reasoning"/.test(errorBody)) {
         this.reasoningUnsupported = true;
         delete body.reasoning;
-        response = await fetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
+        response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_CHAT}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -141,7 +156,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    * (The native API doesn't have an embedding endpoint — OpenAI-compat is fine here.)
    */
   async embed(text: string): Promise<EmbeddingResponse> {
-    const response = await fetch(`${this.baseUrl}${ENDPOINT_EMBEDDINGS}`, {
+    const response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_EMBEDDINGS}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -204,7 +219,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
       body.offload_kv_cache_to_gpu = true;
     }
 
-    const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LOAD}`, {
+    const response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_MODELS_LOAD}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -233,7 +248,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
    */
   private async getLoadedInstances(): Promise<NativeLoadedInstance[]> {
     try {
-      const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_NATIVE}`, {
+      const response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_MODELS_NATIVE}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
       if (!response.ok) return [];
@@ -248,7 +263,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
+      const response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
         signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
       });
       return response.ok;
@@ -260,7 +275,7 @@ export class LmStudioBackend implements LlmProvider, EmbeddingProvider {
   /** List available models on this LM Studio instance. */
   async listModels(timeoutMs?: number): Promise<string[]> {
     try {
-      const response = await fetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
+      const response = await lmStudioFetch(`${this.baseUrl}${ENDPOINT_MODELS_LIST}`, {
         signal: AbortSignal.timeout(timeoutMs ?? DAEMON_CLIENT_TIMEOUT_MS),
       });
       const data = await response.json() as { data: Array<{ id: string }> };

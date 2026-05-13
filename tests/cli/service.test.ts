@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseServiceArgs } from '../../packages/myco/src/cli/service';
+import { parseServiceArgs, assertSafeServiceMutation } from '../../packages/myco/src/cli/service';
 
 describe('parseServiceArgs', () => {
   test('install (no flags) → variant=prod', () => {
@@ -32,5 +32,38 @@ describe('parseServiceArgs', () => {
 
   test('rejects missing action', () => {
     expect(() => parseServiceArgs([])).toThrow(/usage/i);
+  });
+});
+
+// Regression: the dev daemon was once allowed to manage the prod plist,
+// which produced a multi-minute prod outage when the dev binary's plist
+// format diverged from the installed prod binary's. The fence below
+// makes that path unreachable at the CLI boundary.
+describe('assertSafeServiceMutation (prod-from-dev-binary fence)', () => {
+  const devBuildPath = '/Users/dev/repos/myco/packages/myco/vendor/darwin-arm64/myco';
+  const globalPath = '/opt/homebrew/lib/node_modules/@goondocks/myco/vendor/darwin-arm64/myco';
+
+  test('refuses every mutating verb against prod when run from a dev-build binary', () => {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
+      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath);
+      expect(refusal).not.toBeNull();
+      expect(refusal!).toMatch(/Refusing to .* the \*prod\* service from a dev-build binary/);
+    }
+  });
+
+  test('allows status against prod even from a dev-build binary (read-only)', () => {
+    expect(assertSafeServiceMutation({ action: 'status', variant: 'prod' }, devBuildPath)).toBeNull();
+  });
+
+  test('allows all actions against dev variant from a dev-build binary', () => {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
+      expect(assertSafeServiceMutation({ action, variant: 'dev' }, devBuildPath)).toBeNull();
+    }
+  });
+
+  test('allows all actions against prod variant from the globally installed binary', () => {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart', 'status'] as const) {
+      expect(assertSafeServiceMutation({ action, variant: 'prod' }, globalPath)).toBeNull();
+    }
   });
 });

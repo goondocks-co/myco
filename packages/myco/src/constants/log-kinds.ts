@@ -78,6 +78,15 @@ export const LOG_KINDS = {
   DAEMON_MIGRATION: 'daemon.migration',
   DAEMON_PORT: 'daemon.port',
   DAEMON_RECONCILE: 'daemon.reconcile',
+  DAEMON_LAG: 'daemon.lag',
+
+  // Provider-level fetch instrumentation (cross-runtime: anything that
+  // routes outbound LLM/embedding requests through `instrumentedFetch`).
+  FETCH_START: 'fetch.start',
+  FETCH_COMPLETE: 'fetch.complete',
+  FETCH_TIMEOUT: 'fetch.timeout',
+  FETCH_STALL: 'fetch.stall',
+  FETCH_ABORT: 'fetch.abort',
 
   // Server (HTTP)
   SERVER_REQUEST: 'server.request',

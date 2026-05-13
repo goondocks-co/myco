@@ -678,6 +678,14 @@ export async function executePhasedQuery(
     if (shouldStop) {
       break;
     }
+
+    // Hand control back to libuv between waves. Each wave settles via
+    // `Promise.allSettled` (microtasks only) and then writes a
+    // checkpoint via sync bun:sqlite — back-to-back waves with no yield
+    // can keep the timer/poll phases starved long enough for
+    // PowerManager ticks and the `/health` listener to miss their
+    // scheduling windows.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   const usage = aggregateUsage(phaseResults.map((phase) => phase.usage));

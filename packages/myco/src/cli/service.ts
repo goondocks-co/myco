@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getServiceManager } from '../service/manager.js';
-import { buildServiceSpec } from '../service/spec-builder.js';
+import { buildServiceSpec, looksLikeDevBuildExecutable } from '../service/spec-builder.js';
 import { serviceLabel, serviceVariantToDirName } from '../service/labels.js';
 import type { ServiceVariant } from '../service/types.js';
 import { resolveMycoHome, DAEMON_STATE_FILENAME } from '../grove/paths.js';
@@ -58,6 +58,38 @@ function readRecordedDaemonCommand(variant: ServiceVariant): string | null {
   }
 }
 
+/**
+ * Hard fence: a dev-build binary must never manage the *prod* service.
+ *
+ * Why this exists: even when the dev binary resolves the correct
+ * executable for the prod plist (via daemon.json), `mgr.install`
+ * rewrites the plist whenever the rendered content drifts (e.g. when
+ * the running binary adds new plist keys like SoftResourceLimits), and
+ * the bootout/bootstrap cycle SIGTERMs the running prod daemon
+ * mid-flight. The dev binary also has no business uninstalling /
+ * restarting / stopping the prod service. Block every mutating verb at
+ * the CLI boundary so an accidental `myco service install` (no `--dev`)
+ * from a developer shell can never disturb prod.
+ *
+ * Returns a refusal message when the action should be blocked, or null
+ * when the action is safe to proceed. Exported for unit tests.
+ */
+export function assertSafeServiceMutation(
+  parsed: ParsedServiceArgs,
+  execPath: string,
+): string | null {
+  const mutating: ReadonlySet<ServiceAction> = new Set(['install', 'uninstall', 'start', 'stop', 'restart']);
+  if (parsed.variant !== 'prod') return null;
+  if (!mutating.has(parsed.action)) return null;
+  if (!looksLikeDevBuildExecutable(execPath)) return null;
+  return (
+    `Refusing to ${parsed.action} the *prod* service from a dev-build binary (${execPath}). ` +
+    `The prod service must be managed by the globally installed myco. ` +
+    `Use \`myco service ${parsed.action} --dev\` for the dogfood service, or run this command from the installed binary ` +
+    `(e.g. /opt/homebrew/lib/node_modules/@goondocks/myco/vendor/<arch>/myco).`
+  );
+}
+
 export async function run(args: string[], _vaultDir: string): Promise<void> {
   const parsed = parseServiceArgs(args);
   const mgr = getServiceManager();
@@ -68,6 +100,12 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
   }
 
   const label = serviceLabel(parsed.variant);
+
+  const refusal = assertSafeServiceMutation(parsed, process.execPath);
+  if (refusal) {
+    console.error(refusal);
+    process.exit(1);
+  }
 
   switch (parsed.action) {
     case 'install': {

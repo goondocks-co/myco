@@ -14,28 +14,56 @@ import { serviceVariantToDirName } from '../service/labels.js';
  * Resolve the bootstrap vault directory for daemon startup.
  *
  * Priority:
- *  1. The cwd-walking `resolveVaultDir()` result, IF its parent contains a
- *     `project.toml`. This preserves existing behavior for daemons spawned
- *     from a project directory (lazy spawn via `ensureRunning`).
- *  2. The first registered project in a Grove matching the current service
- *     variant (`MYCO_SERVICE_VARIANT` env var). Dev variant scans for a
- *     Grove with `served_by = "service-dev"`; prod variant (or unset) uses
- *     the default Grove from the registry.
+ *  1. **When `MYCO_SERVICE_VARIANT` is set** (i.e. the daemon is under a
+ *     service supervisor — launchd, systemd — with a known variant), use
+ *     the variant-aware registry path **first**. The cwd at spawn time is
+ *     irrelevant: we already know which Grove this daemon serves.
+ *
+ *     This guards against a previously-observed failure: a lazy-spawn
+ *     triggered by a hook or MCP tool whose cwd is inside an unrelated
+ *     project would bootstrap the daemon to that project's vault — even
+ *     if that project's Grove is served by a *different* variant. The
+ *     dashboard then refuses every request with "Cross-Grove access is
+ *     forbidden" (API 500). Before this guard, the only thing that hid
+ *     the race was the daemon's 87-second shutdown latency; once that
+ *     was fixed, the wrong-cwd respawn won the port consistently.
+ *
+ *  2. The cwd-walking `resolveVaultDir()` result, IF its parent contains
+ *     a `project.toml`. Preserves the existing behavior for variant-less
+ *     ad-hoc invocations (lazy spawn via `ensureRunning`, `myco daemon`
+ *     run by hand from a project directory).
+ *
+ *  3. The first registered project in a Grove matching the current
+ *     service variant. Dev variant scans for a Grove with
+ *     `served_by = "service-dev"`; prod variant (or unset) uses the
+ *     default Grove from the registry.
  *
  * Throws if neither path yields a vault dir (no enclosing project AND no
  * Grove with at least one registered project). The error message instructs
  * the user to run `myco init` from a project directory.
  */
 export function resolveBootstrapVaultDir(cwd: string = process.cwd()): string {
+  const variant = process.env.MYCO_SERVICE_VARIANT?.trim();
   const cwdVault = resolveVaultDir(cwd);
+
+  // Variant-pinned daemons trust their variant, not their cwd.
+  if (variant) {
+    const fromRegistry = firstProjectVaultFromRegistry();
+    if (fromRegistry) return fromRegistry;
+    throw new Error(
+      `Daemon bootstrap failed (variant="${variant}"): no projects registered in a Grove served_by="${variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME}". `
+      + `Run \`myco init\` from a project directory first.`,
+    );
+  }
+
+  // Variant-less: original cwd-walk-first behavior.
   if (hasProjectManifest(cwdVault)) return cwdVault;
 
   const fromRegistry = firstProjectVaultFromRegistry();
   if (fromRegistry) return fromRegistry;
 
-  const variant = process.env.MYCO_SERVICE_VARIANT?.trim() || 'prod';
   throw new Error(
-    `Daemon bootstrap failed: no enclosing project at ${cwdVault}, and no projects registered in a Grove served_by="${variant === 'dev' ? SERVICE_DEV_DIRNAME : SERVICE_DIRNAME}". `
+    `Daemon bootstrap failed: no enclosing project at ${cwdVault}, and no projects registered in the default Grove (served_by="${SERVICE_DIRNAME}"). `
     + `Run \`myco init\` from a project directory first.`,
   );
 }
