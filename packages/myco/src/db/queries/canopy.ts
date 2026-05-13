@@ -93,18 +93,18 @@ for (const name of EXPECTED_SESSION_COLUMNS) {
  *
  * `LEFT JOIN canopy_entries` brings in the file's token estimate so the
  * tokens-saved arithmetic can run without a second round-trip. Joining on
- * `(project_id, path)` requires the project_id; we resolve it from the
- * sessions row's project_root since canopy_entries keys on project_id but
- * the sessions table tracks project_root. The join falls back to NULL when
- * there's no match (file not yet scanned, or excluded).
+ * `(project_id, path)` requires sessions.project_id. Absolute paths are
+ * canonicalized against sessions.project_root, while already-normalized
+ * activity file paths pass through unchanged. The join falls back to NULL
+ * when there's no match (file not yet scanned, or excluded).
  *
  * The reads_after_injection branch *spends* injection tokens (negative
  * savings) since we paid the injection cost and then read the file anyway.
  * Skips *save* (file_tokens − injection_tokens).
  */
 const AGGREGATE_SQL = `
-WITH session_root AS (
-  SELECT project_root AS project_id
+WITH session_ctx AS (
+  SELECT project_id, project_root
   FROM sessions
   WHERE id = ?
 ),
@@ -112,9 +112,9 @@ raw_reads AS (
   SELECT
     a.id                       AS tc_id,
     COALESCE(
+      a.file_path,
       json_extract(a.tool_input, '$.file_path'),
-      json_extract(a.tool_input, '$.filePath'),
-      a.file_path
+      json_extract(a.tool_input, '$.filePath')
     ) AS raw_path,
     a.canopy_injection_tokens  AS injection_tokens,
     CASE WHEN a.canopy_injection_tokens IS NOT NULL THEN 1 ELSE 0 END AS had_injection,
@@ -128,9 +128,9 @@ reads AS (
     rr.tc_id,
     CASE
       WHEN rr.raw_path IS NOT NULL
-       AND (SELECT project_id FROM session_root) IS NOT NULL
-       AND rr.raw_path LIKE (SELECT project_id FROM session_root) || '/%'
-      THEN substr(rr.raw_path, length((SELECT project_id FROM session_root)) + 2)
+       AND (SELECT project_root FROM session_ctx) IS NOT NULL
+       AND rr.raw_path LIKE (SELECT project_root FROM session_ctx) || '/%'
+      THEN substr(rr.raw_path, length((SELECT project_root FROM session_ctx)) + 2)
       ELSE rr.raw_path
     END AS path,
     rr.injection_tokens,
@@ -168,7 +168,7 @@ tokens AS (
     ce.token_estimate AS file_tokens
   FROM skip_resolution sr
   LEFT JOIN canopy_entries ce
-    ON ce.project_id = (SELECT project_id FROM session_root)
+    ON ce.project_id = (SELECT project_id FROM session_ctx)
    AND ce.path = sr.path
 ),
 redundant AS (
@@ -448,7 +448,7 @@ export function listCanopyReads(db: Database | null, sessionId: string): CanopyR
         SELECT
           id,
           timestamp,
-          COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.filePath'), file_path) AS file_path,
+          COALESCE(file_path, json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.filePath')) AS file_path,
           canopy_injection_tokens
         FROM activities
         WHERE session_id = ?
@@ -470,8 +470,10 @@ export interface CanopyToolCallContext {
   session_id: string;
   file_path: string;
   injection_tokens: number | null;
-  /** project_id used to look up canopy_entries — sessions.project_root. */
+  /** project_id used to look up canopy_entries. */
   project_id: string | null;
+  /** project root used only to canonicalize absolute filesystem paths. */
+  project_root: string | null;
 }
 
 export function getCanopyToolCallContext(
@@ -494,9 +496,10 @@ export function getCanopyToolCallContext(
         SELECT
           a.id                                       AS activity_id,
           a.session_id                               AS session_id,
-          COALESCE(json_extract(a.tool_input, '$.file_path'), json_extract(a.tool_input, '$.filePath'), a.file_path) AS file_path,
+          COALESCE(a.file_path, json_extract(a.tool_input, '$.file_path'), json_extract(a.tool_input, '$.filePath')) AS file_path,
           a.canopy_injection_tokens                  AS injection_tokens,
-          s.project_root                             AS project_id
+          s.project_id                               AS project_id,
+          s.project_root                             AS project_root
         FROM activities a
         LEFT JOIN sessions s ON s.id = a.session_id
         WHERE a.id = ?

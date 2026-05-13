@@ -78,8 +78,10 @@ export const handleGetCanopyToolCallBlob: RouteHandler = async (req) => {
   // today. If the file's mechanical anatomy has advanced since the call,
   // the popover shows the current blob, not a stale snapshot — design
   // choice per the spec, and the same path the agent would now see.
-  if (!ctx.project_id) return notFound('project_root_missing');
-  const lookupPath = relativizeForLookup(ctx.file_path, ctx.project_id);
+  if (!ctx.project_id) return notFound('project_id_missing');
+  const lookupPath = ctx.project_root
+    ? relativizeForLookup(ctx.file_path, ctx.project_root)
+    : ctx.file_path;
   const entry = findCanopyEntry(ctx.project_id, lookupPath);
   if (!entry) return notFound('entry_missing');
 

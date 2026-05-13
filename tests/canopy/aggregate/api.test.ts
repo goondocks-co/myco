@@ -16,9 +16,10 @@ import {
   handleGetCanopyRollup,
 } from '@myco/daemon/api/canopy-read.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
-import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import { makeTestRequestContext } from '../../helpers/request-context';
 
-const PROJECT_ID = '/repo/myco';
+const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PROJECT_ROOT = '/repo/myco';
 const epochNow = () => Math.floor(Date.now() / 1000);
 
 function makeReq(opts: {
@@ -31,7 +32,7 @@ function makeReq(opts: {
     query: opts.query ?? {},
     params: opts.params ?? {},
     pathname: '/test',
-    requestContext: TEST_REQUEST_CONTEXT,
+    requestContext: makeTestRequestContext({ projectId: PROJECT_ID, groveId: 'grove_test' }),
   };
 }
 
@@ -42,7 +43,8 @@ function seedSession(sessionId: string) {
     agent: 'claude-code',
     started_at: now,
     created_at: now,
-    project_root: PROJECT_ID,
+    project_id: PROJECT_ID,
+    project_root: PROJECT_ROOT,
   });
 }
 
@@ -55,11 +57,11 @@ function seedRead(
   const result = getDatabase()
     .prepare(`
       INSERT INTO activities (
-        session_id, tool_name, tool_input, file_path, timestamp,
+        session_id, project_id, tool_name, tool_input, file_path, timestamp,
         processed, created_at, canopy_injection_tokens
-      ) VALUES (?, 'Read', ?, ?, ?, 0, ?, ?)
+      ) VALUES (?, ?, 'Read', ?, ?, ?, 0, ?, ?)
     `)
-    .run(sessionId, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
+    .run(sessionId, PROJECT_ID, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
   return Number(result.lastInsertRowid);
 }
 
@@ -169,7 +171,7 @@ describe('handleGetCanopyToolCallBlob', () => {
     const sessionId = 'sess-api-blob-absolute';
     seedSession(sessionId);
     seedCanopyEntry('present.ts', 800);
-    const tcId = seedRead(sessionId, `${PROJECT_ID}/present.ts`, 70, epochNow());
+    const tcId = seedRead(sessionId, `${PROJECT_ROOT}/present.ts`, 70, epochNow());
 
     const res = await handleGetCanopyToolCallBlob(makeReq({
       params: { id: sessionId, tcId: String(tcId) },
@@ -212,7 +214,7 @@ describe('handleGetCanopyRollup', () => {
   it('returns the cross-session rollup', async () => {
     const db = getDatabase();
     const now = epochNow();
-    upsertSession({ id: 's1', agent: 'claude-code', started_at: now, created_at: now });
+    upsertSession({ id: 's1', agent: 'claude-code', started_at: now, created_at: now, project_id: PROJECT_ID, project_root: PROJECT_ROOT });
     db.prepare(`
       UPDATE sessions SET
         canopy_injections_offered = 4,
@@ -236,8 +238,8 @@ describe('handleGetCanopyRollup', () => {
 
   it('parses since/until query params', async () => {
     const db = getDatabase();
-    upsertSession({ id: 'old', agent: 'claude-code', started_at: 100, created_at: 100 });
-    upsertSession({ id: 'new', agent: 'claude-code', started_at: 500, created_at: 500 });
+    upsertSession({ id: 'old', agent: 'claude-code', started_at: 100, created_at: 100, project_id: PROJECT_ID, project_root: PROJECT_ROOT });
+    upsertSession({ id: 'new', agent: 'claude-code', started_at: 500, created_at: 500, project_id: PROJECT_ID, project_root: PROJECT_ROOT });
     db.prepare(`
       UPDATE sessions SET canopy_injections_offered = 1, canopy_skips_after_injection = 1,
         canopy_injection_total_tokens = 0, canopy_reads_after_injection = 0,
