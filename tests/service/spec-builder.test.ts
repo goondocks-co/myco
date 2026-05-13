@@ -76,4 +76,78 @@ describe('buildServiceSpec', () => {
       expect(() => buildServiceSpec({ variant: 'prod', mycoHome: home, executable: exe })).toThrow(/script-runner|standalone daemon binary/);
     }
   });
+
+  // Regression: the prod plist was once written with a dev-build path,
+  // after which launchd spawned the dev binary as the prod service —
+  // running unreleased code against the prod Grove. The guard must
+  // refuse the substitution regardless of which caller invoked us.
+  test('refuses prod variant when executable is a dev-build path', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-repo-'));
+    const vendorDir = path.join(repoRoot, 'packages', 'myco', 'vendor', 'darwin-arm64');
+    fs.mkdirSync(vendorDir, { recursive: true });
+    const devBin = path.join(vendorDir, 'myco');
+    fs.writeFileSync(devBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    expect(() => buildServiceSpec({
+      variant: 'prod',
+      mycoHome: home,
+      executable: devBin,
+    })).toThrow(/dev-build executable|packages\/<pkg>\/vendor/);
+  });
+
+  test('allows dev variant with a dev-build path (the legitimate dogfood case)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-repo-'));
+    const vendorDir = path.join(repoRoot, 'packages', 'myco', 'vendor', 'darwin-arm64');
+    fs.mkdirSync(vendorDir, { recursive: true });
+    const devBin = path.join(vendorDir, 'myco');
+    fs.writeFileSync(devBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const spec = buildServiceSpec({
+      variant: 'dev',
+      mycoHome: home,
+      executable: devBin,
+    });
+    expect(spec.executable).toBe(devBin);
+    expect(spec.variant).toBe('dev');
+  });
+
+  test('prod refuses a symlink whose realpath resolves into a vendor tree', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-repo-'));
+    const vendorDir = path.join(repoRoot, 'packages', 'myco', 'vendor', 'darwin-arm64');
+    fs.mkdirSync(vendorDir, { recursive: true });
+    const realBin = path.join(vendorDir, 'myco');
+    fs.writeFileSync(realBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    // The user installs via a symlink that lives outside vendor/.
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-link-'));
+    const link = path.join(linkDir, 'myco');
+    fs.symlinkSync(realBin, link);
+
+    expect(() => buildServiceSpec({
+      variant: 'prod',
+      mycoHome: home,
+      executable: link,
+    })).toThrow(/dev-build executable/);
+  });
+
+  test('prod allows a normal globally-installed path (npm-style)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
+    // Simulate a global install layout: no 'packages/<pkg>/vendor/' segment.
+    const globalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-global-'));
+    const vendorDir = path.join(globalDir, 'node_modules', '@goondocks', 'myco', 'vendor', 'darwin-arm64');
+    fs.mkdirSync(vendorDir, { recursive: true });
+    const bin = path.join(vendorDir, 'myco');
+    fs.writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const spec = buildServiceSpec({
+      variant: 'prod',
+      mycoHome: home,
+      executable: bin,
+    });
+    expect(spec.variant).toBe('prod');
+    expect(spec.executable).toBe(bin);
+  });
 });
