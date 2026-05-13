@@ -51,6 +51,7 @@ export default function App() {
         <Route path="cortex" element={<Cortex />} />
         <Route path="mycelium" element={<Mycelium />} />
         <Route path="agent" element={<Agent />} />
+        <Route path="agent/:id" element={<Agent />} />
         <Route path="skills" element={<Skills />} />
         <Route path="settings" element={<Settings />} />
         {/* Legacy project-scoped /operations → Grove-scoped /dashboard. */}
@@ -82,6 +83,7 @@ export default function App() {
       <Route path="/cortex" element={<LegacyProjectRedirect suffix="/cortex" />} />
       <Route path="/mycelium" element={<LegacyProjectRedirect suffix="/mycelium" />} />
       <Route path="/agent" element={<LegacyProjectRedirect suffix="/agent" />} />
+      <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
       <Route path="/operations" element={<LegacyGroveRedirect suffix="/dashboard" />} />
