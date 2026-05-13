@@ -68,39 +68,14 @@ import {
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
-import type { ServiceManager, ServiceStatus } from '@myco/service/types.js';
+import { FakeServiceManager } from '../../helpers/fake-service-manager';
 
 // ---------------------------------------------------------------------------
-// Fake ServiceManager — mirrors the one in tests/daemon/api/restart.test.ts.
-// Used to drive the service-managed detection paths in handleUpdateApply and
-// handleUpdateStatus's auto-restart short-circuit.
+// Pre-installed service helper. The /update routes look up
+// restartShellCommand only when the service is already installed for this
+// PID — wire a status snapshot + shell command in one call so each test
+// reads as a single intent line.
 // ---------------------------------------------------------------------------
-class FakeServiceManager implements ServiceManager {
-  readonly supported: boolean;
-  readonly platformName = 'fake';
-  statuses = new Map<string, ServiceStatus>();
-  installed = new Set<string>();
-  restartShellCommands = new Map<string, string>();
-
-  constructor(opts: { supported?: boolean } = {}) {
-    this.supported = opts.supported ?? true;
-  }
-  async isInstalled(label: string): Promise<boolean> { return this.installed.has(label); }
-  async install(): Promise<void> {}
-  async uninstall(): Promise<void> {}
-  async start(): Promise<void> {}
-  async stop(): Promise<void> {}
-  async restart(): Promise<void> {}
-  restartShellCommand(label: string): string {
-    const cmd = this.restartShellCommands.get(label);
-    if (!cmd) throw new Error(`no restartShellCommand for ${label}`);
-    return cmd;
-  }
-  async status(label: string): Promise<ServiceStatus> {
-    return this.statuses.get(label) ?? { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
-  }
-}
-
 function installedServiceManager(label: string, shellCmd: string): FakeServiceManager {
   const mgr = new FakeServiceManager();
   mgr.installed.add(label);

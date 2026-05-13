@@ -6,26 +6,10 @@ import http from 'node:http';
 import { DaemonClient, type RestartDeps } from '@myco/hooks/client';
 import { ensureProjectManifest } from '@myco/config/project-manifest';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
-import type { ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/types';
-
-/** Service manager that reports "no daemon service installed" so restart() falls
- *  through to the legacy raw-spawn path. The stuck-detection logic is
- *  orthogonal to service-management: it triggers whenever /health is silent
- *  but the prev PID is still alive and bound to the port. */
-class NoServiceManager implements ServiceManager {
-  readonly supported = true;
-  readonly platformName = 'fake (no service)';
-  async isInstalled(_label: string): Promise<boolean> { return false; }
-  async install(_spec: ServiceSpec): Promise<void> {}
-  async uninstall(_label: string): Promise<void> {}
-  async start(_label: string): Promise<void> {}
-  async stop(_label: string): Promise<void> {}
-  async restart(_label: string): Promise<void> {}
-  restartShellCommand(_label: string): string { return ''; }
-  async status(_label: string): Promise<ServiceStatus> {
-    return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
-  }
-}
+// Service-manager fake routes restart() through the legacy raw-spawn path so
+// the stuck-detection logic — which is orthogonal to service management — is
+// the only thing under test here.
+import { noServiceManager } from '../helpers/fake-service-manager';
 
 /** A PID we can safely "track" without ever touching a real process. The
  *  injected isProcessAlive / isPortBound deps decide whether the test daemon
@@ -92,7 +76,7 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
     healthResponds = true;
     // Re-publish daemon.json after killDaemon clears it during the call — we
     // simulate the supervisor respawning a healthy daemon at the same port.
-    const client = new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() });
+    const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
 
     const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     const deps: RestartDeps = {
@@ -120,7 +104,7 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
     // Health server never returns 200 until after we observe a force-kill —
     // models the wedge: prev daemon owns the port, /health silent.
     healthResponds = false;
-    const client = new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() });
+    const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
 
     const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     const deps: RestartDeps = {
@@ -154,7 +138,7 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
     // PID is dead; port is unbound. This is the "supervisor hasn't respawned
     // yet" state — escalating to SIGKILL would target a dead PID needlessly.
     healthResponds = false;
-    const client = new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() });
+    const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
 
     const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     const deps: RestartDeps = {

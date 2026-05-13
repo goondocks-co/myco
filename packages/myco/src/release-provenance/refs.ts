@@ -47,7 +47,13 @@ function listAllRefs(projectRoot: string): string[] {
   return result.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-function globToRegex(pattern: string): RegExp {
+/**
+ * Convert a glob with `*` and `?` wildcards into an anchored RegExp. The
+ * full ref-glob form (with `?`) is the canonical one; `package-map.ts`
+ * imports it for tag-pattern matching too — both call sites accept the
+ * extra `?` support harmlessly since their patterns don't use `?`.
+ */
+export function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
   return new RegExp(`^${escaped}$`);
 }

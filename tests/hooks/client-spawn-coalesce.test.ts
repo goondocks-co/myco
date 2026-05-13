@@ -6,7 +6,7 @@ import path from 'node:path';
 import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import * as childProcessActual__ns from 'node:child_process';
-import type { ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/types';
+import { FakeServiceManager, noServiceManager } from '../helpers/fake-service-manager';
 
 // Mock child_process.spawn at module-boundary so the `spawn` import inside
 // hooks/client.ts resolves to our spy. vi.spyOn doesn't work here — the
@@ -27,24 +27,10 @@ afterAll(() => {
 // Late import so the mock is in place before client.ts evaluates.
 const { DaemonClient } = await import('@myco/hooks/client');
 
-/** Fake service manager used by the coalesce tests so they exercise the
- *  legacy (no-service) spawn path regardless of whether the host has the
- *  real launchd/systemd unit installed. The dedicated service-aware suite
- *  below tests the deferral logic with its own fakes. */
-class NoServiceManager implements ServiceManager {
-  readonly supported = true;
-  readonly platformName = 'fake (no service)';
-  async isInstalled(_label: string): Promise<boolean> { return false; }
-  async install(_spec: ServiceSpec): Promise<void> {}
-  async uninstall(_label: string): Promise<void> {}
-  async start(_label: string): Promise<void> {}
-  async stop(_label: string): Promise<void> {}
-  async restart(_label: string): Promise<void> {}
-  restartShellCommand(_label: string): string { return ''; }
-  async status(_label: string): Promise<ServiceStatus> {
-    return { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
-  }
-}
+// The coalesce tests below use `noServiceManager()` to take the legacy
+// (no-service) spawn path regardless of whether the host has the real
+// launchd/systemd unit installed. The dedicated service-aware suite at the
+// bottom uses `FakeServiceManager` directly to drive the deferral logic.
 
 // Exercises the coalesce guard that stops a burst of concurrent hook/MCP
 // spawns from forking multiple daemon processes. The guard fires only when
@@ -75,7 +61,7 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
   }
 
   it('spawns when daemon.json is absent', async () => {
-    await new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() }).spawnDaemon();
+    await new DaemonClient(vaultDir, { serviceManager: noServiceManager() }).spawnDaemon();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
@@ -83,7 +69,7 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
     // process.pid is always alive from its own perspective, so it's a stable
     // stand-in for an in-flight spawner's pid.
     writeDaemonJson(process.pid);
-    await new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() }).spawnDaemon();
+    await new DaemonClient(vaultDir, { serviceManager: noServiceManager() }).spawnDaemon();
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
@@ -91,7 +77,7 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
     // Reserved pid value above any OS allocation range.
     const deadPid = 0x7fffffff;
     writeDaemonJson(deadPid);
-    await new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() }).spawnDaemon();
+    await new DaemonClient(vaultDir, { serviceManager: noServiceManager() }).spawnDaemon();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
@@ -99,7 +85,7 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
     writeDaemonJson(process.pid);
     const ancientSec = (Date.now() - DAEMON_SPAWN_COALESCE_MS - 1_000) / 1_000;
     fs.utimesSync(statePath, ancientSec, ancientSec);
-    await new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() }).spawnDaemon();
+    await new DaemonClient(vaultDir, { serviceManager: noServiceManager() }).spawnDaemon();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -132,7 +118,7 @@ describe('DaemonClient — auto-spawn on request failure', () => {
       (c: InstanceType<typeof DaemonClient>) => c.delete('/x'),
     ]) {
       spawnMock.mockClear();
-      const client = new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() });
+      const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
       const result = await call(client);
       expect(result.ok).toBe(false);
       // spawnDaemon is fire-and-forget from the request method; flush
@@ -148,7 +134,7 @@ describe('DaemonClient — auto-spawn on request failure', () => {
       statePath,
       JSON.stringify({ pid: 0x7fffffff, port: 1 }),
     );
-    const client = new DaemonClient(vaultDir, { serviceManager: new NoServiceManager() });
+    const client = new DaemonClient(vaultDir, { serviceManager: noServiceManager() });
     const result = await client.post('/x', {});
     expect(result.ok).toBe(false);
     await new Promise((r) => setImmediate(r));
@@ -164,27 +150,6 @@ describe('DaemonClient — auto-spawn on request failure', () => {
 describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
   let vaultDir: string;
   let statePath: string;
-
-  class FakeServiceManager implements ServiceManager {
-    readonly supported: boolean;
-    readonly platformName = 'fake';
-    installed = new Set<string>();
-    statuses = new Map<string, ServiceStatus>();
-    startCalls: string[] = [];
-    constructor(opts: { supported?: boolean } = {}) {
-      this.supported = opts.supported ?? true;
-    }
-    async isInstalled(label: string): Promise<boolean> { return this.installed.has(label); }
-    async install(_spec: ServiceSpec): Promise<void> {}
-    async uninstall(_label: string): Promise<void> {}
-    async start(label: string): Promise<void> { this.startCalls.push(label); }
-    async stop(_label: string): Promise<void> {}
-    async restart(_label: string): Promise<void> {}
-    restartShellCommand(_label: string): string { return `fake-restart`; }
-    async status(label: string): Promise<ServiceStatus> {
-      return this.statuses.get(label) ?? { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
-    }
-  }
 
   beforeEach(() => {
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-svc-defer-'));

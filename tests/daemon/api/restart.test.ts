@@ -38,31 +38,7 @@ function restoreProcessKill() {
 
 import { buildRestartShellCommand, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
-import type { ServiceManager, ServiceStatus } from '@myco/service/types.js';
-
-class FakeServiceManager implements ServiceManager {
-  readonly supported: boolean;
-  readonly platformName = 'fake';
-  /** label → status snapshot returned by status(). */
-  statuses = new Map<string, ServiceStatus>();
-  installed = new Set<string>();
-  restartCalls: string[] = [];
-
-  constructor(opts: { supported?: boolean } = {}) {
-    this.supported = opts.supported ?? true;
-  }
-
-  async isInstalled(label: string): Promise<boolean> { return this.installed.has(label); }
-  async install(): Promise<void> {}
-  async uninstall(): Promise<void> {}
-  async start(): Promise<void> {}
-  async stop(): Promise<void> {}
-  async restart(label: string): Promise<void> { this.restartCalls.push(label); }
-  restartShellCommand(label: string): string { return `fake-restart ${label}`; }
-  async status(label: string): Promise<ServiceStatus> {
-    return this.statuses.get(label) ?? { installed: false, running: false, pid: null, lastExitCode: null, unitPath: null };
-  }
-}
+import { FakeServiceManager } from '../../helpers/fake-service-manager';
 
 function makeDeps(overrides: Partial<RestartHandlerDeps> = {}): RestartHandlerDeps {
   const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-vault-'));
