@@ -680,6 +680,7 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   // is checked immediately. Child rows must be removed before their parents:
   //   - spores.prompt_batch_id     → prompt_batches(id)   [spores BEFORE prompt_batches]
   //   - plans.prompt_batch_id      → prompt_batches(id)   [plans BEFORE prompt_batches]
+  //   - knowledge_* provenance     → sessions/prompt_batches(id)
   //   - resolution_events.spore_id → spores(id)           [resolution_events BEFORE spores]
   //   - skill_usage.session_id     → sessions(id) NOT NULL
   //   - plans.session_id           → sessions(id)
@@ -694,6 +695,16 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
   // `changes()` after each `.run()` to get the outer statement's affected
   // rows only.
   const result = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM knowledge_release_state
+       WHERE source_session_id = ?
+          OR source_prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
+    ).run(sessionId, sessionId);
+    db.prepare(
+      `DELETE FROM knowledge_git_provenance
+       WHERE session_id = ?
+          OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
+    ).run(sessionId, sessionId);
     db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(sessionId);
     db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(sessionId);
     const attachments = changesSince(db);

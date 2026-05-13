@@ -485,6 +485,25 @@ describe('session query helpers', () => {
     ).run(`res-${Math.random().toString(36).slice(2, 8)}`, agentId, sporeId, sessionId, now);
   }
 
+  /** Insert release provenance rows that hold FKs to sessions / prompt_batches. */
+  function createReleaseEvidence(sessionId: string, promptBatchId?: number): void {
+    const db = getDatabase();
+    const now = epochNow();
+    const suffix = Math.random().toString(36).slice(2, 8);
+    db.prepare(
+      `INSERT INTO knowledge_git_provenance (
+         identity_key, session_id, prompt_batch_id, capture_point, captured_at,
+         status_hash, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`git:${suffix}`, sessionId, promptBatchId ?? null, 'prompt_capture', now, `status:${suffix}`, now);
+    db.prepare(
+      `INSERT INTO knowledge_release_state (
+         identity_key, namespace, record_id, source_session_id, source_prompt_batch_id,
+         state, confidence, checked_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(`release:${suffix}`, 'sessions', sessionId, sessionId, promptBatchId ?? null, 'unknown', 'low', now, now);
+  }
+
   /** Insert an attachment row directly. */
   function createAttachment(sessionId: string, filePath: string): void {
     const db = getDatabase();
@@ -642,6 +661,28 @@ describe('session query helpers', () => {
       const result = deleteSessionCascade(sessA.id);
       expect(result.deleted).toBe(true);
       expect(result.counts.resolutionEvents).toBe(1);
+    });
+
+    it('deletes release provenance rows before deleting sessions and prompt batches', () => {
+      const session = makeSession({ id: 'sess-release-provenance-cascade' });
+      upsertSession(session);
+      const batchId = createBatch(session.id);
+      createReleaseEvidence(session.id);
+      createReleaseEvidence(session.id, batchId);
+
+      const result = deleteSessionCascade(session.id);
+      expect(result.deleted).toBe(true);
+
+      const db = getDatabase();
+      const remaining = db.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM knowledge_git_provenance WHERE session_id = ?) AS git_rows,
+           (SELECT COUNT(*) FROM knowledge_release_state WHERE source_session_id = ?) AS release_rows,
+           (SELECT COUNT(*) FROM prompt_batches WHERE session_id = ?) AS batches`,
+      ).get(session.id, session.id, session.id) as Record<string, number>;
+      expect(remaining.git_rows).toBe(0);
+      expect(remaining.release_rows).toBe(0);
+      expect(remaining.batches).toBe(0);
     });
 
     it('returns deleted: false for non-existent session', () => {
