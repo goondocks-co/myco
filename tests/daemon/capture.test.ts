@@ -513,6 +513,41 @@ describe('stateless DB functions', () => {
       expect(activity.prompt_batch_id).toBeNull();
     });
 
+    it('accepts canopy_injection_tokens in the same INSERT (no follow-up UPDATE needed)', async () => {
+      const sessionId = 'test-activity-batch-canopy';
+      const now = epochNow();
+
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      const activity = insertActivityWithBatch({
+        session_id: sessionId,
+        tool_name: 'Read',
+        file_path: 'src/foo.ts',
+        timestamp: now,
+        created_at: now,
+        canopy_injection_tokens: 1234,
+      });
+
+      expect(activity.canopy_injection_tokens).toBe(1234);
+      expect(activity.file_path).toBe('src/foo.ts');
+    });
+
+    it('defaults canopy_injection_tokens to NULL when omitted', async () => {
+      const sessionId = 'test-activity-batch-canopy-null';
+      const now = epochNow();
+
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      const activity = insertActivityWithBatch({
+        session_id: sessionId,
+        tool_name: 'Read',
+        timestamp: now,
+        created_at: now,
+      });
+
+      expect(activity.canopy_injection_tokens).toBeNull();
+    });
+
     it('records failure fields correctly', async () => {
       const sessionId = 'test-activity-batch-005';
       const now = epochNow();

@@ -13,7 +13,6 @@ import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
-import { getDatabase } from '@myco/db/client.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
 import { getManifestByName } from '@myco/symbionts/detect.js';
 import { extractAnyPath } from '@myco/symbionts/canopy-read-tools.js';
@@ -160,6 +159,19 @@ export function handleToolUse(
   const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
 
+  // Canopy linkage: if a PreToolUse injection was recorded for this
+  // (sessionId, file_path), capture the offered token count before INSERT
+  // so it lands in the same row write — no follow-up UPDATE needed.
+  // Try the relativized path first (the form PreToolUse uses for paths
+  // under projectRoot) and fall back to the raw path for absolute reads
+  // that didn't relativize.
+  let injectionTokens: number | null = null;
+  if (filePath) {
+    injectionTokens =
+      consumePendingInjection(sessionId, activityFilePath ?? filePath)
+      ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
+  }
+
   const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
@@ -168,26 +180,8 @@ export function handleToolUse(
     file_path: activityFilePath,
     timestamp: now,
     created_at: now,
+    canopy_injection_tokens: injectionTokens,
   });
-
-  // Canopy linkage: if a PreToolUse injection was recorded for this
-  // (sessionId, file_path), stamp the offered token count onto the new
-  // activity row. NULL otherwise; aggregation treats that as no injection.
-  if (filePath) {
-    const injectionTokens =
-      consumePendingInjection(sessionId, activityFilePath ?? filePath)
-      ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
-    if (injectionTokens !== null) {
-      try {
-        getDatabase()
-          .prepare('UPDATE activities SET canopy_injection_tokens = ? WHERE id = ?')
-          .run(injectionTokens, activity.id);
-      } catch {
-        // Non-fatal: column missing on a downgraded schema or row vanished.
-        // Aggregation falls back to NULL.
-      }
-    }
-  }
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {

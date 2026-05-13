@@ -201,6 +201,13 @@ export interface StatelessActivityInsert {
   success?: number;
   error_message?: string | null;
   content_hash?: string | null;
+  /**
+   * Optional canopy_injection_tokens — set when the PostToolUse handler has
+   * already consumed a pending Canopy injection for this row. Folded into
+   * the initial INSERT so the Pre→Post linkage doesn't require a follow-up
+   * UPDATE on the new row.
+   */
+  canopy_injection_tokens?: number | null;
 }
 
 /**
@@ -222,7 +229,7 @@ export function insertActivityWithBatch(
        project_id, session_id, prompt_batch_id, tool_name, tool_input,
        tool_output_summary, file_path, files_affected, duration_ms,
        success, error_message, timestamp, processed,
-       content_hash, created_at
+       content_hash, created_at, canopy_injection_tokens
      ) VALUES (
        (SELECT project_id FROM sessions WHERE id = ?),
        ?,
@@ -230,7 +237,7 @@ export function insertActivityWithBatch(
        ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,
-       ?, ?
+       ?, ?, ?
      )`,
   ).run(
     data.session_id,
@@ -248,6 +255,7 @@ export function insertActivityWithBatch(
     DEFAULT_PROCESSED,
     data.content_hash ?? null,
     data.created_at,
+    data.canopy_injection_tokens ?? null,
   );
 
   const activityId = Number(info.lastInsertRowid);
