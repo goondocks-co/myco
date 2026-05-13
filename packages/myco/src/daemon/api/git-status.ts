@@ -1,14 +1,16 @@
 // Lightweight git state for the topbar identity pill. Reads branch, dirty
-// flag, ahead/behind, head sha, and last-commit author from the request's
-// project root — NOT the daemon's working directory. The daemon serves
-// multiple projects; scoping to req.requestContext.projectRoot is what
-// keeps a Grove with N projects from reporting one canonical branch.
+// flag, ahead/behind, head sha, and last-commit author from the caller's
+// filesystem root — NOT the daemon's working directory. The daemon serves
+// multiple projects, and the caller may be working inside a worktree; the
+// topbar pill must reflect the worktree's branch, not the canonical
+// project branch.
 //
 // Heavier git work (patch IDs, blob hashes) lives in release-provenance;
-// this endpoint stays cheap so a 30s topbar poll doesn't compete with it.
+// this endpoint stays cheap so a topbar poll doesn't compete with it.
 
 import { spawnSync } from 'node:child_process';
 import type { RouteHandler, RouteResponse } from '../router.js';
+import { filesystemRootFromRequestContext } from '../../tools/request-context.js';
 import { errorBody } from './error-envelope.js';
 
 // Cap subprocess wall time so a wedged index.lock or slow NFS doesn't
@@ -121,16 +123,18 @@ export function readGitStatus(cwd: string): GitStatusResponse | null {
 }
 
 /**
- * GET /api/git/status — returns the request project's git state.
+ * GET /api/git/status — returns the caller's filesystem-root git state.
  *
- * Scopes to `req.requestContext.projectRoot`, not `process.cwd()`: the
- * daemon serves multiple projects, and a Grove switch must change the
- * reported branch immediately.
+ * Resolves the caller's actual working location via
+ * `filesystemRootFromRequestContext` (callerRoot falls back to projectRoot).
+ * Worktree callers report the worktree's branch; non-worktree callers
+ * report the canonical project's branch.
  */
 export const handleGetGitStatus: RouteHandler = async (req) => {
-  const projectRoot = req.requestContext?.projectRoot;
-  if (!projectRoot) return badRequest('Request has no project root');
-  const status = readGitStatus(projectRoot);
+  if (!req.requestContext) return badRequest('Request has no project root');
+  const root = filesystemRootFromRequestContext(req.requestContext);
+  if (!root) return badRequest('Request has no project root');
+  const status = readGitStatus(root);
   if (!status) return notFound('Not a git repository or git is unavailable');
   return { body: status };
 };
