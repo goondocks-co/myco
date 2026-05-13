@@ -22,7 +22,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test'
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { getDatabase } from '@myco/db/client.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
-import { aggregateSessionCanopy, rollupCanopy } from '@myco/db/queries/canopy.js';
+import {
+  aggregateSessionCanopy,
+  rollupCanopy,
+  listCanopyReads,
+  getCanopyToolCallContext,
+} from '@myco/db/queries/canopy.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
 const PROJECT_ID = '/repo/myco';
@@ -287,6 +292,47 @@ describe('aggregateSessionCanopy', () => {
     expect(agg.tokens_saved).toBe(920);
   });
 
+  it('counts Codex Bash activities (manifest-driven tool-name allowlist)', () => {
+    // Codex routes file reads through Bash with the path embedded in the
+    // command string. PostToolUse stamps canopy_injection_tokens on those
+    // rows. The aggregator must include them via the manifest-driven
+    // tool-name filter, not the legacy `tool_name = 'Read'` hardcode.
+    const sessionId = 'sess-codex-bash';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'src/x.ts', token_estimate: 1500 }]);
+    seedActivities(sessionId, [
+      { tool_name: 'Bash', file_path: 'src/x.ts', injection_tokens: 70, ts: 1 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.injections_offered).toBe(1);
+    expect(agg.injection_total_tokens).toBe(70);
+    expect(agg.skips_after_injection).toBe(1);
+    expect(agg.reads_after_injection).toBe(0);
+    expect(agg.tokens_saved).toBe(1430); // 1500 - 70
+  });
+
+  it('counts mixed Claude Read and Codex Bash activities in one session', () => {
+    const sessionId = 'sess-mixed-agents';
+    seedSession(sessionId);
+    seedCanopyEntries([
+      { path: 'a.ts', token_estimate: 1000 },
+      { path: 'b.ts', token_estimate: 2000 },
+    ]);
+    seedActivities(sessionId, [
+      { tool_name: 'Read', file_path: 'a.ts', injection_tokens: 80, ts: 1 },
+      { tool_name: 'Bash', file_path: 'b.ts', injection_tokens: 90, ts: 2 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.injections_offered).toBe(2);
+    expect(agg.injection_total_tokens).toBe(170);
+    expect(agg.skips_after_injection).toBe(2);
+    expect(agg.tokens_saved).toBe(2830); // (1000-80) + (2000-90)
+  });
+
   it('canonicalizes absolute Read paths before joining canopy_entries', () => {
     const sessionId = 'sess-absolute-path';
     seedSession(sessionId);
@@ -299,6 +345,63 @@ describe('aggregateSessionCanopy', () => {
 
     expect(agg.skips_after_injection).toBe(1);
     expect(agg.tokens_saved).toBe(920);
+  });
+});
+
+describe('listCanopyReads (per-tool-call indicators)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    getDatabase().prepare('DELETE FROM canopy_entries').run();
+  });
+
+  it('returns Codex Bash rows alongside Claude Read rows (manifest-driven allowlist)', () => {
+    // Mirrors the aggregate-side guarantee: the per-tool-call drilldown that
+    // backs /sessions/:id/canopy must include the same set of activities the
+    // aggregate counts, or the UI shows "5 injections offered" with zero rows.
+    const sessionId = 'sess-list-mixed';
+    seedSession(sessionId);
+    seedActivities(sessionId, [
+      { tool_name: 'Read', file_path: 'a.ts', injection_tokens: 80, ts: 1 },
+      { tool_name: 'Bash', file_path: 'b.ts', injection_tokens: 90, ts: 2 },
+      // A non-read tool is excluded — same predicate as the aggregate.
+      { tool_name: 'Edit', file_path: 'c.ts', injection_tokens: 50, ts: 3 },
+    ]);
+
+    const rows = listCanopyReads(null, sessionId);
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.file_path).sort()).toEqual(['a.ts', 'b.ts']);
+    expect(rows.find(r => r.file_path === 'b.ts')?.canopy_injection_tokens).toBe(90);
+  });
+});
+
+describe('getCanopyToolCallContext (read-replay endpoint)', () => {
+  beforeAll(() => { setupTestDb(); });
+  afterAll(() => { teardownTestDb(); });
+  beforeEach(() => {
+    cleanTestDb();
+    getDatabase().prepare('DELETE FROM canopy_entries').run();
+  });
+
+  it('resolves a Codex Bash tool-call as a canopy read (manifest-driven allowlist)', () => {
+    const sessionId = 'sess-ctx-bash';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'src/x.ts', token_estimate: 1500 }]);
+    seedActivities(sessionId, [
+      { tool_name: 'Bash', file_path: 'src/x.ts', injection_tokens: 70, ts: 1 },
+    ]);
+
+    // Recover the inserted activity id directly — seedActivities doesn't return
+    // it, but it's the only row for this session.
+    const row = getDatabase()
+      .prepare('SELECT id FROM activities WHERE session_id = ?')
+      .get(sessionId) as { id: number };
+
+    const ctx = getCanopyToolCallContext(ALL_PROJECTS_SCOPE, sessionId, row.id);
+    expect(ctx).not.toBeNull();
+    expect(ctx?.file_path).toBe('src/x.ts');
+    expect(ctx?.injection_tokens).toBe(70);
   });
 });
 

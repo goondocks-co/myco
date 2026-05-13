@@ -11,6 +11,7 @@
  */
 
 import type { PackageTagMapping } from './config.js';
+import { refAliases, globToRegex } from './refs.js';
 
 export function pathMatchesGlob(path: string, glob: string): boolean {
   if (glob.endsWith('/')) return path.startsWith(glob);
@@ -53,11 +54,6 @@ export function filterRefsByPackagePatterns(
 ): string[] {
   if (patterns.length === 0) return [...refs];
   const matchers = patterns.map(globToRegex);
-  const filtered = refs.filter((ref) => matchers.some((re) => re.test(ref)));
+  const filtered = refs.filter((ref) => refAliases(ref).some((alias) => matchers.some((re) => re.test(alias))));
   return filtered.length > 0 ? filtered : [...refs];
-}
-
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-  return new RegExp(`^${escaped}$`);
 }

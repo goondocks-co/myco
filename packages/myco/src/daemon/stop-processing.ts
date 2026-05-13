@@ -39,6 +39,7 @@ import { SessionRegistry } from './lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { EmbeddingManager } from './embedding/index.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { triggerTitleSummary as sharedTriggerTitleSummary } from './trigger-title-summary.js';
@@ -183,6 +184,16 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     planWatchConfig,
   } = deps;
 
+  function configForRequest(req: Parameters<RouteHandler>[0]): MycoConfig {
+    const ctx = req.requestContext;
+    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
+    try {
+      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
+    } catch {
+      return liveConfig.current;
+    }
+  }
+
   // Internal state
   let activeStopProcessing: Promise<void> | null = null;
   const sessionTitleCache = new Map<string, string>();
@@ -243,6 +254,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     requestRowProjectId: string | null,
     requestProjectRoot: string,
     requestMachineId: string,
+    requestProductionRef: string | null,
     hookTranscriptPath?: string,
     lastAssistantMessage?: string,
   ): Promise<void> {
@@ -350,7 +362,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
         sessionId,
         promptBatchId: latestBatch.id,
         capturePoint: 'prompt_batch_stop',
-        productionRef: primaryProductionRef(liveConfig.current),
+        productionRef: requestProductionRef,
         logger,
       });
     }
@@ -588,6 +600,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
     const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestMachineId = req.requestContext?.machineId ?? machineId;
+    const requestProductionRef = primaryProductionRef(configForRequest(req));
 
     if (hookTranscriptPath) {
       const detectedAgent = agent ?? getSession(sessionId, ALL_PROJECTS_SCOPE)?.agent ?? 'claude-code';
@@ -666,6 +679,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       requestRowProjectId,
       requestProjectRoot,
       requestMachineId,
+      requestProductionRef,
       normalizedTranscriptPath,
       normalizedAssistantMessage,
     ).catch((err) => {

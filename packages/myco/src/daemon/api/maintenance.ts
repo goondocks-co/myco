@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { Logger } from '../logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import type { GroveRuntimeCache, EmbeddingRuntimeFactory } from '../grove-runtime-cache.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { MS_PER_HOUR } from '@myco/constants.js';
@@ -14,6 +15,7 @@ import {
   resolveGroveDbPath,
   resolveGroveDir,
   resolveMycoHome,
+  resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
 import {
   loadGroveRecord,
@@ -415,10 +417,6 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
    * isolated — one bad project does not abort the rest.
    */
   async function handleReleaseProvenanceReconcile(_req: RouteRequest): Promise<RouteResponse> {
-    const config = releaseProvenanceConfig(deps.liveConfig.current);
-    if (!config.enabled) {
-      return { body: { ok: true, disabled: true, results: [] } };
-    }
     interface PerProjectResult {
       grove_id: string;
       project_id: string;
@@ -437,6 +435,20 @@ export function createMaintenanceHandlers(deps: MaintenanceHandlersDeps) {
         for (const project of projects) {
           const projectId = project.project_id as GroveProjectId;
           try {
+            const projectVaultDir = resolveProjectVaultDir(project.root);
+            const projectConfig = loadMergedConfig(projectVaultDir, { groveId: scope.grove.id, mycoHome });
+            const config = releaseProvenanceConfig(projectConfig);
+            if (!config.enabled) {
+              results.push({
+                grove_id: scope.grove.id,
+                project_id: projectId,
+                reconciled: 0,
+                scanned: 0,
+                unchanged: 0,
+                failed: 0,
+              });
+              continue;
+            }
             const entry = deps.cache.getEmbeddingRuntime(scope.databasePath, deps.embeddingRuntimeFactory);
             const vectorStore = entry.vectorStore;
             const result = await reconcileReleaseProvenance({

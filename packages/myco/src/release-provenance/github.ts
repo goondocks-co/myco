@@ -20,6 +20,7 @@ import type { ReleaseGithubConfig } from './config.js';
 
 const GITHUB_API = 'https://api.github.com';
 const FETCH_TIMEOUT_MS = 5_000;
+export const GITHUB_TOKEN_ENV = 'GITHUB_TOKEN';
 
 export interface SquashLookupOptions {
   repo: string;

@@ -3,45 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureSelfInstalledAsService } from '../../packages/myco/src/service/self-install';
-import type { ServiceManager, ServiceSpec, ServiceStatus } from '../../packages/myco/src/service/types';
+import { FakeServiceManager } from '../helpers/fake-service-manager';
 
-class FakeManager implements ServiceManager {
-  readonly supported: boolean;
-  readonly platformName: string;
-  installed = false;
-  installCalls: ServiceSpec[] = [];
-  uninstallCalls: string[] = [];
-  startCalls: string[] = [];
-  stopCalls: string[] = [];
-  statusCalls = 0;
-
-  constructor(opts: { supported?: boolean; platformName?: string; preInstalled?: boolean } = {}) {
-    this.supported = opts.supported ?? true;
-    this.platformName = opts.platformName ?? 'fake';
-    this.installed = opts.preInstalled ?? false;
-  }
-
-  async isInstalled(_label: string): Promise<boolean> {
-    return this.installed;
-  }
-  async install(spec: ServiceSpec): Promise<void> {
-    this.installCalls.push(spec);
-    this.installed = true;
-  }
-  async uninstall(label: string): Promise<void> { this.uninstallCalls.push(label); this.installed = false; }
-  async start(label: string): Promise<void> { this.startCalls.push(label); }
-  async stop(label: string): Promise<void> { this.stopCalls.push(label); }
-  async status(_label: string): Promise<ServiceStatus> {
-    this.statusCalls++;
-    return {
-      installed: this.installed,
-      running: this.installed,
-      pid: this.installed ? 1234 : null,
-      lastExitCode: this.installed ? 0 : null,
-      unitPath: this.installed ? '/fake/unit' : null,
-    };
-  }
-}
+// Local alias matches the legacy test naming. The shared fake exposes the
+// same call-tracking arrays (installCalls, uninstallCalls, ...) and treats
+// `preInstalled: true` as "every label looks installed", which is exactly
+// the boolean semantics this suite relied on.
+const FakeManager = FakeServiceManager;
 
 class CapturingLogger {
   infos: Array<{ kind: string; message: string; meta?: Record<string, unknown> }> = [];

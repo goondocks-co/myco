@@ -15,6 +15,8 @@ import { createHookDaemonClient } from './client.js';
 import { readHookInput } from './input.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { writeHookResponse } from './response.js';
+import { getManifestByName } from '../symbionts/detect.js';
+import { resolveCanopyReadTool } from '../symbionts/canopy-read-tools.js';
 
 const INJECT_TIMEOUT_MS = 1500;
 
@@ -61,12 +63,14 @@ export async function main(): Promise<void> {
     const input = await readHookInput();
     symbiont = input.agent;
 
-    // Cheap pre-checks before any IPC: only Read benefits from injection.
-    if (input.toolName !== 'Read') return;
     if (!input.sessionId) return;
+    if (!input.toolName) return;
 
-    const toolInput = asObject(input.toolInput);
-    if (!toolInput) return;
+    const manifest = getManifestByName(input.agent);
+    if (!manifest) return;
+
+    const resolved = resolveCanopyReadTool(manifest, input.toolName, input.toolInput);
+    if (!resolved) return;
 
     const client = createHookDaemonClient(vaultDir, { sessionId: input.sessionId });
     const result = await client.post(
@@ -74,7 +78,9 @@ export async function main(): Promise<void> {
       {
         sessionId: input.sessionId,
         agent: input.agent,
-        toolInput,
+        // Normalize to the daemon's expected shape (file_path) regardless of
+        // how this symbiont's tool_input was structured.
+        toolInput: { file_path: resolved.filePath },
       },
       { timeoutMs: INJECT_TIMEOUT_MS },
     );

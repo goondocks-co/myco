@@ -12,6 +12,7 @@
 import type { Database } from 'bun:sqlite';
 import { getDatabase } from '@myco/db/client.js';
 import { CANOPY_SESSION_COLUMNS, CANOPY_ACTIVITY_COLUMN } from '@myco/db/schema-ddl.js';
+import { allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
 import { projectScopeClause, type ProjectScope } from './project-scope.js';
 
 // ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ raw_reads AS (
     a.timestamp                AS ts
   FROM activities a
   WHERE a.session_id = ?
-    AND a.tool_name = 'Read'
+    AND a.tool_name IN (SELECT value FROM json_each(?))
 ),
 reads AS (
   SELECT
@@ -222,7 +223,24 @@ export function aggregateSessionCanopy(
   sessionId: string,
 ): CanopySessionAggregate {
   const handle = db ?? getDatabase();
-  const row = handle.prepare(AGGREGATE_SQL).get(sessionId, sessionId) as
+  // Tool-name allowlist comes from the union of canopyReadTools across all
+  // installed manifests — manifest-driven so Codex's Bash reads, Claude's
+  // Read calls, and any future symbiont's tool surface all roll up without
+  // hardcoded checks here. Fast path: no manifests declare read tools →
+  // there can't be any qualifying activities.
+  const toolNames = allCanopyReadToolNames();
+  if (toolNames.length === 0) {
+    return {
+      injections_offered: 0,
+      injection_total_tokens: 0,
+      skips_after_injection: 0,
+      reads_after_injection: 0,
+      tokens_saved: 0,
+      redundant_reads: 0,
+    };
+  }
+  const toolNamesJson = JSON.stringify(toolNames);
+  const row = handle.prepare(AGGREGATE_SQL).get(sessionId, sessionId, toolNamesJson) as
     | {
         injections_offered: number | null;
         injection_total_tokens: number | null;
@@ -413,9 +431,17 @@ export interface CanopyReadRow {
 /**
  * Read tool-calls for a session, ordered by timestamp. Used by the
  * `/sessions/:id/canopy` endpoint to render per-tool-call indicators.
+ *
+ * Tool-name allowlist comes from the union of canopyReadTools across all
+ * installed manifests — manifest-driven so Codex's Bash reads, Claude's
+ * Read calls, and any future symbiont's tool surface all surface here
+ * without hardcoded checks.
  */
 export function listCanopyReads(db: Database | null, sessionId: string): CanopyReadRow[] {
   const handle = db ?? getDatabase();
+  const toolNames = allCanopyReadToolNames();
+  if (toolNames.length === 0) return [];
+  const toolNamesJson = JSON.stringify(toolNames);
   return handle
     .prepare(
       `
@@ -426,11 +452,11 @@ export function listCanopyReads(db: Database | null, sessionId: string): CanopyR
           canopy_injection_tokens
         FROM activities
         WHERE session_id = ?
-          AND tool_name = 'Read'
+          AND tool_name IN (SELECT value FROM json_each(?))
         ORDER BY timestamp ASC, id ASC
       `,
     )
-    .all(sessionId) as CanopyReadRow[];
+    .all(sessionId, toolNamesJson) as CanopyReadRow[];
 }
 
 /**
@@ -455,6 +481,12 @@ export function getCanopyToolCallContext(
   db: Database | null = null,
 ): CanopyToolCallContext | null {
   const handle = db ?? getDatabase();
+  const toolNames = allCanopyReadToolNames();
+  // Tool-name allowlist is manifest-driven (matches aggregateSessionCanopy
+  // and listCanopyReads). No manifest declares a canopy read tool → no
+  // activity can have qualified, so the context cannot exist.
+  if (toolNames.length === 0) return null;
+  const toolNamesJson = JSON.stringify(toolNames);
   const scopeClause = projectScopeClause(scope, 'a');
   const row = handle
     .prepare(
@@ -469,12 +501,12 @@ export function getCanopyToolCallContext(
         LEFT JOIN sessions s ON s.id = a.session_id
         WHERE a.id = ?
           AND a.session_id = ?
-          AND a.tool_name = 'Read'
+          AND a.tool_name IN (SELECT value FROM json_each(?))
           AND a.canopy_injection_tokens IS NOT NULL
           ${scopeClause.sql}
       `,
     )
-    .get(activityId, sessionId, ...scopeClause.params) as CanopyToolCallContext | undefined;
+    .get(activityId, sessionId, toolNamesJson, ...scopeClause.params) as CanopyToolCallContext | undefined;
 
   if (!row || !row.file_path) return null;
   return row;

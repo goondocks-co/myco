@@ -130,7 +130,36 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": true,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [
+        {
+          "tool": "Read",
+          "pathField": "file_path",
+          "pathKind": "file"
+        }
+      ],
+      "pathBearingTools": [
+        {
+          "tool": "Read",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Write",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "Edit",
+          "pathField": "file_path",
+          "pathKind": "file"
+        },
+        {
+          "tool": "MultiEdit",
+          "pathField": "file_path",
+          "pathKind": "file"
+        }
+      ]
     }
   },
   {
@@ -313,8 +342,54 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "settingsFormat": "toml"
     },
     "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "preToolUseInjection": true,
+      "sessionStartInjection": true,
+      "canopyReadTools": [
+        {
+          "tool": "Bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ],
+      "pathBearingTools": [
+        {
+          "tool": "Bash",
+          "pathField": "command",
+          "extract": "shell-arg",
+          "readCommands": [
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "bat",
+            "wc",
+            "file",
+            "nl",
+            "sed",
+            "awk",
+            "grep",
+            "rg",
+            "perl"
+          ]
+        }
+      ]
     }
   },
   {
@@ -365,7 +440,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [],
+      "pathBearingTools": []
     }
   },
   {
@@ -405,7 +482,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [],
+      "pathBearingTools": []
     }
   },
   {
@@ -444,7 +523,25 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [],
+      "pathBearingTools": [
+        {
+          "tool": "read",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "write",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "edit",
+          "pathField": "filePath",
+          "pathKind": "file"
+        }
+      ]
     }
   },
   {
@@ -480,7 +577,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [],
+      "pathBearingTools": []
     }
   },
   {
@@ -516,7 +615,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": true
+      "sessionStartInjection": true,
+      "canopyReadTools": [],
+      "pathBearingTools": []
     }
   },
   {
@@ -552,7 +653,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "capabilities": {
       "preToolUseInjection": false,
-      "sessionStartInjection": false
+      "sessionStartInjection": false,
+      "canopyReadTools": [],
+      "pathBearingTools": []
     }
   }
 ] as const;

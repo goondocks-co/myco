@@ -49,5 +49,17 @@ export interface ServiceManager {
   uninstall(label: string): Promise<void>;
   start(label: string): Promise<void>;
   stop(label: string): Promise<void>;
+  /** Restart the service in place via the platform's native primitive
+   *  (faster than stop+start, and more importantly atomic — no window where
+   *  KeepAlive/Restart could fire and spawn an unwanted instance).
+   *  Throws if the service is not installed. */
+  restart(label: string): Promise<void>;
+  /** The literal shell command that, when run from any detached process,
+   *  restarts the service via the platform's native primitive. Used by the
+   *  detached update / restart scripts that must run AFTER the daemon exits
+   *  (so they cannot call back into TypeScript). The command is fully
+   *  resolved at generation time — no env-var indirection. Throws on the
+   *  unsupported platform. */
+  restartShellCommand(label: string): string;
   status(label: string): Promise<ServiceStatus>;
 }

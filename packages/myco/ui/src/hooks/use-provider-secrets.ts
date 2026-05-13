@@ -6,13 +6,18 @@ const PROVIDER_SECRETS_QUERY_KEY = ['provider-secrets'] as const;
 const PROVIDERS_QUERY_KEY = ['providers'] as const;
 const MODELS_QUERY_KEY = ['models'] as const;
 
-export type SecretProvider = 'openai' | 'openrouter';
+export type SecretProvider = 'openai' | 'openrouter' | 'github';
+export type SecretScope = 'machine' | 'project';
+export type SecretSource = SecretScope | 'env' | 'none';
 
 export interface ProviderSecretInfo {
   configured: boolean;
   envKey: string;
   maskedValue: string | null;
-  source: 'vault' | 'env' | 'none';
+  source: SecretSource;
+  sourceScope: SecretScope | null;
+  defaultScope: SecretScope;
+  availableScopes: SecretScope[];
 }
 
 export interface ProviderSecretsResponse {
@@ -36,8 +41,8 @@ function invalidateProviderQueries(queryClient: ReturnType<typeof useQueryClient
 export function useSaveProviderSecret() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ provider, apiKey }: { provider: SecretProvider; apiKey: string }) =>
-      putJson(`/providers/secrets/${provider}`, { api_key: apiKey }),
+    mutationFn: ({ provider, apiKey, scope }: { provider: SecretProvider; apiKey: string; scope?: SecretScope }) =>
+      putJson(`/providers/secrets/${provider}`, { api_key: apiKey, scope }),
     onSuccess: () => invalidateProviderQueries(queryClient),
   });
 }
@@ -45,7 +50,8 @@ export function useSaveProviderSecret() {
 export function useDeleteProviderSecret() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (provider: SecretProvider) => deleteJson(`/providers/secrets/${provider}`),
+    mutationFn: ({ provider, scope }: { provider: SecretProvider; scope?: SecretScope }) =>
+      deleteJson(`/providers/secrets/${provider}${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`),
     onSuccess: () => invalidateProviderQueries(queryClient),
   });
 }

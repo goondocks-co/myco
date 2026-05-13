@@ -1,4 +1,5 @@
 import type { MycoConfig } from '@myco/config/schema.js';
+import { GITHUB_TOKEN_ENV } from './github.js';
 
 export interface PackageTagMapping {
   path_glob: string;
@@ -31,7 +32,7 @@ export function releaseProvenanceConfig(config: MycoConfig): ReleaseProvenanceRu
     reconcile_interval_minutes: release?.reconcile_interval_minutes ?? 15,
     github: {
       repo: release?.github?.repo ?? '',
-      token_env: release?.github?.token_env ?? 'GITHUB_TOKEN',
+      token_env: release?.github?.token_env ?? GITHUB_TOKEN_ENV,
       max_lookups_per_run: release?.github?.max_lookups_per_run ?? 20,
     },
     package_map: release?.package_map ?? [],

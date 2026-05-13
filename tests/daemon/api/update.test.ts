@@ -8,7 +8,7 @@
  * - handleUpdateChannel: writes config + clears cache, 400 for invalid channel
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { vi } from '../../helpers/vi-shim.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,6 +16,14 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted before imports
 // ---------------------------------------------------------------------------
+
+// Capture the real modules BEFORE replacing them, so afterAll can put them
+// back. bun:test's mock.module() is process-scoped — without this restore,
+// the stub modules below leak into every later test file that imports them
+// in the same `bun test` invocation (the canonical npm test runner uses
+// --isolate, which masks the leak; the restore stays correct regardless).
+const realUpdateChecker = await import('@myco/daemon/update-checker.js');
+const realUpdateInstaller = await import('@myco/daemon/update-installer.js');
 
 mock.module('@myco/daemon/update-checker.js', () => ({
   isUpdateExempt: vi.fn(() => false),
@@ -38,6 +46,11 @@ mock.module('@myco/daemon/update-installer.js', () => ({
   spawnRestartScript: vi.fn(() => '/tmp/myco-restart-123.sh'),
 }));
 
+afterAll(() => {
+  mock.module('@myco/daemon/update-checker.js', () => realUpdateChecker);
+  mock.module('@myco/daemon/update-installer.js', () => realUpdateInstaller);
+});
+
 import {
   isUpdateExempt,
   checkForUpdate,
@@ -55,6 +68,21 @@ import {
 import { spawnUpdateScript, spawnRestartScript } from '@myco/daemon/update-installer.js';
 import { createUpdateHandlers } from '@myco/daemon/api/update.js';
 import type { RouteRequest } from '@myco/daemon/router.js';
+import { FakeServiceManager } from '../../helpers/fake-service-manager';
+
+// ---------------------------------------------------------------------------
+// Pre-installed service helper. The /update routes look up
+// restartShellCommand only when the service is already installed for this
+// PID — wire a status snapshot + shell command in one call so each test
+// reads as a single intent line.
+// ---------------------------------------------------------------------------
+function installedServiceManager(label: string, shellCmd: string): FakeServiceManager {
+  const mgr = new FakeServiceManager();
+  mgr.installed.add(label);
+  mgr.statuses.set(label, { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
+  mgr.restartShellCommands.set(label, shellCmd);
+  return mgr;
+}
 
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
 // ---------------------------------------------------------------------------
@@ -392,6 +420,82 @@ describe('handleUpdateApply', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Service-managed restart routing
+  //
+  // Mirrors the bug fix in commit 78a2c421 for /restart. When launchd /
+  // systemd manages the daemon, the post-install script must NOT spawn
+  // `myco daemon` itself — the service supervisor's KeepAlive would race
+  // it for the canonical port. Instead, the script invokes the platform
+  // restart primitive directly.
+  // -------------------------------------------------------------------------
+  it('passes a launchctl kickstart command when the daemon is service-managed (prod)', async () => {
+    const mgr = installedServiceManager(
+      'co.goondocks.myco',
+      'launchctl kickstart -k gui/501/co.goondocks.myco',
+    );
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
+
+    await handleUpdateApply(makeReq());
+
+    expect(spawnUpdateScript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+      }),
+    );
+  });
+
+  it('passes a launchctl kickstart command for the dev service variant', async () => {
+    const mgr = installedServiceManager(
+      'co.goondocks.myco-dev',
+      'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
+    );
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
+
+    await handleUpdateApply(makeReq());
+
+    expect(spawnUpdateScript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
+      }),
+    );
+  });
+
+  it('omits the service-restart command when no service is installed (manual daemon)', async () => {
+    const mgr = new FakeServiceManager();
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
+
+    await handleUpdateApply(makeReq());
+
+    const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
+    expect(call?.serviceRestartCommand).toBeUndefined();
+  });
+
+  it('omits the service-restart command when service is installed but a different PID is the daemon', async () => {
+    // The supervisor manages SOME process, but not this one. Don't claim
+    // service-managed semantics — fall back to the manual daemon spawn.
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
+    mgr.restartShellCommands.set('co.goondocks.myco', 'launchctl kickstart -k gui/501/co.goondocks.myco');
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
+
+    await handleUpdateApply(makeReq());
+
+    const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
+    expect(call?.serviceRestartCommand).toBeUndefined();
+  });
+
+  it('omits the service-restart command on unsupported platforms', async () => {
+    const mgr = new FakeServiceManager({ supported: false });
+    const { handleUpdateApply } = createUpdateHandlers(makeDeps({ serviceManager: mgr }));
+
+    await handleUpdateApply(makeReq());
+
+    const call = vi.mocked(spawnUpdateScript).mock.calls[0]?.[0];
+    expect(call?.serviceRestartCommand).toBeUndefined();
+  });
+
   it('installs a managed beta runtime even when the global install matches the target', async () => {
     // User is on stable, opts into beta. Global myco is already at the
     // version the beta channel resolves to — update_available is false but
@@ -631,6 +735,31 @@ describe('handleUpdateStatus — restart_required', () => {
     expect(scheduleShutdown).not.toHaveBeenCalled();
     expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
     expect(result.body).toMatchObject({ exempt: false });
+  });
+
+  it('passes a service-restart command into the auto-restart script when service-managed', async () => {
+    // Auto-restart short-circuit (sibling-version-sync) must route through
+    // launchd / systemd too — same thundering-herd avoidance as
+    // handleUpdateApply. Without this, the sibling daemon spawn + KeepAlive
+    // both fight for the port and the system enters the crash loop.
+    vi.mocked(getInstalledVersion).mockReturnValue('1.1.0');
+    // Reset runtime.command pin pollution from preceding tests in this block.
+    vi.mocked(resolveRuntimeCommand).mockReturnValue(null);
+    vi.mocked(isManagedMachineRuntime).mockReturnValue(false);
+    const mgr = installedServiceManager(
+      'co.goondocks.myco',
+      'launchctl kickstart -k gui/501/co.goondocks.myco',
+    );
+    const { handleUpdateStatus } = createUpdateHandlers(
+      makeDeps({ globalPrefix: '/usr/local', serviceManager: mgr }),
+    );
+
+    await handleUpdateStatus(makeReq());
+
+    expect(spawnRestartScript).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnRestartScript).mock.calls[0][0]).toMatchObject({
+      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+    });
   });
 
   it('does not trigger auto-restart when runtime.command pins a dogfood binary outside .myco/runtime/', async () => {

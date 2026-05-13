@@ -16,7 +16,7 @@ import {
 } from '@myco/db/queries/batches.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
-import { STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
+import { STALE_BUFFER_MAX_AGE_MS, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
 import { isSystemMessage, handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
@@ -90,6 +90,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
     if (event.type === 'tool_use') {
       handleToolUse(
         sessionId,
+        typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
         String(event.tool_name ?? ''),
         event.tool_input,
         typeof event.output_preview === 'string' ? event.output_preview : undefined,
@@ -100,6 +101,7 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
     if (event.type === 'tool_failure') {
       handleToolFailure(
         sessionId,
+        typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
         String(event.tool_name ?? ''),
         event.tool_input,
         typeof event.error === 'string' ? event.error : undefined,

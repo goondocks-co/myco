@@ -33,6 +33,22 @@ export interface MycoConfig {
     buffer_max_events: number;
     ignore_plan_dirs_in_git?: boolean;
   };
+  release_provenance: {
+    enabled: boolean;
+    production_refs: string[];
+    integration_refs: string[];
+    reconcile_interval_minutes: number;
+    production_debug_include_unknown: boolean;
+    github: {
+      repo: string;
+      token_env: string;
+      max_lookups_per_run: number;
+    };
+    package_map: Array<{
+      path_glob: string;
+      tag_pattern: string;
+    }>;
+  };
   agent: {
     summary_batch_interval: number;
     scheduled_tasks_enabled?: boolean;

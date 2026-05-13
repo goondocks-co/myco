@@ -16,15 +16,28 @@ capture:
   buffer_max_events: 500
 release_provenance:
   enabled: true
-  production_refs: []
-  integration_refs: []
+  production_refs:
+    - refs/tags/myco/v*
+    - refs/tags/myco-team/v*
+    - refs/tags/myco-collective/v*
+    - refs/tags/myco-shared/v*
+  integration_refs:
+    - origin/main
   reconcile_interval_minutes: 15
   production_debug_include_unknown: true
   github:
-    repo: ""
+    repo: goondocks-co/myco
     token_env: GITHUB_TOKEN
     max_lookups_per_run: 20
-  package_map: []
+  package_map:
+    - path_glob: packages/myco/
+      tag_pattern: refs/tags/myco/v*
+    - path_glob: packages/myco-team/
+      tag_pattern: refs/tags/myco-team/v*
+    - path_glob: packages/myco-collective/
+      tag_pattern: refs/tags/myco-collective/v*
+    - path_glob: packages/myco-shared/
+      tag_pattern: refs/tags/myco-shared/v*
 agent:
   summary_batch_interval: 5
   scheduled_tasks_enabled: true

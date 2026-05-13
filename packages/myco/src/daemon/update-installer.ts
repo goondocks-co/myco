@@ -47,6 +47,19 @@ export interface InstallParams {
    * `myco` in prod).
    */
   mycoBinary: string;
+  /**
+   * Literal shell command that restarts the daemon via the platform
+   * service manager (launchctl kickstart / systemctl --user restart).
+   * When set, the generated script invokes this command instead of
+   * spawning `<mycoBinary> daemon` directly — preventing the
+   * thundering-herd race between a manually-spawned daemon child and
+   * the service supervisor's KeepAlive/Restart=always policy.
+   *
+   * Callers should derive this from `ServiceManager.restartShellCommand(label)`
+   * only when `detectServiceManagedLabel()` confirms this process is the
+   * service-managed daemon.
+   */
+  serviceRestartCommand?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +88,7 @@ export function generateUpdateScript(params: InstallParams): string {
     removeLocalRuntime = false,
     projectRoot,
     mycoBinary,
+    serviceRestartCommand,
   } = params;
 
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
@@ -141,12 +155,33 @@ else
   MYCO=${quotedMycoBinary}
 fi
 
-# Restart daemon (works whether install succeeded or failed)
-cd ${quotedProjectRoot} && "$MYCO" daemon &
+${buildRestartTail(serviceRestartCommand, quotedProjectRoot)}
 
 # Clean up this script
 rm -f "$0"
 `;
+}
+
+/**
+ * Final-line restart tail for the generated script.
+ *
+ * - Service-managed: invoke the platform's restart primitive (literal command
+ *   pre-resolved at generation time). The supervisor respawns the daemon
+ *   from its installed path, which now resolves to the freshly-installed
+ *   binary. No `cd` needed — the service definition pins workingDir.
+ * - Non-service-managed: `cd <projectRoot> && "$MYCO" daemon &` so the new
+ *   daemon's resolveVaultDir picks up the vault from cwd.
+ */
+function buildRestartTail(
+  serviceRestartCommand: string | undefined,
+  quotedProjectRoot: string,
+): string {
+  if (serviceRestartCommand) {
+    return `# Restart via platform service manager (no parallel daemon spawn).
+${serviceRestartCommand}`;
+  }
+  return `# Restart daemon (works whether install succeeded or failed)
+cd ${quotedProjectRoot} && "$MYCO" daemon &`;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +237,13 @@ export interface RestartParams {
    * update-checker for how callers pick it.
    */
   mycoBinary: string;
+  /**
+   * Literal shell command that restarts the daemon via the platform
+   * service manager (launchctl kickstart / systemctl --user restart).
+   * See `InstallParams.serviceRestartCommand` for the full rationale —
+   * same fix shape.
+   */
+  serviceRestartCommand?: string;
 }
 
 /**
@@ -214,7 +256,15 @@ export interface RestartParams {
  * 5. Cleans up the script file.
  */
 export function generateRestartScript(params: RestartParams): string {
-  const { projectRoot, vaultDir, runLocalUpdate, fromVersion, toVersion, mycoBinary } = params;
+  const {
+    projectRoot,
+    vaultDir,
+    runLocalUpdate,
+    fromVersion,
+    toVersion,
+    mycoBinary,
+    serviceRestartCommand,
+  } = params;
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
   const reasonFile = JSON.stringify(path.join(vaultDir, RESTART_REASON_FILENAME));
@@ -247,8 +297,7 @@ ${updateBlock}
 # Write restart reason for the new daemon to pick up
 echo ${reasonJson} > ${reasonFile}
 
-# Restart daemon (cd'd into projectRoot so resolveVaultDir finds the vault)
-cd ${quotedProjectRoot} && "$MYCO" daemon &
+${buildRestartTail(serviceRestartCommand, quotedProjectRoot)}
 
 # Clean up this script
 rm -f "$0"

@@ -13,8 +13,9 @@ import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
-import { getDatabase } from '@myco/db/client.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
+import { getManifestByName } from '@myco/symbionts/detect.js';
+import { extractAnyPath } from '@myco/symbionts/canopy-read-tools.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,18 +42,28 @@ export function isSystemMessage(prompt: string): boolean {
   return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
-/** Extract a file path from tool input across snake_case and camelCase conventions. */
-function extractToolFilePath(toolInput: unknown): string | null {
-  const inputObj = toolInput as Record<string, unknown> | undefined;
-  if (!inputObj) return null;
-
-  const filePath = inputObj.file_path;
-  if (typeof filePath === 'string') return filePath;
-
-  const camelFilePath = inputObj.filePath;
-  if (typeof camelFilePath === 'string') return camelFilePath;
-
-  return null;
+/**
+ * Extract a file path from tool input via the agent's manifest.
+ *
+ * Manifest-driven: consults `pathBearingTools` on the agent's symbiont
+ * manifest — the broader sibling of `canopyReadTools` that covers
+ * write-side tools (Write, Edit, MultiEdit) in addition to canopy reads.
+ * Each entry declares either a structured `pathField` or a shell-arg
+ * extraction with a `readCommands` allowlist (Codex's `sed -n '1,5p' x.ts`).
+ *
+ * Returns null when the agent has no manifest entry for the tool, the
+ * input shape doesn't match, or the path field is missing. Per-event cost
+ * is one memoized manifest lookup plus a small shell-quote parse.
+ */
+function extractToolFilePath(
+  agent: string,
+  toolName: string,
+  toolInput: unknown,
+): string | null {
+  const manifest = getManifestByName(agent);
+  if (!manifest) return null;
+  const resolved = extractAnyPath(manifest, toolName, toolInput);
+  return resolved ? resolved.filePath : null;
 }
 
 function relativizeToolPath(filePath: string, projectRoot: string): string {
@@ -137,6 +148,7 @@ export function handleUserPrompt(
  */
 export function handleToolUse(
   sessionId: string,
+  agent: string,
   toolName: string,
   toolInput: unknown,
   toolOutput: string | undefined,
@@ -144,8 +156,21 @@ export function handleToolUse(
 ): void {
   const now = epochSeconds();
 
-  const filePath = extractToolFilePath(toolInput);
+  const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
+
+  // Canopy linkage: if a PreToolUse injection was recorded for this
+  // (sessionId, file_path), capture the offered token count before INSERT
+  // so it lands in the same row write — no follow-up UPDATE needed.
+  // Try the relativized path first (the form PreToolUse uses for paths
+  // under projectRoot) and fall back to the raw path for absolute reads
+  // that didn't relativize.
+  let injectionTokens: number | null = null;
+  if (filePath) {
+    injectionTokens =
+      consumePendingInjection(sessionId, activityFilePath ?? filePath)
+      ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
+  }
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,
@@ -155,26 +180,8 @@ export function handleToolUse(
     file_path: activityFilePath,
     timestamp: now,
     created_at: now,
+    canopy_injection_tokens: injectionTokens,
   });
-
-  // Canopy linkage: if a PreToolUse injection was recorded for this
-  // (sessionId, file_path), stamp the offered token count onto the new
-  // activity row. NULL otherwise; aggregation treats that as no injection.
-  if (filePath) {
-    const injectionTokens =
-      consumePendingInjection(sessionId, activityFilePath ?? filePath)
-      ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
-    if (injectionTokens !== null) {
-      try {
-        getDatabase()
-          .prepare('UPDATE activities SET canopy_injection_tokens = ? WHERE id = ?')
-          .run(injectionTokens, activity.id);
-      } catch {
-        // Non-fatal: column missing on a downgraded schema or row vanished.
-        // Aggregation falls back to NULL.
-      }
-    }
-  }
 
   // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
@@ -206,13 +213,14 @@ export function handleStopBatches(
  */
 export function handleToolFailure(
   sessionId: string,
+  agent: string,
   toolName: string,
   toolInput: unknown,
   error: string | undefined,
   isInterrupt: boolean | undefined,
 ): void {
   const now = epochSeconds();
-  const filePath = extractToolFilePath(toolInput);
+  const filePath = extractToolFilePath(agent, toolName, toolInput);
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,
