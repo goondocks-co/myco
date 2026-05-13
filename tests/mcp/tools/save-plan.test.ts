@@ -191,6 +191,29 @@ describe('myco_plans op: save (in-process)', () => {
     ]);
   });
 
+  it('normalizes the source_path against the caller cwd so worktrees produce a portable logical_key', async () => {
+    seedSession('sess-worktree', 'proj_cccccccccccccccccccccccccccccccc');
+    const worktreeRoot = '/workspace/worktrees/feature-x';
+    const context = resolveLegacyRequestContext(vaultDir, {
+      projectRoot: '/workspace/project-c',
+      callerRoot: worktreeRoot,
+      projectId: 'proj_cccccccccccccccccccccccccccccccc',
+      groveId: 'grove-c',
+      machineId: 'machine-c',
+      source: 'explicit',
+    });
+
+    const result = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-worktree',
+      content: '# Worktree Plan',
+      source_path: `${worktreeRoot}/docs/plans/sprint.md`,
+    }, mockClient(), context) as PlanSaveSuccess;
+
+    expect(result.logical_key).toBe('path:docs/plans/sprint.md');
+    expect(result.source_path).toBe('docs/plans/sprint.md');
+  });
+
   it('rejects op:save when both source_path and plan_key are passed', async () => {
     seedSession('sess-1');
 
