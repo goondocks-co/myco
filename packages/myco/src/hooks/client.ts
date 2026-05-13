@@ -1,7 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
+import {
+  DAEMON_CLIENT_TIMEOUT_MS,
+  DAEMON_HEALTH_CHECK_TIMEOUT_MS,
+  DAEMON_HEALTH_RETRY_DELAYS,
+  DAEMON_RESTART_HEALTH_DEADLINE_MS,
+  DAEMON_RESTART_POLL_INTERVAL_MS,
+  DAEMON_SPAWN_COALESCE_MS,
+  DAEMON_STALE_GRACE_PERIOD_MS,
+  DAEMON_STUCK_DETECTION_MS,
+} from '../constants.js';
+import { findPidsListeningOn, isProcessAlive } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
 import {
   REQUEST_CONTEXT_AUTH_ENV,
@@ -78,6 +88,34 @@ interface DaemonClientOptions {
 
 interface HookRequestContextInput {
   sessionId?: string | null;
+}
+
+/**
+ * Pluggable surface for {@link DaemonClient.restart}'s stuck-shutdown
+ * recovery loop. All fields default to the production implementations;
+ * tests inject fakes to drive the three observed states (healthy quickly,
+ * wedged listener, dead PID waiting for supervisor) deterministically.
+ */
+export interface RestartDeps {
+  isProcessAlive?: (pid: number) => boolean;
+  /** Returns true when `pid` (the prior daemon) is the listener bound to
+   *  `port`. Pass-through to lsof / ss / netstat in production. */
+  isPortBound?: (port: number, pid: number) => boolean;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  stuckDetectionMs?: number;
+  deadlineMs?: number;
+  pollIntervalMs?: number;
+}
+
+function defaultIsPortBound(port: number, pid: number): boolean {
+  try {
+    const owners = findPidsListeningOn([port]);
+    return owners.some((owner) => owner.pid === pid && owner.port === port);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -325,10 +363,71 @@ export class DaemonClient {
     return { ...this.defaultHeaders, ...(headers ?? {}) };
   }
 
-  async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
-    this.killDaemon(this.readDaemonJson());
-    await new Promise((r) => setTimeout(r, 200));
-    return this.ensureRunning(opts);
+  /**
+   * Bounce the daemon and wait for the new instance to become healthy.
+   *
+   * Stuck-shutdown recovery: when the SIGTERM-driven restart wedges (the old
+   * daemon's TCP listener stays bound but /health stops responding — observed
+   * during a deep deadlock or a shutdown handler hang), the CLI was previously
+   * forced to manually `kill -9` the PID. This loop now detects that signature
+   * — prev PID still alive AND port still bound AND /health silent for
+   * `DAEMON_STUCK_DETECTION_MS` — and escalates to SIGKILL once, then lets
+   * launchd / systemd KeepAlive respawn the daemon. If /health is already
+   * silent because the PID is already dead, no escalation fires — we just keep
+   * polling for the supervisor to respawn.
+   *
+   * `deps` is exposed for unit tests; production callers use the defaults.
+   */
+  async restart(
+    _opts?: { checkStale?: boolean },
+    deps?: RestartDeps,
+  ): Promise<boolean> {
+    const d: Required<RestartDeps> = {
+      isProcessAlive: deps?.isProcessAlive ?? isProcessAlive,
+      isPortBound: deps?.isPortBound ?? defaultIsPortBound,
+      kill: deps?.kill ?? ((pid, sig) => process.kill(pid, sig)),
+      now: deps?.now ?? (() => Date.now()),
+      sleep: deps?.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      stuckDetectionMs: deps?.stuckDetectionMs ?? DAEMON_STUCK_DETECTION_MS,
+      deadlineMs: deps?.deadlineMs ?? DAEMON_RESTART_HEALTH_DEADLINE_MS,
+      pollIntervalMs: deps?.pollIntervalMs ?? DAEMON_RESTART_POLL_INTERVAL_MS,
+    };
+
+    const prevInfo = this.readDaemonJson();
+    const prevPid = prevInfo?.pid;
+    const prevPort = prevInfo?.port;
+
+    // Initiate the bounce. killDaemon issues SIGTERM and clears daemon.json;
+    // spawnDaemon (or the service supervisor's KeepAlive) brings a fresh
+    // daemon up.
+    this.killDaemon(prevInfo);
+    // Kick the spawn / supervisor start without blocking on retry delays —
+    // the unified poll loop below is the single source of truth for the
+    // deadline and stuck-detection behavior.
+    void this.spawnDaemon();
+
+    const startedAt = d.now();
+    let stuckEscalated = false;
+    while (d.now() - startedAt < d.deadlineMs) {
+      if (await this.isHealthy()) return true;
+
+      if (
+        !stuckEscalated &&
+        prevPid !== undefined &&
+        prevPort !== undefined &&
+        d.now() - startedAt >= d.stuckDetectionMs &&
+        d.isProcessAlive(prevPid) &&
+        d.isPortBound(prevPort, prevPid)
+      ) {
+        try { d.kill(prevPid, 'SIGKILL'); } catch { /* already dead */ }
+        stuckEscalated = true;
+        // Loop continues; the supervisor's KeepAlive should respawn shortly.
+      }
+
+      await d.sleep(d.pollIntervalMs);
+    }
+
+    return this.isHealthy();
   }
 
   async spawnDaemon(): Promise<void> {
