@@ -16,11 +16,11 @@ export type DigestRevisionRow = DigestExtractRevisionRow;
 
 /* ---------- Constants ---------- */
 
-/** Poll interval for agent run list (matches POLL_INTERVALS.STATS). */
-const RUNS_POLL_INTERVAL = POLL_INTERVALS.STATS;
+/** Poll interval for agent run list. */
+const RUNS_POLL_INTERVAL = POLL_INTERVALS.RUNS_ACTIVE;
 
 /** Poll interval for a single run detail (faster — watching active run). */
-const RUN_DETAIL_POLL_INTERVAL = POLL_INTERVALS.HEALTH;
+const RUN_DETAIL_POLL_INTERVAL = POLL_INTERVALS.RUN_DETAIL;
 
 /** Poll interval for run reports (moderate — updates during execution). */
 const REPORTS_POLL_INTERVAL = POLL_INTERVALS.STATS;

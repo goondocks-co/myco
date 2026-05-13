@@ -41,6 +41,7 @@ import { useUnreadCount } from '../hooks/use-notifications';
 import { cn } from '../lib/cn';
 import { monogramFor } from '../lib/selection';
 import { AppearanceSection } from './AppearanceSection';
+import { Topbar } from './Topbar';
 
 /* ---------- Constants ---------- */
 
@@ -627,6 +628,13 @@ export default function Layout() {
         )}
         aria-label="Page content"
       >
+        {!drawer.isMobile && (
+          <Topbar
+            onOpenSearch={openSearch}
+            onOpenNotifications={openNotifPanel}
+            unreadCount={unreadCount}
+          />
+        )}
         <Outlet />
       </main>
     </div>

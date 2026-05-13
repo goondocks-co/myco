@@ -4,8 +4,8 @@ import { Pagination } from '../components/ui/pagination';
 import { LogToolbar, type LogMode } from '../components/logs/LogToolbar';
 import { LogTable } from '../components/logs/LogTable';
 import { LogDetail } from '../components/logs/LogDetail';
+import { SlideoutDetailPanel } from '../components/ui/slideout-detail-panel';
 import { useLogStream, useLogSearch, useLogDetail, type LogEntry } from '../hooks/use-logs';
-import { cn } from '../lib/cn';
 import { DEFAULT_PAGE_SIZE, LEVEL_ORDER, type LogLevel } from '../lib/constants';
 
 /** Map time range presets to ISO from-timestamp. */
@@ -159,10 +159,9 @@ export default function Logs() {
         />
       </div>
 
-      {/* Main content: table + optional detail panel */}
+      {/* Main content: table */}
       <div className="flex flex-1 overflow-hidden mx-6 mb-6 rounded-lg border border-outline-variant/10">
-        {/* Log table */}
-        <div className={cn('flex flex-col', detailOpen ? 'w-3/5' : 'w-full')}>
+        <div className="flex flex-col w-full">
           <LogTable
             entries={displayEntries}
             selectedId={selectedEntry?.id ?? null}
@@ -183,18 +182,21 @@ export default function Logs() {
             </div>
           )}
         </div>
-
-        {/* Detail slide-out */}
-        {detailOpen && selectedEntry && (
-          <div className="w-2/5 border-l border-outline-variant/10">
-            <LogDetail
-              entry={selectedEntry}
-              resolved={detailData?.resolved}
-              onClose={() => setSelectedEntry(null)}
-            />
-          </div>
-        )}
       </div>
+
+      <SlideoutDetailPanel
+        open={detailOpen && !!selectedEntry}
+        onClose={() => setSelectedEntry(null)}
+        ariaLabel="Log entry detail"
+      >
+        {selectedEntry && (
+          <LogDetail
+            entry={selectedEntry}
+            resolved={detailData?.resolved}
+            onClose={() => setSelectedEntry(null)}
+          />
+        )}
+      </SlideoutDetailPanel>
     </div>
   );
 }

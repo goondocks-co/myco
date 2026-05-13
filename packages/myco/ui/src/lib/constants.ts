@@ -1,9 +1,19 @@
 export const POLL_INTERVALS = {
+  // Generic buckets — used by consumers that don't yet adopt per-surface keys.
   HEALTH: 5_000,
   STATS: 10_000,
   LOGS: 3_000,
   PROGRESS: 1_000,
   UPDATE: 300_000,
+
+  // Per-surface intervals — used by RefreshIndicator and the redesigned surfaces.
+  RUNS_ACTIVE: 3_000,
+  RUN_DETAIL: 5_000,
+  SESSIONS: 8_000,
+  SESSION_DETAIL: 8_000,
+  SPORES: 30_000,
+  CANOPY_ENTRIES: 60_000,
+  GIT_IDENTITY: 5_000,
 } as const;
 
 export const STALE_TIME = 10_000;
