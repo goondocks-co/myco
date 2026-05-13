@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveCanopyReadTool } from '@myco/symbionts/canopy-read-tools.js';
+import { resolveCanopyReadTool, allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 
 const claudeManifest = {
@@ -152,6 +152,19 @@ describe('resolveCanopyReadTool — shell-arg variant', () => {
       .toEqual({ filePath: 'src/x.ts' });
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'tail -n 5 src/x.ts' }))
       .toEqual({ filePath: 'src/x.ts' });
+  });
+});
+
+describe('allCanopyReadToolNames', () => {
+  it('returns the union of tool names across all installed manifests', () => {
+    const names = allCanopyReadToolNames();
+    // Claude declares Read; Codex declares Bash — both must be in the union.
+    expect(names).toContain('Read');
+    expect(names).toContain('Bash');
+  });
+  it('returns distinct tool names (deduped across manifests)', () => {
+    const names = allCanopyReadToolNames();
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 

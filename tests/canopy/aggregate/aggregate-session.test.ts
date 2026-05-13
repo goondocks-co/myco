@@ -287,6 +287,47 @@ describe('aggregateSessionCanopy', () => {
     expect(agg.tokens_saved).toBe(920);
   });
 
+  it('counts Codex Bash activities (manifest-driven tool-name allowlist)', () => {
+    // Codex routes file reads through Bash with the path embedded in the
+    // command string. PostToolUse stamps canopy_injection_tokens on those
+    // rows. The aggregator must include them via the manifest-driven
+    // tool-name filter, not the legacy `tool_name = 'Read'` hardcode.
+    const sessionId = 'sess-codex-bash';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'src/x.ts', token_estimate: 1500 }]);
+    seedActivities(sessionId, [
+      { tool_name: 'Bash', file_path: 'src/x.ts', injection_tokens: 70, ts: 1 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.injections_offered).toBe(1);
+    expect(agg.injection_total_tokens).toBe(70);
+    expect(agg.skips_after_injection).toBe(1);
+    expect(agg.reads_after_injection).toBe(0);
+    expect(agg.tokens_saved).toBe(1430); // 1500 - 70
+  });
+
+  it('counts mixed Claude Read and Codex Bash activities in one session', () => {
+    const sessionId = 'sess-mixed-agents';
+    seedSession(sessionId);
+    seedCanopyEntries([
+      { path: 'a.ts', token_estimate: 1000 },
+      { path: 'b.ts', token_estimate: 2000 },
+    ]);
+    seedActivities(sessionId, [
+      { tool_name: 'Read', file_path: 'a.ts', injection_tokens: 80, ts: 1 },
+      { tool_name: 'Bash', file_path: 'b.ts', injection_tokens: 90, ts: 2 },
+    ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.injections_offered).toBe(2);
+    expect(agg.injection_total_tokens).toBe(170);
+    expect(agg.skips_after_injection).toBe(2);
+    expect(agg.tokens_saved).toBe(2830); // (1000-80) + (2000-90)
+  });
+
   it('canonicalizes absolute Read paths before joining canopy_entries', () => {
     const sessionId = 'sess-absolute-path';
     seedSession(sessionId);

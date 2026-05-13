@@ -1,8 +1,28 @@
 import { parse as shellParse } from 'shell-quote';
+import { loadManifests } from './detect.js';
 import type { SymbiontManifest, SymbiontCanopyReadTool } from './manifest-schema.js';
 
 export interface ResolvedRead {
   filePath: string;
+}
+
+/**
+ * Union of canopy read-tool names declared across all installed manifests.
+ * Used by SQL aggregators that need to know which activity rows are
+ * agent-driven file reads (`Read` for Claude, `Bash` for Codex shell-arg,
+ * etc.) without hardcoding agent-specific values.
+ *
+ * `loadManifests()` is memoized so this is cheap; the returned list is small
+ * (~2–3 entries for the foreseeable future).
+ */
+export function allCanopyReadToolNames(): string[] {
+  const names = new Set<string>();
+  for (const m of loadManifests()) {
+    const tools = m.capabilities?.canopyReadTools;
+    if (!tools) continue;
+    for (const t of tools) names.add(t.tool);
+  }
+  return Array.from(names);
 }
 
 /**
