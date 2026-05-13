@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson } from '../lib/api';
+import { POLL_INTERVALS } from '../lib/constants';
 import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
@@ -249,6 +250,7 @@ export function useCanopyEntries(args: CanopyEntriesQuery) {
     queryFn: ({ signal }) =>
       fetchJson<CanopyEntriesListResponse>(`/canopy/entries${buildEntriesQueryString(args)}`, { signal }),
     staleTime: ENTRIES_STALE_TIME,
+    refetchInterval: POLL_INTERVALS.CANOPY_ENTRIES,
   });
 }
 

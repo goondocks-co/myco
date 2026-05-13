@@ -31,7 +31,7 @@ describe('useSessionPlans', () => {
       queryKey: ['session-plans', 'sess-1'],
       enabled: true,
       pollCategory: 'standard',
-      refetchInterval: POLL_INTERVALS.STATS,
+      refetchInterval: POLL_INTERVALS.SESSION_DETAIL,
     }));
   });
 });
