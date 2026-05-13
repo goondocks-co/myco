@@ -13,10 +13,20 @@
  * misbehaving SDK aggregator) shows up in the same log stream with the
  * same kind. Operators grep for `daemon.lag` and see every stall.
  *
- * Implementation note: chained `setTimeout` is preferred over
+ * Implementation note 1: chained `setTimeout` is preferred over
  * `setInterval`. setInterval's callback fires "as soon as possible" after
  * the interval, which masks lag; chained setTimeout measures the gap
  * directly.
+ *
+ * Implementation note 2: measurements use `performance.now()` rather than
+ * `Date.now()`. On macOS (laptop lid close / display sleep) and other
+ * platforms with system suspend, `Date.now()` keeps advancing during
+ * sleep while `setTimeout` (driven by libuv's monotonic clock) pauses.
+ * That mismatch would surface as a multi-minute fake "lag" reading the
+ * first time the laptop woke up. `performance.now()` is monotonic and
+ * pauses with the timer, so sleep events are invisible to the probe and
+ * only real loop pinning is reported. Live dogfood proof: probe reported
+ * 275 sec and 329 sec "lags" until this clock fix landed.
  */
 
 import type { Logger } from './logger.js';
@@ -30,7 +40,10 @@ export interface EventLoopLagProbeOptions {
    *  records every sample internally; only those exceeding this threshold
    *  hit the log. */
   warnThresholdMs?: number;
-  /** Optional clock override for tests. */
+  /** Optional clock override for tests. Production uses
+   *  `performance.now()` — monotonic and pauses during system sleep,
+   *  unlike `Date.now()` which would mis-classify multi-minute sleep
+   *  gaps as event-loop pins. */
   now?: () => number;
 }
 
@@ -53,7 +66,7 @@ export class EventLoopLagProbe {
   constructor(private readonly logger: Logger, options: EventLoopLagProbeOptions = {}) {
     this.sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
     this.warnThresholdMs = options.warnThresholdMs ?? DEFAULT_WARN_THRESHOLD_MS;
-    this.now = options.now ?? Date.now;
+    this.now = options.now ?? (() => performance.now());
   }
 
   start(): void {
