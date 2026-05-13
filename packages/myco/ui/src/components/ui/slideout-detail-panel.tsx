@@ -10,6 +10,12 @@ export interface SlideoutDetailPanelProps {
   children: ReactNode;
   ariaLabel?: string;
   className?: string;
+  /**
+   * When set, stamps `data-testid="${testIdRoot}-panel"` on the outer Surface
+   * and `data-testid="${testIdRoot}-close"` on the close button. Useful when a
+   * consumer needs scoped chrome-level testids beyond the inner content.
+   */
+  testIdRoot?: string;
 }
 
 export function SlideoutDetailPanel({
@@ -19,6 +25,7 @@ export function SlideoutDetailPanel({
   children,
   ariaLabel = 'Detail panel',
   className,
+  testIdRoot,
 }: SlideoutDetailPanelProps) {
   useEffect(() => {
     if (!open) return;
@@ -45,12 +52,14 @@ export function SlideoutDetailPanel({
         className,
       )}
       style={{ width: widthPx }}
+      data-testid={testIdRoot ? `${testIdRoot}-panel` : undefined}
     >
       <div className="flex justify-end px-3 pt-3">
         <button
           type="button"
           onClick={onClose}
           aria-label="Close detail"
+          data-testid={testIdRoot ? `${testIdRoot}-close` : undefined}
           className="shrink-0 rounded-md p-1 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors"
         >
           <X className="h-4 w-4" />
