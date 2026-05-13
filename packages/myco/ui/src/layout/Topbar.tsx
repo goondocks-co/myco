@@ -20,8 +20,21 @@ const ROUTE_LABELS: Record<string, string> = {
 };
 
 function breadcrumbFor(pathname: string): string[] {
-  if (pathname === '/') return ['Dashboard'];
-  const segments = pathname.split('/').filter(Boolean);
+  // Strip grove/project scope prefix so the breadcrumb shows the page,
+  // not "g". Layout wraps project-scoped routes as /g/<grove>/p/<project>/<page>
+  // and grove-scoped routes as /g/<grove>/<page>.
+  let effective = pathname;
+  const projectScoped = pathname.match(/^\/g\/[^/]+\/p\/[^/]+(\/.*)?$/);
+  if (projectScoped) {
+    effective = projectScoped[1] || '/';
+  } else {
+    const groveScoped = pathname.match(/^\/g\/[^/]+(\/.*)?$/);
+    if (groveScoped) {
+      effective = groveScoped[1] || '/';
+    }
+  }
+  if (effective === '/') return ['Dashboard'];
+  const segments = effective.split('/').filter(Boolean);
   const top = `/${segments[0]}`;
   const topLabel = ROUTE_LABELS[top] ?? segments[0];
   return [topLabel];

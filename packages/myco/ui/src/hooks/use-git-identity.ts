@@ -15,7 +15,7 @@ export interface GitIdentity {
 export function useGitIdentity() {
   return usePowerQuery<GitIdentity>({
     queryKey: ['git-identity'],
-    queryFn: ({ signal }) => fetchJson<GitIdentity>('/api/git/status', { signal }),
+    queryFn: ({ signal }) => fetchJson<GitIdentity>('/git/status', { signal }),
     refetchInterval: POLL_INTERVALS.GIT_IDENTITY,
     pollCategory: 'standard',
   });
