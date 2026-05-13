@@ -227,6 +227,7 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   function groveSyncContext(groveId: string, databasePath: string, projectVaultDir: string): MycoRequestContext {
     return {
       projectRoot: projectVaultDir,
+      callerRoot: null,
       // Cast — never read by team-sync code paths. Documented above.
       projectId: '' as MycoRequestContext['projectId'],
       groveId,
