@@ -4,6 +4,16 @@ function shellEscape(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * systemd's default `LimitNOFILE` for user services is 1024 on most
+ * distros — fine for a typical CLI tool, but the daemon serves HTTP +
+ * N SQLite handles + log streams, and a burst of concurrent connections
+ * can exhaust the cap. Raise it explicitly so the unit file is the
+ * source of truth instead of inheriting whatever the distro chose. See
+ * the matching `SoftResourceLimits.NumberOfFiles` in launchd-plist.ts.
+ */
+const SYSTEMD_LIMIT_NOFILE = 65_535;
+
 export function renderSystemdUnit(spec: ServiceSpec): string {
   const execLine = [spec.executable, ...spec.args].join(' ');
   const envLines = Object.entries(spec.env)
@@ -26,6 +36,7 @@ StandardOutput=append:${spec.stdoutPath}
 StandardError=append:${spec.stderrPath}
 Restart=${restart}
 RestartSec=${spec.throttleSeconds}
+LimitNOFILE=${SYSTEMD_LIMIT_NOFILE}
 
 [Install]
 ${wantedBy ? `WantedBy=${wantedBy}` : ''}

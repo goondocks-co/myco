@@ -61,4 +61,20 @@ describe('renderLaunchdPlist', () => {
     const plist = renderLaunchdPlist({ ...baseSpec, keepAlive: false });
     expect(plist).not.toContain('<key>KeepAlive</key>');
   });
+
+  test('raises NumberOfFiles past the launchd-session default of 256', () => {
+    // launchd inherits the user session's `maxfiles` ceiling, which on
+    // macOS is typically 256. A burst of concurrent HTTP connections
+    // hits that ceiling and starts returning EMFILE on accept(). The
+    // plist must override it on both Soft and Hard limits so the
+    // daemon's fd table actually opens up.
+    const plist = renderLaunchdPlist(baseSpec);
+    expect(plist).toContain('<key>SoftResourceLimits</key>');
+    expect(plist).toContain('<key>HardResourceLimits</key>');
+    expect(plist).toContain('<key>NumberOfFiles</key>');
+    // The exact value isn't load-bearing, but it must be well above 256.
+    const match = plist.match(/<key>NumberOfFiles<\/key>\s*<integer>(\d+)<\/integer>/);
+    expect(match).not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThan(10_000);
+  });
 });

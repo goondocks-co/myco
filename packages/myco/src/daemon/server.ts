@@ -28,6 +28,28 @@ const DEFAULT_STATUS = 200;
  *  keep-alive doesn't make restart look broken. */
 const SERVER_STOP_FORCE_CLOSE_GRACE_MS = 2_000;
 
+/**
+ * Protective limits applied to the daemon's HTTP server. Node's defaults
+ * are tuned for public-internet clients (long keep-alive, slow-loris
+ * tolerance, no cap on per-socket request count). On loopback we can be
+ * much tighter — every legitimate client is on the same machine. Without
+ * these, a misbehaving client (or even a stress test from a developer
+ * shell) can pile up sockets in CLOSE_WAIT until the daemon's fd table
+ * is exhausted and `accept()` starts returning EMFILE.
+ */
+const HTTP_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const HTTP_HEADERS_TIMEOUT_MS = 10_000;
+/** Cap how many requests reuse a single keep-alive socket before we
+ *  force a close. Without this, a single client can hold one fd open
+ *  forever no matter how many requests it sends. */
+const HTTP_MAX_REQUESTS_PER_SOCKET = 1_000;
+/** Explicit TCP listen backlog. Node defaults to 511, which the macOS
+ *  kernel further caps at `kern.ipc.somaxconn` (often 128). 4096 keeps
+ *  the kernel's SYN queue deep enough that a burst of concurrent
+ *  loopback connections doesn't get rejected during the brief window
+ *  the daemon takes to call `accept()` on each. */
+const HTTP_LISTEN_BACKLOG = 4_096;
+
 export interface DaemonServerConfig {
   vaultDir: string;
   logger: DaemonLogger;
@@ -115,7 +137,13 @@ export class DaemonServer {
       });
       this.server.on('error', reject);
 
-      this.server.listen(port, '127.0.0.1', () => {
+      // Tighten Node's default HTTP server limits — see the helper
+      // docstring for the load-bearing reasoning. Defaults let a single
+      // misbehaving client camp on sockets long enough to exhaust the
+      // daemon's fd table.
+      applyDaemonHttpServerLimits(this.server);
+
+      this.server.listen(port, '127.0.0.1', HTTP_LISTEN_BACKLOG, () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
         this.writeDaemonJson();
@@ -646,6 +674,37 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
     origin === `http://localhost:${portStr}`
   );
 }
+
+/**
+ * Apply the daemon's protective HTTP server limits.
+ *
+ * Node's HTTP server defaults are tuned for serving public-internet
+ * clients — long keep-alive, generous slow-loris tolerance, no cap on
+ * how many requests reuse a single socket. The daemon listens only on
+ * loopback, so every legitimate client is on the same machine and we
+ * can be much tighter.
+ *
+ * The motivating incident: 250 concurrent `curl` probes against
+ * `/health` filled the kernel's accept queue and the daemon's fd table
+ * (launchd capped at 256 NOFILE) faster than the server could drain
+ * them. Once the fd table was full, `accept()` returned EMFILE and the
+ * SYN queue overflowed — new clients couldn't even complete the TCP
+ * handshake. With these limits in place, idle keep-alives are reaped
+ * every 5s, slow-header attackers drop after 10s, and one client can't
+ * monopolize a socket past `HTTP_MAX_REQUESTS_PER_SOCKET` reuses.
+ *
+ * Exported so the regression test can verify the limits are applied
+ * without standing up a full `DaemonServer`.
+ */
+export function applyDaemonHttpServerLimits(server: http.Server): void {
+  server.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = HTTP_HEADERS_TIMEOUT_MS;
+  server.maxRequestsPerSocket = HTTP_MAX_REQUESTS_PER_SOCKET;
+}
+
+/** TCP listen backlog used by the daemon. Exported so service installers
+ *  / consumers that bind their own listener can match it. */
+export const DAEMON_HTTP_LISTEN_BACKLOG = HTTP_LISTEN_BACKLOG;
 
 /**
  * Force a Node HTTP server through a fast, deterministic shutdown.
