@@ -133,10 +133,6 @@ export async function handleRestart(
   }, sigtermDelay);
 
   return {
-    body: {
-      status: 'restarting',
-      serviceManaged: serviceManagedLabel !== null,
-      ...(serviceManagedLabel ? { serviceLabel: serviceManagedLabel } : {}),
-    },
+    body: { status: 'restarting' },
   };
 }

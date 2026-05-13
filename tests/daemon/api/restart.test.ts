@@ -154,20 +154,20 @@ describe('handleRestart', () => {
     const mgr = new FakeServiceManager();
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ status: 'restarting', serviceManaged: false });
+    expect(res.body).toMatchObject({ status: 'restarting' });
     expect(spawnCalls.length).toBe(1);
     const shellCmd = (spawnCalls[0].args[1] ?? '');
     expect(shellCmd).toContain('daemon');
     expect(shellCmd).not.toContain('service restart');
   });
 
-  test('service-managed prod: routes to `service restart` (no variant flag) and reports serviceManaged=true', async () => {
+  test('service-managed prod: routes to `service restart` (no variant flag)', async () => {
     const mgr = new FakeServiceManager();
     mgr.installed.add('co.goondocks.myco');
     mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ status: 'restarting', serviceManaged: true, serviceLabel: 'co.goondocks.myco' });
+    expect(res.body).toMatchObject({ status: 'restarting' });
     const shellCmd = (spawnCalls[0].args[1] ?? '');
     expect(shellCmd).toContain('service restart');
     expect(shellCmd).not.toContain('--dev');
@@ -179,7 +179,7 @@ describe('handleRestart', () => {
     mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ status: 'restarting', serviceManaged: true, serviceLabel: 'co.goondocks.myco-dev' });
+    expect(res.body).toMatchObject({ status: 'restarting' });
     const shellCmd = (spawnCalls[0].args[1] ?? '');
     expect(shellCmd).toContain('service restart --dev');
   });
@@ -190,7 +190,7 @@ describe('handleRestart', () => {
     mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/x' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ serviceManaged: false });
+    expect(res.body).toMatchObject({ status: 'restarting' });
     const shellCmd = (spawnCalls[0].args[1] ?? '');
     expect(shellCmd).not.toContain('service restart');
   });
@@ -199,7 +199,9 @@ describe('handleRestart', () => {
     const mgr = new FakeServiceManager({ supported: false });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
-    expect(res.body).toMatchObject({ serviceManaged: false });
+    expect(res.body).toMatchObject({ status: 'restarting' });
+    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    expect(shellCmd).not.toContain('service restart');
   });
 
   test('active operations + no force: returns 409 and does NOT spawn', async () => {
