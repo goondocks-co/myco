@@ -20,7 +20,11 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { resolveVaultDir } from '../vault/resolve.js';
 import { DaemonClient } from '../hooks/client.js';
-import { requestContextFromEnvironment, requestContextHeaders } from '../tools/request-context.js';
+import {
+  REQUEST_CONTEXT_AUTH_HEADER,
+  requestContextFromEnvironment,
+  requestContextHeaders,
+} from '../tools/request-context.js';
 
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
@@ -40,13 +44,17 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // G4: context-switching headers (project/grove ids) must be paired with
+  // the daemon-issued bearer token. The host (e.g. claude-code) spawns this
+  // bridge with a clean env, so MYCO_DAEMON_AUTH is unset — recover the
+  // token from daemon.json via `info.auth_token`.
+  const headers: Record<string, string> = {
+    ...requestContextHeaders(requestContextFromEnvironment(process.env, vaultDir)),
+    ...(info.auth_token ? { [REQUEST_CONTEXT_AUTH_HEADER]: info.auth_token } : {}),
+  };
   const upstream = new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${info.port}/mcp`),
-    {
-      requestInit: {
-        headers: requestContextHeaders(requestContextFromEnvironment(process.env, vaultDir)),
-      },
-    },
+    { requestInit: { headers } },
   );
   const downstream = new StdioServerTransport();
 

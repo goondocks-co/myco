@@ -35,6 +35,15 @@ import type { ServiceManager } from '../service/types.js';
 export interface DaemonInfo {
   pid: number;
   port: number;
+  /**
+   * Daemon-issued bearer token (G4). Present when the daemon writes
+   * `daemon.json` with an `auth_token`; absent for pre-G4 state files.
+   * Out-of-band callers (e.g. the stdio MCP bridge) that build their
+   * own HTTP transport must attach this as `x-myco-auth` whenever
+   * they send context-switching headers, or the daemon's gate rejects
+   * the request with `UnauthorizedRequestContextError`.
+   */
+  auth_token?: string;
 }
 
 /**
