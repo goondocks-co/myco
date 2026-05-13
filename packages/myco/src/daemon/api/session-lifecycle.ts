@@ -18,6 +18,7 @@ import type { DaemonServer } from '../server.js';
 import type { PowerManager } from '../power.js';
 import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { cleanStaleBuffers } from '@myco/capture/buffer.js';
 import { upsertSession, closeSession, updateSession } from '@myco/db/queries/sessions.js';
 import { notify } from '@myco/notifications/notify.js';
@@ -97,6 +98,16 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     liveConfig,
     vaultDir,
   } = deps;
+
+  function configForRequest(req: RouteRequest): MycoConfig {
+    const ctx = req.requestContext;
+    if (!ctx?.projectVaultDir || !ctx.groveId) return liveConfig.current;
+    try {
+      return loadMergedConfig(ctx.projectVaultDir, { groveId: ctx.groveId });
+    } catch {
+      return liveConfig.current;
+    }
+  }
   // Read through `deps` on every register call so the holder set after
   // registerPowerJobs becomes visible to subsequent SessionStart events.
   const canopyRegistryHolder = (): CanopyJobsRegistry | undefined => deps.canopyRegistry;
@@ -160,7 +171,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
         machineId: requestMachineId,
         sessionId: session_id,
         capturePoint: 'session_start',
-        productionRef: primaryProductionRef(liveConfig.current),
+        productionRef: primaryProductionRef(configForRequest(req)),
         logger,
       },
       (provenance) => {
@@ -225,7 +236,7 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
       machineId: req.requestContext?.machineId ?? machineId,
       sessionId: session_id,
       capturePoint: 'session_end',
-      productionRef: primaryProductionRef(liveConfig.current),
+      productionRef: primaryProductionRef(configForRequest(req)),
       logger,
     });
     registry.unregister(session_id);

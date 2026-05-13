@@ -28,6 +28,9 @@ import {
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
+import { detectServiceManagedLabel } from './restart.js';
+import { getServiceManager } from '../../service/manager.js';
+import type { ServiceManager } from '../../service/types.js';
 import semver from 'semver';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,6 +52,11 @@ export interface UpdateDeps {
   scheduleShutdown: () => void;
   /** npm global prefix, resolved once at daemon startup. Null if resolution failed. */
   globalPrefix: string | null;
+  /** Optional override for tests; defaults to the platform service manager.
+   *  Used to detect whether this process is the service-managed daemon and
+   *  to derive the restart-shell-command baked into the detached update /
+   *  restart script. */
+  serviceManager?: ServiceManager;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +78,25 @@ const ChannelBodySchema = z.object({
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
   const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
+  const serviceManager = deps.serviceManager ?? getServiceManager();
+
+  /**
+   * Returns the literal `launchctl kickstart -k …` / `systemctl --user restart …`
+   * command to bake into the detached update / restart script — or null when
+   * this process is NOT the service-managed daemon (manual dev runs, test
+   * fixtures, unsupported platforms). Mirrors the detection used by
+   * handleRestart so /api/update/* and /api/restart agree on what the daemon's
+   * "supervisor" actually is. */
+  async function resolveServiceRestartCommand(): Promise<string | undefined> {
+    const label = await detectServiceManagedLabel(serviceManager);
+    if (!label) return undefined;
+    try {
+      return serviceManager.restartShellCommand(label);
+    } catch {
+      // Unsupported manager — fall back to spawning a daemon child.
+      return undefined;
+    }
+  }
 
   /**
    * Per-request snapshot of everything derived from vault state on disk.
@@ -141,11 +168,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       ) {
         restartInitiated = true;
         const runLocalUpdate = !isStampMatching(installedVersion);
+        const serviceRestartCommand = await resolveServiceRestartCommand();
         spawnRestartScript({
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
           toVersion: installedVersion,
           mycoBinary: snapshot.mycoBinary,
+          serviceRestartCommand,
         });
         scheduleShutdown();
         return {
@@ -293,6 +322,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
       : installSpecs;
 
+    const serviceRestartCommand = await resolveServiceRestartCommand();
     spawnUpdateScript({
       packageSpecs: globalPackageSpecs,
       localRuntimeSpec,
@@ -300,6 +330,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       projectRoot,
       vaultDir,
       mycoBinary: snapshot.mycoBinary,
+      serviceRestartCommand,
     });
     scheduleShutdown();
 

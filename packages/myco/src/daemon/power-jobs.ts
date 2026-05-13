@@ -3,6 +3,7 @@ import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
 import type { MycoConfig } from '@myco/config/schema.js';
+import { loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
 import { runSessionMaintenance } from './jobs/session-maintenance.js';
 import {
@@ -530,16 +531,17 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     name: POWER_JOB_NAMES.RELEASE_PROVENANCE_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
     fn: async () => {
-      const config = releaseProvenanceConfig(liveConfig.current);
-      if (!config.enabled) return;
-      const intervalMs = config.reconcile_interval_minutes * 60 * 1000;
       const now = Date.now();
       const visited = new Set<string>();
       await forEachRegisteredProject(
         cache,
         logger,
-        ({ projectId, projectRoot, databasePath }: RegisteredProjectScope) => {
-          const key = String(projectId);
+        ({ grove, projectId, projectRoot, projectVaultDir, databasePath }: RegisteredProjectScope) => {
+          const projectConfig = loadMergedConfig(projectVaultDir, { groveId: grove.id, mycoHome });
+          const config = releaseProvenanceConfig(projectConfig);
+          if (!config.enabled) return;
+          const intervalMs = config.reconcile_interval_minutes * 60 * 1000;
+          const key = `${grove.id}:${projectId}`;
           visited.add(key);
           const lastRun = lastReleaseReconcileAt.get(key) ?? 0;
           if (now - lastRun < intervalMs) return;

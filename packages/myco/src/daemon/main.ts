@@ -197,7 +197,7 @@ export {
   handleSubagentStart, handleSubagentStop, handleStopFailure,
   handleTaskCompleted, handleCompact,
 } from './event-handlers.js';
-import { loadSecrets } from '../config/secrets.js';
+import { loadLayeredSecrets } from '../config/secrets.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { MS_PER_DAY } from '../constants.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -411,15 +411,21 @@ export async function main(): Promise<void> {
   const { resolveBootstrapVaultDir } = await import('../vault/bootstrap.js');
   const bootstrapVaultDir = resolveBootstrapVaultDir();
 
-  // Load API keys from secrets.env into process.env before any provider init
-  loadSecrets(bootstrapVaultDir);
-
   // --- Machine identity (resolved early so config load can use the Grove id) ---
   const machineId = getMachineId(bootstrapVaultDir);
   const dataPaths = resolveDaemonDataPaths(bootstrapVaultDir, {
     ...process.env,
     MYCO_MACHINE_ID: machineId,
   });
+
+  // Load file-backed provider secrets before any provider init. Legacy project
+  // `.myco/secrets.env` remains a fallback, while machine secrets are the
+  // forward path for daemon-wide provider credentials. Existing process env
+  // vars still win.
+  loadLayeredSecrets([
+    bootstrapVaultDir,
+    resolveMycoHome(),
+  ]);
 
   // Merged = machine + grove + project + personal. Any gate downstream
   // of this needs to see all four tiers, so the daemon loads the merged
@@ -1301,7 +1307,7 @@ export async function main(): Promise<void> {
   // --- Provider detection & testing ---
   server.registerRoute('GET', '/api/providers', async () => handleGetProviders(logger));
   server.registerRoute('POST', '/api/providers/test', async (req) => handleTestProvider(req));
-  server.registerRoute('GET', '/api/providers/secrets', async () => handleGetProviderSecrets(bootstrapVaultDir));
+  server.registerRoute('GET', '/api/providers/secrets', async (req) => handleGetProviderSecrets(bootstrapVaultDir, req));
   server.registerRoute('PUT', '/api/providers/secrets/:provider', async (req) => handlePutProviderSecret(bootstrapVaultDir, req));
   server.registerRoute('DELETE', '/api/providers/secrets/:provider', async (req) => handleDeleteProviderSecret(bootstrapVaultDir, req));
 

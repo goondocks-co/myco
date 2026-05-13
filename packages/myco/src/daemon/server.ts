@@ -137,17 +137,49 @@ export class DaemonServer {
   }
 
   private registerDefaultRoutes(): void {
-    this.registerRoute('GET', '/health', async () => ({
-      body: {
+    // /health and /api/version are liveness probes. They must answer
+    // within milliseconds regardless of background-job state. Routing
+    // them through the normal router pulls them through CSRF validation,
+    // manifest-driven request-context resolution, GroveRuntimeCache DB
+    // opens, and `withDatabase()` AsyncLocalStorage wrapping — any of
+    // which can stall when a background job (e.g. embedding reconcile
+    // against a wedged Ollama) is holding the event loop on synchronous
+    // bun:sqlite work or DB-open contention.
+    //
+    // Live dogfood reproduction: Ollama wedged → reconcile loop ran
+    // embed() against a hung TCP socket; daemon's TCP listener kept
+    // accepting connections but /health timed out at 3+ seconds with
+    // HTTP 000. The route handlers themselves are trivial (pid/uptime
+    // from memory) — the cost lived entirely in the request pipeline.
+    //
+    // Raw routes bypass that pipeline. They still pass loopback CSRF
+    // validation (so a cross-origin POST can't hit them) but read no
+    // disk, open no DB, and acquire no AsyncLocalStorage scope.
+    const versionHeader = { 'X-Myco-Api-Version': this.version };
+    this.registerRawRoute('/health', async (req, res) => {
+      // GET-only — POST/PUT/DELETE on /health is nonsense.
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify({
         myco: true,
         version: this.version,
         pid: process.pid,
         uptime: process.uptime(),
-      },
-    }));
-    this.registerRoute('GET', '/api/version', async () => ({
-      body: { version: this.version },
-    }));
+      }));
+    });
+    this.registerRawRoute('/api/version', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'Content-Type': 'application/json', ...versionHeader });
+        res.end(JSON.stringify({ error: 'method_not_allowed' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
+      res.end(JSON.stringify({ version: this.version }));
+    });
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

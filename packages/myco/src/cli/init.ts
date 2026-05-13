@@ -11,6 +11,7 @@ import {
 import { detectSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MycoConfigSchema } from '../config/schema.js';
 import { updateConfig, saveConfig } from '../config/loader.js';
+import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
 import { DEFAULT_OLLAMA_EMBEDDING_MODEL } from '../constants.js';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
@@ -111,10 +112,10 @@ export async function run(args: string[]): Promise<void> {
     // Let schema defaults fill the agent section. Scheduled/event toggles
     // default to true, but the agent only runs once the user configures a
     // provider in Settings, so a no-op "enabled" state is safe.
-    const config = MycoConfigSchema.parse({
+    const config = withInferredReleaseProvenanceDefaults(MycoConfigSchema.parse({
       version: 3,
       ...(Object.keys(embeddingFromFlags).length > 0 ? { embedding: embeddingFromFlags } : {}),
-    });
+    }), projectRoot);
 
     saveConfig(vaultDir, config);
     fs.writeFileSync(path.join(vaultDir, '.gitignore'), VAULT_GITIGNORE, 'utf-8');

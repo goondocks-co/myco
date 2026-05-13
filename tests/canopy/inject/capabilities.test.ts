@@ -46,12 +46,13 @@ describe('manifestHasCapability', () => {
 });
 
 describe('symbiontHasCapability', () => {
-  it('claude-code has preToolUseInjection enabled', () => {
+  it('claude-code and codex have preToolUseInjection enabled', () => {
     expect(symbiontHasCapability('claude-code', 'preToolUseInjection')).toBe(true);
+    expect(symbiontHasCapability('codex', 'preToolUseInjection')).toBe(true);
   });
 
-  it('all other symbionts default to false for preToolUseInjection', () => {
-    for (const name of ['cursor', 'codex', 'gemini', 'windsurf', 'vscode-copilot']) {
+  it('symbionts without a PreToolUse hook surface default to false', () => {
+    for (const name of ['cursor', 'gemini', 'windsurf', 'vscode-copilot']) {
       expect(symbiontHasCapability(name, 'preToolUseInjection')).toBe(false);
     }
   });

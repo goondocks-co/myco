@@ -7,9 +7,68 @@ import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
 import { getDatabase, openDatabase } from '@myco/db/client';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+/**
+ * Open a raw TCP socket to 127.0.0.1:port, send `request`, and return
+ * the connected socket without waiting for the response. Used by the
+ * liveness regression test to occupy one server socket with an in-flight
+ * request while another test request lands on a separate socket.
+ */
+function openRawRequest(port: number, request: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.once('error', reject);
+    socket.once('connect', () => {
+      socket.write(request);
+      resolve(socket);
+    });
+  });
+}
+
+/**
+ * Open a raw TCP socket to 127.0.0.1:port, send `request`, read the
+ * complete HTTP/1.1 response with `Connection: close`, and return the
+ * parsed status line + body. Bypasses fetch()'s connection pooling so
+ * the test measures server-side response latency.
+ */
+function rawRequest(port: number, request: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const settle = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      action();
+    };
+    socket.once('error', (err) => settle(() => reject(err)));
+    socket.once('connect', () => socket.write(request));
+    socket.on('data', (chunk) => chunks.push(chunk));
+    const finish = () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const headerEnd = raw.indexOf('\r\n\r\n');
+      if (headerEnd === -1) {
+        settle(() => reject(new Error(`Malformed HTTP response: ${raw.slice(0, 200)}`)));
+        return;
+      }
+      const head = raw.slice(0, headerEnd);
+      const body = raw.slice(headerEnd + 4);
+      const statusLine = head.split('\r\n', 1)[0];
+      const match = statusLine.match(/^HTTP\/1\.[01] (\d{3})/);
+      if (!match) {
+        settle(() => reject(new Error(`Malformed status line: ${statusLine}`)));
+        return;
+      }
+      settle(() => resolve({ status: Number(match[1]), body }));
+    };
+    socket.once('end', finish);
+    socket.once('close', finish);
+  });
+}
 
 describe('DaemonServer', () => {
   let vaultDir: string;
@@ -48,6 +107,109 @@ describe('DaemonServer', () => {
     expect(body.pid).toBe(process.pid);
 
     await server.stop();
+  });
+
+  it('/health answers fast even while another route handler is blocked', async () => {
+    // Liveness regression: live dogfood (2026-05-12) saw the daemon's TCP
+    // listener bound on 19344, accepting connections, but /health timing
+    // out at 3+s when the embedding reconcile was holding the event loop
+    // on hung Ollama fetches. /health must be in-memory and must not
+    // share the request pipeline with any heavy background work.
+    const server = new DaemonServer({ vaultDir, logger });
+
+    // Register a deliberately hung route to simulate an in-flight slow
+    // handler that would queue behind the normal router pipeline. A real
+    // reconcile-against-wedged-Ollama path would not hang the router
+    // outright, but this test enforces the stricter contract: /health
+    // must answer regardless of what other request handlers are doing.
+    let releaseHung: () => void = () => {};
+    const hungPromise = new Promise<void>((resolve) => { releaseHung = resolve; });
+    server.registerRoute('GET', '/api/hung', async () => {
+      await hungPromise;
+      return { body: { ok: true } };
+    });
+
+    await server.start();
+    try {
+      // Kick off the hung request on a dedicated raw socket — don't
+      // await it. Using fetch() can multiplex requests on a shared
+      // keepalive socket, which would queue the subsequent /health
+      // request behind this one regardless of server behaviour. Raw
+      // sockets force each request onto a distinct connection so the
+      // assertion measures server-side concurrency, not client pooling.
+      const hungSocket = await openRawRequest(server.port, `GET /api/hung HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`);
+
+      // Give the server a microtask tick to enter the hung handler so we
+      // know the /health request is competing with an in-flight one.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // /health must respond well within the 100ms liveness budget,
+      // even while the hung handler is still in flight on its own socket.
+      const start = Date.now();
+      const { status, body } = await rawRequest(server.port, `GET /health HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`);
+      const elapsed = Date.now() - start;
+      const parsed = JSON.parse(body) as { myco?: boolean; version?: string };
+
+      expect(status).toBe(200);
+      expect(parsed.myco).toBe(true);
+      expect(elapsed).toBeLessThan(100);
+
+      // Let the hung handler finish so the test can shut down cleanly.
+      releaseHung();
+      hungSocket.destroy();
+      // Give Node a tick to finish the hung response before stop().
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('/health bypasses request-context resolution entirely', async () => {
+    // /health is a raw route — it must not trigger manifest reads, Grove
+    // DB opens, or the AsyncLocalStorage scoping that the standard router
+    // pipeline performs. Sending grove headers without the daemon bearer
+    // token would otherwise trip the context-switch auth gate; on /health
+    // the headers are ignored and the response is unconditional.
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/health`, {
+        headers: {
+          'x-myco-grove-id': 'grove_does_not_exist',
+          'x-myco-project-id': 'proj_does_not_exist',
+        },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.myco).toBe(true);
+      expect(body.version).toBeTruthy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('/health rejects non-GET methods', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/health`, { method: 'POST' });
+      expect(res.status).toBe(405);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('/api/version returns version and is raw-routed', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/version`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as { version: string };
+      expect(body.version).toBeTruthy();
+    } finally {
+      await server.stop();
+    }
   });
 
   it('returns 404 for unknown routes', async () => {

@@ -1,7 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { DAEMON_CLIENT_TIMEOUT_MS, DAEMON_HEALTH_CHECK_TIMEOUT_MS, DAEMON_HEALTH_RETRY_DELAYS, DAEMON_SPAWN_COALESCE_MS, DAEMON_STALE_GRACE_PERIOD_MS } from '../constants.js';
+import {
+  DAEMON_CLIENT_TIMEOUT_MS,
+  DAEMON_HEALTH_CHECK_TIMEOUT_MS,
+  DAEMON_HEALTH_RETRY_DELAYS,
+  DAEMON_RESTART_HEALTH_DEADLINE_MS,
+  DAEMON_RESTART_POLL_INTERVAL_MS,
+  DAEMON_SPAWN_COALESCE_MS,
+  DAEMON_STALE_GRACE_PERIOD_MS,
+  DAEMON_STUCK_DETECTION_MS,
+} from '../constants.js';
+import { findPidsListeningOn, isProcessAlive } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
 import {
   REQUEST_CONTEXT_AUTH_ENV,
@@ -18,6 +28,9 @@ import {
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
+import { findInstalledServiceLabel } from '../daemon/api/restart.js';
+import { getServiceManager } from '../service/manager.js';
+import type { ServiceManager } from '../service/types.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -67,10 +80,42 @@ interface ClientOptions {
 interface DaemonClientOptions {
   requestContext?: MycoRequestContext;
   headers?: Record<string, string>;
+  /** Optional override for the platform service manager. Defaults to
+   *  `getServiceManager()`. Tests inject a fake to bypass real launchd /
+   *  systemd state on the host. */
+  serviceManager?: ServiceManager;
 }
 
 interface HookRequestContextInput {
   sessionId?: string | null;
+}
+
+/**
+ * Pluggable surface for {@link DaemonClient.restart}'s stuck-shutdown
+ * recovery loop. All fields default to the production implementations;
+ * tests inject fakes to drive the three observed states (healthy quickly,
+ * wedged listener, dead PID waiting for supervisor) deterministically.
+ */
+export interface RestartDeps {
+  isProcessAlive?: (pid: number) => boolean;
+  /** Returns true when `pid` (the prior daemon) is the listener bound to
+   *  `port`. Pass-through to lsof / ss / netstat in production. */
+  isPortBound?: (port: number, pid: number) => boolean;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  stuckDetectionMs?: number;
+  deadlineMs?: number;
+  pollIntervalMs?: number;
+}
+
+function defaultIsPortBound(port: number, pid: number): boolean {
+  try {
+    const owners = findPidsListeningOn([port]);
+    return owners.some((owner) => owner.pid === pid && owner.port === port);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -107,6 +152,7 @@ export class DaemonClient {
   private vaultDir: string;
   private defaultHeaders: Record<string, string>;
   private daemonService: DaemonServiceState;
+  private serviceManager: ServiceManager | null;
 
   constructor(vaultDir: string, options: DaemonClientOptions = {}) {
     this.vaultDir = vaultDir;
@@ -119,6 +165,7 @@ export class DaemonClient {
       ...resolveDaemonAuthHeader(this.daemonService.statePath),
       ...(options.headers ?? {}),
     };
+    this.serviceManager = options.serviceManager ?? null;
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
@@ -316,13 +363,74 @@ export class DaemonClient {
     return { ...this.defaultHeaders, ...(headers ?? {}) };
   }
 
-  async restart(opts?: { checkStale?: boolean }): Promise<boolean> {
-    this.killDaemon(this.readDaemonJson());
-    await new Promise((r) => setTimeout(r, 200));
-    return this.ensureRunning(opts);
+  /**
+   * Bounce the daemon and wait for the new instance to become healthy.
+   *
+   * Stuck-shutdown recovery: when the SIGTERM-driven restart wedges (the old
+   * daemon's TCP listener stays bound but /health stops responding — observed
+   * during a deep deadlock or a shutdown handler hang), the CLI was previously
+   * forced to manually `kill -9` the PID. This loop now detects that signature
+   * — prev PID still alive AND port still bound AND /health silent for
+   * `DAEMON_STUCK_DETECTION_MS` — and escalates to SIGKILL once, then lets
+   * launchd / systemd KeepAlive respawn the daemon. If /health is already
+   * silent because the PID is already dead, no escalation fires — we just keep
+   * polling for the supervisor to respawn.
+   *
+   * `deps` is exposed for unit tests; production callers use the defaults.
+   */
+  async restart(
+    _opts?: { checkStale?: boolean },
+    deps?: RestartDeps,
+  ): Promise<boolean> {
+    const d: Required<RestartDeps> = {
+      isProcessAlive: deps?.isProcessAlive ?? isProcessAlive,
+      isPortBound: deps?.isPortBound ?? defaultIsPortBound,
+      kill: deps?.kill ?? ((pid, sig) => process.kill(pid, sig)),
+      now: deps?.now ?? (() => Date.now()),
+      sleep: deps?.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      stuckDetectionMs: deps?.stuckDetectionMs ?? DAEMON_STUCK_DETECTION_MS,
+      deadlineMs: deps?.deadlineMs ?? DAEMON_RESTART_HEALTH_DEADLINE_MS,
+      pollIntervalMs: deps?.pollIntervalMs ?? DAEMON_RESTART_POLL_INTERVAL_MS,
+    };
+
+    const prevInfo = this.readDaemonJson();
+    const prevPid = prevInfo?.pid;
+    const prevPort = prevInfo?.port;
+
+    // Initiate the bounce. killDaemon issues SIGTERM and clears daemon.json;
+    // spawnDaemon (or the service supervisor's KeepAlive) brings a fresh
+    // daemon up.
+    this.killDaemon(prevInfo);
+    // Kick the spawn / supervisor start without blocking on retry delays —
+    // the unified poll loop below is the single source of truth for the
+    // deadline and stuck-detection behavior.
+    void this.spawnDaemon();
+
+    const startedAt = d.now();
+    let stuckEscalated = false;
+    while (d.now() - startedAt < d.deadlineMs) {
+      if (await this.isHealthy()) return true;
+
+      if (
+        !stuckEscalated &&
+        prevPid !== undefined &&
+        prevPort !== undefined &&
+        d.now() - startedAt >= d.stuckDetectionMs &&
+        d.isProcessAlive(prevPid) &&
+        d.isPortBound(prevPort, prevPid)
+      ) {
+        try { d.kill(prevPid, 'SIGKILL'); } catch { /* already dead */ }
+        stuckEscalated = true;
+        // Loop continues; the supervisor's KeepAlive should respawn shortly.
+      }
+
+      await d.sleep(d.pollIntervalMs);
+    }
+
+    return this.isHealthy();
   }
 
-  spawnDaemon(): void {
+  async spawnDaemon(): Promise<void> {
     // Tests set MYCO_NO_AUTO_SPAWN=1 to suppress fork side effects when
     // exercising the "daemon down" path.
     if (process.env.MYCO_NO_AUTO_SPAWN === '1') return;
@@ -333,6 +441,30 @@ export class DaemonClient {
     // any hook activity — not just session-start — resurrects a dead daemon.
     // The daemon's own step-aside guard backs this up.
     if (this.spawnIsInFlight()) return;
+
+    // Service-managed daemons: defer to the supervisor. Spawning a raw child
+    // here would race with launchd's KeepAlive / systemd's Restart=always —
+    // the challenger comes up, fails to bind the port the service owns, and
+    // self-SIGTERMs via the sibling-stepping-aside path. Same root cause as
+    // the /restart and update-flow bypasses fixed earlier in this branch.
+    try {
+      const mgr = this.serviceManager ?? getServiceManager();
+      const installed = await findInstalledServiceLabel(mgr);
+      if (installed) {
+        if (!installed.status.running) {
+          // Supervisor knows about the service but isn't running it (cold
+          // boot, throttle window). Ask it to start; the supervisor handles
+          // port / lifecycle correctly. Fire-and-forget — the next probe
+          // will discover whether the start succeeded.
+          await mgr.start(installed.label).catch(() => { /* best-effort */ });
+        }
+        return;
+      }
+    } catch {
+      // Service manager unavailable on this platform, or transient lookup
+      // failure. Fall through to the legacy raw-spawn path so manual dev
+      // runs and test fixtures keep working.
+    }
 
     const { execPath, cliEntry } = resolveCliEntryPath();
     const child = spawn(execPath, buildReExecArgs(cliEntry, ['daemon']), {

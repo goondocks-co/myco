@@ -89,6 +89,23 @@ export class LaunchdServiceManager implements ServiceManager {
     await this.runner.run(['kill', 'SIGTERM', this.domainTarget(label)]);
   }
 
+  async restart(label: string): Promise<void> {
+    // kickstart -k SIGTERMs the running instance then starts it again.
+    // Requires the service to be installed (loaded). We don't check first
+    // because launchctl returns a clear error if not.
+    const result = await this.runner.run(['kickstart', '-k', this.domainTarget(label)]);
+    if (result.exitCode !== 0) {
+      throw new Error(`launchctl kickstart failed (exit ${result.exitCode}): ${result.stdout.trim()}`);
+    }
+  }
+
+  restartShellCommand(label: string): string {
+    // Literal command the detached update / restart script invokes after the
+    // daemon exits. Mirrors restart() above so launchd's KeepAlive cannot race
+    // a manually-spawned daemon child for the canonical port.
+    return `launchctl kickstart -k ${this.domainTarget(label)}`;
+  }
+
   async status(label: string): Promise<ServiceStatus> {
     const plistPath = this.plistPath(label);
     if (!fs.existsSync(plistPath)) {

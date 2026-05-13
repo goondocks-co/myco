@@ -321,7 +321,7 @@ Use Grove path constants from `packages/myco/src/grove/paths.ts`:
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 export const GROVES_DIRNAME = 'groves';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
-export const GROVE_CONFIG_FILENAME = 'grove.yaml';
+export const GROVE_CONFIG_FILENAME = 'grove.toml';  // Standardized to TOML
 export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GROVE_REGISTRY_DIRNAME = 'registry';
@@ -366,7 +366,52 @@ function enableProdMode() {
   setDevServiceMode(false);
   console.log('Switched to production service mode');
 }
+
+// Path equivalence validation across service modes
+function validateServicePaths(path1: string, path2: string): boolean {
+  return pathsEquivalent(path1, path2);
+}
 ```
+
+### Daemon Service Boundary Architecture
+
+Implement service boundary management with development and production daemon coordination:
+
+1. **Service directory resolution**:
+```typescript
+import { resolveServiceDir, resolveServiceDirName } from '../grove/paths.js';
+
+// Resolve service directory based on current mode
+const serviceDir = resolveServiceDir(groveHome);
+const serviceDirName = resolveServiceDirName(); // 'service' or 'service-dev'
+
+// Service-aware daemon state management
+const daemonStatePath = resolveServiceDaemonStatePath();
+```
+
+2. **Service mode coordination**:
+```typescript
+// Development service boundary (port 19344, service-dev/)
+if (isDevServiceMode()) {
+  const devServiceDir = path.join(groveHome, SERVICE_DEV_DIRNAME);
+  const devPort = 19344;
+  const devDaemonState = path.join(devServiceDir, DAEMON_STATE_FILENAME);
+}
+
+// Production service boundary (port 20915, service/)
+else {
+  const prodServiceDir = path.join(groveHome, SERVICE_DIRNAME);
+  const prodPort = 20915;
+  const prodDaemonState = path.join(prodServiceDir, DAEMON_STATE_FILENAME);
+}
+```
+
+**Service boundary isolation patterns**:
+- **Port isolation**: Dev (19344) vs prod (20915) ports prevent conflicts
+- **State isolation**: Separate daemon.json files per service mode
+- **Path isolation**: service-dev/ vs service/ directories for complete separation
+- **Mode switching**: setDevServiceMode() for runtime mode changes
+- **Equivalence checking**: pathsEquivalent() for cross-mode path validation
 
 ### Grove Registry Structure
 
@@ -619,11 +664,13 @@ async function validateGroveBearerToken(providedToken, groveId, projectId) {
 
 **Machine Runtime Path Resolution**: Use machine runtime path primitives (`resolveMachineRuntimeDir`, `resolveMachineRuntimeCommandPath`, `resolveMachineRuntimeTmpDir`) for any operations requiring machine-local runtime state. Direct path construction bypasses Grove home resolution and causes path inconsistencies across environments.
 
-**Registry File Naming**: Always use `GROVE_REGISTRY_FILENAME` constant ('registry.toml') for registry path resolution. Hardcoded filenames cause path mismatches when Grove path constants are updated.
+**Registry File Format Drift**: Always use TOML format for Grove registry files (`registry.toml`, `grove.toml`, `projects.toml`). YAML format usage in Grove contexts causes parsing errors and registry corruption.
 
 **Development Service Mode Isolation**: The development service mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production service mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution. Hardcoded service directory references bypass mode switching and cause service discovery failures.
 
 **Path Equivalence in Multi-Mode Environments**: Use `pathsEquivalent()` for path comparisons across development and production service modes. String equality comparisons fail when paths reference different service directories that resolve to the same logical location.
+
+**Service Boundary Confusion**: Service directory resolution (`resolveServiceDir`) must account for current service mode. Direct path construction to 'service/' bypasses development mode and causes daemon state file conflicts.
 
 **Grove Secret File Permissions Reset**: File permissions on Grove-scoped `.myco/secrets.env` can be reset by git operations or deployment scripts. Always verify permissions after deployment and include Grove-scoped permission checks in startup validation.
 

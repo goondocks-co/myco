@@ -106,6 +106,19 @@ export const STALE_BUFFER_MAX_AGE_MS = 1 * MS_PER_DAY;
 /** Retry delays for daemon health check (ms). */
 export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
 
+/** Overall deadline for `myco restart` to observe a healthy daemon after
+ *  triggering shutdown. Long enough to cover a fresh `npm install`-paced cold
+ *  boot, short enough that genuine wedge states surface to the user. */
+export const DAEMON_RESTART_HEALTH_DEADLINE_MS = 30_000;
+
+/** Per-poll interval during the restart health-watch loop (ms). */
+export const DAEMON_RESTART_POLL_INTERVAL_MS = 500;
+
+/** How long to give a normal restart before treating "TCP listener bound but
+ *  /health silent" as a stuck shutdown and escalating to SIGKILL. Generous
+ *  enough that a slow-but-healthy startup isn't force-killed. */
+export const DAEMON_STUCK_DETECTION_MS = 6_000;
+
 /** Grace period after daemon.json is written before stale checks can trigger a restart (ms).
  *  Prevents rapid restart loops from concurrent hooks or session reloads. */
 export const DAEMON_STALE_GRACE_PERIOD_MS = 60_000;

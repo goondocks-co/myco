@@ -105,6 +105,32 @@ describe('reconcileReleaseProvenance', () => {
     }
   });
 
+  it('expands production ref globs so new release tags reconcile without config edits', async () => {
+    const { repo, first } = makeRepo();
+    try {
+      const batchId = insertPromptProvenance(first);
+
+      await reconcileReleaseProvenance({
+        projectRoot: repo,
+        scope: ALL_PROJECTS_SCOPE,
+        config: {
+          enabled: true,
+          production_refs: ['refs/tags/pro*'],
+          integration_refs: [],
+          reconcile_interval_minutes: 15,
+        },
+        now: NOW + 1,
+      });
+
+      const state = getReleaseState('prompt_batches', String(batchId), ALL_PROJECTS_SCOPE);
+      expect(state?.state).toBe('released');
+      expect(state?.confidence).toBe('high');
+      expect(state?.basis_ref).toBe('refs/tags/prod');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('keeps missing release configuration as unreconciled instead of guessing', async () => {
     const { repo, first } = makeRepo();
     try {

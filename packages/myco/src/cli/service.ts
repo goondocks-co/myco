@@ -7,18 +7,18 @@ import type { ServiceVariant } from '../service/types.js';
 import { resolveMycoHome, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 export { detectInstallVariant } from '../service/labels.js';
 
-export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'status';
+export type ServiceAction = 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'status';
 
 export interface ParsedServiceArgs {
   action: ServiceAction;
   variant: ServiceVariant;
 }
 
-const ACTIONS: ServiceAction[] = ['install', 'uninstall', 'start', 'stop', 'status'];
+const ACTIONS: ServiceAction[] = ['install', 'uninstall', 'start', 'stop', 'restart', 'status'];
 
 export function parseServiceArgs(args: string[]): ParsedServiceArgs {
   if (args.length === 0) {
-    throw new Error('Usage: myco service <install|uninstall|start|stop|status> [--dev]');
+    throw new Error('Usage: myco service <install|uninstall|start|stop|restart|status> [--dev]');
   }
   const action = args[0] as ServiceAction;
   if (!ACTIONS.includes(action)) {
@@ -88,6 +88,10 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
     case 'stop':
       await mgr.stop(label);
       console.log(`Stopped ${label}`);
+      return;
+    case 'restart':
+      await mgr.restart(label);
+      console.log(`Restarted ${label}`);
       return;
     case 'status': {
       const st = await mgr.status(label);

@@ -78,6 +78,37 @@ describe('generateRestartScript()', () => {
     });
     expect(script).toContain('my project');
   });
+
+  // Service-managed restart tail — same root cause as the /restart bug fixed
+  // in commit 78a2c421. When launchd's KeepAlive (or systemd's
+  // Restart=always) is going to respawn the daemon, the script must NOT
+  // also spawn `myco daemon` — they'd fight for the canonical port.
+  it('uses the service-restart command instead of spawning a daemon when service-managed', () => {
+    const script = generateRestartScript({
+      ...baseParams,
+      runLocalUpdate: false,
+      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+    });
+    expect(script).toContain('launchctl kickstart -k gui/501/co.goondocks.myco');
+    expect(script).not.toContain('"$MYCO" daemon');
+  });
+
+  it('uses the systemd restart command on Linux', () => {
+    const script = generateRestartScript({
+      ...baseParams,
+      runLocalUpdate: false,
+      serviceRestartCommand: 'systemctl --user restart myco.service',
+    });
+    expect(script).toContain('systemctl --user restart myco.service');
+    expect(script).not.toContain('"$MYCO" daemon');
+  });
+
+  it('falls back to spawning `myco daemon` when no service-restart command is supplied', () => {
+    const script = generateRestartScript({ ...baseParams, runLocalUpdate: false });
+    expect(script).toContain('"$MYCO" daemon');
+    expect(script).not.toContain('launchctl');
+    expect(script).not.toContain('systemctl');
+  });
 });
 
 describe('generateUpdateScript()', () => {
@@ -138,5 +169,49 @@ describe('generateUpdateScript()', () => {
     expect(script).toMatch(/rm -f "[^"]*runtime\.command"/);
     expect(script).toMatch(/rm -rf "[^"]*\/runtime"/);
     expect(script).toContain('MYCO="myco"');
+  });
+
+  // Service-managed update tail. Once PR #267 made the prod daemon
+  // service-managed, the post-install `cd … && myco daemon &` line raced
+  // launchd's KeepAlive for the canonical port — same bug shape as the
+  // /restart fix in commit 78a2c421. The script must invoke the platform
+  // restart primitive instead of spawning its own daemon.
+  it('uses the service-restart command instead of spawning a daemon when service-managed', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+    });
+    expect(script).toContain('launchctl kickstart -k gui/501/co.goondocks.myco');
+    // Critical: no parallel daemon spawn.
+    expect(script).not.toContain('"$MYCO" daemon');
+  });
+
+  it('uses the systemd restart command on Linux', () => {
+    const script = generateUpdateScript({
+      ...baseParams,
+      serviceRestartCommand: 'systemctl --user restart myco.service',
+    });
+    expect(script).toContain('systemctl --user restart myco.service');
+    expect(script).not.toContain('"$MYCO" daemon');
+  });
+
+  it('falls back to spawning `myco daemon` when no service-restart command is supplied', () => {
+    const script = generateUpdateScript(baseParams);
+    expect(script).toContain('"$MYCO" daemon');
+    expect(script).not.toContain('launchctl');
+    expect(script).not.toContain('systemctl');
+  });
+
+  it('service-restart tail still runs after the npm install completes (sequenced after update_failed branch)', () => {
+    // The restart command must follow the success/failure handling block so
+    // we never restart before the install attempt has finished.
+    const script = generateUpdateScript({
+      ...baseParams,
+      serviceRestartCommand: 'launchctl kickstart -k gui/501/co.goondocks.myco',
+    });
+    const installIdx = script.indexOf('npm install');
+    const restartIdx = script.indexOf('launchctl kickstart');
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(restartIdx).toBeGreaterThan(installIdx);
   });
 });

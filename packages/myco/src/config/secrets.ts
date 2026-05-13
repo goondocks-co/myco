@@ -1,8 +1,10 @@
 /**
  * Secrets file utilities for API key storage outside git.
  *
- * Secrets are stored in `secrets.env` inside the vault directory.
- * This file is gitignored (see VAULT_GITIGNORE) and never committed.
+ * Secrets are stored in `secrets.env` beside the scope they belong to:
+ * project legacy vaults, the machine Myco home, or a Grove directory. Project
+ * files are gitignored (see VAULT_GITIGNORE), and machine/Grove stores live
+ * outside repositories.
  * Format: KEY=value, one per line (same as .env).
  *
  * The Grove rescope widened the blast radius of secrets storage: per-Grove
@@ -88,6 +90,38 @@ export function loadSecrets(vaultDir: string): void {
   for (const [key, value] of Object.entries(secrets)) {
     if (!process.env[key]) {
       process.env[key] = value;
+    }
+  }
+}
+
+/**
+ * Load several secrets.env stores as one layered view.
+ *
+ * The order is low-to-high precedence: later directories override earlier
+ * directories, while environment variables that were already set before this
+ * call still win over every file-backed secret. This lets legacy project
+ * secrets remain a fallback while machine and Grove stores take precedence
+ * without clobbering an explicit shell/launchd environment.
+ */
+export function loadLayeredSecrets(
+  secretsDirs: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const protectedEnvKeys = new Set(
+    Object.entries(env)
+      .filter(([, value]) => value !== undefined && value !== '')
+      .map(([key]) => key),
+  );
+  const merged: Record<string, string> = {};
+
+  for (const dir of secretsDirs) {
+    tightenSecretsPermissions(dir);
+    Object.assign(merged, readSecrets(dir));
+  }
+
+  for (const [key, value] of Object.entries(merged)) {
+    if (!protectedEnvKeys.has(key)) {
+      env[key] = value;
     }
   }
 }

@@ -14,6 +14,8 @@ describe('UnsupportedServiceManager', () => {
     await expect(mgr.uninstall('x')).rejects.toThrow(/not.*supported.*win32/i);
     await expect(mgr.start('x')).rejects.toThrow(/not.*supported.*win32/i);
     await expect(mgr.stop('x')).rejects.toThrow(/not.*supported.*win32/i);
+    await expect(mgr.restart('x')).rejects.toThrow(/not.*supported.*win32/i);
+    expect(() => mgr.restartShellCommand('x')).toThrow(/not.*supported.*win32/i);
   });
 
   test('status returns a sentinel — does not throw', async () => {
