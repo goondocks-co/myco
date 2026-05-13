@@ -24,9 +24,7 @@ function breadcrumbFor(pathname: string): string[] {
   const segments = pathname.split('/').filter(Boolean);
   const top = `/${segments[0]}`;
   const topLabel = ROUTE_LABELS[top] ?? segments[0];
-  const trail: string[] = [topLabel];
-  if (segments.length > 1 && segments[1] !== ':id') trail.push(segments[1]);
-  return trail;
+  return [topLabel];
 }
 
 export interface TopbarProps {

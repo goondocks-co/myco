@@ -40,7 +40,6 @@ describe('Topbar', () => {
     renderTopbar('/');
     expect(screen.getByText('daemon')).toBeDefined();
     expect(screen.getByText('cortex')).toBeDefined();
-    // Git pill renders an em-dash when pending (no QueryClient data yet)
-    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('git-identity-pill')).toBeDefined();
   });
 });

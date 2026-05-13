@@ -3,7 +3,6 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { POLL_INTERVALS } from '../../packages/myco/ui/src/lib/constants';
 import { useSpores } from '../../packages/myco/ui/src/hooks/use-spores';
 
 const useQueryMock = vi.fn();
@@ -30,7 +29,7 @@ describe('useSpores', () => {
     renderHook(() => useSpores());
 
     expect(useQueryMock).toHaveBeenCalledWith(expect.objectContaining({
-      refetchInterval: POLL_INTERVALS.SPORES,
+      refetchInterval: 30_000,
     }));
   });
 });

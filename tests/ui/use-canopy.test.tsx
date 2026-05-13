@@ -3,7 +3,6 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { POLL_INTERVALS } from '../../packages/myco/ui/src/lib/constants';
 import { useCanopyEntries } from '../../packages/myco/ui/src/hooks/use-canopy';
 
 const useQueryMock = vi.fn();
@@ -40,7 +39,7 @@ describe('useCanopyEntries', () => {
     renderHook(() => useCanopyEntries({}));
 
     expect(useQueryMock).toHaveBeenCalledWith(expect.objectContaining({
-      refetchInterval: POLL_INTERVALS.CANOPY_ENTRIES,
+      refetchInterval: 60_000,
     }));
   });
 });

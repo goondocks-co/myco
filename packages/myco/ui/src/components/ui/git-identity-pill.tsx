@@ -15,6 +15,7 @@ export function GitIdentityPill({ data, isPending, isError, className }: GitIden
       <button
         type="button"
         disabled
+        data-testid="git-identity-pill"
         className={cn(
           'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 text-on-surface-variant',
           className,
@@ -34,6 +35,7 @@ export function GitIdentityPill({ data, isPending, isError, className }: GitIden
     <button
       type="button"
       title={title}
+      data-testid="git-identity-pill"
       className={cn(
         'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 hover:bg-surface-container-high transition-colors',
         className,

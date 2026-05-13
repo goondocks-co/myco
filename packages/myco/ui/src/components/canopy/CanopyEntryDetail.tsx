@@ -90,7 +90,7 @@ export interface CanopyEntryDetailProps {
   /** Legacy back button — retained for callers that still use stacked layout. */
   onBack?: () => void;
   /** Slide-out close handler — renders an X button in the top-right. */
-  onClose?: () => void;
+  onClose: () => void;
 }
 
 export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailProps) {
@@ -144,7 +144,7 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
     return (
       <SlideoutDetailPanel
       open
-      onClose={onClose ?? (() => {})}
+      onClose={onClose}
       ariaLabel="Canopy entry detail"
       testIdRoot="canopy-entry-detail"
     >
@@ -157,7 +157,7 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
     return (
       <SlideoutDetailPanel
       open
-      onClose={onClose ?? (() => {})}
+      onClose={onClose}
       ariaLabel="Canopy entry detail"
       testIdRoot="canopy-entry-detail"
     >
@@ -187,7 +187,7 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
     return (
       <SlideoutDetailPanel
       open
-      onClose={onClose ?? (() => {})}
+      onClose={onClose}
       ariaLabel="Canopy entry detail"
       testIdRoot="canopy-entry-detail"
     >
@@ -215,7 +215,7 @@ export function CanopyEntryDetail({ path, onBack, onClose }: CanopyEntryDetailPr
   return (
     <SlideoutDetailPanel
       open
-      onClose={onClose ?? (() => {})}
+      onClose={onClose}
       ariaLabel="Canopy entry detail"
       testIdRoot="canopy-entry-detail"
     >

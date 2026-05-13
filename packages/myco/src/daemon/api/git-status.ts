@@ -92,9 +92,10 @@ export function readGitStatus(cwd: string): GitStatusResponse | null {
     timeout: GIT_TIMEOUT_MS,
     killSignal: 'SIGKILL',
   });
-  // SpawnSyncReturns sets `signal` (non-null) when the child was killed by
-  // the timeout, and leaves `status` at null. The old `status !== 0` check
-  // alone let the timeout case fall through to a successful response.
+  // Guard against the three independent failure modes: error (thrown),
+  // signal (process killed, e.g. by SIGKILL timeout), and non-zero exit.
+  // On a timeout kill the result has status=null and signal set, so
+  // checking status alone misses the timeout case.
   if (statusResult.error || statusResult.signal !== null || statusResult.status !== 0) return null;
 
   const authorResult = spawnSync('git', ['log', '-1', '--pretty=%an%n%ae'], {
