@@ -22,6 +22,11 @@ import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
 const DEFAULT_STATUS = 200;
+/** How long we wait after `closeIdleConnections()` before force-yanking
+ *  any sockets that still haven't closed. Long enough for an in-flight
+ *  request to finish its response, short enough that a stale UI
+ *  keep-alive doesn't make restart look broken. */
+const SERVER_STOP_FORCE_CLOSE_GRACE_MS = 2_000;
 
 export interface DaemonServerConfig {
   vaultDir: string;
@@ -121,19 +126,16 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
-    return new Promise((resolve) => {
-      this.removeDaemonJson();
-      if (this.server) {
-        this.server.close(() => {
-          this.closeRequestDatabases();
-          this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
-          resolve();
-        });
-      } else {
-        this.closeRequestDatabases();
-        resolve();
-      }
+    this.removeDaemonJson();
+    if (!this.server) {
+      this.closeRequestDatabases();
+      return;
+    }
+    await gracefullyCloseHttpServer(this.server, {
+      gracePeriodMs: SERVER_STOP_FORCE_CLOSE_GRACE_MS,
     });
+    this.closeRequestDatabases();
+    this.logger.info(LOG_KINDS.DAEMON_START, 'Server stopped');
   }
 
   private registerDefaultRoutes(): void {
@@ -643,4 +645,59 @@ function isLoopbackOrigin(origin: string, port: number): boolean {
     origin === `http://127.0.0.1:${portStr}` ||
     origin === `http://localhost:${portStr}`
   );
+}
+
+/**
+ * Force a Node HTTP server through a fast, deterministic shutdown.
+ *
+ * `http.Server.close()` only stops accepting *new* connections — it
+ * waits for every existing connection to disconnect on its own before
+ * invoking its callback. UI keep-alives, MCP HTTP clients, and
+ * WebSocket upgrades happily hold sockets open for ~90s after we asked
+ * them to leave, which makes every daemon restart look broken (old
+ * daemon still holding the port, new daemon unable to bind).
+ *
+ *   1. `closeIdleConnections()` drops sockets that aren't mid-request
+ *      immediately (Node 18.2+).
+ *   2. A short grace window lets an in-flight request finish its
+ *      response cycle.
+ *   3. `closeAllConnections()` yanks anything still holding a socket —
+ *      WebSocket upgrades, long-poll clients, anything that wouldn't
+ *      otherwise notice we said goodbye.
+ *
+ * After that, the `close()` callback fires immediately because the
+ * sockets are gone. Exported so the regression test can exercise the
+ * timing property without standing up a full `DaemonServer`.
+ */
+export function gracefullyCloseHttpServer(
+  server: http.Server,
+  options: { gracePeriodMs: number },
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    server.closeIdleConnections();
+    // `server.close(cb)` invokes its callback only after every existing
+    // socket has finished. With bun's HTTP runtime that callback is not
+    // reliably fired even after `closeAllConnections()` has destroyed
+    // the sockets, so we don't depend on it: we drive completion from
+    // the operations we control. The callback path is still wired so
+    // we resolve on the fast path (no force-close needed) when the
+    // runtime does fire it.
+    server.close(finish);
+    const forceClose = setTimeout(() => {
+      server.closeAllConnections();
+      // closeAllConnections returns synchronously after destroying
+      // every socket — the server has now stopped accepting new
+      // connections (close() was called above) and severed every
+      // existing one. Anything still waiting on the close() callback
+      // is the runtime, not real work; resolve and move on.
+      finish();
+    }, options.gracePeriodMs);
+    forceClose.unref?.();
+  });
 }
