@@ -1,3 +1,4 @@
+import { type RefObject } from 'react';
 import { Search } from 'lucide-react';
 import { Input } from './input';
 import { Surface } from './surface';
@@ -22,6 +23,8 @@ export interface ListToolbarProps {
   filters?: FilterDefinition[];
   filterValues?: Record<string, string>;
   onFilterChange?: (key: string, value: string) => void;
+  /** Forwarded to the underlying search input so callers can programmatically focus it (e.g. `/` keyboard shortcut). */
+  inputRef?: RefObject<HTMLInputElement | null>;
 }
 
 export function ListToolbar({
@@ -31,11 +34,13 @@ export function ListToolbar({
   filters = [],
   filterValues = {},
   onFilterChange,
+  inputRef,
 }: ListToolbarProps) {
   return (
     <Surface level="bright" className="flex items-center gap-3 px-4 py-2 rounded-md">
       <Search className="h-3.5 w-3.5 text-on-surface-variant shrink-0" />
       <Input
+        ref={inputRef}
         placeholder={searchPlaceholder}
         value={searchValue}
         onChange={(e) => onSearchChange(e.target.value)}

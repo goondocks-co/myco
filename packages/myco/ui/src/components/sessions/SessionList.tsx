@@ -14,7 +14,8 @@ import { shortSession } from '../../lib/format';
 import { StatusBadge } from './status-helpers';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { cn } from '../../lib/cn';
-import { useMemo, useState } from 'react';
+import { forwardRef, useMemo, useRef, useState } from 'react';
+import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
 /* ---------- Constants ---------- */
 
@@ -36,22 +37,33 @@ const STATUS_FILTER: FilterDefinition = {
 
 /* ---------- Sub-components ---------- */
 
-function SessionTableRow({
-  session,
-  symbiontDisplayName,
-  onClick,
-  onDelete,
-}: {
+const SessionTableRow = forwardRef<HTMLTableRowElement, {
   session: SessionSummary;
   symbiontDisplayName: string;
+  isSelected: boolean;
+  isCursor: boolean;
   onClick: () => void;
   onDelete: () => void;
-}) {
+}>(function SessionTableRow({
+  session,
+  symbiontDisplayName,
+  isSelected,
+  isCursor,
+  onClick,
+  onDelete,
+}, ref) {
   const sessionLabel = session.title || shortSession(session.id);
 
   return (
     <tr
-      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
+      ref={ref}
+      data-selected={isSelected || undefined}
+      data-cursor={isCursor || undefined}
+      className={cn(
+        'border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]',
+        isSelected && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
+        isCursor && !isSelected && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
+      )}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -61,6 +73,7 @@ function SessionTableRow({
       }}
       tabIndex={0}
       role="row"
+      aria-selected={isSelected}
       aria-label={`Session: ${sessionLabel}`}
     >
       {/* Session ID */}
@@ -127,7 +140,7 @@ function SessionTableRow({
       </td>
     </tr>
   );
-}
+});
 
 function SkeletonTableRow() {
   return (
@@ -154,8 +167,15 @@ function ColHeader({ children, className }: { children: React.ReactNode; classNa
 
 /* ---------- Component ---------- */
 
-export function SessionList() {
+export interface SessionListProps {
+  /** When set, the row with this session id renders as active. Also seeds the
+   * keyboard-nav cursor so j/k continues from the selection. */
+  selectedId?: string;
+}
+
+export function SessionList({ selectedId }: SessionListProps = {}) {
   const navigate = useNavigate();
+  const filterInputRef = useRef<HTMLInputElement>(null);
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
     initialFilters: { status: FILTER_ALL, agent: FILTER_ALL },
   });
@@ -216,6 +236,14 @@ export function SessionList() {
   const sessions = data?.sessions ?? [];
   const total = data?.total ?? 0;
 
+  const nav = useListKeyboardNav({
+    items: sessions,
+    getId: (s) => s.id,
+    selectedId,
+    onActivate: (id) => navigate(`/sessions/${id}`),
+    filterInputRef,
+  });
+
   const toolbar = (
     <ListToolbar
       searchPlaceholder="Search sessions..."
@@ -224,6 +252,7 @@ export function SessionList() {
       filters={sessionFilters}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
+      inputRef={filterInputRef}
     />
   );
 
@@ -243,7 +272,7 @@ export function SessionList() {
 
   if (isError) {
     return (
-      <div>
+      <div className="p-4">
         <PageHeader title="Session Archive" />
         {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary mt-4">
@@ -258,7 +287,7 @@ export function SessionList() {
   }
 
   return (
-    <div>
+    <div className="p-4">
       <PageHeader
         title="Session Archive"
         subtitle={isLoading ? 'Loading...' : `${total} session${total !== 1 ? 's' : ''} captured`}
@@ -291,20 +320,30 @@ export function SessionList() {
         </div>
       ) : (
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full" aria-label="Session archive">
-            {tableHead}
-            <tbody>
-              {sessions.map((session) => (
-                <SessionTableRow
-                  key={session.id}
-                  session={session}
-                  symbiontDisplayName={symbiontDisplayName(session.agent)}
-                  onClick={() => navigate(`/sessions/${session.id}`)}
-                  onDelete={() => setDeleteTarget(session)}
-                />
-              ))}
-            </tbody>
-          </table>
+          <div
+            {...nav.containerProps}
+            role="group"
+            aria-label="Session list keyboard navigation"
+            className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+          >
+            <table className="w-full" aria-label="Session archive">
+              {tableHead}
+              <tbody>
+                {sessions.map((session, idx) => (
+                  <SessionTableRow
+                    key={session.id}
+                    ref={nav.setRowRef(idx)}
+                    session={session}
+                    symbiontDisplayName={symbiontDisplayName(session.agent)}
+                    isSelected={selectedId === session.id}
+                    isCursor={nav.cursorIndex === idx}
+                    onClick={() => navigate(`/sessions/${session.id}`)}
+                    onDelete={() => setDeleteTarget(session)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Surface>
       )}
 
