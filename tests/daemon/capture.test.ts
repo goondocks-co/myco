@@ -902,4 +902,145 @@ describe('new event type handlers', () => {
       expect(activities[1].tool_output_summary).toBe('Reduced context by 60%');
     });
   });
+
+  // --- Manifest-driven file path extraction (Codex Bash reads) ---
+
+  describe('handleToolUse manifest-driven path extraction', () => {
+    it('fast path: Claude Read with file_path returns top-level value (agent ignored)', async () => {
+      const sessionId = 'test-manifest-extract-001';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'Read',
+        { file_path: '/tmp/claude-read.ts' },
+        'contents',
+        TEST_PROJECT_ROOT,
+        'claude-code',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBe('/tmp/claude-read.ts');
+    });
+
+    it("manifest path: Codex Bash with `sed -n '1,5p' src/x.ts` extracts src/x.ts", async () => {
+      const sessionId = 'test-manifest-extract-002';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'Bash',
+        { command: "sed -n '1,5p' src/x.ts" },
+        'line one\nline two',
+        TEST_PROJECT_ROOT,
+        'codex',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBe('src/x.ts');
+    });
+
+    it('manifest path: Codex pending injection is consumed for Bash sed reads', async () => {
+      const sessionId = 'test-manifest-extract-003';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
+
+      recordPendingInjection(sessionId, 'src/y.ts', 777);
+
+      handleToolUse(
+        sessionId,
+        'Bash',
+        { command: "sed -n '1,5p' src/y.ts" },
+        'contents',
+        TEST_PROJECT_ROOT,
+        'codex',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBe('src/y.ts');
+      expect(activities[0].canopy_injection_tokens).toBe(777);
+    });
+
+    it('manifest path: Codex Bash with `ls -la` returns no file path', async () => {
+      const sessionId = 'test-manifest-extract-004';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'Bash',
+        { command: 'ls -la' },
+        '',
+        TEST_PROJECT_ROOT,
+        'codex',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBeNull();
+    });
+
+    it('unknown agent: fast path still works, manifest lookup safely returns no path', async () => {
+      const sessionId = 'test-manifest-extract-005';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'Bash',
+        { command: "sed -n '1,5p' src/z.ts" },
+        '',
+        TEST_PROJECT_ROOT,
+        'nonexistent-agent',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBeNull();
+    });
+
+    it('missing agent (undefined): fast path only, no crash on Bash command', async () => {
+      const sessionId = 'test-manifest-extract-006';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'Bash',
+        { command: "sed -n '1,5p' src/z.ts" },
+        '',
+        TEST_PROJECT_ROOT,
+        undefined,
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBeNull();
+    });
+
+    it('handleToolFailure also resolves Codex Bash paths via manifest', async () => {
+      const sessionId = 'test-manifest-extract-007';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
+
+      handleToolFailure(
+        sessionId,
+        'Bash',
+        { command: "sed -n '1,5p' src/missing.ts" },
+        'ENOENT',
+        false,
+        'codex',
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBe('src/missing.ts');
+      expect(activities[0].success).toBe(0);
+    });
+  });
 });

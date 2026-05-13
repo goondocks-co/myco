@@ -15,6 +15,8 @@ import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import { createBatchLineage } from '@myco/db/queries/lineage.js';
 import { getDatabase } from '@myco/db/client.js';
 import { consumePendingInjection } from '@myco/canopy/inject/pending.js';
+import { getManifestByName } from '@myco/symbionts/detect.js';
+import { resolveCanopyReadTool } from '@myco/symbionts/canopy-read-tools.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,18 +43,39 @@ export function isSystemMessage(prompt: string): boolean {
   return SYSTEM_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
-/** Extract a file path from tool input across snake_case and camelCase conventions. */
-function extractToolFilePath(toolInput: unknown): string | null {
+/**
+ * Extract a file path from tool input.
+ *
+ * Two-stage extraction:
+ *  1. Fast path — top-level `file_path` / `filePath` keys (Claude's Read,
+ *     opencode's edit, etc.). Identity-agnostic.
+ *  2. Manifest path — when the fast path fails and an `agent` is known,
+ *     consult the symbiont's canopyReadTools declaration via
+ *     resolveCanopyReadTool. This handles shell-arg extraction for Codex
+ *     Bash reads like `sed -n '1,5p' src/x.ts`.
+ *
+ * Returns null when no path can be determined. Cheap for the fast path;
+ * the manifest path hits a memoized cache so the per-event cost is a
+ * map lookup plus a small regex/shell-quote parse.
+ */
+function extractToolFilePath(
+  agent: string | undefined,
+  toolName: string,
+  toolInput: unknown,
+): string | null {
   const inputObj = toolInput as Record<string, unknown> | undefined;
-  if (!inputObj) return null;
+  if (inputObj) {
+    const filePath = inputObj.file_path;
+    if (typeof filePath === 'string' && filePath.length > 0) return filePath;
+    const camelFilePath = inputObj.filePath;
+    if (typeof camelFilePath === 'string' && camelFilePath.length > 0) return camelFilePath;
+  }
 
-  const filePath = inputObj.file_path;
-  if (typeof filePath === 'string') return filePath;
-
-  const camelFilePath = inputObj.filePath;
-  if (typeof camelFilePath === 'string') return camelFilePath;
-
-  return null;
+  if (!agent) return null;
+  const manifest = getManifestByName(agent);
+  if (!manifest) return null;
+  const resolved = resolveCanopyReadTool(manifest, toolName, toolInput);
+  return resolved ? resolved.filePath : null;
 }
 
 function relativizeToolPath(filePath: string, projectRoot: string): string {
@@ -141,10 +164,11 @@ export function handleToolUse(
   toolInput: unknown,
   toolOutput: string | undefined,
   projectRoot: string,
+  agent?: string,
 ): void {
   const now = epochSeconds();
 
-  const filePath = extractToolFilePath(toolInput);
+  const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
 
   const activity = insertActivityWithBatch({
@@ -210,9 +234,10 @@ export function handleToolFailure(
   toolInput: unknown,
   error: string | undefined,
   isInterrupt: boolean | undefined,
+  agent?: string,
 ): void {
   const now = epochSeconds();
-  const filePath = extractToolFilePath(toolInput);
+  const filePath = extractToolFilePath(agent, toolName, toolInput);
 
   const activity = insertActivityWithBatch({
     session_id: sessionId,
