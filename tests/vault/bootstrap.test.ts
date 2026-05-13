@@ -138,4 +138,50 @@ describe('resolveBootstrapVaultDir', () => {
       delete process.env.MYCO_SERVICE_VARIANT;
     }
   });
+
+  test('variant-pinned dev daemon ignores cwd inside a prod-grove project', () => {
+    // The regression: a hook running inside /Users/x/unifi-mcp lazy-spawns
+    // the dev daemon. cwd-walk would resolve to unifi-mcp's vault, but
+    // unifi-mcp belongs to the prod Grove. The dashboard then refuses
+    // every cross-Grove request. The fix: when the variant env is set,
+    // the cwd is ignored — the variant pins us to its own Grove.
+    const prodGrove = 'grove_ffffffffffffffffffffffffffffffff';
+    const devGrove = 'grove_99999999999999999999999999999999';
+    const prodRoot = makeProject('prod-cwd');
+    const devRoot = makeProject('dev-target');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+
+    process.env.MYCO_SERVICE_VARIANT = 'dev';
+    try {
+      // cwd is inside the prod-grove project — but we are the dev daemon.
+      expect(resolveBootstrapVaultDir(prodRoot)).toBe(path.join(devRoot, '.myco'));
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
+
+  test('variant-pinned prod daemon ignores cwd inside a dev-grove project', () => {
+    // Symmetric: the prod daemon shouldn't be hijacked by a cwd that
+    // happens to fall inside the dogfood project either.
+    const prodGrove = 'grove_88888888888888888888888888888888';
+    const devGrove = 'grove_77777777777777777777777777777777';
+    const prodRoot = makeProject('prod-target');
+    const devRoot = makeProject('dev-cwd');
+    writeRegistry(prodGrove);
+    writeGroveToml(prodGrove, 'service');
+    writeGroveToml(devGrove, 'service-dev');
+    writeProjectsToml(prodGrove, [{ id: 'proj_prod', root: prodRoot }]);
+    writeProjectsToml(devGrove, [{ id: 'proj_dev', root: devRoot }]);
+
+    process.env.MYCO_SERVICE_VARIANT = 'prod';
+    try {
+      expect(resolveBootstrapVaultDir(devRoot)).toBe(path.join(prodRoot, '.myco'));
+    } finally {
+      delete process.env.MYCO_SERVICE_VARIANT;
+    }
+  });
 });

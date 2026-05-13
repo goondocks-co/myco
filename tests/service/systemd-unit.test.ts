@@ -56,4 +56,14 @@ describe('renderSystemdUnit', () => {
     const unit = renderSystemdUnit(baseSpec);
     expect(unit).toContain('WantedBy=default.target');
   });
+
+  test('raises LimitNOFILE past the systemd-default of 1024', () => {
+    // Most systemd distros default user-service `LimitNOFILE` to 1024.
+    // The daemon's HTTP server + SQLite handles + log streams blow past
+    // that under load. The unit file must override it.
+    const unit = renderSystemdUnit(baseSpec);
+    const match = unit.match(/^LimitNOFILE=(\d+)/m);
+    expect(match).not.toBeNull();
+    expect(Number(match![1])).toBeGreaterThan(10_000);
+  });
 });

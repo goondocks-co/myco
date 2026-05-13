@@ -34,6 +34,7 @@ import {
 } from '@myco/intelligence/local-openai-backends.js';
 import { DEFAULT_OPENAI_URL, DEFAULT_OPENROUTER_URL } from '@myco/agent/provider.js';
 import { errorMessage } from '@myco/utils/error-message.js';
+import { createInstrumentedFetch } from '@myco/utils/instrumented-fetch.js';
 
 const OPENAI_COMPATIBLE_PLACEHOLDER_API_KEY = 'myco-local-openai-compatible';
 const OPENAI_API_PATH = '/v1';
@@ -252,11 +253,39 @@ async function prepareLocalProviderExecution(
   };
 }
 
+/**
+ * Outbound LLM fetch instrumentation for the OpenAI Agents harness.
+ *
+ * Owns the cross-provider protection that's missing from the SDK out of
+ * the box: bounded response-headers timeout, no-progress watchdog (any
+ * stream that drops below the idle threshold gets aborted with a stable
+ * `fetch.stall` log entry), and `setImmediate` yields between body chunks
+ * so a high-rate streamed response never starves libuv timers or the
+ * daemon's HTTP listener. See `utils/instrumented-fetch.ts` for the full
+ * contract.
+ *
+ * Defaults are chosen for local-provider tolerance — LMStudio / Ollama
+ * on cold first-byte and big context loads can take a while — but still
+ * tight enough that a wedged stream dies in tens of seconds, not the
+ * SDK's default 600s.
+ */
+const harnessFetch = createInstrumentedFetch({
+  component: 'agent.openai-harness',
+  // 90s of silence allowed before headers — covers cold model warm-up on
+  // a local backend at high context.
+  responseHeadersTimeoutMs: 90_000,
+  // 45s between body chunks before we treat the stream as wedged. A
+  // healthy local model emits chunks well under a second apart even when
+  // it's reasoning; 45s is several orders of magnitude above that.
+  idleTimeoutMs: 45_000,
+});
+
 function createProvider(provider: ProviderConfig | undefined): OpenAIProvider {
   const { apiKey, baseURL } = resolveOpenAIClientConfig(provider);
   const client = new OpenAI({
     apiKey,
     ...(baseURL ? { baseURL } : {}),
+    fetch: harnessFetch,
   });
 
   return new OpenAIProvider({
