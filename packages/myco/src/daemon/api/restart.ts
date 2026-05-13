@@ -55,12 +55,15 @@ export function buildRestartShellCommand(
  *  current status. Process-agnostic — used by client-side surfaces
  *  (DaemonClient.spawnDaemon) that only need to know "is there a service
  *  supervisor that owns the daemon for our variant" without checking PID. */
+const SERVICE_VARIANTS: ServiceVariant[] = ['dev', 'prod'];
+
 export async function findInstalledServiceLabel(
   mgr: ServiceManager,
+  variant?: ServiceVariant,
 ): Promise<{ label: string; status: ServiceStatus } | null> {
   if (!mgr.supported) return null;
-  for (const variant of ['dev', 'prod'] as ServiceVariant[]) {
-    const label = serviceLabel(variant);
+  for (const candidate of variant ? [variant] : SERVICE_VARIANTS) {
+    const label = serviceLabel(candidate);
     const installed = await mgr.isInstalled(label).catch(() => false);
     if (!installed) continue;
     const status = await mgr.status(label).catch(() => null);
@@ -83,9 +86,11 @@ export async function detectServiceManagedLabel(
   mgr: ServiceManager,
   myPid: number = process.pid,
 ): Promise<string | null> {
-  const found = await findInstalledServiceLabel(mgr);
-  if (!found) return null;
-  return found.status.running && found.status.pid === myPid ? found.label : null;
+  for (const variant of SERVICE_VARIANTS) {
+    const found = await findInstalledServiceLabel(mgr, variant);
+    if (found?.status.running && found.status.pid === myPid) return found.label;
+  }
+  return null;
 }
 
 export async function handleRestart(

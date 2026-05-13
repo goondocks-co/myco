@@ -28,9 +28,10 @@ import {
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
+import { SERVICE_DEV_DIRNAME } from '../grove/paths.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
-import type { ServiceManager } from '../service/types.js';
+import type { ServiceManager, ServiceVariant } from '../service/types.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -125,6 +126,10 @@ function defaultIsPortBound(port: number, pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function serviceVariantForState(state: DaemonServiceState): ServiceVariant {
+  return path.basename(state.stateDir) === SERVICE_DEV_DIRNAME ? 'dev' : 'prod';
 }
 
 /**
@@ -458,7 +463,7 @@ export class DaemonClient {
     // the /restart and update-flow bypasses fixed earlier in this branch.
     try {
       const mgr = this.serviceManager ?? getServiceManager();
-      const installed = await findInstalledServiceLabel(mgr);
+      const installed = await findInstalledServiceLabel(mgr, serviceVariantForState(this.daemonService));
       if (installed) {
         if (!installed.status.running) {
           // Supervisor knows about the service but isn't running it (cold
