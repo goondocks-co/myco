@@ -263,6 +263,73 @@ describe('tool request context', () => {
     expect(rowProjectIdFromRequestContext(grove)).toBe(projectId);
   });
 
+  describe('callerRoot — caller cwd for worktree-local filesystem ops', () => {
+    it('preserves callerRoot from MYCO_CALLER_ROOT env var through Grove resolution', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const worktreeRoot = path.join(projectRoot, '..', 'worktrees', 'feature-x');
+        const resolved = requestContextFromEnvironment({
+          [REQUEST_CONTEXT_ENV.projectId]: projectId,
+          [REQUEST_CONTEXT_ENV.groveId]: groveId,
+          [REQUEST_CONTEXT_ENV.callerRoot]: worktreeRoot,
+        }, vaultDir);
+
+        expect(resolved.projectRoot).toBe(projectRoot);
+        expect(resolved.callerRoot).toBe(path.resolve(worktreeRoot));
+      });
+    });
+
+    it('preserves callerRoot from x-myco-caller-root HTTP header through Grove resolution', () => {
+      withRegisteredProject(({ projectRoot, vaultDir, groveId, projectId }) => {
+        const worktreeRoot = path.join(projectRoot, '..', 'worktrees', 'feature-x');
+        const resolved = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+          [REQUEST_CONTEXT_HEADERS.callerRoot]: worktreeRoot,
+        }, vaultDir);
+
+        expect(resolved.projectRoot).toBe(projectRoot);
+        expect(resolved.callerRoot).toBe(path.resolve(worktreeRoot));
+      });
+    });
+
+    it('leaves callerRoot null when no caller-root header or env is present', () => {
+      withRegisteredProject(({ vaultDir, groveId, projectId }) => {
+        const fromEnv = requestContextFromEnvironment({
+          [REQUEST_CONTEXT_ENV.projectId]: projectId,
+          [REQUEST_CONTEXT_ENV.groveId]: groveId,
+        }, vaultDir);
+        const fromHeaders = requestContextFromHttpHeaders({
+          [REQUEST_CONTEXT_HEADERS.projectId]: projectId,
+          [REQUEST_CONTEXT_HEADERS.groveId]: groveId,
+        }, vaultDir);
+
+        expect(fromEnv.callerRoot).toBeNull();
+        expect(fromHeaders.callerRoot).toBeNull();
+      });
+    });
+
+    it('round-trips callerRoot through requestContextHeaders', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+        projectId,
+        callerRoot: path.join('/tmp', 'worktrees', 'feature-y'),
+      });
+
+      const headers = requestContextHeaders(context);
+
+      expect(headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBe(path.join('/tmp', 'worktrees', 'feature-y'));
+    });
+
+    it('does not emit x-myco-caller-root when callerRoot is null', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), { projectId });
+
+      const headers = requestContextHeaders(context);
+
+      expect(headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBeUndefined();
+    });
+  });
+
   it('rejects a path-string project id at the brand boundary', () => {
     expect(() => resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
       // @ts-expect-error — exercising the runtime brand check on bad input
