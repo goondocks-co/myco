@@ -8,6 +8,7 @@ import { createSchema } from '@myco/db/schema';
 import { MycoConfigSchema, type MycoConfig } from '@myco/config/schema';
 import { createCanopyInjectHandler } from '@myco/daemon/api/canopy-inject';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { assertGroveProjectId } from '@myco/grove/ids';
 import {
   _resetPendingInjections,
   consumePendingInjection,
@@ -240,6 +241,39 @@ describe('POST /canopy/inject — handler', () => {
     expect(res.body).toMatchObject({ inject: true, path: 'src/big.ts' });
     const body = res.body as { injectionTokens: number };
     expect(consumePendingInjection('s1', absPath)).toBe(body.injectionTokens);
+  });
+
+  it('uses requestContext.callerRoot to canonicalize worktree absolute paths', async () => {
+    const worktreeRoot = path.join(os.tmpdir(), 'myco-worktree-canopy');
+    seed(tmpProjectId, [{ path: 'src/worktree.ts', size: 4096 }]);
+    const handler = createCanopyInjectHandler({
+      liveConfig: { current: makeConfig() },
+      vaultDir: path.join(tmpVault, '.myco'),
+      getDatabase,
+    });
+    const absoluteWorktreePath = path.join(worktreeRoot, 'src/worktree.ts');
+    const res = await handler({
+      requestContext: {
+        projectRoot: tmpVault,
+        callerRoot: worktreeRoot,
+        projectId: assertGroveProjectId(tmpProjectId),
+        groveId: null,
+        machineId: 'local',
+        sessionId: 's-worktree',
+        projectVaultDir: path.join(tmpVault, '.myco'),
+        databasePath: path.join(tmpVault, '.myco', SQLITE_DB_FILE),
+        source: 'explicit',
+      },
+      body: {
+        sessionId: 's-worktree',
+        agent: 'claude-code',
+        toolInput: { file_path: absoluteWorktreePath },
+      },
+    });
+
+    expect(res.body).toMatchObject({ inject: true, path: 'src/worktree.ts' });
+    const body = res.body as { injectionTokens: number };
+    expect(consumePendingInjection('s-worktree', absoluteWorktreePath)).toBe(body.injectionTokens);
   });
 
   it('uses summary [meta] line when llm_description is populated', async () => {

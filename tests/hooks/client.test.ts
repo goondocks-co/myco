@@ -61,6 +61,7 @@ describe('DaemonClient', () => {
     delete process.env[REQUEST_CONTEXT_ENV.groveId];
     delete process.env[REQUEST_CONTEXT_ENV.machineId];
     delete process.env[REQUEST_CONTEXT_ENV.sessionId];
+    delete process.env[REQUEST_CONTEXT_ENV.callerRoot];
   });
 
   it('posts to daemon and returns data', async () => {
@@ -142,6 +143,7 @@ describe('DaemonClient', () => {
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.groveId]).toBe(grove.id);
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.machineId]).toBe('machine-a');
       expect(result.data.headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBe('sess-hook');
+      expect(result.data.headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBe(process.cwd());
     } finally {
       if (previousHome === undefined) delete process.env.MYCO_HOME;
       else process.env.MYCO_HOME = previousHome;

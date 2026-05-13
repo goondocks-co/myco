@@ -48,7 +48,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
-import { rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
+import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -253,7 +253,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     requestProjectId: GroveProjectId,
     requestRowProjectId: string | null,
     requestProjectRoot: string,
-    requestCallerRoot: string | null,
+    requestFilesystemRoot: string,
     requestMachineId: string,
     requestProductionRef: string | null,
     hookTranscriptPath?: string,
@@ -484,11 +484,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const sessionStopMs = Date.now();
     const sessionBatches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
 
-    // Caller-local: when the Stop request originates in a worktree, anchor
-    // the watch dirs and plan source paths at the worktree cwd so files
-    // written there are seen and stored as portable relative paths. Falls
-    // back to the daemon-boot registered root when no callerRoot is set.
-    const planCaptureRoot = requestCallerRoot ?? planWatchConfig.projectRoot;
+    const planCaptureRoot = requestFilesystemRoot;
     for (const watchDir of planWatchConfig.watchDirs) {
       const absoluteWatchDir = resolvePlanWatchDir(watchDir, planCaptureRoot);
       if (!fs.existsSync(absoluteWatchDir)) continue;
@@ -605,7 +601,9 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     const requestScope = rowProjectIdFromRequestContext(req.requestContext);
     const requestRowProjectId = requestScope === undefined ? requestProjectId : requestScope;
     const requestProjectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
-    const requestCallerRoot = req.requestContext?.callerRoot ?? null;
+    const requestFilesystemRoot = req.requestContext
+      ? filesystemRootFromRequestContext(req.requestContext)
+      : planWatchConfig.projectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
     const requestProductionRef = primaryProductionRef(configForRequest(req));
 
@@ -685,7 +683,7 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       requestProjectId,
       requestRowProjectId,
       requestProjectRoot,
-      requestCallerRoot,
+      requestFilesystemRoot,
       requestMachineId,
       requestProductionRef,
       normalizedTranscriptPath,

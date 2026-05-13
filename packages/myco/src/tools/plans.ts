@@ -9,7 +9,12 @@
 import type { DaemonClient } from '@myco/hooks/client.js';
 import { saveMcpPlan } from '@myco/plans/save-mcp.js';
 import { listPlansForMcp } from '@myco/plans/list-for-mcp.js';
-import { requestContextHeaders, resolveRequestContextForVault, type MycoRequestContext } from './request-context.js';
+import {
+  filesystemRootFromRequestContext,
+  requestContextHeaders,
+  resolveRequestContextForVault,
+  type MycoRequestContext,
+} from './request-context.js';
 import { extractErrorMessage, type ToolFailure } from './error.js';
 
 // ---------------------------------------------------------------------------
@@ -94,10 +99,7 @@ export async function handleMycoPlans(
       title: input.title,
       status: input.status,
       tags: input.tags,
-      // Caller-local: source path keys must anchor to where the user is
-      // (worktree cwd) so the same plan file produces the same logical_key
-      // from any tree. Falls back to projectRoot when no callerRoot is set.
-      projectRoot: context.callerRoot ?? context.projectRoot,
+      projectRoot: filesystemRootFromRequestContext(context),
       requestContext: context,
     });
 

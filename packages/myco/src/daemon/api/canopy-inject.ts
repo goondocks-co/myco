@@ -22,11 +22,11 @@
 
 import path from 'node:path';
 import { z } from 'zod';
-import { resolveRequestContextForVault } from '../../tools/request-context.js';
+import { filesystemRootFromRequestContext, resolveRequestContextForVault } from '../../tools/request-context.js';
 import type { MycoConfig } from '../../config/schema.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
-import type { RouteResponse } from '../router.js';
+import type { RouteRequest, RouteResponse } from '../router.js';
 import { errorBody } from './error-envelope.js';
 import { composeBlob, blobTokenCost } from '../../canopy/inject/compose.js';
 import { decide, type IntentDecision, type NoInjectionReason } from '../../canopy/inject/filter.js';
@@ -85,7 +85,7 @@ export function relativizeForLookup(filePath: string, projectRoot: string): stri
 }
 
 export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
-  return async function handleCanopyInject(req: { body: unknown }): Promise<RouteResponse> {
+  return async function handleCanopyInject(req: Pick<RouteRequest, 'body' | 'requestContext'>): Promise<RouteResponse> {
     const parsed = InjectBody.safeParse(req.body);
     if (!parsed.success) {
       return {
@@ -96,8 +96,8 @@ export function createCanopyInjectHandler(deps: CanopyInjectDeps) {
     const { sessionId, agent, toolInput } = parsed.data;
     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
 
-    const ctx = resolveRequestContextForVault(deps.vaultDir);
-    const projectRoot = ctx.projectRoot;
+    const ctx = req.requestContext ?? resolveRequestContextForVault(deps.vaultDir);
+    const projectRoot = filesystemRootFromRequestContext(ctx);
     const projectId = ctx.projectId;
     const config = deps.liveConfig.current.cortex.canopy;
 

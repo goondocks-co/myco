@@ -11,6 +11,7 @@ import {
   REQUEST_CONTEXT_ENV,
   REQUEST_CONTEXT_HEADERS,
   UnauthorizedRequestContextError,
+  filesystemRootFromRequestContext,
   requestContextFromEnvironment,
   requestContextFromHttpHeaders,
   requestContextHeaders,
@@ -327,6 +328,31 @@ describe('tool request context', () => {
       const headers = requestContextHeaders(context);
 
       expect(headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBeUndefined();
+    });
+
+    it('uses projectRoot as the live filesystem root when callerRoot is absent', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const projectRoot = path.join('/tmp', 'project');
+      const context = resolveLegacyRequestContext(path.join(projectRoot, '.myco'), {
+        projectId,
+        projectRoot,
+      });
+
+      expect(filesystemRootFromRequestContext(context)).toBe(path.resolve(projectRoot));
+    });
+
+    it('uses callerRoot as the live filesystem root without changing registered projectRoot', () => {
+      const projectId = assertGroveProjectId(createProjectId());
+      const projectRoot = path.join('/tmp', 'project');
+      const worktreeRoot = path.join('/tmp', 'worktrees', 'feature-y');
+      const context = resolveLegacyRequestContext(path.join(projectRoot, '.myco'), {
+        projectId,
+        projectRoot,
+        callerRoot: worktreeRoot,
+      });
+
+      expect(context.projectRoot).toBe(path.resolve(projectRoot));
+      expect(filesystemRootFromRequestContext(context)).toBe(worktreeRoot);
     });
   });
 

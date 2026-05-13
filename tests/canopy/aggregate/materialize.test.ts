@@ -10,7 +10,8 @@ import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
-const PROJECT_ID = '/repo/myco';
+const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PROJECT_ROOT = '/repo/myco';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -21,7 +22,8 @@ function seedSession(sessionId: string) {
     agent: 'claude-code',
     started_at: now,
     created_at: now,
-    project_root: PROJECT_ID,
+    project_id: PROJECT_ID,
+    project_root: PROJECT_ROOT,
   });
 }
 
