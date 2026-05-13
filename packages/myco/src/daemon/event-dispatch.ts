@@ -483,11 +483,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       try {
         handleToolUse(
           event.session_id,
+          typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
           requestProjectRoot,
-          typeof event.agent === 'string' ? event.agent : undefined,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
@@ -523,11 +523,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
       try {
         handleToolFailure(
           event.session_id,
+          typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
           toolName,
           event.tool_input,
           typeof event.error === 'string' ? event.error : undefined,
           !!event.is_interrupt,
-          typeof event.agent === 'string' ? event.agent : undefined,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record tool failure', { session_id: event.session_id, error: (err as Error).message });

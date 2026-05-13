@@ -73,9 +73,9 @@ describe('daemon capture flow', () => {
     expect(result1.promptNumber).toBe(1);
 
     // --- PostToolUse × 3 ---
-    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.ts' }, 'File written', TEST_PROJECT_ROOT);
-    handleToolUse(sessionId, 'Bash', { command: 'npm run build' }, 'Build succeeded', TEST_PROJECT_ROOT);
-    handleToolUse(sessionId, 'Read', { file_path: '/tmp/hello.ts' }, 'export function...', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Write', { file_path: '/tmp/hello.ts' }, 'File written', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Bash', { command: 'npm run build' }, 'Build succeeded', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Read', { file_path: '/tmp/hello.ts' }, 'export function...', TEST_PROJECT_ROOT);
 
     // --- UserPromptSubmit #2 (closes batch 1, opens batch 2) ---
     const result2 = handleUserPrompt(sessionId, 'Now add tests');
@@ -83,7 +83,7 @@ describe('daemon capture flow', () => {
     expect(result2.promptNumber).toBe(2);
 
     // --- PostToolUse × 1 ---
-    handleToolUse(sessionId, 'Write', { file_path: '/tmp/hello.test.ts' }, 'Test file written', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Write', { file_path: '/tmp/hello.test.ts' }, 'Test file written', TEST_PROJECT_ROOT);
 
     // --- Stop (closes batches, NOT the session) ---
     handleStopBatches(sessionId);
@@ -152,7 +152,7 @@ describe('daemon capture flow', () => {
     });
 
     // Tool use without a prior user prompt — should still record activity
-    handleToolUse(sessionId, 'Read', { file_path: '/tmp/file.ts' }, 'contents', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Read', { file_path: '/tmp/file.ts' }, 'contents', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
@@ -171,7 +171,7 @@ describe('daemon capture flow', () => {
       created_at: now,
     });
 
-    handleToolUse(sessionId, 'edit', { filePath: '/tmp/opencode.ts' }, 'updated', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'opencode', 'edit', { filePath: '/tmp/opencode.ts' }, 'updated', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
@@ -191,7 +191,7 @@ describe('daemon capture flow', () => {
     const absolute = `${process.cwd()}/src/file.ts`;
     recordPendingInjection(sessionId, 'src/file.ts', 123);
 
-    handleToolUse(sessionId, 'Read', { file_path: absolute }, 'contents', TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Read', { file_path: absolute }, 'contents', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities).toHaveLength(1);
@@ -254,7 +254,7 @@ describe('daemon capture flow', () => {
 
     // Send a very large tool input
     const largeInput = { file_path: '/tmp/file.ts', content: 'x'.repeat(10000) };
-    handleToolUse(sessionId, 'Write', largeInput, undefined, TEST_PROJECT_ROOT);
+    handleToolUse(sessionId, 'claude-code', 'Write', largeInput, undefined, TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
@@ -699,6 +699,7 @@ describe('new event type handlers', () => {
 
       handleToolFailure(
         sessionId,
+        'claude-code',
         'Bash',
         { command: 'rm -rf /' },
         'Permission denied',
@@ -719,7 +720,7 @@ describe('new event type handlers', () => {
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-      handleToolFailure(sessionId, 'Bash', { command: 'sleep 999' }, undefined, true);
+      handleToolFailure(sessionId, 'claude-code', 'Bash', { command: 'sleep 999' }, undefined, true);
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities.length).toBe(1);
@@ -733,7 +734,7 @@ describe('new event type handlers', () => {
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-      handleToolFailure(sessionId, 'Write', { file_path: '/tmp/readonly.ts' }, 'EACCES', false);
+      handleToolFailure(sessionId, 'claude-code', 'Write', { file_path: '/tmp/readonly.ts' }, 'EACCES', false);
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities[0].file_path).toBe('/tmp/readonly.ts');
@@ -745,7 +746,7 @@ describe('new event type handlers', () => {
 
       upsertSession({ id: sessionId, agent: 'opencode', started_at: now, created_at: now });
 
-      handleToolFailure(sessionId, 'edit', { filePath: '/tmp/opencode-readonly.ts' }, 'EACCES', false);
+      handleToolFailure(sessionId, 'opencode', 'edit', { filePath: '/tmp/opencode-readonly.ts' }, 'EACCES', false);
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
       expect(activities[0].file_path).toBe('/tmp/opencode-readonly.ts');
@@ -906,18 +907,18 @@ describe('new event type handlers', () => {
   // --- Manifest-driven file path extraction (Codex Bash reads) ---
 
   describe('handleToolUse manifest-driven path extraction', () => {
-    it('fast path: Claude Read with file_path returns top-level value (agent ignored)', async () => {
+    it('Claude Read with file_path: extracts via pathBearingTools manifest entry', async () => {
       const sessionId = 'test-manifest-extract-001';
       const now = epochNow();
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
       handleToolUse(
         sessionId,
+        'claude-code',
         'Read',
         { file_path: '/tmp/claude-read.ts' },
         'contents',
         TEST_PROJECT_ROOT,
-        'claude-code',
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
@@ -925,18 +926,65 @@ describe('new event type handlers', () => {
       expect(activities[0].file_path).toBe('/tmp/claude-read.ts');
     });
 
-    it("manifest path: Codex Bash with `sed -n '1,5p' src/x.ts` extracts src/x.ts", async () => {
+    it('Claude Write with file_path: extracts via pathBearingTools (write-side superset)', async () => {
+      const sessionId = 'test-manifest-extract-write';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'claude-code',
+        'Write',
+        { file_path: '/tmp/claude-write.ts' },
+        'wrote',
+        TEST_PROJECT_ROOT,
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(1);
+      expect(activities[0].file_path).toBe('/tmp/claude-write.ts');
+    });
+
+    it('Claude Edit / MultiEdit also resolve file_path via pathBearingTools', async () => {
+      const sessionId = 'test-manifest-extract-edit';
+      const now = epochNow();
+      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+
+      handleToolUse(
+        sessionId,
+        'claude-code',
+        'Edit',
+        { file_path: '/tmp/a.ts' },
+        'edited',
+        TEST_PROJECT_ROOT,
+      );
+      handleToolUse(
+        sessionId,
+        'claude-code',
+        'MultiEdit',
+        { file_path: '/tmp/b.ts' },
+        'multi-edited',
+        TEST_PROJECT_ROOT,
+      );
+
+      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+      expect(activities).toHaveLength(2);
+      expect(activities[0].file_path).toBe('/tmp/a.ts');
+      expect(activities[1].file_path).toBe('/tmp/b.ts');
+    });
+
+    it("Codex Bash with `sed -n '1,5p' src/x.ts` extracts src/x.ts", async () => {
       const sessionId = 'test-manifest-extract-002';
       const now = epochNow();
       upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
 
       handleToolUse(
         sessionId,
+        'codex',
         'Bash',
         { command: "sed -n '1,5p' src/x.ts" },
         'line one\nline two',
         TEST_PROJECT_ROOT,
-        'codex',
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
@@ -944,7 +992,7 @@ describe('new event type handlers', () => {
       expect(activities[0].file_path).toBe('src/x.ts');
     });
 
-    it('manifest path: Codex pending injection is consumed for Bash sed reads', async () => {
+    it('Codex pending injection is consumed for Bash sed reads', async () => {
       const sessionId = 'test-manifest-extract-003';
       const now = epochNow();
       upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
@@ -953,11 +1001,11 @@ describe('new event type handlers', () => {
 
       handleToolUse(
         sessionId,
+        'codex',
         'Bash',
         { command: "sed -n '1,5p' src/y.ts" },
         'contents',
         TEST_PROJECT_ROOT,
-        'codex',
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
@@ -966,18 +1014,18 @@ describe('new event type handlers', () => {
       expect(activities[0].canopy_injection_tokens).toBe(777);
     });
 
-    it('manifest path: Codex Bash with `ls -la` returns no file path', async () => {
+    it('Codex Bash with `ls -la` returns no file path', async () => {
       const sessionId = 'test-manifest-extract-004';
       const now = epochNow();
       upsertSession({ id: sessionId, agent: 'codex', started_at: now, created_at: now });
 
       handleToolUse(
         sessionId,
+        'codex',
         'Bash',
         { command: 'ls -la' },
         '',
         TEST_PROJECT_ROOT,
-        'codex',
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
@@ -985,37 +1033,18 @@ describe('new event type handlers', () => {
       expect(activities[0].file_path).toBeNull();
     });
 
-    it('unknown agent: fast path still works, manifest lookup safely returns no path', async () => {
+    it('unknown agent: manifest lookup safely returns no path (no crash)', async () => {
       const sessionId = 'test-manifest-extract-005';
       const now = epochNow();
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
       handleToolUse(
         sessionId,
-        'Bash',
-        { command: "sed -n '1,5p' src/z.ts" },
-        '',
-        TEST_PROJECT_ROOT,
         'nonexistent-agent',
-      );
-
-      const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
-      expect(activities).toHaveLength(1);
-      expect(activities[0].file_path).toBeNull();
-    });
-
-    it('missing agent (undefined): fast path only, no crash on Bash command', async () => {
-      const sessionId = 'test-manifest-extract-006';
-      const now = epochNow();
-      upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
-
-      handleToolUse(
-        sessionId,
         'Bash',
         { command: "sed -n '1,5p' src/z.ts" },
         '',
         TEST_PROJECT_ROOT,
-        undefined,
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
@@ -1030,11 +1059,11 @@ describe('new event type handlers', () => {
 
       handleToolFailure(
         sessionId,
+        'codex',
         'Bash',
         { command: "sed -n '1,5p' src/missing.ts" },
         'ENOENT',
         false,
-        'codex',
       );
 
       const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });

@@ -525,7 +525,23 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "canopyReadTools": [],
-      "pathBearingTools": []
+      "pathBearingTools": [
+        {
+          "tool": "read",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "write",
+          "pathField": "filePath",
+          "pathKind": "file"
+        },
+        {
+          "tool": "edit",
+          "pathField": "filePath",
+          "pathKind": "file"
+        }
+      ]
     }
   },
   {
