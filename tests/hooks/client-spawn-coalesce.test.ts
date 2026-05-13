@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
-import { resolveServiceDaemonStatePath } from '@myco/grove/paths';
+import { resolveServiceDaemonStatePath, setDevServiceMode } from '@myco/grove/paths';
 import * as childProcessActual__ns from 'node:child_process';
 import { FakeServiceManager, noServiceManager } from '../helpers/fake-service-manager';
 
@@ -49,6 +49,7 @@ describe('DaemonClient.spawnDaemon — coalesce guard', () => {
   });
 
   afterEach(() => {
+    setDevServiceMode(false);
     try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -152,6 +153,7 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
   let statePath: string;
 
   beforeEach(() => {
+    setDevServiceMode(false);
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-svc-defer-'));
     statePath = resolveServiceDaemonStatePath();
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
@@ -160,6 +162,7 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
   });
 
   afterEach(() => {
+    setDevServiceMode(false);
     try { fs.unlinkSync(statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -200,9 +203,25 @@ describe('DaemonClient.spawnDaemon — service-aware deferral', () => {
     mgr.statuses.set('co.goondocks.myco-dev', {
       installed: true, running: false, pid: null, lastExitCode: null, unitPath: '/x.plist',
     });
+    setDevServiceMode(true);
     await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
     expect(spawnMock).not.toHaveBeenCalled();
     expect(mgr.startCalls).toEqual(['co.goondocks.myco-dev']);
+  });
+
+  it('prod client ignores installed dev service and starts prod service', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco-dev');
+    mgr.statuses.set('co.goondocks.myco-dev', {
+      installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/dev.plist',
+    });
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', {
+      installed: true, running: false, pid: null, lastExitCode: 78, unitPath: '/prod.plist',
+    });
+    await new DaemonClient(vaultDir, { serviceManager: mgr }).spawnDaemon();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(mgr.startCalls).toEqual(['co.goondocks.myco']);
   });
 
   it('unsupported platform: falls back to legacy raw spawn', async () => {
