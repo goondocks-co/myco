@@ -331,6 +331,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
     return {
       projectRoot: registeredRoot,
       projectId: assertGroveProjectId(projectId),
+      callerRoot: null,
       groveId: registered.grove.id,
       machineId,
       sessionId,
@@ -351,6 +352,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
       const registeredRoot = path.resolve(registered.project.root);
       return {
         projectRoot: registeredRoot,
+        callerRoot: null,
         projectId: assertGroveProjectId(registered.project.project_id),
         groveId: registered.grove.id,
         machineId,
@@ -373,6 +375,7 @@ function resolveTeamRequestContext(vaultDir: string): MycoRequestContext {
   }
   return {
     projectRoot: fallbackProjectRoot,
+    callerRoot: null,
     projectId: assertGroveProjectId(fallbackProjectId),
     groveId: null,
     machineId,

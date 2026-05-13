@@ -20,6 +20,17 @@ export const REQUEST_CONTEXT_HEADERS = {
   groveId: 'x-myco-grove-id',
   machineId: 'x-myco-machine-id',
   sessionId: 'x-myco-session-id',
+  /**
+   * Caller's actual cwd (per-request, free-form). Distinct from
+   * `x-myco-project-root` which is the canonical/registered project
+   * root and validated against the Grove registry. `callerRoot`
+   * represents "where the user is right now" — typically a git
+   * worktree path that differs from the registered main tree — and
+   * is preserved through resolution untouched. Filesystem ops that
+   * should follow the caller (plan watch dirs, plan source path
+   * keys) read `context.callerRoot ?? context.projectRoot`.
+   */
+  callerRoot: 'x-myco-caller-root',
 } as const;
 
 export const REQUEST_CONTEXT_ENV = {
@@ -28,6 +39,7 @@ export const REQUEST_CONTEXT_ENV = {
   groveId: 'MYCO_GROVE_ID',
   machineId: 'MYCO_MACHINE_ID',
   sessionId: 'MYCO_SESSION_ID',
+  callerRoot: 'MYCO_CALLER_ROOT',
 } as const;
 
 /**
@@ -84,6 +96,17 @@ export type RequestContextSource = 'explicit' | 'headers' | 'legacy-vault';
 
 export interface MycoRequestContext {
   projectRoot: string;
+  /**
+   * Caller's actual cwd, populated from `x-myco-caller-root` (or
+   * `MYCO_CALLER_ROOT`) and preserved untouched through registry
+   * resolution. Null when no caller-root was supplied. Readers that
+   * need "where the user is right now" — plan watch dirs, plan
+   * source path keys, hook artifact discovery — use
+   * `context.callerRoot ?? context.projectRoot`. Readers that need
+   * canonical project identity (vault dir, db path, Grove
+   * registration) stay on `projectRoot`.
+   */
+  callerRoot: string | null;
   projectId: GroveProjectId;
   groveId: string | null;
   machineId: string;
@@ -100,6 +123,7 @@ export function isGroveScoped(context: MycoRequestContext | undefined | null): b
 
 export interface LegacyRequestContextOptions {
   projectRoot?: string;
+  callerRoot?: string | null;
   projectId?: GroveProjectId;
   groveId?: string | null;
   machineId?: string;
@@ -129,6 +153,7 @@ export function resolveLegacyRequestContext(
   const projectRoot = options.projectRoot ?? resolveProjectRoot(vaultDir);
   return {
     projectRoot,
+    callerRoot: options.callerRoot ?? null,
     projectId: assertGroveProjectId(options.projectId),
     groveId: options.groveId ?? null,
     machineId: options.machineId ?? process.env.MYCO_MACHINE_ID ?? getMachineId(vaultDir),
@@ -142,6 +167,7 @@ export function resolveLegacyRequestContext(
 export function requestContextHeaders(context: MycoRequestContext): Record<string, string> {
   return compactHeaders({
     [REQUEST_CONTEXT_HEADERS.projectRoot]: context.projectRoot,
+    [REQUEST_CONTEXT_HEADERS.callerRoot]: context.callerRoot,
     [REQUEST_CONTEXT_HEADERS.projectId]: context.projectId,
     [REQUEST_CONTEXT_HEADERS.groveId]: context.groveId,
     [REQUEST_CONTEXT_HEADERS.machineId]: context.machineId,
@@ -159,7 +185,8 @@ export function requestContextFromHttpHeaders(
   // trigger a manifest read — failure mode is "unauthorized" full stop.
   enforceContextSwitchAuth(headers, options.expectedAuthToken ?? null);
 
-  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir);
+  const callerRoot = normalizeCallerRoot(readHeader(headers, REQUEST_CONTEXT_HEADERS.callerRoot));
+  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { callerRoot });
   const explicit: ExplicitContextInput = {
     projectRoot: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectRoot),
     projectId: readHeader(headers, REQUEST_CONTEXT_HEADERS.projectId),
@@ -232,7 +259,8 @@ export function requestContextFromEnvironment(
 ): MycoRequestContext {
   const machineId = readEnv(env, REQUEST_CONTEXT_ENV.machineId);
   const sessionId = readEnv(env, REQUEST_CONTEXT_ENV.sessionId);
-  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { machineId, sessionId });
+  const callerRoot = normalizeCallerRoot(readEnv(env, REQUEST_CONTEXT_ENV.callerRoot));
+  const { context: fallback, manifest } = buildVaultFallback(fallbackVaultDir, { machineId, sessionId, callerRoot });
   const hasExplicitProjectContext = [
     REQUEST_CONTEXT_ENV.projectRoot,
     REQUEST_CONTEXT_ENV.projectId,
@@ -326,7 +354,7 @@ export function tryResolveRequestContextForVault(
  */
 function buildVaultFallback(
   vaultDir: string,
-  overrides: { machineId?: string; sessionId?: string | null } = {},
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
 ): { context: MycoRequestContext; manifest: ProjectManifest | null } {
   const result = tryBuildVaultFallback(vaultDir, overrides);
   if (result.kind === 'legacy') {
@@ -345,7 +373,7 @@ function buildVaultFallback(
  */
 function tryBuildVaultFallback(
   vaultDir: string,
-  overrides: { machineId?: string; sessionId?: string | null } = {},
+  overrides: { machineId?: string; sessionId?: string | null; callerRoot?: string | null } = {},
 ): { kind: 'grove'; context: MycoRequestContext; manifest: ProjectManifest } | { kind: 'legacy'; vaultDir: string; reason: string } {
   const manifest = readManifest(vaultDir);
   if (!manifest?.project?.id) {
@@ -360,6 +388,7 @@ function tryBuildVaultFallback(
     kind: 'grove',
     context: {
       projectRoot,
+      callerRoot: overrides.callerRoot ?? null,
       projectId: assertGroveProjectId(manifest.project.id),
       groveId: null,
       machineId: overrides.machineId ?? getMachineId(vaultDir),
@@ -597,6 +626,17 @@ function readManifest(projectVaultDir: string): ProjectManifest | null {
   // that field from this loader rather than calling `loadProjectLocalManifest`
   // directly so the legacy-vault and post-migration code paths stay unified.
   return loadProjectManifest(projectVaultDir);
+}
+
+/**
+ * Resolve a caller-root value (header or env) to an absolute path,
+ * or null when the caller did not supply one. Centralized so the
+ * HTTP and env entry points apply the same `path.resolve` normalization
+ * — readers downstream get a value that is always absolute when present.
+ */
+function normalizeCallerRoot(raw: string | undefined): string | null {
+  if (!raw) return null;
+  return path.resolve(raw);
 }
 
 function readHeader(headers: IncomingHttpHeaders, name: string): string | undefined {

@@ -525,4 +525,70 @@ describe('createStopProcessor session capture rules', () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  it('reconciles a worktree-local plan-dir write using requestContext.callerRoot', async () => {
+    const sessionId = 'claude-plan-reconcile-worktree';
+    const now = epochNow();
+    // planWatchConfig.projectRoot is set at daemon boot from the registered
+    // (main-tree) root. A Stop request from a worktree carries callerRoot
+    // pointing at the worktree; the handler must anchor watch dirs there
+    // or the worktree-local plan file is never seen.
+    const registeredRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-main-tree-'));
+    const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-'));
+    const transcriptPath = path.join(worktreeRoot, `${sessionId}.jsonl`);
+    const specDir = path.join(worktreeRoot, 'docs/superpowers/specs');
+    const specPath = path.join(specDir, 'worktree-spec.md');
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.writeFileSync(transcriptPath, '', 'utf-8');
+    fs.writeFileSync(specPath, '# Worktree Spec\n\nWritten in a worktree.', 'utf-8');
+
+    upsertSession({
+      id: sessionId,
+      agent: 'claude-code',
+      status: 'active',
+      started_at: now - 60,
+      created_at: now - 60,
+    });
+
+    const stopProcessor = makeStopProcessor(vaultDir, {
+      planWatchConfig: {
+        watchDirs: ['docs/superpowers/specs'],
+        // Registered main-tree root — the watcher resolves dirs here by
+        // default, which would miss the worktree write.
+        projectRoot: registeredRoot,
+        extensions: ['.md'],
+      },
+    });
+
+    const res = await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'claude-code',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'done',
+      },
+      requestContext: {
+        projectRoot: registeredRoot,
+        callerRoot: worktreeRoot,
+        projectId: 'proj_worktree000000000000000000000',
+        groveId: 'grove-worktree',
+        machineId: 'machine-w',
+        sessionId: null,
+        projectVaultDir: registeredRoot,
+        databasePath: vaultDir,
+        source: 'headers',
+      },
+    } as never);
+
+    expect(res.body).toEqual({ ok: true });
+    await stopProcessor.getActiveProcessing();
+
+    const plans = listPlansBySession(sessionId, ALL_PROJECTS_SCOPE);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].title).toBe('Worktree Spec');
+    expect(plans[0].source_path).toBe('docs/superpowers/specs/worktree-spec.md');
+
+    fs.rmSync(registeredRoot, { recursive: true, force: true });
+    fs.rmSync(worktreeRoot, { recursive: true, force: true });
+  });
+
 });

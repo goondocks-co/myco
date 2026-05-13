@@ -348,6 +348,7 @@ function buildRegisteredProjectScope(input: {
   const projectId = assertGroveProjectId(input.project.project_id);
   const requestContext: MycoRequestContext = {
     projectRoot,
+    callerRoot: null,
     projectId,
     groveId: input.grove.id,
     machineId: input.machineId,

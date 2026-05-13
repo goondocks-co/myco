@@ -142,6 +142,9 @@ export function resolveCallContext(
 
   return {
     projectRoot: resolvedProjectRoot,
+    // Preserve the caller's cwd across the pivot — switching Grove or
+    // pivoting project_id doesn't change "where the user is right now".
+    callerRoot: baseContext.callerRoot,
     projectId: resolvedProjectId,
     groveId: grove.id,
     machineId: baseContext.machineId,

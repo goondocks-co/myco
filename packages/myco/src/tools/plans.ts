@@ -94,7 +94,10 @@ export async function handleMycoPlans(
       title: input.title,
       status: input.status,
       tags: input.tags,
-      projectRoot: context.projectRoot,
+      // Caller-local: source path keys must anchor to where the user is
+      // (worktree cwd) so the same plan file produces the same logical_key
+      // from any tree. Falls back to projectRoot when no callerRoot is set.
+      projectRoot: context.callerRoot ?? context.projectRoot,
       requestContext: context,
     });
 
