@@ -62,6 +62,13 @@ class LocalVaultMcpServer implements MCPServer {
       throw new Error(`Unknown MCP tool: ${toolName}`);
     }
     const result = await tool.handler(args ?? {});
+    // Vault tools invoke synchronous bun:sqlite work — a chatty agent doing
+    // dozens of tool calls per turn would queue all of them as immediate
+    // microtask resolutions, starving libuv timers (PowerManager tick) and
+    // the daemon HTTP poll phase. Hand control back to libuv between tool
+    // dispatches so `/health` and scheduled jobs keep getting scheduling
+    // slots even during a hot tool-call burst.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     return result.content;
   }
 

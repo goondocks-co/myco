@@ -168,6 +168,7 @@ import { RESTART_REASON_FILENAME } from '../constants/update.js';
 import { buildScopedConfigSaveNotification } from '../config/focus.js';
 import { notify } from '../notifications/notify.js';
 import { PowerManager } from './power.js';
+import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
 import {
@@ -762,6 +763,12 @@ export async function main(): Promise<void> {
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
   });
+
+  // Always-on diagnostic for event-loop pinning. Catches stalls regardless
+  // of cause (sync bun:sqlite, multi-MB JSON.parse, microtask cascade in a
+  // streaming SDK aggregator). Stopped during shutdown alongside the
+  // PowerManager.
+  const eventLoopLagProbe = new EventLoopLagProbe(logger);
 
   // Per-project power state. Pre-Grove, each project ran in its own
   // daemon with its own PowerManager. With one global daemon hosting
@@ -1741,6 +1748,7 @@ export async function main(): Promise<void> {
   }
 
   powerManager.start();
+  eventLoopLagProbe.start();
 
   // --- Shutdown ---
 
@@ -1763,6 +1771,7 @@ export async function main(): Promise<void> {
   const runShutdown = async (signal: string) => {
     logger.info(LOG_KINDS.DAEMON_START, `${signal} received`);
     powerManager.stop();
+    eventLoopLagProbe.stop();
     // Wait for any active stop processing to finish before shutting down
     const activeStopProcessing = stopProcessor.getActiveProcessing();
     if (activeStopProcessing) {
