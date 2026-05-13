@@ -214,7 +214,24 @@ const CapabilitiesSchema = z.object({
    * for a given tool call and where the path lives. See `CanopyReadToolSchema`.
    */
   canopyReadTools: z.array(CanopyReadToolSchema).default([]),
-}).default(() => ({ preToolUseInjection: false, sessionStartInjection: false, canopyReadTools: [] }));
+  /**
+   * Declarations of tool calls that carry a file path on `tool_input`. Broader
+   * superset of `canopyReadTools` — used by capture (PostToolUse activity
+   * insert) to populate `activities.file_path` for write-side tools too
+   * (Write, Edit, MultiEdit), so the FTS index and per-activity file column
+   * stay accurate. Reuses the same entry shape (structured / shell-arg).
+   *
+   * Every `canopyReadTools` entry SHOULD also appear here — a refine() on the
+   * outer manifest verifies the invariant: if `canopyReadTools` is non-empty,
+   * `pathBearingTools` must be non-empty too.
+   */
+  pathBearingTools: z.array(CanopyReadToolSchema).default([]),
+}).default(() => ({
+  preToolUseInjection: false,
+  sessionStartInjection: false,
+  canopyReadTools: [],
+  pathBearingTools: [],
+}));
 
 export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
 export type SymbiontCanopyReadTool = z.infer<typeof CanopyReadToolSchema>;
@@ -242,7 +259,19 @@ export const SymbiontManifestSchema = z.object({
   capture: CaptureManifestSchema.optional(),
   registration: RegistrationSchema.optional(),
   capabilities: CapabilitiesSchema.optional(),
-});
+}).refine(
+  (m) => {
+    const reads = m.capabilities?.canopyReadTools ?? [];
+    const paths = m.capabilities?.pathBearingTools ?? [];
+    // A canopy read is always path-bearing — if we declared canopy reads but
+    // forgot to declare any path-bearing tools, that's a config error.
+    return reads.length === 0 || paths.length > 0;
+  },
+  {
+    message: 'capabilities.pathBearingTools must be non-empty when canopyReadTools is non-empty',
+    path: ['capabilities', 'pathBearingTools'],
+  },
+);
 
 export type SymbiontManifest = z.infer<typeof SymbiontManifestSchema>;
 export type SymbiontRegistration = z.infer<typeof RegistrationSchema>;

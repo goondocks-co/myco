@@ -39,7 +39,48 @@ export function resolveCanopyReadTool(
   toolName: string,
   toolInput: unknown,
 ): ResolvedRead | null {
-  const entries = manifest?.capabilities?.canopyReadTools;
+  return resolveFromEntries(manifest?.capabilities?.canopyReadTools, toolName, toolInput);
+}
+
+/**
+ * Union of path-bearing tool names declared across all installed manifests.
+ * Companion to `allCanopyReadToolNames()`; this is the broader list (Write,
+ * Edit, MultiEdit, etc.) that PostToolUse capture consults to populate
+ * `activities.file_path` for the FTS index and the per-activity UI column.
+ */
+export function allPathBearingToolNames(): string[] {
+  const names = new Set<string>();
+  for (const m of loadManifests()) {
+    const tools = m.capabilities?.pathBearingTools;
+    if (!tools) continue;
+    for (const t of tools) names.add(t.tool);
+  }
+  return Array.from(names);
+}
+
+/**
+ * Decide whether (toolName, toolInput) carries an extractable file path under
+ * the given symbiont's manifest, and return it if so. Broader counterpart to
+ * `resolveCanopyReadTool` — consults `pathBearingTools` instead of
+ * `canopyReadTools` so write-side tools (Write, Edit, MultiEdit, etc.) also
+ * populate `activities.file_path` during PostToolUse capture.
+ *
+ * Same identity-agnostic semantics: shape, shell-arg extraction, and
+ * read-command allowlist behaviour mirror the canopy resolver exactly.
+ */
+export function extractAnyPath(
+  manifest: SymbiontManifest | undefined,
+  toolName: string,
+  toolInput: unknown,
+): ResolvedRead | null {
+  return resolveFromEntries(manifest?.capabilities?.pathBearingTools, toolName, toolInput);
+}
+
+function resolveFromEntries(
+  entries: ReadonlyArray<SymbiontCanopyReadTool> | undefined,
+  toolName: string,
+  toolInput: unknown,
+): ResolvedRead | null {
   if (!entries || entries.length === 0) return null;
   if (toolInput === null || typeof toolInput !== 'object') return null;
 

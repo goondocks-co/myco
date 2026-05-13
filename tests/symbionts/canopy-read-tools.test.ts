@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveCanopyReadTool, allCanopyReadToolNames } from '@myco/symbionts/canopy-read-tools.js';
+import {
+  resolveCanopyReadTool,
+  allCanopyReadToolNames,
+  extractAnyPath,
+  allPathBearingToolNames,
+} from '@myco/symbionts/canopy-read-tools.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 
 const claudeManifest = {
@@ -185,5 +190,85 @@ describe('resolveCanopyReadTool — multiple entries', () => {
   it('matches shell second', () => {
     expect(resolveCanopyReadTool(mixedManifest, 'Bash', { command: 'cat foo' }))
       .toEqual({ filePath: 'foo' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractAnyPath — broader path-bearing resolver
+// ---------------------------------------------------------------------------
+
+const claudePathBearingManifest = {
+  capabilities: {
+    pathBearingTools: [
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Write', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Edit', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'MultiEdit', pathField: 'file_path', pathKind: 'file' },
+    ],
+  },
+} as unknown as SymbiontManifest;
+
+describe('extractAnyPath — basics', () => {
+  it('returns null when manifest is undefined', () => {
+    expect(extractAnyPath(undefined, 'Read', { file_path: '/x' })).toBeNull();
+  });
+  it('returns null when capabilities is missing', () => {
+    expect(extractAnyPath({} as SymbiontManifest, 'Read', { file_path: '/x' })).toBeNull();
+  });
+  it('returns null when pathBearingTools is empty', () => {
+    const m = { capabilities: { pathBearingTools: [] } } as unknown as SymbiontManifest;
+    expect(extractAnyPath(m, 'Read', { file_path: '/x' })).toBeNull();
+  });
+});
+
+describe('extractAnyPath — write-side tools', () => {
+  it('extracts file_path for Write', () => {
+    expect(extractAnyPath(claudePathBearingManifest, 'Write', { file_path: '/abs/foo.ts' }))
+      .toEqual({ filePath: '/abs/foo.ts' });
+  });
+  it('extracts file_path for Edit', () => {
+    expect(extractAnyPath(claudePathBearingManifest, 'Edit', { file_path: '/abs/foo.ts' }))
+      .toEqual({ filePath: '/abs/foo.ts' });
+  });
+  it('extracts file_path for MultiEdit', () => {
+    expect(extractAnyPath(claudePathBearingManifest, 'MultiEdit', { file_path: '/abs/foo.ts' }))
+      .toEqual({ filePath: '/abs/foo.ts' });
+  });
+  it('returns null for unknown tool', () => {
+    expect(extractAnyPath(claudePathBearingManifest, 'Bash', { command: 'cat foo' })).toBeNull();
+  });
+});
+
+describe('extractAnyPath — shell-arg variant', () => {
+  const codexPathBearingManifest = {
+    capabilities: {
+      pathBearingTools: [
+        {
+          tool: 'Bash',
+          pathField: 'command',
+          extract: 'shell-arg',
+          readCommands: ['cat', 'sed', 'rg'],
+        },
+      ],
+    },
+  } as unknown as SymbiontManifest;
+
+  it('extracts path from shell-arg Bash command', () => {
+    expect(extractAnyPath(codexPathBearingManifest, 'Bash', { command: 'cat src/x.ts' }))
+      .toEqual({ filePath: 'src/x.ts' });
+  });
+  it('returns null when command not in readCommands', () => {
+    expect(extractAnyPath(codexPathBearingManifest, 'Bash', { command: 'ls -la' })).toBeNull();
+  });
+});
+
+describe('allPathBearingToolNames', () => {
+  it('returns Claude Read/Write/Edit/MultiEdit and Codex Bash', () => {
+    const names = allPathBearingToolNames();
+    expect(names).toEqual(expect.arrayContaining(['Read', 'Write', 'Edit', 'MultiEdit', 'Bash']));
+  });
+  it('returns distinct tool names (deduped across manifests)', () => {
+    const names = allPathBearingToolNames();
+    expect(new Set(names).size).toBe(names.length);
   });
 });

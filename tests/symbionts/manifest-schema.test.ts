@@ -282,6 +282,7 @@ describe('CapabilitiesSchema.canopyReadTools', () => {
       hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
       capabilities: {
         canopyReadTools: [{ tool: 'Read', pathField: 'file_path' }],
+        pathBearingTools: [{ tool: 'Read', pathField: 'file_path' }],
       },
     });
     expect(m.capabilities?.canopyReadTools).toEqual([
@@ -295,6 +296,12 @@ describe('CapabilitiesSchema.canopyReadTools', () => {
       hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
       capabilities: {
         canopyReadTools: [{
+          tool: 'Bash',
+          pathField: 'command',
+          extract: 'shell-arg',
+          readCommands: ['cat', 'head', 'tail'],
+        }],
+        pathBearingTools: [{
           tool: 'Bash',
           pathField: 'command',
           extract: 'shell-arg',
@@ -338,6 +345,78 @@ describe('CapabilitiesSchema.canopyReadTools', () => {
   });
 });
 
+describe('CapabilitiesSchema.pathBearingTools', () => {
+  it('parses a list of structured entries', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        pathBearingTools: [
+          { tool: 'Read', pathField: 'file_path' },
+          { tool: 'Write', pathField: 'file_path' },
+          { tool: 'Edit', pathField: 'file_path' },
+          { tool: 'MultiEdit', pathField: 'file_path' },
+        ],
+      },
+    });
+    expect(m.capabilities?.pathBearingTools).toEqual([
+      { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Write', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'Edit', pathField: 'file_path', pathKind: 'file' },
+      { tool: 'MultiEdit', pathField: 'file_path', pathKind: 'file' },
+    ]);
+  });
+
+  it('defaults pathBearingTools to empty array when capabilities omits it', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {},
+    });
+    expect(m.capabilities?.pathBearingTools).toEqual([]);
+  });
+
+  it('rejects canopyReadTools non-empty + pathBearingTools empty (refine)', () => {
+    expect(() => SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{ tool: 'Read', pathField: 'file_path' }],
+        pathBearingTools: [],
+      },
+    })).toThrow(/pathBearingTools.*non-empty.*canopyReadTools/);
+  });
+
+  it('allows both empty (symbiont without canopy support)', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [],
+        pathBearingTools: [],
+      },
+    });
+    expect(m.capabilities?.canopyReadTools).toEqual([]);
+    expect(m.capabilities?.pathBearingTools).toEqual([]);
+  });
+
+  it('allows pathBearingTools to be a strict superset of canopyReadTools', () => {
+    const m = SymbiontManifestSchema.parse({
+      name: 'fake', displayName: 'F', binary: 'f', configDir: '.f', pluginRootEnvVar: 'F_ROOT',
+      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last' },
+      capabilities: {
+        canopyReadTools: [{ tool: 'Read', pathField: 'file_path' }],
+        pathBearingTools: [
+          { tool: 'Read', pathField: 'file_path' },
+          { tool: 'Write', pathField: 'file_path' },
+        ],
+      },
+    });
+    expect(m.capabilities?.canopyReadTools).toHaveLength(1);
+    expect(m.capabilities?.pathBearingTools).toHaveLength(2);
+  });
+});
+
 describe('claude-code manifest declares its file-read tool', () => {
   it('parses with one canopyReadTools entry: Read / file_path', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
@@ -345,6 +424,13 @@ describe('claude-code manifest declares its file-read tool', () => {
     expect(m.capabilities?.canopyReadTools).toEqual([
       { tool: 'Read', pathField: 'file_path', pathKind: 'file' },
     ]);
+  });
+
+  it('declares pathBearingTools covering Read + write-side tools', () => {
+    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'claude-code.yaml'), 'utf-8');
+    const m = SymbiontManifestSchema.parse(YAML.parse(raw));
+    const names = (m.capabilities?.pathBearingTools ?? []).map((t) => t.tool);
+    expect(names).toEqual(expect.arrayContaining(['Read', 'Write', 'Edit', 'MultiEdit']));
   });
 });
 
@@ -366,5 +452,18 @@ describe('codex manifest enables Canopy PreToolUse for Bash reads', () => {
     // Verify the allowlist isn't empty and contains the core read commands.
     expect((entry as { readCommands: string[] }).readCommands)
       .toEqual(expect.arrayContaining(['cat', 'head', 'tail']));
+  });
+
+  it('declares pathBearingTools mirroring the Bash shell-arg entry', () => {
+    const yamlPath = path.join(MANIFESTS_DIR, 'codex.yaml');
+    const raw = YAML.parse(fs.readFileSync(yamlPath, 'utf8'));
+    const m = SymbiontManifestSchema.parse(raw);
+    expect(m.capabilities?.pathBearingTools).toHaveLength(1);
+    const entry = m.capabilities!.pathBearingTools![0];
+    expect(entry).toMatchObject({
+      tool: 'Bash',
+      pathField: 'command',
+      extract: 'shell-arg',
+    });
   });
 });

@@ -226,3 +226,26 @@ capabilities:
         - grep
         - rg
         - perl
+  # Codex's write surface flows through the same Bash tool (editor commands,
+  # apply_patch-style scripts) — no separate path-bearing tool name exists
+  # beyond the read entry above. Mirror canopyReadTools so capture stays
+  # symmetric with the read surface.
+  pathBearingTools:
+    - tool: Bash
+      pathField: command
+      extract: shell-arg
+      readCommands:
+        - cat
+        - head
+        - tail
+        - less
+        - more
+        - bat
+        - wc
+        - file
+        - nl
+        - sed
+        - awk
+        - grep
+        - rg
+        - perl

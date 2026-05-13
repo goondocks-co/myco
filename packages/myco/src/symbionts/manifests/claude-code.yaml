@@ -176,3 +176,16 @@ capabilities:
   canopyReadTools:
     - tool: Read
       pathField: file_path
+  # Broader superset declaring every tool whose tool_input carries a file
+  # path. PostToolUse uses this list to stamp `activities.file_path` for
+  # write-side tools too, so the FTS index and per-activity file column
+  # stay accurate. Canopy entries above are repeated here.
+  pathBearingTools:
+    - tool: Read
+      pathField: file_path
+    - tool: Write
+      pathField: file_path
+    - tool: Edit
+      pathField: file_path
+    - tool: MultiEdit
+      pathField: file_path
