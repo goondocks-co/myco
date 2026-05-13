@@ -37,7 +37,7 @@ function renderDetail(path: string) {
   const client = makeQueryClient();
   return render(
     <QueryClientProvider client={client}>
-      <CanopyEntryDetail path={path} />
+      <CanopyEntryDetail path={path} onClose={() => {}} />
     </QueryClientProvider>,
   );
 }

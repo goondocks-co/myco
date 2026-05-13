@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
+import { POLL_INTERVALS } from '../lib/constants';
 import { useProjectScopedQueryKey } from './use-project-selection';
 
 /* ---------- Constants ---------- */
@@ -136,6 +137,7 @@ export function useSpores(filters?: {
     queryKey,
     queryFn: ({ signal }) => fetchJson<SporesResponse>(path, { signal }),
     staleTime: SPORES_STALE_TIME,
+    refetchInterval: POLL_INTERVALS.SPORES,
   });
 }
 

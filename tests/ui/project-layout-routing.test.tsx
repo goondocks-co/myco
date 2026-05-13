@@ -45,6 +45,10 @@ mock.module('../../packages/myco/ui/src/layout/AppearanceSection', () => ({
   AppearanceSection: () => null,
 }));
 
+mock.module('../../packages/myco/ui/src/hooks/use-git-identity', () => ({
+  useGitIdentity: () => ({ data: null, isPending: false, isError: false }),
+}));
+
 const selection: ProjectSelection = {
   grove: {
     id: 'grove-a',

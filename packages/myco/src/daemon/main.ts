@@ -95,6 +95,7 @@ import { createCanopyInjectHandler } from './api/canopy-inject.js';
 import { handleGetFeed } from './api/feed.js';
 import { handleListSymbionts } from './api/symbionts.js';
 import { registerCanopyReadRoutes } from './api/canopy-read.js';
+import { handleGetGitStatus } from './api/git-status.js';
 import {
   handleGetEmbeddingStatus,
   handleEmbeddingDetails,
@@ -1081,6 +1082,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/log', createLogIngestionHandler(logger));
 
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
+  server.registerRoute('GET', '/api/git/status', handleGetGitStatus);
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
   // --- Update routes ---

@@ -5,6 +5,8 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { MarkdownContent } from '../ui/markdown-content';
+import { RefreshIndicator } from '../ui/refresh-indicator';
+import { POLL_INTERVALS } from '../../lib/constants';
 import {
   useAgentRun,
   useAgentReports,
@@ -587,7 +589,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   // a brand-new run and never modifies this one.
   const [rerunOpen, setRerunOpen] = useState(false);
 
-  const { data: runData, isLoading: runLoading, isError: runError } = useAgentRun(runId);
+  const {
+    data: runData,
+    isLoading: runLoading,
+    isError: runError,
+    isFetching: runFetching,
+    refetch: refetchRun,
+  } = useAgentRun(runId);
   const runStatus = runData?.run?.status;
   const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
   const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
@@ -638,6 +646,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const turns = turnsData ?? [];
   const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
   const isDryRun = run.dry_run === true;
+  const isTerminal = ['completed', 'failed', 'skipped'].includes(run.status);
   // Detect whether this run produced digest writes so we know whether to
   // render the revisions section. turns is empty until the audit trail is
   // opened; fall back to task name ('vault-evolve' always writes a
@@ -656,6 +665,14 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           <Badge variant="warning" title="Writes were intercepted and recorded as intents">
             Dry Run
           </Badge>
+        )}
+        {!isTerminal && (
+          <RefreshIndicator
+            className="ml-auto"
+            intervalMs={POLL_INTERVALS.RUN_DETAIL}
+            isFetching={runFetching}
+            onManualRefresh={() => { void refetchRun(); }}
+          />
         )}
       </div>
 

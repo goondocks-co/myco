@@ -7,13 +7,13 @@ import { useProjectScopedQueryKey } from './use-project-selection';
 /* ---------- Constants ---------- */
 
 /** Poll interval for session list. */
-const SESSIONS_POLL_INTERVAL = POLL_INTERVALS.STATS;
+const SESSIONS_POLL_INTERVAL = POLL_INTERVALS.SESSIONS;
 
 /** Poll interval for session detail. */
-const SESSION_DETAIL_POLL_INTERVAL = POLL_INTERVALS.STATS;
+const SESSION_DETAIL_POLL_INTERVAL = POLL_INTERVALS.SESSION_DETAIL;
 
 /** Poll interval for batch list. */
-const BATCHES_POLL_INTERVAL = POLL_INTERVALS.STATS;
+const BATCHES_POLL_INTERVAL = POLL_INTERVALS.SESSION_DETAIL;
 
 /** Cache TTL for activities list (30 seconds). */
 const ACTIVITIES_STALE_TIME = 30_000;
@@ -25,7 +25,7 @@ const ATTACHMENTS_STALE_TIME = 60_000;
 const IMPACT_STALE_TIME = 10_000;
 
 /** Poll interval for session plans. */
-const PLANS_POLL_INTERVAL = POLL_INTERVALS.STATS;
+const PLANS_POLL_INTERVAL = POLL_INTERVALS.SESSION_DETAIL;
 
 /* ---------- Types ---------- */
 
