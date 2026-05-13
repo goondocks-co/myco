@@ -35,7 +35,12 @@ import {
   handleCompact,
 } from './event-handlers.js';
 import { handleCanopyToolUse } from '@myco/canopy/scanner/handle-tool-use.js';
-import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
+import {
+  filesystemRootFromRequestContext,
+  projectScopeFromRequestContext,
+  resolveRequestContextForVault,
+  rowProjectIdFromRequestContext,
+} from '@myco/tools/request-context.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
@@ -45,7 +50,6 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
-import { projectScopeFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -227,6 +231,9 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     let userPromptBatchId: number | undefined;
     const requestProjectId = rowProjectIdFromRequestContext(req.requestContext);
     const requestProjectRoot = req.requestContext?.projectRoot ?? projectRoot;
+    const requestFilesystemRoot = req.requestContext
+      ? filesystemRootFromRequestContext(req.requestContext)
+      : requestProjectRoot;
     const requestMachineId = req.requestContext?.machineId ?? machineId;
 
     logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event received', { type: event.type, session_id: event.session_id });
@@ -487,7 +494,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           toolName,
           event.tool_input,
           typeof event.output_preview === 'string' ? event.output_preview : undefined,
-          requestProjectRoot,
+          requestFilesystemRoot,
         );
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record activity', { session_id: event.session_id, error: (err as Error).message });
@@ -500,7 +507,7 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
             db: getDatabase(),
             logger,
             machineId: requestMachineId,
-            projectRoot: requestProjectRoot,
+            projectRoot: requestFilesystemRoot,
             projectId: (req.requestContext ?? resolveRequestContextForVault(vaultDir)).projectId,
             toolName,
             toolInput: event.tool_input,

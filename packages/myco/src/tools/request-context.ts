@@ -28,7 +28,7 @@ export const REQUEST_CONTEXT_HEADERS = {
    * worktree path that differs from the registered main tree — and
    * is preserved through resolution untouched. Filesystem ops that
    * should follow the caller (plan watch dirs, plan source path
-   * keys) read `context.callerRoot ?? context.projectRoot`.
+   * keys, live Canopy tool paths) use `filesystemRootFromRequestContext`.
    */
   callerRoot: 'x-myco-caller-root',
 } as const;
@@ -102,7 +102,7 @@ export interface MycoRequestContext {
    * resolution. Null when no caller-root was supplied. Readers that
    * need "where the user is right now" — plan watch dirs, plan
    * source path keys, hook artifact discovery — use
-   * `context.callerRoot ?? context.projectRoot`. Readers that need
+   * `filesystemRootFromRequestContext`. Readers that need
    * canonical project identity (vault dir, db path, Grove
    * registration) stay on `projectRoot`.
    */
@@ -119,6 +119,21 @@ export interface MycoRequestContext {
 /** True iff the request is bound to a Grove (vs a legacy project-local vault). */
 export function isGroveScoped(context: MycoRequestContext | undefined | null): boolean {
   return Boolean(context?.groveId);
+}
+
+/**
+ * Filesystem anchor for live, caller-originated paths.
+ *
+ * Use this when interpreting paths that came from a hook, MCP tool call, or
+ * current user action: the caller may be in a git worktree whose filesystem
+ * root differs from the registered project root. Do not use this for durable
+ * project identity, Grove registration, database selection, or background
+ * sweeps; those stay anchored to `context.projectRoot`.
+ */
+export function filesystemRootFromRequestContext(
+  context: Pick<MycoRequestContext, 'callerRoot' | 'projectRoot'>,
+): string {
+  return context.callerRoot ?? context.projectRoot;
 }
 
 export interface LegacyRequestContextOptions {

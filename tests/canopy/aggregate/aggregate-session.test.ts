@@ -2,7 +2,7 @@
  * Tests for the per-session Canopy aggregation SQL.
  *
  * Each scenario seeds an in-memory SQLite vault with:
- *   - a sessions row with project_root pointing at a fixture project_id
+ *   - a sessions row with project_id pointing at the fixture Canopy project
  *   - activities rows representing Read tool-calls (with/without injection)
  *   - canopy_entries rows providing the file_tokens for the LEFT JOIN
  *
@@ -30,7 +30,8 @@ import {
 } from '@myco/db/queries/canopy.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
-const PROJECT_ID = '/repo/myco';
+const PROJECT_ID = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PROJECT_ROOT = '/repo/myco';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -55,7 +56,8 @@ function seedSession(sessionId: string) {
     agent: 'claude-code',
     started_at: now,
     created_at: now,
-    project_root: PROJECT_ID,
+    project_id: PROJECT_ID,
+    project_root: PROJECT_ROOT,
   });
 }
 
@@ -338,8 +340,25 @@ describe('aggregateSessionCanopy', () => {
     seedSession(sessionId);
     seedCanopyEntries([{ path: 'src/a.ts', token_estimate: 1000 }]);
     seedActivities(sessionId, [
-      { file_path: `${PROJECT_ID}/src/a.ts`, injection_tokens: 80, ts: 1 },
+      { file_path: `${PROJECT_ROOT}/src/a.ts`, injection_tokens: 80, ts: 1 },
     ]);
+
+    const agg = aggregateSessionCanopy(null, sessionId);
+
+    expect(agg.skips_after_injection).toBe(1);
+    expect(agg.tokens_saved).toBe(920);
+  });
+
+  it('prefers normalized activity file_path over raw absolute tool_input path', () => {
+    const sessionId = 'sess-normalized-path';
+    seedSession(sessionId);
+    seedCanopyEntries([{ path: 'src/a.ts', token_estimate: 1000 }]);
+    seedActivities(sessionId, [
+      { file_path: 'src/a.ts', injection_tokens: 80, ts: 1 },
+    ]);
+    getDatabase()
+      .prepare(`UPDATE activities SET tool_input = ? WHERE session_id = ?`)
+      .run(JSON.stringify({ file_path: '/tmp/worktrees/feature/src/a.ts' }), sessionId);
 
     const agg = aggregateSessionCanopy(null, sessionId);
 

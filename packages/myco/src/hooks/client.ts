@@ -513,6 +513,7 @@ export function requestContextForHook(
 ): MycoRequestContext {
   const env: Record<string, string | undefined> = { ...process.env };
   if (input.sessionId) env[REQUEST_CONTEXT_ENV.sessionId] = input.sessionId;
+  env[REQUEST_CONTEXT_ENV.callerRoot] ??= process.cwd();
   return requestContextFromEnvironment(env, vaultDir);
 }
 
