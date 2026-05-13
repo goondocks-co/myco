@@ -36,7 +36,7 @@ function restoreProcessKill() {
   (process as any).kill = realKill;
 }
 
-import { buildRestartShellCommand, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
+import { buildRestartShellCommand, detectServiceManagedLabel, findInstalledServiceLabel, handleRestart, type RestartHandlerDeps } from '@myco/daemon/api/restart.js';
 import { ProgressTracker } from '@myco/daemon/api/progress.js';
 import { FakeServiceManager } from '../../helpers/fake-service-manager';
 
@@ -113,6 +113,26 @@ describe('findInstalledServiceLabel', () => {
     const found = await findInstalledServiceLabel(mgr);
     expect(found?.label).toBe('co.goondocks.myco');
   });
+
+  test('variant filter returns prod even when dev is installed first', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco-dev');
+    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: 1111, lastExitCode: 0, unitPath: '/dev.plist' });
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: false, pid: null, lastExitCode: 78, unitPath: '/prod.plist' });
+    const found = await findInstalledServiceLabel(mgr, 'prod');
+    expect(found?.label).toBe('co.goondocks.myco');
+    expect(found?.status.running).toBe(false);
+  });
+
+  test('detectServiceManagedLabel scans past non-matching dev service', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco-dev');
+    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/dev.plist' });
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod.plist' });
+    await expect(detectServiceManagedLabel(mgr, process.pid)).resolves.toBe('co.goondocks.myco');
+  });
 });
 
 describe('handleRestart', () => {
@@ -141,6 +161,20 @@ describe('handleRestart', () => {
     const mgr = new FakeServiceManager();
     mgr.installed.add('co.goondocks.myco');
     mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/x' });
+    const deps = makeDeps({ serviceManager: mgr });
+    const res = await handleRestart(deps, {});
+    expect(res.body).toMatchObject({ status: 'restarting' });
+    const shellCmd = (spawnCalls[0].args[1] ?? '');
+    expect(shellCmd).toContain('service restart');
+    expect(shellCmd).not.toContain('--dev');
+  });
+
+  test('service-managed prod with dev service also running: still routes to prod restart', async () => {
+    const mgr = new FakeServiceManager();
+    mgr.installed.add('co.goondocks.myco-dev');
+    mgr.statuses.set('co.goondocks.myco-dev', { installed: true, running: true, pid: process.pid + 999, lastExitCode: 0, unitPath: '/dev' });
+    mgr.installed.add('co.goondocks.myco');
+    mgr.statuses.set('co.goondocks.myco', { installed: true, running: true, pid: process.pid, lastExitCode: 0, unitPath: '/prod' });
     const deps = makeDeps({ serviceManager: mgr });
     const res = await handleRestart(deps, {});
     expect(res.body).toMatchObject({ status: 'restarting' });

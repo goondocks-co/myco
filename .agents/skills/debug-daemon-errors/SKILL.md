@@ -107,6 +107,67 @@ await db.transaction(async (tx) => {
 
 **Pitfall:** If there are multiple levels of FK nesting (grandchild → child → parent), delete from the leaf up. Draw the dependency tree before writing the delete sequence.
 
+#### deleteSessionCascade — Complex FK Cascade Patterns
+
+The `deleteSessionCascade` function in `packages/myco/src/db/queries/sessions.ts` demonstrates the most complex FK cascade scenario in Myco. This function has encountered three different FK bugs due to its deep dependency tree and recurring extension pattern.
+
+**Design Contract:** `deleteSessionCascade` must delete a session and ALL related data across 9+ tables with complex FK dependencies. The function returns counts for each deleted table type for verification.
+
+**Correct Delete Order:**
+```typescript
+// Fixed FK-respecting delete order:
+// activities → attachments → plans → skill_usage → resolution_events → graph_edges → spores → prompt_batches → sessions
+```
+
+**Historical FK Bugs:**
+
+1. **Original Bug**: Deleted `prompt_batches` before `spores`, causing FK constraint violations because `spores.prompt_batch_id` references `prompt_batches.id`
+2. **Extension Bug**: Release provenance feature added new FK tables (`release_artifacts`, `release_commits`) that weren't included in the cascade delete
+3. **Test Gap**: Existing regression test used `createSpore` helper that omitted `promptBatchId`, so spores had no FK links to test
+
+**Recurring Extension Pattern:** Each time a new feature adds tables with session FKs, `deleteSessionCascade` must be updated or silent FK failures occur in production. The function serves as a "FK canary" — when session deletion starts failing, it indicates missing cascade delete entries.
+
+**Implementation Pattern:**
+```typescript
+export function deleteSessionCascade(sessionId: string): CascadeDeleteCounts {
+  return db.transaction((tx) => {
+    // Delete in FK dependency order - children first
+    const activities = tx.delete(activitiesTable).where(eq(activitiesTable.sessionId, sessionId));
+    const attachments = tx.delete(attachmentsTable).where(eq(attachmentsTable.sessionId, sessionId));
+    const plans = tx.delete(plansTable).where(eq(plansTable.sessionId, sessionId));
+    const skillUsage = tx.delete(skillUsageTable).where(eq(skillUsageTable.sessionId, sessionId));
+    const resolutionEvents = tx.delete(resolutionEventsTable).where(eq(resolutionEventsTable.sessionId, sessionId));
+    const graphEdges = tx.delete(graphEdgesTable).where(eq(graphEdgesTable.sessionId, sessionId));
+    const spores = tx.delete(sporesTable).where(eq(sporesTable.sessionId, sessionId));
+    const promptBatches = tx.delete(promptBatchesTable).where(eq(promptBatchesTable.sessionId, sessionId));
+    const sessions = tx.delete(sessionsTable).where(eq(sessionsTable.id, sessionId));
+
+    return { activities, attachments, plans, skillUsage, resolutionEvents, graphEdges, spores, promptBatches, sessions };
+  });
+}
+```
+
+**Extension Checklist:** When adding tables with session FKs:
+1. Add the new table delete to `deleteSessionCascade` in correct FK order
+2. Update the return type to include the new table count
+3. Add regression test that creates FK links to verify cascade delete works
+4. Test in isolation before deploying to avoid production FK failures
+
+**Debugging FK Cascade Failures:**
+```bash
+# Check for missing table deletions in deleteSessionCascade
+sqlite3 .myco/myco.db "
+SELECT sql FROM sqlite_master 
+WHERE sql LIKE '%REFERENCES%session%' 
+AND type='table';"
+
+# Verify FK constraints in logs
+grep -rn "FOREIGN KEY constraint failed" ~/.myco/daemon.log
+
+# Check session maintenance job for cascade delete usage
+grep -rn "deleteSessionCascade" packages/myco/src/daemon/jobs/
+```
+
 ### Grove Import/Migration FK Violations
 
 Grove import operations commonly trigger FK constraint violations when importing data with cross-references. The patterns above apply, but Grove import has additional considerations:
@@ -716,6 +777,7 @@ export async function performStartupRecovery() {
 | Error / Symptom | Likely Cause | Fix |
 |----------------|--------------|-----|
 | `FOREIGN KEY constraint failed` on delete | Wrong deletion order | Delete children before parents |
+| `deleteSessionCascade` FK constraint failed | Missing table in cascade delete OR wrong delete order | Add missing tables to cascade delete; use correct order: activities → attachments → plans → skill_usage → resolution_events → graph_edges → spores → prompt_batches → sessions |
 | Job registered but never fires | Scheduler not woken after insert | Call `scheduler.wake()` after inserting work |
 | Outbox drain loops without progress | Missing `approved_at` guard | Guard status transitions to set value only once |
 | Two sessions for one conversation | No duplicate guard on session insert | Check for existing session ID before insert |
