@@ -12,11 +12,20 @@ import { formatEpochAbsolute, formatEpochAgo } from '../../lib/format';
 /** Upper bound on spores fetched per session — covers the long tail without paginating. */
 const MAX_SESSION_SPORES = 200;
 
+/**
+ * `observation_type` is a free-form string at the DB layer, but in practice the
+ * intelligence agent (vault-evolve, vault-seed) produces a known set: the six
+ * direct-extraction kinds plus three synthesized kinds (`wisdom`, `pattern`,
+ * `architecture`). Unmapped kinds fall through to the `secondary` tone.
+ */
 const KIND_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   decision: 'default',
   discovery: 'default',
+  wisdom: 'default',
+  architecture: 'default',
   trade_off: 'secondary',
   'cross-cutting': 'secondary',
+  pattern: 'secondary',
   gotcha: 'destructive',
   bug_fix: 'destructive',
 };

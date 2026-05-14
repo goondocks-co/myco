@@ -93,6 +93,61 @@ describe('SessionSpores', () => {
     expect(screen.getByText(/Last updated .*ago/i)).toBeDefined();
   });
 
+  it('renders synthesized kinds (wisdom, pattern, architecture) with their own tones', async () => {
+    // @ts-expect-error
+    globalThis.fetch = mock(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/spores?')) {
+        return new Response(
+          JSON.stringify({
+            spores: [
+              {
+                id: 'spore-w',
+                observation_type: 'wisdom',
+                status: 'active',
+                content: 'Consolidated reference from three prior spores.',
+                session_id: 'session-w',
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_000,
+                importance: 8,
+                tags: [],
+              },
+              {
+                id: 'spore-p',
+                observation_type: 'pattern',
+                status: 'active',
+                content: 'Recurring shape across the codebase.',
+                session_id: 'session-w',
+                created_at: 1_700_000_100,
+                updated_at: 1_700_000_100,
+                importance: 5,
+                tags: [],
+              },
+              {
+                id: 'spore-a',
+                observation_type: 'architecture',
+                status: 'active',
+                content: 'Load-bearing invariant of the daemon.',
+                session_id: 'session-w',
+                created_at: 1_700_000_200,
+                updated_at: 1_700_000_200,
+                importance: 9,
+                tags: [],
+              },
+            ],
+            total: 3,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    });
+    renderWith('session-w');
+    await screen.findByText(/wisdom/i);
+    expect(screen.getByText(/wisdom/i)).toBeDefined();
+    expect(screen.getByText(/pattern/i)).toBeDefined();
+    expect(screen.getByText(/architecture/i)).toBeDefined();
+  });
+
   it('applies line-through to superseded spore previews', async () => {
     // @ts-expect-error
     globalThis.fetch = mock(async (url: string) => {
