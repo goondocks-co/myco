@@ -677,7 +677,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <StatCard label="Status" value={capitalize(run.status)} accent="sage" />
         <StatCard label="Task" value={resolveTaskName(run.task, tasksList)} accent="outline" />
         <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
@@ -720,7 +720,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
       {/* Model / Provider info */}
       {(run.harness || run.provider || run.model) && (
-        <div className="flex items-center gap-4 px-1">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1">
           {run.harness && (
             <span className="font-sans text-xs text-on-surface-variant">
               Harness: <span className="font-mono text-on-surface">{run.harness}</span>
@@ -749,7 +749,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Cost Diagnostics
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <StatTile label="Input" value={formatTokens(parsedCost?.breakdown.inputTokens ?? parsedUsage?.run?.inputTokens ?? null)} />
             <StatTile label="Cached Input" value={formatTokens(parsedCost?.breakdown.cachedInputTokens ?? parsedUsage?.run?.cachedTokens ?? null)} />
             <StatTile label="Uncached Input" value={formatTokens(parsedCost?.breakdown.uncachedInputTokens ?? null)} />
@@ -768,7 +768,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           <h2 className="font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide">
             Token Budget
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             <StatTile label="Context Window" value={formatTokens(parsedUsage.runBudget.contextWindowTokens)} />
             <StatTile label="Peak Request" value={formatTokens(parsedUsage.runBudget.peakRequestTotalTokens)} />
             <StatTile label="Peak Input" value={formatTokens(parsedUsage.runBudget.peakRequestInputTokens)} />
@@ -776,7 +776,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
             <StatTile label="Budget Used" value={parsedUsage.runBudget.utilizationPercent != null ? `${parsedUsage.runBudget.utilizationPercent}%` : '\u2014'} />
             <StatTile label="Headroom" value={formatTokens(parsedUsage.runBudget.headroomTokens)} />
           </div>
-          <div className="flex items-center gap-3 px-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1">
             <span className="font-sans text-xs text-on-surface-variant">
               Budget status: <span className="font-mono text-on-surface">{parsedUsage.runBudget.status}</span>
             </span>
