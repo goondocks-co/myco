@@ -60,4 +60,32 @@ describe('walkSchemaFields', () => {
       expect.objectContaining({ key: 'retries', kind: 'number', optional: false }),
     ]);
   });
+
+  it('descends through ZodPipe (.pipe()) to the output object', () => {
+    // Mirrors `rejectLegacyRuntimeKey` in packages/myco/src/config/schema.ts —
+    // a guard `.pipe()`d into the real validator. The walker should ignore
+    // the guard and surface the object's fields.
+    const piped = z.unknown().superRefine(() => {}).pipe(
+      z.object({ enabled: z.boolean(), model: z.string() }),
+    );
+    const keys = walkSchemaFields(piped).map((f) => f.key);
+    expect(keys).toEqual(['enabled', 'model']);
+  });
+
+  it('descends through z.preprocess to the inner object', () => {
+    // Mirrors MachineConfigSchema — a preprocess that strips legacy fields
+    // before strict validation. The walker should reach the strict object.
+    const schema = z.preprocess(
+      (raw) => raw,
+      z.object({ daemon: z.object({ log_level: z.string() }) }).strict(),
+    );
+    const keys = walkSchemaFields(schema).map((f) => f.key);
+    expect(keys).toEqual(['daemon.log_level']);
+  });
+
+  it('unwraps ZodReadonly to surface the inner object', () => {
+    const schema = z.object({ tags: z.array(z.string()) }).readonly();
+    const keys = walkSchemaFields(schema).map((f) => f.key);
+    expect(keys).toEqual(['tags']);
+  });
 });

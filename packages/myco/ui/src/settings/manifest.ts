@@ -100,6 +100,15 @@ export const SETTINGS_GROUPS: readonly SettingGroup[] = [
         note: 'Context window size for local models (Ollama num_ctx, LM Studio context_length).',
       },
       {
+        key: 'agent.model',
+        label: 'Default model',
+        scope: 'project',
+        kind: 'text',
+        category: 'Agent',
+        icon: 'Bot',
+        note: 'Project-wide default model used when neither the provider block nor a per-task override sets one.',
+      },
+      {
         key: 'agent.harness',
         label: 'Harness',
         scope: 'project',

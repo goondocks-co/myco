@@ -40,6 +40,21 @@ function unwrap(schema: z.ZodTypeAny): { inner: z.ZodTypeAny; optional: boolean 
       current = readInnerType(current._def);
       continue;
     }
+    if (current instanceof z.ZodReadonly) {
+      current = readInnerType(current._def);
+      continue;
+    }
+    // `z.preprocess(fn, target)` and `schema.pipe(target)` both produce a
+    // ZodPipe with `_def.in` (the transform / source) and `_def.out` (the
+    // validator). The interesting schema for field-walking is always the
+    // output side — that's where the real object/leaf lives. Schema-level
+    // pipes used in config (e.g. rejectLegacyRuntimeKey, MachineConfigSchema
+    // legacy stripper) follow this shape.
+    const def = (current as { _def?: { type?: string; in?: z.ZodTypeAny; out?: z.ZodTypeAny } })._def;
+    if (def && def.type === 'pipe' && def.out) {
+      current = def.out;
+      continue;
+    }
     return { inner: current, optional };
   }
 }
