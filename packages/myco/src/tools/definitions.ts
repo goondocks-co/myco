@@ -142,7 +142,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_PLANS,
-    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with exactly one of source_path or plan_key, or updates an existing plan when id is passed; pass status to mark a plan in_progress when you start executing it and completed when the work finishes. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
+    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with content and exactly one of source_path or plan_key, or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to "active". op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,

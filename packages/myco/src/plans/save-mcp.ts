@@ -23,7 +23,8 @@ import {
 export interface SaveMcpPlanInput {
   id?: string;
   session_id?: string;
-  content: string;
+  /** Required for new plans; optional when `id` is set — omitted content preserves the existing body. */
+  content?: string;
   source_path?: string;
   plan_key?: string;
   title?: string;
@@ -65,7 +66,9 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
       id: existingPlan.id,
       sessionId: input.session_id || existingPlan.session_id,
       projectId,
-      content: input.content,
+      // Omitting content on update preserves the existing body — the common
+      // case for status-only transitions (active → in_progress → completed).
+      content: input.content ?? existingPlan.content,
       logicalKey: existingPlan.logical_key,
       sourcePath: existingPlan.source_path,
       promptBatchId: openBatch?.id ?? existingPlan.prompt_batch_id,
@@ -74,6 +77,14 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
       tags: input.tags,
     });
     return { ok: true, plan };
+  }
+
+  if (!input.content) {
+    return {
+      ok: false,
+      code: 'invalid-arguments',
+      message: 'content is required when creating a new plan',
+    };
   }
 
   if (hasSourcePath === hasPlanKey) {
