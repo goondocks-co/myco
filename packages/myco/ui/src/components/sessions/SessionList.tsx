@@ -13,6 +13,7 @@ import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
+import { sectionRows } from '../../lib/section-rows';
 import { cn } from '../../lib/cn';
 import { forwardRef, useMemo, useRef, useState } from 'react';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
@@ -298,18 +299,47 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
             aria-label="Session archive"
             className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
           >
-            {sessions.map((session, idx) => (
-              <SessionCardRow
-                key={session.id}
-                ref={nav.setRowRef(idx)}
-                session={session}
-                symbiontDisplayName={symbiontDisplayName(session.agent)}
-                isSelected={selectedId === session.id}
-                isCursor={nav.cursorIndex === idx}
-                onClick={() => navigate(`/sessions/${session.id}`)}
-                onDelete={() => setDeleteTarget(session)}
-              />
-            ))}
+            {(() => {
+              const sections = sectionRows(sessions, {
+                isActive: (s) => s.status === 'active',
+                startedAtEpochSec: (s) => s.started_at,
+              });
+              // Keyboard nav was wired with items=sessions (flat array). The
+              // setRowRef/cursorIndex indices must match positions in that
+              // flat array, NOT positions within their section — so j/k
+              // crosses section boundaries seamlessly.
+              let flatIdx = 0;
+              return sections.map((section) => (
+                <div key={section.label}>
+                  <div
+                    role="separator"
+                    className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/20 bg-surface-container/30"
+                  >
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                      {section.label}
+                    </span>
+                    <span className="font-mono text-[10px] text-on-surface-variant">
+                      {section.rows.length}
+                    </span>
+                  </div>
+                  {section.rows.map((session) => {
+                    const idx = flatIdx++;
+                    return (
+                      <SessionCardRow
+                        key={session.id}
+                        ref={nav.setRowRef(idx)}
+                        session={session}
+                        symbiontDisplayName={symbiontDisplayName(session.agent)}
+                        isSelected={selectedId === session.id}
+                        isCursor={nav.cursorIndex === idx}
+                        onClick={() => navigate(`/sessions/${session.id}`)}
+                        onDelete={() => setDeleteTarget(session)}
+                      />
+                    );
+                  })}
+                </div>
+              ));
+            })()}
           </div>
         </Surface>
       )}

@@ -13,6 +13,7 @@ import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
 import { formatEpochAgo, capitalize } from '../../lib/format';
+import { sectionRows } from '../../lib/section-rows';
 import { statusBadgeVariant, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
@@ -370,20 +371,49 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
           aria-label="Agent run list keyboard navigation"
           className="rounded-md bg-surface-container-low overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
         >
-          {runs.map((run, idx) => (
-            <RunRailRow
-              key={run.id}
-              ref={nav.setRowRef(idx)}
-              run={run}
-              taskNameMap={taskNameMap}
-              selected={selected.has(run.id)}
-              onToggleSelected={toggleSelected}
-              onSelectRun={onSelectRun}
-              onRerun={setRerunSource}
-              isActive={selectedId === run.id}
-              isCursor={nav.cursorIndex === idx}
-            />
-          ))}
+          {(() => {
+            const sections = sectionRows(runs, {
+              isActive: (r) => r.status === 'running',
+              startedAtEpochSec: (r) => r.started_at,
+            });
+            // Keyboard nav was wired with items=runs (flat array). The
+            // setRowRef/cursorIndex indices must match positions in that
+            // flat array, NOT positions within their section — so j/k
+            // crosses section boundaries seamlessly.
+            let flatIdx = 0;
+            return sections.map((section) => (
+              <div key={section.label}>
+                <div
+                  role="separator"
+                  className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/20 bg-surface-container/30"
+                >
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                    {section.label}
+                  </span>
+                  <span className="font-mono text-[10px] text-on-surface-variant">
+                    {section.rows.length}
+                  </span>
+                </div>
+                {section.rows.map((run) => {
+                  const idx = flatIdx++;
+                  return (
+                    <RunRailRow
+                      key={run.id}
+                      ref={nav.setRowRef(idx)}
+                      run={run}
+                      taskNameMap={taskNameMap}
+                      selected={selected.has(run.id)}
+                      onToggleSelected={toggleSelected}
+                      onSelectRun={onSelectRun}
+                      onRerun={setRerunSource}
+                      isActive={selectedId === run.id}
+                      isCursor={nav.cursorIndex === idx}
+                    />
+                  );
+                })}
+              </div>
+            ));
+          })()}
         </div>
       )}
 
