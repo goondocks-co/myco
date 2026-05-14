@@ -72,7 +72,29 @@ const selection: ProjectSelection = {
   },
 };
 
-describe('project-scoped layout routing', () => {
+function renderLayout() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/g/work/p/project-a-123abc']}>
+        <Routes>
+          <Route
+            path="/g/work/p/project-a-123abc"
+            element={(
+              <ProjectSelectionBoundary selection={selection}>
+                <Layout />
+              </ProjectSelectionBoundary>
+            )}
+          >
+            <Route index element={<div>Dashboard content</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe('sidebar v7 IA grouping', () => {
   beforeEach(() => {
     const storage = new Map<string, string>();
     const localStorageMock = {
@@ -114,71 +136,69 @@ describe('project-scoped layout routing', () => {
     vi.unstubAllGlobals();
   });
 
-  it('renders project navigation links without treating resolved paths as functions', () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    render(
-      <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/g/work/p/project-a-123abc']}>
-          <Routes>
-            <Route
-              path="/g/work/p/project-a-123abc"
-              element={(
-                <ProjectSelectionBoundary selection={selection}>
-                  <Layout />
-                </ProjectSelectionBoundary>
-              )}
-            >
-              <Route index element={<div>Dashboard content</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    // Operations is the v7 IA replacement for Maintenance in the sidebar
-    // and is Grove-scoped (no project segment) — exercises the same
-    // :groveSlug path-template-replacement branch that Maintenance used to.
-    const operationsLink = screen.getAllByText('Operations')[0]?.closest('a');
-    expect(operationsLink?.getAttribute('href')).toBe('/g/work/operations');
-    expect(screen.getByText('Dashboard content')).toBeTruthy();
+  it('renders the four nav group labels in v7 order', () => {
+    renderLayout();
+    const nav = screen.getByLabelText('Main navigation');
+    const labels = Array.from(nav.querySelectorAll('div'))
+      .map((el) => el.textContent?.trim())
+      .filter((text): text is string =>
+        text === 'Project' ||
+        text === 'Observability' ||
+        text === 'Grove management' ||
+        text === 'Settings',
+      );
+    expect(labels).toEqual(['Project', 'Observability', 'Grove management', 'Settings']);
   });
 
-  it('exposes the Groves management page between Grove and Team in the Grove management nav section', () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  it('groups items into the correct categories', () => {
+    renderLayout();
+    const nav = screen.getByLabelText('Main navigation');
+    // Each group is a direct child <div> of <nav>; the first <div> inside
+    // it (when expanded) is the uppercase label, so we filter to the
+    // group block whose first child div text matches.
+    const groups = Array.from(nav.children) as HTMLElement[];
 
-    render(
-      <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/g/work/p/project-a-123abc']}>
-          <Routes>
-            <Route
-              path="/g/work/p/project-a-123abc"
-              element={(
-                <ProjectSelectionBoundary selection={selection}>
-                  <Layout />
-                </ProjectSelectionBoundary>
-              )}
-            >
-              <Route index element={<div>Dashboard content</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
+    function itemsInGroup(label: string): string[] {
+      const group = groups.find((g) => g.querySelector('div')?.textContent?.trim() === label);
+      if (!group) return [];
+      return Array.from(group.querySelectorAll('a'))
+        .map((a) => a.getAttribute('href') ?? '')
+        .filter((h) => h.length > 0);
+    }
+
+    const projectHrefs = itemsInGroup('Project');
+    expect(projectHrefs).toContain('/g/work/p/project-a-123abc');
+    expect(projectHrefs.some((h) => h.endsWith('/sessions'))).toBe(true);
+    expect(projectHrefs.some((h) => h.endsWith('/agent'))).toBe(true);
+
+    const observabilityHrefs = itemsInGroup('Observability');
+    expect(observabilityHrefs).toContain('/g/work/operations');
+    expect(observabilityHrefs).toContain('/logs');
+
+    const groveMgmtHrefs = itemsInGroup('Grove management');
+    expect(groveMgmtHrefs).toContain('/g/work/dashboard');
+    expect(groveMgmtHrefs).toContain('/groves');
+    expect(groveMgmtHrefs).toContain('/g/work/team');
+
+    const settingsHrefs = itemsInGroup('Settings');
+    expect(settingsHrefs.some((h) => h.endsWith('/settings'))).toBe(true);
+  });
+
+  it('has exactly one Settings link in the sidebar', () => {
+    renderLayout();
+    const nav = screen.getByLabelText('Main navigation');
+    const settingsLinks = Array.from(nav.querySelectorAll('a')).filter(
+      (a) => a.textContent?.trim() === 'Settings',
     );
+    expect(settingsLinks.length).toBe(1);
+  });
 
-    const grovesLink = screen.getAllByText('Groves')[0]?.closest('a');
-    expect(grovesLink?.getAttribute('href')).toBe('/groves');
-
-    // Verify ordering inside the Grove management group: Grove (the
-    // Grove-scoped dashboard) -> Groves (cross-Grove index) -> Team.
-    const hrefs = Array.from(document.querySelectorAll('a'))
-      .map((a) => a.getAttribute('href'))
-      .filter((href): href is string => href !== null);
-    const groveIdx = hrefs.indexOf('/g/work/dashboard');
-    const grovesIdx = hrefs.indexOf('/groves');
-    const teamIdx = hrefs.indexOf('/g/work/team');
-    expect(groveIdx).toBeGreaterThanOrEqual(0);
-    expect(grovesIdx).toBeGreaterThan(groveIdx);
-    expect(teamIdx).toBeGreaterThan(grovesIdx);
+  it('does not render any Maintenance link in the sidebar', () => {
+    renderLayout();
+    const nav = screen.getByLabelText('Main navigation');
+    const maintenanceLinks = Array.from(nav.querySelectorAll('a')).filter(
+      (a) => a.textContent?.trim() === 'Maintenance',
+    );
+    expect(maintenanceLinks.length).toBe(0);
   });
 });
