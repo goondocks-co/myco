@@ -449,16 +449,6 @@ export function updateConfig(
   return updated;
 }
 
-export function updateBackupConfig(
-  vaultDir: string,
-  backup: Partial<BackupConfig>,
-): MycoConfig {
-  return updateConfig(vaultDir, (config) => ({
-    ...config,
-    backup: { ...config.backup, ...backup },
-  }));
-}
-
 /**
  * Extract the set of enabled symbiont names from config.
  * Returns null when the `symbionts` section is absent (pre-existing installs),
