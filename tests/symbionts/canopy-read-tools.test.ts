@@ -140,6 +140,9 @@ describe('resolveCanopyReadTool — shell-arg variant', () => {
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'cat $(echo src/x.ts)' })).toBeNull();
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'cat src/*.ts' })).toBeNull();
   });
+  it('returns null when shell parsing rejects complex command syntax', () => {
+    expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'node -e "console.log(${JSON.stringify({ ok: true })})"' })).toBeNull();
+  });
   it('returns null when command has no positional argument', () => {
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'cat' })).toBeNull();
     expect(resolveCanopyReadTool(codexManifest, 'Bash', { command: 'cat -n' })).toBeNull();

@@ -170,10 +170,24 @@ intelligence:
     const loaded = loadConfig(tmpDir);
     expect(loaded.embedding.provider).toBe('ollama');
   });
+
+  it('does not serialize Grove-tier defaults into project config', () => {
+    const config = loadConfig(writeMinimalProject(tmpDir));
+
+    saveConfig(tmpDir, config);
+
+    const written = fs.readFileSync(path.join(tmpDir, 'myco.yaml'), 'utf-8');
+    expect(written).not.toContain('run_in_deep_sleep');
+    expect(written).not.toContain('scheduled_tasks_active_window_days');
+  });
 });
 
 function writeProject(dir: string, yaml: string) {
   fs.writeFileSync(path.join(dir, 'myco.yaml'), yaml);
+}
+function writeMinimalProject(dir: string) {
+  fs.writeFileSync(path.join(dir, 'myco.yaml'), 'version: 3\n');
+  return dir;
 }
 function writeLocal(dir: string, yaml: string) {
   // Tests treat `dir` as the vault directory (matches resolveVaultDir's `.myco/` convention).

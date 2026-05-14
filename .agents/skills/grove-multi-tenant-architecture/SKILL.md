@@ -325,7 +325,7 @@ export const GROVE_CONFIG_FILENAME = 'grove.toml';  // Standardized to TOML
 export const GROVE_PROJECTS_FILENAME = 'projects.toml';
 export const GROVE_ROOTS_FILENAME = 'roots.toml';
 export const GROVE_REGISTRY_DIRNAME = 'registry';
-export const GROVE_REGISTRY_FILENAME = 'registry.toml';
+export const GROVE_REGISTRY_FILENAME = 'registry.yaml';
 export const DAEMON_STATE_FILENAME = 'daemon.json';
 export const SERVICE_DIRNAME = 'service';
 export const SERVICE_DEV_DIRNAME = 'service-dev';
@@ -428,17 +428,17 @@ status = "active"
 # Project bindings managed in projects.toml
 ```
 
-Registry structure in `registry.toml` (GROVE_REGISTRY_FILENAME):
-```toml
-[registry]
-version = "1.0"
+Registry structure in `registry.yaml` (GROVE_REGISTRY_FILENAME):
+```yaml
+registry:
+  version: "1.0"
 
-[[groves]]
-id = "grove_abc123"
-name = "production"
-endpoint = "https://grove.myco.dev"
-status = "active"
-created_at = "2026-05-01T12:00:00Z"
+groves:
+  - id: "grove_abc123"
+    name: "production"
+    endpoint: "https://grove.myco.dev"
+    status: "active"
+    created_at: "2026-05-01T12:00:00Z"
 ```
 
 ### CLI Surface Implementation
@@ -664,7 +664,7 @@ async function validateGroveBearerToken(providedToken, groveId, projectId) {
 
 **Machine Runtime Path Resolution**: Use machine runtime path primitives (`resolveMachineRuntimeDir`, `resolveMachineRuntimeCommandPath`, `resolveMachineRuntimeTmpDir`) for any operations requiring machine-local runtime state. Direct path construction bypasses Grove home resolution and causes path inconsistencies across environments.
 
-**Registry File Format Drift**: Always use TOML format for Grove registry files (`registry.toml`, `grove.toml`, `projects.toml`). YAML format usage in Grove contexts causes parsing errors and registry corruption.
+**Registry File Format Drift**: Always use YAML format for Grove registry files (`registry.yaml`, `grove.yaml`, `projects.yaml`) to match the `GROVE_REGISTRY_FILENAME` constant. TOML format usage in Grove registry contexts causes parsing errors and registry corruption.
 
 **Development Service Mode Isolation**: The development service mode (`SERVICE_DEV_DIRNAME`, port 19344) is isolated from production service mode (`SERVICE_DIRNAME`, port 20915). Always use `isDevServiceMode()` to check current mode before path resolution. Hardcoded service directory references bypass mode switching and cause service discovery failures.
 

@@ -20,6 +20,20 @@ import path from 'node:path';
 /** Directories that must exist inside a vault for correct operation. */
 const VAULT_REQUIRED_DIRS = ['buffer', 'attachments', 'logs', 'migration', 'tasks'] as const;
 
+const USAGE = `Usage: myco init [options]
+
+Initialize or reconcile Myco for the current project.
+
+Options:
+  --project <path>                 Project root to initialize
+  --grove <name|id>                Grove to bind this project to
+  --non-interactive                Run without prompts
+  --embedding-provider <provider>  Embedding provider for new vaults
+  --embedding-model <model>        Embedding model for new vaults
+  --embedding-url <url>            Embedding base URL for new vaults
+  -h, --help                       Show this help
+`;
+
 function printBanner(): void {
   const version = getPluginVersion();
   console.log('');
@@ -30,6 +44,11 @@ function printBanner(): void {
 }
 
 export async function run(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+
   const nonInteractive = args.includes('--non-interactive');
   const isInteractive = !nonInteractive && !!process.stdin.isTTY;
 

@@ -60,7 +60,7 @@ Pages (packages/myco/ui/src/pages/)
 
 ### Hub Base-Path Routing Integration
 
-Handle base-path routing for hub-proxied daemon UIs through `__MYCO_HUB_PREFIX__` detection:
+Handle base-path routing for hub-proxied daemon UIs:
 
 ```typescript
 // Detect hub context and configure router base-path
@@ -149,7 +149,7 @@ function useGroveApiClient() {
 
 ### Machine-Scoped Runtime Status Badges
 
-Implement sidebar badges to display DEV/BETA runtime status for machine-scoped service coordination:
+Implement sidebar badges to display DEV/BETA runtime status:
 
 ```typescript
 // Runtime status badge component for sidebar footer
@@ -177,24 +177,6 @@ function RuntimeStatusBadge() {
   );
 }
 
-// Integration in sidebar layout
-function SidebarFooter() {
-  return (
-    <div className="sidebar-footer">
-      <div className="sidebar-footer-content">
-        <RuntimeStatusBadge />
-        {/* Other footer content */}
-      </div>
-    </div>
-  );
-}
-```
-
-### Runtime Origin API Integration
-
-Connect to `/api/stats` endpoint for runtime information:
-
-```typescript
 // Hook to fetch daemon stats including runtime origin
 function useDaemonStats() {
   return useQuery({
@@ -207,28 +189,10 @@ function useDaemonStats() {
         version: string; uptime: number;
       };
     },
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 30000
   });
 }
-
-// Runtime status affects UI behavior
-function useRuntimeAwareBehavior() {
-  const { runtimeOrigin } = useDaemonStats();
-  
-  return {
-    shouldShowDebugInfo: runtimeOrigin === 'dev',
-    shouldShowUpdateBanner: runtimeOrigin !== 'dev', // DEV builds skip update checks
-    shouldShowBetaFeatures: runtimeOrigin === 'beta'
-  };
-}
 ```
-
-**Machine-scoped runtime coordination patterns**:
-- **Runtime status badges**: Visual indication of DEV/BETA vs stable runtime
-- **Update behavior**: DEV builds skip update checks, show runtime origin
-- **Feature toggles**: Beta features visible only in beta runtime
-- **Debug information**: Development features exposed only in DEV runtime
-- **Machine-scoped commands**: Runtime detection unified across all projects on machine
 
 ## Procedure B: Theme System Implementation and Extension
 
@@ -467,6 +431,256 @@ test('theme picker updates appearance correctly', async ({ page }) => {
 })
 ```
 
+## Procedure G: Notification System Integration
+
+### Notification Database Schema and Event Architecture
+
+Create notification tables with proper constraints and project scoping:
+
+```sql
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  project_id TEXT,  -- NULL for daemon-scoped notifications
+  user_id TEXT,
+  status TEXT DEFAULT 'unread' CHECK (status IN ('unread', 'read', 'dismissed')),
+  created_at INTEGER DEFAULT (unixepoch()),
+  expires_at INTEGER,
+  metadata TEXT,  -- JSON payload
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE notification_deliveries (
+  id TEXT PRIMARY KEY,
+  notification_id TEXT NOT NULL,
+  delivery_mode TEXT NOT NULL,  -- 'ui_banner', 'browser_push', 'email'
+  delivered_at INTEGER DEFAULT (unixepoch()),
+  acknowledged_at INTEGER,
+  FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+);
+```
+
+Define consistent event payload structures:
+
+```typescript
+interface NotificationEvent {
+  type: string;
+  title: string;
+  message: string;
+  projectId?: string;  // Null for daemon notifications
+  userId?: string;
+  metadata?: Record<string, any>;
+  expiresAt?: number;
+  deliveryModes: NotificationDeliveryMode[];
+}
+```
+
+### Domain Registry Wiring and Notification Emission
+
+Register new domains and implement emission points:
+
+```typescript
+import { register } from '../notifications/registry.js';
+import { notify } from '../notifications/notify.js';
+
+export const YOUR_DOMAIN_DESCRIPTOR = {
+  domain: 'your-domain',
+  label: 'Your Domain',
+  types: [
+    { 
+      id: 'your-domain.action.success', 
+      label: 'Action completed', 
+      defaultMode: 'banner', 
+      defaultLevel: 'success' 
+    },
+    { 
+      id: 'your-domain.action.error', 
+      label: 'Action failed', 
+      defaultMode: 'banner', 
+      defaultLevel: 'error' 
+    }
+  ]
+};
+
+// Register during initialization
+register(YOUR_DOMAIN_DESCRIPTOR);
+
+// Emit in domain logic
+export async function performDomainAction(entityId: string): Promise<void> {
+  const vaultDir = getVaultDir();
+  
+  try {
+    // ... perform domain logic
+    
+    notify(vaultDir, {
+      domain: 'your-domain',
+      type: 'your-domain.action.success',
+      title: 'Action Completed',
+      message: `Successfully processed ${entityId}`,
+      link: `/domain/${entityId}`,
+      metadata: { entityId, timestamp: Date.now() }
+    });
+  } catch (error) {
+    notify(vaultDir, {
+      domain: 'your-domain',
+      type: 'your-domain.action.error',
+      title: 'Action Failed',
+      message: error.message,
+      level: 'error',
+      metadata: { entityId, error: error.message }
+    });
+    throw error;
+  }
+}
+```
+
+## Procedure H: Notification Display Components
+
+### Notification Provider and React State Management
+
+Build notification display components with proper state management:
+
+```tsx
+export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [dismissTimers, setDismissTimers] = useState<Map<string, NodeJS.Timeout>>(new Map());
+
+  const addNotification = useCallback((notification: Omit<Notification, 'id'>) => {
+    const id = crypto.randomUUID();
+    const newNotification = { ...notification, id };
+    
+    setNotifications(prev => [newNotification, ...prev]);
+    
+    // Auto-dismiss after delay if configured
+    if (notification.autoDismissMs) {
+      const timer = setTimeout(() => dismissNotification(id), notification.autoDismissMs);
+      setDismissTimers(prev => new Map(prev.set(id, timer)));
+    }
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    const timer = dismissTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      setDismissTimers(prev => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [dismissTimers]);
+
+  return (
+    <NotificationContext.Provider value={{ notifications, addNotification, dismissNotification }}>
+      {children}
+    </NotificationContext.Provider>
+  );
+};
+
+export const NotificationBanner: React.FC<{
+  notification: Notification;
+  onDismiss: () => void;
+  onAction?: () => void;
+}> = ({ notification, onDismiss, onAction }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  
+  useEffect(() => {
+    const timer = setTimeout(() => setIsVisible(true), 10);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const handleDismiss = () => {
+    setIsVisible(false);
+    setTimeout(onDismiss, 300);
+  };
+
+  return (
+    <div 
+      className={`notification-banner ${isVisible ? 'notification-banner--visible' : ''}`}
+      role="alert"
+      aria-live="polite"
+    >
+      <div className="notification-banner__content">
+        <span className="notification-banner__icon">
+          {notification.type === 'skill_generated' ? '🎯' : 'ℹ️'}
+        </span>
+        <div className="notification-banner__text">
+          <h4 className="notification-banner__title">{notification.title}</h4>
+          <p className="notification-banner__message">{notification.message}</p>
+        </div>
+      </div>
+      <div className="notification-banner__actions">
+        {onAction && <button onClick={onAction}>View</button>}
+        <button onClick={handleDismiss}>×</button>
+      </div>
+    </div>
+  );
+};
+```
+
+### Browser Notification Management and Rate Limiting
+
+Implement progressive permission requests and rate limiting:
+
+```typescript
+class BrowserNotificationManager {
+  private permissionRequested = false;
+  private lastRequestTime = 0;
+  private readonly REQUEST_COOLDOWN = 24 * 60 * 60 * 1000; // 24 hours
+
+  async requestPermissionIfNeeded(): Promise<NotificationPermission> {
+    const currentPermission = Notification.permission;
+    if (currentPermission !== 'default') return currentPermission;
+    
+    // Avoid rapid permission requests
+    const now = Date.now();
+    if (this.permissionRequested && (now - this.lastRequestTime) < this.REQUEST_COOLDOWN) {
+      return 'default';
+    }
+    
+    this.permissionRequested = true;
+    this.lastRequestTime = now;
+    return await Notification.requestPermission();
+  }
+
+  async showNotificationSafely(title: string, options: NotificationOptions) {
+    const permission = await this.requestPermissionIfNeeded();
+    if (permission === 'granted') {
+      return new Notification(title, {
+        ...options,
+        tag: options.tag || 'myco-notification',
+        requireInteraction: false
+      });
+    }
+    return this.showUIFallback(title, options);
+  }
+}
+
+class NotificationRateLimiter {
+  private readonly recentNotifications = new Map<string, number[]>();
+  private readonly MAX_PER_HOUR = 10;
+  private readonly MAX_PER_TYPE_PER_HOUR = 3;
+
+  canShowNotification(type: string): boolean {
+    const now = Date.now();
+    const hourAgo = now - (60 * 60 * 1000);
+    
+    // Check global and per-type rate limits
+    const allRecent = Array.from(this.recentNotifications.values())
+      .flat()
+      .filter(time => time > hourAgo);
+    if (allRecent.length >= this.MAX_PER_HOUR) return false;
+    
+    const typeRecent = (this.recentNotifications.get(type) || [])
+      .filter(time => time > hourAgo);
+    return typeRecent.length < this.MAX_PER_TYPE_PER_HOUR;
+  }
+}
+```
+
 ## Cross-Cutting Gotchas
 
 **Theme Development Cache Issues**: Browser aggressively caches CSS files. Always hard refresh (Cmd+Shift+R / Ctrl+Shift+R) when developing themes or you'll see stale styles.
@@ -492,3 +706,21 @@ test('theme picker updates appearance correctly', async ({ page }) => {
 **Machine-Scoped Runtime Context Lost**: Runtime status detection depends on machine-scoped runtime.command files. If context is lost, check that the runtime.command resolution is working and the stats endpoint reflects the correct runtime origin.
 
 **Runtime Badge State Desync**: Runtime badges can become stale if not properly refreshed. Use polling intervals and ensure the daemon stats are being updated correctly when runtime origin changes.
+
+**Notification Emission Point Timing**: Call `notify()` AFTER core operations succeed, not before. Failed operations shouldn't generate success notifications, but always emit error notifications in catch blocks.
+
+**VaultDir Resolution**: Always pass correct `vaultDir` to `notify()`. Use `getVaultDir()` or undefined for no-op behavior. Never hardcode vault paths.
+
+**Registry Timing**: Register notification domains during application initialization, not on-demand. Registry must be populated before first `notify()` call.
+
+**Browser Permission Timing**: Never request notification permissions on page load without user interaction. Modern browsers block aggressive permission requests permanently.
+
+**Rate Limiting Scope**: Implement rate limiting per notification type AND globally. Type-specific limits prevent spam, global limits prevent system overload.
+
+**Database Transaction Scope**: Wrap notification creation and delivery recording in same transaction to ensure consistency.
+
+**React State Batching**: Use React's batching mechanisms when adding multiple notifications rapidly to prevent display flickering.
+
+**Memory Leak Prevention**: Always clear notification timers and event listeners when components unmount.
+
+**Fallback Delivery Chain**: Design delivery modes with clear fallback priorities. If high-priority delivery fails, automatically attempt lower-priority modes rather than losing notifications.

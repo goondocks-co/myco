@@ -80,6 +80,17 @@ describe('myco init', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
+  it('prints help without initializing or updating a project', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await run(['--help']);
+
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage: myco init'));
+    expect(fs.existsSync(vault)).toBe(false);
+    expect(openDatabase).not.toHaveBeenCalled();
+    stdoutSpy.mockRestore();
+  });
+
   it('creates vault with config and gitignore', async () => {
     await run(['--embedding-model', 'bge-m3']);
 

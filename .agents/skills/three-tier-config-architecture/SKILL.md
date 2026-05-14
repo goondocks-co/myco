@@ -374,7 +374,99 @@ class ScopeMigrationRunner {
 }
 ```
 
-### 2. Implement Backward Compatibility During Migration
+### 2. Automatic CLI-Driven Migration Patterns
+
+`myco update` automatically handles scope migration for specific legacy configuration fields:
+
+```typescript
+// packages/myco/src/config/automatic-migration.ts
+interface AutomaticMigrationRule {
+  field: string;
+  fromScope: 'project' | 'grove' | 'machine';
+  toScope: 'project' | 'grove' | 'machine';
+  condition?: (value: any) => boolean;
+}
+
+const AUTOMATIC_MIGRATION_RULES: AutomaticMigrationRule[] = [
+  {
+    field: 'embedding.run_in_deep_sleep',
+    fromScope: 'project',
+    toScope: 'grove'
+  },
+  {
+    field: 'agent.scheduled_tasks_active_window_days', 
+    fromScope: 'project',
+    toScope: 'grove'
+  }
+];
+
+class AutomaticMigrationProcessor {
+  async processProjectToGroveMigration(projectPath: string): Promise<void> {
+    const projectConfig = await loadConfig(path.join(projectPath, '.myco/myco.yaml'));
+    const groveConfig = await loadGroveConfig();
+    
+    let hasProjectChanges = false;
+    let hasGroveChanges = false;
+    
+    for (const rule of AUTOMATIC_MIGRATION_RULES) {
+      if (rule.fromScope === 'project' && rule.toScope === 'grove') {
+        const value = this.getNestedValue(projectConfig, rule.field);
+        
+        if (value !== undefined) {
+          // Move value from project to grove config
+          this.setNestedValue(groveConfig, rule.field, value);
+          this.removeNestedValue(projectConfig, rule.field);
+          
+          hasProjectChanges = true;
+          hasGroveChanges = true;
+          
+          console.log(`Migrated ${rule.field} from project to grove config`);
+        }
+      }
+    }
+    
+    // Write updated configurations
+    if (hasProjectChanges) {
+      await updateConfig(path.join(projectPath, '.myco/myco.yaml'), projectConfig);
+    }
+    if (hasGroveChanges) {
+      await saveGroveConfig(groveConfig);
+    }
+  }
+  
+  private getNestedValue(obj: any, path: string): any {
+    return path.split('.').reduce((current, key) => current?.[key], obj);
+  }
+  
+  private setNestedValue(obj: any, path: string, value: any): void {
+    const keys = path.split('.');
+    const lastKey = keys.pop()!;
+    const target = keys.reduce((current, key) => {
+      current[key] = current[key] || {};
+      return current[key];
+    }, obj);
+    target[lastKey] = value;
+  }
+  
+  private removeNestedValue(obj: any, path: string): void {
+    const keys = path.split('.');
+    const lastKey = keys.pop()!;
+    const target = keys.reduce((current, key) => current?.[key], obj);
+    if (target) {
+      delete target[lastKey];
+    }
+  }
+}
+```
+
+**Migration Trigger:** The automatic migration is integrated into the `myco update` command workflow. When updating CLI hooks and MCP entries, the system checks for legacy configuration fields at the project level and migrates them to the Grove tier. This migration:
+
+- Preserves the configured behavior (values are not lost)
+- Makes settings available to all projects within the Grove
+- Follows the principle that scope should broaden when settings prove useful across multiple projects
+- Runs transparently during routine update operations
+
+### 3. Implement Backward Compatibility During Migration
 
 Maintain compatibility while scope changes are in progress:
 
@@ -398,7 +490,7 @@ class BackwardCompatibilityLayer {
 }
 ```
 
-### 3. Build Migration Validation and Rollback
+### 4. Build Migration Validation and Rollback
 
 Create safety mechanisms for migration operations with portable project support:
 
@@ -470,3 +562,5 @@ class MigrationValidator {
 - **Legacy project ID migration**: When migrating from legacy project identifiers, preserve configuration continuity by mapping legacy values to binding_id-based storage before removing legacy entries.
 
 - **Grove identity coordination**: Project configuration changes may affect Grove-level settings inheritance. Always consider the Grove/project relationship when modifying project-scoped configuration patterns.
+
+- **Automatic migration side effects**: The automatic migration during `myco update` preserves values but changes their scope. Be aware that previously project-specific settings become grove-wide after migration. Review Grove config after update to ensure the migrated values are appropriate for all projects in the Grove.

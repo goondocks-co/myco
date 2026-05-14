@@ -34,6 +34,7 @@ import {
   resolveMycoHome,
   resolveProjectVaultDir,
   resolveGroveDbPath,
+  resolveServiceDirName,
 } from '@myco/grove/paths.js';
 import {
   pauseAwareShouldVisit,
@@ -171,8 +172,9 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   return () => {
     if (cache && Date.now() < cache.expiresAt) return cache.total;
     const mycoHome = deps.mycoHome ?? resolveMycoHome();
+    const servedBy = resolveServiceDirName(deps.daemonStateDir, mycoHome);
     let total = 0;
-    for (const grove of listGroves(mycoHome)) {
+    for (const grove of listGroves(mycoHome, { servedBy })) {
       try {
         const databasePath = resolveGroveDbPath(grove.id, mycoHome);
         const entry = deps.cache.getEmbeddingRuntime(databasePath, deps.embeddingRuntimeFactory);

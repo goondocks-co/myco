@@ -17,7 +17,7 @@ function rejectLegacyRuntimeKey<T extends z.ZodTypeAny>(schema: T) {
   }).pipe(schema);
 }
 
-const EmbeddingProviderSchema = z.object({
+const EmbeddingProviderBaseSchema = z.object({
   provider: z.enum(['ollama', 'openai-compatible', 'openrouter', 'openai']).default('ollama'),
   model: z.string().default('bge-m3'),
   base_url: z.string().url().optional(),
@@ -29,6 +29,10 @@ const EmbeddingProviderSchema = z.object({
    * draining when the machine sits idle long enough to deep-sleep.
    */
   run_in_deep_sleep: z.boolean().default(true),
+});
+const EmbeddingProviderSchema = EmbeddingProviderBaseSchema;
+const ProjectEmbeddingProviderSchema = EmbeddingProviderBaseSchema.omit({
+  run_in_deep_sleep: true,
 });
 
 const DaemonSchema = z.object({
@@ -154,7 +158,7 @@ const TaskProviderOverrideSchema = rejectLegacyRuntimeKey(z.object({
 // (Legacy `context.*` and root `canopy.*` blocks unified into `cortex.*`
 // in config_version 8. See migrations.ts:migrateV7ToV8.)
 
-const AgentSchema = rejectLegacyRuntimeKey(z.object({
+const AgentBaseSchema = z.object({
   /** Number of batches between event-driven summary triggers (0 to disable). */
   summary_batch_interval: z.number().int().min(0).default(5),
   /** Global toggle for PowerManager-scheduled agent tasks. */
@@ -183,6 +187,10 @@ const AgentSchema = rejectLegacyRuntimeKey(z.object({
   model: z.string().optional(),
   /** Per-task overrides keyed by task name. */
   tasks: z.record(z.string(), TaskProviderOverrideSchema).optional(),
+});
+const AgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema);
+const ProjectAgentSchema = rejectLegacyRuntimeKey(AgentBaseSchema.omit({
+  scheduled_tasks_active_window_days: true,
 }));
 
 const BackupRetentionSchema = z.object({
@@ -525,10 +533,10 @@ export const GroveConfigSchema = z.object({
 export const ProjectConfigSchema = z.object({
   version: z.literal(3),
   config_version: z.number().int().nonnegative().default(0),
-  embedding: EmbeddingProviderSchema.default(() => EmbeddingProviderSchema.parse({})),
+  embedding: ProjectEmbeddingProviderSchema.default(() => ProjectEmbeddingProviderSchema.parse({})),
   capture: CaptureSchema.default(() => CaptureSchema.parse({})),
   release_provenance: ReleaseProvenanceSchema.default(() => ReleaseProvenanceSchema.parse({})),
-  agent: AgentSchema.default(() => AgentSchema.parse({})),
+  agent: ProjectAgentSchema.default(() => ProjectAgentSchema.parse({})),
   skills: SkillsSchema.default(() => SkillsSchema.parse({})),
   notifications: NotificationsSchema.default(() => NotificationsSchema.parse({})),
   cortex: CortexSchema.default(() => CortexSchema.parse({})),

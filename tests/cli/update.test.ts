@@ -51,10 +51,15 @@ mock.module('@myco/cli/shared.js', () => ({
 describe('myco update', () => {
   let testDir: string;
   let vaultDir: string;
+  let mycoHome: string;
+  let previousMycoHome: string | undefined;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-test-'));
     vaultDir = path.join(testDir, '.myco');
+    mycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-home-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
     fs.mkdirSync(vaultDir, { recursive: true });
     vi.clearAllMocks();
     ensureRunningMock.mockResolvedValue(true);
@@ -64,6 +69,24 @@ describe('myco update', () => {
 
   afterEach(() => {
     fs.rmSync(testDir, { recursive: true, force: true });
+    fs.rmSync(mycoHome, { recursive: true, force: true });
+    if (previousMycoHome === undefined) {
+      delete process.env.MYCO_HOME;
+    } else {
+      process.env.MYCO_HOME = previousMycoHome;
+    }
+  });
+
+  it('prints help without touching project files', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const { run } = await import('@myco/cli/update.js');
+
+    await run(['--help']);
+
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Usage: myco update'));
+    expect(fs.existsSync(path.join(vaultDir, 'myco.yaml'))).toBe(false);
+    expect(ensureRunningMock).not.toHaveBeenCalled();
+    stdoutSpy.mockRestore();
   });
 
   it('updates only enabled symbionts from config', async () => {
@@ -242,6 +265,47 @@ describe('myco update', () => {
     await run(['--project', testDir]);
 
     expect(ensureRunningMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves legacy project config fields into Grove config during update', async () => {
+    const groveId = 'grove_00000000000000000000000000000001';
+    const projectId = 'proj_00000000000000000000000000000001';
+    fs.writeFileSync(path.join(vaultDir, 'project.toml'), [
+      '[project]',
+      `id = "${projectId}"`,
+      'name = "test-project"',
+      '',
+      '[grove]',
+      `id = "${groveId}"`,
+      'name = "Default"',
+      'slug = "default"',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), YAML.stringify({
+      version: 3,
+      config_version: 0,
+      embedding: {
+        provider: 'ollama',
+        model: 'bge-m3',
+        run_in_deep_sleep: false,
+      },
+      agent: {
+        scheduled_tasks_active_window_days: 3,
+      },
+      symbionts: { 'claude-code': { enabled: true } },
+    }));
+    fs.mkdirSync(path.join(testDir, '.claude'), { recursive: true });
+
+    const { run } = await import('@myco/cli/update.js');
+    await run(['--project', testDir]);
+
+    const projectYaml = fs.readFileSync(path.join(vaultDir, 'myco.yaml'), 'utf-8');
+    expect(projectYaml).not.toContain('run_in_deep_sleep');
+    expect(projectYaml).not.toContain('scheduled_tasks_active_window_days');
+
+    const groveYaml = fs.readFileSync(path.join(mycoHome, 'groves', groveId, 'grove.yaml'), 'utf-8');
+    expect(groveYaml).toContain('run_in_deep_sleep: false');
+    expect(groveYaml).toContain('scheduled_tasks_active_window_days: 3');
   });
 
   describe('--all-projects', () => {
