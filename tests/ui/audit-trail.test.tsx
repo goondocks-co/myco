@@ -124,9 +124,7 @@ describe('AuditTrail', () => {
 
   it('renders one row per turn with tool names', async () => {
     renderTrail();
-    // Turn trace section header should appear
-    await screen.findByText(/turn trace/i);
-    // Tool names appear in turn rows (exact span text, unlike badges which show "Tool × N")
+    // Tool names appear in turn rows as exact span text (badges show "Tool × N")
     const readItems = await screen.findAllByText('Read');
     expect(readItems.length).toBeGreaterThan(0);
     const writeItems = await screen.findAllByText('Write');
@@ -135,10 +133,48 @@ describe('AuditTrail', () => {
     expect(embedItems.length).toBeGreaterThan(0);
   });
 
+  it('groups turns under the phase whose timestamp range contains them', async () => {
+    const { container } = renderTrail();
+    // Wait for both phases and turns to render
+    await screen.findAllByText('Read');
+
+    // Find the order of phase headers and turn tool-name spans by their
+    // position in the document. The expected order is:
+    //   describe header → Read turn → Write turn → embed header → Embed turn
+    const all = Array.from(container.querySelectorAll('*'))
+      .filter((el) => {
+        const text = el.textContent?.trim();
+        if (!text) return false;
+        // Only leaf-ish elements (no further child elements with text)
+        if (el.children.length > 0) {
+          for (const child of Array.from(el.children)) {
+            if ((child.textContent ?? '').trim() === text) return false;
+          }
+        }
+        return ['describe', 'embed', 'Read', 'Write', 'Embed'].includes(text);
+      });
+
+    const sequence = all.map((el) => el.textContent!.trim());
+    const describeIdx = sequence.indexOf('describe');
+    const embedIdx = sequence.indexOf('embed');
+    const readIdx = sequence.indexOf('Read');
+    const writeIdx = sequence.indexOf('Write');
+    const embedTurnIdx = sequence.lastIndexOf('Embed');
+
+    expect(describeIdx).toBeGreaterThanOrEqual(0);
+    expect(embedIdx).toBeGreaterThan(describeIdx);
+    // Read + Write turns belong to the describe phase: they appear after the
+    // describe header and before the embed header.
+    expect(readIdx).toBeGreaterThan(describeIdx);
+    expect(readIdx).toBeLessThan(embedIdx);
+    expect(writeIdx).toBeGreaterThan(describeIdx);
+    expect(writeIdx).toBeLessThan(embedIdx);
+    // Embed turn belongs to the embed phase: appears after the embed header.
+    expect(embedTurnIdx).toBeGreaterThan(embedIdx);
+  });
+
   it('expands a turn row to show input/output on click', async () => {
     renderTrail();
-    // Wait for turn trace to render, then find the exact "Read" tool name span
-    await screen.findByText(/turn trace/i);
     const readSpans = await screen.findAllByText('Read');
     // The turn row div has role="button" — click the one that is inside a turn row
     const turnRow = readSpans

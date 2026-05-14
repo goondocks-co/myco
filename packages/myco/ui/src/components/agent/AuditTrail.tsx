@@ -176,7 +176,7 @@ function TurnItem({ turn }: { turn: TurnRow }) {
           )}
 
           {expanded && parsedInput !== null && (
-            <pre className="mt-1.5 ml-4 rounded-md bg-surface-container-lowest p-2.5 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
+            <pre className="mt-1.5 ml-4 rounded-md bg-surface-container-lowest p-2.5 font-mono text-xs whitespace-pre-wrap overflow-x-auto max-h-48 text-on-surface-variant">
               {typeof parsedInput === 'string'
                 ? parsedInput
                 : JSON.stringify(parsedInput, null, 2)}
@@ -199,17 +199,89 @@ function TurnItem({ turn }: { turn: TurnRow }) {
   );
 }
 
+/* ---------- Phase grouping ---------- */
+
+/**
+ * Sort phases by their best-available start signal. `startedAt` is null in
+ * the current audit view for multi-phase runs (the checkpoint persists only
+ * `updatedAt`), so we fall back to `completedAt` and finally to insertion
+ * order to keep the render deterministic.
+ */
+function sortPhases(phases: PhaseAuditEntry[]): PhaseAuditEntry[] {
+  return phases.slice().sort((a, b) => {
+    const aKey = a.startedAt ?? a.completedAt ?? Number.MAX_SAFE_INTEGER;
+    const bKey = b.startedAt ?? b.completedAt ?? Number.MAX_SAFE_INTEGER;
+    return aKey - bKey;
+  });
+}
+
+/**
+ * Group turns under the phase that contains their `started_at` timestamp.
+ *
+ * Phase boundaries are derived from `completedAt` values (since `startedAt`
+ * is always null for phased runs). The interval for phase N is
+ * (prev.completedAt, N.completedAt]; the first phase covers everything up
+ * to its own completedAt. Turns that fall outside every interval — or
+ * runs whose phases have no completedAt at all — land in the trailing
+ * `_unphased` bucket.
+ */
+function groupTurnsByPhase(
+  turns: TurnRow[],
+  sortedPhases: PhaseAuditEntry[],
+): { phaseName: string; turns: TurnRow[] }[] {
+  const buckets = new Map<string, TurnRow[]>();
+  for (const phase of sortedPhases) buckets.set(phase.phaseName, []);
+  buckets.set('_unphased', []);
+
+  for (const turn of turns) {
+    const t = turn.started_at;
+    let assigned: string | null = null;
+    if (t !== null) {
+      let lower = -Infinity;
+      for (const phase of sortedPhases) {
+        const upper = phase.completedAt ?? Infinity;
+        if (t > lower && t <= upper) {
+          assigned = phase.phaseName;
+          break;
+        }
+        if (phase.completedAt !== null) lower = phase.completedAt;
+      }
+    }
+    if (assigned === null) {
+      buckets.get('_unphased')!.push(turn);
+    } else {
+      buckets.get(assigned)!.push(turn);
+    }
+  }
+
+  // Sort each bucket by turn_number ASC for deterministic order
+  for (const arr of buckets.values()) {
+    arr.sort((a, b) => a.turn_number - b.turn_number);
+  }
+
+  const result: { phaseName: string; turns: TurnRow[] }[] = [];
+  for (const phase of sortedPhases) {
+    result.push({ phaseName: phase.phaseName, turns: buckets.get(phase.phaseName)! });
+  }
+  const unphased = buckets.get('_unphased')!;
+  if (unphased.length > 0) {
+    result.push({ phaseName: '_unphased', turns: unphased });
+  }
+  return result;
+}
+
 /* ---------- AuditTrail ---------- */
 
 /**
  * Unified audit view for a run. Fetches phase summaries (from the audit
  * endpoint) and per-turn tool call details (from the turns endpoint) and
- * renders them together: collapsible phase summary cards followed by a
- * flat turn-by-turn trace.
+ * renders them as a phase-grouped trail: each phase header card is followed
+ * inline by the turns whose `started_at` falls within that phase's
+ * timestamp range. Turns that don't map to any phase land in a trailing
+ * "misc" bucket.
  *
  * Both queries are fetched on mount — the caller controls whether to mount
- * this component at all. Note: agent_turns has no phase column, so turns
- * are listed in chronological order rather than grouped per-phase.
+ * this component at all.
  */
 export function AuditTrail({ runId, runStatus, className }: AuditTrailProps) {
   const auditQuery = useAgentRunAudit(runId);
@@ -240,33 +312,38 @@ export function AuditTrail({ runId, runStatus, className }: AuditTrailProps) {
     );
   }
 
-  return (
-    <div className={cn('space-y-4', className)}>
-      {/* Phase summaries */}
-      {phases.length > 0 && (
-        <div className="space-y-2">
-          <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">
-            Phases
-          </p>
-          {phases.map((entry) => (
-            <PhaseCard key={entry.phaseName} entry={entry} />
-          ))}
-        </div>
-      )}
+  const sortedPhases = sortPhases(phases);
+  const groups = groupTurnsByPhase(turns, sortedPhases);
+  const phaseLookup = new Map(sortedPhases.map((p) => [p.phaseName, p]));
 
-      {/* Turn-by-turn trace */}
-      {turns.length > 0 && (
-        <div className="space-y-2">
-          <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">
-            Turn trace ({turns.length})
-          </p>
-          <Surface level="low" className="overflow-hidden">
-            {turns.map((turn) => (
-              <TurnItem key={turn.id} turn={turn} />
-            ))}
-          </Surface>
-        </div>
-      )}
+  return (
+    <div className={cn('space-y-3', className)}>
+      <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant">
+        Audit Trail
+      </p>
+      {groups.map((group) => {
+        const phase = phaseLookup.get(group.phaseName);
+        return (
+          <div key={group.phaseName} className="space-y-1.5">
+            {phase ? (
+              <PhaseCard entry={phase} />
+            ) : (
+              <div className="px-4 py-2 rounded-md bg-surface-container/30">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                  misc ({group.turns.length})
+                </span>
+              </div>
+            )}
+            {group.turns.length > 0 && (
+              <Surface level="low" className="overflow-hidden ml-3">
+                {group.turns.map((turn) => (
+                  <TurnItem key={turn.id} turn={turn} />
+                ))}
+              </Surface>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
