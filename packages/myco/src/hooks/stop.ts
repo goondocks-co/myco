@@ -22,7 +22,7 @@ export async function main() {
     // Pass transcript_path and last_assistant_message from the active agent.
     // These are provided by the hook system and eliminate the need to
     // scan directories or mine the transcript for the AI response.
-    await client.post('/events/stop', {
+    await client.capturePost('/events/stop', {
       session_id: input.sessionId,
       agent: input.agent,
       transcript_path: input.transcriptPath,

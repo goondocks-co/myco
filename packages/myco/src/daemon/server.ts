@@ -210,6 +210,19 @@ export class DaemonServer {
       res.writeHead(200, { 'Content-Type': 'application/json', ...versionHeader });
       res.end(JSON.stringify({ version: this.version }));
     });
+
+    // Readiness deliberately uses the normal route pipeline. /health answers
+    // "is the process alive?"; /ready answers "can routed daemon requests
+    // make it through request-context resolution and DB scoping?"
+    this.registerRoute('GET', '/ready', async () => ({
+      body: {
+        myco: true,
+        ready: true,
+        version: this.version,
+        pid: process.pid,
+        uptime: process.uptime(),
+      },
+    }));
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -322,7 +335,7 @@ export class DaemonServer {
       return;
     }
 
-    if (pathname.startsWith('/api/') || pathname === '/health') {
+    if (isDaemonControlPath(pathname)) {
       res.writeHead(404, { 'Content-Type': 'application/json', 'X-Myco-Api-Version': this.version });
       res.end(JSON.stringify({ error: 'not found' }));
       return;
@@ -375,7 +388,7 @@ export class DaemonServer {
     if (!this.uiDevProxyTarget || !req.url) return false;
 
     const pathname = new URL(req.url, 'http://localhost').pathname;
-    if (pathname.startsWith('/api/') || pathname === '/health') return false;
+    if (isDaemonControlPath(pathname)) return false;
 
     try {
       const targetUrl = new URL(req.url, this.uiDevProxyTarget).toString();
@@ -438,7 +451,7 @@ export class DaemonServer {
     }
 
     const pathname = new URL(req.url, 'http://localhost').pathname;
-    if (pathname.startsWith('/api/') || pathname === '/health') {
+    if (isDaemonControlPath(pathname)) {
       socket.destroy();
       return;
     }
@@ -705,6 +718,10 @@ export function applyDaemonHttpServerLimits(server: http.Server): void {
 /** TCP listen backlog used by the daemon. Exported so service installers
  *  / consumers that bind their own listener can match it. */
 export const DAEMON_HTTP_LISTEN_BACKLOG = HTTP_LISTEN_BACKLOG;
+
+function isDaemonControlPath(pathname: string): boolean {
+  return pathname.startsWith('/api/') || pathname === '/health' || pathname === '/ready';
+}
 
 /**
  * Force a Node HTTP server through a fast, deterministic shutdown.

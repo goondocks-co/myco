@@ -4,6 +4,8 @@ import { REQUEST_CONTEXT_ENV, REQUEST_CONTEXT_HEADERS, resolveLegacyRequestConte
 import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveProjectVaultDir, resolveServiceDaemonStatePath } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
+import { serviceLabel } from '@myco/service/labels';
+import { FakeServiceManager } from '../helpers/fake-service-manager';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +16,7 @@ describe('DaemonClient', () => {
   let mockServer: http.Server;
   let mockPort: number;
   let globalStatePath: string;
+  let previousMycoHome: string | undefined;
 
   beforeEach(async () => {
     // Suppress the fire-and-forget spawnDaemon side effect that post/get/put/
@@ -21,12 +24,17 @@ describe('DaemonClient', () => {
     // request-level result; the spawn path has its own unit coverage.
     process.env.MYCO_NO_AUTO_SPAWN = '1';
     vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-client-'));
+    previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = path.join(vaultDir, 'home');
     ensureProjectManifest(vaultDir, { projectName: 'client-test' });
 
     mockServer = http.createServer((req, res) => {
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ myco: true, pid: process.pid }));
+      } else if (req.url === '/ready') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ myco: true, ready: true, pid: process.pid }));
       } else {
         let body = '';
         req.on('data', (c: string) => { body += c; });
@@ -56,6 +64,8 @@ describe('DaemonClient', () => {
     fs.rmSync(vaultDir, { recursive: true, force: true });
     try { fs.unlinkSync(globalStatePath); } catch { /* gone */ }
     delete process.env.MYCO_NO_AUTO_SPAWN;
+    if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+    else process.env.MYCO_HOME = previousMycoHome;
     delete process.env[REQUEST_CONTEXT_ENV.projectRoot];
     delete process.env[REQUEST_CONTEXT_ENV.projectId];
     delete process.env[REQUEST_CONTEXT_ENV.groveId];
@@ -69,6 +79,12 @@ describe('DaemonClient', () => {
     const result = await client.post('/events', { type: 'test' });
     expect(result.ok).toBe(true);
     expect(result.data.received.type).toBe('test');
+  });
+
+  it('checks routed readiness separately from raw health', async () => {
+    const client = new DaemonClient(vaultDir);
+    await expect(client.isHealthy()).resolves.toBe(true);
+    await expect(client.isReady()).resolves.toBe(true);
   });
 
   it('forwards constructor request context headers to daemon requests', async () => {
@@ -166,6 +182,44 @@ describe('DaemonClient', () => {
     const client = new DaemonClient(vaultDir);
     const result = await client.post('/events', { type: 'test' });
     expect(result.ok).toBe(false);
+  });
+
+  it('restarts the managed service when a capture-critical post fails', async () => {
+    await new Promise<void>((r) => mockServer.close(() => r()));
+
+    const mgr = new FakeServiceManager({ preInstalled: serviceLabel('prod') });
+    mgr.statuses.set(serviceLabel('prod'), {
+      installed: true,
+      running: true,
+      pid: process.pid,
+      lastExitCode: 0,
+      unitPath: '/fake/co.goondocks.myco.plist',
+    });
+    const client = new DaemonClient(vaultDir, { serviceManager: mgr });
+
+    const result = await client.capturePost('/events', { type: 'test' });
+
+    expect(result.ok).toBe(false);
+    expect(mgr.restartCalls).toEqual([serviceLabel('prod')]);
+  });
+
+  it('coalesces repeated capture recovery restarts', async () => {
+    await new Promise<void>((r) => mockServer.close(() => r()));
+
+    const mgr = new FakeServiceManager({ preInstalled: serviceLabel('prod') });
+    mgr.statuses.set(serviceLabel('prod'), {
+      installed: true,
+      running: true,
+      pid: process.pid,
+      lastExitCode: 0,
+      unitPath: '/fake/co.goondocks.myco.plist',
+    });
+    const client = new DaemonClient(vaultDir, { serviceManager: mgr });
+
+    await client.capturePost('/events', { type: 'first' });
+    await client.capturePost('/events', { type: 'second' });
+
+    expect(mgr.restartCalls).toEqual([serviceLabel('prod')]);
   });
 });
 
