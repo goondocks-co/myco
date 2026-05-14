@@ -28,7 +28,31 @@ export const PlanFrontmatterSchema = z.object({
   tags: z.array(z.string()).default([]),
 });
 
-export const OBSERVATION_TYPES = ['gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting'] as const;
+/**
+ * Canonical set of spore kinds the renderable + writable surface supports.
+ *
+ * Two clusters:
+ * - **Direct-extraction** (capture-pipeline / coding agent writes these):
+ *   `gotcha`, `bug_fix`, `decision`, `discovery`, `trade_off`, `cross-cutting`.
+ * - **Synthesized** (intelligence agent writes these during vault-seed /
+ *   vault-evolve consolidation):
+ *   `wisdom`, `pattern`, `architecture`.
+ *
+ * Both clusters are first-class kinds — the UI maps every entry to a tone,
+ * search ranks them uniformly, and downstream consumers should treat the
+ * whole set as the renderable universe.
+ */
+export const OBSERVATION_TYPES = [
+  'gotcha',
+  'bug_fix',
+  'decision',
+  'discovery',
+  'trade_off',
+  'cross-cutting',
+  'wisdom',
+  'pattern',
+  'architecture',
+] as const;
 
 export const SPORE_STATUSES = ['active', 'superseded', 'archived'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -36,7 +60,7 @@ export type SporeStatus = (typeof SPORE_STATUSES)[number];
 export const SporeFrontmatterSchema = z.object({
   type: z.literal('spore'),
   id: z.string(),
-  observation_type: z.string(),
+  observation_type: z.enum(OBSERVATION_TYPES),
   status: z.enum(SPORE_STATUSES).default('active'),
   session: z.string().optional(),
   plan: z.string().optional(),

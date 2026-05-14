@@ -1,8 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ChevronDown, ChevronRight, MessageSquare, Bot } from 'lucide-react';
-import { Surface } from '../ui/surface';
-import { MarkdownContent } from '../ui/markdown-content';
-import { Lightbox } from '../ui/lightbox';
+import { MessageSquare } from 'lucide-react';
 import {
   useSessionBatches,
   useSessionAttachments,
@@ -10,33 +7,12 @@ import {
   type AttachmentRow,
   type PromptBatchOrigin,
 } from '../../hooks/use-sessions';
-import { ActivityList } from './ActivityList';
-import { cn } from '../../lib/cn';
-import { withBasePath } from '../../lib/base-path';
+import { PromptBatchCard } from './PromptBatchCard';
 
 /* ---------- Constants ---------- */
 
-/** Number of characters to show in a collapsed batch prompt preview. */
-const PROMPT_PREVIEW_CHARS = 120;
-
-/** Diameter of the timeline node marker in pixels (Tailwind: h-7 w-7 = 28px). */
-const TIMELINE_NODE_SIZE_CLASS = 'h-7 w-7';
-
 /** Number of skeleton items to show during loading. */
 const SKELETON_COUNT = 3;
-
-/* ---------- Helpers ---------- */
-
-function formatTimestamp(epochSeconds: number): string {
-  return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function promptPreview(text: string | null): string {
-  if (!text) return '(no prompt)';
-  return text.length > PROMPT_PREVIEW_CHARS
-    ? text.slice(0, PROMPT_PREVIEW_CHARS) + '\u2026'
-    : text;
-}
 
 /* ---------- Helpers: steering grouping ---------- */
 
@@ -65,186 +41,6 @@ function groupBatches(sortedBatches: BatchRow[]): BatchGroup[] {
       (a, b) => (a.started_at ?? 0) - (b.started_at ?? 0),
     ),
   }));
-}
-
-/* ---------- Sub-components ---------- */
-
-interface BatchCardProps {
-  batch: BatchRow;
-  batchAttachments: AttachmentRow[];
-  steeringChildren: BatchRow[];
-  defaultOpen?: boolean;
-  promptIndex: number;
-  isLast: boolean;
-}
-
-function BatchCard({ batch, batchAttachments, steeringChildren, defaultOpen = false, promptIndex, isLast }: BatchCardProps) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-
-  return (
-    <div className="relative flex gap-4">
-      {/* Timeline spine */}
-      <div className="relative flex flex-col items-center shrink-0" style={{ width: '28px' }}>
-        {/* Connector line above node */}
-        {promptIndex > 0 && (
-          <div className="absolute top-0 w-px bg-outline-variant/40" style={{ height: '14px' }} />
-        )}
-        {/* Node marker */}
-        <div
-          className={cn(
-            TIMELINE_NODE_SIZE_CLASS,
-            'rounded-full flex items-center justify-center shrink-0 text-[10px] font-mono font-bold transition-colors z-10',
-            open
-              ? 'bg-primary text-on-primary'
-              : 'bg-surface-container-high text-on-surface-variant border border-outline-variant/40',
-          )}
-        >
-          {promptIndex + 1}
-        </div>
-        {/* Connector line below node */}
-        {!isLast && (
-          <div className="flex-1 w-px bg-outline-variant/40" />
-        )}
-      </div>
-
-      {/* Card content */}
-      <Surface level="low" className="flex-1 overflow-hidden rounded-md max-w-full border border-outline-variant/10 mb-2">
-        {/* Collapsible header */}
-        <button
-          type="button"
-          className={cn(
-            'flex w-full items-start gap-3 px-4 py-3 text-left transition-colors overflow-hidden',
-            'hover:bg-surface-container/40',
-            open && 'bg-surface-container/20',
-          )}
-          onClick={() => setOpen((prev) => !prev)}
-          aria-expanded={open}
-        >
-          {open ? (
-            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant transition-transform" />
-          ) : (
-            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant transition-transform" />
-          )}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="flex items-baseline justify-between gap-2 mb-0.5">
-              <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
-                Prompt
-              </span>
-              {batch.activity_count > 0 && (
-                <span className="font-mono text-[10px] text-on-surface-variant/70 shrink-0">
-                  {batch.activity_count} tool call{batch.activity_count !== 1 ? 's' : ''}
-                </span>
-              )}
-              {batch.started_at && (
-                <span className="shrink-0 font-mono text-xs text-on-surface-variant">
-                  {formatTimestamp(batch.started_at)}
-                </span>
-              )}
-            </div>
-            <p className="font-sans text-sm text-on-surface truncate">
-              {open ? (batch.user_prompt ?? '(no prompt)') : promptPreview(batch.user_prompt)}
-            </p>
-          </div>
-        </button>
-
-        {/* Expandable body — CSS grid animation for smooth expand/collapse */}
-        <div
-          className="grid transition-[grid-template-rows] duration-200 ease-out"
-          style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
-        >
-          <div className="overflow-hidden">
-            {/* User prompt (full) */}
-            <div className="px-4 pt-0 pb-3 overflow-hidden">
-              {batch.user_prompt && batch.user_prompt.length > PROMPT_PREVIEW_CHARS && (
-                <MarkdownContent content={batch.user_prompt} />
-              )}
-
-              {/* Inline attachments */}
-              {batchAttachments.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {batchAttachments.map((att, idx) => (
-                    <button
-                      key={att.id}
-                      type="button"
-                      className="rounded-md overflow-hidden hover:ring-2 hover:ring-primary/40 transition-all"
-                      onClick={() => setLightboxIndex(idx)}
-                    >
-                      <img
-                        src={withBasePath(`/api/attachments/${att.file_path}`)}
-                        alt={att.description ?? att.file_path ?? ''}
-                        className="max-w-[200px] max-h-[140px] object-cover rounded-md"
-                        loading="lazy"
-                      />
-                    </button>
-                  ))}
-                </div>
-              )}
-              {lightboxIndex !== null && (
-                <Lightbox
-                  images={batchAttachments.map((a) => ({
-                    src: withBasePath(`/api/attachments/${a.file_path}`),
-                    alt: a.description ?? a.file_path ?? '',
-                  }))}
-                  index={lightboxIndex}
-                  onNavigate={setLightboxIndex}
-                  onClose={() => setLightboxIndex(null)}
-                />
-              )}
-            </div>
-
-            {/* Activities — header is built into ActivityList for expand/collapse */}
-            {batch.activity_count > 0 && (
-              <ActivityList batchId={batch.id} activityCount={batch.activity_count} />
-            )}
-
-            {/* Steering / interrupt children nested beneath parent */}
-            {steeringChildren.map((child) => (
-              <div key={child.id} className="mt-3 border-l-2 border-primary/30 pl-4 pb-3 mx-4">
-                <div className="font-sans text-[10px] font-medium uppercase tracking-widest text-primary/70 mb-1">
-                  {child.kind === 'interrupt' ? '⚠ interrupt' : '↳ steering'}
-                </div>
-                <div className="flex items-baseline justify-between gap-2 mb-1">
-                  <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
-                    Prompt
-                  </span>
-                  {child.started_at && (
-                    <span className="shrink-0 font-mono text-xs text-on-surface-variant">
-                      {formatTimestamp(child.started_at)}
-                    </span>
-                  )}
-                </div>
-                <p className="font-sans text-sm text-on-surface whitespace-pre-wrap">
-                  {child.user_prompt ?? '(no prompt)'}
-                </p>
-                {child.activity_count > 0 && (
-                  <ActivityList batchId={child.id} activityCount={child.activity_count} />
-                )}
-              </div>
-            ))}
-
-            {/* AI summary — distinct response block with left accent */}
-            {batch.response_summary && (
-              <div className="border-t border-[var(--ghost-border)] overflow-hidden">
-                <div className="flex gap-3 px-4 py-3">
-                  <div className="w-0.5 shrink-0 rounded-full bg-primary/30" />
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <Bot className="h-3 w-3 text-primary/60" />
-                      <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant">
-                        Response
-                      </span>
-                    </div>
-                    <MarkdownContent content={batch.response_summary} />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </Surface>
-    </div>
-  );
 }
 
 /* ---------- Component ---------- */
@@ -330,7 +126,7 @@ export function BatchTimeline({ sessionId }: BatchTimelineProps) {
         const resolved = byBatchId.get(parent.id)
           ?? (parent.prompt_number !== null ? byTurnNumber.get(parent.prompt_number) ?? [] : []);
         return (
-          <BatchCard
+          <PromptBatchCard
             key={parent.id}
             batch={parent}
             batchAttachments={resolved}

@@ -122,6 +122,7 @@ export function useSpores(filters?: {
   search?: string;
   limit?: number;
   offset?: number;
+  session_id?: string;
 }) {
   const params = new URLSearchParams();
   if (filters?.type) params.set('type', filters.type);
@@ -129,6 +130,7 @@ export function useSpores(filters?: {
   if (filters?.search) params.set('search', filters.search);
   if (filters?.limit !== undefined) params.set('limit', String(filters.limit));
   if (filters?.offset !== undefined) params.set('offset', String(filters.offset));
+  if (filters?.session_id) params.set('session_id', filters.session_id);
   const qs = params.toString();
   const path = qs ? `/spores?${qs}` : '/spores';
   const queryKey = useProjectScopedQueryKey(['spores', filters]);

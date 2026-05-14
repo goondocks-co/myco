@@ -54,6 +54,7 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
   const agentId = req.query.agent_id; // undefined = all agents
   const type = req.query.type;
   const status = req.query.status;
+  const session_id = req.query.session_id || undefined;
   const limit = req.query.limit ? Number(req.query.limit) : DEFAULT_LIST_LIMIT;
   const offset = req.query.offset ? Number(req.query.offset) : DEFAULT_LIST_OFFSET;
   const search = req.query.search || undefined;
@@ -65,6 +66,7 @@ export async function handleListSpores(req: RouteRequest): Promise<RouteResponse
     ...(agentId ? { agent_id: agentId } : {}),
     observation_type: type,
     status,
+    session_id,
     search,
   };
 

@@ -224,7 +224,7 @@ export function SessionPlans({ sessionId, expandedPlanId }: SessionPlansProps) {
         <PlanCard
           key={plan.id}
           plan={plan}
-          initialExpanded={String(plan.id) === expandedPlanId}
+          initialExpanded={plan.status === 'in_progress' || String(plan.id) === expandedPlanId}
           isDeleting={deletePlan.isPending && pendingDeletePlan?.id === plan.id}
           onDelete={() => setPendingDeletePlan(plan)}
         />
