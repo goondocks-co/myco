@@ -130,7 +130,7 @@ export default function Agent() {
   const { id: selectedRunId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const urlState = useMemo(() => readUrlState(searchParams), [searchParams]);
   // When a run is selected via the path (/agent/:id), force the Runs tab —
   // a path-selected run only makes sense in the Runs view. Tab in ?tab= is
@@ -138,36 +138,6 @@ export default function Agent() {
   const tab: AgentTab = selectedRunId ? 'runs' : urlState.tab;
   const { taskId: selectedTaskId, compareRunIds } = urlState;
   const [triggerOpen, setTriggerOpen] = useState(false);
-
-  // Canonicalize `?tab=evaluations` bookmarks on mount so future navigation
-  // uses the new name.
-  useEffect(() => {
-    const rawTab = searchParams.get(PARAM_TAB);
-    if (rawTab && TAB_REDIRECTS[rawTab]) {
-      const nextTab = TAB_REDIRECTS[rawTab];
-      const next = new URLSearchParams(searchParams);
-      if (nextTab === 'runs') next.delete(PARAM_TAB);
-      else next.set(PARAM_TAB, nextTab);
-      setSearchParams(next, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Migrate legacy `?run=<id>` bookmarks to `/agent/<id>` path selection.
-  // Mount-only canonicalization, same pattern as the ?tab=evaluations redirect.
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const legacyRunId = params.get('run');
-    if (legacyRunId && !selectedRunId) {
-      params.delete('run');
-      const search = params.toString();
-      navigate(
-        `${agentBasePath}/${legacyRunId}${search ? `?${search}` : ''}`,
-        { replace: true },
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   /** Base path of the Agent page (`/g/<grove>/p/<project>/agent`), with any
    *  trailing `/<runId>` stripped. Used to build sibling URLs for tab/comparison
@@ -181,6 +151,39 @@ export default function Agent() {
     }
     return location.pathname;
   }, [location.pathname, selectedRunId]);
+
+  // mount-only canonicalization for legacy URL shapes:
+  //   - `?run=<id>` -> path-based `/agent/<id>` selection
+  //   - `?tab=evaluations` (and other legacy tab ids) -> current tab id
+  // Resolved together so a URL like `/agent?run=<id>&tab=evaluations`
+  // applies both transforms atomically in a single replace.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const legacyRunId = params.get('run');
+    const rawTab = params.get(PARAM_TAB);
+    const redirectedTab = rawTab ? TAB_REDIRECTS[rawTab] : undefined;
+
+    let nextPath = location.pathname;
+    let mutated = false;
+
+    if (legacyRunId && !selectedRunId) {
+      params.delete('run');
+      nextPath = `${agentBasePath}/${legacyRunId}`;
+      mutated = true;
+    }
+
+    if (redirectedTab) {
+      if (redirectedTab === 'runs') params.delete(PARAM_TAB);
+      else params.set(PARAM_TAB, redirectedTab);
+      mutated = true;
+    }
+
+    if (mutated) {
+      const search = params.toString();
+      navigate(`${nextPath}${search ? `?${search}` : ''}`, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** Navigate to the agent page with the given tab state, dropping any
    *  path-selected run id. */
