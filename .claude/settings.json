@@ -148,10 +148,10 @@
   },
   "permissions": {
     "allow": [
-      "Bash(myco:*)",
-      "Bash(myco-dev:*)",
       "Bash(myco *)",
-      "Bash(myco-dev *)"
+      "Bash(myco:*)",
+      "Bash(myco-dev *)",
+      "Bash(myco-dev:*)"
     ]
   }
 }

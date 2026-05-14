@@ -165,23 +165,20 @@ export function getRunBranches(runIds: readonly string[]): Map<string, string | 
 
   const db = getDatabase();
   const placeholders = runIds.map(() => '?').join(', ');
-  // For each run, prefer the latest provenance row attached to its session;
-  // we group by run_id and take MAX(captured_at). The outer SELECT projects
-  // the branch attached to that captured_at via a self-join on (session_id,
-  // captured_at) — safe because (session_id, captured_at) is effectively
-  // unique within a session's capture stream.
+  // Use a window function to pick the latest provenance row per session in
+  // a single pass — the previous correlated subquery re-ran MAX(captured_at)
+  // for every matched session row, turning into N+1 round trips on large
+  // result sets.
   const rows = db
     .prepare(
-      `SELECT r.id AS run_id, p.branch AS branch
+      `SELECT r.id AS run_id, latest.branch AS branch
          FROM agent_runs r
          JOIN sessions s ON s.id = r.session_ref
-         JOIN knowledge_git_provenance p
-           ON p.session_id = s.id
-          AND p.captured_at = (
-            SELECT MAX(captured_at)
-              FROM knowledge_git_provenance
-             WHERE session_id = s.id
-          )
+         JOIN (
+           SELECT session_id, branch,
+                  ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY captured_at DESC) AS rn
+             FROM knowledge_git_provenance
+         ) latest ON latest.session_id = s.id AND latest.rn = 1
         WHERE r.id IN (${placeholders})`,
     )
     .all(...runIds) as Array<{ run_id: string; branch: string | null }>;
