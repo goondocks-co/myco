@@ -22,7 +22,7 @@ import { getLastCompletedRunsForProject } from '@myco/db/queries/project-activit
 import { withDatabase } from '@myco/db/client.js';
 import { getLatestResumableRunForTask } from '@myco/db/queries/runs.js';
 import { countToolCallsByRun } from '@myco/db/queries/turns.js';
-import { runAgent } from '@myco/agent/executor.js';
+import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { loadAllTasks } from '@myco/agent/registry.js';
 import { notify } from '@myco/notifications/notify.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -214,7 +214,7 @@ export async function registerScheduledTasks(
       : getLatestResumableRunForTask(DEFAULT_AGENT_ID, taskName, readScope);
 
     if (resumableRun) {
-      const resumed = await runAgent(projectVaultDir, {
+      const resumed = await dispatchAgentRun(projectVaultDir, {
         agentId: DEFAULT_AGENT_ID,
         task: taskName,
         resumeRunId: resumableRun.id,
@@ -254,7 +254,7 @@ export async function registerScheduledTasks(
       return;
     }
 
-    const result = await runAgent(projectVaultDir, {
+    const result = await dispatchAgentRun(projectVaultDir, {
       task: taskName,
       instruction: built?.instruction,
       runContext: built?.context,

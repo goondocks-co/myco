@@ -135,15 +135,18 @@ function targetFor(row: GitProvenanceRow): ReleaseTarget | null {
   }
 }
 
-function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): RefCheck[] {
-  return refs.map((ref) => {
+async function checkRefs(projectRoot: string, headSha: string, refs: readonly string[]): Promise<RefCheck[]> {
+  const results: RefCheck[] = [];
+  for (const ref of refs) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const result = runGit(projectRoot, ['merge-base', '--is-ancestor', headSha, ref]);
-    return {
+    results.push({
       ref,
       ok: result.ok,
       ...(result.ok || result.status === 1 ? {} : { error: result.error }),
-    };
-  });
+    });
+  }
+  return results;
 }
 
 function boundedChecks(checks: RefCheck[]): RefCheck[] {
@@ -165,11 +168,11 @@ function parseCapturedPatchIds(row: GitProvenanceRow): CapturedPatchId[] {
   }
 }
 
-function capturedPatchCandidates(
+async function capturedPatchCandidates(
   row: GitProvenanceRow,
   projectRoot: string,
   refs: readonly string[],
-): CapturedPatchId[] {
+): Promise<CapturedPatchId[]> {
   const byKey = new Map<string, CapturedPatchId>();
   for (const patch of parseCapturedPatchIds(row)) {
     if (!patch.patch_id) continue;
@@ -178,6 +181,7 @@ function capturedPatchCandidates(
 
   if (row.head_sha) {
     for (const ref of refs) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
       const baseSha = mergeBase(projectRoot, row.head_sha, ref);
       if (!baseSha) continue;
       const patchId = patchIdForRange(projectRoot, baseSha, row.head_sha);
@@ -196,13 +200,13 @@ function capturedPatchCandidates(
   return [...byKey.values()];
 }
 
-function findPatchMatch(
+async function findPatchMatch(
   projectRoot: string,
   row: GitProvenanceRow,
   refs: readonly string[],
   cache: PatchIdCache,
-): { matches: PatchMatch[]; errors: RefCheck[] } {
-  const patches = capturedPatchCandidates(row, projectRoot, refs);
+): Promise<{ matches: PatchMatch[]; errors: RefCheck[] }> {
+  const patches = await capturedPatchCandidates(row, projectRoot, refs);
   const wanted = new Map<string, CapturedPatchId>();
   for (const patch of patches) {
     if (patch.patch_id) wanted.set(patch.patch_id, patch);
@@ -213,13 +217,19 @@ function findPatchMatch(
   const errors: RefCheck[] = [];
 
   for (const ref of refs) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const revList = runGit(projectRoot, ['rev-list', `--max-count=${PATCH_SCAN_MAX_COMMITS}`, ref]);
     if (!revList.ok) {
       errors.push({ ref, ok: false, error: revList.error });
       continue;
     }
+    let commitsSinceYield = 0;
     for (const commitSha of revList.stdout.split('\n')) {
       if (!commitSha) continue;
+      if (++commitsSinceYield >= 32) {
+        commitsSinceYield = 0;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       const patchId = cache.patchIdForCommit(projectRoot, commitSha);
       if (!patchId) continue;
       const captured = wanted.get(patchId);
@@ -276,12 +286,12 @@ function selectRefsForRow(
   };
 }
 
-function classify(
+async function classify(
   row: GitProvenanceRow,
   input: ReconcileReleaseProvenanceInput,
   cache: PatchIdCache,
   prSquash: PullRequestSquashEvidence | null,
-): Classification {
+): Promise<Classification> {
   const baseEvidence = {
     provenance_id: row.id,
     capture_point: row.capture_point,
@@ -319,7 +329,7 @@ function classify(
   }
 
   // Direct ancestry against production refs (highest confidence).
-  const productionChecks = checkRefs(input.projectRoot, row.head_sha, productionRefs);
+  const productionChecks = await checkRefs(input.projectRoot, row.head_sha, productionRefs);
   const released = productionChecks.find((check) => check.ok);
   if (released) {
     return buildClassification(
@@ -330,7 +340,7 @@ function classify(
   }
 
   // Patch-id equivalence against production refs (squash-merge case).
-  const productionPatchMatch = findPatchMatch(input.projectRoot, row, productionRefs, cache);
+  const productionPatchMatch = await findPatchMatch(input.projectRoot, row, productionRefs, cache);
   const releasedByPatch = productionPatchMatch.matches[0];
   if (releasedByPatch) {
     return buildClassification(
@@ -353,7 +363,7 @@ function classify(
   // has a different SHA. Re-check ancestry against the squash commit before
   // falling through to integration refs.
   if (prSquash) {
-    const squashAncestry = checkRefs(input.projectRoot, prSquash.merge_commit_sha, productionRefs);
+    const squashAncestry = await checkRefs(input.projectRoot, prSquash.merge_commit_sha, productionRefs);
     const releasedBySquash = squashAncestry.find((check) => check.ok);
     if (releasedBySquash) {
       return buildClassification(
@@ -370,7 +380,7 @@ function classify(
   }
 
   // Same checks against integration refs (merged but not released).
-  const integrationChecks = checkRefs(input.projectRoot, row.head_sha, integrationRefs);
+  const integrationChecks = await checkRefs(input.projectRoot, row.head_sha, integrationRefs);
   const merged = integrationChecks.find((check) => check.ok);
   if (merged) {
     return buildClassification(
@@ -380,7 +390,7 @@ function classify(
     );
   }
 
-  const integrationPatchMatch = findPatchMatch(input.projectRoot, row, integrationRefs, cache);
+  const integrationPatchMatch = await findPatchMatch(input.projectRoot, row, integrationRefs, cache);
   const mergedByPatch = integrationPatchMatch.matches[0];
   if (mergedByPatch) {
     return buildClassification(
@@ -476,6 +486,7 @@ export async function reconcileReleaseProvenance(
   let failed = 0;
 
   for (const row of rows) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const target = targetFor(row);
     if (!target) {
       skipped++;
@@ -490,7 +501,7 @@ export async function reconcileReleaseProvenance(
 
     try {
       const prSquash = await resolvePullRequestSquash(row, reconcilerInput, githubBudget);
-      const result = classify(row, reconcilerInput, cache, prSquash);
+      const result = await classify(row, reconcilerInput, cache, prSquash);
       const projectId = input.projectId ?? row.project_id;
       const identityKey = buildReleaseStateIdentityKey({
         project_id: projectId,
@@ -542,6 +553,7 @@ export async function reconcileReleaseProvenance(
         scope: input.scope,
       });
       for (const record of derived) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
         upsertReleaseState({
           project_id: projectId,
           machine_id: input.machineId ?? row.machine_id,
