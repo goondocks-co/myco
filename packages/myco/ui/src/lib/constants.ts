@@ -46,6 +46,9 @@ export const DEFAULT_DIGEST_TIER = 5000;
 /** Default max spores injected per prompt. */
 export const DEFAULT_MAX_SPORES = 3;
 
+/** Milliseconds per second — used to convert stored epoch seconds for display. */
+export const MS_PER_SECOND = 1_000;
+
 /** Map log level to Badge variant. */
 export function levelBadgeVariant(level: LogLevel): 'default' | 'secondary' | 'warning' | 'destructive' {
   switch (level) {

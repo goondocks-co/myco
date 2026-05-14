@@ -240,12 +240,43 @@ describe('myco_plans op: save (in-process)', () => {
     expect(result).toEqual({ ok: false, error: 'session_id is required for op: save' });
   });
 
-  it('rejects op:save without content', async () => {
+  it('rejects op:save without content when creating a new plan', async () => {
     const result = await handleMycoPlans({
       op: 'save',
       session_id: 'sess-1',
       plan_key: 'p',
     }, mockClient(), vaultDir);
-    expect(result).toEqual({ ok: false, error: 'content is required for op: save' });
+    expect(result).toEqual({ ok: false, error: 'content is required when creating a new plan' });
+  });
+
+  it('allows status-only update on an existing plan (content omitted preserves body)', async () => {
+    seedSession('sess-1');
+    const created = await handleMycoPlans({
+      op: 'save',
+      session_id: 'sess-1',
+      content: '# Original body\n\n- [ ] step 1',
+      plan_key: 'lifecycle',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+    expect(created.status).toBe('active');
+
+    const advanced = await handleMycoPlans({
+      op: 'save',
+      id: created.id,
+      status: 'in_progress',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+    expect(advanced.ok).toBe(true);
+    expect(advanced.id).toBe(created.id);
+    expect(advanced.status).toBe('in_progress');
+
+    // Body is preserved unchanged.
+    const row = getPlan(created.id, ALL_PROJECTS_SCOPE);
+    expect(row?.content).toBe('# Original body\n\n- [ ] step 1');
+
+    const completed = await handleMycoPlans({
+      op: 'save',
+      id: created.id,
+      status: 'completed',
+    }, mockClient(), vaultDir) as PlanSaveSuccess;
+    expect(completed.status).toBe('completed');
   });
 });

@@ -87,7 +87,9 @@ export async function handleMycoPlans(
     : contextOrVaultDir;
 
   if (op === 'save') {
-    if (!input.content) return { ok: false, error: 'content is required for op: save' };
+    if (!input.content && !input.id) {
+      return { ok: false, error: 'content is required when creating a new plan' };
+    }
     if (!input.id && !input.session_id) return { ok: false, error: 'session_id is required for op: save' };
 
     const result = saveMcpPlan({

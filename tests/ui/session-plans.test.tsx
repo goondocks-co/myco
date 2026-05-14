@@ -129,6 +129,56 @@ describe('SessionPlans', () => {
     expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 
+  it('renders in-progress plan expanded by default and others collapsed', () => {
+    useSessionPlansMock.mockReturnValue({
+      data: [
+        {
+          id: 'p1',
+          status: 'completed',
+          title: 'Completed Plan',
+          content: '# Completed Plan body',
+          source_path: null,
+          content_hash: 'hash-p1',
+          session_id: 'sess-1',
+          created_at: 1700000000,
+          updated_at: 1700000000,
+        },
+        {
+          id: 'p2',
+          status: 'in_progress',
+          title: 'In Progress Plan',
+          content: '# In Progress Plan body',
+          source_path: null,
+          content_hash: 'hash-p2',
+          session_id: 'sess-1',
+          created_at: 1700000100,
+          updated_at: 1700000100,
+        },
+        {
+          id: 'p3',
+          status: 'active',
+          title: 'Active Plan',
+          content: '# Active Plan body',
+          source_path: null,
+          content_hash: 'hash-p3',
+          session_id: 'sess-1',
+          created_at: 1700000200,
+          updated_at: 1700000200,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<SessionPlans sessionId="sess-1" />);
+
+    // in_progress card renders its body content (expanded)
+    expect(screen.getByText('In Progress Plan body')).toBeInTheDocument();
+    // completed and active cards do not render body content (collapsed)
+    expect(screen.queryByText('Completed Plan body')).not.toBeInTheDocument();
+    expect(screen.queryByText('Active Plan body')).not.toBeInTheDocument();
+  });
+
   it('renders a delete error banner', () => {
     useDeletePlanMock.mockReturnValue({
       mutateAsync: mutateAsyncMock,
