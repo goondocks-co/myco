@@ -1147,7 +1147,7 @@ export async function main(): Promise<void> {
       // + fs_read) and then finalizeCanopyMap crashes because
       // runContext.canopy_map_inputs_hash is unset.
       const { buildCanopyMapInstructionDetailed } = await import('../agent/instruction-builders.js');
-      const { runAgent } = await import('../agent/executor.js');
+      const { dispatchAgentRun } = await import('../agent/runner-host.js');
       const { getLatestRunId } = await import('../db/queries/runs.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
@@ -1160,7 +1160,7 @@ export async function main(): Promise<void> {
         return { skipped: true, reason: built.reason };
       }
 
-      const resultPromise = runAgent(bootstrapVaultDir, {
+      const resultPromise = dispatchAgentRun(bootstrapVaultDir, {
         task,
         instruction: built.instruction,
         runContext: built.context,
@@ -1191,7 +1191,7 @@ export async function main(): Promise<void> {
       // runCanopyMapTask above. Map-phase source.args uses
       // params.canopy_entry_path to filter to that one entry.
       const { buildTaskInstruction } = await import('../agent/instruction-builders.js');
-      const { runAgent } = await import('../agent/executor.js');
+      const { dispatchAgentRun } = await import('../agent/runner-host.js');
       const { getLatestRunId } = await import('../db/queries/runs.js');
       const { DEFAULT_AGENT_ID } = await import('../constants.js');
 
@@ -1209,7 +1209,7 @@ export async function main(): Promise<void> {
         requestContext,
       );
 
-      const resultPromise = runAgent(bootstrapVaultDir, {
+      const resultPromise = dispatchAgentRun(bootstrapVaultDir, {
         task,
         instruction: built?.instruction,
         runContext: built?.context,

@@ -71,8 +71,8 @@ export async function triggerTitleSummary(
   }
 
   try {
-    const { runAgent } = await import('../agent/executor.js');
-    runAgent(vaultDir, {
+    const { dispatchAgentRun } = await import('../agent/runner-host.js');
+    dispatchAgentRun(vaultDir, {
       task: 'title-summary',
       instruction: `Process session ${sessionId} only`,
       embeddingManager,
