@@ -15,7 +15,6 @@ import {
   ChevronRight,
   MessageSquare,
   Bot,
-  Wrench,
   Users,
   Search,
   Menu,
@@ -25,9 +24,8 @@ import {
   Brain,
   Trees,
   FolderTree,
-  Cpu,
+  Activity,
 } from 'lucide-react';
-import { useUpdateStatus } from '../hooks/use-update-status';
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { useProjectPath, useProjectSelection } from '../hooks/use-project-selection';
@@ -46,43 +44,31 @@ import { Topbar } from './Topbar';
 /* ---------- Constants ---------- */
 
 type NavScope = 'project' | 'grove' | 'machine';
+type NavCategory = 'Project' | 'Observability' | 'Grove management' | 'Settings';
 
 interface NavItem {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
   scope: NavScope;
+  category: NavCategory;
 }
 
-const PROJECT_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project' },
-  { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project' },
-  { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project' },
-  { to: '/mycelium', label: 'Mycelium', icon: Network, scope: 'project' },
-  { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project' },
-  { to: '/agent', label: 'Agent', icon: Bot, scope: 'project' },
-  { to: '/settings', label: 'Settings', icon: Settings, scope: 'project' },
-];
+const NAV_ORDER: readonly NavCategory[] = ['Project', 'Observability', 'Grove management', 'Settings'];
 
-const GROVE_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/g/:groveSlug/dashboard', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
-  { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine' },
-  { to: '/g/:groveSlug/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
-  { to: '/g/:groveSlug/settings', label: 'Settings', icon: Trees, scope: 'grove' },
-];
-
-// Team is its own top-level section now — Grove-scoped configuration
-// lives in the Grove section, while Team has its own Dashboard +
-// Maintenance feature pages.
-const TEAM_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/g/:groveSlug/team', label: 'Dashboard', icon: LayoutDashboard, scope: 'grove' },
-  { to: '/g/:groveSlug/team/maintenance', label: 'Maintenance', icon: Wrench, scope: 'grove' },
-];
-
-const MACHINE_NAV_ITEMS: readonly NavItem[] = [
-  { to: '/machine', label: 'Dashboard', icon: Cpu, scope: 'machine' },
-  { to: '/machine/settings', label: 'Settings', icon: Settings, scope: 'machine' },
-  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine' },
+const navItems: readonly NavItem[] = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, scope: 'project', category: 'Project' },
+  { to: '/sessions', label: 'Sessions', icon: MessageSquare, scope: 'project', category: 'Project' },
+  { to: '/agent', label: 'Agent', icon: Bot, scope: 'project', category: 'Project' },
+  { to: '/cortex', label: 'Cortex', icon: Brain, scope: 'project', category: 'Project' },
+  { to: '/mycelium', label: 'Mycelium', icon: Network, scope: 'project', category: 'Project' },
+  { to: '/skills', label: 'Skills', icon: Sparkles, scope: 'project', category: 'Project' },
+  { to: '/g/:groveSlug/operations', label: 'Operations', icon: Activity, scope: 'grove', category: 'Observability' },
+  { to: '/logs', label: 'Logs', icon: ScrollText, scope: 'machine', category: 'Observability' },
+  { to: '/g/:groveSlug/dashboard', label: 'Grove', icon: Trees, scope: 'grove', category: 'Grove management' },
+  { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine', category: 'Grove management' },
+  { to: '/g/:groveSlug/team', label: 'Team', icon: Users, scope: 'grove', category: 'Grove management' },
+  { to: '/settings', label: 'Settings', icon: Settings, scope: 'project', category: 'Settings' },
 ];
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';
@@ -229,39 +215,6 @@ function RuntimeBadge({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-/**
- * Self-contained Machine Settings nav link — adds an
- * "update available" dot when an upgrade is pending. Updates live
- * on the Machine Settings page now (the Operations page that used
- * to host them was dissolved into Dashboard + Maintenance).
- */
-function MachineSettingsNavLink({ collapsed }: { collapsed: boolean }) {
-  const { data } = useUpdateStatus();
-  const hasUpdate = !!(data && !data.exempt && data.update_available);
-
-  return (
-    <NavLink
-      to="/machine/settings"
-      title={collapsed ? 'Settings' : undefined}
-      className={({ isActive }) =>
-        cn(
-          'flex items-center rounded-md text-sm font-medium transition-colors',
-          collapsed ? 'justify-center px-2 py-2' : 'gap-3 px-3 py-2',
-          isActive
-            ? 'bg-primary/10 text-primary'
-            : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
-        )
-      }
-    >
-      <Settings className="h-4 w-4 shrink-0" />
-      {!collapsed && 'Settings'}
-      {hasUpdate && (
-        <span className="h-2 w-2 rounded-full bg-secondary shrink-0 ml-auto" />
-      )}
-    </NavLink>
-  );
-}
-
 function SidebarContent({
   collapsed,
   onSearchOpen,
@@ -322,33 +275,17 @@ function SidebarContent({
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-2" aria-label="Main navigation">
-        <NavGroup label="Project" collapsed={collapsed}>
-          {PROJECT_NAV_ITEMS.map((item) => (
-            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-          ))}
-        </NavGroup>
-
-        <NavGroup label="Grove" collapsed={collapsed}>
-          {GROVE_NAV_ITEMS.map((item) => (
-            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-          ))}
-        </NavGroup>
-
-        <NavGroup label="Team" collapsed={collapsed}>
-          {TEAM_NAV_ITEMS.map((item) => (
-            <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-          ))}
-        </NavGroup>
-
-        <NavGroup label="Machine" collapsed={collapsed}>
-          {MACHINE_NAV_ITEMS.map((item) =>
-            item.to === '/machine/settings' ? (
-              <MachineSettingsNavLink key={item.to} collapsed={collapsed} />
-            ) : (
-              <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
-            ),
-          )}
-        </NavGroup>
+        {NAV_ORDER.map((category) => {
+          const items = navItems.filter((i) => i.category === category);
+          if (items.length === 0) return null;
+          return (
+            <NavGroup key={category} label={category} collapsed={collapsed}>
+              {items.map((item) => (
+                <SidebarNavLink key={item.to} item={item} collapsed={collapsed} />
+              ))}
+            </NavGroup>
+          );
+        })}
       </nav>
 
       {/* Footer */}

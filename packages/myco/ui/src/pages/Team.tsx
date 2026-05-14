@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle, Wrench, ArrowLeft } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   useTeamStatus,
@@ -17,7 +18,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
-import { Button } from '../components/ui/button';
+import { Button, buttonVariants } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { StatCard } from '../components/ui/stat-card';
@@ -1046,6 +1047,15 @@ export function TeamDashboard() {
           subtitle={isConnected && status
             ? 'Connection and team credentials'
             : `Connect ${scopeName} to team sync`}
+          actions={isConnected ? (
+            <Link
+              to="maintenance"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              <Wrench size={14} />
+              Maintenance
+            </Link>
+          ) : undefined}
         />
       </div>
 
@@ -1088,6 +1098,16 @@ export function TeamMaintenance() {
           subtitle={isConnected
             ? 'Backlog, queue health, and failed syncs'
             : `Connect ${scopeName} to team sync to access maintenance`}
+          actions={
+            <Link
+              to=".."
+              relative="path"
+              className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+            >
+              <ArrowLeft size={14} />
+              Back to Team
+            </Link>
+          }
         />
       </div>
 
