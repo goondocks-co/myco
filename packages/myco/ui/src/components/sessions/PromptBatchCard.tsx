@@ -34,7 +34,7 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   return (
-    <div className="relative flex gap-4">
+    <div className="relative flex gap-2">
       {/* Timeline spine */}
       <div className="relative flex flex-col items-center shrink-0" style={{ width: '28px' }}>
         {/* Connector line above node */}
