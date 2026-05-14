@@ -249,12 +249,19 @@ describe('legacy /maintenance redirect', () => {
     // Mock the hooks that App.tsx's transitive page imports rely on
     // so loading <App /> doesn't pull half the daemon UI into the
     // test. The redirect itself only needs route resolution + the
-    // Operations stub to mount.
+    // Operations page header to render — both render synchronously
+    // before the embedding/database data fetches resolve.
     mock.module('../../packages/myco/ui/src/hooks/use-update-status', () => ({
       useUpdateStatus: () => ({ data: { exempt: false, update_available: false } }),
       useUpdateCheck: () => ({ mutate: vi.fn(), isPending: false }),
       useUpdateApply: () => ({ mutate: vi.fn(), isPending: false }),
       useUpdateChannel: () => ({ mutate: vi.fn(), isPending: false }),
+    }));
+    mock.module('../../packages/myco/ui/src/hooks/use-embedding-details', () => ({
+      useEmbeddingDetails: () => ({ data: undefined, isLoading: true, isError: false, error: null }),
+    }));
+    mock.module('../../packages/myco/ui/src/hooks/use-database-details', () => ({
+      useDatabaseDetails: () => ({ data: undefined, isLoading: true, isError: false, error: null }),
     }));
     mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
       useGroves: () => ({
@@ -297,6 +304,6 @@ describe('legacy /maintenance redirect', () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByTestId('operations-stub')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Operations' })).toBeTruthy();
   });
 });
