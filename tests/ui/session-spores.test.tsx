@@ -83,4 +83,46 @@ describe('SessionSpores', () => {
     await screen.findByText(/No spores derived/i);
     expect(screen.getByText(/No spores derived/i)).toBeDefined();
   });
+
+  it('shows created/updated timestamps after expanding a card', async () => {
+    renderWith('session-a');
+    const firstCard = await screen.findByText(/Why we chose Postgres/i);
+    fireEvent.click(firstCard.closest('[role="button"]') ?? firstCard);
+    // `formatEpochAgo` formats stale (2023) epochs as "Xd ago".
+    expect(screen.getByText(/Created .*ago/i)).toBeDefined();
+    expect(screen.getByText(/Last updated .*ago/i)).toBeDefined();
+  });
+
+  it('applies line-through to superseded spore previews', async () => {
+    // @ts-expect-error
+    globalThis.fetch = mock(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/spores?')) {
+        return new Response(
+          JSON.stringify({
+            spores: [
+              {
+                id: 'spore-sup',
+                observation_type: 'decision',
+                status: 'superseded',
+                content: 'Old decision that was replaced.',
+                session_id: 'session-c',
+                created_at: 1_700_000_000,
+                updated_at: 1_700_000_000,
+                importance: 2,
+                tags: [],
+              },
+            ],
+            total: 1,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    });
+    renderWith('session-c');
+    const preview = await screen.findByText(/Old decision that was replaced/i);
+    const paragraph = preview.closest('p');
+    expect(paragraph).not.toBeNull();
+    expect(paragraph!.classList.contains('line-through')).toBe(true);
+  });
 });

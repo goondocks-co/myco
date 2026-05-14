@@ -5,6 +5,7 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { MarkdownContent } from '../ui/markdown-content';
 import { cn } from '../../lib/cn';
+import { formatEpochAbsolute, formatEpochAgo } from '../../lib/format';
 
 /* ---------- Constants ---------- */
 
@@ -79,6 +80,7 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
             <div className="flex flex-wrap items-center gap-1.5 mb-1">
               <Badge variant={kindTone}>{spore.observation_type}</Badge>
               <Badge variant={statusTone}>{spore.status}</Badge>
+              {/* TODO(phase-3 edges): render edges badge when useSporeEdges lands */}
             </div>
             <p
               className={cn(
@@ -92,8 +94,16 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
         </div>
       </button>
       {open && (
-        <div className="border-t border-outline-variant/20 px-4 py-3">
+        <div className="border-t border-outline-variant/20 px-4 py-3 space-y-3">
           <MarkdownContent content={spore.content} />
+          <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-on-surface-variant">
+            <span title={formatEpochAbsolute(spore.created_at)}>
+              Created {formatEpochAgo(spore.created_at)}
+            </span>
+            <span title={formatEpochAbsolute(spore.updated_at)}>
+              Last updated {formatEpochAgo(spore.updated_at)}
+            </span>
+          </div>
         </div>
       )}
     </Surface>
