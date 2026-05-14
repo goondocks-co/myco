@@ -7,6 +7,7 @@ import { cn } from '../../lib/cn';
 import { tryParseJson } from '@myco/utils/json';
 import type { PhaseAuditEntry, TurnRow } from '../../hooks/use-agent';
 import { formatCost, formatTokens } from './helpers';
+import { MS_PER_SECOND } from '../../lib/constants';
 
 /* ---------- Props ---------- */
 
@@ -18,7 +19,6 @@ export interface AuditTrailProps {
 
 /* ---------- Helpers ---------- */
 
-const MS_PER_SECOND = 1_000;
 const TURN_PREVIEW_CHARS = 80;
 
 function phaseStatusVariant(status: string): 'default' | 'warning' | 'destructive' | 'secondary' {
@@ -48,6 +48,7 @@ function PhaseCard({ entry }: { entry: PhaseAuditEntry }) {
         type="button"
         className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-container-high/30 transition-colors"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
       >
         {open
           ? <ChevronDown className="h-3.5 w-3.5 mt-1 shrink-0 text-on-surface-variant" />
@@ -237,6 +238,7 @@ function groupTurnsByPhase(
     const t = turn.started_at;
     let assigned: string | null = null;
     if (t !== null) {
+      // First phase has no predecessor; open lower bound matches any turn before this phase ended.
       let lower = -Infinity;
       for (const phase of sortedPhases) {
         const upper = phase.completedAt ?? Infinity;

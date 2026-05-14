@@ -6,7 +6,7 @@ import { Surface } from '../ui/surface';
 import { StatCard } from '../ui/stat-card';
 import { MarkdownContent } from '../ui/markdown-content';
 import { RefreshIndicator } from '../ui/refresh-indicator';
-import { POLL_INTERVALS } from '../../lib/constants';
+import { POLL_INTERVALS, MS_PER_SECOND } from '../../lib/constants';
 import {
   useAgentRun,
   useAgentReports,
@@ -27,11 +27,6 @@ import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
 import type { HarnessTokenBudget } from '@myco/agent/types';
 import { tryParseJson } from '@myco/utils/json';
-
-/* ---------- Constants ---------- */
-
-/** Milliseconds per second for epoch conversion. */
-const MS_PER_SECOND = 1_000;
 
 /* ---------- Helpers ---------- */
 
@@ -437,9 +432,11 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
   const isDryRun = run.dry_run === true;
   const isTerminal = ['completed', 'failed', 'skipped'].includes(run.status);
-  // Detect whether this run produced digest writes to decide whether to
-  // render the revisions section. Use task name as a reliable proxy —
-  // 'vault-evolve' always writes a digest.
+  // Detects digest-writing runs via task name. Previously also scanned turns
+  // for vault_write_digest; that scan is dropped because turns are no longer
+  // fetched in RunDetail. If a non-vault-evolve task ever writes the digest,
+  // expose a digest_written boolean on the run row instead of rehydrating
+  // turns here.
   const hasDigestActivity = !isDryRun && run.task === 'vault-evolve';
 
   return (
