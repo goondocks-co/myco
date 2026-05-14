@@ -21,16 +21,13 @@ import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
-  handleGetConfig,
-  handleGetMergedConfig,
-  handleGetLocalConfig,
-  handlePutScopedConfig,
   handleGetGroveConfig,
   handlePutGroveConfig,
   handleGetMachineConfig,
   handlePutMachineConfig,
   createPlanDirHandlers,
 } from './api/config.js';
+import { registerConfigRoutes } from './api/register-config-routes.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
@@ -907,21 +904,11 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/config', async (req) =>
-    handleGetConfig(req.requestContext?.projectVaultDir ?? bootstrapVaultDir));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
-
-  server.registerRoute('GET', '/api/config/merged', async (req) =>
-    handleGetMergedConfig(
-      req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
-      { groveId: req.requestContext?.groveId ?? null },
-    ));
-  server.registerRoute('GET', '/api/config/local', async (req) =>
-    handleGetLocalConfig(req.requestContext?.projectVaultDir ?? bootstrapVaultDir));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -1008,20 +995,18 @@ export async function main(): Promise<void> {
     return reactionContext;
   }
 
-  server.registerRoute('PUT', '/api/config/scoped', async (req) => {
-    const requestVaultDir = req.requestContext?.projectVaultDir ?? bootstrapVaultDir;
-    const requestGroveId = req.requestContext?.groveId ?? dataPaths.requestContext.groveId;
-    const result = await handlePutScopedConfig(requestVaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
+  registerConfigRoutes(server, {
+    bootstrapVaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+    onScopedWrite: async ({ body, vaultDir, groveId }) => {
       const touchedPaths = computeTouchedPaths(body.patch, body.clear);
-      const reactionContext = await applyConfigWriteReactions(
-        touchedPaths,
-        { vaultDir: requestVaultDir, groveId: requestGroveId },
-      );
+      const reactionContext = await applyConfigWriteReactions(touchedPaths, {
+        vaultDir,
+        groveId,
+      });
       if (reactionContext) {
         const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
-        notify(requestVaultDir, {
+        notify(vaultDir, {
           domain: 'settings',
           type: 'settings.saved',
           title: summary.title,
@@ -1030,10 +1015,9 @@ export async function main(): Promise<void> {
           metadata: summary.metadata,
         }, reactionContext);
       } else {
-        configHash = computeConfigHash(requestVaultDir);
+        configHash = computeConfigHash(vaultDir);
       }
-    }
-    return result;
+    },
   });
 
   // Grove-tier config (~/.myco/groves/<id>/grove.yaml) — separate tier
@@ -1292,44 +1276,46 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
   server.registerRoute('POST', '/api/digest/revisions/:id/restore', digestRevisionHandlers.handleRestore);
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, bootstrapVaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, bootstrapVaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, bootstrapVaultDir));
+  const taskVaultDir = (req: RouteRequest) => req.requestContext?.projectVaultDir ?? bootstrapVaultDir;
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, taskVaultDir(req)));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, taskVaultDir(req)));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleUpdateTask(req, bootstrapVaultDir);
+    const result = await handleUpdateTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks', async (req) => {
-    const result = await handleCreateTask(req, bootstrapVaultDir);
+    const result = await handleCreateTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => {
-    const result = await handleCopyTask(req, bootstrapVaultDir);
+    const result = await handleCopyTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleDeleteTask(req, bootstrapVaultDir);
+    const result = await handleDeleteTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
-  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
-    const result = await handleUpdateTaskConfig(req, bootstrapVaultDir);
+    const requestVaultDir = taskVaultDir(req);
+    const result = await handleUpdateTaskConfig(req, requestVaultDir);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions([`agent.tasks.${req.params.id}`], {
-        vaultDir: bootstrapVaultDir,
-        groveId: dataPaths.requestContext.groveId,
+        vaultDir: requestVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
       });
     }
     return result;
@@ -1392,7 +1378,7 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
   const backupConfigHandlers = createBackupConfigHandlers({
-    vaultDir: bootstrapVaultDir,
+    bootstrapVaultDir,
     bootGroveId: dataPaths.requestContext.groveId ?? null,
   });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
@@ -1400,8 +1386,8 @@ export async function main(): Promise<void> {
     const result = await backupConfigHandlers.handlePutBackupConfig(req);
     if (!result.status || result.status < 400) {
       await applyConfigWriteReactions(['backup.dir'], {
-        vaultDir: bootstrapVaultDir,
-        groveId: dataPaths.requestContext.groveId,
+        vaultDir: req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
       });
     }
     return result;

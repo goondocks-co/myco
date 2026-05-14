@@ -9,14 +9,9 @@
  * release_provenance and every other project-tier field bled across
  * projects, and saves silently overwrote the bootstrap project's file.
  *
- * This test mirrors the route closure shape used in main.ts and asserts:
- *   - GET /api/config/merged returns the requested project's values, not
- *     bootstrap's.
- *   - GET /api/config/local returns the requested project's overlay.
- *   - PUT /api/config/scoped writes into the requested project's vault
- *     and leaves the other project's `myco.yaml` untouched.
- *
- * If anyone reverts the routing to `bootstrapVaultDir`, these tests fail.
+ * This test exercises `registerConfigRoutes` — the helper the daemon
+ * uses to register the four routes — through a fake server, so a future
+ * regression that re-hard-wires `bootstrapVaultDir` fails here.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -24,30 +19,53 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
-  handleGetMergedConfig,
-  handleGetLocalConfig,
-  handlePutScopedConfig,
-} from '@myco/daemon/api/config';
+  registerConfigRoutes,
+  type ConfigRouteServer,
+} from '@myco/daemon/api/register-config-routes';
+import type { RouteRequest } from '@myco/daemon/router';
 
 interface FakeReq {
   requestContext?: { projectVaultDir?: string; groveId?: string | null };
   body?: unknown;
 }
 
-// Mirrors the route closures in packages/myco/src/daemon/main.ts.
-// Keeping them inline (rather than importing from main.ts) avoids
-// pulling in the daemon's bootstrap singletons. If main.ts route
-// wiring changes shape, update these mirrors too.
-function makeRoutes(bootstrapVaultDir: string) {
+interface RegisteredRoute {
+  method: string;
+  path: string;
+  handler: (req: RouteRequest) => Promise<unknown>;
+}
+
+function makeFakeServer() {
+  const routes: RegisteredRoute[] = [];
+  const server: ConfigRouteServer = {
+    registerRoute(method, routePath, handler) {
+      routes.push({ method, path: routePath, handler });
+    },
+  };
+  function call(method: string, routePath: string, req: FakeReq) {
+    const route = routes.find((r) => r.method === method && r.path === routePath);
+    if (!route) throw new Error(`No route registered for ${method} ${routePath}`);
+    return route.handler(req as unknown as RouteRequest);
+  }
+  return { server, call };
+}
+
+function makeRoutes(bootstrapVaultDir: string, onScopedWrite?: (params: {
+  request: RouteRequest;
+  body: { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
+  vaultDir: string;
+  groveId: string | null;
+}) => void | Promise<void>) {
+  const fake = makeFakeServer();
+  registerConfigRoutes(fake.server, {
+    bootstrapVaultDir,
+    bootGroveId: null,
+    onScopedWrite,
+  });
   return {
-    mergedGet: (req: FakeReq) =>
-      handleGetMergedConfig(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, {
-        groveId: req.requestContext?.groveId ?? null,
-      }),
-    localGet: (req: FakeReq) =>
-      handleGetLocalConfig(req.requestContext?.projectVaultDir ?? bootstrapVaultDir),
-    scopedPut: (req: FakeReq) =>
-      handlePutScopedConfig(req.requestContext?.projectVaultDir ?? bootstrapVaultDir, req.body),
+    mergedGet: (req: FakeReq) => fake.call('GET', '/api/config/merged', req),
+    localGet: (req: FakeReq) => fake.call('GET', '/api/config/local', req),
+    scopedPut: (req: FakeReq) => fake.call('PUT', '/api/config/scoped', req),
   };
 }
 
@@ -68,7 +86,7 @@ release_provenance:
   );
 }
 
-describe('config HTTP routes — per-request projectVaultDir wiring', () => {
+describe('registerConfigRoutes — per-request projectVaultDir wiring', () => {
   let projectA: string;
   let projectB: string;
   let bootstrap: string;
@@ -130,6 +148,34 @@ describe('config HTTP routes — per-request projectVaultDir wiring', () => {
     expect(aAfter).toBe(aBefore);
     expect(bAfter).toContain('refs/tags/v99');
     expect(bAfter).not.toContain('refs/tags/network/v*');
+  });
+
+  it('PUT /api/config/scoped fires onScopedWrite with the request-scoped vault + grove', async () => {
+    const writes: Array<{ vaultDir: string; groveId: string | null }> = [];
+    const fake = makeFakeServer();
+    registerConfigRoutes(fake.server, {
+      bootstrapVaultDir: bootstrap,
+      bootGroveId: 'grove_boot',
+      onScopedWrite: ({ vaultDir, groveId }) => { writes.push({ vaultDir, groveId }); },
+    });
+    await fake.call('PUT', '/api/config/scoped', {
+      requestContext: { projectVaultDir: projectB, groveId: 'grove_b' },
+      body: {
+        scope: 'project',
+        patch: { release_provenance: { production_refs: ['refs/tags/v9'] } },
+      },
+    });
+    // Also confirm fallback to bootstrap+bootGrove when no request context.
+    await fake.call('PUT', '/api/config/scoped', {
+      body: {
+        scope: 'project',
+        patch: { release_provenance: { production_refs: ['refs/tags/v10'] } },
+      },
+    });
+    expect(writes).toEqual([
+      { vaultDir: projectB, groveId: 'grove_b' },
+      { vaultDir: bootstrap, groveId: 'grove_boot' },
+    ]);
   });
 
   it('PUT /api/config/scoped at scope=local writes the requested project local.yaml', async () => {

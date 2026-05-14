@@ -339,33 +339,43 @@ export function createBackupHandlers(deps: BackupDeps) {
 // ---------------------------------------------------------------------------
 
 export interface BackupConfigDeps {
-  vaultDir: string;
-  /** Boot-time Grove id; used to compute the default-dir hint. */
+  /** Bootstrap fallback used only when a request arrives with no context. */
+  bootstrapVaultDir: string;
+  /** Boot-time Grove id; used to compute the default-dir hint when unset. */
   bootGroveId: string | null;
   mycoHome?: string;
 }
 
 /**
  * Create handlers for GET/PUT /api/backup/config.
+ *
+ * The vault dir is resolved per-request from `req.requestContext.projectVaultDir`
+ * so each project's backup setting is read/written against its own
+ * `myco.yaml`. `bootstrapVaultDir` is only used when no request context is
+ * bound (legacy / non-daemon callers).
  */
 export function createBackupConfigHandlers(deps: BackupConfigDeps) {
-  const { vaultDir } = deps;
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
 
-  function defaultDirForGrove(grove: GroveRecord | null): string {
+  function defaultDirForGrove(grove: GroveRecord | null, vaultDir: string): string {
     if (grove) return path.resolve(resolveGroveDir(grove.id, mycoHome), 'backups');
     return path.resolve(vaultDir, 'backups');
   }
 
+  function vaultDirForRequest(req: RouteRequest): string {
+    return req.requestContext?.projectVaultDir ?? deps.bootstrapVaultDir;
+  }
+
   /** GET /api/backup/config — read the configured backup directory (merged). */
   async function handleGetBackupConfig(req: RouteRequest): Promise<RouteResponse> {
+    const vaultDir = vaultDirForRequest(req);
     const groveId = req.requestContext?.groveId ?? deps.bootGroveId;
     const cfg = loadMergedConfig(vaultDir, { groveId, mycoHome });
     const grove = groveId ? loadGroveRecord(groveId, mycoHome) : null;
     return {
       body: {
         dir: cfg.backup.dir ?? null,
-        default_dir: defaultDirForGrove(grove),
+        default_dir: defaultDirForGrove(grove, vaultDir),
       },
     };
   }
@@ -373,7 +383,7 @@ export function createBackupConfigHandlers(deps: BackupConfigDeps) {
   /** PUT /api/backup/config — update the backup directory setting. */
   async function handlePutBackupConfig(req: RouteRequest): Promise<RouteResponse> {
     const { dir } = req.body as { dir?: string | null };
-    updateBackupConfig(vaultDir, { dir: dir || undefined });
+    updateBackupConfig(vaultDirForRequest(req), { dir: dir || undefined });
     return { body: { dir: dir || null } };
   }
 
