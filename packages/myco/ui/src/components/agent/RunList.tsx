@@ -309,6 +309,32 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
     filterInputRef,
   });
 
+  // Page-local sums: aggregates reflect the visible page only. RunRow has
+  // no per-run tool-call count (turn-level data lives in `agent_turns`,
+  // which is not loaded with the run list). TOKENS is the closest aggregate
+  // available without an N+1 fetch — TOTAL comes from the paginated query
+  // response (server-wide for the current filter).
+  const runningCount = runs.filter((r) => r.status === 'running').length;
+  const tokensTotal = runs.reduce((sum, r) => sum + (r.tokens_used ?? 0), 0);
+
+  const totalsHeader = (
+    <div className="px-4 py-3 border-b border-outline-variant/20">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+          Runs
+        </h2>
+        <span className="font-serif italic text-sm text-on-surface">History</span>
+      </div>
+      <div className="font-mono text-[11px] text-on-surface-variant inline-flex items-center gap-1.5">
+        <span><strong className="text-on-surface font-semibold">{total.toLocaleString()}</strong> TOTAL</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{runningCount.toLocaleString()}</strong> RUNNING</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{tokensTotal.toLocaleString()}</strong> TOKENS</span>
+      </div>
+    </div>
+  );
+
   const toolbar = (
     <ListToolbar
       searchPlaceholder="Search runs..."
@@ -324,6 +350,7 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
   if (isError) {
     return (
       <div className="p-4 space-y-4">
+        {totalsHeader}
         {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
@@ -338,6 +365,7 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
 
   return (
     <div className="p-4 space-y-4">
+      {totalsHeader}
       {toolbar}
 
       {isLoading ? (

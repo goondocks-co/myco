@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
-import { PageHeader } from '../ui/page-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
@@ -246,10 +245,35 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
     />
   );
 
+  // Page-local sums: aggregates reflect the visible page only. The sessions
+  // query doesn't expose project-scoped totals for prompts/active-status
+  // separately, so we sum what's loaded. TOTAL comes from the paginated
+  // query response (server-wide for the current filter).
+  const activeCount = sessions.filter((s) => s.status === 'active').length;
+  const promptsTotal = sessions.reduce((sum, s) => sum + (s.prompt_count ?? 0), 0);
+
+  const totalsHeader = (
+    <div className="px-4 py-3 border-b border-outline-variant/20">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+          Sessions
+        </h2>
+        <span className="font-serif italic text-sm text-on-surface">Archive</span>
+      </div>
+      <div className="font-mono text-[11px] text-on-surface-variant inline-flex items-center gap-1.5">
+        <span><strong className="text-on-surface font-semibold">{total.toLocaleString()}</strong> TOTAL</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{activeCount.toLocaleString()}</strong> ACTIVE</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{promptsTotal.toLocaleString()}</strong> PROMPTS</span>
+      </div>
+    </div>
+  );
+
   if (isError) {
     return (
       <div className="p-4">
-        <PageHeader title="Session Archive" />
+        {totalsHeader}
         {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary mt-4">
           <AlertCircle className="h-5 w-5" />
@@ -264,10 +288,7 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
 
   return (
     <div className="p-4">
-      <PageHeader
-        title="Session Archive"
-        subtitle={isLoading ? 'Loading...' : `${total} session${total !== 1 ? 's' : ''} captured`}
-      />
+      {totalsHeader}
 
       {toolbar}
 
