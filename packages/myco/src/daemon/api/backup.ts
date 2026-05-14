@@ -20,7 +20,8 @@ import {
   restorePreview,
   restoreBackup,
 } from '../backup.js';
-import { loadMergedConfig, updateBackupConfig } from '../../config/loader.js';
+import { loadMergedConfig, loadGroveConfig, saveGroveConfig } from '../../config/loader.js';
+import { GroveConfigSchema } from '../../config/schema.js';
 import { loadGroveRecord, listGroves, type GroveRecord } from '../../grove/registry.js';
 import { resolveGroveDir, resolveGroveDbPath, resolveMycoHome } from '../../grove/paths.js';
 import type { GroveRuntimeCache } from '../grove-runtime-cache.js';
@@ -380,10 +381,27 @@ export function createBackupConfigHandlers(deps: BackupConfigDeps) {
     };
   }
 
-  /** PUT /api/backup/config — update the backup directory setting. */
+  /**
+   * PUT /api/backup/config — update the backup directory setting.
+   *
+   * `backup` lives at Grove tier (see `GroveConfigSchema`) — one backup
+   * policy per Grove. Project myco.yaml writes for `backup.*` are
+   * silently stripped by `PROJECT_TIER_LEGACY_FIELDS` on the next load,
+   * so the API must persist to `~/.myco/groves/<id>/grove.yaml` to
+   * survive a daemon restart.
+   */
   async function handlePutBackupConfig(req: RouteRequest): Promise<RouteResponse> {
+    const groveId = req.requestContext?.groveId ?? deps.bootGroveId;
+    if (!groveId) {
+      return { status: 404, body: { error: 'no_grove_in_context' } };
+    }
     const { dir } = req.body as { dir?: string | null };
-    updateBackupConfig(vaultDirForRequest(req), { dir: dir || undefined });
+    const current = loadGroveConfig(groveId);
+    const next = GroveConfigSchema.parse({
+      ...current,
+      backup: { ...current.backup, dir: dir || undefined },
+    });
+    saveGroveConfig(groveId, next);
     return { body: { dir: dir || null } };
   }
 
