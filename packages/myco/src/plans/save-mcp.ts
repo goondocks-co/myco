@@ -68,7 +68,9 @@ export function saveMcpPlan(input: SaveMcpPlanInput): SaveMcpPlanResult {
       projectId,
       // Omitting content on update preserves the existing body — the common
       // case for status-only transitions (active → in_progress → completed).
-      content: input.content ?? existingPlan.content,
+      // PlanRow.content is nullable at the DB layer; empty string is the safe
+      // fallback for that edge case (plans historically always have content).
+      content: input.content ?? existingPlan.content ?? '',
       logicalKey: existingPlan.logical_key,
       sourcePath: existingPlan.source_path,
       promptBatchId: openBatch?.id ?? existingPlan.prompt_batch_id,
