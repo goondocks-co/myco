@@ -388,6 +388,74 @@ When multiple global daemons detected:
 
 ## Procedure E: Health Checking and Recovery
 
+### Liveness vs Readiness Probe Split
+
+**Critical architecture**: Formalize daemon health checking into two distinct endpoints following Kubernetes liveness/readiness probe pattern:
+
+```typescript
+// 1. /health — Raw Liveness Probe
+app.get('/health', (req, res) => {
+  // Returns immediately with process-level liveness signal
+  // No routed request, no DB scoping, no context validation
+  res.json({
+    status: 'alive',
+    version: process.env.npm_package_version,
+    pid: process.pid,
+    uptime: process.uptime(),
+    timestamp: Date.now()
+  });
+});
+
+// 2. /ready — Routed Readiness Probe  
+app.get('/ready', async (req, res) => {
+  // Full readiness check with request context validation
+  try {
+    // Validate request context propagation
+    const groveId = req.headers['x-grove-id'] || 'default';
+    
+    // Test database connectivity
+    await validateDatabaseConnection(groveId);
+    
+    // Test grove coordination
+    await validateGroveCoordination(groveId);
+    
+    // Test critical services
+    await validateCriticalServices(groveId);
+    
+    res.json({
+      status: 'ready',
+      grove: groveId,
+      checks: {
+        database: 'ok',
+        groveCoordination: 'ok', 
+        criticalServices: 'ok'
+      },
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'not_ready',
+      error: error.message,
+      timestamp: Date.now()
+    });
+  }
+});
+```
+
+**Liveness probe characteristics:**
+- Fast response (< 100ms typical)
+- Process-level health only
+- No external dependencies
+- No database queries
+- No grove coordination
+
+**Readiness probe characteristics:**
+- Context-aware validation
+- Database connectivity check
+- Grove coordination validation
+- Full service stack verification
+- May fail while process is alive
+
 ### Session Freshness Check with Tool-Use Activity Detection
 
 **Critical fix**: Session freshness checks must account for tool-use activity during long agentic turns:
@@ -431,28 +499,39 @@ async function isSessionFresh(sessionId: string): Promise<boolean> {
 
 **Fix pattern**: Always include tool-use activity timestamps in session freshness calculations to properly handle long agentic turns.
 
-### Global Daemon Health Validation
+### Dual-Probe Health Validation
 
 ```bash
-# Global daemon HTTP health check
+# Liveness check — fast process health
 DAEMON_PORT=$(jq -r '.port' ~/.myco/daemon.json)
 if curl -f -s "http://localhost:$DAEMON_PORT/health" >/dev/null; then
-  echo "Global daemon healthy"
+  echo "Daemon process alive"
 else
-  echo "Global daemon unhealthy - triggering recovery"
+  echo "Daemon process dead - triggering restart"
+  myco daemon restart
+fi
+
+# Readiness check — full service validation
+GROVE_ID="default"
+if curl -f -s -H "x-grove-id: $GROVE_ID" "http://localhost:$DAEMON_PORT/ready" >/dev/null; then
+  echo "Daemon ready for requests"
+else
+  echo "Daemon not ready - investigating service issues"
+  # Continue with detailed diagnostics
 fi
 ```
 
 ### Grove-Aware Recovery Workflows
 
 **Global daemon recovery workflow:**
-1. **Attempt global health ping** with reasonable timeout
-2. **Check global process existence** if health ping fails
-3. **Validate global port binding** if process exists
-4. **Check for Hub process interference** and migrate if needed
-5. **Coordinate grove notification** before eviction
-6. **Evict and restart global daemon** if unresponsive
-7. **Re-establish grove connections** after restart
+1. **Attempt liveness ping** (`/health`) with reasonable timeout
+2. **Attempt readiness ping** (`/ready`) with grove context
+3. **Check global process existence** if liveness ping fails
+4. **Validate global port binding** if process exists
+5. **Check for Hub process interference** and migrate if needed
+6. **Coordinate grove notification** before eviction
+7. **Evict and restart global daemon** if unresponsive
+8. **Re-establish grove connections** after restart
 
 ### Grove Responsiveness Monitoring
 
@@ -660,6 +739,33 @@ else
   echo "Hub migration not complete - preserving Hub artifacts"
 fi
 ```
+
+### Liveness vs Readiness Probe Usage
+
+**Probe selection gotcha**: Choose the appropriate probe for each use case:
+
+```bash
+# Wrong - using readiness probe for process restart decisions
+if ! curl -s "http://localhost:$PORT/ready"; then
+  myco daemon restart  # May restart healthy process with temporary readiness issues
+fi
+
+# Right - use liveness probe for restart decisions
+if ! curl -s "http://localhost:$PORT/health"; then
+  myco daemon restart  # Only restart when process is actually dead
+fi
+
+# Right - use readiness probe for load balancing and request routing
+if curl -s "http://localhost:$PORT/ready"; then
+  # Safe to route requests to this daemon
+  route_requests_to_daemon
+fi
+```
+
+**Probe timing gotchas**:
+- Liveness probes should timeout quickly (< 5 seconds) to detect process death
+- Readiness probes can timeout longer (10-30 seconds) for thorough validation
+- Never use readiness failure as sole trigger for process restart
 
 ### Grove Ownership and Multi-Environment Coordination
 

@@ -21,16 +21,13 @@ import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import {
-  handleGetConfig,
-  handleGetMergedConfig,
-  handleGetLocalConfig,
-  handlePutScopedConfig,
   handleGetGroveConfig,
   handlePutGroveConfig,
   handleGetMachineConfig,
   handlePutMachineConfig,
   createPlanDirHandlers,
 } from './api/config.js';
+import { registerConfigRoutes } from './api/register-config-routes.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
 import { createUpdateHandlers } from './api/update.js';
@@ -907,16 +904,11 @@ export async function main(): Promise<void> {
     registerInflightRun: (p) => inflightRuns.register(p),
   });
 
-  server.registerRoute('GET', '/api/config', async () => handleGetConfig(bootstrapVaultDir));
   server.registerRoute('GET', '/api/symbionts', async () => handleListSymbionts(bootstrapVaultDir));
   server.registerRoute('GET', '/api/cortex/instructions', cortexHandlers.handleGetInstructions);
   server.registerRoute('POST', '/api/cortex/instructions/refresh', cortexHandlers.handleRefreshInstructions);
   server.registerRoute('POST', '/api/cortex/prompt-builder', cortexHandlers.handleBuildPrompt);
   server.registerRoute('GET', '/api/cortex/prompt-builder/:runId', cortexHandlers.handleGetPromptResult);
-
-  server.registerRoute('GET', '/api/config/merged', async (req) =>
-    handleGetMergedConfig(bootstrapVaultDir, { groveId: req.requestContext?.groveId ?? null }));
-  server.registerRoute('GET', '/api/config/local', async () => handleGetLocalConfig(bootstrapVaultDir));
 
   // Pre-compute symbiont plan dirs for the config endpoint (manifests don't change at runtime)
   const symbiontPlanDirsByAgent: Record<string, string[]> = {};
@@ -988,27 +980,33 @@ export async function main(): Promise<void> {
     await syncScheduledTasks();
   });
 
-  async function applyConfigWriteReactions(touchedPaths: string[]) {
-    const reactionContext = loadReactionContext(bootstrapVaultDir, logger, {
-      groveId: dataPaths.requestContext.groveId,
+  async function applyConfigWriteReactions(
+    touchedPaths: string[],
+    scope: { vaultDir: string; groveId: string | null },
+  ) {
+    const reactionContext = loadReactionContext(scope.vaultDir, logger, {
+      groveId: scope.groveId,
     });
     if (!reactionContext) {
-      configHash = computeConfigHash(bootstrapVaultDir);
+      configHash = computeConfigHash(scope.vaultDir);
       return null;
     }
     await reactions.fire(touchedPaths, reactionContext);
     return reactionContext;
   }
 
-  server.registerRoute('PUT', '/api/config/scoped', async (req) => {
-    const result = await handlePutScopedConfig(bootstrapVaultDir, req.body);
-    if (!result.status || result.status < 400) {
-      const body = req.body as { scope: 'project' | 'local'; patch?: unknown; clear?: string[] };
+  registerConfigRoutes(server, {
+    bootstrapVaultDir,
+    bootGroveId: dataPaths.requestContext.groveId ?? null,
+    onScopedWrite: async ({ body, vaultDir, groveId }) => {
       const touchedPaths = computeTouchedPaths(body.patch, body.clear);
-      const reactionContext = await applyConfigWriteReactions(touchedPaths);
+      const reactionContext = await applyConfigWriteReactions(touchedPaths, {
+        vaultDir,
+        groveId,
+      });
       if (reactionContext) {
         const summary = buildScopedConfigSaveNotification(body.scope, touchedPaths);
-        notify(bootstrapVaultDir, {
+        notify(vaultDir, {
           domain: 'settings',
           type: 'settings.saved',
           title: summary.title,
@@ -1017,10 +1015,9 @@ export async function main(): Promise<void> {
           metadata: summary.metadata,
         }, reactionContext);
       } else {
-        configHash = computeConfigHash(bootstrapVaultDir);
+        configHash = computeConfigHash(vaultDir);
       }
-    }
-    return result;
+    },
   });
 
   // Grove-tier config (~/.myco/groves/<id>/grove.yaml) — separate tier
@@ -1035,7 +1032,10 @@ export async function main(): Promise<void> {
       req.body,
     );
     if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
-      await applyConfigWriteReactions(touchedPaths);
+      await applyConfigWriteReactions(touchedPaths, {
+        vaultDir: req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
     }
     return response;
   });
@@ -1050,7 +1050,10 @@ export async function main(): Promise<void> {
   server.registerRoute('PUT', '/api/machine-config', async (req) => {
     const { response, touchedPaths } = await handlePutMachineConfig(req.body);
     if ((!response.status || response.status < 400) && touchedPaths.length > 0) {
-      await applyConfigWriteReactions(touchedPaths);
+      await applyConfigWriteReactions(touchedPaths, {
+        vaultDir: req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
     }
     return response;
   });
@@ -1273,42 +1276,47 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/digest/revisions', digestRevisionHandlers.handleList);
   server.registerRoute('POST', '/api/digest/revisions/:id/restore', digestRevisionHandlers.handleRestore);
 
-  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, bootstrapVaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, bootstrapVaultDir));
-  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, bootstrapVaultDir));
+  const taskVaultDir = (req: RouteRequest) => req.requestContext?.projectVaultDir ?? bootstrapVaultDir;
+  server.registerRoute('GET', '/api/agent/tasks', async (req) => handleListTasks(req, taskVaultDir(req)));
+  server.registerRoute('GET', '/api/agent/tasks/:id', async (req) => handleGetTask(req, taskVaultDir(req)));
+  server.registerRoute('GET', '/api/agent/tasks/:id/yaml', async (req) => handleGetTaskYaml(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleUpdateTask(req, bootstrapVaultDir);
+    const result = await handleUpdateTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks', async (req) => {
-    const result = await handleCreateTask(req, bootstrapVaultDir);
+    const result = await handleCreateTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('POST', '/api/agent/tasks/:id/copy', async (req) => {
-    const result = await handleCopyTask(req, bootstrapVaultDir);
+    const result = await handleCopyTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
   server.registerRoute('DELETE', '/api/agent/tasks/:id', async (req) => {
-    const result = await handleDeleteTask(req, bootstrapVaultDir);
+    const result = await handleDeleteTask(req, taskVaultDir(req));
     if (!result.status || result.status < 400) {
       await syncScheduledTasks();
     }
     return result;
   });
-  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, bootstrapVaultDir));
+  server.registerRoute('GET', '/api/agent/tasks/:id/config', async (req) => handleGetTaskConfig(req, taskVaultDir(req)));
   server.registerRoute('PUT', '/api/agent/tasks/:id/config', async (req) => {
-    const result = await handleUpdateTaskConfig(req, bootstrapVaultDir);
+    const requestVaultDir = taskVaultDir(req);
+    const result = await handleUpdateTaskConfig(req, requestVaultDir);
     if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions([`agent.tasks.${req.params.id}`]);
+      await applyConfigWriteReactions([`agent.tasks.${req.params.id}`], {
+        vaultDir: requestVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
     }
     return result;
   });
@@ -1370,14 +1378,17 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/restore', backupHandlers.handleRestore);
 
   const backupConfigHandlers = createBackupConfigHandlers({
-    vaultDir: bootstrapVaultDir,
+    bootstrapVaultDir,
     bootGroveId: dataPaths.requestContext.groveId ?? null,
   });
   server.registerRoute('GET', '/api/backup/config', backupConfigHandlers.handleGetBackupConfig);
   server.registerRoute('PUT', '/api/backup/config', async (req) => {
     const result = await backupConfigHandlers.handlePutBackupConfig(req);
     if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions(['backup.dir']);
+      await applyConfigWriteReactions(['backup.dir'], {
+        vaultDir: req.requestContext?.projectVaultDir ?? bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
     }
     return result;
   });
@@ -1411,7 +1422,10 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/team/connect', async (req) => {
     const result = await teamHandlers.handleConnect(req);
     if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await applyConfigWriteReactions(['team.enabled', 'team.worker_url'], {
+        vaultDir: bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
       await teamSync.reconcileClient(req.requestContext);
     }
     return result;
@@ -1419,7 +1433,10 @@ export async function main(): Promise<void> {
   server.registerRoute('POST', '/api/team/disconnect', async (req) => {
     const result = await teamHandlers.handleDisconnect(req);
     if (!result.status || result.status < 400) {
-      await applyConfigWriteReactions(['team.enabled', 'team.worker_url']);
+      await applyConfigWriteReactions(['team.enabled', 'team.worker_url'], {
+        vaultDir: bootstrapVaultDir,
+        groveId: req.requestContext?.groveId ?? dataPaths.requestContext.groveId,
+      });
       await teamSync.reconcileClient(req.requestContext);
     }
     return result;

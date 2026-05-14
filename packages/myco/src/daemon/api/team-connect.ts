@@ -1084,10 +1084,13 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
       version: result.version,
     });
 
-    // Re-read myco.yaml (the subprocess updated team.worker_url) and
-    // reinitialize the client from the fresh merged config rather than
-    // the subprocess's result shape.
-    const freshConfig = loadMergedConfig(vaultDir);
+    // Re-read merged config (the subprocess updated team.worker_url in
+    // the Grove-tier config) and reinitialize the client from the fresh
+    // merged config rather than the subprocess's result shape. Passing
+    // `groveId` ensures the Grove-tier `team` block is included.
+    const freshConfig = loadMergedConfig(vaultDir, {
+      groveId: req.requestContext?.groveId ?? null,
+    });
     const workerUrl = result.worker_url ?? freshConfig.team.worker_url;
     if (workerUrl) {
       updateTeamConnectionConfig(vaultDir, req.requestContext, {
