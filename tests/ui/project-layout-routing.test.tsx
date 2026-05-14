@@ -136,18 +136,15 @@ describe('project-scoped layout routing', () => {
       </QueryClientProvider>,
     );
 
-    // Grove section is Dashboard / Maintenance / Settings post-
-    // sidebar-regroup; Operations dissolved into Dashboard +
-    // Maintenance. The Grove > Maintenance link is the natural
-    // assertion — it's Grove-scoped (no project segment) and
-    // tests the same path-template-replacement that used to be
-    // exercised by Operations.
-    const maintenanceLink = screen.getAllByText('Maintenance')[0]?.closest('a');
-    expect(maintenanceLink?.getAttribute('href')).toBe('/g/work/maintenance');
+    // Operations is the v7 IA replacement for Maintenance in the sidebar
+    // and is Grove-scoped (no project segment) — exercises the same
+    // :groveSlug path-template-replacement branch that Maintenance used to.
+    const operationsLink = screen.getAllByText('Operations')[0]?.closest('a');
+    expect(operationsLink?.getAttribute('href')).toBe('/g/work/operations');
     expect(screen.getByText('Dashboard content')).toBeTruthy();
   });
 
-  it('exposes the Groves management page between Dashboard and Maintenance in the GROVE nav section', () => {
+  it('exposes the Groves management page between Grove and Team in the Grove management nav section', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     render(
@@ -172,18 +169,16 @@ describe('project-scoped layout routing', () => {
     const grovesLink = screen.getAllByText('Groves')[0]?.closest('a');
     expect(grovesLink?.getAttribute('href')).toBe('/groves');
 
-    // Verify ordering: Dashboard -> Groves -> Maintenance -> Settings within
-    // the GROVE section. The Grove-scoped Dashboard and Maintenance links
-    // route under /g/:groveSlug/, while the cross-Grove index lives at
-    // /groves and is inserted right after Dashboard.
+    // Verify ordering inside the Grove management group: Grove (the
+    // Grove-scoped dashboard) -> Groves (cross-Grove index) -> Team.
     const hrefs = Array.from(document.querySelectorAll('a'))
       .map((a) => a.getAttribute('href'))
       .filter((href): href is string => href !== null);
-    const dashboardIdx = hrefs.indexOf('/g/work/dashboard');
+    const groveIdx = hrefs.indexOf('/g/work/dashboard');
     const grovesIdx = hrefs.indexOf('/groves');
-    const maintenanceIdx = hrefs.indexOf('/g/work/maintenance');
-    expect(dashboardIdx).toBeGreaterThanOrEqual(0);
-    expect(grovesIdx).toBeGreaterThan(dashboardIdx);
-    expect(maintenanceIdx).toBeGreaterThan(grovesIdx);
+    const teamIdx = hrefs.indexOf('/g/work/team');
+    expect(groveIdx).toBeGreaterThanOrEqual(0);
+    expect(grovesIdx).toBeGreaterThan(groveIdx);
+    expect(teamIdx).toBeGreaterThan(grovesIdx);
   });
 });

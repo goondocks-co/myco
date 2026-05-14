@@ -9,8 +9,8 @@ import Agent from './pages/Agent';
 import Skills from './pages/Skills';
 import Settings from './pages/Settings';
 import GroveDashboard from './pages/GroveDashboard';
-import GroveMaintenance from './pages/GroveMaintenance';
 import GroveSettings from './pages/GroveSettings';
+import Operations from './pages/Operations';
 import Logs from './pages/Logs';
 import MachineDashboard from './pages/MachineDashboard';
 import MachineSettings from './pages/MachineSettings';
@@ -63,17 +63,14 @@ export default function App() {
       <Route path="/g/:groveSlug/dashboard" element={<GroveScopedLayout />}>
         <Route index element={<GroveDashboard />} />
       </Route>
-      <Route path="/g/:groveSlug/maintenance" element={<GroveScopedLayout />}>
-        <Route index element={<GroveMaintenance />} />
+      <Route path="/g/:groveSlug/operations" element={<GroveScopedLayout />}>
+        <Route index element={<Operations />} />
       </Route>
       <Route path="/g/:groveSlug/settings" element={<GroveScopedLayout />}>
         <Route index element={<GroveSettings />} />
       </Route>
-      {/* Legacy /g/:slug/operations → /g/:slug/dashboard. Operations
-          was the old combined informational + actions page; it split
-          into Dashboard (informational) + Maintenance (actions) so
-          every section shares the same shape. */}
-      <Route path="/g/:groveSlug/operations" element={<LegacyGroveOperationsRedirect />} />
+      {/* Phase 4 unifies operations under /operations; /maintenance redirects forward. */}
+      <Route path="/g/:groveSlug/maintenance" element={<LegacyMaintenanceRedirect />} />
       <Route path="/g/:groveSlug/team" element={<GroveScopedLayout />}>
         <Route index element={<TeamDashboard />} />
         <Route path="maintenance" element={<TeamMaintenance />} />
@@ -86,7 +83,7 @@ export default function App() {
       <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
-      <Route path="/operations" element={<LegacyGroveRedirect suffix="/dashboard" />} />
+      <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
       <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -154,22 +151,24 @@ function LegacyTeamRedirect() {
 }
 
 /**
- * Legacy project-scoped /operations → Grove-scoped /dashboard.
- * Operations was the combined "stats + actions" page that split
- * into Dashboard + Maintenance. Sends users to the Dashboard so
- * they land on read-only stats, not the action surface.
+ * Legacy project-scoped /operations → Grove-scoped /operations.
+ * Operations is a Grove-tier surface; the project segment was vestigial.
  */
 function LegacyOperationsRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/dashboard`} replace />;
+  return <Navigate to={`/g/${groveSlug}/operations`} replace />;
 }
 
-/** Same as above but for the Grove-scoped /g/:slug/operations URL. */
-function LegacyGroveOperationsRedirect() {
+/**
+ * Grove-scoped /g/:slug/maintenance → /g/:slug/operations.
+ * Phase 4 collapses Maintenance into Operations; legacy bookmarks
+ * forward to the new canonical URL.
+ */
+function LegacyMaintenanceRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/dashboard`} replace />;
+  return <Navigate to={`/g/${groveSlug}/operations`} replace />;
 }
 
 function ProjectScopedLayout() {

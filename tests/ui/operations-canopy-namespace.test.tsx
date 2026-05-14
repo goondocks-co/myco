@@ -61,11 +61,8 @@ mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
 }));
 
 // Imported AFTER the mocks so the module-level imports resolve to the stubs.
-// Operations was renamed to GroveMaintenance during the four-commit
-// sidebar regroup; the page contents (Embedding/Database/Backup tabs)
-// are unchanged.
-const { default: GroveMaintenance } = await import(
-  '../../packages/myco/ui/src/pages/GroveMaintenance'
+const { default: Operations } = await import(
+  '../../packages/myco/ui/src/pages/Operations'
 );
 
 /* ---------- Helpers ---------- */
@@ -101,7 +98,7 @@ function renderPage() {
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <GroveMaintenance />
+        <Operations />
       </MemoryRouter>
     </QueryClientProvider>,
   );
