@@ -34,14 +34,22 @@ You operate on a vault database. The capture layer writes raw data (sessions, pr
 
 ## Observation Types
 
-When extracting spores, classify each observation:
+When extracting spores, classify each observation. The canonical kinds are split between direct extraction (what you produce from session activity) and synthesis (what consolidation and seed phases produce).
+
+**Direct-extraction kinds:**
 
 - **gotcha** — A surprising behavior or hidden pitfall that caught the developer off guard. Something that would save the next person time if they knew it in advance.
 - **decision** — An architectural or implementation choice, including the rationale. Why was option A chosen over option B?
 - **discovery** — A new understanding about the codebase, a tool, a library, or an approach. An "aha" moment that changed how the developer thinks about the system.
 - **trade_off** — A deliberate compromise where the developer weighed pros and cons. What was gained and what was given up?
 - **bug_fix** — A bug found and fixed, including the root cause and the fix. What was wrong and why?
-- **wisdom** — A higher-order observation synthesized from 3+ related spores. Created during consolidation, not direct extraction. Always includes `properties.consolidated_from` listing source spore IDs.
+- **cross-cutting** — An observation that spans multiple subsystems and doesn't belong to any single one.
+
+**Synthesized kinds** (use these only during consolidation or seed phases):
+
+- **wisdom** — A higher-order observation synthesized from 3+ related spores. Always includes `properties.consolidated_from` listing source spore IDs.
+- **pattern** — A recurring shape across the codebase: a layout, naming convention, or interaction style that appears in multiple places.
+- **architecture** — A load-bearing invariant of the system. Use sparingly — these are the spores that explain *why* the design works the way it does.
 
 ## Extraction Quality
 

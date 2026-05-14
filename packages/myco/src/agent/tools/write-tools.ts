@@ -12,6 +12,7 @@ import { epochSeconds, DIGEST_TIERS } from '@myco/constants.js';
 import { getSpore, insertSpore, updateSporeStatus, DEFAULT_IMPORTANCE } from '@myco/db/queries/spores.js';
 import { updateSession } from '@myco/db/queries/sessions.js';
 import { setState } from '@myco/db/queries/agent-state.js';
+import { OBSERVATION_TYPES } from '../../vault/types.js';
 import { markBatchProcessed } from '@myco/db/queries/batches.js';
 import { createSporeLineage } from '@myco/db/queries/lineage.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
@@ -32,7 +33,11 @@ export function createWriteTools(deps: VaultToolDeps) {
     'vault_create_spore',
     'Create a new spore (observation) in the vault. The agent_id is set automatically.',
     {
-      observation_type: z.string().describe('Type of observation (gotcha, decision, discovery, trade-off, bug_fix, etc.)'),
+      observation_type: z
+        .enum(OBSERVATION_TYPES)
+        .describe(
+          `Spore kind. Direct extraction: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting. Synthesized (consolidation / seed): wisdom, pattern, architecture.`,
+        ),
       content: z.string().describe('The observation content in markdown'),
       session_id: z.string().optional().describe('Associated session ID'),
       prompt_batch_id: z.number().optional().describe('Associated prompt batch ID'),

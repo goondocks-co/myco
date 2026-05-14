@@ -13,10 +13,12 @@ import { formatEpochAbsolute, formatEpochAgo } from '../../lib/format';
 const MAX_SESSION_SPORES = 200;
 
 /**
- * `observation_type` is a free-form string at the DB layer, but in practice the
- * intelligence agent (vault-evolve, vault-seed) produces a known set: the six
- * direct-extraction kinds plus three synthesized kinds (`wisdom`, `pattern`,
- * `architecture`). Unmapped kinds fall through to the `secondary` tone.
+ * Tone for every canonical kind in `OBSERVATION_TYPES` (see
+ * `packages/myco/src/vault/types.ts`). Direct-extraction kinds split into
+ * sage (default), ochre (secondary), and terracotta (destructive) by
+ * semantic weight. Synthesized kinds — `wisdom`, `pattern`, `architecture` —
+ * are produced during consolidation and seed phases. Unmapped kinds (legacy
+ * data, future drift) fall through to the `secondary` tone.
  */
 const KIND_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   decision: 'default',
