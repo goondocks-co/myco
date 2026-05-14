@@ -1,17 +1,19 @@
 import { forwardRef, memo, useCallback, useMemo, useRef, useState } from 'react';
-import { Bot, AlertCircle, Play, RotateCcw } from 'lucide-react';
+import { Bot, AlertCircle, GitBranch, Play, RotateCcw } from 'lucide-react';
 import { Button } from '../ui/button';
 import { CompareBar } from '../ui/compare-bar';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
+import { Sparkline } from '../ui/sparkline';
+import { StatusDot, type StatusTone } from '../ui/status-dot';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { RunTaskDialog } from './RunTaskDialog';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
-import { formatEpochRelative, capitalize } from '../../lib/format';
-import { statusBadgeVariant, formatCost, formatTokens, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
+import { formatEpochAgo, capitalize } from '../../lib/format';
+import { statusBadgeVariant, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
 
@@ -22,6 +24,15 @@ const RUN_STATUS_OPTIONS = [
   { value: 'failed', label: 'Failed' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
+
+/* ---------- Helpers ---------- */
+
+function statusTone(status: string): StatusTone {
+  if (status === 'running') return 'sage';
+  if (status === 'completed') return 'outline';
+  if (status === 'failed' || status === 'cancelled') return 'terracotta';
+  return 'ochre';
+}
 
 /* ---------- Sub-components ---------- */
 
@@ -82,13 +93,33 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
   const onClick = useCallback(() => onSelectRun(run.id), [onSelectRun, run.id]);
   const taskLabel = run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL;
 
+  // Meta segments built conditionally so missing fields drop out entirely
+  // rather than rendering em-dash placeholders that read as broken state.
+  // started_at already appears in the top-right; the meta line carries
+  // duration, tokens, and cost only.
+  const metaSegments: string[] = [];
+  if (run.started_at !== null && run.completed_at !== null) {
+    metaSegments.push(formatDuration(run.started_at, run.completed_at));
+  }
+  if (run.tokens_used !== null && run.tokens_used > 0) {
+    metaSegments.push(`${run.tokens_used.toLocaleString()} tok`);
+  }
+  if (
+    run.cost_source !== 'unavailable' &&
+    run.cost_usd !== null &&
+    run.cost_usd > 0
+  ) {
+    const prefix = run.cost_source === 'estimated' ? '~' : '';
+    metaSegments.push(`${prefix}$${run.cost_usd.toFixed(4)}`);
+  }
+
   return (
     <div
       ref={ref}
       data-selected={isActive || undefined}
       data-cursor={isCursor || undefined}
       className={cn(
-        'group border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
+        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
         'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
         'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
         isActive && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
@@ -106,84 +137,90 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
       aria-selected={isActive}
       aria-label={`Agent run: ${taskLabel}, status ${run.status}`}
     >
-      <div className="flex items-start gap-3">
-        {/* Compare checkbox */}
-        <div
-          className="pt-1 shrink-0"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <input
-            type="checkbox"
-            aria-label={`Select run ${run.id.slice(0, 8)}`}
-            checked={selected}
-            onChange={() => onToggleSelected(run.id)}
+      {/* Top row: checkbox + status dot + title on the left, time + sparkline + actions on the right */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          {/* Compare checkbox */}
+          <div
+            className="pt-1 shrink-0"
             onClick={(e) => e.stopPropagation()}
-            className="h-4 w-4 rounded accent-primary cursor-pointer"
-          />
-        </div>
-
-        <Bot className="h-4 w-4 shrink-0 text-on-surface-variant mt-0.5" />
-
-        {/* Main content */}
-        <div className="flex-1 min-w-0 space-y-1.5">
-          {/* Top line: task label + flags */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-on-surface truncate">
-              {taskLabel}
-            </span>
-            {run.dry_run && (
-              <span
-                className="inline-flex items-center rounded-xs bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary shrink-0"
-                title="Dry run — writes were intercepted, no vault mutations"
-              >
-                Dry
-              </span>
-            )}
-          </div>
-
-          {/* Status line */}
-          <div className="flex items-center gap-2">
-            <RunStatusBadge status={run.status} />
-            {run.resumable && run.status === 'failed' && (
-              <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
-            )}
-            {run.cost_source === 'estimated' && (
-              <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
-            )}
-          </div>
-
-          {/* Meta line: started · duration · tokens · cost */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-on-surface-variant font-mono">
-            <span>{formatEpochRelative(run.started_at)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatDuration(run.started_at, run.completed_at)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatTokens(run.tokens_used)} tok</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatCost(run.cost_usd, run.cost_source)}</span>
-          </div>
-        </div>
-
-        {/* Rerun action */}
-        <div
-          className="shrink-0"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7 text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRerun(run);
-            }}
-            title="Rerun with same settings"
-            aria-label={`Rerun ${run.id.slice(0, 8)} with same settings`}
           >
-            <RotateCcw className="h-3.5 w-3.5" />
-          </Button>
+            <input
+              type="checkbox"
+              aria-label={`Select run ${run.id.slice(0, 8)}`}
+              checked={selected}
+              onChange={() => onToggleSelected(run.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 rounded accent-primary cursor-pointer"
+            />
+          </div>
+          <StatusDot
+            tone={statusTone(run.status)}
+            pulse={run.status === 'running'}
+            className="mt-1.5 shrink-0"
+          />
+          <h3 className="font-serif italic text-sm text-on-surface truncate leading-snug">
+            {taskLabel}
+          </h3>
+          {run.dry_run && (
+            <span
+              className="inline-flex items-center rounded-xs bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary shrink-0"
+              title="Dry run — writes were intercepted, no vault mutations"
+            >
+              Dry
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {run.started_at !== null && (
+            <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
+              {formatEpochAgo(run.started_at)}
+            </span>
+          )}
+          <Sparkline data={run.activity_buckets ?? []} widthPx={48} heightPx={14} />
+          <div onClick={(e) => e.stopPropagation()}>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRerun(run);
+              }}
+              title="Rerun with same settings"
+              aria-label={`Rerun ${run.id.slice(0, 8)} with same settings`}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/* Status line: badge + flags */}
+      <div className="mt-1.5 ml-11 flex items-center gap-2">
+        <RunStatusBadge status={run.status} />
+        {run.resumable && run.status === 'failed' && (
+          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
+        )}
+        {run.cost_source === 'estimated' && (
+          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
+        )}
+      </div>
+
+      {/* Meta line: only rendered segments that have data, joined with · */}
+      {metaSegments.length > 0 && (
+        <div className="mt-1 ml-11 font-mono text-[11px] text-on-surface-variant truncate">
+          {metaSegments.join(' · ')}
+        </div>
+      )}
+
+      {/* Branch line: rendered only when a branch was captured */}
+      {run.branch && (
+        <div className="mt-0.5 ml-11 inline-flex items-center gap-1 font-mono text-[10px] italic text-on-surface-variant">
+          <GitBranch className="h-2.5 w-2.5" />
+          {run.branch}
+        </div>
+      )}
     </div>
   );
 }));
