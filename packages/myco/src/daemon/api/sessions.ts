@@ -3,6 +3,7 @@ import { listBatchesBySession, countBatchesBySession, getBatchById, PROMPT_BATCH
 import { listActivitiesByBatch, countActivities } from '@myco/db/queries/activities.js';
 import { listAttachmentsBySession } from '@myco/db/queries/attachments.js';
 import { deletePlan, getPlan, listPlansBySession } from '@myco/db/queries/plans.js';
+import { getSessionActivityBuckets } from '@myco/db/queries/activity-buckets.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds } from '@myco/constants.js';
@@ -36,6 +37,7 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
 
   const rawSessions = listSessions({ ...filterOpts, limit, offset });
   const states = releaseStateAnnotationMap('sessions', rawSessions.map((s) => s.id), scope);
+  const activityBuckets = getSessionActivityBuckets(rawSessions.map((s) => s.id));
   const sessions = rawSessions.map((s) => ({
     id: s.id,
     date: new Date(s.started_at * 1000).toISOString().slice(0, 10),
@@ -46,6 +48,8 @@ export async function handleListSessions(req: RouteRequest): Promise<RouteRespon
     tool_count: s.tool_count,
     started_at: s.started_at,
     ended_at: s.ended_at,
+    branch: s.branch,
+    activity_buckets: activityBuckets.get(s.id) ?? [],
     ...releaseStateField(states.get(s.id)),
   }));
   const total = countSessions(filterOpts);
