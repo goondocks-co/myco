@@ -10,6 +10,7 @@ capture:
     - docs/superpowers/plans/
     - docs/design/
     - docs/plans
+    - docs/superpowers/handoffs
   ignore_plan_dirs_in_git: true
   artifact_extensions:
     - .md
