@@ -376,6 +376,29 @@ describe('embedding-reconcile power job', () => {
     expect(job.preventsDeepSleep?.()).toBe(false);
   });
 
+  it('preventsDeepSleep ignores pending work in Groves served by a different daemon', () => {
+    const devGrove = createGrove('Dogfood', fx.mycoHome, { servedBy: 'service-dev' });
+    ensureGroveDatabase(devGrove.id, fx.mycoHome);
+    const devDatabasePath = resolveGroveDbPath(devGrove.id, fx.mycoHome);
+
+    const managers = new Map<string, { totalPendingCount: () => number; reconcile: ReturnType<typeof vi.fn> }>([
+      [fx.databasePath, { totalPendingCount: () => 0, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })) }],
+      [devDatabasePath, { totalPendingCount: () => 5, reconcile: vi.fn(async () => ({ embedded: 0, stale_reembedded: 0, orphans_cleaned: 0, duration_ms: 0 })) }],
+    ]);
+    const factory: EmbeddingRuntimeFactory = (_db, dbPath) => ({
+      vectorStore: { close() {} } as never,
+      embeddingManager: managers.get(dbPath)! as never,
+    });
+    fx.cache.getEmbeddingRuntime(devDatabasePath, factory);
+
+    const deps = buildDeps(fx);
+    deps.embeddingRuntimeFactory = factory;
+    registerPowerJobs(pm as never, deps);
+
+    const job = pm.find('embedding-reconcile');
+    expect(job.preventsDeepSleep?.()).toBe(false);
+  });
+
   it('preventsDeepSleep returns false when toggle is off, even with pending work', () => {
     fx.cleanup();
     fx = setupGrove({ pendingCount: 50 });

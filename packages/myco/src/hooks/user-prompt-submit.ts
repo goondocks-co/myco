@@ -47,7 +47,7 @@ export async function main() {
     }
 
     // Kind classification happens on the daemon; Stop-time reconciler repairs it.
-    const eventResult = await client.post('/events', {
+    const eventResult = await client.capturePost('/events', {
       type: 'user_prompt',
       prompt,
       session_id: sessionId,

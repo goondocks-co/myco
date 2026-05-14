@@ -20,11 +20,9 @@ export async function main() {
 
     const client = createHookDaemonClient(VAULT_DIR, { sessionId });
 
-    // DaemonClient auto-spawns on missing daemon.json or fetch failure,
-    // coalesced within DAEMON_SPAWN_COALESCE_MS so frequent PostToolUse
-    // firings don't fork extra daemons. This call still buffers on live
-    // failure; reconcile replays on the next successful start.
-    const result = await client.post('/events', {
+    // Capture writes use service-aware recovery on transport failure, then
+    // still buffer locally so reconcile can replay on the next successful start.
+    const result = await client.capturePost('/events', {
       type: 'tool_use',
       tool_name: input.toolName,
       tool_input: input.toolInput,

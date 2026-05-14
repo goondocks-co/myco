@@ -45,7 +45,7 @@ export async function main() {
     } catch { /* not a git repo */ }
 
     const [, contextResult] = await Promise.all([
-      client.post('/sessions/register', {
+      client.capturePost('/sessions/register', {
         session_id: sessionId,
         agent: symbiont,
         branch,

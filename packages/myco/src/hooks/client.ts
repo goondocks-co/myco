@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   DAEMON_CLIENT_TIMEOUT_MS,
+  DAEMON_CAPTURE_RECOVERY_COALESCE_MS,
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_HEALTH_RETRY_DELAYS,
   DAEMON_RESTART_HEALTH_DEADLINE_MS,
@@ -85,6 +86,10 @@ interface ClientResult {
 interface ClientOptions {
   timeoutMs?: number;
   headers?: Record<string, string>;
+}
+
+interface RequestFailureRecovery {
+  captureCritical?: boolean;
 }
 
 interface DaemonClientOptions {
@@ -183,6 +188,24 @@ export class DaemonClient {
   }
 
   async post(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
+    return this.postWithRecovery(endpoint, body, options);
+  }
+
+  /**
+   * POST for capture-critical hook writes. If transport times out or the
+   * daemon socket fails, recover the owning service instead of only spawning:
+   * a managed daemon can still be "running" while routed ingestion is wedged.
+   */
+  async capturePost(endpoint: string, body: unknown, options?: ClientOptions): Promise<ClientResult> {
+    return this.postWithRecovery(endpoint, body, options, { captureCritical: true });
+  }
+
+  private async postWithRecovery(
+    endpoint: string,
+    body: unknown,
+    options?: ClientOptions,
+    recovery?: RequestFailureRecovery,
+  ): Promise<ClientResult> {
     const info = this.readDaemonJson();
     if (!info) {
       this.spawnDaemon();
@@ -200,7 +223,7 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
-      this.spawnDaemon();
+      await this.recoverAfterRequestFailure(recovery);
       return { ok: false };
     }
   }
@@ -223,7 +246,7 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
-      this.spawnDaemon();
+      await this.recoverAfterRequestFailure();
       return { ok: false };
     }
   }
@@ -244,7 +267,7 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
-      this.spawnDaemon();
+      await this.recoverAfterRequestFailure();
       return { ok: false };
     }
   }
@@ -274,7 +297,7 @@ export class DaemonClient {
       const data = await res.json();
       return { ok: true, data };
     } catch {
-      this.spawnDaemon();
+      await this.recoverAfterRequestFailure();
       return { ok: false };
     }
   }
@@ -290,6 +313,23 @@ export class DaemonClient {
       if (!res.ok) return false;
       const data = await res.json() as HealthResponse;
       return data.myco === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async isReady(cachedInfo?: DaemonInfo | null): Promise<boolean> {
+    try {
+      const info = cachedInfo ?? this.readDaemonJson();
+      if (!info) return false;
+
+      const res = await fetch(`http://127.0.0.1:${info.port}/ready`, {
+        headers: this.requestHeaders(),
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (!res.ok) return false;
+      const data = await res.json() as { ready?: boolean };
+      return data.ready === true;
     } catch {
       return false;
     }
@@ -504,6 +544,41 @@ export class DaemonClient {
 
   private readDaemonJson(): DaemonInfo | null {
     return readDaemonState(this.daemonService.statePath);
+  }
+
+  private async recoverAfterRequestFailure(recovery?: RequestFailureRecovery): Promise<void> {
+    if (!recovery?.captureCritical) {
+      await this.spawnDaemon();
+      return;
+    }
+
+    if (this.captureRecoveryRecentlyRequested()) return;
+
+    try {
+      const mgr = this.serviceManager ?? getServiceManager();
+      const installed = await findInstalledServiceLabel(mgr, serviceVariantForState(this.daemonService));
+      if (installed) {
+        await mgr.restart(installed.label).catch(() => { /* best-effort */ });
+        return;
+      }
+    } catch {
+      // Fall through to legacy spawn recovery.
+    }
+
+    await this.spawnDaemon();
+  }
+
+  private captureRecoveryRecentlyRequested(): boolean {
+    try {
+      const markerPath = path.join(this.daemonService.stateDir, 'capture-recovery.json');
+      const stat = fs.existsSync(markerPath) ? fs.statSync(markerPath) : null;
+      if (stat && Date.now() - stat.mtimeMs < DAEMON_CAPTURE_RECOVERY_COALESCE_MS) return true;
+      fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+      fs.writeFileSync(markerPath, JSON.stringify({ requested_at: new Date().toISOString() }));
+    } catch {
+      return false;
+    }
+    return false;
   }
 }
 

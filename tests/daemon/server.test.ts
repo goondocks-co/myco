@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { DaemonServer } from '@myco/daemon/server';
 import { DaemonLogger } from '@myco/daemon/logger';
-import { requestContextHeaders, resolveLegacyRequestContext, REQUEST_CONTEXT_AUTH_HEADER } from '@myco/tools/request-context';
+import { requestContextHeaders, resolveLegacyRequestContext, REQUEST_CONTEXT_AUTH_HEADER, REQUEST_CONTEXT_HEADERS } from '@myco/tools/request-context';
 import { ensureProjectManifest, saveProjectManifest } from '@myco/config/project-manifest';
 import { resolveGroveDbPath, resolveProjectVaultDir } from '@myco/grove/paths';
 import { createGrove, registerProjectInGrove } from '@myco/grove/registry';
@@ -183,6 +183,38 @@ describe('DaemonServer', () => {
       const body = await res.json();
       expect(body.myco).toBe(true);
       expect(body.version).toBeTruthy();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('/ready reports routed request readiness', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/ready`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as { myco?: boolean; ready?: boolean; version?: string; pid?: number };
+      expect(body.myco).toBe(true);
+      expect(body.ready).toBe(true);
+      expect(body.version).toBeTruthy();
+      expect(body.pid).toBe(process.pid);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('/ready uses request-context auth instead of raw liveness bypass', async () => {
+    const server = new DaemonServer({ vaultDir, logger });
+    await server.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/ready`, {
+        headers: {
+          [REQUEST_CONTEXT_HEADERS.groveId]: 'grove_does_not_exist',
+          [REQUEST_CONTEXT_HEADERS.projectId]: 'proj_does_not_exist',
+        },
+      });
+      expect(res.status).toBe(401);
     } finally {
       await server.stop();
     }

@@ -25,7 +25,23 @@ import path from 'node:path';
 // gated by the `migration_tasks` ledger so they run exactly once per
 // vault regardless of update invocations.
 
+const USAGE = `Usage: myco update [options]
+
+Regenerate managed Myco project files and migrate legacy config to the
+current Machine/Grove/Project config tiers.
+
+Options:
+  --project <path>  Project root to update
+  --all-projects    Update every registered project served by this binary
+  -h, --help        Show this help
+`;
+
 export async function run(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(USAGE);
+    return;
+  }
+
   if (args.includes('--all-projects')) {
     await runAllProjects();
     return;
@@ -63,6 +79,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   // .myco/myco.db but no project.toml Grove binding. Lift it into the
   // machine's default Grove before the rest of update operates on it.
   ensureGroveActivation(vaultDir, resolvedProjectRoot);
+  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
 
   const stampPath = path.join(vaultDir, UPDATE_STAMP_FILENAME);
   const currentVersion = getPluginVersion();
@@ -89,7 +106,7 @@ async function runForProject(projectRoot: string | undefined): Promise<void> {
   const allManifests = loadManifests();
   const pkgRoot = resolvePackageRoot();
 
-  const config = loadConfig(vaultDir);
+  const config = loadConfig(vaultDir, { groveId, migrateTiers: true });
   const withReleaseDefaults = withInferredReleaseProvenanceDefaults(config, resolvedProjectRoot);
   if (withReleaseDefaults !== config) {
     updateConfig(vaultDir, () => withReleaseDefaults);

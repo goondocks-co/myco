@@ -36,6 +36,8 @@ Verify the installation:
 myco --version
 ```
 
+**CLI Help Behavior:** All Myco commands return usage information via `--help` before processing configuration. This means `myco init --help` or `myco update --help` will display command usage immediately without reading `.myco/myco.yaml` or validating the project state first.
+
 ### 2. Initialize Myco in a Project
 
 Navigate to the project root and run:
@@ -131,6 +133,12 @@ myco update
 Updates the CLI binary and refreshes hook files, MCP entries, and skill symlinks for all active symbionts. `myco update` respects the existing `symbionts` list in `.myco/myco.yaml` — it does not overwrite or reset per-project activation choices.
 
 `myco update` also auto-migrates hook files from the old relative-path format (`node .agents/myco-hook.cjs`) to the current harness env-var format that uses `${CLAUDE_PROJECT_DIR:-.}` (and cursor/windsurf equivalents) for correct root resolution.
+
+**Automatic Configuration Migration:** `myco update` now automatically migrates legacy project configuration fields to the Grove tier instead of silently stripping them. Specifically:
+- `embedding.run_in_deep_sleep` moves from Project to Grove config
+- `agent.scheduled_tasks_active_window_days` moves from Project to Grove config
+
+This migration preserves configuration values that previously would have been lost during updates. The migrated settings become available to all projects within the Grove while maintaining their configured behavior.
 
 ### 7. Removing Myco from a Project
 
@@ -264,6 +272,8 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 **Myco Agent pipeline won't run after init without configuration.** `myco init` writes `scheduled_tasks_enabled: false` and `event_tasks_enabled: false` explicitly to `.myco/myco.yaml`. If the agent pipeline isn't running after setup, check the **Myco Agent** section in the daemon UI — LLM provider, embedding provider, and per-task scheduling all require explicit opt-in.
 
 **CLI flags are ignored on re-init of an existing vault.** Provider flags like `--embedding-provider` and `--agent-provider` are scoped exclusively to new vault creation. Running `myco init --agent-provider anthropic` on a project that already has a `.myco/` vault has no effect on provider settings — the existing configuration is preserved. To change providers on an existing vault, use the Settings UI in the daemon.
+
+**CLI help shows before config processing.** Commands like `myco init --help` and `myco update --help` display usage information immediately without reading or validating configuration files. This means help is available even in projects with broken or missing `.myco/myco.yaml` files.
 
 ### Development Environment Gotchas
 

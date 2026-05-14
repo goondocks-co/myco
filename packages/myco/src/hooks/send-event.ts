@@ -30,7 +30,10 @@ export async function sendEvent(
     };
 
     const client = createHookDaemonClient(VAULT_DIR, { sessionId });
-    const result = await client.post('/events', { ...eventWithContext, session_id: sessionId, agent: symbiont });
+    const result = await client.capturePost(
+      '/events',
+      { ...eventWithContext, session_id: sessionId, agent: symbiont },
+    );
 
     // Buffer on transport failure OR server-side `ignored` so reconcile can replay it.
     if (!result.ok || isIgnoredEventResponse(result.data)) {

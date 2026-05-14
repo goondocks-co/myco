@@ -117,7 +117,12 @@ function resolveShellArg(
   // (pipes, redirects, subshells, globs, command chains all surface here).
   // A bare `$` string token comes from a subshell expansion like `$(...)`
   // whose `(`/`)` arrive as operator objects — treat that as not-simple too.
-  const tokens = shellParse(raw);
+  let tokens: ReturnType<typeof shellParse>;
+  try {
+    tokens = shellParse(raw);
+  } catch {
+    return null;
+  }
   if (tokens.length === 0) return null;
   for (const tok of tokens) {
     if (typeof tok !== 'string') return null;

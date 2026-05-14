@@ -110,6 +110,8 @@ export const DAEMON_HEALTH_RETRY_DELAYS = [100, 200, 400, 800, 1500];
  *  triggering shutdown. Long enough to cover a fresh `npm install`-paced cold
  *  boot, short enough that genuine wedge states surface to the user. */
 export const DAEMON_RESTART_HEALTH_DEADLINE_MS = 30_000;
+/** Minimum interval between hook-triggered capture recovery restarts. */
+export const DAEMON_CAPTURE_RECOVERY_COALESCE_MS = 30_000;
 
 /** Per-poll interval during the restart health-watch loop (ms). */
 export const DAEMON_RESTART_POLL_INTERVAL_MS = 500;
