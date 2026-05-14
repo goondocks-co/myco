@@ -9,6 +9,9 @@ import { formatEpochAbsolute, formatEpochAgo } from '../../lib/format';
 
 /* ---------- Constants ---------- */
 
+/** Upper bound on spores fetched per session — covers the long tail without paginating. */
+const MAX_SESSION_SPORES = 200;
+
 const KIND_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
   decision: 'default',
   discovery: 'default',
@@ -21,6 +24,7 @@ const KIND_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outli
 const STATUS_TONE: Record<string, 'default' | 'outline'> = {
   active: 'default',
   superseded: 'outline',
+  consolidated: 'outline',
   archived: 'outline',
 };
 
@@ -65,7 +69,6 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
     >
       <button
         type="button"
-        role="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         className="w-full px-4 py-3 text-left hover:bg-surface-container-high/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
@@ -113,7 +116,7 @@ function SporeCard({ spore }: { spore: SporeCardSpore }) {
 /* ---------- Component ---------- */
 
 export function SessionSpores({ sessionId, className }: SessionSporesProps) {
-  const { data, isPending, isError } = useSpores({ session_id: sessionId, limit: 200 });
+  const { data, isPending, isError } = useSpores({ session_id: sessionId, limit: MAX_SESSION_SPORES });
 
   if (isPending) {
     return (

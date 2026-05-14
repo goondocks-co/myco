@@ -66,7 +66,7 @@ describe('SessionSpores', () => {
     expect(screen.getByText(/decision/i)).toBeDefined();
     expect(screen.getByText(/gotcha/i)).toBeDefined();
     const activeChips = screen.getAllByText(/active/i);
-    expect(activeChips.length).toBeGreaterThanOrEqual(2);
+    expect(activeChips).toHaveLength(2);
   });
 
   it('expands a card inline on click', async () => {
