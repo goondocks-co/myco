@@ -202,3 +202,101 @@ describe('sidebar v7 IA grouping', () => {
     expect(maintenanceLinks.length).toBe(0);
   });
 });
+
+describe('legacy /maintenance redirect', () => {
+  beforeEach(() => {
+    const storage = new Map<string, string>();
+    const localStorageMock = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, String(value)),
+      removeItem: (key: string) => storage.delete(key),
+      clear: () => storage.clear(),
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size;
+      },
+    };
+    vi.stubGlobal('localStorage', localStorageMock);
+    window.localStorage = localStorageMock as Storage;
+    vi.stubGlobal('location', window.location);
+    const matchMedia = () => ({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal('matchMedia', matchMedia);
+    window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+    Object.defineProperty(window.HTMLCanvasElement.prototype, 'getContext', {
+      configurable: true,
+      value: () => ({
+        beginPath: vi.fn(),
+        rect: vi.fn(),
+        fill: vi.fn(),
+        fillText: vi.fn(),
+      }),
+    });
+    Object.defineProperty(window.HTMLCanvasElement.prototype, 'toDataURL', {
+      configurable: true,
+      value: () => 'data:image/png;base64,',
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('forwards /g/:slug/maintenance to /g/:slug/operations', async () => {
+    // Mock the hooks that App.tsx's transitive page imports rely on
+    // so loading <App /> doesn't pull half the daemon UI into the
+    // test. The redirect itself only needs route resolution + the
+    // Operations stub to mount.
+    mock.module('../../packages/myco/ui/src/hooks/use-update-status', () => ({
+      useUpdateStatus: () => ({ data: { exempt: false, update_available: false } }),
+      useUpdateCheck: () => ({ mutate: vi.fn(), isPending: false }),
+      useUpdateApply: () => ({ mutate: vi.fn(), isPending: false }),
+      useUpdateChannel: () => ({ mutate: vi.fn(), isPending: false }),
+    }));
+    mock.module('../../packages/myco/ui/src/hooks/use-groves', () => ({
+      useGroves: () => ({
+        data: {
+          groves: [
+            {
+              id: 'grove-a',
+              name: 'Work',
+              slug: 'work',
+              mode: 'local',
+              is_default: true,
+              created_at: '2026-01-01T00:00:00.000Z',
+              project_count: 1,
+              projects: [
+                {
+                  project_id: 'project-a',
+                  name: 'Project A',
+                  slug: 'project-a-123abc',
+                  root: '/tmp/project-a',
+                  binding_id: 'gbind-a',
+                  created_at: '2026-01-01T00:00:00.000Z',
+                  updated_at: '2026-01-01T00:00:00.000Z',
+                  manifest_state: 'present',
+                },
+              ],
+            },
+          ],
+        },
+        isLoading: false,
+        error: null,
+      }),
+    }));
+    const { default: App } = await import('../../packages/myco/ui/src/App');
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/g/work/maintenance']}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId('operations-stub')).toBeTruthy();
+  });
+});
