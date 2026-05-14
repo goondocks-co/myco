@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { listRuns, countRuns, getRun, getLatestRunId } from '@myco/db/queries/runs.js';
+import { getRunActivityBuckets, getRunBranches } from '@myco/db/queries/activity-buckets.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listWriteIntents, countWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
@@ -266,8 +267,22 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const filterOpts = { scope, agent_id: agentId, status, task, search };
     const runs = listRuns({ ...filterOpts, limit, offset });
     const total = countRuns(filterOpts);
+    const runIds = runs.map((r) => r.id);
+    const activityBuckets = getRunActivityBuckets(runIds);
+    const branches = getRunBranches(runIds);
 
-    return { body: { runs: runs.map((run) => serializeRun(run, { logger })), total, offset, limit } };
+    return {
+      body: {
+        runs: runs.map((run) => serializeRun(run, {
+          logger,
+          activityBuckets: activityBuckets.get(run.id) ?? [],
+          branch: branches.get(run.id) ?? null,
+        })),
+        total,
+        offset,
+        limit,
+      },
+    };
   }
 
   /**
@@ -286,12 +301,16 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
     const byTool = countWriteIntentsByTool(run.id, scope);
     const total = Object.values(byTool).reduce((acc, n) => acc + n, 0);
+    const activityBuckets = getRunActivityBuckets([run.id]);
+    const branches = getRunBranches([run.id]);
     return {
       body: {
         run: serializeRun(run, {
           writeIntents: { total, by_tool: byTool },
           duration_ms: runDurationMs(run),
           logger,
+          activityBuckets: activityBuckets.get(run.id) ?? [],
+          branch: branches.get(run.id) ?? null,
         }),
       },
     };

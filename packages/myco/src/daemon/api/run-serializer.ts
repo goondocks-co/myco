@@ -108,6 +108,19 @@ export interface SerializeRunOptions {
    * sites that don't have a logger can still serialize rows.
    */
   logger?: DaemonLogger;
+  /**
+   * Length-`BUCKET_COUNT` activity sparkline for the v6 rail cards. Each
+   * entry counts `agent_turns` rows for that run in a 1-minute bucket over
+   * the recent window. Omit (or pass undefined) to skip — MCP / legacy
+   * call sites that don't need it stay slim.
+   */
+  activityBuckets?: number[];
+  /**
+   * Git branch the run was started on, resolved from the run's session via
+   * the most recent release-provenance capture. Null when no provenance is
+   * available. Omit entirely to skip the field on the wire.
+   */
+  branch?: string | null;
 }
 
 /**
@@ -123,6 +136,8 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
     writeIntents,
     duration_ms,
     logger,
+    activityBuckets,
+    branch,
   } = opts;
 
   const base = {
@@ -171,5 +186,7 @@ export function serializeRun(run: RunRow, opts: SerializeRunOptions = {}) {
       ? { write_intents: writeIntents }
       : {}),
     ...(duration_ms !== undefined ? { duration_ms } : {}),
+    ...(activityBuckets !== undefined ? { activity_buckets: activityBuckets } : {}),
+    ...('branch' in opts ? { branch: branch ?? null } : {}),
   };
 }

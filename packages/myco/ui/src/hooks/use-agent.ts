@@ -115,6 +115,20 @@ export interface RunRow {
     costUsd?: number;
     costSource?: 'actual' | 'estimated' | 'unavailable';
   }>;
+  /**
+   * Recent-activity sparkline data — one `agent_turns` count per 1-minute
+   * bucket over the recent window, newest bucket last. Length matches
+   * `BUCKET_COUNT` on the server. Empty array when the run has no activity
+   * in the window. Optional because legacy/serialized rows may omit it.
+   */
+  activity_buckets?: number[];
+  /**
+   * Git branch resolved from the run's session via the most recent
+   * release-provenance capture. Null when no provenance was recorded for
+   * the linked session, or when the run has no session_ref. Optional —
+   * MCP / legacy serializers may omit the field entirely.
+   */
+  branch?: string | null;
 }
 
 export interface RunsResponse {
