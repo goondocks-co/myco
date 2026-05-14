@@ -77,6 +77,28 @@ describe('session API request context scoping', () => {
     expect(body.total).toBe(1);
   });
 
+  it('returns activity_buckets and branch on every list row', async () => {
+    const now = epochNow();
+    upsertSession({
+      id: 'sess-bucketed',
+      project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      agent: 'test-agent',
+      branch: 'feat/test-branch',
+      started_at: now,
+      created_at: now,
+    });
+
+    const res = await handleListSessions(makeRequest({
+      requestContext: requestContext(tmpDir, 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+    }));
+
+    const body = res.body as { sessions: Array<{ id: string; branch: string | null; activity_buckets: number[] }> };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].branch).toBe('feat/test-branch');
+    expect(body.sessions[0].activity_buckets).toHaveLength(8);
+    expect(body.sessions[0].activity_buckets.every((n) => n === 0)).toBe(true);
+  });
+
   it('does not return a session from a different project context', async () => {
     const now = epochNow();
     upsertSession({ id: 'sess-other', project_id: 'proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', agent: 'test-agent', started_at: now, created_at: now });

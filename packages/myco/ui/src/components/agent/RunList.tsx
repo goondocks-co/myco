@@ -1,15 +1,20 @@
-import { memo, useCallback, useMemo, useState } from 'react';
-import { Bot, AlertCircle, GitCompare, Play, RotateCcw, X } from 'lucide-react';
+import { forwardRef, memo, useCallback, useMemo, useRef, useState } from 'react';
+import { Bot, AlertCircle, GitBranch, Play, RotateCcw } from 'lucide-react';
 import { Button } from '../ui/button';
+import { CompareBar } from '../ui/compare-bar';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
+import { Sparkline } from '../ui/sparkline';
+import { StatusDot, type StatusTone } from '../ui/status-dot';
 import { useAgentRuns, useAgentTasks, type RunRow } from '../../hooks/use-agent';
 import { RunTaskDialog } from './RunTaskDialog';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
+import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { cn } from '../../lib/cn';
-import { formatEpochRelative, capitalize } from '../../lib/format';
-import { statusBadgeVariant, formatCost, formatTokens, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
+import { formatEpochAgo, capitalize } from '../../lib/format';
+import { sectionRows } from '../../lib/section-rows';
+import { statusBadgeVariant, formatDuration, UNKNOWN_TASK_LABEL } from './helpers';
 
 /* ---------- Constants ---------- */
 
@@ -20,6 +25,15 @@ const RUN_STATUS_OPTIONS = [
   { value: 'failed', label: 'Failed' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
+
+/* ---------- Helpers ---------- */
+
+function statusTone(status: string): StatusTone {
+  if (status === 'running') return 'sage';
+  if (status === 'completed') return 'outline';
+  if (status === 'failed' || status === 'cancelled') return 'terracotta';
+  return 'ochre';
+}
 
 /* ---------- Sub-components ---------- */
 
@@ -40,25 +54,22 @@ function RunStatusBadge({ status }: { status: string }) {
   );
 }
 
-function SkeletonRow() {
+function SkeletonRailRow() {
   return (
-    <tr className="border-b border-outline-variant/20">
-      <td className="px-4 py-3">
-        <div className="h-4 w-4 animate-pulse rounded bg-surface-container" />
-      </td>
-      {[200, 80, 100, 80, 80, 80].map((w, i) => (
-        <td key={i} className="px-4 py-3">
-          <div className={cn('h-4 animate-pulse rounded bg-surface-container')} style={{ width: w }} />
-        </td>
-      ))}
-      <td className="px-2 py-3 w-10">
-        <div className="h-4 w-4 animate-pulse rounded bg-surface-container" />
-      </td>
-    </tr>
+    <div className="border-b border-outline-variant/20 px-4 py-3">
+      <div className="flex items-center gap-3">
+        <div className="h-4 w-4 animate-pulse rounded bg-surface-container shrink-0" />
+        <div className="h-4 w-4 animate-pulse rounded bg-surface-container shrink-0" />
+        <div className="flex-1 space-y-2">
+          <div className="h-4 w-2/3 animate-pulse rounded bg-surface-container" />
+          <div className="h-3 w-1/2 animate-pulse rounded bg-surface-container" />
+        </div>
+      </div>
+    </div>
   );
 }
 
-interface RunRowItemProps {
+interface RunRailRowProps {
   run: RunRow;
   /** Called with the run id so callers don't allocate a new closure per row. */
   onSelectRun: (id: string) => void;
@@ -66,22 +77,55 @@ interface RunRowItemProps {
   selected: boolean;
   onToggleSelected: (id: string) => void;
   onRerun: (run: RunRow) => void;
+  isActive: boolean;
+  isCursor: boolean;
 }
 
-const RunRowItem = memo(function RunRowItem({
+const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function RunRailRow({
   run,
   onSelectRun,
   taskNameMap,
   selected,
   onToggleSelected,
   onRerun,
-}: RunRowItemProps) {
+  isActive,
+  isCursor,
+}, ref) {
   const onClick = useCallback(() => onSelectRun(run.id), [onSelectRun, run.id]);
   const taskLabel = run.task ? taskNameMap.get(run.task) ?? run.task : UNKNOWN_TASK_LABEL;
 
+  // Meta segments built conditionally so missing fields drop out entirely
+  // rather than rendering em-dash placeholders that read as broken state.
+  // started_at already appears in the top-right; the meta line carries
+  // duration, tokens, and cost only.
+  const metaSegments: string[] = [];
+  if (run.started_at !== null && run.completed_at !== null) {
+    metaSegments.push(formatDuration(run.started_at, run.completed_at));
+  }
+  if (run.tokens_used !== null && run.tokens_used > 0) {
+    metaSegments.push(`${run.tokens_used.toLocaleString()} tok`);
+  }
+  if (
+    run.cost_source !== 'unavailable' &&
+    run.cost_usd !== null &&
+    run.cost_usd > 0
+  ) {
+    const prefix = run.cost_source === 'estimated' ? '~' : '';
+    metaSegments.push(`${prefix}$${run.cost_usd.toFixed(4)}`);
+  }
+
   return (
-    <tr
-      className="border-b border-outline-variant/20 last:border-0 hover:bg-surface-container-high/50 cursor-pointer transition-all duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
+    <div
+      ref={ref}
+      data-selected={isActive || undefined}
+      data-cursor={isCursor || undefined}
+      className={cn(
+        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
+        'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+        isActive && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
+        isCursor && !isActive && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
+      )}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -91,101 +135,111 @@ const RunRowItem = memo(function RunRowItem({
       }}
       tabIndex={0}
       role="row"
+      aria-selected={isActive}
       aria-label={`Agent run: ${taskLabel}, status ${run.status}`}
     >
-      <td
-        className="px-4 py-3"
-        onClick={(e) => {
-          // Stop row-click from firing when clicking the checkbox or its <td>.
-          e.stopPropagation();
-        }}
-      >
-        <input
-          type="checkbox"
-          aria-label={`Select run ${run.id.slice(0, 8)}`}
-          checked={selected}
-          onChange={() => onToggleSelected(run.id)}
-          onClick={(e) => e.stopPropagation()}
-          className="h-4 w-4 rounded accent-primary cursor-pointer"
-        />
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Bot className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
-          <span className="text-sm font-medium text-on-surface truncate max-w-xs">
+      {/* Top row: checkbox + status dot + title on the left, time + sparkline + actions on the right */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          {/* Compare checkbox */}
+          <div
+            className="pt-1 shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              aria-label={`Select run ${run.id.slice(0, 8)}`}
+              checked={selected}
+              onChange={() => onToggleSelected(run.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="h-4 w-4 rounded accent-primary cursor-pointer"
+            />
+          </div>
+          <StatusDot
+            tone={statusTone(run.status)}
+            pulse={run.status === 'running'}
+            className="mt-1.5 shrink-0"
+          />
+          <h3 className="font-serif italic text-sm text-on-surface truncate leading-snug">
             {taskLabel}
-          </span>
+          </h3>
           {run.dry_run && (
             <span
-              className="inline-flex items-center rounded-xs bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary"
+              className="inline-flex items-center rounded-xs bg-secondary/15 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide text-secondary shrink-0"
               title="Dry run — writes were intercepted, no vault mutations"
             >
               Dry
             </span>
           )}
         </div>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-2">
-          <RunStatusBadge status={run.status} />
-          {run.resumable && run.status === 'failed' && (
-            <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {run.started_at !== null && (
+            <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
+              {formatEpochAgo(run.started_at)}
+            </span>
           )}
+          <Sparkline data={run.activity_buckets ?? []} widthPx={48} heightPx={14} />
+          <div onClick={(e) => e.stopPropagation()}>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRerun(run);
+              }}
+              title="Rerun with same settings"
+              aria-label={`Rerun ${run.id.slice(0, 8)} with same settings`}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
-      </td>
-      <td className="px-4 py-3 text-xs text-on-surface-variant font-mono">
-        {formatEpochRelative(run.started_at)}
-      </td>
-      <td className="px-4 py-3 text-xs text-on-surface-variant font-mono">
-        {formatDuration(run.started_at, run.completed_at)}
-      </td>
-      <td className="px-4 py-3 text-xs text-on-surface-variant font-mono">
-        {formatTokens(run.tokens_used)}
-      </td>
-      <td className="px-4 py-3 text-xs text-on-surface-variant font-mono">
-        <div className="flex items-center gap-2">
-          <span>{formatCost(run.cost_usd, run.cost_source)}</span>
-          {run.cost_source === 'estimated' && (
-            <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
-          )}
+      </div>
+
+      {/* Status line: badge + flags */}
+      <div className="mt-1.5 ml-11 flex items-center gap-2">
+        <RunStatusBadge status={run.status} />
+        {run.resumable && run.status === 'failed' && (
+          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">resumable</span>
+        )}
+        {run.cost_source === 'estimated' && (
+          <span className="font-sans text-[10px] uppercase tracking-wide text-secondary">est</span>
+        )}
+      </div>
+
+      {/* Meta line: only rendered segments that have data, joined with · */}
+      {metaSegments.length > 0 && (
+        <div className="mt-1 ml-11 font-mono text-[11px] text-on-surface-variant truncate">
+          {metaSegments.join(' · ')}
         </div>
-      </td>
-      <td
-        className="px-2 py-3 w-10"
-        onClick={(e) => {
-          // Stop row-click from firing — rerun opens a confirmation dialog,
-          // not the run detail.
-          e.stopPropagation();
-        }}
-      >
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-7 w-7 text-on-surface-variant hover:text-on-surface"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRerun(run);
-          }}
-          title="Rerun with same settings"
-          aria-label={`Rerun ${run.id.slice(0, 8)} with same settings`}
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-        </Button>
-      </td>
-    </tr>
+      )}
+
+      {/* Branch line: rendered only when a branch was captured */}
+      {run.branch && (
+        <div className="mt-0.5 ml-11 inline-flex items-center gap-1 font-mono text-[10px] italic text-on-surface-variant">
+          <GitBranch className="h-2.5 w-2.5" />
+          {run.branch}
+        </div>
+      )}
+    </div>
   );
-});
+}));
 
 /* ---------- Component ---------- */
 
 export interface RunListProps {
+  /** When set, the row with this run id renders as active. Also seeds the
+   *  keyboard-nav cursor so j/k continues from the selection. */
+  selectedId?: string;
   onSelectRun: (id: string) => void;
   onTriggerRun: () => void;
   /** Navigates to an ad-hoc comparison over the selected run ids. */
   onCompareRuns: (ids: string[]) => void;
 }
 
-export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListProps) {
+export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }: RunListProps) {
+  const filterInputRef = useRef<HTMLInputElement>(null);
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
     initialFilters: { status: FILTER_ALL, task: FILTER_ALL },
   });
@@ -247,6 +301,40 @@ export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListPro
   const runs = data?.runs ?? [];
   const total = data?.total ?? 0;
 
+  const nav = useListKeyboardNav({
+    items: runs,
+    getId: (r) => r.id,
+    selectedId,
+    onActivate: (id) => onSelectRun(id),
+    filterInputRef,
+  });
+
+  // Page-local sums: aggregates reflect the visible page only. RunRow has
+  // no per-run tool-call count (turn-level data lives in `agent_turns`,
+  // which is not loaded with the run list). TOKENS is the closest aggregate
+  // available without an N+1 fetch — TOTAL comes from the paginated query
+  // response (server-wide for the current filter).
+  const runningCount = runs.filter((r) => r.status === 'running').length;
+  const tokensTotal = runs.reduce((sum, r) => sum + (r.tokens_used ?? 0), 0);
+
+  const totalsHeader = (
+    <div className="px-4 py-3 border-b border-outline-variant/20">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+          Runs
+        </h2>
+        <span className="font-serif italic text-sm text-on-surface">History</span>
+      </div>
+      <div className="font-mono text-[11px] text-on-surface-variant inline-flex items-center gap-1.5">
+        <span><strong className="text-on-surface font-semibold">{total.toLocaleString()}</strong> TOTAL</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{runningCount.toLocaleString()}</strong> RUNNING</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{tokensTotal.toLocaleString()}</strong> TOKENS</span>
+      </div>
+    </div>
+  );
+
   const toolbar = (
     <ListToolbar
       searchPlaceholder="Search runs..."
@@ -255,31 +343,14 @@ export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListPro
       filters={filters}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
+      inputRef={filterInputRef}
     />
-  );
-
-  const tableHeader = (
-    <thead>
-      <tr className="border-b border-outline-variant/20 bg-surface-container/50">
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans w-10" aria-label="Select">
-          <span className="sr-only">Select</span>
-        </th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Task</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Status</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Started</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Duration</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Tokens</th>
-        <th className="px-4 py-3 text-left text-xs font-medium text-on-surface-variant uppercase tracking-widest font-sans">Cost</th>
-        <th className="px-2 py-3 w-10" aria-label="Rerun">
-          <span className="sr-only">Rerun</span>
-        </th>
-      </tr>
-    </thead>
   );
 
   if (isError) {
     return (
-      <div className="space-y-4">
+      <div className="p-4 space-y-4">
+        {totalsHeader}
         {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary">
           <AlertCircle className="h-5 w-5" />
@@ -293,17 +364,13 @@ export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListPro
   }
 
   return (
-    <div className="space-y-4">
+    <div className="p-4 space-y-4">
+      {totalsHeader}
       {toolbar}
 
       {isLoading ? (
         <div className="rounded-md bg-surface-container-low overflow-hidden">
-          <table className="w-full">
-            {tableHeader}
-            <tbody>
-              {[1, 2, 3].map((i) => <SkeletonRow key={i} />)}
-            </tbody>
-          </table>
+          {[1, 2, 3].map((i) => <SkeletonRailRow key={i} />)}
         </div>
       ) : runs.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center gap-3 rounded-md bg-surface-container-low text-on-surface-variant">
@@ -326,23 +393,55 @@ export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListPro
           )}
         </div>
       ) : (
-        <div className="rounded-md bg-surface-container-low overflow-hidden">
-          <table className="w-full" aria-label="Agent runs">
-            {tableHeader}
-            <tbody>
-              {runs.map((run) => (
-                <RunRowItem
-                  key={run.id}
-                  run={run}
-                  taskNameMap={taskNameMap}
-                  selected={selected.has(run.id)}
-                  onToggleSelected={toggleSelected}
-                  onSelectRun={onSelectRun}
-                  onRerun={setRerunSource}
-                />
-              ))}
-            </tbody>
-          </table>
+        <div
+          {...nav.containerProps}
+          role="group"
+          aria-label="Agent run list keyboard navigation"
+          className="rounded-md bg-surface-container-low overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+        >
+          {(() => {
+            const sections = sectionRows(runs, {
+              isActive: (r) => r.status === 'running',
+              startedAtEpochSec: (r) => r.started_at,
+            });
+            // Keyboard nav was wired with items=runs (flat array). The
+            // setRowRef/cursorIndex indices must match positions in that
+            // flat array, NOT positions within their section — so j/k
+            // crosses section boundaries seamlessly.
+            let flatIdx = 0;
+            return sections.map((section) => (
+              <div key={section.label}>
+                <div
+                  role="separator"
+                  className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/20 bg-surface-container/30"
+                >
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                    {section.label}
+                  </span>
+                  <span className="font-mono text-[10px] text-on-surface-variant">
+                    {section.rows.length}
+                  </span>
+                </div>
+                {section.rows.map((run) => {
+                  const idx = flatIdx++;
+                  return (
+                    <RunRailRow
+                      key={run.id}
+                      ref={nav.setRowRef(idx)}
+                      run={run}
+                      taskNameMap={taskNameMap}
+                      selected={selected.has(run.id)}
+                      onToggleSelected={toggleSelected}
+                      onSelectRun={onSelectRun}
+                      onRerun={setRerunSource}
+                      isActive={selectedId === run.id}
+                      isCursor={nav.cursorIndex === idx}
+                    />
+                  );
+                })}
+              </div>
+            ));
+          })()}
         </div>
       )}
 
@@ -353,36 +452,11 @@ export function RunList({ onSelectRun, onTriggerRun, onCompareRuns }: RunListPro
         onPageChange={setOffset}
       />
 
-      {selected.size > 0 && (
-        <div
-          role="region"
-          aria-label="Run selection"
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-full bg-surface-container-high px-4 py-2 shadow-lg border border-outline-variant/30"
-        >
-          <span className="font-sans text-sm text-on-surface">
-            {selected.size} selected
-          </span>
-          <Button
-            size="sm"
-            variant="default"
-            className="gap-2"
-            disabled={selected.size < 2}
-            onClick={() => onCompareRuns([...selected])}
-          >
-            <GitCompare className="h-3.5 w-3.5" />
-            Compare {selected.size} {selected.size === 1 ? 'run' : 'runs'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="gap-2 text-on-surface-variant"
-            onClick={clearSelection}
-          >
-            <X className="h-3.5 w-3.5" />
-            Clear selection
-          </Button>
-        </div>
-      )}
+      <CompareBar
+        selectedCount={selected.size}
+        onClear={clearSelection}
+        onCompare={() => onCompareRuns([...selected])}
+      />
 
       {/* "Rerun with same settings" dialog — opens pre-filled from rerunSource.
           Conditionally mounted so the dialog's hook subscriptions

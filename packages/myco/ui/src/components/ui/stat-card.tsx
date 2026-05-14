@@ -52,7 +52,7 @@ export function StatCard({ label, value, sublabel, accent, sparklineData, classN
           {value}
         </p>
         {sparklineData && sparklineData.length >= 2 && (
-          <Sparkline data={sparklineData} width={80} height={28} className="opacity-60" />
+          <Sparkline data={sparklineData} widthPx={80} heightPx={28} className="opacity-60" />
         )}
       </div>
       {sublabel && (

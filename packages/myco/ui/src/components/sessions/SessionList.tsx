@@ -1,28 +1,26 @@
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, MessageSquare, Trash2 } from 'lucide-react';
-import { Badge } from '../ui/badge';
+import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
-import { PageHeader } from '../ui/page-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
+import { StatusDot, type StatusTone } from '../ui/status-dot';
+import { Sparkline } from '../ui/sparkline';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { useSymbionts } from '../../hooks/use-symbionts';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
-import { shortSession } from '../../lib/format';
-import { StatusBadge } from './status-helpers';
+import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
+import { sectionRows } from '../../lib/section-rows';
 import { cn } from '../../lib/cn';
-import { useMemo, useState } from 'react';
+import { forwardRef, useMemo, useRef, useState } from 'react';
+import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
 /* ---------- Constants ---------- */
 
 /** Number of skeleton rows to show during loading. */
 const SKELETON_ROW_COUNT = 5;
-
-/** Characters shown from session ID in table column. */
-const SESSION_ID_COLUMN_LENGTH = 12;
 
 const STATUS_FILTER: FilterDefinition = {
   key: 'status',
@@ -34,24 +32,45 @@ const STATUS_FILTER: FilterDefinition = {
   ],
 };
 
+/* ---------- Helpers ---------- */
+
+function statusTone(status: string): StatusTone {
+  if (status === 'active') return 'sage';
+  if (status === 'completed') return 'outline';
+  return 'ochre';
+}
+
 /* ---------- Sub-components ---------- */
 
-function SessionTableRow({
-  session,
-  symbiontDisplayName,
-  onClick,
-  onDelete,
-}: {
+const SessionCardRow = forwardRef<HTMLDivElement, {
   session: SessionSummary;
   symbiontDisplayName: string;
+  isSelected: boolean;
+  isCursor: boolean;
   onClick: () => void;
   onDelete: () => void;
-}) {
+}>(function SessionCardRow({
+  session,
+  symbiontDisplayName,
+  isSelected,
+  isCursor,
+  onClick,
+  onDelete,
+}, ref) {
   const sessionLabel = session.title || shortSession(session.id);
 
   return (
-    <tr
-      className="border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]"
+    <div
+      ref={ref}
+      data-selected={isSelected || undefined}
+      data-cursor={isCursor || undefined}
+      className={cn(
+        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
+        'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+        isSelected && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
+        isCursor && !isSelected && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
+      )}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -61,52 +80,27 @@ function SessionTableRow({
       }}
       tabIndex={0}
       role="row"
+      aria-selected={isSelected}
       aria-label={`Session: ${sessionLabel}`}
     >
-      {/* Session ID */}
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {session.id.slice(0, SESSION_ID_COLUMN_LENGTH)}
-        </span>
-      </td>
-
-      {/* Title */}
-      <td className="px-4 py-3">
-        <span className="font-sans text-sm font-medium text-on-surface truncate block max-w-xs">
-          {sessionLabel}
-        </span>
-      </td>
-
-      {/* Symbiont */}
-      <td className="px-4 py-3">
-        <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-          {symbiontDisplayName}
-        </Badge>
-      </td>
-
-      {/* Status */}
-      <td className="px-4 py-3">
-        <StatusBadge status={session.status} />
-      </td>
-
-      {/* Release */}
-      <td className="px-4 py-3 text-center">
-        <ReleaseStateDot annotation={session.release_state} className="mx-auto" />
-      </td>
-
-      {/* Turns */}
-      <td className="px-4 py-3 text-center">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {session.prompt_count}
-        </span>
-      </td>
-
-      {/* Last Activity */}
-      <td className="px-4 py-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-xs text-on-surface-variant">
-            {session.date}
+      {/* Top row: status + title on the left, time + sparkline + actions on the right */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <StatusDot
+            tone={statusTone(session.status)}
+            pulse={session.status === 'active'}
+            className="mt-1.5 shrink-0"
+          />
+          <h3 className="font-serif italic text-sm text-on-surface truncate leading-snug">
+            {sessionLabel}
+          </h3>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <ReleaseStateDot annotation={session.release_state} />
+          <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
+            {formatEpochAgo(session.started_at)}
           </span>
+          <Sparkline data={session.activity_buckets} widthPx={48} heightPx={14} />
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -117,45 +111,60 @@ function SessionTableRow({
                 e.stopPropagation();
               }
             }}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-tertiary/40"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-tertiary/40"
             aria-label={`Delete session ${sessionLabel}`}
             title="Delete session"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
-      </td>
-    </tr>
-  );
-}
+      </div>
 
-function SkeletonTableRow() {
-  return (
-    <tr className="border-b border-[var(--ghost-border)]">
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3 text-center"><div className="h-2.5 w-2.5 rounded-full bg-surface-container-high animate-pulse mx-auto" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-8 rounded bg-surface-container-high animate-pulse mx-auto" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
-    </tr>
-  );
-}
+      {/* Meta line: agent · symbiont · prompts · tools */}
+      <div className="mt-1.5 ml-5 font-mono text-[11px] text-on-surface-variant truncate">
+        {session.agent} · {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
+      </div>
 
-/** Column header with consistent styling. */
-function ColHeader({ children, className }: { children: React.ReactNode; className?: string }) {
+      {/* Branch line: rendered only when a branch was captured */}
+      {session.branch && (
+        <div className="mt-0.5 ml-5 inline-flex items-center gap-1 font-mono text-[10px] italic text-on-surface-variant">
+          <GitBranch className="h-2.5 w-2.5" />
+          {session.branch}
+        </div>
+      )}
+    </div>
+  );
+});
+
+function SkeletonCardRow() {
   return (
-    <th className={cn('px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
-      {children}
-    </th>
+    <div className="border-b border-outline-variant/20 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-surface-container-high animate-pulse shrink-0" />
+          <div className="h-3 w-48 rounded bg-surface-container-high animate-pulse" />
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="h-3 w-10 rounded bg-surface-container-high animate-pulse" />
+          <div className="h-3 w-12 rounded bg-surface-container-high animate-pulse" />
+        </div>
+      </div>
+      <div className="mt-1.5 ml-5 h-2.5 w-40 rounded bg-surface-container-high animate-pulse" />
+    </div>
   );
 }
 
 /* ---------- Component ---------- */
 
-export function SessionList() {
+export interface SessionListProps {
+  /** When set, the row with this session id renders as active. Also seeds the
+   * keyboard-nav cursor so j/k continues from the selection. */
+  selectedId?: string;
+}
+
+export function SessionList({ selectedId }: SessionListProps = {}) {
   const navigate = useNavigate();
+  const filterInputRef = useRef<HTMLInputElement>(null);
   const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
     initialFilters: { status: FILTER_ALL, agent: FILTER_ALL },
   });
@@ -216,6 +225,14 @@ export function SessionList() {
   const sessions = data?.sessions ?? [];
   const total = data?.total ?? 0;
 
+  const nav = useListKeyboardNav({
+    items: sessions,
+    getId: (s) => s.id,
+    selectedId,
+    onActivate: (id) => navigate(`/sessions/${id}`),
+    filterInputRef,
+  });
+
   const toolbar = (
     <ListToolbar
       searchPlaceholder="Search sessions..."
@@ -224,27 +241,39 @@ export function SessionList() {
       filters={sessionFilters}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
+      inputRef={filterInputRef}
     />
   );
 
-  const tableHead = (
-    <thead>
-      <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-        <ColHeader>Session ID</ColHeader>
-        <ColHeader>Title</ColHeader>
-        <ColHeader>Symbiont</ColHeader>
-        <ColHeader>Status</ColHeader>
-        <ColHeader className="w-16 text-center">Release</ColHeader>
-        <ColHeader className="text-center">Turns</ColHeader>
-        <ColHeader>Date</ColHeader>
-      </tr>
-    </thead>
+  // Page-local sums: aggregates reflect the visible page only. The sessions
+  // query doesn't expose project-scoped totals for prompts/active-status
+  // separately, so we sum what's loaded. TOTAL comes from the paginated
+  // query response (server-wide for the current filter).
+  const activeCount = sessions.filter((s) => s.status === 'active').length;
+  const promptsTotal = sessions.reduce((sum, s) => sum + (s.prompt_count ?? 0), 0);
+
+  const totalsHeader = (
+    <div className="px-4 py-3 border-b border-outline-variant/20">
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <h2 className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+          Sessions
+        </h2>
+        <span className="font-serif italic text-sm text-on-surface">Archive</span>
+      </div>
+      <div className="font-mono text-[11px] text-on-surface-variant inline-flex items-center gap-1.5">
+        <span><strong className="text-on-surface font-semibold">{total.toLocaleString()}</strong> TOTAL</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{activeCount.toLocaleString()}</strong> ACTIVE</span>
+        <span aria-hidden>·</span>
+        <span><strong className="text-on-surface font-semibold">{promptsTotal.toLocaleString()}</strong> PROMPTS</span>
+      </div>
+    </div>
   );
 
   if (isError) {
     return (
-      <div>
-        <PageHeader title="Session Archive" />
+      <div className="p-4">
+        {totalsHeader}
         {toolbar}
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary mt-4">
           <AlertCircle className="h-5 w-5" />
@@ -258,24 +287,18 @@ export function SessionList() {
   }
 
   return (
-    <div>
-      <PageHeader
-        title="Session Archive"
-        subtitle={isLoading ? 'Loading...' : `${total} session${total !== 1 ? 's' : ''} captured`}
-      />
+    <div className="p-4">
+      {totalsHeader}
 
       {toolbar}
 
       {isLoading ? (
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full">
-            {tableHead}
-            <tbody>
-              {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
-                <SkeletonTableRow key={i} />
-              ))}
-            </tbody>
-          </table>
+          <div role="list" aria-label="Session archive loading">
+            {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
+              <SkeletonCardRow key={i} />
+            ))}
+          </div>
         </Surface>
       ) : sessions.length === 0 ? (
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant mt-4">
@@ -291,20 +314,54 @@ export function SessionList() {
         </div>
       ) : (
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full" aria-label="Session archive">
-            {tableHead}
-            <tbody>
-              {sessions.map((session) => (
-                <SessionTableRow
-                  key={session.id}
-                  session={session}
-                  symbiontDisplayName={symbiontDisplayName(session.agent)}
-                  onClick={() => navigate(`/sessions/${session.id}`)}
-                  onDelete={() => setDeleteTarget(session)}
-                />
-              ))}
-            </tbody>
-          </table>
+          <div
+            {...nav.containerProps}
+            role="list"
+            aria-label="Session archive"
+            className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+          >
+            {(() => {
+              const sections = sectionRows(sessions, {
+                isActive: (s) => s.status === 'active',
+                startedAtEpochSec: (s) => s.started_at,
+              });
+              // Keyboard nav was wired with items=sessions (flat array). The
+              // setRowRef/cursorIndex indices must match positions in that
+              // flat array, NOT positions within their section — so j/k
+              // crosses section boundaries seamlessly.
+              let flatIdx = 0;
+              return sections.map((section) => (
+                <div key={section.label}>
+                  <div
+                    role="separator"
+                    className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/20 bg-surface-container/30"
+                  >
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                      {section.label}
+                    </span>
+                    <span className="font-mono text-[10px] text-on-surface-variant">
+                      {section.rows.length}
+                    </span>
+                  </div>
+                  {section.rows.map((session) => {
+                    const idx = flatIdx++;
+                    return (
+                      <SessionCardRow
+                        key={session.id}
+                        ref={nav.setRowRef(idx)}
+                        session={session}
+                        symbiontDisplayName={symbiontDisplayName(session.agent)}
+                        isSelected={selectedId === session.id}
+                        isCursor={nav.cursorIndex === idx}
+                        onClick={() => navigate(`/sessions/${session.id}`)}
+                        onDelete={() => setDeleteTarget(session)}
+                      />
+                    );
+                  })}
+                </div>
+              ));
+            })()}
+          </div>
         </Surface>
       )}
 

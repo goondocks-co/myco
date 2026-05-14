@@ -50,6 +50,14 @@ export interface SessionSummary {
   started_at: number;
   ended_at: number | null;
   release_state?: SessionReleaseState;
+  /**
+   * Recent-activity sparkline data — one prompt_batch count per 1-minute
+   * bucket over the recent window, newest bucket last. Empty array when
+   * the session has no activity in the window.
+   */
+  activity_buckets: number[];
+  /** Git branch captured for this session, or null when no provenance was recorded. */
+  branch: string | null;
 }
 
 /** Full session row returned by the detail endpoint. */

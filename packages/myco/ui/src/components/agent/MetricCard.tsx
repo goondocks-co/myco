@@ -30,7 +30,7 @@ export function MetricCard({ label, value, sparklineData, children, className }:
         {children}
       </div>
       {sparklineData && sparklineData.length >= 2 && (
-        <Sparkline data={sparklineData} width={160} height={28} className="mt-1 opacity-80" />
+        <Sparkline data={sparklineData} widthPx={160} heightPx={28} className="mt-1 opacity-80" />
       )}
     </div>
   );
