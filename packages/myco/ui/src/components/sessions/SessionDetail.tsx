@@ -12,6 +12,7 @@ import { useSymbionts, buildResumeCommand } from '../../hooks/use-symbionts';
 import { useTriggerRun } from '../../hooks/use-agent';
 import { BatchTimeline } from './BatchTimeline';
 import { SessionPlans } from './SessionPlans';
+import { SessionSpores } from './SessionSpores';
 import { CanopyEfficiencyTile } from './CanopyEfficiencyTile';
 import { ReleaseStateBadge } from '../release-state/ReleaseStateBadge';
 import { StatusBadge } from './status-helpers';
@@ -71,7 +72,7 @@ function MetaItem({ label, value, mono = true, copyable = false, code = false }:
   );
 }
 
-type TabValue = 'conversation' | 'plans';
+type TabValue = 'conversation' | 'plans' | 'spores';
 
 function TabButton({ label, value, activeTab, onClick }: {
   label: string;
@@ -112,7 +113,10 @@ export function SessionDetail({ id }: SessionDetailProps) {
   // Read initial tab and plan from URL query params (e.g., ?tab=plans&plan=123)
   const [activeTab, setActiveTab] = useState<TabValue>(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('tab') === 'plans' ? 'plans' : 'conversation';
+    const tab = params.get('tab');
+    if (tab === 'plans') return 'plans';
+    if (tab === 'spores') return 'spores';
+    return 'conversation';
   });
   const [expandedPlanId] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -305,10 +309,12 @@ export function SessionDetail({ id }: SessionDetailProps) {
         <div className="flex gap-0 border-b border-border mb-4">
           <TabButton label="Conversation" value="conversation" activeTab={activeTab} onClick={setActiveTab} />
           <TabButton label="Plans" value="plans" activeTab={activeTab} onClick={setActiveTab} />
+          <TabButton label="Spores" value="spores" activeTab={activeTab} onClick={setActiveTab} />
         </div>
 
         {activeTab === 'conversation' && <BatchTimeline sessionId={id} />}
         {activeTab === 'plans' && <SessionPlans sessionId={id} expandedPlanId={expandedPlanId} />}
+        {activeTab === 'spores' && <SessionSpores sessionId={id} />}
       </div>
 
       <ConfirmDialog
