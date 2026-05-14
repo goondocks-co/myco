@@ -142,7 +142,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: TOOL_PLANS,
-    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with exactly one of source_path or plan_key, or updates an existing plan when id is passed. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
+    description: 'Manage implementation plans. op: "list" (default) returns plan summaries. op: "get" returns one plan with content by id. op: "save" creates a plan for a session with exactly one of source_path or plan_key, or updates an existing plan when id is passed; pass status to mark a plan in_progress when you start executing it and completed when the work finishes. op: "delete" removes a plan by id; cross-machine rows require force_remote: true.',
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -150,7 +150,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       openWorldHint: false,
     },
     cortex: {
-      guidance: 'Use op: "list" before implementation when plans or specs may already exist. Use op: "save" when you create or materially revise a plan. Use op: "get" for full plan content returned by search.',
+      guidance: 'Use op: "list" before implementation when plans or specs may already exist. Use op: "save" when you create or materially revise a plan, and pass status: "in_progress" when you start working through it so the Sessions UI surfaces it as the active plan. Mark it status: "completed" (or "abandoned") when the work concludes. Plans default to status: "active" — that means written-but-not-yet-executing; "in_progress" means execution has begun. Use op: "get" for full plan content returned by search.',
       priority: 50,
     },
     inputSchema: {
