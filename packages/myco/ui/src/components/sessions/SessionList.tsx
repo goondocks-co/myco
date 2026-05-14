@@ -1,17 +1,17 @@
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, MessageSquare, Trash2 } from 'lucide-react';
-import { Badge } from '../ui/badge';
+import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { PageHeader } from '../ui/page-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
+import { StatusDot, type StatusTone } from '../ui/status-dot';
+import { Sparkline } from '../ui/sparkline';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { useSymbionts } from '../../hooks/use-symbionts';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
-import { shortSession } from '../../lib/format';
-import { StatusBadge } from './status-helpers';
+import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { cn } from '../../lib/cn';
 import { forwardRef, useMemo, useRef, useState } from 'react';
@@ -21,9 +21,6 @@ import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
 /** Number of skeleton rows to show during loading. */
 const SKELETON_ROW_COUNT = 5;
-
-/** Characters shown from session ID in table column. */
-const SESSION_ID_COLUMN_LENGTH = 12;
 
 const STATUS_FILTER: FilterDefinition = {
   key: 'status',
@@ -35,16 +32,24 @@ const STATUS_FILTER: FilterDefinition = {
   ],
 };
 
+/* ---------- Helpers ---------- */
+
+function statusTone(status: string): StatusTone {
+  if (status === 'active') return 'sage';
+  if (status === 'completed') return 'outline';
+  return 'ochre';
+}
+
 /* ---------- Sub-components ---------- */
 
-const SessionTableRow = forwardRef<HTMLTableRowElement, {
+const SessionCardRow = forwardRef<HTMLDivElement, {
   session: SessionSummary;
   symbiontDisplayName: string;
   isSelected: boolean;
   isCursor: boolean;
   onClick: () => void;
   onDelete: () => void;
-}>(function SessionTableRow({
+}>(function SessionCardRow({
   session,
   symbiontDisplayName,
   isSelected,
@@ -55,12 +60,14 @@ const SessionTableRow = forwardRef<HTMLTableRowElement, {
   const sessionLabel = session.title || shortSession(session.id);
 
   return (
-    <tr
+    <div
       ref={ref}
       data-selected={isSelected || undefined}
       data-cursor={isCursor || undefined}
       className={cn(
-        'border-b border-[var(--ghost-border)] last:border-0 hover:bg-surface-container/60 cursor-pointer transition-all duration-150 group focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 hover:shadow-[inset_3px_0_0_var(--primary)]',
+        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
+        'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
         isSelected && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
         isCursor && !isSelected && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
       )}
@@ -76,50 +83,24 @@ const SessionTableRow = forwardRef<HTMLTableRowElement, {
       aria-selected={isSelected}
       aria-label={`Session: ${sessionLabel}`}
     >
-      {/* Session ID */}
-      <td className="px-4 py-3">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {session.id.slice(0, SESSION_ID_COLUMN_LENGTH)}
-        </span>
-      </td>
-
-      {/* Title */}
-      <td className="px-4 py-3">
-        <span className="font-sans text-sm font-medium text-on-surface truncate block max-w-xs">
-          {sessionLabel}
-        </span>
-      </td>
-
-      {/* Symbiont */}
-      <td className="px-4 py-3">
-        <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0">
-          {symbiontDisplayName}
-        </Badge>
-      </td>
-
-      {/* Status */}
-      <td className="px-4 py-3">
-        <StatusBadge status={session.status} />
-      </td>
-
-      {/* Release */}
-      <td className="px-4 py-3 text-center">
-        <ReleaseStateDot annotation={session.release_state} className="mx-auto" />
-      </td>
-
-      {/* Turns */}
-      <td className="px-4 py-3 text-center">
-        <span className="font-mono text-xs text-on-surface-variant">
-          {session.prompt_count}
-        </span>
-      </td>
-
-      {/* Last Activity */}
-      <td className="px-4 py-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="font-mono text-xs text-on-surface-variant">
-            {session.date}
+      {/* Top row: status + title on the left, time + sparkline + actions on the right */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <StatusDot
+            tone={statusTone(session.status)}
+            pulse={session.status === 'active'}
+            className="mt-1.5 shrink-0"
+          />
+          <h3 className="font-serif italic text-sm text-on-surface truncate leading-snug">
+            {sessionLabel}
+          </h3>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <ReleaseStateDot annotation={session.release_state} />
+          <span className="font-mono text-[10px] text-on-surface-variant whitespace-nowrap">
+            {formatEpochAgo(session.started_at)}
           </span>
+          <Sparkline data={session.activity_buckets} widthPx={48} heightPx={14} />
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -130,38 +111,46 @@ const SessionTableRow = forwardRef<HTMLTableRowElement, {
                 e.stopPropagation();
               }
             }}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-tertiary/40"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-tertiary/40"
             aria-label={`Delete session ${sessionLabel}`}
             title="Delete session"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
-      </td>
-    </tr>
+      </div>
+
+      {/* Meta line: agent · symbiont · prompts · tools */}
+      <div className="mt-1.5 ml-5 font-mono text-[11px] text-on-surface-variant truncate">
+        {session.agent} · {symbiontDisplayName} · {session.prompt_count}p · {session.tool_count}t
+      </div>
+
+      {/* Branch line: rendered only when a branch was captured */}
+      {session.branch && (
+        <div className="mt-0.5 ml-5 inline-flex items-center gap-1 font-mono text-[10px] italic text-on-surface-variant">
+          <GitBranch className="h-2.5 w-2.5" />
+          {session.branch}
+        </div>
+      )}
+    </div>
   );
 });
 
-function SkeletonTableRow() {
+function SkeletonCardRow() {
   return (
-    <tr className="border-b border-[var(--ghost-border)]">
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-40 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-16 rounded bg-surface-container-high animate-pulse" /></td>
-      <td className="px-4 py-3 text-center"><div className="h-2.5 w-2.5 rounded-full bg-surface-container-high animate-pulse mx-auto" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-8 rounded bg-surface-container-high animate-pulse mx-auto" /></td>
-      <td className="px-4 py-3"><div className="h-3 w-20 rounded bg-surface-container-high animate-pulse" /></td>
-    </tr>
-  );
-}
-
-/** Column header with consistent styling. */
-function ColHeader({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <th className={cn('px-4 py-3 text-left font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant', className)}>
-      {children}
-    </th>
+    <div className="border-b border-outline-variant/20 px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-surface-container-high animate-pulse shrink-0" />
+          <div className="h-3 w-48 rounded bg-surface-container-high animate-pulse" />
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="h-3 w-10 rounded bg-surface-container-high animate-pulse" />
+          <div className="h-3 w-12 rounded bg-surface-container-high animate-pulse" />
+        </div>
+      </div>
+      <div className="mt-1.5 ml-5 h-2.5 w-40 rounded bg-surface-container-high animate-pulse" />
+    </div>
   );
 }
 
@@ -256,20 +245,6 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
     />
   );
 
-  const tableHead = (
-    <thead>
-      <tr className="border-b border-[var(--ghost-border)] bg-surface-container/50">
-        <ColHeader>Session ID</ColHeader>
-        <ColHeader>Title</ColHeader>
-        <ColHeader>Symbiont</ColHeader>
-        <ColHeader>Status</ColHeader>
-        <ColHeader className="w-16 text-center">Release</ColHeader>
-        <ColHeader className="text-center">Turns</ColHeader>
-        <ColHeader>Date</ColHeader>
-      </tr>
-    </thead>
-  );
-
   if (isError) {
     return (
       <div className="p-4">
@@ -297,14 +272,11 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
 
       {isLoading ? (
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
-          <table className="w-full">
-            {tableHead}
-            <tbody>
-              {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
-                <SkeletonTableRow key={i} />
-              ))}
-            </tbody>
-          </table>
+          <div role="list" aria-label="Session archive loading">
+            {Array.from({ length: SKELETON_ROW_COUNT }).map((_, i) => (
+              <SkeletonCardRow key={i} />
+            ))}
+          </div>
         </Surface>
       ) : sessions.length === 0 ? (
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant mt-4">
@@ -322,27 +294,22 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
           <div
             {...nav.containerProps}
-            role="group"
-            aria-label="Session list keyboard navigation"
+            role="list"
+            aria-label="Session archive"
             className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
           >
-            <table className="w-full" aria-label="Session archive">
-              {tableHead}
-              <tbody>
-                {sessions.map((session, idx) => (
-                  <SessionTableRow
-                    key={session.id}
-                    ref={nav.setRowRef(idx)}
-                    session={session}
-                    symbiontDisplayName={symbiontDisplayName(session.agent)}
-                    isSelected={selectedId === session.id}
-                    isCursor={nav.cursorIndex === idx}
-                    onClick={() => navigate(`/sessions/${session.id}`)}
-                    onDelete={() => setDeleteTarget(session)}
-                  />
-                ))}
-              </tbody>
-            </table>
+            {sessions.map((session, idx) => (
+              <SessionCardRow
+                key={session.id}
+                ref={nav.setRowRef(idx)}
+                session={session}
+                symbiontDisplayName={symbiontDisplayName(session.agent)}
+                isSelected={selectedId === session.id}
+                isCursor={nav.cursorIndex === idx}
+                onClick={() => navigate(`/sessions/${session.id}`)}
+                onDelete={() => setDeleteTarget(session)}
+              />
+            ))}
           </div>
         </Surface>
       )}
