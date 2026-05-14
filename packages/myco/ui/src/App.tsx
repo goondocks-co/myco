@@ -83,7 +83,7 @@ export default function App() {
       <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
       <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
-      <Route path="/operations" element={<LegacyGroveRedirect suffix="/dashboard" />} />
+      <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
       <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -151,15 +151,13 @@ function LegacyTeamRedirect() {
 }
 
 /**
- * Legacy project-scoped /operations → Grove-scoped /dashboard.
- * Operations was the combined "stats + actions" page that split
- * into Dashboard + Maintenance. Sends users to the Dashboard so
- * they land on read-only stats, not the action surface.
+ * Legacy project-scoped /operations → Grove-scoped /operations.
+ * Operations is a Grove-tier surface; the project segment was vestigial.
  */
 function LegacyOperationsRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
-  return <Navigate to={`/g/${groveSlug}/dashboard`} replace />;
+  return <Navigate to={`/g/${groveSlug}/operations`} replace />;
 }
 
 /**
