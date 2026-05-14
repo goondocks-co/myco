@@ -10,22 +10,18 @@ import { POLL_INTERVALS } from '../../lib/constants';
 import {
   useAgentRun,
   useAgentReports,
-  useAgentTurns,
   useAgentTasks,
   useResumeRun,
   useAgentRunWriteIntents,
-  useAgentRunAudit,
   useDigestRevisions,
   useRestoreDigestRevision,
   type ReportRow,
-  type TurnRow,
   type WriteIntentRow,
-  type PhaseAuditEntry,
   type DigestRevisionRow,
 } from '../../hooks/use-agent';
 import { RunTaskDialog } from './RunTaskDialog';
-import { cn } from '../../lib/cn';
-import { formatEpochRelative, truncate, capitalize } from '../../lib/format';
+import { AuditTrail } from './AuditTrail';
+import { formatEpochRelative, capitalize } from '../../lib/format';
 import { formatCost, formatTokens, formatDuration, resolveTaskName } from './helpers';
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
@@ -33,9 +29,6 @@ import type { HarnessTokenBudget } from '@myco/agent/types';
 import { tryParseJson } from '@myco/utils/json';
 
 /* ---------- Constants ---------- */
-
-/** Max characters to show in turn input/output preview columns. */
-const TURN_PREVIEW_CHARS = 80;
 
 /** Milliseconds per second for epoch conversion. */
 const MS_PER_SECOND = 1_000;
@@ -56,11 +49,6 @@ function actionBadgeVariant(action: string): 'default' | 'warning' | 'destructiv
 function formatEpochAbsoluteTime(epoch: number | null): string {
   if (epoch === null) return '\u2014';
   return new Date(epoch * MS_PER_SECOND).toLocaleTimeString();
-}
-
-function truncatePreview(text: string | null, limit: number): string {
-  if (!text) return '\u2014';
-  return truncate(text, limit) || '\u2014';
 }
 
 function formatBudgetSource(source: HarnessTokenBudget['contextWindowSource'] | undefined): string {
@@ -173,57 +161,6 @@ function ReportCard({ report }: { report: ReportRow }) {
   );
 }
 
-function TurnCard({ turn }: { turn: TurnRow }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const parsedInput: unknown = turn.tool_input
-    ? tryParseJson(turn.tool_input) ?? turn.tool_input
-    : null;
-
-  const inputPreview = turn.tool_input
-    ? truncatePreview(turn.tool_input, TURN_PREVIEW_CHARS)
-    : '\u2014';
-  const hasExpandableInput = turn.tool_input !== null && turn.tool_input.length > TURN_PREVIEW_CHARS;
-
-  return (
-    <div className="px-4 py-2.5 hover:bg-surface-container-high/30 transition-colors border-b border-outline-variant/10 last:border-b-0">
-      <div className="flex items-start gap-3">
-        <span className="font-mono text-xs text-on-surface-variant w-5 shrink-0 pt-0.5 text-right">
-          {turn.turn_number}
-        </span>
-        <span className="font-mono text-xs font-medium text-on-surface shrink-0 pt-0.5 min-w-[140px]">
-          {turn.tool_name}
-        </span>
-        <div className="flex-1 min-w-0">
-          {hasExpandableInput ? (
-            <button
-              className="flex items-start gap-1 text-left font-mono text-xs text-on-surface-variant hover:text-on-surface transition-colors w-full"
-              onClick={() => setExpanded(!expanded)}
-            >
-              {expanded
-                ? <ChevronDown className="h-3 w-3 mt-0.5 shrink-0" />
-                : <ChevronRight className="h-3 w-3 mt-0.5 shrink-0" />}
-              <span className={expanded ? undefined : 'truncate'}>{inputPreview}</span>
-            </button>
-          ) : (
-            <span className="font-mono text-xs text-on-surface-variant truncate block">
-              {inputPreview}
-            </span>
-          )}
-
-          {expanded && parsedInput !== null && (
-            <pre className="mt-1.5 ml-4 rounded-md bg-surface-container-lowest p-2.5 font-mono text-xs overflow-auto max-h-48 text-on-surface-variant">
-              {typeof parsedInput === 'string'
-                ? parsedInput
-                : JSON.stringify(parsedInput, null, 2)}
-            </pre>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ---------- Write-intents panel ---------- */
 
 /** Group intents by tool_name, preserving their original order. */
@@ -314,145 +251,6 @@ function IntendedWritesPanel({ runId }: { runId: string }) {
             no vault data was mutated.
           </p>
         </>
-      )}
-    </div>
-  );
-}
-
-/* ---------- Phase audit section ---------- */
-
-function PhaseAuditCard({ entry }: { entry: PhaseAuditEntry }) {
-  const [open, setOpen] = useState(false);
-  const toolBadges = Object.entries(entry.toolCalls);
-  const writeIntentBadges = entry.writeIntents ? Object.entries(entry.writeIntents.byTool) : [];
-
-  return (
-    <Surface level="low" className="overflow-hidden">
-      <button
-        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-container-high/30 transition-colors"
-        onClick={() => setOpen(!open)}
-      >
-        {open
-          ? <ChevronDown className="h-3.5 w-3.5 mt-1 shrink-0 text-on-surface-variant" />
-          : <ChevronRight className="h-3.5 w-3.5 mt-1 shrink-0 text-on-surface-variant" />}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-sans text-sm font-medium text-on-surface">{entry.phaseName}</span>
-            <Badge variant={phaseStatusVariant(entry.status)}>{entry.status}</Badge>
-            <span className="font-mono text-xs text-on-surface-variant">
-              {entry.turnsUsed} turn{entry.turnsUsed === 1 ? '' : 's'}
-              {entry.maxTurns ? ` / ${entry.maxTurns}` : ''}
-            </span>
-            <span className="font-mono text-xs text-on-surface-variant">
-              {formatTokens(entry.tokensUsed)} tok
-            </span>
-            <span className="font-mono text-xs text-on-surface-variant">
-              {formatCost(entry.costUsd, (entry.costSource ?? null) as 'actual' | 'estimated' | 'unavailable' | null)}
-            </span>
-            {entry.durationMs !== null && (
-              <span className="font-mono text-xs text-on-surface-variant">
-                {(entry.durationMs / MS_PER_SECOND).toFixed(1)}s
-              </span>
-            )}
-          </div>
-          {entry.skipReason && (
-            <p className="font-sans text-xs text-secondary mt-1">Skipped: {entry.skipReason}</p>
-          )}
-        </div>
-      </button>
-
-      {open && (
-        <div className="space-y-3 border-t border-outline-variant/20 px-4 py-3">
-          {toolBadges.length > 0 && (
-            <div>
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant mb-1.5">
-                Tool calls
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {toolBadges.map(([tool, count]) => (
-                  <Badge key={tool} variant="secondary" className="font-mono">
-                    {tool} × {count}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-          {entry.writeIntents && (
-            <div>
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant mb-1.5">
-                Write intents ({entry.writeIntents.total})
-              </p>
-              {writeIntentBadges.length === 0 ? (
-                <span className="font-sans text-xs text-on-surface-variant">None attributed to this phase.</span>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {writeIntentBadges.map(([tool, count]) => (
-                    <Badge key={tool} variant="warning" className="font-mono">
-                      {tool} × {count}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {entry.summary && (
-            <div>
-              <p className="font-sans text-[11px] uppercase tracking-wide text-on-surface-variant mb-1.5">
-                Summary
-              </p>
-              <p className="font-sans text-xs text-on-surface whitespace-pre-wrap">{entry.summary}</p>
-            </div>
-          )}
-        </div>
-      )}
-    </Surface>
-  );
-}
-
-function phaseStatusVariant(status: string): 'default' | 'warning' | 'destructive' | 'secondary' {
-  switch (status) {
-    case 'completed': return 'default';
-    case 'failed':    return 'destructive';
-    case 'skipped':   return 'secondary';
-    default:          return 'warning';
-  }
-}
-
-function PhaseAuditSection({ runId }: { runId: string }) {
-  const [open, setOpen] = useState(false);
-  const { data, isLoading } = useAgentRunAudit(open ? runId : null);
-  const phases = data?.audit.phases ?? [];
-
-  return (
-    <div className="space-y-3">
-      <button
-        className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide hover:text-on-surface transition-colors"
-        onClick={() => setOpen(!open)}
-      >
-        {open
-          ? <ChevronDown className="h-4 w-4" />
-          : <ChevronRight className="h-4 w-4" />}
-        Phase Audit
-        <span className="normal-case font-normal text-xs">(per-phase join)</span>
-      </button>
-
-      {open && (
-        isLoading ? (
-          <div className="flex items-center gap-2 text-on-surface-variant py-4">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="font-sans text-sm">Loading audit...</span>
-          </div>
-        ) : phases.length === 0 ? (
-          <Surface level="low" className="flex h-20 items-center justify-center">
-            <span className="font-sans text-sm text-on-surface-variant">No phase data recorded</span>
-          </Surface>
-        ) : (
-          <div className="space-y-2">
-            {phases.map((entry) => (
-              <PhaseAuditCard key={entry.phaseName} entry={entry} />
-            ))}
-          </div>
-        )
       )}
     </div>
   );
@@ -570,11 +368,6 @@ function DigestRevisionsSection({ agentId, tier }: { agentId: string; tier: numb
   );
 }
 
-/** Return true if any turn recorded a digest write (real or intercepted). */
-function hasDigestWrites(turns: TurnRow[]): boolean {
-  return turns.some((t) => t.tool_name === 'vault_write_digest');
-}
-
 /* ---------- Component ---------- */
 
 export interface RunDetailProps {
@@ -583,7 +376,6 @@ export interface RunDetailProps {
 }
 
 export function RunDetail({ runId, onBack }: RunDetailProps) {
-  const [showAudit, setShowAudit] = useState(false);
   // "Rerun with same settings" state — opens RunTaskDialog pre-filled from
   // the current run. The dialog is the confirmation step; submission starts
   // a brand-new run and never modifies this one.
@@ -598,7 +390,6 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
   } = useAgentRun(runId);
   const runStatus = runData?.run?.status;
   const { data: reportsData, isLoading: reportsLoading } = useAgentReports(runId, runStatus);
-  const { data: turnsData, isLoading: turnsLoading } = useAgentTurns(showAudit ? runId : undefined, runStatus);
   const { data: tasksData } = useAgentTasks();
   const resumeMutation = useResumeRun();
   const tasksList = useMemo(() => tasksData?.tasks ?? [], [tasksData]);
@@ -643,15 +434,13 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
 
   const run = runData.run;
   const reports = reportsData?.reports ?? [];
-  const turns = turnsData ?? [];
   const costCardLabel = run.cost_source === 'estimated' ? 'Estimated Cost' : 'Cost';
   const isDryRun = run.dry_run === true;
   const isTerminal = ['completed', 'failed', 'skipped'].includes(run.status);
-  // Detect whether this run produced digest writes so we know whether to
-  // render the revisions section. turns is empty until the audit trail is
-  // opened; fall back to task name ('vault-evolve' always writes a
-  // digest) to avoid hiding the section on initial page load.
-  const hasDigestActivity = !isDryRun && (run.task === 'vault-evolve' || hasDigestWrites(turns));
+  // Detect whether this run produced digest writes to decide whether to
+  // render the revisions section. Use task name as a reliable proxy —
+  // 'vault-evolve' always writes a digest.
+  const hasDigestActivity = !isDryRun && run.task === 'vault-evolve';
 
   return (
     <div className="space-y-6">
@@ -833,7 +622,7 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       )}
 
       {/* Phase audit — always available */}
-      <PhaseAuditSection runId={run.id} />
+      <AuditTrail runId={run.id} runStatus={run.status} />
 
       {/* Decisions / Reports */}
       <div className="space-y-3">
@@ -861,44 +650,6 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
               <ReportCard key={report.id} report={report} />
             ))}
           </div>
-        )}
-      </div>
-
-      {/* Audit trail (collapsed by default) */}
-      <div className="space-y-3">
-        <button
-          className="flex items-center gap-2 font-sans text-sm font-medium text-on-surface-variant uppercase tracking-wide hover:text-on-surface transition-colors"
-          onClick={() => setShowAudit(!showAudit)}
-        >
-          {showAudit
-            ? <ChevronDown className="h-4 w-4" />
-            : <ChevronRight className="h-4 w-4" />}
-          Audit Trail
-          <span className="normal-case font-normal text-xs">(diagnostics)</span>
-        </button>
-
-        {showAudit && (
-          <Surface level="low" className={cn('overflow-hidden')}>
-            <div className="p-4 pb-2">
-              <h3 className="font-sans text-sm font-medium text-on-surface">Turn-by-turn trace</h3>
-            </div>
-            <div className="p-0">
-              {turnsLoading ? (
-                <div className="flex items-center gap-2 text-on-surface-variant p-4">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="font-sans text-sm">Loading turns...</span>
-                </div>
-              ) : turns.length === 0 ? (
-                <p className="font-sans text-sm text-on-surface-variant p-4">No turns recorded.</p>
-              ) : (
-                <div>
-                  {turns.map((turn) => (
-                    <TurnCard key={turn.id} turn={turn} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </Surface>
         )}
       </div>
 
