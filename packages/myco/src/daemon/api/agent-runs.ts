@@ -192,8 +192,8 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       }
     }
 
-    const { runAgent } = await import('@myco/agent/executor.js');
-    const resultPromise = runAgent(vaultDir, {
+    const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
+    const resultPromise = dispatchAgentRun(vaultDir, {
       task,
       instruction,
       agentId,
@@ -309,8 +309,8 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     }
 
     const { mode } = ResumeRunBody.parse(req.body ?? {});
-    const { runAgent } = await import('@myco/agent/executor.js');
-    const resultPromise = runAgent(vaultDir, {
+    const { dispatchAgentRun } = await import('@myco/agent/runner-host.js');
+    const resultPromise = dispatchAgentRun(vaultDir, {
       agentId: run.agent_id,
       task: run.task ?? undefined,
       instruction: run.instruction ?? undefined,

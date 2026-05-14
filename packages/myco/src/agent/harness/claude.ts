@@ -117,6 +117,9 @@ async function consumeClaudeMessageStream(
     for await (const message of messageStream) {
       if (message.type === 'assistant') {
         assistantMessages += 1;
+        // Yield to libuv so the daemon's HTTP listener and lag probe
+        // don't starve during high-message-count runs.
+        await new Promise<void>((resolve) => setImmediate(resolve));
         continue;
       }
       if (message.type === 'result') {
@@ -130,6 +133,7 @@ async function consumeClaudeMessageStream(
           finalText = message.result;
         }
       }
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
   } catch (err) {
     if (turnsUsed > 0 || inputTokens > 0 || outputTokens > 0) {

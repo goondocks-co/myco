@@ -154,9 +154,9 @@ describe('triggerCortexInstructions', () => {
     );
   });
 
-  it('returns agent-module-unavailable when loadExecutor throws (module-not-found path)', async () => {
+  it('returns agent-module-unavailable when loadRunner throws (module-not-found path)', async () => {
     const logger = makeLogger();
-    const loadExecutor = vi.fn(async () => {
+    const loadRunner = vi.fn(async () => {
       throw new Error("Cannot find module '../agent/executor.js'");
     });
 
@@ -165,13 +165,13 @@ describe('triggerCortexInstructions', () => {
       embeddingManager: makeEmbeddingManagerStub() as never,
       liveConfig: { current: makeConfig() },
       logger: logger as never,
-      loadExecutor: loadExecutor as never,
+      loadRunner: loadRunner as never,
     });
 
     expect(result.started).toBe(false);
     expect(result.reason).toBe('agent-module-unavailable');
     expect(result.error).toContain('Cannot find module');
-    expect(loadExecutor).toHaveBeenCalledTimes(1);
+    expect(loadRunner).toHaveBeenCalledTimes(1);
     expect(buildCortexInstructionsInput).not.toHaveBeenCalled();
     expect(runAgent).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
@@ -181,10 +181,10 @@ describe('triggerCortexInstructions', () => {
     );
   });
 
-  it('uses the default loadExecutor (real dynamic import) when the seam is not injected', async () => {
+  it('uses the default loadRunner (real dynamic import) when the seam is not injected', async () => {
     // Happy path already mocks @myco/agent/executor.js at the vi.mock level;
     // this assertion confirms the default code path is still exercised when
-    // no loadExecutor override is passed (sanity check that the seam is
+    // no loadRunner override is passed (sanity check that the seam is
     // opt-in and backward-compatible).
     const logger = makeLogger();
 

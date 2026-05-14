@@ -18,7 +18,7 @@
  * the orchestration layer: deciding which symbiont is targeted, what
  * instructions go inline, and how the agent run is launched + tracked.
  */
-import { runAgent } from '@myco/agent/executor.js';
+import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { DEFAULT_AGENT_ID } from '@myco/constants.js';
@@ -73,11 +73,13 @@ export interface TriggerCortexInstructionsDeps {
   /** Optional registry that tracks the fire-and-forget run so daemon shutdown can await it. */
   registerInflightRun?: (promise: Promise<unknown>) => void;
   /**
-   * Dynamic import seam for the agent executor. Defaults to the real import
+   * Dynamic import seam for the agent runner. Defaults to the real import
    * so tests can force the module-unavailable branch without monkey-patching
-   * the module system.
+   * the module system. Renamed from `loadExecutor` when the runner-host
+   * shim landed — production now routes through `dispatchAgentRun` rather
+   * than calling `runAgent` directly, so the seam loads `runner-host`.
    */
-  loadExecutor?: () => Promise<typeof import('../agent/executor.js')>;
+  loadRunner?: () => Promise<typeof import('../agent/runner-host.js')>;
 }
 
 export interface CortexInstructionsSnapshot {
@@ -217,7 +219,7 @@ export async function buildCortexPrompt(
       : '## Current Cortex session-start instructions\nOmit them from the prompt because this symbiont receives session-start injection.\n',
   ].join('\n');
 
-  const resultPromise = runAgent(vaultDir, {
+  const resultPromise = dispatchAgentRun(vaultDir, {
     task: CORTEX_PROMPT_BUILDER_TASK,
     agentId: DEFAULT_AGENT_ID,
     instruction: builderInstruction,
@@ -282,7 +284,7 @@ export async function triggerCortexInstructions(
   deps: TriggerCortexInstructionsDeps,
 ): Promise<TriggerCortexInstructionsResult> {
   const { vaultDir, embeddingManager, liveConfig, logger, getTeamClient } = deps;
-  const loadExecutor = deps.loadExecutor ?? (() => import('../agent/executor.js'));
+  const loadRunner = deps.loadRunner ?? (() => import('../agent/runner-host.js'));
   const config = liveConfig.current;
 
   if (config.agent.event_tasks_enabled === false) {
@@ -292,9 +294,9 @@ export async function triggerCortexInstructions(
     return { started: false, reason: 'provider-not-configured' };
   }
 
-  let runAgentFn: typeof import('../agent/executor.js').runAgent;
+  let dispatchFn: typeof import('../agent/runner-host.js').dispatchAgentRun;
   try {
-    ({ runAgent: runAgentFn } = await loadExecutor());
+    ({ dispatchAgentRun: dispatchFn } = await loadRunner());
   } catch (err) {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'cortex-instructions: agent module unavailable', {
       error: String(err),
@@ -309,7 +311,7 @@ export async function triggerCortexInstructions(
   try {
     const requestContext = resolveRequestContextForVault(vaultDir);
     const built = await buildCortexInstructionsInput(config, vaultDir, getTeamClient, requestContext);
-    const resultPromise = runAgentFn(vaultDir, {
+    const resultPromise = dispatchFn(vaultDir, {
       task: CORTEX_INSTRUCTIONS_TASK,
       agentId: DEFAULT_AGENT_ID,
       instruction: built.instruction,
