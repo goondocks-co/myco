@@ -92,6 +92,48 @@ describe('initD1Schema', () => {
     });
   });
 
+  it('mirrors skill candidate quality columns in fresh DDL and migrations', async () => {
+    const fake = createFakeD1();
+
+    await initD1Schema(fake.db as never);
+
+    const skillCandidatesDdl = fake.batchedSql.find((sql) =>
+      sql.includes('CREATE TABLE IF NOT EXISTS skill_candidates'),
+    );
+
+    expect(skillCandidatesDdl).toMatch(/\bevidence_bundle_id\s+TEXT\b/);
+    expect(skillCandidatesDdl).toMatch(/\bquality_score\s+REAL\b/);
+    expect(skillCandidatesDdl).toMatch(/\bquality_failures\s+TEXT NOT NULL DEFAULT '\[\]'/);
+    expect(skillCandidatesDdl).toMatch(/\bcoverage_matches\s+TEXT NOT NULL DEFAULT '\[\]'/);
+    expect(skillCandidatesDdl).toMatch(/\blast_reconciled_at\s+INTEGER\b/);
+    expect(skillCandidatesDdl).toMatch(/\breconciliation_reason\s+TEXT\b/);
+
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_candidates ADD COLUMN evidence_bundle_id TEXT',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_candidates ADD COLUMN quality_score REAL',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: "ALTER TABLE skill_candidates ADD COLUMN quality_failures TEXT NOT NULL DEFAULT '[]'",
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: "ALTER TABLE skill_candidates ADD COLUMN coverage_matches TEXT NOT NULL DEFAULT '[]'",
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_candidates ADD COLUMN last_reconciled_at INTEGER',
+      values: [],
+    });
+    expect(fake.runs).toContainEqual({
+      sql: 'ALTER TABLE skill_candidates ADD COLUMN reconciliation_reason TEXT',
+      values: [],
+    });
+  });
+
   describe('semantic graph one-shot prune', () => {
     it('runs the prune batch when the marker is absent', async () => {
       const fake = createFakeD1({ markerPresent: false });
