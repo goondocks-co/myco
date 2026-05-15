@@ -2,7 +2,7 @@
 
 import { describe, it, expect, mock } from 'bun:test';
 import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const statusFixture = {
@@ -74,6 +74,30 @@ function wrap(initial: string) {
   );
 }
 
+// Mirrors App.tsx's `TeamMaintenanceRedirect`. Kept inline so this test
+// asserts the redirect contract end-to-end without mounting the full App
+// (which would require mocking every layout dependency). If the real
+// redirect changes, this test must change too — by design.
+function TeamMaintenanceRedirect() {
+  const { groveSlug } = useParams();
+  if (!groveSlug) return <Navigate to="/" replace />;
+  return <Navigate to={`/g/${groveSlug}/team?tab=sync`} replace />;
+}
+
+function wrapWithRoutes(initial: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initial]}>
+        <Routes>
+          <Route path="/g/:groveSlug/team" element={<TeamPage />} />
+          <Route path="/g/:groveSlug/team/maintenance" element={<TeamMaintenanceRedirect />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 describe('TeamPage tabs', () => {
   it('renders Status tab by default', async () => {
     render(wrap('/g/foo/team'));
@@ -86,5 +110,11 @@ describe('TeamPage tabs', () => {
   it('renders Members placeholder when ?tab=members', async () => {
     render(wrap('/g/foo/team?tab=members'));
     await waitFor(() => expect(screen.getByText(/Members tab coming up/i)).toBeInTheDocument());
+  });
+  it('redirects /team/maintenance → /team?tab=sync', async () => {
+    render(wrapWithRoutes('/g/foo/team/maintenance'));
+    // After the redirect resolves, the Sync tab body is mounted —
+    // assert on its "Worker" section header.
+    await waitFor(() => expect(screen.getByText(/Worker/i)).toBeInTheDocument());
   });
 });

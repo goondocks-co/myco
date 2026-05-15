@@ -3,6 +3,7 @@ import { Activity, RefreshCw, Users } from 'lucide-react';
 import { useTeamStatus } from '../../hooks/use-team';
 import { PageHeader } from '../../components/ui/page-header';
 import { PageLoading } from '../../components/ui/page-loading';
+import type { Tab } from '../../components/ui/tab-switcher';
 import { StatusTab } from './StatusTab';
 import { SyncTab } from './SyncTab';
 import { MembersTab } from './MembersTab';
@@ -10,18 +11,27 @@ import { NotConnectedView } from './NotConnectedView';
 
 type TabId = 'status' | 'sync' | 'members';
 
-const TABS: { id: TabId; label: string; Icon: typeof Activity }[] = [
+const TABS: Tab[] = [
   { id: 'status', label: 'Status', Icon: Activity },
   { id: 'sync', label: 'Sync', Icon: RefreshCw },
   { id: 'members', label: 'Members', Icon: Users },
 ];
 
+const VALID_TABS = new Set<TabId>(['status', 'sync', 'members']);
+
 export function TeamPage() {
   const { data: status, isLoading } = useTeamStatus();
   const [params, setParams] = useSearchParams();
-  const tab = (params.get('tab') as TabId) ?? 'status';
+  const raw = params.get('tab') ?? 'status';
+  const tab: TabId = VALID_TABS.has(raw as TabId) ? (raw as TabId) : 'status';
 
-  if (isLoading) return <PageLoading isLoading error={null}><span /></PageLoading>;
+  if (isLoading) {
+    return (
+      <PageLoading isLoading error={null} loadingText="Loading team…">
+        <span />
+      </PageLoading>
+    );
+  }
   if (!status) return null;
 
   const isConnected = status.enabled && status.worker_url;
@@ -30,26 +40,13 @@ export function TeamPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6">
-        <PageHeader title="Team" subtitle="Grove-scoped team sync and membership" />
-        {isConnected && (
-          <div className="mt-4 flex gap-1 border-b border-outline-variant/20">
-            {TABS.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setParams({ tab: id })}
-                className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
-                  tab === id
-                    ? 'border-primary text-on-surface'
-                    : 'border-transparent text-on-surface-variant hover:text-on-surface'
-                }`}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        <PageHeader
+          title="Team"
+          subtitle="Grove-scoped team sync and membership"
+          tabs={isConnected ? TABS : undefined}
+          activeTab={isConnected ? tab : undefined}
+          onTabChange={isConnected ? (id) => setParams({ tab: id }) : undefined}
+        />
       </div>
       <div className="flex-1 overflow-auto">
         <div className="px-6 py-6">
