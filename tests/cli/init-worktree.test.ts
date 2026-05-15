@@ -86,17 +86,24 @@ describe('myco init --worktree', () => {
     expect(fs.readFileSync(mirrored, 'utf-8')).toBe('/abs/path/to/myco-dev\n');
   });
 
-  it('bootstraps every enabled symbiont, not just claude-code', async () => {
-    // Mirrors the dogfooding project: all 6 enabled at once.
-    plantMainVault(mainRepo, ['claude-code', 'cursor', 'codex', 'gemini', 'opencode', 'windsurf']);
+  it('bootstraps every enabled symbiont (full manifest set)', async () => {
+    // Cover the full enabled set on the dogfooding machine — including pi
+    // and vscode-copilot, which were missed by an earlier 6-symbiont version
+    // of this test. The implementation is symbiont-agnostic by construction;
+    // this test makes the coverage exhaustive so a new symbiont added to
+    // manifests/ without test updates will at least surface a gap to chase.
+    plantMainVault(mainRepo, [
+      'claude-code', 'cursor', 'codex', 'gemini',
+      'opencode', 'windsurf', 'pi', 'vscode-copilot',
+    ]);
     execFileSync('git', ['worktree', 'add', worktreePath, '-b', 'feature'], { cwd: mainRepo });
     process.chdir(worktreePath);
 
     await runInit(['--worktree']);
 
-    // Each symbiont's distinguishing config file should land in the worktree.
-    // These are the actual hooksTarget/settingsTarget values declared in each
-    // manifest at packages/myco/src/symbionts/manifests/*.yaml.
+    // Each symbiont's distinguishing artifact (hooksTarget where present,
+    // or the next-best per-manifest write) should land in the worktree.
+    // Values match packages/myco/src/symbionts/manifests/*.yaml.
     const perSymbiontArtifact: Record<string, string> = {
       'claude-code': path.join('.claude', 'settings.json'),
       'cursor': path.join('.cursor', 'hooks.json'),
@@ -104,11 +111,13 @@ describe('myco init --worktree', () => {
       'gemini': path.join('.gemini', 'settings.json'),
       'opencode': path.join('.opencode', 'plugins', 'myco.ts'),
       'windsurf': path.join('.windsurf', 'hooks.json'),
+      'pi': path.join('.pi', 'extensions', 'myco', 'index.ts'),
+      'vscode-copilot': path.join('.vscode', 'mcp.json'),
     };
     for (const [name, relPath] of Object.entries(perSymbiontArtifact)) {
       const abs = path.join(worktreePath, relPath);
-      expect(fs.existsSync(abs)).toBe(true);
       if (!fs.existsSync(abs)) console.error(`missing ${name} artifact at ${relPath}`);
+      expect(fs.existsSync(abs)).toBe(true);
     }
 
     // The shared hook guard is written exactly once regardless of symbiont count.
