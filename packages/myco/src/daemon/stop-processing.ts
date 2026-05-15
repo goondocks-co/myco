@@ -36,6 +36,7 @@ import { detectSkillUsage, SKILL_USAGE_DETECTION_ENABLED } from './skill-usage.j
 import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
 import { SessionRegistry } from './lifecycle.js';
+import { ensureSession } from './session-lifecycle.js';
 import { EventBuffer } from '@myco/capture/buffer.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
@@ -651,12 +652,40 @@ export function createStopProcessor(deps: StopProcessorDeps): {
       return { body: { ok: true, ignored: 'ephemeral-sub-invocation' } };
     }
 
-    // Ensure session is registered (handles daemon restarts mid-session)
+    // Ensure session is registered (handles daemon restarts mid-session
+    // AND the Codex-style case where the very first event we see for a
+    // session is a Stop, not a user_prompt). Pre-fix, this path only
+    // updated the in-memory registry — the missing DB row produced silent
+    // FK cascades in every subsequent prompt_batch/activity insert. Go
+    // through the lifecycle helper so the row exists by construction.
     if (!existingSessionMeta) {
-      registry.register(sessionId, { started_at: new Date().toISOString() });
-      logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, dbSession
-        ? 'Rehydrated registry from DB on stop event'
-        : 'Auto-registered session from stop event', { session_id: sessionId });
+      if (dbSession) {
+        // Cheap rehydrate path: row already exists, just cache it.
+        registry.register(sessionId, { started_at: new Date().toISOString() });
+        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Rehydrated registry from DB on stop event', {
+          session_id: sessionId,
+        });
+      } else {
+        // First-sight session — Stop is its registration event. Persist
+        // the row before adding to the registry so future prompt/tool
+        // events find an existing sessions.id when they reference it via
+        // FK. `agent` is best-effort: hook events for Codex / Claude
+        // include it; older transcripts may not.
+        ensureSession({
+          sessionId,
+          agent: agent ?? 'claude-code',
+          projectId: requestRowProjectId ?? null,
+          projectRoot: requestProjectRoot,
+          machineId: requestMachineId,
+          startedAt: new Date().toISOString(),
+          registry,
+          logger,
+          source: 'stop',
+        });
+        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from stop event', {
+          session_id: sessionId,
+        });
+      }
     }
     const sessionMeta = existingSessionMeta ?? registry.getSession(sessionId);
     logger.info(LOG_KINDS.HOOKS_STOP, 'Stop received', {
