@@ -17,6 +17,7 @@ import { SectionHeader } from '../../components/ui/section-header';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { StatCard } from '../../components/ui/stat-card';
+import { QueueTile } from '../../components/team/QueueTile';
 
 const SECONDS_PER_MIN = 60;
 const SECONDS_PER_HOUR = 3600;
@@ -502,14 +503,23 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard label="Waiting" value={main?.depth == null ? '—' : String(main.depth)} accent="outline" />
-            <StatCard label="Oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
-            <StatCard
-              label="Failed"
-              value={dlqStats?.depth == null ? String(dlqMessages.length) : String(dlqStats.depth)}
-              accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+            <QueueTile
+              label="Pending"
+              value={main?.depth ?? 0}
+              tone={(main?.depth ?? 0) > 0 ? 'ochre' : 'outline'}
             />
-            <StatCard label="Oldest failed" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
+            {/* Processing: Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s — no in-flight/consumer count. Rendered as 0 outline until a backing field exists. */}
+            <QueueTile label="Processing" value={0} tone="outline" />
+            <QueueTile
+              label="Failed"
+              value={dlqStats?.depth ?? dlqMessages.length}
+              tone={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+            />
+            <QueueTile
+              label="DLQ"
+              value={dlqMessages.length}
+              tone={dlqMessages.length > 0 ? 'terracotta' : 'outline'}
+            />
           </div>
         )}
       </Surface>
