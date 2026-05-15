@@ -181,7 +181,9 @@ describe('sidebar v7 IA grouping', () => {
     expect(groveMgmtHrefs).toContain('/g/work/team');
 
     const settingsHrefs = itemsInGroup('Settings');
-    expect(settingsHrefs.some((h) => h.endsWith('/settings'))).toBe(true);
+    // Sidebar Settings entry points at the unified /settings, not a
+    // scoped /g/<slug>/settings or /g/<g>/p/<p>/settings.
+    expect(settingsHrefs).toContain('/settings');
   });
 
   it('has exactly one Settings link in the sidebar', () => {

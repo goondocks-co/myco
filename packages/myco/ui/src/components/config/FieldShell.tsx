@@ -1,9 +1,8 @@
 /**
- * Shared shell for config field rows on Settings (project tier),
- * GroveSettings (grove tier), and System (machine tier). Renders the
- * label + scope indicator + helper text + (any) input + error in the
- * same layout so the three pages stay visually aligned without each
- * rolling its own version.
+ * Shared shell for config field rows on the unified Settings page.
+ * Renders the label + scope indicator + helper text + (any) input +
+ * error in the same layout so every field stays visually aligned
+ * without each call site rolling its own version.
  *
  * The shell handles layout only — state, commit logic, and tier
  * routing belong to the call site (ScopedField, NumberField, etc.).
