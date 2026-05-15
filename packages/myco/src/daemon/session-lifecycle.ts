@@ -67,7 +67,7 @@
  *     logged at ERROR level, and the throw propagates so the HTTP layer
  *     returns 500. We never fabricate success for a failed persist.
  */
-import type { Logger } from '@myco/log/logger.js';
+import type { Logger } from './logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { epochSeconds, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
 import { upsertSession, getSession } from '@myco/db/queries/sessions.js';
