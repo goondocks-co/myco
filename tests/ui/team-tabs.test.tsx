@@ -60,6 +60,25 @@ mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
   useDaemon: () => ({ data: undefined }),
 }));
 
+mock.module('../../packages/myco/ui/src/hooks/use-team-members', () => ({
+  useTeamMembers: () => ({
+    data: {
+      members: [
+        {
+          id: 'm1',
+          user: 'Alice',
+          role: 'owner',
+          joined: '2026-04-01',
+          tags: ['core'],
+          machine_id: 'machine-1',
+          synced_at: null,
+        },
+      ],
+    },
+    isLoading: false,
+  }),
+}));
+
 // Import after mocks so the page sees the mocked modules.
 import { TeamPage } from '../../packages/myco/ui/src/pages/Team';
 
@@ -107,9 +126,11 @@ describe('TeamPage tabs', () => {
     render(wrap('/g/foo/team?tab=sync'));
     await waitFor(() => expect(screen.getByText(/Worker/i)).toBeInTheDocument());
   });
-  it('renders Members placeholder when ?tab=members', async () => {
+  it('renders Members roster when ?tab=members', async () => {
     render(wrap('/g/foo/team?tab=members'));
-    await waitFor(() => expect(screen.getByText(/Members tab coming up/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
+    expect(screen.getByText('owner')).toBeInTheDocument();
+    expect(screen.getByText('machine-1')).toBeInTheDocument();
   });
   it('redirects /team/maintenance → /team?tab=sync', async () => {
     render(wrapWithRoutes('/g/foo/team/maintenance'));
