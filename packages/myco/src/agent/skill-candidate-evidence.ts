@@ -653,7 +653,7 @@ function partitionExistingCandidateComparables(value: unknown): { blocking: unkn
 function bestOverlapMatch(
   candidateText: string,
   comparables: unknown,
-  prefix: 'active-skill' | 'candidate',
+  prefix: 'active-skill' | 'candidate' | 'dismissed-candidate',
 ): string | null {
   if (!Array.isArray(comparables)) return null;
 
