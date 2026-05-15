@@ -125,6 +125,14 @@ export interface InstallResult {
 }
 
 export class SymbiontInstaller {
+  /**
+   * `vaultDir` defaults to `<projectRoot>/.myco` for ordinary installs.
+   * It's separately settable so the worktree-bootstrap path can write hook
+   * files into the worktree (`projectRoot = worktreeRoot`) while still
+   * reading config from the main repo's shared vault.
+   */
+  private readonly vaultDir: string;
+
   constructor(
     private manifest: SymbiontManifest,
     private projectRoot: string,
@@ -133,7 +141,10 @@ export class SymbiontInstaller {
     // this to exercise scenarios where a specific template file is absent
     // from the packageRoot without inheriting the baked-in copy.
     private suppressBundledTemplates: boolean = false,
-  ) {}
+    vaultDir?: string,
+  ) {
+    this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
+  }
 
   /**
    * Read a template file as raw text, checking both source and dist layouts.
@@ -310,7 +321,7 @@ export class SymbiontInstaller {
 
   private loadProjectConfig() {
     try {
-      return loadMergedConfig(path.join(this.projectRoot, '.myco'));
+      return loadMergedConfig(this.vaultDir);
     } catch {
       return null;
     }
