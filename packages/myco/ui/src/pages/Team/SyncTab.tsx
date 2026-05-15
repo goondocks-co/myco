@@ -502,18 +502,27 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : queueUnavailable ? (
           <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          /* Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s
+             (no in-flight/consumer count), so there's no "Processing" tile.
+             Subtitles surface the oldest-message age on Pending and Failed. */
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <QueueTile
               label="Pending"
               value={main?.depth ?? 0}
               tone={(main?.depth ?? 0) > 0 ? 'ochre' : 'outline'}
+              sub={(() => {
+                const age = formatAge(main?.oldest_msg_age_s ?? null);
+                return age === '—' ? undefined : `Oldest ${age}`;
+              })()}
             />
-            {/* Processing: Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s — no in-flight/consumer count. Rendered as 0 outline until a backing field exists. */}
-            <QueueTile label="Processing" value={0} tone="outline" />
             <QueueTile
               label="Failed"
               value={dlqStats?.depth ?? dlqMessages.length}
               tone={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+              sub={(() => {
+                const age = formatAge(dlqStats?.oldest_msg_age_s ?? null);
+                return age === '—' ? undefined : `Oldest ${age}`;
+              })()}
             />
             <QueueTile
               label="DLQ"

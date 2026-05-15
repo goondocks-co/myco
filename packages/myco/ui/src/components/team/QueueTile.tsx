@@ -5,6 +5,7 @@ interface QueueTileProps {
   value: number;
   tone: 'sage' | 'ochre' | 'terracotta' | 'outline';
   pulse?: boolean;
+  sub?: string;
 }
 
 const TONE_BG: Record<QueueTileProps['tone'], string> = {
@@ -14,7 +15,7 @@ const TONE_BG: Record<QueueTileProps['tone'], string> = {
   outline: 'bg-surface-container text-on-surface-variant',
 };
 
-export function QueueTile({ label, value, tone, pulse }: QueueTileProps) {
+export function QueueTile({ label, value, tone, pulse, sub }: QueueTileProps) {
   return (
     <div className={cn('flex flex-col gap-1 rounded-md p-3', TONE_BG[tone])}>
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider">
@@ -22,6 +23,9 @@ export function QueueTile({ label, value, tone, pulse }: QueueTileProps) {
         {label}
       </div>
       <div className="font-mono text-2xl tabular-nums">{value}</div>
+      {sub ? (
+        <div className="text-[10px] text-on-surface-variant">{sub}</div>
+      ) : null}
     </div>
   );
 }
