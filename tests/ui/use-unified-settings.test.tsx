@@ -28,7 +28,7 @@ const groveState: {
     groveId: 'g1',
     config: {
       daemon: { stale_session_threshold_ms: 3_600_000 },
-      team: { enabled: false, interval_minutes: 10 },
+      maintenance: { auto_optimize_interval_hours: 10 },
       agent: { scheduled_tasks_active_window_days: 14 },
     },
   },
@@ -102,7 +102,7 @@ function findField(key: string): SettingField {
 }
 
 const PROJECT_FIELD = findField('agent.provider.context_length');
-const GROVE_FIELD = findField('team.interval_minutes');
+const GROVE_FIELD = findField('maintenance.auto_optimize_interval_hours');
 const MACHINE_FIELD = findField('daemon.log_level');
 
 describe('useUnifiedSettings', () => {
@@ -122,7 +122,7 @@ describe('useUnifiedSettings', () => {
       groveId: 'g1',
       config: {
         daemon: { stale_session_threshold_ms: 3_600_000 },
-        team: { enabled: false, interval_minutes: 10 },
+        maintenance: { auto_optimize_interval_hours: 10 },
         agent: { scheduled_tasks_active_window_days: 14 },
       },
     };
@@ -168,7 +168,7 @@ describe('useUnifiedSettings', () => {
       await result.current.writeField(GROVE_FIELD, 30);
     });
     expect(updateGroveMutateMock).toHaveBeenCalledWith({
-      team: { interval_minutes: 30 },
+      maintenance: { auto_optimize_interval_hours: 30 },
     });
   });
 
@@ -195,17 +195,22 @@ describe('useUnifiedSettings', () => {
     expect(result.current.error).toBe(groveErr);
   });
 
-  it('scopeCounts matches the manifest', () => {
+  it('scopeCounts matches the renderable manifest fields (excludes customRender:card-owns)', () => {
+    // customRender:'card-owns' entries are present in the manifest for sync
+    // test coverage but never render as standalone rows — they shouldn't
+    // inflate the filter-bar counters.
     const expected = { project: 0, grove: 0, machine: 0 } as Record<
       'project' | 'grove' | 'machine',
       number
     >;
     for (const group of SETTINGS_GROUPS) {
-      for (const f of group.fields) expected[f.scope] += 1;
+      for (const f of group.fields) {
+        if (f.customRender === 'card-owns') continue;
+        expected[f.scope] += 1;
+      }
     }
     const { result } = renderHook(() => useUnifiedSettings());
     expect(result.current.scopeCounts).toEqual(expected);
-    // Sanity check: the manifest covers all three scopes today.
     expect(expected.project).toBeGreaterThan(0);
     expect(expected.grove).toBeGreaterThan(0);
     expect(expected.machine).toBeGreaterThan(0);

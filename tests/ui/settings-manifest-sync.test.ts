@@ -18,9 +18,9 @@ const ALLOWLIST: readonly string[] = [
   'version',
   'config_version',
   'machine_id',
-  'team.worker_url',
-  'team.team_id',
-  'team.mcp_token',
+  // Team owns its own page (worker URL, credentials, sync controls). The
+  // unified Settings page deliberately does not surface any team.* fields.
+  'team.',
   'agent.tasks',
   'agent.summary_batch_interval',
   'agent.cold_project_threshold_days',

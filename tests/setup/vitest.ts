@@ -40,16 +40,19 @@ if (typeof window !== 'undefined') {
   };
 
   Object.defineProperty(window, 'localStorage', {
+    configurable: true,
     writable: true,
     value: localStorageMock,
   });
 
   Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
     writable: true,
     value: localStorageMock,
   });
 
   Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
     writable: true,
     value: (query: string) => ({
       matches: false,
