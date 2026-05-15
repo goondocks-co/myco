@@ -10,13 +10,15 @@ export interface TeamMemberRow {
   role: string | null;
   joined: string | null;
   tags: string | null;
+  machine_id: string;
+  synced_at: number | null;
 }
 
-/** List all team members ordered by ID. */
+/** List all team members ordered by user name. */
 export function listTeamMembers(): TeamMemberRow[] {
   return getDatabase().prepare(
-    `SELECT id, "user", role, joined, tags
+    `SELECT id, "user", role, joined, tags, machine_id, synced_at
      FROM team_members
-     ORDER BY id ASC`,
+     ORDER BY "user" ASC`,
   ).all() as TeamMemberRow[];
 }
