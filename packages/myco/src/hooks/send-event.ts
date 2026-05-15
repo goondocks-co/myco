@@ -9,6 +9,32 @@ import { writeHookResponse } from './response.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Classify why a hook is falling back to a buffer write. Surfaces in stderr
+ * so a "session not captured" investigation can answer "did the hook reach
+ * the daemon at all?" without inspecting buffer-file byte counts. Matches
+ * the failure modes in `DaemonClient.capturePost`.
+ *
+ * Exported so the two hook handlers with their own buffer-write logic
+ * (`user-prompt-submit.ts`, `post-tool-use.ts`) classify the same way as
+ * sendEvent — one observability surface across every capture hook.
+ */
+export function classifyBufferFallback(result: { ok: boolean; data?: unknown }): string {
+  if (result.ok) {
+    if (isIgnoredEventResponse(result.data)) {
+      const ignored = (result.data as { ignored?: unknown } | undefined)?.ignored;
+      return `daemon-ignored:${typeof ignored === 'string' ? ignored : 'unknown'}`;
+    }
+    return 'unknown';
+  }
+  // transport failure (fetch threw, daemon.json missing, recovery path)
+  // OR non-2xx HTTP response (`result.data` may be the parsed error envelope)
+  if (result.data !== undefined) {
+    return 'http-error';
+  }
+  return 'transport-failure';
+}
+
 export async function sendEvent(
   hookName: string,
   buildEvent: (input: NormalizedHookInput) => Record<string, unknown>,
@@ -39,6 +65,15 @@ export async function sendEvent(
     if (!result.ok || isIgnoredEventResponse(result.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
       buffer.append(eventWithContext);
+      // Stderr log so "session not captured" investigations can see the
+      // buffer-fallback path firing — previously this was completely silent,
+      // which is exactly how the prod-daemon stop-responding-after-restart
+      // class of bug went undiagnosed for hours at a time. The agent
+      // captures hook stderr (or surfaces it in its log), so this is the
+      // shortest path to observability without a daemon round-trip.
+      process.stderr.write(
+        `[myco] ${hookName} buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
+      );
     }
   } catch (error) {
     process.stderr.write(`[myco] ${hookName} error: ${(error as Error).message}\n`);
