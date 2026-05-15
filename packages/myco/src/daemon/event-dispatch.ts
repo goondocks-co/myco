@@ -45,7 +45,7 @@ import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
 import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
-import { ensureSession } from './session-lifecycle.js';
+import { ensureSession, ensureSessionRowExists } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -381,6 +381,22 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           });
         }
         try {
+          // Defensive layer: the registry-gated auto-register above is an
+          // optimization, not the contract. The contract is that a
+          // sessions.id row must exist by the time we open a prompt_batch.
+          // If anything upstream missed (e.g. an event arrived before
+          // session-start, or a future refactor breaks the gate), this
+          // recovers via an INSERT-IF-MISSING + WARN log so the bug
+          // surfaces instead of cascading into FK violations downstream.
+          ensureSessionRowExists({
+            sessionId: event.session_id,
+            agent: ((event as Record<string, unknown>).agent as string) ?? undefined,
+            projectId: requestProjectId,
+            projectRoot: requestProjectRoot,
+            machineId: requestMachineId,
+            logger,
+            source: 'user_prompt',
+          });
           const kind = typeof event.kind === 'string' ? event.kind : 'initial';
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
           userPromptBatchId = batchId;
@@ -487,6 +503,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         });
       }
       try {
+        // Defensive: same belt-and-suspenders pattern as the user_prompt
+        // branch above. activities.session_id is FK-constrained, so the
+        // sessions.id row must exist by here.
+        ensureSessionRowExists({
+          sessionId: event.session_id,
+          agent: typeof event.agent === 'string' ? event.agent : undefined,
+          projectId: requestProjectId,
+          projectRoot: requestProjectRoot,
+          machineId: requestMachineId,
+          logger,
+          source: 'tool_use',
+        });
         handleToolUse(
           event.session_id,
           typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,
