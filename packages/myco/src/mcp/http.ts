@@ -8,6 +8,7 @@ import {
   tryResolveRequestContextForVault,
 } from '../tools/request-context.js';
 import { createMcpProtocolServer } from './server.js';
+import type { Logger } from '../daemon/logger.js';
 
 export type StreamableMcpHttpHandler = (
   req: http.IncomingMessage,
@@ -18,6 +19,12 @@ export interface StreamableMcpHttpHandlerOptions {
   client?: DaemonClient;
   /** Reuse the daemon's runtime cache so tool calls don't open per-call DB handles. */
   resolveDatabase?: (databasePath: string) => Database;
+  /**
+   * Optional structured logger. When provided, the protocol server logs
+   * each /mcp tool dispatch (start, success, error) — closes the
+   * observability gap from issue #288.
+   */
+  logger?: Logger;
 }
 
 /**
@@ -76,7 +83,10 @@ export function createStreamableMcpHttpHandler(
       requestContext,
       resolveDatabase: options.resolveDatabase,
     });
-    const server = createMcpProtocolServer(tools);
+    const server = createMcpProtocolServer(tools, {
+      logger: options.logger,
+      sessionId: requestContext.sessionId ?? null,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

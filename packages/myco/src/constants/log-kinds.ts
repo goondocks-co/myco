@@ -109,6 +109,8 @@ export const LOG_KINDS = {
 
   // MCP
   MCP_EVENT: 'mcp.event',
+  MCP_CALL: 'mcp.call',
+  MCP_LIST: 'mcp.list',
 
   // Log retention
   LOG_RETENTION: 'log.retention',
