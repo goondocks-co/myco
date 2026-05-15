@@ -38,6 +38,8 @@ import { ReleaseProvenanceCard } from '../components/settings/ReleaseProvenanceC
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
+import { useGroves } from '../hooks/use-groves';
+import { defaultSelection, selectionFromLast } from '../lib/selection';
 import { cn } from '../lib/cn';
 
 /* ---------- Icon registry ---------- */
@@ -158,7 +160,21 @@ export default function Settings() {
 }
 
 function SettingsInner() {
-  const projectSelection = useProjectSelection();
+  // Unified /settings can land here without a URL-bound project (the
+  // sidebar Settings entry is machine-tier). When that happens we fall
+  // back to the last-used project from useGroves so project- and
+  // grove-scoped fields stay editable instead of showing a misleading
+  // "select a project" banner — writes already resolve to the daemon's
+  // active selection. The banner only appears when no projects exist
+  // on the machine at all.
+  const urlSelection = useProjectSelection();
+  const groves = useGroves();
+  const fallbackSelection = useMemo(() => {
+    const list = groves.data?.groves ?? [];
+    if (list.length === 0) return null;
+    return selectionFromLast(list) ?? defaultSelection(list);
+  }, [groves.data]);
+  const projectSelection = urlSelection ?? fallbackSelection;
   const hasProject = projectSelection !== null;
   const unified = useUnifiedSettings();
 
