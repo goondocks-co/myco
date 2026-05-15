@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, Check, XCircle, ListChecks, ExternalLink } from 'lucide-react';
+import { AlertCircle, Check, XCircle, ListChecks, ExternalLink, Clock } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
@@ -24,6 +24,7 @@ const CANDIDATE_FILTERS: FilterDefinition[] = [
       { value: PIPELINE_FILTER_VALUE, label: 'Approved & generated' },
       { value: CANDIDATE_STATUS.APPROVED, label: 'Awaiting generation' },
       { value: CANDIDATE_STATUS.GENERATED, label: 'Generated' },
+      { value: CANDIDATE_STATUS.DEFERRED, label: 'Deferred' },
       { value: CANDIDATE_STATUS.DISMISSED, label: 'Dismissed' },
     ],
   },
@@ -51,9 +52,82 @@ function statusBadge(status: string) {
     case CANDIDATE_STATUS.IDENTIFIED: return <Badge variant="outline">Identified</Badge>;
     case CANDIDATE_STATUS.APPROVED: return <Badge variant="secondary">Awaiting generation</Badge>;
     case CANDIDATE_STATUS.GENERATED: return <Badge variant="default">Generated</Badge>;
+    case CANDIDATE_STATUS.DEFERRED: return <Badge variant="outline">Deferred</Badge>;
     case CANDIDATE_STATUS.DISMISSED: return <Badge variant="outline" className="opacity-50">Dismissed</Badge>;
     default: return <Badge variant="outline">{status}</Badge>;
   }
+}
+
+function parseJsonArray(value: string | null | undefined): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function sourceRefLabel(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const ref = value as { id?: unknown; type?: unknown };
+  if (typeof ref.id !== 'string' || typeof ref.type !== 'string') return null;
+  return `${ref.type}:${ref.id}`;
+}
+
+function CandidateQualityMetadata({ candidate }: { candidate: SkillCandidate }) {
+  const sourceRefs = parseJsonArray(candidate.source_ids).map(sourceRefLabel).filter((label): label is string => Boolean(label));
+  const failures = parseJsonArray(candidate.quality_failures).filter((value): value is string => typeof value === 'string');
+  const coverageMatches = parseJsonArray(candidate.coverage_matches).filter((value): value is string => typeof value === 'string');
+  const hasMetadata =
+    candidate.evidence_bundle_id ||
+    candidate.quality_score !== null ||
+    failures.length > 0 ||
+    coverageMatches.length > 0 ||
+    sourceRefs.length > 0 ||
+    candidate.reconciliation_reason;
+
+  if (!hasMetadata) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 font-sans text-xs text-on-surface-variant">
+      {candidate.quality_score !== null && (
+        <Badge variant={candidate.quality_score >= 0.7 ? 'secondary' : 'outline'}>
+          Quality {(candidate.quality_score * 100).toFixed(0)}%
+        </Badge>
+      )}
+      {candidate.evidence_bundle_id && (
+        <Badge variant="outline" className="max-w-[240px] truncate" title={candidate.evidence_bundle_id}>
+          Bundle {candidate.evidence_bundle_id}
+        </Badge>
+      )}
+      {sourceRefs.length > 0 && (
+        <Badge variant="outline" title={sourceRefs.join(', ')}>
+          {sourceRefs.length} source{sourceRefs.length === 1 ? '' : 's'}
+        </Badge>
+      )}
+      {coverageMatches.length > 0 && (
+        <Badge variant="outline" title={coverageMatches.join(', ')}>
+          {coverageMatches.length} overlap{coverageMatches.length === 1 ? '' : 's'}
+        </Badge>
+      )}
+      {failures.slice(0, 3).map((failure) => (
+        <Badge key={failure} variant="outline" className="opacity-70">
+          {failure}
+        </Badge>
+      ))}
+      {failures.length > 3 && (
+        <Badge variant="outline" className="opacity-70">
+          +{failures.length - 3} more
+        </Badge>
+      )}
+      {candidate.reconciliation_reason && (
+        <span className="min-w-0 truncate" title={candidate.reconciliation_reason}>
+          {candidate.reconciliation_reason}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /* ---------- Candidate Card ---------- */
@@ -61,14 +135,18 @@ function statusBadge(status: string) {
 function CandidateCard({
   candidate,
   onApprove,
+  onDefer,
   onDismiss,
   isApproving,
+  isDeferring,
   isDismissing,
 }: {
   candidate: SkillCandidate;
   onApprove: () => void;
+  onDefer: () => void;
   onDismiss: () => void;
   isApproving: boolean;
+  isDeferring: boolean;
   isDismissing: boolean;
 }) {
   const conf = confidenceLabel(candidate.confidence);
@@ -107,6 +185,8 @@ function CandidateCard({
         className="text-sm text-on-surface-variant"
       />
 
+      <CandidateQualityMetadata candidate={candidate} />
+
       {/* Actions — only for identified/approved candidates */}
       {showActions && (
         <div className="flex items-center gap-2 pt-1">
@@ -120,6 +200,16 @@ function CandidateCard({
               >
                 <Check className="h-3.5 w-3.5 mr-1.5" />
                 {isApproving ? 'Approving...' : 'Approve'}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onDefer}
+                disabled={isDeferring}
+                className="text-on-surface-variant"
+              >
+                <Clock className="h-3.5 w-3.5 mr-1.5" />
+                {isDeferring ? 'Deferring...' : 'Defer'}
               </Button>
               <Button
                 size="sm"
@@ -192,6 +282,10 @@ export function CandidateList() {
 
   function handleApprove(candidate: SkillCandidate) {
     updateCandidate.mutate({ id: candidate.id, status: CANDIDATE_STATUS.APPROVED });
+  }
+
+  function handleDefer(candidate: SkillCandidate) {
+    updateCandidate.mutate({ id: candidate.id, status: CANDIDATE_STATUS.DEFERRED });
   }
 
   function handleDismiss(candidate: SkillCandidate) {
@@ -288,11 +382,17 @@ export function CandidateList() {
               key={candidate.id}
               candidate={candidate}
               onApprove={() => handleApprove(candidate)}
+              onDefer={() => handleDefer(candidate)}
               onDismiss={() => handleDismiss(candidate)}
               isApproving={
                 updateCandidate.isPending &&
                 updateCandidate.variables?.id === candidate.id &&
                 updateCandidate.variables?.status === CANDIDATE_STATUS.APPROVED
+              }
+              isDeferring={
+                updateCandidate.isPending &&
+                updateCandidate.variables?.id === candidate.id &&
+                updateCandidate.variables?.status === CANDIDATE_STATUS.DEFERRED
               }
               isDismissing={
                 updateCandidate.isPending &&
