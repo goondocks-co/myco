@@ -269,7 +269,7 @@ export default function GroveDashboard() {
   const selection = useProjectSelection();
   const groveSlug = selection?.grove.slug ?? '';
   const groveMaintenancePath = `/g/${groveSlug}/maintenance`;
-  const groveSettingsPath = `/g/${groveSlug}/settings`;
+  const groveSettingsPath = '/settings#backup';
 
   if (!selection) {
     return (

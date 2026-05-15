@@ -9,11 +9,9 @@ import Agent from './pages/Agent';
 import Skills from './pages/Skills';
 import Settings from './pages/Settings';
 import GroveDashboard from './pages/GroveDashboard';
-import GroveSettings from './pages/GroveSettings';
 import Operations from './pages/Operations';
 import Logs from './pages/Logs';
 import MachineDashboard from './pages/MachineDashboard';
-import MachineSettings from './pages/MachineSettings';
 import { TeamDashboard, TeamMaintenance } from './pages/Team';
 import Onboarding from './pages/Onboarding';
 import Groves from './pages/Groves';
@@ -37,12 +35,17 @@ export default function App() {
         <Route path="/groves" element={<Groves />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/machine" element={<MachineDashboard />} />
-        <Route path="/machine/settings" element={<MachineSettings />} />
-        {/* Legacy /system → /machine/settings (the "System" page used
-            to host every machine-tier setting; renamed during the
-            sidebar regroup so all four sections share Dashboard +
-            Settings + (specialized) shape). */}
-        <Route path="/system" element={<Navigate to="/machine/settings" replace />} />
+        {/* Unified Settings page owns /settings and renders Project, Grove,
+            and Machine fields together. The page degrades when no project
+            is selected — Machine-tier fields remain editable. */}
+        <Route path="/settings" element={<Settings />} />
+        {/* Legacy machine-scoped Settings URL — redirect to the unified
+            page anchored at the logging group, which surfaces the most
+            machine-tier fields. */}
+        <Route path="/machine/settings" element={<LegacyMachineSettingsRedirect />} />
+        {/* Legacy /system → /settings#logging (the "System" page used
+            to host machine-tier settings; folded into the unified page). */}
+        <Route path="/system" element={<Navigate to="/settings#logging" replace />} />
       </Route>
       <Route path="/g/:groveSlug/p/:projectSlug" element={<ProjectScopedLayout />}>
         <Route index element={<Dashboard />} />
@@ -53,7 +56,11 @@ export default function App() {
         <Route path="agent" element={<Agent />} />
         <Route path="agent/:id" element={<Agent />} />
         <Route path="skills" element={<Skills />} />
-        <Route path="settings" element={<Settings />} />
+        {/* Project-scoped /settings is consolidated into the unified
+            /settings page. Forward inbound bookmarks, preserving the
+            `?configField=`/`?configSection=` deep-link params so the
+            global focus highlighter still lands on the right row. */}
+        <Route path="settings" element={<LegacyProjectScopedSettingsRedirect />} />
         {/* Legacy project-scoped /operations → Grove-scoped /dashboard. */}
         <Route path="operations" element={<LegacyOperationsRedirect />} />
         {/* Legacy project-scoped /team → Grove-scoped /g/<slug>/team.
@@ -66,9 +73,10 @@ export default function App() {
       <Route path="/g/:groveSlug/operations" element={<GroveScopedLayout />}>
         <Route index element={<Operations />} />
       </Route>
-      <Route path="/g/:groveSlug/settings" element={<GroveScopedLayout />}>
-        <Route index element={<GroveSettings />} />
-      </Route>
+      {/* Legacy Grove-scoped Settings URL → unified /settings anchored at
+          the backup group (the section with the most Grove-tier fields
+          that the old GroveSettings page surfaced). */}
+      <Route path="/g/:groveSlug/settings" element={<LegacyGroveSettingsRedirect />} />
       {/* Phase 4 unifies operations under /operations; /maintenance redirects forward. */}
       <Route path="/g/:groveSlug/maintenance" element={<LegacyMaintenanceRedirect />} />
       <Route path="/g/:groveSlug/team" element={<GroveScopedLayout />}>
@@ -82,7 +90,6 @@ export default function App() {
       <Route path="/agent" element={<LegacyProjectRedirect suffix="/agent" />} />
       <Route path="/agent/:id" element={<LegacyProjectRedirect suffixFromPath />} />
       <Route path="/skills" element={<LegacyProjectRedirect suffix="/skills" />} />
-      <Route path="/settings" element={<LegacyProjectRedirect suffix="/settings" />} />
       <Route path="/operations" element={<LegacyGroveRedirect suffix="/operations" />} />
       <Route path="/team" element={<LegacyGroveRedirect suffix="/team" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -169,6 +176,35 @@ function LegacyMaintenanceRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
   return <Navigate to={`/g/${groveSlug}/operations`} replace />;
+}
+
+/**
+ * Legacy Grove-scoped /g/:slug/settings → unified /settings#backup.
+ * The unified page surfaces Grove-tier fields alongside Project and
+ * Machine fields; the `#backup` anchor matches the section with the
+ * most Grove-tier content from the old GroveSettings page.
+ */
+function LegacyGroveSettingsRedirect() {
+  return <Navigate to="/settings#backup" replace />;
+}
+
+/**
+ * Legacy machine-scoped /machine/settings → unified /settings#logging.
+ * The unified page now owns every Machine-tier field.
+ */
+function LegacyMachineSettingsRedirect() {
+  return <Navigate to="/settings#logging" replace />;
+}
+
+/**
+ * Legacy project-scoped /g/:g/p/:p/settings → unified /settings.
+ * Preserves any deep-link query params (`?configField=`, `?configSection=`)
+ * so old links from `buildConfigFocusLink` still highlight the right row.
+ */
+function LegacyProjectScopedSettingsRedirect() {
+  const location = useLocation();
+  const target = `/settings${location.search}${location.hash}`;
+  return <Navigate to={target} replace />;
 }
 
 function ProjectScopedLayout() {
