@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(41);
+      expect(SCHEMA_VERSION).toBe(42);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -556,6 +556,12 @@ describe('Database schema', () => {
         expect(colNames).toContain('created_at');
         expect(colNames).toContain('updated_at');
         expect(colNames).toContain('approved_at');
+        expect(colNames).toContain('evidence_bundle_id');
+        expect(colNames).toContain('quality_score');
+        expect(colNames).toContain('quality_failures');
+        expect(colNames).toContain('coverage_matches');
+        expect(colNames).toContain('last_reconciled_at');
+        expect(colNames).toContain('reconciliation_reason');
         expect(colNames).toContain('synced_at');
       });
 
