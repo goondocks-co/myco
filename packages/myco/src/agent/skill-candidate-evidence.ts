@@ -43,7 +43,7 @@ const MIN_SOURCE_REFS = 3;
 const MIN_DISTINCT_SESSIONS = 2;
 const OVERLAP_SIMILARITY_THRESHOLD = 0.18;
 const OVERLAP_SHARED_TOKEN_THRESHOLD = 3;
-const SCORE_PENALTY_PER_FAILURE = 0.2;
+const SCORE_PENALTY_PER_FAILURE = 0.35;
 
 const STOP_WORDS = new Set([
   'about',
@@ -70,6 +70,7 @@ const STOP_WORDS = new Set([
 ]);
 
 export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
+  if (Array.isArray(value)) return normalizeSourceRefs(value);
   if (typeof value !== 'string') return [];
 
   let parsed: unknown;
@@ -81,44 +82,36 @@ export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
 
   if (!Array.isArray(parsed)) return [];
 
-  const refs: CandidateSourceRef[] = [];
-  for (const entry of parsed) {
-    if (!entry || typeof entry !== 'object') continue;
-    const candidate = entry as Record<string, unknown>;
-    if (typeof candidate.id !== 'string') continue;
-    if (typeof candidate.type !== 'string') continue;
-    if (!SOURCE_TYPES.has(candidate.type as CandidateSourceType)) continue;
-    refs.push({ id: candidate.id, type: candidate.type as CandidateSourceType });
-  }
-  return refs;
+  return normalizeSourceRefs(parsed);
 }
 
 export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): CandidateEvidenceAssessment {
+  const safeInput = isRecord(input) ? input : {};
   const failures: string[] = [];
   const coverageMatches: string[] = [];
-  const sourceRefs = input.sourceRefs ?? [];
+  const sourceRefs = normalizeSourceRefs(safeInput.sourceRefs);
 
   if (sourceRefs.length < MIN_SOURCE_REFS) {
     failures.push('insufficient-source-refs');
   }
 
-  const sessionIds = distinctSessionIds(sourceRefs, input.sourceSessions ?? []);
-  if (!input.consolidatesWisdom && sessionIds.size < MIN_DISTINCT_SESSIONS) {
+  const sessionIds = distinctSessionIds(sourceRefs, safeInput.sourceSessions);
+  if (!safeInput.consolidatesWisdom && sessionIds.size < MIN_DISTINCT_SESSIONS) {
     failures.push('insufficient-distinct-sessions');
   }
 
-  const candidateText = [input.topic, input.rationale].filter(Boolean).join(' ');
+  const candidateText = [safeString(safeInput.topic), safeString(safeInput.rationale)].filter(Boolean).join(' ');
   if (!hasProjectAnchor(candidateText)) {
     failures.push('missing-project-anchor');
   }
 
-  const activeSkillMatch = bestOverlapMatch(candidateText, input.activeSkills ?? [], 'active-skill');
+  const activeSkillMatch = bestOverlapMatch(candidateText, safeInput.activeSkills, 'active-skill');
   if (activeSkillMatch) {
     failures.push('active-skill-overlap');
     coverageMatches.push(activeSkillMatch);
   }
 
-  const candidateMatch = bestOverlapMatch(candidateText, input.existingCandidates ?? [], 'candidate');
+  const candidateMatch = bestOverlapMatch(candidateText, safeInput.existingCandidates, 'candidate');
   if (candidateMatch) {
     failures.push('existing-candidate-overlap');
     coverageMatches.push(candidateMatch);
@@ -131,30 +124,72 @@ export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): Ca
   };
 }
 
+function normalizeSourceRefs(value: unknown): CandidateSourceRef[] {
+  if (!Array.isArray(value)) return [];
+
+  const refs: CandidateSourceRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const ref = sourceRefFromEntry(entry);
+    if (!ref) continue;
+    const key = `${ref.type}:${ref.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+function sourceRefFromEntry(entry: unknown): CandidateSourceRef | null {
+  if (typeof entry === 'string') {
+    const id = cleanId(entry);
+    const type = inferSourceType(id);
+    return type ? { id, type } : null;
+  }
+
+  if (!isRecord(entry)) return null;
+  const id = cleanId(entry.id);
+  if (!id || typeof entry.type !== 'string') return null;
+  if (!SOURCE_TYPES.has(entry.type as CandidateSourceType)) return null;
+  return { id, type: entry.type as CandidateSourceType };
+}
+
+function inferSourceType(id: string): CandidateSourceType | null {
+  if (/^spore-/i.test(id)) return 'spore';
+  if (/^(?:session-|sess-)/i.test(id)) return 'session';
+  if (/^plan-/i.test(id)) return 'plan';
+  if (/^artifact-/i.test(id)) return 'artifact';
+  return null;
+}
+
 export function renderEvidenceBundleForPrompt(bundle: SkillCandidateEvidenceBundle): string {
-  const failures = bundle.failures.length > 0 ? bundle.failures.join(', ') : 'none';
-  const coverageMatches = bundle.coverageMatches.length > 0 ? bundle.coverageMatches.join(', ') : 'none';
-  const sourceRefs = bundle.sourceRefs.length > 0
-    ? bundle.sourceRefs.map(ref => `${ref.type}:${ref.id}`).join(', ')
+  const safeBundle: Record<string, unknown> = isRecord(bundle) ? bundle : {};
+  const failures = cleanStringArray(safeBundle.failures);
+  const coverageMatches = cleanStringArray(safeBundle.coverageMatches);
+  const sourceRefs = normalizeSourceRefs(safeBundle.sourceRefs);
+  const renderedFailures = failures.length > 0 ? failures.join(', ') : 'none';
+  const renderedCoverageMatches = coverageMatches.length > 0 ? coverageMatches.join(', ') : 'none';
+  const renderedSourceRefs = sourceRefs.length > 0
+    ? sourceRefs.map(ref => `${ref.type}:${ref.id}`).join(', ')
     : 'none';
 
   return [
-    `#### ${bundle.id}: ${bundle.topic}`,
-    `- score: ${formatScore(bundle.score)}`,
-    `- failures: ${failures}`,
-    `- coverage_matches: ${coverageMatches}`,
-    `- source_refs: ${sourceRefs}`,
+    `#### ${safeString(safeBundle.id, 'unknown')}: ${safeString(safeBundle.topic, 'unknown')}`,
+    `- score: ${formatScore(safeBundle.score)}`,
+    `- failures: ${renderedFailures}`,
+    `- coverage_matches: ${renderedCoverageMatches}`,
+    `- source_refs: ${renderedSourceRefs}`,
   ].join('\n');
 }
 
 export function renderEvidenceBundlesForPrompt(bundles: SkillCandidateEvidenceBundle[]): string {
-  const parts = [`### Candidate Evidence Bundles (${bundles.length})`];
-  if (bundles.length === 0) {
-    parts.push('No candidate evidence bundles assembled yet.');
-    return parts.join('\n');
-  }
+  const safeBundles = Array.isArray(bundles)
+    ? bundles.filter(isRecord) as unknown as SkillCandidateEvidenceBundle[]
+    : [];
+  const parts = [`### Candidate Evidence Bundles (${safeBundles.length})`];
+  if (safeBundles.length === 0) return parts.join('\n');
 
-  for (const bundle of [...bundles].sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const bundle of [...safeBundles].sort((a, b) => safeString(a.id).localeCompare(safeString(b.id)))) {
     parts.push('', renderEvidenceBundleForPrompt(bundle));
   }
   return parts.join('\n');
@@ -162,17 +197,20 @@ export function renderEvidenceBundlesForPrompt(bundles: SkillCandidateEvidenceBu
 
 function distinctSessionIds(
   sourceRefs: CandidateSourceRef[],
-  sourceSessions: Array<string | { id?: string | null } | null | undefined>,
+  sourceSessions: unknown,
 ): Set<string> {
   const ids = new Set<string>();
   for (const ref of sourceRefs) {
     if (ref.type === 'session') ids.add(ref.id);
   }
+  if (!Array.isArray(sourceSessions)) return ids;
   for (const session of sourceSessions) {
     if (typeof session === 'string') {
-      ids.add(session);
-    } else if (session?.id) {
-      ids.add(session.id);
+      const id = cleanId(session);
+      if (id) ids.add(id);
+    } else if (isRecord(session)) {
+      const id = cleanId(session.id);
+      if (id) ids.add(id);
     }
   }
   return ids;
@@ -190,9 +228,11 @@ function hasProjectAnchor(text: string): boolean {
 
 function bestOverlapMatch(
   candidateText: string,
-  comparables: Array<string | CandidateEvidenceComparable>,
+  comparables: unknown,
   prefix: 'active-skill' | 'candidate',
 ): string | null {
+  if (!Array.isArray(comparables)) return null;
+
   let best: { id: string; score: number; shared: number } | null = null;
   for (const comparable of comparables) {
     const { id, text } = comparableText(comparable);
@@ -211,10 +251,11 @@ function bestOverlapMatch(
 
 function comparableText(value: string | CandidateEvidenceComparable): { id: string; text: string } {
   if (typeof value === 'string') return { id: value, text: value };
-  const id = value.id ?? value.name ?? value.topic ?? 'unknown';
+  if (!isRecord(value)) return { id: 'unknown', text: '' };
+  const id = safeString(value.id, safeString(value.name, safeString(value.topic, 'unknown')));
   return {
     id,
-    text: [value.name, value.topic, value.description, value.rationale].filter(Boolean).join(' '),
+    text: [value.name, value.topic, value.description, value.rationale].map(value => safeString(value)).filter(Boolean).join(' '),
   };
 }
 
@@ -249,6 +290,24 @@ function normalizeToken(token: string): string {
   return token;
 }
 
-function formatScore(score: number): string {
+function cleanId(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function cleanStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => safeString(item)).filter(Boolean);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function safeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function formatScore(score: unknown): string {
+  if (typeof score !== 'number' || !Number.isFinite(score)) return '0.00';
   return Number.isInteger(score) ? score.toFixed(2) : score.toFixed(2).replace(/0$/, '');
 }
