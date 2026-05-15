@@ -92,6 +92,7 @@ export async function handleGetCandidate(req: RouteRequest): Promise<RouteRespon
  * path calls updateCandidate directly rather than going through REST.
  */
 const ALLOWED_REST_STATUSES = new Set<string>(REST_SETTABLE_STATUSES);
+const NON_NULL_JSON_TEXT_CANDIDATE_FIELDS = ['quality_failures', 'coverage_matches'] as const;
 
 /**
  * Update a skill candidate's fields (typically used to advance its status).
@@ -136,6 +137,15 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
             `${[...ALLOWED_REST_STATUSES].join(', ')}. The 'generated' status ` +
             "is set internally by vault_finalize_skill after validation.",
         },
+      };
+    }
+  }
+
+  for (const field of NON_NULL_JSON_TEXT_CANDIDATE_FIELDS) {
+    if (body[field] === null) {
+      return {
+        status: 400,
+        body: { error: `${field} must be a JSON string when provided` },
       };
     }
   }

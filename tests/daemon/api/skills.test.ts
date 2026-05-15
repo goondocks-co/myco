@@ -260,6 +260,74 @@ describe('handleUpdateCandidate', () => {
     expect(body.candidate.reconciliation_reason).toBe('manual review');
   });
 
+  it('rejects null quality_failures with 400 and leaves the candidate unchanged', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-null-quality-failures',
+      status: 'identified',
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-null-quality-failures' },
+        body: { status: 'approved', quality_failures: null },
+      }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch('quality_failures');
+
+    const getResult = await handleGetCandidate(
+      makeReq({ params: { id: 'cand-null-quality-failures' } }),
+    );
+    expect(getResult.status).toBe(200);
+    const body = getResult.body as {
+      candidate: {
+        status: string;
+        quality_failures: string;
+        coverage_matches: string;
+      };
+    };
+    expect(body.candidate.status).toBe('identified');
+    expect(body.candidate.quality_failures).toBe('["before"]');
+    expect(body.candidate.coverage_matches).toBe('["before.ts"]');
+  });
+
+  it('rejects null coverage_matches with 400 and leaves the candidate unchanged', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-null-coverage-matches',
+      status: 'identified',
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-null-coverage-matches' },
+        body: { status: 'approved', coverage_matches: null },
+      }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch('coverage_matches');
+
+    const getResult = await handleGetCandidate(
+      makeReq({ params: { id: 'cand-null-coverage-matches' } }),
+    );
+    expect(getResult.status).toBe(200);
+    const body = getResult.body as {
+      candidate: {
+        status: string;
+        quality_failures: string;
+        coverage_matches: string;
+      };
+    };
+    expect(body.candidate.status).toBe('identified');
+    expect(body.candidate.quality_failures).toBe('["before"]');
+    expect(body.candidate.coverage_matches).toBe('["before.ts"]');
+  });
+
   it('returns 400 when body is missing', async () => {
     insertCandidate(makeCandidate({ id: 'cand-nobody' }));
 

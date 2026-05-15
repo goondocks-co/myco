@@ -600,10 +600,18 @@ describe('Grove project core importer', () => {
       skill_id: string;
       supersedes: string;
       approved_at: number;
+      evidence_bundle_id: string;
+      quality_score: number;
+      quality_failures: string;
+      coverage_matches: string;
+      last_reconciled_at: number;
+      reconciliation_reason: string;
     }>(
       targetDb,
       `SELECT project_id, agent_id, machine_id, topic, rationale, confidence,
-              status, source_ids, skill_id, supersedes, approved_at
+              status, source_ids, skill_id, supersedes, approved_at,
+              evidence_bundle_id, quality_score, quality_failures, coverage_matches,
+              last_reconciled_at, reconciliation_reason
          FROM skill_candidates WHERE id = ?`,
       skillCandidateId,
     );
@@ -618,6 +626,12 @@ describe('Grove project core importer', () => {
     expect(skillCandidate.skill_id).toBe(skillRecordId);
     expect(skillCandidate.supersedes).toBe('["myco:old-importer"]');
     expect(skillCandidate.approved_at).toBe(462);
+    expect(skillCandidate.evidence_bundle_id).toBe('legacy-evidence-bundle');
+    expect(skillCandidate.quality_score).toBe(0.92);
+    expect(skillCandidate.quality_failures).toBe('["missing-edge-case"]');
+    expect(skillCandidate.coverage_matches).toBe('["packages/myco/src/grove/importer.ts"]');
+    expect(skillCandidate.last_reconciled_at).toBe(463);
+    expect(skillCandidate.reconciliation_reason).toBe('preserve quality metadata');
 
     const skillLineage = getRow<{
       project_id: string;
@@ -1754,8 +1768,10 @@ function seedSourceProject(db: Database): void {
     `INSERT INTO skill_candidates (
        id, project_id, agent_id, machine_id, topic, rationale,
        confidence, status, source_ids, skill_id, supersedes,
-       created_at, updated_at, approved_at, synced_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       created_at, updated_at, approved_at, evidence_bundle_id,
+       quality_score, quality_failures, coverage_matches, last_reconciled_at,
+       reconciliation_reason, synced_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     'legacy-candidate',
     SOURCE_PROJECT_ROOT,
@@ -1771,6 +1787,12 @@ function seedSourceProject(db: Database): void {
     460,
     465,
     462,
+    'legacy-evidence-bundle',
+    0.92,
+    '["missing-edge-case"]',
+    '["packages/myco/src/grove/importer.ts"]',
+    463,
+    'preserve quality metadata',
     466,
   );
 
