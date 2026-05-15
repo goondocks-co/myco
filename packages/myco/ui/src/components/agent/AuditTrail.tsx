@@ -4,7 +4,7 @@ import { useAgentTurns, useAgentRunAudit } from '../../hooks/use-agent';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { cn } from '../../lib/cn';
-import { tryParseJson } from '@myco/utils/json';
+import { tryParseJson } from '../../lib/json';
 import type { PhaseAuditEntry, TurnRow } from '../../hooks/use-agent';
 import { formatCost, formatTokens } from './helpers';
 import { MS_PER_SECOND } from '../../lib/constants';

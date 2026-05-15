@@ -5,7 +5,7 @@
  * spinning up a React renderer (the component itself has no RTL harness).
  */
 
-import { tryParseJson } from '@myco/utils/json';
+import { tryParseJson } from '../../lib/json';
 import type { RunCompareSummary } from '../../hooks/use-agent';
 import { extractSharedInputs, type SharedInputKey } from './shared-inputs';
 
