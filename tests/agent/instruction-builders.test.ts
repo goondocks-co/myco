@@ -165,6 +165,41 @@ function createSettledSurveyCorpus(): void {
   });
 }
 
+function createAnchorRichSurveyCorpus(): void {
+  const now = epochSeconds();
+  createSession('settled-anchor-1', 'completed', now - 300);
+  createSession('settled-anchor-2', 'completed', now - 200);
+
+  insertSpore({
+    id: 'spore-anchor-wisdom',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-anchor-1',
+    observation_type: 'wisdom',
+    content: 'Daemon restart workflow for `packages/myco/src/daemon/main.ts` requires `make build` and `myco-dev restart` before verification.',
+    importance: 9,
+    properties: JSON.stringify({ consolidated_from: ['spore-anchor-source-1', 'spore-anchor-source-2'] }),
+    created_at: now - 180,
+  });
+  insertSpore({
+    id: 'spore-anchor-decision',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-anchor-2',
+    observation_type: 'decision',
+    content: 'Keep hook entry points thin and validate daemon changes through `packages/myco/src/daemon/main.ts` after restart.',
+    importance: 7,
+    created_at: now - 170,
+  });
+  insertSpore({
+    id: 'spore-anchor-gotcha',
+    agent_id: TEST_AGENT_ID,
+    session_id: 'settled-anchor-1',
+    observation_type: 'gotcha',
+    content: 'Dogfooding can keep running old daemon code until `myco-dev restart` follows `make build`.',
+    importance: 6,
+    created_at: now - 160,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -595,6 +630,21 @@ describe('buildSkillSurveyInstruction', () => {
     expect(result!.instruction).toContain('### Candidate Evidence Bundles (0)');
     expect(result!.instruction).toContain('settled-1');
     expect(result!.instruction).toContain('spore-survey-1');
+  });
+
+  it('includes candidate evidence bundles from anchor-rich settled corpus', () => {
+    createAnchorRichSurveyCorpus();
+
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
+
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('### Candidate Evidence Bundles (1)');
+    expect(result!.instruction).toContain('- score: 1.00');
+    expect(result!.instruction).toContain('source_refs:');
+    expect(result!.instruction).toContain('spore:spore-anchor-wisdom');
+    expect(result!.instruction).toContain('spore:spore-anchor-source-1');
+    expect(result!.instruction).toContain('session:settled-anchor-1');
+    expect(result!.instruction).toContain('session:settled-anchor-2');
   });
 
   it('returns undefined when no new settled knowledge exists after the watermark', () => {

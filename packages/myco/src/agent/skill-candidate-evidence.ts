@@ -14,6 +14,25 @@ export interface SkillCandidateEvidenceBundle {
   sourceRefs: CandidateSourceRef[];
 }
 
+export interface CandidateEvidenceSpore {
+  id: string;
+  observation_type?: string | null;
+  session_id?: string | null;
+  content?: string | null;
+  context?: string | null;
+  importance?: number | null;
+  file_path?: string | null;
+  tags?: string | null;
+  properties?: string | null;
+  created_at?: number | null;
+}
+
+export interface CandidateEvidenceSession {
+  id: string;
+  title?: string | null;
+  summary?: string | null;
+}
+
 export interface CandidateEvidenceComparable {
   id?: string;
   name?: string;
@@ -32,6 +51,15 @@ export interface AssessCandidateEvidenceInput {
   consolidatesWisdom?: boolean;
 }
 
+export interface BuildCandidateEvidenceBundlesInput {
+  wisdomSpores?: CandidateEvidenceSpore[];
+  decisions?: CandidateEvidenceSpore[];
+  gotchas?: CandidateEvidenceSpore[];
+  sessions?: CandidateEvidenceSession[];
+  activeSkills?: Array<string | CandidateEvidenceComparable>;
+  existingCandidates?: Array<string | CandidateEvidenceComparable>;
+}
+
 export interface CandidateEvidenceAssessment {
   score: number;
   failures: string[];
@@ -44,6 +72,9 @@ const MIN_DISTINCT_SESSIONS = 2;
 const OVERLAP_SIMILARITY_THRESHOLD = 0.18;
 const OVERLAP_SHARED_TOKEN_THRESHOLD = 3;
 const SCORE_PENALTY_PER_FAILURE = 0.35;
+const MAX_EVIDENCE_BUNDLES = 8;
+const MAX_RELATED_SPORES_PER_BUNDLE = 6;
+const MIN_BUNDLE_SOURCE_REFS = 2;
 
 const STOP_WORDS = new Set([
   'about',
@@ -68,6 +99,54 @@ const STOP_WORDS = new Set([
   'with',
   'workflow',
 ]);
+
+export function buildCandidateEvidenceBundles(
+  input: BuildCandidateEvidenceBundlesInput,
+): SkillCandidateEvidenceBundle[] {
+  const safeInput = isRecord(input) ? input : {};
+  const wisdomSpores = normalizeSpores(safeInput.wisdomSpores);
+  const decisions = normalizeSpores(safeInput.decisions);
+  const gotchas = normalizeSpores(safeInput.gotchas);
+  const sessions = normalizeSessions(safeInput.sessions);
+  const sessionById = new Map(sessions.map(session => [session.id, session]));
+  const supportingSpores = [...decisions, ...gotchas];
+  const bundles: SkillCandidateEvidenceBundle[] = [];
+
+  for (const wisdom of sortSpores(wisdomSpores)) {
+    const bundle = buildBundleFromSeed({
+      seed: wisdom,
+      relatedSpores: relatedSporesForSeed(wisdom, supportingSpores),
+      sessionById,
+      activeSkills: safeInput.activeSkills as BuildCandidateEvidenceBundlesInput['activeSkills'],
+      existingCandidates: safeInput.existingCandidates as BuildCandidateEvidenceBundlesInput['existingCandidates'],
+      consolidatesWisdom: true,
+    });
+    if (bundle) bundles.push(bundle);
+  }
+
+  const seenSupportingIds = new Set<string>();
+  for (const spore of sortSpores(supportingSpores)) {
+    if (seenSupportingIds.has(spore.id)) continue;
+    const relatedSpores = relatedSporesForSeed(spore, supportingSpores)
+      .filter(related => related.id !== spore.id);
+    for (const related of relatedSpores) seenSupportingIds.add(related.id);
+    seenSupportingIds.add(spore.id);
+
+    const bundle = buildBundleFromSeed({
+      seed: spore,
+      relatedSpores,
+      sessionById,
+      activeSkills: safeInput.activeSkills as BuildCandidateEvidenceBundlesInput['activeSkills'],
+      existingCandidates: safeInput.existingCandidates as BuildCandidateEvidenceBundlesInput['existingCandidates'],
+      consolidatesWisdom: false,
+    });
+    if (bundle) bundles.push(bundle);
+  }
+
+  return dedupeBundles(bundles)
+    .sort(compareBundles)
+    .slice(0, MAX_EVIDENCE_BUNDLES);
+}
 
 export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
   if (Array.isArray(value)) return normalizeSourceRefs(value);
@@ -122,6 +201,258 @@ export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): Ca
     failures,
     coverageMatches,
   };
+}
+
+interface BuildBundleFromSeedInput {
+  seed: CandidateEvidenceSpore;
+  relatedSpores: CandidateEvidenceSpore[];
+  sessionById: Map<string, CandidateEvidenceSession>;
+  activeSkills?: Array<string | CandidateEvidenceComparable>;
+  existingCandidates?: Array<string | CandidateEvidenceComparable>;
+  consolidatesWisdom: boolean;
+}
+
+function buildBundleFromSeed(input: BuildBundleFromSeedInput): SkillCandidateEvidenceBundle | null {
+  const spores = [input.seed, ...input.relatedSpores]
+    .filter(spore => spore.id)
+    .slice(0, MAX_RELATED_SPORES_PER_BUNDLE);
+  const sourceRefs = sourceRefsForSpores(spores);
+  if (sourceRefs.length < MIN_BUNDLE_SOURCE_REFS) return null;
+
+  const rationale = bundleRationale(spores, input.sessionById);
+  if (!rationale) return null;
+
+  const topic = topicForBundle(input.seed, spores);
+  const sourceSessions = sourceRefs
+    .filter(ref => ref.type === 'session')
+    .map(ref => ref.id);
+  const assessment = assessCandidateEvidence({
+    topic,
+    rationale,
+    sourceRefs,
+    sourceSessions,
+    activeSkills: input.activeSkills,
+    existingCandidates: input.existingCandidates,
+    consolidatesWisdom: input.consolidatesWisdom,
+  });
+  if (
+    assessment.failures.includes('insufficient-source-refs')
+    || assessment.failures.includes('missing-project-anchor')
+  ) {
+    return null;
+  }
+
+  return {
+    id: evidenceBundleId(topic, sourceRefs),
+    topic,
+    score: assessment.score,
+    failures: assessment.failures,
+    coverageMatches: assessment.coverageMatches,
+    sourceRefs,
+  };
+}
+
+function relatedSporesForSeed(
+  seed: CandidateEvidenceSpore,
+  candidates: CandidateEvidenceSpore[],
+): CandidateEvidenceSpore[] {
+  const seedAnchors = extractProjectAnchors(sporeText(seed));
+  if (seedAnchors.length === 0) return [];
+  const seedTokenText = [...normalizedTokens(sporeText(seed))].join(' ');
+
+  return candidates
+    .filter(candidate => candidate.id !== seed.id)
+    .map(candidate => {
+      const candidateAnchors = extractProjectAnchors(sporeText(candidate));
+      const sharedAnchors = candidateAnchors.filter(anchor => seedAnchors.includes(anchor)).length;
+      const overlap = tokenOverlap(seedTokenText, sporeText(candidate));
+      return { candidate, sharedAnchors, overlap: overlap.score };
+    })
+    .filter(item => item.sharedAnchors > 0 || item.overlap >= 0.2)
+    .sort((a, b) => {
+      if (b.sharedAnchors !== a.sharedAnchors) return b.sharedAnchors - a.sharedAnchors;
+      if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+      return compareSpores(a.candidate, b.candidate);
+    })
+    .map(item => item.candidate);
+}
+
+function sourceRefsForSpores(spores: CandidateEvidenceSpore[]): CandidateSourceRef[] {
+  const refs: CandidateSourceRef[] = [];
+  for (const spore of spores) {
+    refs.push({ id: spore.id, type: 'spore' });
+    for (const sourceId of consolidatedFrom(spore)) {
+      refs.push({ id: sourceId, type: 'spore' });
+    }
+    if (spore.session_id) {
+      refs.push({ id: spore.session_id, type: 'session' });
+    }
+  }
+  return normalizeSourceRefs(refs);
+}
+
+function bundleRationale(
+  spores: CandidateEvidenceSpore[],
+  sessionById: Map<string, CandidateEvidenceSession>,
+): string {
+  const parts: string[] = [];
+  for (const spore of spores) {
+    const text = truncateText(sporeText(spore), 220);
+    if (text) parts.push(text);
+  }
+  const sessionIds = new Set(spores.map(spore => spore.session_id).filter(Boolean) as string[]);
+  for (const sessionId of sessionIds) {
+    const session = sessionById.get(sessionId);
+    const sessionText = [session?.title, session?.summary].map(value => safeString(value)).filter(Boolean).join(' ');
+    if (sessionText) parts.push(truncateText(sessionText, 180));
+  }
+  return parts.join(' ');
+}
+
+function topicForBundle(seed: CandidateEvidenceSpore, spores: CandidateEvidenceSpore[]): string {
+  const anchorTokens = extractProjectAnchors(spores.map(sporeText).join(' '))
+    .flatMap(anchor => [...normalizedTokens(anchor)])
+    .filter(token => !STOP_WORDS.has(token));
+  const textTokens = [...normalizedTokens(sporeText(seed))]
+    .filter(token => !STOP_WORDS.has(token));
+  const tokens = uniqueStrings([...textTokens, ...anchorTokens])
+    .filter(token => !/^\d+$/.test(token))
+    .slice(0, 5);
+  return tokens.length > 0 ? tokens.join(' ') : seed.id;
+}
+
+export function extractProjectAnchors(text: string): string[] {
+  const anchors: string[] = [];
+  const addMatches = (pattern: RegExp, source: string) => {
+    for (const match of source.matchAll(pattern)) {
+      anchors.push(normalizeAnchor(match[1] ?? match[0]));
+    }
+  };
+
+  addMatches(/`([^`]+)`/g, text);
+  addMatches(/\b((?:[a-z0-9_.-]+\/){1,}[a-z0-9_.-]+)\b/gi, text);
+  addMatches(/\b([a-z0-9_.-]+\.(?:ts|tsx|js|mjs|cjs|md|yaml|yml|json|sql|sh))\b/gi, text);
+  addMatches(/\b((?:make|bun|npm|pnpm|node|myco(?:-dev)?)\s+[a-z0-9:_./-]+)\b/gi, text);
+  addMatches(/\b(AGENTS\.md|ProjectScope|GroveProjectId|PowerManager|SKILL\.md|\.myco|vault_[a-z_]+)\b/g, text);
+
+  return uniqueStrings(anchors.filter(anchor => anchor && hasProjectAnchor(anchor))).slice(0, 12);
+}
+
+function evidenceBundleId(topic: string, sourceRefs: CandidateSourceRef[]): string {
+  const seed = sourceRefs.find(ref => ref.type === 'spore')?.id ?? topic;
+  return `candidate-evidence-${slugify(topic)}-${slugify(seed).slice(0, 32)}`;
+}
+
+function dedupeBundles(bundles: SkillCandidateEvidenceBundle[]): SkillCandidateEvidenceBundle[] {
+  const byKey = new Map<string, SkillCandidateEvidenceBundle>();
+  for (const bundle of bundles) {
+    const sporeRefs = bundle.sourceRefs
+      .filter(ref => ref.type === 'spore')
+      .map(ref => ref.id)
+      .sort()
+      .join('|');
+    const key = `${bundle.topic}:${sporeRefs}`;
+    const existing = byKey.get(key);
+    if (!existing || compareBundles(bundle, existing) < 0) {
+      byKey.set(key, bundle);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function compareBundles(a: SkillCandidateEvidenceBundle, b: SkillCandidateEvidenceBundle): number {
+  if (b.score !== a.score) return b.score - a.score;
+  const topicOrder = a.topic.localeCompare(b.topic);
+  if (topicOrder !== 0) return topicOrder;
+  return a.id.localeCompare(b.id);
+}
+
+function normalizeSpores(value: unknown): CandidateEvidenceSpore[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map(row => ({
+      id: safeString(row.id),
+      observation_type: safeString(row.observation_type),
+      session_id: safeString(row.session_id) || null,
+      content: safeString(row.content),
+      context: safeString(row.context) || null,
+      importance: typeof row.importance === 'number' ? row.importance : null,
+      file_path: safeString(row.file_path) || null,
+      tags: safeString(row.tags) || null,
+      properties: safeString(row.properties) || null,
+      created_at: typeof row.created_at === 'number' ? row.created_at : null,
+    }))
+    .filter(spore => spore.id && spore.content);
+}
+
+function normalizeSessions(value: unknown): CandidateEvidenceSession[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map(row => ({
+      id: safeString(row.id),
+      title: safeString(row.title) || null,
+      summary: safeString(row.summary) || null,
+    }))
+    .filter(session => session.id);
+}
+
+function sortSpores(spores: CandidateEvidenceSpore[]): CandidateEvidenceSpore[] {
+  return [...spores].sort(compareSpores);
+}
+
+function compareSpores(a: CandidateEvidenceSpore, b: CandidateEvidenceSpore): number {
+  const importanceOrder = (b.importance ?? 0) - (a.importance ?? 0);
+  if (importanceOrder !== 0) return importanceOrder;
+  const createdOrder = (b.created_at ?? 0) - (a.created_at ?? 0);
+  if (createdOrder !== 0) return createdOrder;
+  return a.id.localeCompare(b.id);
+}
+
+function sporeText(spore: CandidateEvidenceSpore): string {
+  return [spore.content, spore.context, spore.file_path, spore.tags]
+    .map(value => safeString(value))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function consolidatedFrom(spore: CandidateEvidenceSpore): string[] {
+  if (!spore.properties) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(spore.properties);
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.consolidated_from)) return [];
+  return parsed.consolidated_from.map(value => safeString(value)).filter(Boolean);
+}
+
+function normalizeAnchor(anchor: string): string {
+  return anchor.trim().replace(/[.,;:)]+$/g, '').toLowerCase();
+}
+
+function uniqueStrings(values: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const clean = value.trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    result.push(clean);
+  }
+  return result;
+}
+
+function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const clean = value.trim().replace(/\s+/g, ' ');
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 function normalizeSourceRefs(value: unknown): CandidateSourceRef[] {
@@ -189,7 +520,7 @@ export function renderEvidenceBundlesForPrompt(bundles: SkillCandidateEvidenceBu
   const parts = [`### Candidate Evidence Bundles (${safeBundles.length})`];
   if (safeBundles.length === 0) return parts.join('\n');
 
-  for (const bundle of [...safeBundles].sort((a, b) => safeString(a.id).localeCompare(safeString(b.id)))) {
+  for (const bundle of safeBundles) {
     parts.push('', renderEvidenceBundleForPrompt(bundle));
   }
   return parts.join('\n');

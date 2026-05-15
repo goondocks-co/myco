@@ -46,7 +46,7 @@ import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './tools/skill-validator.js';
-import { renderEvidenceBundlesForPrompt } from './skill-candidate-evidence.js';
+import { buildCandidateEvidenceBundles, renderEvidenceBundlesForPrompt } from './skill-candidate-evidence.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -343,7 +343,16 @@ export function buildSkillSurveyInstruction(
   parts.push('');
 
   // 6. Candidate evidence bundles
-  parts.push(renderEvidenceBundlesForPrompt([]));
+  const existingCandidates = listCandidates({ ...scopedOptions(scope), limit: 200 });
+  const evidenceBundles = buildCandidateEvidenceBundles({
+    wisdomSpores,
+    decisions,
+    gotchas,
+    sessions,
+    activeSkills,
+    existingCandidates,
+  });
+  parts.push(renderEvidenceBundlesForPrompt(evidenceBundles));
   parts.push('');
 
   // Advance watermark

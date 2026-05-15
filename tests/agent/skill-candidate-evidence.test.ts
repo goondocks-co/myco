@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import {
   assessCandidateEvidence,
+  buildCandidateEvidenceBundles,
   parseSourceRefs,
   renderEvidenceBundleForPrompt,
   renderEvidenceBundlesForPrompt,
@@ -248,6 +249,184 @@ describe('assessCandidateEvidence', () => {
     expect(result.failures).toContain('existing-candidate-overlap');
     expect(result.coverageMatches).toContain('active-skill:daemon-process-lifecycle-management');
     expect(result.coverageMatches).toContain('candidate:candidate-existing');
+  });
+});
+
+describe('buildCandidateEvidenceBundles', () => {
+  it('produces a strong bundle from wisdom, decision, and gotcha evidence across two sessions with project anchors', () => {
+    const bundles = buildCandidateEvidenceBundles({
+      wisdomSpores: [
+        {
+          id: 'spore-wisdom-daemon',
+          observation_type: 'wisdom',
+          session_id: 'session-1',
+          content: 'Daemon hook changes in `packages/myco/src/daemon/main.ts` require `make build` and `myco-dev restart` before verification.',
+          importance: 9,
+          properties: JSON.stringify({ consolidated_from: ['spore-source-1', 'spore-source-2'] }),
+          created_at: 300,
+        },
+      ],
+      decisions: [
+        {
+          id: 'spore-decision-daemon',
+          observation_type: 'decision',
+          session_id: 'session-2',
+          content: 'Keep hook entry points thin and delegate daemon behavior through `packages/myco/src/daemon/main.ts`.',
+          importance: 7,
+          created_at: 200,
+        },
+      ],
+      gotchas: [
+        {
+          id: 'spore-gotcha-daemon',
+          observation_type: 'gotcha',
+          session_id: 'session-1',
+          content: 'After daemon changes, tests can pass but dogfooding still uses old code until `myco-dev restart` runs.',
+          importance: 6,
+          created_at: 100,
+        },
+      ],
+      sessions: [
+        { id: 'session-1', title: 'Daemon restart fix', summary: 'Worked on `packages/myco/src/daemon/main.ts` and `myco-dev restart` verification.' },
+        { id: 'session-2', title: 'Hook delegation', summary: 'Confirmed hook delegation through daemon code and `make build`.' },
+      ],
+      activeSkills: [],
+      existingCandidates: [],
+    });
+
+    expect(bundles.length).toBeGreaterThan(0);
+    expect(bundles[0].score).toBeGreaterThan(0.8);
+    expect(bundles[0].failures).toEqual([]);
+    expect(bundles[0].topic).toContain('daemon');
+  });
+
+  it('includes source refs, consolidated source spore refs, and session refs', () => {
+    const bundles = buildCandidateEvidenceBundles({
+      wisdomSpores: [
+        {
+          id: 'spore-wisdom-daemon',
+          observation_type: 'wisdom',
+          session_id: 'session-1',
+          content: 'Daemon lifecycle in `packages/myco/src/daemon/main.ts` needs `make build` plus restart verification.',
+          importance: 8,
+          properties: JSON.stringify({ consolidated_from: ['spore-source-1', 'spore-source-2'] }),
+          created_at: 300,
+        },
+      ],
+      decisions: [
+        {
+          id: 'spore-decision-daemon',
+          observation_type: 'decision',
+          session_id: 'session-2',
+          content: 'Use `myco-dev restart` after daemon implementation changes.',
+          importance: 7,
+          created_at: 200,
+        },
+      ],
+      gotchas: [],
+      sessions: [
+        { id: 'session-1', summary: 'Session referenced `packages/myco/src/daemon/main.ts`.' },
+        { id: 'session-2', summary: 'Session referenced `myco-dev restart`.' },
+      ],
+      activeSkills: [],
+      existingCandidates: [],
+    });
+
+    const sourceRefs = bundles[0].sourceRefs.map(ref => `${ref.type}:${ref.id}`);
+    expect(sourceRefs).toContain('spore:spore-wisdom-daemon');
+    expect(sourceRefs).toContain('spore:spore-source-1');
+    expect(sourceRefs).toContain('spore:spore-source-2');
+    expect(sourceRefs).toContain('spore:spore-decision-daemon');
+    expect(sourceRefs).toContain('session:session-1');
+    expect(sourceRefs).toContain('session:session-2');
+  });
+
+  it('lowers score and reports coverage matches when an active skill or existing candidate overlaps', () => {
+    const bundles = buildCandidateEvidenceBundles({
+      wisdomSpores: [
+        {
+          id: 'spore-wisdom-daemon',
+          observation_type: 'wisdom',
+          session_id: 'session-1',
+          content: 'Daemon restart workflow in `packages/myco/src/daemon/main.ts` requires `make build` and `myco-dev restart`.',
+          importance: 9,
+          properties: JSON.stringify({ consolidated_from: ['spore-source-1', 'spore-source-2'] }),
+          created_at: 300,
+        },
+      ],
+      decisions: [
+        {
+          id: 'spore-decision-daemon',
+          observation_type: 'decision',
+          session_id: 'session-2',
+          content: 'Daemon restart verification should use `myco-dev restart` after `make build`.',
+          importance: 7,
+          created_at: 200,
+        },
+      ],
+      gotchas: [],
+      sessions: [
+        { id: 'session-1', summary: 'Daemon restart workflow in `packages/myco/src/daemon/main.ts`.' },
+        { id: 'session-2', summary: 'Daemon restart verification through `myco-dev restart`.' },
+      ],
+      activeSkills: [
+        {
+          name: 'daemon-process-lifecycle-management',
+          description: 'Use when managing daemon process lifecycle, restarts, and runtime verification.',
+        },
+      ],
+      existingCandidates: [
+        {
+          id: 'candidate-daemon-restart',
+          topic: 'Daemon restart workflow',
+          rationale: 'Candidate covering daemon restart verification through `make build` and `myco-dev restart`.',
+        },
+      ],
+    });
+
+    expect(bundles[0].score).toBeLessThan(0.7);
+    expect(bundles[0].failures).toContain('active-skill-overlap');
+    expect(bundles[0].failures).toContain('existing-candidate-overlap');
+    expect(bundles[0].coverageMatches).toContain('active-skill:daemon-process-lifecycle-management');
+    expect(bundles[0].coverageMatches).toContain('candidate:candidate-daemon-restart');
+  });
+
+  it('stays bounded and deterministically sorted by score then stable topic', () => {
+    const wisdomSpores = Array.from({ length: 12 }, (_, index) => ({
+      id: `spore-wisdom-${String(index).padStart(2, '0')}`,
+      observation_type: 'wisdom',
+      session_id: index % 2 === 0 ? 'session-a' : 'session-b',
+      content: `Workflow ${String(index).padStart(2, '0')} in \`packages/myco/src/agent/workflow-${index}.ts\` needs \`bun test tests/agent/workflow-${index}.test.ts\`.`,
+      importance: 5 + (index % 4),
+      properties: JSON.stringify({ consolidated_from: [`spore-source-${index}-a`, `spore-source-${index}-b`] }),
+      created_at: 1000 - index,
+    }));
+
+    const input = {
+      wisdomSpores,
+      decisions: [],
+      gotchas: [],
+      sessions: [
+        { id: 'session-a', summary: 'Agent workflow verification in packages/myco/src/agent' },
+        { id: 'session-b', summary: 'Agent workflow verification with bun test' },
+      ],
+      activeSkills: [],
+      existingCandidates: [],
+    };
+
+    const first = buildCandidateEvidenceBundles(input);
+    const second = buildCandidateEvidenceBundles(input);
+
+    expect(first).toHaveLength(8);
+    expect(first.map(bundle => bundle.id)).toEqual(second.map(bundle => bundle.id));
+    for (let i = 1; i < first.length; i++) {
+      const previous = first[i - 1];
+      const current = first[i];
+      expect(
+        previous.score > current.score
+        || (previous.score === current.score && previous.topic.localeCompare(current.topic) <= 0),
+      ).toBe(true);
+    }
   });
 });
 
