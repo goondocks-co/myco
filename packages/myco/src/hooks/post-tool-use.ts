@@ -1,4 +1,5 @@
 import { createHookDaemonClient } from './client.js';
+import { classifyBufferFallback } from './send-event.js';
 import { readHookInput } from './input.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { resolveVaultDir } from '../vault/resolve.js';
@@ -41,6 +42,12 @@ export async function main() {
         output_preview: typeof input.toolOutput === 'string' ? input.toolOutput.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined,
         transcript_path: input.transcriptPath,
       });
+      // Mirror the observability contract from send-event.ts and
+      // user-prompt-submit.ts — every buffer-fallback path leaves a stderr
+      // trace classifying the reason.
+      process.stderr.write(
+        `[myco] post-tool-use buffered (${classifyBufferFallback(result)}) session=${sessionId}\n`,
+      );
     }
   } catch (error) {
     process.stderr.write(`[myco] post-tool-use error: ${(error as Error).message}\n`);

@@ -1,4 +1,5 @@
 import { createHookDaemonClient, isIgnoredEventResponse } from './client.js';
+import { classifyBufferFallback } from './send-event.js';
 import { readHookInput } from './input.js';
 import { evaluateUserPromptRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
@@ -56,10 +57,16 @@ export async function main() {
     });
 
     // Buffer on transport failure OR server-side `ignored` so the event is
-    // recoverable by reconcileBufferBatches on the next daemon start.
+    // recoverable by reconcileBufferBatches on the next daemon start. Log
+    // to stderr with the reason — every buffer-fallback path needs a trace
+    // so "session not captured" investigations can rule out the hook layer
+    // without comparing buffer-file mtimes against transcript mtimes.
     if (!eventResult.ok || isIgnoredEventResponse(eventResult.data)) {
       const buffer = new EventBuffer(path.join(VAULT_DIR, 'buffer'), sessionId);
       buffer.append({ type: 'user_prompt', prompt, transcript_path: input.transcriptPath });
+      process.stderr.write(
+        `[myco] user-prompt-submit buffered (${classifyBufferFallback(eventResult)}) session=${sessionId}\n`,
+      );
     }
 
     const contextResult = await client.post('/context/prompt', {

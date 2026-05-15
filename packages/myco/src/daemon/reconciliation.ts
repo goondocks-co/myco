@@ -20,6 +20,7 @@ import { STALE_BUFFER_MAX_AGE_MS, DEFAULT_SYMBIONT_NAME } from '@myco/constants.
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
 import { isSystemMessage, handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
+import { eventDedupKey, eventTimestampMs, EVENT_DEDUP_WINDOW_MS } from '@myco/capture/dedup.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,15 +206,40 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
       return;
     }
 
-    // Replay full event stream from the divergence point
+    // Replay full event stream from the divergence point. Two guards apply
+    // before each event hits replayEvent:
+    //
+    //   1. Type filter (REPLAYABLE_EVENT_TYPES).
+    //   2. Content+window dedup that mirrors the live dispatcher
+    //      (`event-dispatch.ts`). The hook CLI writes to the buffer file
+    //      whenever the daemon returns `ignored: 'duplicate'` (see
+    //      `hooks/send-event.ts`), so without this guard the replay path
+    //      re-inserts events the live path already rejected. Both paths
+    //      now use the same key from `@myco/capture/dedup.js`.
     const eventsToReplay = allEvents.slice(replayStartIndex).filter(
       (e) => REPLAYABLE_EVENT_TYPES.has(String(e.type)),
     );
 
     let promptsRecovered = 0;
     let activitiesRecovered = 0;
+    let duplicatesSuppressed = 0;
+    const seenKeys = new Map<string, number>();
 
     for (const event of eventsToReplay) {
+      const eventWithSession = {
+        ...event,
+        type: String(event.type),
+        session_id: sessionId,
+      } as Record<string, unknown> & { type: string; session_id: string };
+      const key = eventDedupKey(eventWithSession);
+      const ts = eventTimestampMs(event) ?? Date.now();
+      const lastSeen = seenKeys.get(key);
+      if (lastSeen !== undefined && ts - lastSeen < EVENT_DEDUP_WINDOW_MS) {
+        duplicatesSuppressed++;
+        continue;
+      }
+      seenKeys.set(key, ts);
+
       try {
         const result = replayEvent(sessionId, event);
         if (result === 'prompt') promptsRecovered++;
@@ -226,11 +252,12 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
       }
     }
 
-    if (promptsRecovered > 0 || activitiesRecovered > 0) {
+    if (promptsRecovered > 0 || activitiesRecovered > 0 || duplicatesSuppressed > 0) {
       logger.info(LOG_KINDS.LIFECYCLE_RECONCILE, 'Buffer reconciliation complete', {
         session_id: sessionId,
         prompts_recovered: promptsRecovered,
         activities_recovered: activitiesRecovered,
+        duplicates_suppressed: duplicatesSuppressed,
       });
     }
   }

@@ -51,6 +51,7 @@ import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
+import { eventDedupKey, EVENT_DEDUP_WINDOW_MS } from '@myco/capture/dedup.js';
 import { assertGroveProjectId, isGroveEraId } from '@myco/grove/ids.js';
 import type { ProjectPowerStateTracker } from './project-power-state.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
@@ -95,16 +96,15 @@ export interface EventDispatchDeps {
 // revisited; FIFO eviction via Map ordering is sufficient.
 const DROP_DECISION_CACHE_MAX = 1024;
 
-// Suppress identical /events POSTs that arrive within this window. Hook
-// scripts can re-fire the same event when the daemon was previously slow
-// or briefly unavailable (Claude Code retries, multi-symbiont overlap),
-// and the inserts at handleUserPrompt / insertActivityWithBatch have no
-// natural idempotency. A 10-second window catches retry storms without
-// suppressing legitimate same-text turns (a human typing "y" twice in a
-// row pauses far longer than 10s; auto-tooling that legitimately needs
-// to re-send identical events at sub-10s cadence should set a fresh
-// `timestamp` on each attempt, which makes the dedup key differ).
-const EVENT_DEDUP_WINDOW_MS = 10_000;
+// Suppress identical /events POSTs that arrive within `EVENT_DEDUP_WINDOW_MS`.
+// Hook scripts can re-fire the same event when the daemon was previously
+// slow or briefly unavailable (Claude Code retries, multi-symbiont overlap,
+// Codex's user_prompt-submit hook observed firing twice within ~30ms), and
+// the inserts at handleUserPrompt / insertActivityWithBatch have no natural
+// idempotency. A 10-second window catches retry storms without suppressing
+// legitimate same-text turns. The window value and fingerprint live in
+// `@myco/capture/dedup.js` so the buffer reconciler can apply the same key
+// when replaying events the live path already rejected.
 const EVENT_DEDUP_CACHE_MAX = 4096;
 
 export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
@@ -138,23 +138,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
   }
 
   // FIFO dedup cache for event idempotency. Key includes session_id, type,
-  // and a content fingerprint so the cache can distinguish "same prompt
-  // sent twice" from "same hook type for two different prompts."
+  // and a content fingerprint (see `@myco/capture/dedup.js`) so the cache
+  // can distinguish "same prompt sent twice" from "same hook type for two
+  // different prompts." Shared with the buffer reconciler so duplicates the
+  // live path correctly rejected don't resurrect on replay.
   const recentEvents = new Map<string, number>();
-  function eventDedupKey(event: { type: string; session_id: string } & Record<string, unknown>): string {
-    // Cheap content fingerprint: type + first 256 chars of any natural
-    // payload field. Different event shapes use different fields; combine
-    // them so the same physical hook event always hashes the same way.
-    const parts = [
-      event.type,
-      typeof event.prompt === 'string' ? event.prompt.slice(0, 256) : '',
-      typeof event.tool_name === 'string' ? event.tool_name : '',
-      typeof event.tool_input === 'object' ? JSON.stringify(event.tool_input).slice(0, 256) : String(event.tool_input ?? '').slice(0, 256),
-      typeof event.task_id === 'string' ? event.task_id : '',
-      typeof event.agent_id === 'string' ? event.agent_id : '',
-    ];
-    return `${event.session_id}\0${parts.join('\0')}`;
-  }
   function isDuplicateEvent(event: { type: string; session_id: string } & Record<string, unknown>, nowMs: number): boolean {
     const key = eventDedupKey(event);
     const lastSeenMs = recentEvents.get(key);
@@ -244,7 +232,11 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     // the same project, can deliver the same physical event multiple times
     // within seconds; the downstream insert paths are not idempotent.
     if (isDuplicateEvent(event, Date.now())) {
-      logger.debug(LOG_KINDS.HOOKS_EVENT, 'Event suppressed as duplicate within dedup window', {
+      // Promoted from debug to info so `grep hooks.event` in the default
+      // daemon log surfaces the volume of in-flight duplicate-fire patterns
+      // (Codex's double-fire, Claude retries, multi-symbiont overlap) — a
+      // class of bug we keep re-discovering only by manual buffer inspection.
+      logger.info(LOG_KINDS.HOOKS_EVENT, 'Event suppressed as duplicate within dedup window', {
         type: event.type, session_id: event.session_id,
       });
       return { body: { ok: true, ignored: 'duplicate' } };
