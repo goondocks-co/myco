@@ -86,6 +86,35 @@ describe('myco init --worktree', () => {
     expect(fs.readFileSync(mirrored, 'utf-8')).toBe('/abs/path/to/myco-dev\n');
   });
 
+  it('bootstraps every enabled symbiont, not just claude-code', async () => {
+    // Mirrors the dogfooding project: all 6 enabled at once.
+    plantMainVault(mainRepo, ['claude-code', 'cursor', 'codex', 'gemini', 'opencode', 'windsurf']);
+    execFileSync('git', ['worktree', 'add', worktreePath, '-b', 'feature'], { cwd: mainRepo });
+    process.chdir(worktreePath);
+
+    await runInit(['--worktree']);
+
+    // Each symbiont's distinguishing config file should land in the worktree.
+    // These are the actual hooksTarget/settingsTarget values declared in each
+    // manifest at packages/myco/src/symbionts/manifests/*.yaml.
+    const perSymbiontArtifact: Record<string, string> = {
+      'claude-code': path.join('.claude', 'settings.json'),
+      'cursor': path.join('.cursor', 'hooks.json'),
+      'codex': path.join('.codex', 'config.toml'),
+      'gemini': path.join('.gemini', 'settings.json'),
+      'opencode': path.join('.opencode', 'plugins', 'myco.ts'),
+      'windsurf': path.join('.windsurf', 'hooks.json'),
+    };
+    for (const [name, relPath] of Object.entries(perSymbiontArtifact)) {
+      const abs = path.join(worktreePath, relPath);
+      expect(fs.existsSync(abs)).toBe(true);
+      if (!fs.existsSync(abs)) console.error(`missing ${name} artifact at ${relPath}`);
+    }
+
+    // The shared hook guard is written exactly once regardless of symbiont count.
+    expect(fs.existsSync(path.join(worktreePath, '.agents', 'myco-run.cjs'))).toBe(true);
+  });
+
   it('does no symbiont work when the main config has none enabled', async () => {
     plantMainVault(mainRepo, []);
     execFileSync('git', ['worktree', 'add', worktreePath, '-b', 'feature'], { cwd: mainRepo });
