@@ -102,25 +102,54 @@ const SECTION_RULES: PrefixRule[] = [
     sectionId: CONFIG_SECTION_IDS.settingsPlanCapture,
     sectionLabel: 'Plan Capture',
   },
+  // daemon.* fields live in three different groups on the unified Settings
+  // page now — sessions, logging, update. The page emits `id="<group-id>"`
+  // on each section element, so we point notification deep-links at the
+  // anchor directly. Most-specific prefix wins (rule order matters; see
+  // resolveConfigFocusTarget).
   {
-    prefix: 'daemon',
+    prefix: 'daemon.stale_session_threshold_ms',
     page: '/settings',
-    sectionId: CONFIG_SECTION_IDS.settingsProject,
-    sectionLabel: 'Project',
+    sectionId: 'sessions',
+    sectionLabel: 'Sessions',
   },
   {
+    prefix: 'daemon.log_level',
+    page: '/settings',
+    sectionId: 'logging',
+    sectionLabel: 'Logging',
+  },
+  {
+    prefix: 'daemon.log_retention_days',
+    page: '/settings',
+    sectionId: 'logging',
+    sectionLabel: 'Logging',
+  },
+  {
+    prefix: 'daemon.update_channel',
+    page: '/settings',
+    sectionId: 'update',
+    sectionLabel: 'Update',
+  },
+  // Scheduled / event tasks moved out of the Agent page into their own
+  // group on the unified Settings page (Phase 5 fix-forward).
+  {
     prefix: 'agent.scheduled_tasks_enabled',
-    page: '/agent',
-    sectionId: CONFIG_SECTION_IDS.agentOperations,
-    sectionLabel: 'Agent Operations',
-    searchParams: { tab: 'config' },
+    page: '/settings',
+    sectionId: 'scheduled-tasks',
+    sectionLabel: 'Scheduled tasks',
   },
   {
     prefix: 'agent.event_tasks_enabled',
-    page: '/agent',
-    sectionId: CONFIG_SECTION_IDS.agentOperations,
-    sectionLabel: 'Agent Operations',
-    searchParams: { tab: 'config' },
+    page: '/settings',
+    sectionId: 'scheduled-tasks',
+    sectionLabel: 'Scheduled tasks',
+  },
+  {
+    prefix: 'agent.scheduled_tasks_active_window_days',
+    page: '/settings',
+    sectionId: 'scheduled-tasks',
+    sectionLabel: 'Scheduled tasks',
   },
   {
     prefix: 'agent.summary_batch_interval',
@@ -130,16 +159,25 @@ const SECTION_RULES: PrefixRule[] = [
     searchParams: { tab: 'config' },
   },
   {
+    prefix: 'skills',
+    page: '/settings',
+    sectionId: 'skills',
+    sectionLabel: 'Skills',
+  },
+  // Maintenance and Backup moved from the Operations page into the unified
+  // Settings page during Phase 5. Notification links opening "Open
+  // Settings" land on the right group anchor on the new page.
+  {
     prefix: 'maintenance',
-    page: '/operations',
-    sectionId: CONFIG_SECTION_IDS.operationsMaintenance,
-    sectionLabel: 'Scheduled Maintenance',
+    page: '/settings',
+    sectionId: 'maintenance',
+    sectionLabel: 'Maintenance',
   },
   {
     prefix: 'backup',
-    page: '/operations',
-    sectionId: CONFIG_SECTION_IDS.operationsBackup,
-    sectionLabel: 'Backup & Restore',
+    page: '/settings',
+    sectionId: 'backup',
+    sectionLabel: 'Backup',
   },
 ];
 

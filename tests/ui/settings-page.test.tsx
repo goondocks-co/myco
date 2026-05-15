@@ -61,6 +61,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-project-selection', () => ({
   useProjectSelection: () => projectSelectionRef.current,
   useProjectPath: (suffix = '') => suffix || '/',
   useProjectPathBuilder: () => (suffix = '') => suffix || '/',
+  projectScopedQueryKey: (_sel: unknown, key: unknown) => key,
+  useProjectScopedQueryKey: (key: unknown) => key,
+  ProjectSelectionBoundary: ({ children }: { children: unknown }) => children,
+  GlobalSelectionBoundary: ({ children }: { children: unknown }) => children,
 }));
 
 mock.module('../../packages/myco/ui/src/hooks/use-scoped-config', () => ({
@@ -148,9 +152,21 @@ mock.module('../../packages/myco/ui/src/hooks/use-restart', () => ({
   useRestart: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
-// PlanCaptureCard fetches symbiont plan dirs.
+// MachineIdentityRow (Logging group) reads useDaemon for the machine_id.
+mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
+  useDaemon: () => ({
+    data: { context: { request: { machine_id: 'test-machine' } } },
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+// PlanCaptureCard fetches symbiont plan dirs; BackupCard fetches /backups.
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
-  fetchJson: vi.fn().mockResolvedValue({ symbiont: {} }),
+  fetchJson: vi.fn().mockImplementation(async (path: string) => {
+    if (path === '/backups') return { backups: [] };
+    return { symbiont: {} };
+  }),
   postJson: vi.fn().mockResolvedValue({}),
   putJson: vi.fn().mockResolvedValue({}),
   deleteJson: vi.fn().mockResolvedValue({}),
@@ -181,6 +197,16 @@ mock.module('../../packages/myco/ui/src/components/config/PlanCaptureCard', () =
   PlanCaptureCard: () => <div data-testid="plan-capture-card" />,
 }));
 
+// UpdateCard polls /update-status; BackupCard fetches /backups + manages
+// preview/restore state. The unified-page tests don't exercise those flows —
+// stub both to markers so the page layout tests stay focused.
+mock.module('../../packages/myco/ui/src/components/operations/UpdateCard', () => ({
+  UpdateCard: () => <div data-testid="update-card" />,
+}));
+mock.module('../../packages/myco/ui/src/components/operations/BackupCard', () => ({
+  BackupCard: () => <div data-testid="backup-card" />,
+}));
+
 // scrollIntoView isn't implemented in jsdom.
 if (typeof Element !== 'undefined' && !(Element.prototype as { scrollIntoView?: () => void }).scrollIntoView) {
   (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView = () => {};
@@ -209,7 +235,10 @@ describe('Unified Settings page', () => {
     updateGroveMock.mockResolvedValue(undefined);
     updateMachineMock.mockReset();
     updateMachineMock.mockResolvedValue(undefined);
-    projectSelectionRef.current = { groveId: 'g1', projectId: 'p1' };
+    projectSelectionRef.current = {
+      grove: { id: 'g1', slug: 'work', name: 'Work' },
+      project: { id: 'p1', slug: 'p1', name: 'p1', root: '/tmp/p1', bindingId: 'b1' },
+    };
   });
 
   it('renders all 12 groups in manifest order', () => {
@@ -275,9 +304,9 @@ describe('Unified Settings page', () => {
 
   it('toggling a manifest-driven field calls writeField with correct scope', async () => {
     renderPage();
-    // The Team group's `team.enabled` is a grove-scoped toggle. Find it by
-    // the label "Enable team sync" and click the switch.
-    const label = screen.getByText('Enable team sync');
+    // Maintenance.auto_optimize is a grove-scoped toggle. Find it by label
+    // and click the switch — should call updateGrove with the nested patch.
+    const label = screen.getByText('Auto-run PRAGMA optimize');
     const row = label.closest('div')?.parentElement?.parentElement; // grid row
     expect(row).toBeTruthy();
     const sw = row?.querySelector('button[role="switch"]') as HTMLButtonElement | null;
@@ -287,8 +316,10 @@ describe('Unified Settings page', () => {
     await waitFor(() => {
       expect(updateGroveMock).toHaveBeenCalled();
     });
-    // Patch shape should be { team: { enabled: true } }
-    expect(updateGroveMock.mock.calls[0][0]).toEqual({ team: { enabled: true } });
+    // Patch shape should be { maintenance: { auto_optimize: <toggled> } }
+    expect(updateGroveMock.mock.calls[0][0]).toEqual({
+      maintenance: { auto_optimize: expect.any(Boolean) as unknown as boolean },
+    });
   });
 
   it('Mixed scopes badge appears on Embedding (project + grove)', () => {
@@ -307,8 +338,8 @@ describe('Unified Settings page', () => {
     expect(
       screen.getByText(/Select a project to edit Project and Grove settings/),
     ).toBeInTheDocument();
-    // The grove-scoped Team.enabled toggle should be disabled.
-    const label = screen.getByText('Enable team sync');
+    // The grove-scoped maintenance.auto_optimize toggle should be disabled.
+    const label = screen.getByText('Auto-run PRAGMA optimize');
     const row = label.closest('div')?.parentElement?.parentElement;
     const sw = row?.querySelector('button[role="switch"]') as HTMLButtonElement | null;
     expect(sw?.getAttribute('data-disabled') ?? sw?.disabled).toBeTruthy();

@@ -35,10 +35,12 @@ export default function App() {
         <Route path="/groves" element={<Groves />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/machine" element={<MachineDashboard />} />
-        {/* Unified Settings page owns /settings and renders Project, Grove,
-            and Machine fields together. The page degrades when no project
-            is selected — Machine-tier fields remain editable. */}
-        <Route path="/settings" element={<Settings />} />
+        {/* Unified Settings page owns /settings. The wrapper binds a
+            ProjectSelectionBoundary to the last-known project so substrate
+            hooks (useGroveConfig, useScopedConfig) resolve the right scope
+            — without it, every grove-tier field on the page reads as
+            undefined because the grove query is keyed off URL selection. */}
+        <Route path="/settings" element={<SettingsRoute />} />
         {/* Legacy machine-scoped Settings URL — redirect to the unified
             page anchored at the logging group, which surfaces the most
             machine-tier fields. */}
@@ -205,6 +207,38 @@ function LegacyProjectScopedSettingsRedirect() {
   const location = useLocation();
   const target = `/settings${location.search}${location.hash}`;
   return <Navigate to={target} replace />;
+}
+
+/**
+ * Wrapper for `/settings` — the unified Settings page renders Project,
+ * Grove, and Machine fields together but the URL carries no `:groveSlug`
+ * or `:projectSlug`, so substrate hooks (`useGroveConfig`,
+ * `useScopedConfig`) would read undefined without a selection. Resolve
+ * the last-known project (same fallback `RootRedirect` and
+ * `LegacyProjectRedirect` use) and bind it through
+ * `ProjectSelectionBoundary` so every scope's read path sees a real
+ * scope. When no projects exist yet, fall back to
+ * `GlobalSelectionBoundary` and let the page render its
+ * "no project" banner with only Machine-tier fields editable.
+ */
+function SettingsRoute() {
+  const { data, isLoading, error } = useGroves();
+  if (isLoading) return <RouteLoading text="Loading settings..." />;
+  if (error) return <RouteLoading text={error.message} />;
+  const groves = data?.groves ?? [];
+  const selection = selectionFromLast(groves) ?? defaultSelection(groves);
+  if (selection) {
+    return (
+      <ProjectSelectionBoundary selection={selection}>
+        <Settings />
+      </ProjectSelectionBoundary>
+    );
+  }
+  return (
+    <GlobalSelectionBoundary>
+      <Settings />
+    </GlobalSelectionBoundary>
+  );
 }
 
 function ProjectScopedLayout() {

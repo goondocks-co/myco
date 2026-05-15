@@ -109,6 +109,9 @@ export function useUnifiedSettings(): UnifiedSettings {
     const counts: Record<SettingScope, number> = { project: 0, grove: 0, machine: 0 };
     for (const group of SETTINGS_GROUPS) {
       for (const f of group.fields) {
+        // Manifest entries owned by a custom card aren't user-visible as
+        // standalone rows, so they don't belong in the filter-bar counts.
+        if (f.customRender === 'card-owns') continue;
         counts[f.scope] += 1;
       }
     }

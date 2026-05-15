@@ -224,7 +224,10 @@ mock.module('../../packages/myco/ui/src/hooks/use-models', () => ({
 }));
 
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
-  fetchJson: vi.fn().mockResolvedValue({ symbiont: {} }),
+  fetchJson: vi.fn().mockImplementation(async (path: string) => {
+    if (path === '/backups') return { backups: [] };
+    return { symbiont: {} };
+  }),
   postJson: vi.fn().mockResolvedValue({}),
   putJson: vi.fn().mockResolvedValue({}),
   deleteJson: vi.fn().mockResolvedValue({}),
@@ -267,7 +270,6 @@ function installJsdomGlobals() {
     },
   };
   vi.stubGlobal('localStorage', localStorageMock);
-  window.localStorage = localStorageMock as Storage;
   vi.stubGlobal('location', window.location);
   const matchMedia = () => ({
     matches: false,
@@ -275,7 +277,7 @@ function installJsdomGlobals() {
     removeEventListener: vi.fn(),
   });
   vi.stubGlobal('matchMedia', matchMedia);
-  window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+  Object.defineProperty(window, 'matchMedia', { configurable: true, value: matchMedia });
   Object.defineProperty(window.HTMLCanvasElement.prototype, 'getContext', {
     configurable: true,
     value: () => ({
