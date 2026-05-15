@@ -50,7 +50,11 @@ function validCandidateMetadata(overrides: Record<string, unknown> = {}) {
     quality_score: 0.82,
     quality_failures: '[]',
     coverage_matches: '[]',
-    source_ids: JSON.stringify([{ id: 'spore-test-001', type: 'spore' }]),
+    source_ids: JSON.stringify([
+      { id: 'spore-test-001', type: 'spore' },
+      { id: 'spore-test-002', type: 'spore' },
+      { id: 'session-test-001', type: 'session' },
+    ]),
     ...overrides,
   };
 }
@@ -188,12 +192,30 @@ describe('vault skill tools', () => {
           action: 'create',
           topic: 'Missing evidence metadata',
           rationale: 'Should not enter the identified queue without a bundle',
+          source_ids: validCandidateMetadata().source_ids as string,
         },
         undefined,
       );
 
       const data = parseResult(result) as { error?: string };
       expect(data.error).toContain('evidence_bundle_id is required');
+    });
+
+    it('create rejects identified candidate without source evidence', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const { source_ids: _drop, ...metadata } = validCandidateMetadata();
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Missing source evidence',
+          rationale: 'Should not enter the identified queue without source refs',
+          ...metadata,
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('source_ids is required');
     });
 
     it('create rejects identified candidate with score below quality gate', async () => {
@@ -278,7 +300,80 @@ describe('vault skill tools', () => {
       );
 
       const data = parseResult(result) as { error?: string };
-      expect(data.error).toContain('source_ids must contain at least one valid source reference');
+      expect(data.error).toContain('source_ids contains invalid source reference entries');
+    });
+
+    it('create rejects identified candidate with fewer than three source refs', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Too few source refs',
+          rationale: 'Should not enter the identified queue with weak source coverage',
+          ...validCandidateMetadata({
+            source_ids: JSON.stringify([
+              { id: 'spore-test-001', type: 'spore' },
+              { id: 'session-test-001', type: 'session' },
+            ]),
+          }),
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('source_ids must contain at least 3 valid source references');
+    });
+
+    it('create rejects mixed valid and invalid source_ids entries', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Partially malformed source refs',
+          rationale: 'Should reject arrays that mix valid refs with junk',
+          ...validCandidateMetadata({
+            source_ids: JSON.stringify([
+              { id: 'spore-test-001', type: 'spore' },
+              { id: 'spore-test-002', type: 'spore' },
+              { id: 'bad-ref', type: 'note' },
+            ]),
+          }),
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('source_ids contains invalid source reference entries');
+    });
+
+    it('create rejects non-string quality metadata arrays', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+
+      const badCoverage = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Bad coverage metadata',
+            rationale: 'coverage_matches must be string identifiers',
+            ...validCandidateMetadata({ coverage_matches: JSON.stringify([{}]) }),
+          },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(badCoverage.error).toContain('coverage_matches must be a JSON array of strings');
+
+      const badFailures = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Bad failure metadata',
+            rationale: 'quality_failures must be string identifiers',
+            ...validCandidateMetadata({ quality_failures: JSON.stringify([null]) }),
+          },
+          undefined,
+        ),
+      ) as { error?: string };
+      expect(badFailures.error).toContain('quality_failures must be a JSON array of strings');
     });
 
     it('update enforces identified quality gate', async () => {
@@ -301,7 +396,19 @@ describe('vault skill tools', () => {
         undefined,
       );
       const identified = parseResult(identifiedResult) as { error?: string };
-      expect(identified.error).toContain('evidence_bundle_id is required');
+      expect(identified.error).toContain('source_ids must contain at least 3 valid source references');
+
+      const missingBundleResult = await t.handler(
+        {
+          action: 'update',
+          id: dismissed.id,
+          status: 'identified',
+          source_ids: validCandidateMetadata().source_ids,
+        },
+        undefined,
+      );
+      const missingBundle = parseResult(missingBundleResult) as { error?: string };
+      expect(missingBundle.error).toContain('evidence_bundle_id is required');
 
       const valid = parseResult(
         await t.handler(
@@ -351,6 +458,228 @@ describe('vault skill tools', () => {
       ) as { status?: string; error?: string };
       expect(deferred.error).toBeUndefined();
       expect(deferred.status).toBe('deferred');
+    });
+
+    it('update to dismissed can proceed for legacy candidates without source evidence', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const now = epochNow();
+      const inserted = insertCandidate({
+        id: 'candidate-legacy-dismiss-without-source',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Legacy candidate without source refs',
+        rationale: 'Old row should still be removable from the queue',
+        evidence_bundle_id: 'bundle-legacy-dismiss',
+        quality_score: 0.9,
+        quality_failures: '[]',
+        created_at: now,
+        updated_at: now,
+      });
+
+      const result = parseResult(
+        await t.handler({ action: 'update', id: inserted.id, status: 'dismissed' }, undefined),
+      ) as { status?: string; error?: string };
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('dismissed');
+    });
+
+    it('update rejects identified candidate when existing source evidence is empty', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const now = epochNow();
+      const inserted = insertCandidate({
+        id: 'candidate-empty-source-update',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Empty source update',
+        rationale: 'Legacy row without source refs',
+        evidence_bundle_id: 'bundle-empty-source',
+        quality_score: 0.9,
+        quality_failures: '[]',
+        created_at: now,
+        updated_at: now,
+      });
+
+      const result = parseResult(
+        await t.handler({ action: 'update', id: inserted.id, rationale: 'Still identified' }, undefined),
+      ) as { error?: string };
+
+      expect(result.error).toContain('source_ids must contain at least 3 valid source references');
+    });
+
+    it('update rejects identified candidate when existing coverage metadata is malformed', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const now = epochNow();
+      const inserted = insertCandidate({
+        id: 'candidate-bad-coverage-update',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Malformed coverage update',
+        rationale: 'Legacy row with malformed coverage metadata',
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'bundle-bad-coverage-update',
+          coverage_matches: JSON.stringify([{}]),
+        }),
+        created_at: now,
+        updated_at: now,
+      });
+
+      const result = parseResult(
+        await t.handler({ action: 'update', id: inserted.id, rationale: 'Still identified' }, undefined),
+      ) as { error?: string };
+
+      expect(result.error).toContain('coverage_matches must be a JSON array of strings');
+    });
+
+    it('update rejects topic overlap with an active skill while identified', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const now = epochNow();
+      insertSkillRecord({
+        id: 'skill-daemon-lifecycle',
+        agent_id: TEST_AGENT_ID,
+        name: 'daemon-process-lifecycle',
+        display_name: 'Daemon Process Lifecycle',
+        description: 'Manage daemon process lifecycle',
+        path: '.agents/skills/daemon-process-lifecycle/SKILL.md',
+        created_at: now,
+        updated_at: now,
+      });
+      const candidate = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Distinct queue topic',
+            rationale: 'Starts distinct before update',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-active-overlap-update' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+
+      const result = parseResult(
+        await t.handler(
+          { action: 'update', id: candidate.id, topic: 'Daemon process lifecycle' },
+          undefined,
+        ),
+      ) as { error?: string; overlapping_skills?: Array<{ name: string }> };
+
+      expect(result.error).toContain('active skill');
+      expect(result.overlapping_skills?.[0].name).toBe('daemon-process-lifecycle');
+    });
+
+    it('update rejects topic overlap with another non-dismissed candidate', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const existing = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Register PowerManager jobs',
+            rationale: 'Existing identified candidate',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-existing-candidate' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+      const candidate = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Distinct update candidate',
+            rationale: 'Starts distinct before update',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-update-candidate' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+
+      const result = parseResult(
+        await t.handler(
+          { action: 'update', id: candidate.id, topic: 'Register recurring PowerManager job' },
+          undefined,
+        ),
+      ) as { error?: string; existing_candidate?: { id: string } };
+
+      expect(result.error).toContain('review queue');
+      expect(result.existing_candidate?.id).toBe(existing.id);
+    });
+
+    it('update allows topic overlap with a dismissed candidate as a warning', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const dismissed = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Author MCP tools for the vault daemon',
+            rationale: 'Dismissed older candidate',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-dismissed-overlap-source' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+      updateCandidate(dismissed.id, { status: 'dismissed', updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
+      const candidate = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Distinct dismissed-overlap update target',
+            rationale: 'Starts distinct before update',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-dismissed-overlap-target' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+
+      const result = parseResult(
+        await t.handler(
+          { action: 'update', id: candidate.id, topic: 'Author MCP tools for vault daemon' },
+          undefined,
+        ),
+      ) as { error?: string; warning?: string; similar_dismissed_candidate?: { id: string } };
+
+      expect(result.error).toBeUndefined();
+      expect(result.warning).toMatch(/dismissed/);
+      expect(result.similar_dismissed_candidate?.id).toBe(dismissed.id);
+    });
+
+    it('create rejects a non-dismissed overlap even when a dismissed overlap scores higher', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const dismissed = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'PowerManager recurring jobs',
+            rationale: 'Dismissed exact match',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-dismissed-best-match' }),
+          },
+          undefined,
+        ),
+      ) as { id: string };
+      updateCandidate(dismissed.id, { status: 'dismissed', updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
+
+      const activeCandidate = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Recurring PowerManager jobs',
+            rationale: 'Non-dismissed overlapping candidate',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-non-dismissed-overlap' }),
+          },
+          undefined,
+        ),
+      ) as { id: string; error?: string };
+      expect(activeCandidate.error).toBeUndefined();
+
+      const result = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'PowerManager recurring jobs',
+            rationale: 'Should reject because active candidate overlaps too',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-dismissed-mask-attempt' }),
+          },
+          undefined,
+        ),
+      ) as { error?: string; existing_candidate?: { id: string } };
+
+      expect(result.error).toContain('review queue');
+      expect(result.existing_candidate?.id).toBe(activeCandidate.id);
     });
 
     it('create returns candidate with topic', async () => {

@@ -85,23 +85,23 @@ export function createSkillTools(deps: VaultToolDeps) {
    * metric. Reported `score` is the max of the two so the rejection
    * message surfaces the stronger signal.
    */
-  function findOverlappingCandidate(
+  function findOverlappingCandidates(
     newTopic: string,
     existing: ReturnType<typeof listCandidates>,
-  ): { candidate: typeof existing[number]; score: number } | null {
-    let best: { candidate: typeof existing[number]; score: number } | null = null;
+    options: { excludeId?: string } = {},
+  ): Array<{ candidate: typeof existing[number]; score: number }> {
+    const matches: Array<{ candidate: typeof existing[number]; score: number }> = [];
     for (const candidate of existing) {
+      if (candidate.id === options.excludeId) continue;
       const jaccard = descriptionSimilarity(newTopic, candidate.topic);
       const overlap = topicOverlapSimilarity(newTopic, candidate.topic);
       const hitsJaccard = jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD;
       const hitsOverlap = overlap >= TOPIC_OVERLAP_THRESHOLD;
       if (!hitsJaccard && !hitsOverlap) continue;
       const score = Math.max(jaccard, overlap);
-      if (!best || score > best.score) {
-        best = { candidate, score };
-      }
+      matches.push({ candidate, score });
     }
-    return best;
+    return matches.sort((a, b) => b.score - a.score);
   }
 
   /**
@@ -129,7 +129,7 @@ export function createSkillTools(deps: VaultToolDeps) {
   function parseJsonArrayParam(
     fieldName: 'quality_failures' | 'coverage_matches',
     value: string | undefined,
-  ): { array?: unknown[]; error?: string } {
+  ): { array?: string[]; error?: string } {
     if (value === undefined) return {};
 
     let parsed: unknown;
@@ -142,13 +142,102 @@ export function createSkillTools(deps: VaultToolDeps) {
     if (!Array.isArray(parsed)) {
       return { error: `${fieldName} must be a JSON array` };
     }
+    if (!parsed.every((entry) => typeof entry === 'string')) {
+      return { error: `${fieldName} must be a JSON array of strings` };
+    }
     return { array: parsed };
   }
 
-  function validateCandidateSourceIds(sourceIds: string | undefined): Record<string, unknown> | null {
-    if (sourceIds === undefined) return null;
-    if (parseSourceRefs(sourceIds).length > 0) return null;
-    return { error: 'source_ids must contain at least one valid source reference' };
+  function validateCandidateSourceIds(
+    sourceIds: string | undefined,
+    options: { required: boolean; minRefs: number },
+  ): { normalized?: string; error?: string } {
+    if (sourceIds === undefined) {
+      return options.required
+        ? { error: 'source_ids is required for identified skill candidates' }
+        : {};
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sourceIds);
+    } catch {
+      return { error: 'source_ids must be a JSON array of valid source references' };
+    }
+    if (!Array.isArray(parsed)) {
+      return { error: 'source_ids must be a JSON array of valid source references' };
+    }
+
+    const invalidEntries = parsed.filter((entry) => parseSourceRefs([entry]).length !== 1);
+    if (invalidEntries.length > 0) {
+      return { error: 'source_ids contains invalid source reference entries' };
+    }
+
+    const refs = parseSourceRefs(parsed);
+    if (refs.length < options.minRefs) {
+      return { error: `source_ids must contain at least ${options.minRefs} valid source references` };
+    }
+
+    return { normalized: JSON.stringify(refs) };
+  }
+
+  function parseSupersedesNames(value: string | undefined | null): string[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function checkCandidateCoverage(args: {
+    topic: string;
+    supersedes?: string | null;
+    excludeCandidateId?: string;
+  }): { error?: Record<string, unknown>; dismissedMatch?: ReturnType<typeof findOverlappingCandidates>[number] } {
+    const supersedesSet = new Set(parseSupersedesNames(args.supersedes));
+
+    const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
+    const topicLower = args.topic.toLowerCase();
+    const overlapping = activeSkills.filter((s) => {
+      if (supersedesSet.has(s.name)) return false;
+      const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
+      if (nameWords.length < 2) return false;
+      return nameWords.every((w: string) => topicLower.includes(w));
+    });
+    if (overlapping.length > 0) {
+      return {
+        error: {
+          error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
+          overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
+        },
+      };
+    }
+
+    const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
+    const matches = findOverlappingCandidates(args.topic, allExisting, {
+      excludeId: args.excludeCandidateId,
+    });
+    const match = matches.find((entry) => entry.candidate.status !== CANDIDATE_STATUS.DISMISSED)
+      ?? matches[0];
+    if (!match) return {};
+    if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
+      return { dismissedMatch: match };
+    }
+    return {
+      error: {
+        error: candidateOverlapError(match.candidate),
+        existing_candidate: {
+          id: match.candidate.id,
+          status: match.candidate.status,
+          topic: match.candidate.topic,
+        },
+        similarity: match.score,
+      },
+    };
   }
 
   function validateCandidateWrite(args: {
@@ -160,21 +249,41 @@ export function createSkillTools(deps: VaultToolDeps) {
     coverage_matches?: string;
   }, existing?: {
     status: string;
+    source_ids: string;
     evidence_bundle_id: string | null;
     quality_score: number | null;
     quality_failures: string;
-  }): Record<string, unknown> | null {
-    const sourceIdsError = validateCandidateSourceIds(args.source_ids);
-    if (sourceIdsError) return sourceIdsError;
+    coverage_matches: string;
+  }): { error?: string; normalizedSourceIds?: string } {
+    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
+    const sourceIds = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+      ? args.source_ids ?? existing?.source_ids
+      : args.source_ids;
+    const sourceIdsValidation = validateCandidateSourceIds(sourceIds, {
+      required: resultingStatus === CANDIDATE_STATUS.IDENTIFIED,
+      minRefs: resultingStatus === CANDIDATE_STATUS.IDENTIFIED ? 3 : 1,
+    });
+    if (sourceIdsValidation.error) return { error: sourceIdsValidation.error };
 
-    const qualityFailures = parseJsonArrayParam('quality_failures', args.quality_failures);
+    const qualityFailures = parseJsonArrayParam(
+      'quality_failures',
+      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+        ? args.quality_failures ?? existing?.quality_failures
+        : args.quality_failures,
+    );
     if (qualityFailures.error) return { error: qualityFailures.error };
 
-    const coverageMatches = parseJsonArrayParam('coverage_matches', args.coverage_matches);
+    const coverageMatches = parseJsonArrayParam(
+      'coverage_matches',
+      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+        ? args.coverage_matches ?? existing?.coverage_matches
+        : args.coverage_matches,
+    );
     if (coverageMatches.error) return { error: coverageMatches.error };
 
-    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
-    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) return null;
+    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) {
+      return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
+    }
 
     const evidenceBundleId = args.evidence_bundle_id ?? existing?.evidence_bundle_id ?? null;
     if (!evidenceBundleId || evidenceBundleId.trim().length === 0) {
@@ -188,16 +297,11 @@ export function createSkillTools(deps: VaultToolDeps) {
       };
     }
 
-    const qualityFailuresArray = args.quality_failures !== undefined
-      ? qualityFailures.array
-      : existing !== undefined
-        ? parseJsonArrayParam('quality_failures', existing.quality_failures).array
-        : undefined;
-    if (!qualityFailuresArray || qualityFailuresArray.length > 0) {
+    if (!qualityFailures.array || qualityFailures.array.length > 0) {
       return { error: 'quality_failures must be an empty array for identified skill candidates' };
     }
 
-    return null;
+    return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
   }
 
   /**
@@ -534,57 +638,16 @@ export function createSkillTools(deps: VaultToolDeps) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
 
-          const writeError = validateCandidateWrite(args);
-          if (writeError) return textResult(writeError);
+          const writeValidation = validateCandidateWrite(args);
+          if (writeValidation.error) return textResult({ error: writeValidation.error });
 
-          // Parse supersedes list (skill names this candidate would replace)
-          let supersedesNames: string[] = [];
-          if (args.supersedes) {
-            try { supersedesNames = JSON.parse(args.supersedes); } catch { /* malformed */ }
-          }
-          const supersedesSet = new Set(supersedesNames);
+          const resultingStatus = args.status ?? CANDIDATE_STATUS.IDENTIFIED;
+          const coverage = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+            ? checkCandidateCoverage({ topic: args.topic, supersedes: args.supersedes })
+            : {};
+          if (coverage.error) return textResult(coverage.error);
 
-          // Guard 1: reject if an active skill already covers this topic.
-          // Checks whether all significant words from a skill name appear in the topic.
-          // Superseded skills are exempt from this check.
-          const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
-          const topicLower = args.topic.toLowerCase();
-          const overlapping = activeSkills.filter((s) => {
-            if (supersedesSet.has(s.name)) return false; // exempt superseded skills
-            const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
-            if (nameWords.length < 2) return false;
-            return nameWords.every((w: string) => topicLower.includes(w));
-          });
-          if (overlapping.length > 0) {
-            return textResult({
-              error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
-              overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
-            });
-          }
-
-          // Guard 2: reject if an existing candidate (any status) has an
-          // overlapping topic. The skill-survey prompt tells the agent to
-          // check dismissed/generated candidates before re-identifying,
-          // but self-grading is unreliable so the check is enforced here.
-          // Dismissed candidates produce a soft warning rather than a hard rejection.
-          const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
-          const match = findOverlappingCandidate(args.topic, allExisting);
-          let dismissedMatch: typeof match | undefined;
-          if (match) {
-            if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
-              dismissedMatch = match;
-            } else {
-              return textResult({
-                error: candidateOverlapError(match.candidate),
-                existing_candidate: {
-                  id: match.candidate.id,
-                  status: match.candidate.status,
-                  topic: match.candidate.topic,
-                },
-                similarity: match.score,
-              });
-            }
-          }
+          const dismissedMatch = coverage.dismissedMatch;
 
           const now = epochSeconds();
           const candidate = insertCandidate({
@@ -596,7 +659,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             rationale: args.rationale,
             confidence: args.confidence,
             status: args.status,
-            source_ids: args.source_ids,
+            source_ids: writeValidation.normalizedSourceIds ?? args.source_ids,
             supersedes: args.supersedes,
             evidence_bundle_id: args.evidence_bundle_id,
             quality_score: args.quality_score,
@@ -631,8 +694,19 @@ export function createSkillTools(deps: VaultToolDeps) {
           const existing = getCandidate(args.id, scope);
           if (!existing) return textResult({ error: `Candidate not found: ${args.id}` });
 
-          const writeError = validateCandidateWrite(args, existing);
-          if (writeError) return textResult(writeError);
+          const writeValidation = validateCandidateWrite(args, existing);
+          if (writeValidation.error) return textResult({ error: writeValidation.error });
+
+          const resultingStatus = args.status ?? existing.status;
+          const resultingTopic = args.topic ?? existing.topic;
+          const coverage = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+            ? checkCandidateCoverage({
+              topic: resultingTopic,
+              supersedes: args.supersedes ?? existing.supersedes,
+              excludeCandidateId: existing.id,
+            })
+            : {};
+          if (coverage.error) return textResult(coverage.error);
 
           const now = epochSeconds();
           const updated = updateCandidate(args.id, {
@@ -640,7 +714,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.rationale !== undefined ? { rationale: args.rationale } : {}),
             ...(args.confidence !== undefined ? { confidence: args.confidence } : {}),
             ...(args.status !== undefined ? { status: args.status } : {}),
-            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: writeValidation.normalizedSourceIds ?? args.source_ids } : {}),
             ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
             ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
             ...(args.evidence_bundle_id !== undefined ? { evidence_bundle_id: args.evidence_bundle_id } : {}),
@@ -652,6 +726,16 @@ export function createSkillTools(deps: VaultToolDeps) {
             updated_at: now,
           }, scope);
           if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
+          if (coverage.dismissedMatch) {
+            return textResult({
+              ...updated,
+              warning: candidateOverlapError(coverage.dismissedMatch.candidate),
+              similar_dismissed_candidate: {
+                id: coverage.dismissedMatch.candidate.id,
+                topic: coverage.dismissedMatch.candidate.topic,
+              },
+            });
+          }
           return textResult(updated);
         }
 
