@@ -16,6 +16,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 import { run as runInit } from '@myco/cli/init.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 
 let tmpDir: string;
 let mainRepo: string;
@@ -86,37 +87,27 @@ describe('myco init --worktree', () => {
     expect(fs.readFileSync(mirrored, 'utf-8')).toBe('/abs/path/to/myco-dev\n');
   });
 
-  it('bootstraps every enabled symbiont (full manifest set)', async () => {
-    // Cover the full enabled set on the dogfooding machine — including pi
-    // and vscode-copilot, which were missed by an earlier 6-symbiont version
-    // of this test. The implementation is symbiont-agnostic by construction;
-    // this test makes the coverage exhaustive so a new symbiont added to
-    // manifests/ without test updates will at least surface a gap to chase.
-    plantMainVault(mainRepo, [
-      'claude-code', 'cursor', 'codex', 'gemini',
-      'opencode', 'windsurf', 'pi', 'vscode-copilot',
-    ]);
+  it('bootstraps every enabled symbiont (full manifest set, derived from loadManifests)', async () => {
+    // Drive coverage off the manifest registry itself — no hardcoded
+    // per-symbiont strings. Every manifest with a registration.hooksTarget
+    // must produce that file at the worktree's root after bootstrap. If
+    // someone adds a new symbiont to manifests/, this test exercises it
+    // automatically; if they remove one, the loop shrinks. No magic-string
+    // drift between the manifest and the test.
+    const allManifests = loadManifests();
+    const symbiontsWithHooks = allManifests.filter((m) => !!m.registration?.hooksTarget);
+    expect(symbiontsWithHooks.length).toBeGreaterThan(0);
+
+    plantMainVault(mainRepo, symbiontsWithHooks.map((m) => m.name));
     execFileSync('git', ['worktree', 'add', worktreePath, '-b', 'feature'], { cwd: mainRepo });
     process.chdir(worktreePath);
 
     await runInit(['--worktree']);
 
-    // Each symbiont's distinguishing artifact (hooksTarget where present,
-    // or the next-best per-manifest write) should land in the worktree.
-    // Values match packages/myco/src/symbionts/manifests/*.yaml.
-    const perSymbiontArtifact: Record<string, string> = {
-      'claude-code': path.join('.claude', 'settings.json'),
-      'cursor': path.join('.cursor', 'hooks.json'),
-      'codex': path.join('.codex', 'config.toml'),
-      'gemini': path.join('.gemini', 'settings.json'),
-      'opencode': path.join('.opencode', 'plugins', 'myco.ts'),
-      'windsurf': path.join('.windsurf', 'hooks.json'),
-      'pi': path.join('.pi', 'extensions', 'myco', 'index.ts'),
-      'vscode-copilot': path.join('.vscode', 'mcp.json'),
-    };
-    for (const [name, relPath] of Object.entries(perSymbiontArtifact)) {
+    for (const manifest of symbiontsWithHooks) {
+      const relPath = manifest.registration!.hooksTarget!;
       const abs = path.join(worktreePath, relPath);
-      if (!fs.existsSync(abs)) console.error(`missing ${name} artifact at ${relPath}`);
+      if (!fs.existsSync(abs)) console.error(`missing ${manifest.name} hooksTarget at ${relPath}`);
       expect(fs.existsSync(abs)).toBe(true);
     }
 
