@@ -592,6 +592,7 @@ describe('buildSkillSurveyInstruction', () => {
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
     expect(result!.instruction).toContain('only propose project-specific procedural domains');
+    expect(result!.instruction).toContain('### Candidate Evidence Bundles (0)');
     expect(result!.instruction).toContain('settled-1');
     expect(result!.instruction).toContain('spore-survey-1');
   });

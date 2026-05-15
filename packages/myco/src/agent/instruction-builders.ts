@@ -46,6 +46,7 @@ import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './tools/skill-validator.js';
+import { renderEvidenceBundlesForPrompt } from './skill-candidate-evidence.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -339,6 +340,10 @@ export function buildSkillSurveyInstruction(
   for (const s of activeSkills) {
     parts.push(`- **${s.name}**: ${s.description.slice(0, 150)}`);
   }
+  parts.push('');
+
+  // 6. Candidate evidence bundles
+  parts.push(renderEvidenceBundlesForPrompt([]));
   parts.push('');
 
   // Advance watermark
