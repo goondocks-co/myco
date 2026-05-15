@@ -68,7 +68,7 @@ const navItems: readonly NavItem[] = [
   { to: '/g/:groveSlug/dashboard', label: 'Grove', icon: Trees, scope: 'grove', category: 'Grove management' },
   { to: '/groves', label: 'Groves', icon: FolderTree, scope: 'machine', category: 'Grove management' },
   { to: '/g/:groveSlug/team', label: 'Team', icon: Users, scope: 'grove', category: 'Grove management' },
-  { to: '/settings', label: 'Settings', icon: Settings, scope: 'project', category: 'Settings' },
+  { to: '/settings', label: 'Settings', icon: Settings, scope: 'machine', category: 'Settings' },
 ];
 
 const SIDEBAR_COLLAPSED_KEY = 'myco-ui-sidebar-collapsed';

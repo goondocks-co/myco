@@ -203,8 +203,7 @@ function ScheduledMaintenanceCard({
     void doRunNow();
   }
 
-  const groveSlug = selection?.grove.slug ?? '';
-  const settingsHref = `/g/${groveSlug}/settings`;
+  const settingsHref = '/settings#maintenance';
 
   return (
     <Surface level="low" className="p-6 space-y-4">
