@@ -216,6 +216,50 @@ describe('handleUpdateCandidate', () => {
     expect(body.candidate.status).toBe('approved');
   });
 
+  it('updates candidate quality metadata fields', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-quality-update',
+      evidence_bundle_id: 'bundle-before',
+      quality_score: 0.1,
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+      last_reconciled_at: 1_700_000_000,
+      reconciliation_reason: 'before',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-quality-update' },
+        body: {
+          evidence_bundle_id: null,
+          quality_score: 0.88,
+          quality_failures: '["missing-examples"]',
+          coverage_matches: '["packages/myco/src/agent/tools/skill-tools.ts"]',
+          last_reconciled_at: null,
+          reconciliation_reason: 'manual review',
+        },
+      }),
+    );
+
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      candidate: {
+        evidence_bundle_id: string | null;
+        quality_score: number | null;
+        quality_failures: string;
+        coverage_matches: string;
+        last_reconciled_at: number | null;
+        reconciliation_reason: string | null;
+      };
+    };
+    expect(body.candidate.evidence_bundle_id).toBeNull();
+    expect(body.candidate.quality_score).toBe(0.88);
+    expect(body.candidate.quality_failures).toBe('["missing-examples"]');
+    expect(body.candidate.coverage_matches).toBe('["packages/myco/src/agent/tools/skill-tools.ts"]');
+    expect(body.candidate.last_reconciled_at).toBeNull();
+    expect(body.candidate.reconciliation_reason).toBe('manual review');
+  });
+
   it('returns 400 when body is missing', async () => {
     insertCandidate(makeCandidate({ id: 'cand-nobody' }));
 
@@ -279,6 +323,18 @@ describe('handleUpdateCandidate', () => {
       );
 
       expect(result.status).toBe(200);
+    });
+
+    it('accepts status=deferred', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-deferred', status: 'identified' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-deferred' }, body: { status: 'deferred' } }),
+      );
+
+      expect(result.status).toBe(200);
+      const body = result.body as { candidate: { status: string } };
+      expect(body.candidate.status).toBe('deferred');
     });
   });
 });

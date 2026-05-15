@@ -107,7 +107,20 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
   if (!body) return { status: 400, body: { error: 'Request body required' } };
 
   // Pick only allowed mutable fields — reject arbitrary body fields
-  const { status, topic, rationale, confidence, source_ids, skill_id } = body as Record<string, unknown>;
+  const {
+    status,
+    topic,
+    rationale,
+    confidence,
+    source_ids,
+    skill_id,
+    evidence_bundle_id,
+    quality_score,
+    quality_failures,
+    coverage_matches,
+    last_reconciled_at,
+    reconciliation_reason,
+  } = body as Record<string, unknown>;
 
   // Status whitelist guard — defense in depth against a compromised or
   // misconfigured MCP client reaching this endpoint with an internal
@@ -134,6 +147,12 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
     ...(confidence !== undefined ? { confidence: confidence as number } : {}),
     ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
     ...(skill_id !== undefined ? { skill_id: skill_id as string | null } : {}),
+    ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
+    ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
+    ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
+    ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
+    ...(last_reconciled_at !== undefined ? { last_reconciled_at: last_reconciled_at as number | null } : {}),
+    ...(reconciliation_reason !== undefined ? { reconciliation_reason: reconciliation_reason as string | null } : {}),
     updated_at: epochSeconds(),
   }, scope);
 
