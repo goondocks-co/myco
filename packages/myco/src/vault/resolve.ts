@@ -107,3 +107,45 @@ function resolveRepoRoot(cwd: string): string {
     return cwd;
   }
 }
+
+/**
+ * Resolve the current git worktree's top-level directory (not the main
+ * repo root). In a worktree this is the worktree path; in the main repo
+ * it equals the main repo root. Returns null when cwd isn't in a git
+ * repo at all.
+ */
+export function resolveWorktreeRoot(cwd: string = process.cwd()): string | null {
+  try {
+    return execFileSync(
+      'git', ['rev-parse', '--show-toplevel'],
+      { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    ).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the main repo root from anywhere — worktree or not. Returns
+ * the same answer as `resolveVaultDir(..).parent`, exposed directly so
+ * callers can compare against `resolveWorktreeRoot` to detect worktrees.
+ */
+export function resolveMainRepoRoot(cwd: string = process.cwd()): string {
+  return resolveRepoRoot(cwd);
+}
+
+/**
+ * True when `cwd` is inside a git worktree that is NOT the main repo
+ * checkout. The capture stack ships its hook bootstrap files
+ * (`.claude/settings.json`, `.agents/myco-run.cjs`, optionally
+ * `.myco/runtime.command`) as untracked or gitignored — so a freshly
+ * created worktree has none of them and capture silently goes dark
+ * until they're written. `myco init --worktree` is the supported
+ * recovery path; this helper is what it uses to gate behavior.
+ */
+export function isInsideWorktree(cwd: string = process.cwd()): boolean {
+  const worktreeRoot = resolveWorktreeRoot(cwd);
+  if (!worktreeRoot) return false;
+  const mainRepoRoot = resolveMainRepoRoot(cwd);
+  return path.resolve(worktreeRoot) !== path.resolve(mainRepoRoot);
+}

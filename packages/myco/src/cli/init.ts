@@ -1,4 +1,7 @@
-import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
+import {
+  resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError,
+  isInsideWorktree, resolveMainRepoRoot, resolveWorktreeRoot,
+} from '../vault/resolve.js';
 import { ensureProjectManifest, loadProjectManifest, type ProjectManifest } from '../config/project-manifest.js';
 import { resolveProjectVaultDir } from '../grove/paths.js';
 import { ensureGroveDatabase } from '../grove/database.js';
@@ -27,6 +30,7 @@ Initialize or reconcile Myco for the current project.
 Options:
   --project <path>                 Project root to initialize
   --grove <name|id>                Grove to bind this project to
+  --worktree                       Bootstrap hook files in a git worktree
   --non-interactive                Run without prompts
   --embedding-provider <provider>  Embedding provider for new vaults
   --embedding-model <model>        Embedding model for new vaults
@@ -46,6 +50,11 @@ function printBanner(): void {
 export async function run(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(USAGE);
+    return;
+  }
+
+  if (args.includes('--worktree')) {
+    await runWorktreeBootstrap();
     return;
   }
 
@@ -280,6 +289,97 @@ export async function run(args: string[]): Promise<void> {
   }
   console.log('');
   console.log('Start a coding session -- Myco will begin capturing automatically.');
+}
+
+/**
+ * Bootstrap hook files inside a git worktree.
+ *
+ * Worktrees inherit nothing untracked from `git worktree add`: the capture
+ * stack's `.claude/settings.json`, `.agents/myco-run.cjs`, and (if used)
+ * `.myco/runtime.command` are all gitignored, so a fresh worktree captures
+ * nothing until those files exist at its own root. The main repo's vault
+ * stays shared (via `resolveVaultDir`'s worktree-aware walk); only the
+ * hook bootstrap needs per-worktree writes.
+ *
+ * This path:
+ *   1. Asserts we're in a worktree (not the main checkout).
+ *   2. Asserts the main repo has an initialized vault.
+ *   3. Reads the symbiont enablement from the main repo's config.
+ *   4. Runs `SymbiontInstaller` with `projectRoot = worktreeRoot` and
+ *      `vaultDir = mainRepoRoot/.myco` so hook files land in the worktree
+ *      while config reads still resolve through the shared vault.
+ *   5. Mirrors `<main>/.myco/runtime.command` into the worktree if the
+ *      main repo pins a project-scoped runtime. Machine-scoped pins
+ *      (`~/.myco/runtime.command`) work for worktrees without mirroring.
+ */
+async function runWorktreeBootstrap(): Promise<void> {
+  const cwd = process.cwd();
+  if (!isInsideWorktree(cwd)) {
+    console.error(
+      '\nmyco init --worktree: cwd is not inside a git worktree.\n' +
+      'Run `myco init --worktree` from the worktree path you want to bootstrap.\n',
+    );
+    process.exit(1);
+  }
+  const worktreeRoot = resolveWorktreeRoot(cwd);
+  const mainRepoRoot = resolveMainRepoRoot(cwd);
+  if (!worktreeRoot) {
+    console.error('\nmyco init --worktree: failed to resolve the worktree root via git.\n');
+    process.exit(1);
+  }
+
+  const mainVaultDir = path.join(mainRepoRoot, '.myco');
+  if (!fs.existsSync(path.join(mainVaultDir, 'myco.yaml'))) {
+    console.error(
+      `\nmyco init --worktree: main repo at ${mainRepoRoot} has no Myco vault.\n` +
+      'Run `myco init` in the main repo first, then `myco init --worktree` in this worktree.\n',
+    );
+    process.exit(1);
+  }
+
+  // Pull symbiont enablement from the main repo's merged config so we
+  // bootstrap exactly the symbionts the user already configured.
+  const { loadMergedConfig } = await import('../config/loader.js');
+  const config = loadMergedConfig(mainVaultDir);
+  const enabledNames = new Set(
+    Object.entries(config.symbionts ?? {})
+      .filter(([, value]) => (value as { enabled?: boolean }).enabled)
+      .map(([name]) => name),
+  );
+
+  const allManifests = loadManifests();
+  const selectedManifests = allManifests.filter((m) => enabledNames.has(m.name));
+  if (selectedManifests.length === 0) {
+    console.log('  No symbionts enabled in the main repo — nothing to bootstrap.');
+    return;
+  }
+
+  // Ensure `<worktree>/.myco/` exists so a mirrored runtime.command has
+  // somewhere to land; the installer also creates `.agents/` for the hook
+  // guard and CLI launcher.
+  fs.mkdirSync(path.join(worktreeRoot, '.myco'), { recursive: true });
+
+  const pkgRoot = resolvePackageRoot();
+  console.log(`Bootstrapping ${selectedManifests.length} symbiont(s) in worktree ${worktreeRoot}`);
+  registerSymbionts(selectedManifests, worktreeRoot, pkgRoot, 'Registered', mainVaultDir);
+
+  // Mirror the project-scoped runtime pin into the worktree if one exists.
+  // myco-run.cjs walks up from cwd looking for `<dir>/.myco/runtime.command`,
+  // and worktrees typically don't sit beneath the main repo, so the walk
+  // would otherwise miss a project pin entirely.
+  const mainPin = path.join(mainVaultDir, 'runtime.command');
+  if (fs.existsSync(mainPin)) {
+    const worktreePin = path.join(worktreeRoot, '.myco', 'runtime.command');
+    fs.copyFileSync(mainPin, worktreePin);
+    console.log(`  ✓ Mirrored runtime.command from main repo`);
+  }
+
+  console.log('');
+  console.log('=== Worktree Bootstrap Complete ===');
+  console.log(`Worktree: ${worktreeRoot}`);
+  console.log(`Vault:    ${mainVaultDir} (shared with main repo)`);
+  console.log('');
+  console.log('Start a coding session in this worktree -- capture is now live.');
 }
 
 function assertManifestGroveBindingCompatible(
