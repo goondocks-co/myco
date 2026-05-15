@@ -220,36 +220,10 @@ The 6-theme system uses CSS custom properties with color coordination:
 
 ### Adding New Themes
 
-1. **Create theme definition file**:
-```bash
-touch packages/myco/ui/src/themes/ocean.css
-```
-
-2. **Define color palette**:
-```css
-:root[data-theme="ocean"] {
-  --primary: #0ea5e9; --on-primary: #ffffff;
-  --primary-container: #0284c7; --on-primary-container: #ffffff;
-  --secondary: #64748b; --on-secondary: #ffffff;
-  --secondary-container: #475569;
-  --tertiary: #06b6d4; --on-tertiary: #ffffff;
-  --tertiary-container: #0891b2;
-}
-```
-
-3. **Register in theme configuration**:
-```typescript
-// Update packages/myco/src/config/appearance-values.ts
-export const APPEARANCE_THEMES = [
-  'sage', 'moss', 'terracotta', 'dusk', 'plum', 'slate', 'ocean'
-] as const;
-```
-
-4. **Add CSS import**:
-```css
-/* Update packages/myco/ui/src/index.css */
-@import './themes/ocean.css';
-```
+1. **Create theme definition file**: `touch packages/myco/ui/src/themes/ocean.css`
+2. **Define color palette**: CSS custom properties with ocean color scheme
+3. **Register in theme configuration**: Update `packages/myco/src/config/appearance-values.ts` APPEARANCE_THEMES array
+4. **Add CSS import**: Update `packages/myco/ui/src/index.css` with new theme import
 
 ### Reserved Color Coordination
 
@@ -379,26 +353,10 @@ function useAppearanceConfig(): [AppearanceConfig, (config: Partial<AppearanceCo
 
 Follow the established pattern for settings page components:
 
-1. **Create component file**:
-```bash
-touch packages/myco/ui/src/components/settings/NewSettingControl.tsx
-```
-
-2. **Implement with appearance awareness**:
-```typescript
-export function NewSettingControl() {
-  const { theme, updateAppearance } = useAppearanceConfig()
-  
-  return (
-    <Card className="setting-control">
-      <Label>New Setting</Label>
-      <Select value={currentValue} onChange={handleChange} className="theme-aware-select">
-        {/* Options */}
-      </Select>
-    </Card>
-  )
-}
-```
+1. **Create component file**: `touch packages/myco/ui/src/components/settings/NewSettingControl.tsx`
+2. **Implement with appearance awareness**: Use theme-aware classes and appearance config hooks
+3. **Test across themes**: Verify component works correctly with all 6 themes
+4. **Add Playwright tests**: Test component behavior and visual state
 
 ### DevTools Workflow for Component Development
 
@@ -431,255 +389,221 @@ test('theme picker updates appearance correctly', async ({ page }) => {
 })
 ```
 
-## Procedure G: Notification System Integration
+## Procedure G: Master-Detail Layout Architecture
 
-### Notification Database Schema and Event Architecture
+### MasterDetailSplit Component Implementation
 
-Create notification tables with proper constraints and project scoping:
-
-```sql
-CREATE TABLE notifications (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  title TEXT NOT NULL,
-  message TEXT NOT NULL,
-  project_id TEXT,  -- NULL for daemon-scoped notifications
-  user_id TEXT,
-  status TEXT DEFAULT 'unread' CHECK (status IN ('unread', 'read', 'dismissed')),
-  created_at INTEGER DEFAULT (unixepoch()),
-  expires_at INTEGER,
-  metadata TEXT,  -- JSON payload
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-);
-
-CREATE TABLE notification_deliveries (
-  id TEXT PRIMARY KEY,
-  notification_id TEXT NOT NULL,
-  delivery_mode TEXT NOT NULL,  -- 'ui_banner', 'browser_push', 'email'
-  delivered_at INTEGER DEFAULT (unixepoch()),
-  acknowledged_at INTEGER,
-  FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
-);
-```
-
-Define consistent event payload structures:
+Implement responsive master-detail layout with keyboard navigation for Sessions, Agent, and RunDetail surfaces:
 
 ```typescript
-interface NotificationEvent {
-  type: string;
-  title: string;
-  message: string;
-  projectId?: string;  // Null for daemon notifications
-  userId?: string;
-  metadata?: Record<string, any>;
-  expiresAt?: number;
-  deliveryModes: NotificationDeliveryMode[];
+interface MasterDetailSplitProps {
+  masterContent: React.ReactNode;
+  detailContent: React.ReactNode;
+  showDetail: boolean;
+  onCloseDetail: () => void;
+  className?: string;
 }
-```
 
-### Domain Registry Wiring and Notification Emission
+export function MasterDetailSplit({
+  masterContent,
+  detailContent,
+  showDetail,
+  onCloseDetail,
+  className
+}: MasterDetailSplitProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
 
-Register new domains and implement emission points:
-
-```typescript
-import { register } from '../notifications/registry.js';
-import { notify } from '../notifications/notify.js';
-
-export const YOUR_DOMAIN_DESCRIPTOR = {
-  domain: 'your-domain',
-  label: 'Your Domain',
-  types: [
-    { 
-      id: 'your-domain.action.success', 
-      label: 'Action completed', 
-      defaultMode: 'banner', 
-      defaultLevel: 'success' 
-    },
-    { 
-      id: 'your-domain.action.error', 
-      label: 'Action failed', 
-      defaultMode: 'banner', 
-      defaultLevel: 'error' 
-    }
-  ]
-};
-
-// Register during initialization
-register(YOUR_DOMAIN_DESCRIPTOR);
-
-// Emit in domain logic
-export async function performDomainAction(entityId: string): Promise<void> {
-  const vaultDir = getVaultDir();
-  
-  try {
-    // ... perform domain logic
-    
-    notify(vaultDir, {
-      domain: 'your-domain',
-      type: 'your-domain.action.success',
-      title: 'Action Completed',
-      message: `Successfully processed ${entityId}`,
-      link: `/domain/${entityId}`,
-      metadata: { entityId, timestamp: Date.now() }
-    });
-  } catch (error) {
-    notify(vaultDir, {
-      domain: 'your-domain',
-      type: 'your-domain.action.error',
-      title: 'Action Failed',
-      message: error.message,
-      level: 'error',
-      metadata: { entityId, error: error.message }
-    });
-    throw error;
-  }
-}
-```
-
-## Procedure H: Notification Display Components
-
-### Notification Provider and React State Management
-
-Build notification display components with proper state management:
-
-```tsx
-export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [dismissTimers, setDismissTimers] = useState<Map<string, NodeJS.Timeout>>(new Map());
-
-  const addNotification = useCallback((notification: Omit<Notification, 'id'>) => {
-    const id = crypto.randomUUID();
-    const newNotification = { ...notification, id };
-    
-    setNotifications(prev => [newNotification, ...prev]);
-    
-    // Auto-dismiss after delay if configured
-    if (notification.autoDismissMs) {
-      const timer = setTimeout(() => dismissNotification(id), notification.autoDismissMs);
-      setDismissTimers(prev => new Map(prev.set(id, timer)));
-    }
-  }, []);
-
-  const dismissNotification = useCallback((id: string) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-    const timer = dismissTimers.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      setDismissTimers(prev => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  }, [dismissTimers]);
-
-  return (
-    <NotificationContext.Provider value={{ notifications, addNotification, dismissNotification }}>
-      {children}
-    </NotificationContext.Provider>
-  );
-};
-
-export const NotificationBanner: React.FC<{
-  notification: Notification;
-  onDismiss: () => void;
-  onAction?: () => void;
-}> = ({ notification, onDismiss, onAction }) => {
-  const [isVisible, setIsVisible] = useState(false);
-  
+  // Keyboard navigation for closing detail view
   useEffect(() => {
-    const timer = setTimeout(() => setIsVisible(true), 10);
-    return () => clearTimeout(timer);
-  }, []);
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && showDetail) {
+        onCloseDetail();
+      }
+    }
 
-  const handleDismiss = () => {
-    setIsVisible(false);
-    setTimeout(onDismiss, 300);
-  };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [showDetail, onCloseDetail]);
 
   return (
     <div 
-      className={`notification-banner ${isVisible ? 'notification-banner--visible' : ''}`}
-      role="alert"
-      aria-live="polite"
+      ref={containerRef}
+      className={`master-detail-split ${showDetail ? 'detail-open' : ''} ${className || ''}`}
     >
-      <div className="notification-banner__content">
-        <span className="notification-banner__icon">
-          {notification.type === 'skill_generated' ? '🎯' : 'ℹ️'}
-        </span>
-        <div className="notification-banner__text">
-          <h4 className="notification-banner__title">{notification.title}</h4>
-          <p className="notification-banner__message">{notification.message}</p>
+      <div className="master-panel">
+        {masterContent}
+      </div>
+      {showDetail && (
+        <div className="detail-panel">
+          <button 
+            className="close-detail-btn"
+            onClick={onCloseDetail}
+            aria-label="Close detail view"
+          >
+            ×
+          </button>
+          {detailContent}
         </div>
-      </div>
-      <div className="notification-banner__actions">
-        {onAction && <button onClick={onAction}>View</button>}
-        <button onClick={handleDismiss}>×</button>
-      </div>
+      )}
     </div>
   );
-};
+}
 ```
 
-### Browser Notification Management and Rate Limiting
+### Responsive Master-Detail CSS
 
-Implement progressive permission requests and rate limiting:
+Define CSS patterns for responsive master-detail behavior:
+
+```css
+.master-detail-split {
+  display: grid;
+  height: 100%;
+  grid-template-columns: 1fr;
+  transition: grid-template-columns 0.2s ease-in-out;
+}
+
+.master-detail-split.detail-open {
+  grid-template-columns: 350px 1fr;
+}
+
+.master-panel {
+  overflow: auto;
+  border-right: 1px solid var(--border-color);
+}
+
+.detail-panel {
+  position: relative;
+  overflow: auto;
+  background: var(--surface-container);
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .master-detail-split.detail-open {
+    grid-template-columns: 0 1fr;
+  }
+  
+  .master-panel {
+    overflow: hidden;
+  }
+}
+```
+
+### Keyboard Navigation Integration
+
+Implement arrow key navigation within master lists using `useMasterListNavigation` hook for consistent behavior across Sessions, Agent, and RunDetail surfaces.
+
+## Procedure H: Operations Surface URL Routing
+
+### Nested URL Structure for Operations
+
+Implement hierarchical URL routing for the Operations surface with proper breadcrumb navigation:
 
 ```typescript
-class BrowserNotificationManager {
-  private permissionRequested = false;
-  private lastRequestTime = 0;
-  private readonly REQUEST_COOLDOWN = 24 * 60 * 60 * 1000; // 24 hours
+// URL structure: /operations/:category/:operationId?
+export function OperationsRouter() {
+  return (
+    <Routes>
+      <Route path="/operations" element={<OperationsLayout />}>
+        <Route index element={<OperationsOverview />} />
+        <Route path=":category" element={<OperationsCategoryView />}>
+          <Route path=":operationId" element={<OperationDetailView />} />
+        </Route>
+      </Route>
+    </Routes>
+  );
+}
 
-  async requestPermissionIfNeeded(): Promise<NotificationPermission> {
-    const currentPermission = Notification.permission;
-    if (currentPermission !== 'default') return currentPermission;
+function OperationsLayout() {
+  const { category, operationId } = useParams();
+  const location = useLocation();
+  
+  const breadcrumbs = useMemo(() => {
+    const crumbs = [{ label: 'Operations', path: '/operations' }];
     
-    // Avoid rapid permission requests
-    const now = Date.now();
-    if (this.permissionRequested && (now - this.lastRequestTime) < this.REQUEST_COOLDOWN) {
-      return 'default';
-    }
-    
-    this.permissionRequested = true;
-    this.lastRequestTime = now;
-    return await Notification.requestPermission();
-  }
-
-  async showNotificationSafely(title: string, options: NotificationOptions) {
-    const permission = await this.requestPermissionIfNeeded();
-    if (permission === 'granted') {
-      return new Notification(title, {
-        ...options,
-        tag: options.tag || 'myco-notification',
-        requireInteraction: false
+    if (category) {
+      crumbs.push({ 
+        label: formatCategoryLabel(category), 
+        path: `/operations/${category}` 
       });
     }
-    return this.showUIFallback(title, options);
-  }
-}
-
-class NotificationRateLimiter {
-  private readonly recentNotifications = new Map<string, number[]>();
-  private readonly MAX_PER_HOUR = 10;
-  private readonly MAX_PER_TYPE_PER_HOUR = 3;
-
-  canShowNotification(type: string): boolean {
-    const now = Date.now();
-    const hourAgo = now - (60 * 60 * 1000);
     
-    // Check global and per-type rate limits
-    const allRecent = Array.from(this.recentNotifications.values())
-      .flat()
-      .filter(time => time > hourAgo);
-    if (allRecent.length >= this.MAX_PER_HOUR) return false;
+    if (operationId) {
+      crumbs.push({ 
+        label: operationId, 
+        path: location.pathname 
+      });
+    }
     
-    const typeRecent = (this.recentNotifications.get(type) || [])
-      .filter(time => time > hourAgo);
-    return typeRecent.length < this.MAX_PER_TYPE_PER_HOUR;
-  }
+    return crumbs;
+  }, [category, operationId, location.pathname]);
+  
+  return (
+    <div className="operations-layout">
+      <Breadcrumbs crumbs={breadcrumbs} />
+      <Outlet />
+    </div>
+  );
 }
 ```
+
+### URL-Driven State Management
+
+Synchronize component state with URL parameters for deep linking and browser history. Use URL params as source of truth, extract operation ID from location.pathname, and wire MasterDetailSplit to URL navigation.
+
+## Procedure I: Unified Settings Registry
+
+### Settings Registry Architecture
+
+Implement centralized settings registry for consistent configuration management:
+
+```typescript
+interface SettingDefinition {
+  key: string;
+  label: string;
+  description?: string;
+  type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect';
+  options?: Array<{ value: string; label: string }>;
+  scope: 'machine' | 'grove' | 'project';
+  section: string;
+  validation?: (value: any) => string | null;
+  defaultValue: any;
+}
+
+class SettingsRegistry {
+  private settings = new Map<string, SettingDefinition>();
+  private sections = new Set<string>();
+  
+  register(setting: SettingDefinition) {
+    this.settings.set(setting.key, setting);
+    this.sections.add(setting.section);
+  }
+  
+  getSettingsBySection(section: string): SettingDefinition[] {
+    return Array.from(this.settings.values())
+      .filter(setting => setting.section === section)
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+  
+  getSections(): string[] {
+    return Array.from(this.sections).sort();
+  }
+  
+  getSetting(key: string): SettingDefinition | undefined {
+    return this.settings.get(key);
+  }
+}
+
+export const settingsRegistry = new SettingsRegistry();
+```
+
+### Dynamic Settings Form Generation
+
+Generate settings forms dynamically from registry definitions using SettingsSection component that maps registry definitions to appropriate form controls (Switch, Select, Input) with validation.
+
+### Settings Registration Patterns
+
+Register settings during application initialization with proper scope, validation, and default values for theme, daemon port, and other configuration options.
 
 ## Cross-Cutting Gotchas
 
@@ -707,20 +631,16 @@ class NotificationRateLimiter {
 
 **Runtime Badge State Desync**: Runtime badges can become stale if not properly refreshed. Use polling intervals and ensure the daemon stats are being updated correctly when runtime origin changes.
 
-**Notification Emission Point Timing**: Call `notify()` AFTER core operations succeed, not before. Failed operations shouldn't generate success notifications, but always emit error notifications in catch blocks.
+**Master-Detail State Sync**: URL params must drive master-detail state, not vice versa. Component state that doesn't reflect in the URL breaks browser history and deep linking.
 
-**VaultDir Resolution**: Always pass correct `vaultDir` to `notify()`. Use `getVaultDir()` or undefined for no-op behavior. Never hardcode vault paths.
+**Keyboard Navigation Scope**: Keyboard event listeners for master-detail navigation must be properly scoped to avoid conflicts. Use capture phase carefully and always cleanup listeners.
 
-**Registry Timing**: Register notification domains during application initialization, not on-demand. Registry must be populated before first `notify()` call.
+**Responsive Breakpoint Coordination**: Master-detail responsive behavior must coordinate with global layout breakpoints. Test mobile behavior thoroughly when detail panel is open.
 
-**Browser Permission Timing**: Never request notification permissions on page load without user interaction. Modern browsers block aggressive permission requests permanently.
+**URL Routing Case Sensitivity**: Operations category URLs are case-sensitive. Ensure consistent casing between route definitions and navigation calls.
 
-**Rate Limiting Scope**: Implement rate limiting per notification type AND globally. Type-specific limits prevent spam, global limits prevent system overload.
+**Settings Registry Timing**: Register all settings before first Settings page render. Late registration causes missing controls and inconsistent state.
 
-**Database Transaction Scope**: Wrap notification creation and delivery recording in same transaction to ensure consistency.
+**Settings Validation Scope**: Validate setting values both in the UI and in the config update handlers. UI validation prevents bad input, server validation prevents corruption.
 
-**React State Batching**: Use React's batching mechanisms when adding multiple notifications rapidly to prevent display flickering.
-
-**Memory Leak Prevention**: Always clear notification timers and event listeners when components unmount.
-
-**Fallback Delivery Chain**: Design delivery modes with clear fallback priorities. If high-priority delivery fails, automatically attempt lower-priority modes rather than losing notifications.
+**Config Override Resolution**: Settings registry must respect the three-tier config architecture (Machine > Grove > Project). UI should clearly indicate which scope a setting comes from and which scope changes will affect.
