@@ -139,6 +139,8 @@ describe('POST /canopy/inject — handler', () => {
     expect(res.body).toMatchObject({ inject: false, reason: 'disabled' });
   });
 
+  // HTTP-server setup compounds under full-suite event-loop contention; raise the
+  // 5s default so it doesn't fire before the assertion runs. See issue #287.
   it('returns targeted when offset is set', async () => {
     const handler = createCanopyInjectHandler({
       liveConfig: { current: makeConfig() },
@@ -153,7 +155,7 @@ describe('POST /canopy/inject — handler', () => {
       },
     });
     expect(res.body).toMatchObject({ inject: false, reason: 'targeted' });
-  });
+  }, 15_000);
 
   it('returns unknown_file when path is not in canopy_entries', async () => {
     const handler = createCanopyInjectHandler({
