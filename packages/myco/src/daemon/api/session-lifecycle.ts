@@ -20,7 +20,8 @@ import type { EventBuffer } from '@myco/capture/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { cleanStaleBuffers } from '@myco/capture/buffer.js';
-import { upsertSession, closeSession, updateSession } from '@myco/db/queries/sessions.js';
+import { closeSession, updateSession } from '@myco/db/queries/sessions.js';
+import { ensureSession } from '../session-lifecycle.js';
 import { notify } from '@myco/notifications/notify.js';
 import { epochSeconds, STALE_BUFFER_MAX_AGE_MS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -136,27 +137,30 @@ export function createSessionLifecycleHandlers(deps: SessionLifecycleDeps) {
     }
     const { session_id, agent, branch, started_at } = RegisterBody.parse(req.body);
     const resolvedStartedAt = started_at ?? new Date().toISOString();
-    registry.register(session_id, { started_at: resolvedStartedAt, branch });
-    server.updateDaemonJsonSessions(registry.sessions);
-
-    // Upsert session in SQLite — always reset to active on register
-    const now = epochSeconds();
-    const startedEpoch = Math.floor(new Date(resolvedStartedAt).getTime() / 1000);
     const projectId = rowProjectIdFromRequestContext(req.requestContext);
     const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
     const requestMachineId = req.requestContext?.machineId ?? machineId;
-    upsertSession({
-      id: session_id,
-      project_id: projectId,
+    // Persist + register through the single lifecycle helper. Pre-fix this
+    // call site registered in memory FIRST and upserted second, which
+    // poisoned the registry whenever the DB persist later threw.
+    ensureSession({
+      sessionId: session_id,
       agent: agent ?? 'claude-code',
-      user: null,
-      project_root: projectRoot,
-      branch: branch ?? null,
-      started_at: startedEpoch,
-      created_at: now,
-      status: 'active',
-      machine_id: requestMachineId,
+      projectId,
+      projectRoot,
+      machineId: requestMachineId,
+      startedAt: resolvedStartedAt,
+      registry,
+      logger,
+      source: 'api',
     });
+    // `branch` is only carried on this API path (hooks discover it via
+    // git provenance separately). Apply it as a follow-up update so the
+    // ensureSession contract stays minimal.
+    if (branch) {
+      updateSession(session_id, { branch }, projectScopeFromRequestContext(req.requestContext));
+    }
+    server.updateDaemonJsonSessions(registry.sessions);
     // Clear ended_at if session was previously completed (reload scenario)
     updateSession(session_id, { ended_at: null, status: 'active' }, projectScopeFromRequestContext(req.requestContext));
 

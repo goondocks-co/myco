@@ -44,7 +44,8 @@ import {
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
 import { getDatabase } from '@myco/db/client.js';
 import { getLatestBatch } from '@myco/db/queries/batches.js';
-import { getSession, upsertSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
+import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/db/queries/sessions.js';
+import { ensureSession, ensureSessionRowExists } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
 import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -294,23 +295,21 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           return { body: { ok: true, ignored: decision.reason ?? 'rule' } };
         }
 
-        registry.register(event.session_id, { started_at: event.timestamp });
-        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
-
-        // Ensure SQLite session exists — explicitly set status='active' so
-        // resumed sessions (previously 'completed') get reopened.
-        const now = epochSeconds();
-        const startedEpoch = Math.floor(new Date(event.timestamp).getTime() / 1000);
-        upsertSession({
-          id: event.session_id,
-          project_id: requestProjectId,
-          agent: (event as Record<string, unknown>).agent as string ?? DEFAULT_SYMBIONT_NAME,
-          project_root: requestProjectRoot,
-          status: 'active',
-          started_at: startedEpoch,
-          created_at: now,
-          machine_id: requestMachineId,
+        // Persist + register through the single lifecycle helper. ordering
+        // matters: DB row first, then in-memory registry. See
+        // `session-lifecycle.ts` for the invariant rationale.
+        ensureSession({
+          sessionId: event.session_id,
+          agent: ((event as Record<string, unknown>).agent as string) ?? DEFAULT_SYMBIONT_NAME,
+          projectId: requestProjectId,
+          projectRoot: requestProjectRoot,
+          machineId: requestMachineId,
+          startedAt: event.timestamp,
+          registry,
+          logger,
+          source: event.type === 'user_prompt' ? 'user_prompt' : 'tool_use',
         });
+        logger.debug(LOG_KINDS.LIFECYCLE_AUTO_REGISTER, 'Auto-registered session from event', { session_id: event.session_id });
         const autoRegisterScope = projectScopeFromRequestContext(req.requestContext);
         deferGitProvenance(
           {
@@ -382,6 +381,22 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
           });
         }
         try {
+          // Defensive layer: the registry-gated auto-register above is an
+          // optimization, not the contract. The contract is that a
+          // sessions.id row must exist by the time we open a prompt_batch.
+          // If anything upstream missed (e.g. an event arrived before
+          // session-start, or a future refactor breaks the gate), this
+          // recovers via an INSERT-IF-MISSING + WARN log so the bug
+          // surfaces instead of cascading into FK violations downstream.
+          ensureSessionRowExists({
+            sessionId: event.session_id,
+            agent: ((event as Record<string, unknown>).agent as string) ?? undefined,
+            projectId: requestProjectId,
+            projectRoot: requestProjectRoot,
+            machineId: requestMachineId,
+            logger,
+            source: 'user_prompt',
+          });
           const kind = typeof event.kind === 'string' ? event.kind : 'initial';
           const { batchId, promptNumber } = handleUserPrompt(event.session_id, promptText || undefined, { kind });
           userPromptBatchId = batchId;
@@ -488,6 +503,18 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
         });
       }
       try {
+        // Defensive: same belt-and-suspenders pattern as the user_prompt
+        // branch above. activities.session_id is FK-constrained, so the
+        // sessions.id row must exist by here.
+        ensureSessionRowExists({
+          sessionId: event.session_id,
+          agent: typeof event.agent === 'string' ? event.agent : undefined,
+          projectId: requestProjectId,
+          projectRoot: requestProjectRoot,
+          machineId: requestMachineId,
+          logger,
+          source: 'tool_use',
+        });
         handleToolUse(
           event.session_id,
           typeof event.agent === 'string' ? event.agent : DEFAULT_SYMBIONT_NAME,

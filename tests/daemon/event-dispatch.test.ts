@@ -262,6 +262,55 @@ describe('createEventDispatcher', () => {
     });
   });
 
+  describe('cache-vs-DB drift defence', () => {
+    // Pinned regression: the principle is that in-memory registry is a
+    // cache, not a source of truth. Even if the cache lies and claims we
+    // know about a session that has no DB row, the FK-dependent insert
+    // path (prompt_batches, activities) must self-heal rather than fail.
+    // This is what `ensureSessionRowExists()` enforces — the test makes
+    // sure no future refactor strips that defense.
+    it('inserts a sessions row when the registry claims a session that has no DB row (defence layer)', async () => {
+      const { handler, registry, logger, vaultDir } = makeHandler();
+      const sessionId = 'cache-lies-defense-001';
+
+      // Simulate the exact pre-fix bug scenario: registry has the session
+      // (e.g., a Stop handler upstream added it without persisting), but
+      // no row exists in the sessions table. Pre-defense, the very next
+      // user_prompt would skip auto-register (cache hit), call
+      // handleUserPrompt(), and crash with FOREIGN KEY constraint failed.
+      registry.register(sessionId, { started_at: new Date().toISOString() });
+      expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeNull();
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'codex',
+          prompt: 'recovered prompt after cache-vs-DB drift',
+        },
+        query: {},
+        params: {},
+        pathname: '/events',
+      });
+
+      // The dispatcher must succeed end-to-end.
+      expect(res.body).toMatchObject({ ok: true });
+
+      // Defense in depth: sessions row now exists (created by
+      // ensureSessionRowExists during the FK-dependent path).
+      const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
+      expect(row).toBeDefined();
+      expect(row).not.toBeNull();
+
+      // The prompt_batch landed (the original failure mode).
+      expect(listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE }).length).toBeGreaterThan(0);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+    });
+  });
+
   describe('event-dedup window', () => {
     it('suppresses identical user_prompt POSTs that arrive within the dedup window', async () => {
       const { handler, logger, vaultDir } = makeHandler();

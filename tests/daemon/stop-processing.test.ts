@@ -157,6 +157,68 @@ describe('createStopProcessor session capture rules', () => {
     expect(childAfter.response_summary).toBeNull();
   });
 
+  // Regression: post-restart Codex pattern. The daemon's in-memory
+  // SessionRegistry is empty after a restart. The FIRST event for a
+  // live session is typically a Stop (Codex emits Stops between
+  // sub-invocations). Pre-fix, the Stop handler added the session to
+  // the registry without persisting a sessions.id row; the next
+  // user_prompt then bypassed its own DB-insert path (because the
+  // registry already had the session_id) and tried to insert a
+  // prompt_batches row whose FK referenced a session that didn't
+  // exist. Every subsequent capture failed with
+  // `FOREIGN KEY constraint failed` until the user noticed the gap.
+  //
+  // The session MUST exist in the sessions table after handleStopRoute
+  // returns — without it, all FK-dependent inserts (prompt_batches,
+  // activities) silently drop on the floor and data is lost.
+  it('persists a sessions.id row when Stop is the first-seen event after daemon restart', async () => {
+    const sessionId = 'codex-stop-first-after-restart-001';
+    // Provide a transcript so the ephemeral-sub-invocation guard
+    // doesn't drop the event. Empty turns are fine — this test
+    // verifies the registration path, not transcript mining.
+    const transcriptPath = (() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-stop-first-'));
+      const file = path.join(dir, `rollout-${sessionId}.jsonl`);
+      fs.writeFileSync(
+        file,
+        `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId } })}\n`,
+      );
+      return file;
+    })();
+
+    // Empty registry and empty DB — simulate the post-restart state.
+    expect(getSession(sessionId, ALL_PROJECTS_SCOPE)).toBeFalsy();
+
+    const stopProcessor = makeStopProcessor(vaultDir);
+    await stopProcessor.handleStopRoute({
+      body: {
+        session_id: sessionId,
+        agent: 'codex',
+        transcript_path: transcriptPath,
+        last_assistant_message: 'ok',
+      },
+    } as never);
+
+    // Invariant: registry-in-memory implies sessions-row-in-DB.
+    // Pre-fix this lookup returned undefined and the test would fail.
+    const row = getSession(sessionId, ALL_PROJECTS_SCOPE);
+    expect(row).toBeDefined();
+    expect(row?.agent).toBe('codex');
+    expect(row?.status).toBe('active');
+
+    // Sanity: a subsequent FK-dependent insert succeeds now that the
+    // sessions row exists. Pre-fix this threw FOREIGN KEY constraint failed.
+    expect(() => {
+      insertBatch({
+        session_id: sessionId,
+        prompt_number: 1,
+        user_prompt: 'follow-up prompt after the restart-Stop',
+        started_at: epochNow(),
+        created_at: epochNow(),
+      });
+    }).not.toThrow();
+  });
+
   // Regression: Cursor's stop payload doesn't carry `last_assistant_message`
   // and its transcript is rewritten per turn (always turn_count=1). The
   // primary capture path must fall back to the last parsed turn's aiResponse
