@@ -93,6 +93,8 @@ describe('handleUpgradeWorker', () => {
     expect(res.body).toMatchObject({ error: 'myco_team_not_installed' });
   });
 
+  // Subprocess + handler setup compounds under full-suite event-loop contention;
+  // raise the 5s default so it doesn't fire before the assertion runs. See issue #287.
   it('parses the subprocess JSON result and propagates success', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
     const prefix = path.join(tempDir, 'success-prefix');
@@ -114,7 +116,7 @@ describe('handleUpgradeWorker', () => {
       worker_url: 'https://myco-team-test.example.workers.dev',
       version: '9.9.9',
     });
-  });
+  }, 15_000);
 
   it('propagates subprocess-reported failure with stderr included', async () => {
     const { createTeamHandlers } = await import('../../../packages/myco/src/daemon/api/team-connect.js');
