@@ -1,6 +1,6 @@
 # Capture Lifecycle
 
-Reference for Myco contributors and AI agents debugging capture. This is the canonical layered view: every byte of session data passes through these layers in order, and every capture regression we've shipped has been a confused boundary between two of them. When you're looking at "why didn't this prompt land in the DB," the answer is in one of these layers, and the symptom-from-above is the diagnostic.
+Reference material for the `myco:debug-capture` skill. The canonical layered view: every byte of session data passes through these layers in order, and every capture regression we've shipped has been a confused boundary between two of them. When you're looking at "why didn't this prompt land in the DB," the answer is in one of these layers, and the symptom-from-above is the diagnostic.
 
 For the end-user view of capture, see `docs/lifecycle.md`. This document is for the people on the other side of the contract.
 
@@ -89,7 +89,7 @@ Three concrete invariants:
 - **Daemon ↔ transcript miner** — stop replays double-firing and creating duplicates, or under-firing and leaving turns un-captured (PR #285).
 - **MCP ↔ daemon log** — daemon serves the call but writes no log entry, so silent hangs look identical to "tool call vanished" (issue #288, closed by PR #301).
 
-Every one of those was a confused boundary. The lesson the audit codified: when you investigate, walk this stack top-down with `docs/skills/debug-capture.md`. The first layer where the diagnostic check fails is the layer the bug lives in.
+Every one of those was a confused boundary. The lesson the audit codified: when you investigate, walk this stack top-down with the procedure in this skill's `SKILL.md`. The first layer where the diagnostic check fails is the layer the bug lives in.
 
 ## Related code
 

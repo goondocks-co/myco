@@ -1,6 +1,6 @@
 # Symbiont Capture Contract
 
-What each supported agent emits and how Myco captures it. Companion to `docs/architecture/capture-lifecycle.md`.
+What each supported agent emits and how Myco captures it. Companion to `capture-lifecycle.md` in this directory.
 
 Every new symbiont (or new symbiont version) reproduces the same shape of integration bug if this matrix isn't kept current. When you debug a capture issue, find the symbiont's row before forming a hypothesis — most "weird capture behavior" is really "this agent does X differently and Myco's adapter doesn't handle that case."
 
