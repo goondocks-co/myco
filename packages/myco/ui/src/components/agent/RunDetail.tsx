@@ -26,7 +26,7 @@ import { formatCost, formatTokens, formatDuration, resolveTaskName } from './hel
 import { PhaseTimeline, type PhaseResult } from './PhaseTimeline';
 import type { CostResolution } from '@myco/agent/cost/types';
 import type { HarnessTokenBudget } from '@myco/agent/types';
-import { tryParseJson } from '@myco/utils/json';
+import { tryParseJson } from '../../lib/json';
 
 /* ---------- Helpers ---------- */
 
