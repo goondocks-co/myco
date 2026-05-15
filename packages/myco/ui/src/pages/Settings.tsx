@@ -22,6 +22,7 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { RestartGateProvider, RestartBanner } from '../components/config/restart-gate';
 import { ScopeBadge } from '../components/config/ScopePill';
+import { configFieldId } from '@myco/config/focus';
 import {
   ListField,
   NumberField,
@@ -37,6 +38,7 @@ import { EmbeddingCard } from '../components/settings/EmbeddingCard';
 import { ReleaseProvenanceCard } from '../components/settings/ReleaseProvenanceCard';
 import { UpdateCard } from '../components/operations/UpdateCard';
 import { BackupCard } from '../components/operations/BackupCard';
+import { useDaemon } from '../hooks/use-daemon';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
@@ -102,11 +104,41 @@ function fieldMatchesSearch(field: SettingField, needle: string): boolean {
   return hay.includes(needle.toLowerCase());
 }
 
+/**
+ * Manifest entries tagged `customRender: 'card-owns'` exist for sync-test
+ * coverage but the page never renders them as field rows — their owning
+ * custom group renderer (e.g., AgentProviderCard) handles them. They must
+ * also stay out of scope/search counts, since the user can't actually
+ * tweak them as standalone rows.
+ */
+function isRenderableField(field: SettingField): boolean {
+  return field.customRender !== 'card-owns';
+}
+
+/** Counts only the fields that actually render as standalone rows. */
+function renderableFields(group: SettingGroup): SettingField[] {
+  return group.fields.filter(isRenderableField);
+}
+
 function groupVisibleFields(group: SettingGroup, scope: ScopeFilter, search: string): SettingField[] {
-  return group.fields.filter((f) => {
+  return renderableFields(group).filter((f) => {
     if (scope !== 'all' && f.scope !== scope) return false;
     return fieldMatchesSearch(f, search);
   });
+}
+
+/**
+ * For dependsOn lookups: find the manifest entry for `key` in the same
+ * scope. We walk all groups because dependent siblings sometimes live in
+ * a different rendering group than the gating field (rare; defensive).
+ */
+function findFieldInManifest(key: string, scope: SettingScope): SettingField | undefined {
+  for (const group of SETTINGS_GROUPS) {
+    for (const field of group.fields) {
+      if (field.key === key && field.scope === scope) return field;
+    }
+  }
+  return undefined;
 }
 
 function groupIsVisible(
@@ -116,17 +148,20 @@ function groupIsVisible(
   search: string,
   isCustom: boolean,
 ): boolean {
-  // Custom-card groups stay visible whenever scope matches at least one of
-  // their declared fields and there's no active search (search hides them
-  // because the rich cards don't proxy keyword filtering yet).
+  // Custom-card groups stay visible whenever a scope match holds. With an
+  // active search we also keep them visible if the query matches any of
+  // their card-owned fields by label/key — otherwise the user searches for
+  // "production refs" or "harness" and gets zero results because those
+  // fields are owned by AgentProviderCard / ReleaseProvenanceCard rather
+  // than rendered as manifest rows.
   if (isCustom) {
-    if (search.trim().length > 0) {
-      // Hide custom cards once a search query is active — they don't expose
-      // their internal fields to the filter.
-      return visibleFields.length > 0;
+    const needle = search.trim();
+    const inScope = (f: SettingField) => scope === 'all' || f.scope === scope;
+    if (needle.length > 0) {
+      return group.fields.some((f) => inScope(f) && fieldMatchesSearch(f, needle));
     }
     if (scope === 'all') return true;
-    return group.fields.some((f) => f.scope === scope);
+    return group.fields.some((f) => inScope(f));
   }
   return visibleFields.length > 0;
 }
@@ -141,6 +176,7 @@ const CUSTOM_GROUP_IDS = new Set([
   'notifications',
   'update',
   'backup',
+  'logging',
 ]);
 
 interface CustomGroupCtx {
@@ -152,7 +188,18 @@ interface CustomGroupCtx {
 const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Element> = {
   agent: () => <AgentProviderCard />,
   embedding: () => <EmbeddingCard />,
-  capture: () => <PlanCaptureCard />,
+  // Capture is hybrid: PlanCaptureCard owns plan_dirs +
+  // ignore_plan_dirs_in_git with rich glob-pattern help, and the manifest
+  // renders the advanced tuning fields (transcript_paths,
+  // artifact_extensions, buffer_max_events) below.
+  capture: ({ fields, hasProject, unified }) => (
+    <div className="space-y-4">
+      <PlanCaptureCard />
+      {fields.length > 0 && (
+        <FieldGroupBody fields={fields} hasProject={hasProject} unified={unified} />
+      )}
+    </div>
+  ),
   'release-provenance': () => <ReleaseProvenanceCard />,
   notifications: () => <NotificationSettings />,
   // UpdateCard owns dev-mode awareness ("Updates are disabled in
@@ -169,7 +216,41 @@ const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Elemen
       <BackupCard embedded />
     </div>
   ),
+  // Logging is hybrid: manifest fields drive log_level + log_retention_days,
+  // and we tag on a read-only Machine ID row at the bottom — pre-merge this
+  // lived in a standalone MachineIdentityCard on /machine/settings and is
+  // the only settings surface that shows the cross-daemon identity that
+  // team-sync uses for routing.
+  logging: ({ fields, hasProject, unified }) => (
+    <div className="space-y-4">
+      <FieldGroupBody fields={fields} hasProject={hasProject} unified={unified} />
+      <MachineIdentityRow />
+    </div>
+  ),
 };
+
+function MachineIdentityRow() {
+  const daemon = useDaemon();
+  const machineId = daemon.data?.context?.request?.machine_id ?? '—';
+  return (
+    <div className="grid grid-cols-1 gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-start">
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-sans text-sm font-medium text-on-surface">Machine ID</span>
+          <ScopeBadge scope={SCOPE_BADGE_FOR.machine} />
+        </div>
+        <p className="font-sans text-xs text-on-surface-variant">
+          Stable identifier this daemon uses when speaking to the team worker. Read-only.
+        </p>
+      </div>
+      <div className="min-w-0">
+        <div className="flex h-9 w-full items-center rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 font-mono text-sm text-on-surface">
+          {machineId}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ---------- Page ---------- */
 
@@ -223,6 +304,46 @@ function SettingsInner() {
       requestAnimationFrame(() => el.scrollIntoView({ behavior: 'auto', block: 'start' }));
     }
   }, []);
+
+  // Honor `?configField=<key>` deep links from notification cards. Layout's
+  // shared resolver runs on mount with an 80ms delay, but Settings's data
+  // queries usually haven't resolved yet — so the field row doesn't exist
+  // when the resolver looks. Re-scan once data is loaded, scroll the row
+  // into view, and pulse a highlight so the user finds the field they came
+  // from. Falls back to `?configSection=<id>` if no field match is found.
+  useEffect(() => {
+    if (unified.isLoading) return;
+    const params = new URLSearchParams(window.location.search);
+    const fieldParam = params.get('configField');
+    const sectionParam = params.get('configSection');
+    if (!fieldParam && !sectionParam) return;
+
+    const HIGHLIGHT = ['ring-2', 'ring-primary/40', 'bg-primary/5'];
+    const target = (() => {
+      if (fieldParam) {
+        let current = fieldParam;
+        while (current.length > 0) {
+          const el = document.getElementById(configFieldId(current));
+          if (el) return el;
+          const lastDot = current.lastIndexOf('.');
+          if (lastDot === -1) break;
+          current = current.slice(0, lastDot);
+        }
+      }
+      if (sectionParam) {
+        const el = document.getElementById(sectionParam);
+        if (el) return el;
+      }
+      return null;
+    })();
+
+    if (!target) return;
+    requestAnimationFrame(() => {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add(...HIGHLIGHT);
+      window.setTimeout(() => target.classList.remove(...HIGHLIGHT), 2000);
+    });
+  }, [unified.isLoading]);
 
   const handleTocClick = useCallback((id: string) => {
     setActiveGroupId(id);
@@ -378,7 +499,10 @@ function TocRail({ summaries, activeId, onSelect }: TocRailProps) {
       <ul className="space-y-0.5 py-2">
         {summaries.map(({ group, visible, isCustom, visibleFields }) => {
           const active = group.id === activeId;
-          const count = isCustom ? group.fields.length : visibleFields.length;
+          // For custom-rendered groups, count the fields that are actually
+          // rendered as standalone rows — manifest entries flagged
+          // customRender:'card-owns' aren't user-visible as separate rows.
+          const count = isCustom ? renderableFields(group).length : visibleFields.length;
           return (
             <li key={group.id}>
               <button
@@ -509,11 +633,27 @@ interface FieldRowProps {
 }
 
 function FieldRow({ field, hasProject, unified }: FieldRowProps) {
+  // `configFieldId` is the same id `Layout`'s notification deep-link
+  // resolver scans for (`config-field-<path-with-dashes>`), so a link from
+  // a notification card like `?configField=maintenance.auto_optimize` lands
+  // on this row regardless of which group it lives in.
+  const focusAnchorId = configFieldId(field.key);
   const inputId = `setting-${field.key.replace(/\./g, '-')}`;
   const value = unified.readField(field);
   // Project and Grove scopes both depend on a selected project.
-  const disabled =
+  const scopeDisabled =
     (field.scope === 'grove' && !hasProject) || (field.scope === 'project' && !hasProject);
+  // dependsOn: greyed out when the referenced sibling's value differs.
+  // Look up the sibling within the same group so the user can see the
+  // direct cause (e.g., the auto-optimize toggle right above the interval).
+  const dependsOnDisabled = (() => {
+    if (!field.dependsOn) return false;
+    const sibling = findFieldInManifest(field.dependsOn.key, field.scope);
+    if (!sibling) return false;
+    const siblingValue = unified.readField(sibling);
+    return siblingValue !== field.dependsOn.value;
+  })();
+  const disabled = scopeDisabled || dependsOnDisabled;
 
   const onChange = useCallback(
     (next: unknown) => {
@@ -525,7 +665,10 @@ function FieldRow({ field, hasProject, unified }: FieldRowProps) {
   );
 
   return (
-    <div className="grid grid-cols-1 gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-start">
+    <div
+      id={focusAnchorId}
+      className="grid grid-cols-1 gap-3 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-start scroll-mt-4"
+    >
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={inputId} className="font-sans text-sm font-medium text-on-surface">
@@ -585,24 +728,43 @@ function FieldControl({ inputId, field, value, onChange, disabled }: FieldContro
           readonly={field.readonly}
         />
       );
-    case 'number':
+    case 'number': {
+      // Unit conversion: when a field declares a display unit (e.g. minutes
+      // for a value the daemon stores in milliseconds), the user sees the
+      // friendly unit while reads/writes round-trip through the factor.
+      // min/max/step are interpreted in the display unit.
+      const factor = field.unit?.factor ?? 1;
+      const stored = typeof value === 'number' ? value : 0;
+      const display = factor === 1 ? stored : stored / factor;
       return (
         <NumberField
           id={inputId}
-          value={typeof value === 'number' ? value : 0}
-          onChange={(next) => onChange(next)}
+          value={display}
+          onChange={(next) => onChange(factor === 1 ? next : next * factor)}
           min={field.min}
           max={field.max}
+          step={field.step}
+          suffix={field.unit?.displayUnit ?? field.suffix}
           disabled={disabled}
           readonly={field.readonly}
         />
       );
+    }
     case 'text':
       return (
         <TextField
           id={inputId}
           value={typeof value === 'string' ? value : ''}
-          onChange={(next) => onChange(next)}
+          onChange={(next) => {
+            // `nullableEmpty: true` lets a field clear its override by writing
+            // `null` for an empty string (pre-merge convention for backup.dir).
+            const trimmed = typeof next === 'string' ? next : '';
+            if (field.nullableEmpty && trimmed.length === 0) {
+              onChange(null);
+            } else {
+              onChange(next);
+            }
+          }}
           disabled={disabled}
           readonly={field.readonly}
         />

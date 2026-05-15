@@ -152,6 +152,15 @@ mock.module('../../packages/myco/ui/src/hooks/use-restart', () => ({
   useRestart: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+// MachineIdentityRow (Logging group) reads useDaemon for the machine_id.
+mock.module('../../packages/myco/ui/src/hooks/use-daemon', () => ({
+  useDaemon: () => ({
+    data: { context: { request: { machine_id: 'test-machine' } } },
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // PlanCaptureCard fetches symbiont plan dirs; BackupCard fetches /backups.
 mock.module('../../packages/myco/ui/src/lib/api', () => ({
   fetchJson: vi.fn().mockImplementation(async (path: string) => {
