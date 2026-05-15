@@ -35,11 +35,11 @@ import { NotificationSettings } from '../components/notifications/NotificationSe
 import { AgentProviderCard } from '../components/settings/AgentProviderCard';
 import { EmbeddingCard } from '../components/settings/EmbeddingCard';
 import { ReleaseProvenanceCard } from '../components/settings/ReleaseProvenanceCard';
+import { UpdateCard } from '../components/operations/UpdateCard';
+import { BackupCard } from '../components/operations/BackupCard';
 import { SETTINGS_GROUPS, type SettingField, type SettingGroup, type SettingScope } from '../settings/manifest';
 import { useUnifiedSettings } from '../hooks/use-unified-settings';
 import { useProjectSelection } from '../hooks/use-project-selection';
-import { useGroves } from '../hooks/use-groves';
-import { defaultSelection, selectionFromLast } from '../lib/selection';
 import { cn } from '../lib/cn';
 
 /* ---------- Icon registry ---------- */
@@ -139,14 +139,36 @@ const CUSTOM_GROUP_IDS = new Set([
   'capture',
   'release-provenance',
   'notifications',
+  'update',
+  'backup',
 ]);
 
-const CUSTOM_GROUP_RENDERERS: Record<string, () => JSX.Element> = {
+interface CustomGroupCtx {
+  fields: SettingField[];
+  hasProject: boolean;
+  unified: ReturnType<typeof useUnifiedSettings>;
+}
+
+const CUSTOM_GROUP_RENDERERS: Record<string, (ctx: CustomGroupCtx) => JSX.Element> = {
   agent: () => <AgentProviderCard />,
   embedding: () => <EmbeddingCard />,
   capture: () => <PlanCaptureCard />,
   'release-provenance': () => <ReleaseProvenanceCard />,
   notifications: () => <NotificationSettings />,
+  // UpdateCard owns dev-mode awareness ("Updates are disabled in
+  // development mode"), the channel toggle, per-package status, and
+  // last-check timestamp — none of which a plain SelectField for
+  // daemon.update_channel would preserve.
+  update: () => <UpdateCard />,
+  // Backup is hybrid: manifest fields drive the config form
+  // (dir, auto_interval_hours, retention.keep_*) and BackupCard adds
+  // the action surface (create/preview/restore + list).
+  backup: ({ fields, hasProject, unified }) => (
+    <div className="space-y-4">
+      <FieldGroupBody fields={fields} hasProject={hasProject} unified={unified} />
+      <BackupCard embedded />
+    </div>
+  ),
 };
 
 /* ---------- Page ---------- */
@@ -160,21 +182,12 @@ export default function Settings() {
 }
 
 function SettingsInner() {
-  // Unified /settings can land here without a URL-bound project (the
-  // sidebar Settings entry is machine-tier). When that happens we fall
-  // back to the last-used project from useGroves so project- and
-  // grove-scoped fields stay editable instead of showing a misleading
-  // "select a project" banner — writes already resolve to the daemon's
-  // active selection. The banner only appears when no projects exist
-  // on the machine at all.
-  const urlSelection = useProjectSelection();
-  const groves = useGroves();
-  const fallbackSelection = useMemo(() => {
-    const list = groves.data?.groves ?? [];
-    if (list.length === 0) return null;
-    return selectionFromLast(list) ?? defaultSelection(list);
-  }, [groves.data]);
-  const projectSelection = urlSelection ?? fallbackSelection;
+  // The /settings route wrapper (`SettingsRoute` in App.tsx) binds a
+  // ProjectSelectionBoundary to the last-known project, so this hook
+  // returns the active selection whenever projects exist on the machine.
+  // It only falls to null when there are zero projects — in which case
+  // the page shows machine fields and the no-project banner.
+  const projectSelection = useProjectSelection();
   const hasProject = projectSelection !== null;
   const unified = useUnifiedSettings();
 
@@ -430,7 +443,12 @@ function SettingsGroupCard({
         </div>
 
         {isCustom ? (
-          <CustomGroupBody groupId={group.id} />
+          <CustomGroupBody
+            groupId={group.id}
+            fields={visibleFields}
+            hasProject={hasProject}
+            unified={unified}
+          />
         ) : (
           <FieldGroupBody
             fields={visibleFields}
@@ -443,10 +461,15 @@ function SettingsGroupCard({
   );
 }
 
-function CustomGroupBody({ groupId }: { groupId: string }) {
+function CustomGroupBody({
+  groupId,
+  fields,
+  hasProject,
+  unified,
+}: { groupId: string } & CustomGroupCtx) {
   const render = CUSTOM_GROUP_RENDERERS[groupId];
   if (!render) return null;
-  return <div>{render()}</div>;
+  return <div>{render({ fields, hasProject, unified })}</div>;
 }
 
 /* ---------- Manifest-driven field rows ---------- */

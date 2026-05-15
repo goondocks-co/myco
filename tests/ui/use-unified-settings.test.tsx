@@ -28,7 +28,7 @@ const groveState: {
     groveId: 'g1',
     config: {
       daemon: { stale_session_threshold_ms: 3_600_000 },
-      team: { enabled: false, interval_minutes: 10 },
+      maintenance: { auto_optimize_interval_hours: 10 },
       agent: { scheduled_tasks_active_window_days: 14 },
     },
   },
@@ -102,7 +102,7 @@ function findField(key: string): SettingField {
 }
 
 const PROJECT_FIELD = findField('agent.provider.context_length');
-const GROVE_FIELD = findField('team.interval_minutes');
+const GROVE_FIELD = findField('maintenance.auto_optimize_interval_hours');
 const MACHINE_FIELD = findField('daemon.log_level');
 
 describe('useUnifiedSettings', () => {
@@ -122,7 +122,7 @@ describe('useUnifiedSettings', () => {
       groveId: 'g1',
       config: {
         daemon: { stale_session_threshold_ms: 3_600_000 },
-        team: { enabled: false, interval_minutes: 10 },
+        maintenance: { auto_optimize_interval_hours: 10 },
         agent: { scheduled_tasks_active_window_days: 14 },
       },
     };
@@ -168,7 +168,7 @@ describe('useUnifiedSettings', () => {
       await result.current.writeField(GROVE_FIELD, 30);
     });
     expect(updateGroveMutateMock).toHaveBeenCalledWith({
-      team: { interval_minutes: 30 },
+      maintenance: { auto_optimize_interval_hours: 30 },
     });
   });
 
