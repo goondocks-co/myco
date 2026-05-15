@@ -297,7 +297,10 @@ phases:
          - allowed-tools: copy EXACT value from existing skill
          - description: do not shorten (>10% reduction is rejected)
       3. Write via vault_write_skill with a rationale explaining
-         what specifically changed.
+         what specifically changed. Preserve the existing skill
+         `source_ids` unless the update is based on new source evidence;
+         when adding new evidence, pass the union of existing source_ids
+         plus the new source IDs.
 
       ## DEPRECATED — Retire the skill
 
@@ -316,6 +319,8 @@ phases:
            gotchas from both skills
          - Have a coherent structure (not just concatenation)
          Protected frontmatter rules apply to the target.
+         Pass source_ids as the union of the target and source
+         skill source_ids so lineage survives the merge.
       3. Rationale should explain: "Merged <source> into <target>:
          <what was added>."
       4. Delete the SOURCE skill: vault_skill_records (action: delete)
@@ -339,6 +344,9 @@ phases:
       - If vault_write_skill rejects a merge (e.g., dedup gate trips),
         check the error and adjust content. If truly blocked, skip
         and report the issue.
+      - Do not update skill candidates from skill-evolve. Candidate
+        quality metadata belongs to survey/generate; evolution should
+        preserve skill record lineage and report issues via vault_report.
 
       Report all actions via vault_report.
 
@@ -352,7 +360,6 @@ phases:
     tools:
       - vault_write_skill
       - vault_skill_records
-      - vault_skill_candidates
       - vault_search_fts
       - vault_report
     maxTurns: 18

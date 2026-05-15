@@ -192,6 +192,14 @@ export function buildSkillGenerateInstruction(
     `confidence: ${c.confidence}`,
     `rationale: ${c.rationale}`,
     '',
+    '## Candidate Quality Metadata',
+    `evidence_bundle_id: ${c.evidence_bundle_id ?? '(none)'}`,
+    `quality_score: ${c.quality_score ?? '(none)'}`,
+    `quality_failures: ${c.quality_failures || '[]'}`,
+    `coverage_matches: ${c.coverage_matches || '[]'}`,
+    `source_ids: ${c.source_ids || '[]'}`,
+    `supersedes: ${c.supersedes || '[]'}`,
+    '',
     '## Source Material',
   ];
 
@@ -214,6 +222,9 @@ export function buildSkillGenerateInstruction(
         if (session.title) parts.push(`Title: ${session.title}`);
         if (session.summary) parts.push(session.summary);
       }
+    } else {
+      parts.push(`\n### Source: ${src.type}:${src.id}`);
+      parts.push('Source content is not directly renderable by skill-generate; use the source ref for lineage only.');
     }
   }
 

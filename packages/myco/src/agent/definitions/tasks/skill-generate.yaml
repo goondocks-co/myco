@@ -25,8 +25,9 @@ phases:
     prompt: |
       Write a SKILL.md from the source material in the instruction.
       The instruction contains the candidate ID, topic, rationale,
-      and the full text of each source spore and session. Do NOT
-      call any search or read tools — the material is already here.
+      candidate quality metadata, and the full text of each renderable
+      source spore and session. Do NOT call any search or read tools —
+      the material is already here.
 
       ## SKILL.md Format
 
@@ -96,6 +97,11 @@ phases:
       - **This candidate represents a procedural domain** — a family
         of related tasks that share prerequisite knowledge. The skill
         should cover the full domain, not just a single procedure.
+      - **Honor the evidence metadata.** Treat `evidence_bundle_id`,
+        `quality_score`, `coverage_matches`, and `source_ids` in the
+        instruction as the approval record for this candidate. Use the
+        source material to ground the skill; do not broaden the skill
+        beyond what the approved evidence supports.
       - **A well-scoped skill has 3-6 major sections**, each describing
         a distinct procedure within the domain. If the candidate maps
         to fewer than 2 sections, note this in the rationale — it may
@@ -125,7 +131,8 @@ phases:
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
-      - source_ids: JSON array of source item IDs from the instruction
+      - source_ids: the exact JSON array from the instruction's
+        `source_ids` quality metadata
       - rationale: "Initial generation from candidate survey"
 
       **Important:** the skill is NOT live after vault_stage_skill.

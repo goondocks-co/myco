@@ -757,6 +757,15 @@ describe('buildTaskInstruction', () => {
       agent_id: TEST_AGENT_ID,
       topic: 'Ready topic',
       rationale: 'Ready rationale',
+      source_ids: JSON.stringify([
+        { id: 'spore-ready-001', type: 'spore' },
+        { id: 'session-ready-001', type: 'session' },
+        { id: 'plan-ready-001', type: 'plan' },
+      ]),
+      evidence_bundle_id: 'bundle-ready-001',
+      quality_score: 0.88,
+      quality_failures: '[]',
+      coverage_matches: JSON.stringify(['dismissed-candidate:old-ready-topic']),
       created_at: now,
       updated_at: now,
     });
@@ -765,6 +774,11 @@ describe('buildTaskInstruction', () => {
     const result = await buildTaskInstruction(SKILL_GENERATE_TASK, undefined, undefined, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
     expect(result!.instruction).toContain('Ready topic');
+    expect(result!.instruction).toContain('## Candidate Quality Metadata');
+    expect(result!.instruction).toContain('evidence_bundle_id: bundle-ready-001');
+    expect(result!.instruction).toContain('quality_score: 0.88');
+    expect(result!.instruction).toContain('dismissed-candidate:old-ready-topic');
+    expect(result!.instruction).toContain('plan:plan-ready-001');
     expect(result!.context?.candidate_id).toBe('ready-to-generate');
   });
 
