@@ -44,6 +44,17 @@ function validSkillContent(name: string, body = '# Skill\n\nContent here.') {
   return `---\nname: myco:${name}\ndescription: Test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep, Glob\n---\n\n${body}`;
 }
 
+function validCandidateMetadata(overrides: Record<string, unknown> = {}) {
+  return {
+    evidence_bundle_id: 'bundle-test-001',
+    quality_score: 0.82,
+    quality_failures: '[]',
+    coverage_matches: '[]',
+    source_ids: JSON.stringify([{ id: 'spore-test-001', type: 'spore' }]),
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -170,6 +181,178 @@ describe('vault skill tools', () => {
       expect(data).toEqual([]);
     });
 
+    it('create rejects identified candidate without evidence metadata', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Missing evidence metadata',
+          rationale: 'Should not enter the identified queue without a bundle',
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('evidence_bundle_id is required');
+    });
+
+    it('create rejects identified candidate with score below quality gate', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Low quality metadata',
+          rationale: 'Should not enter the identified queue below threshold',
+          ...validCandidateMetadata({ quality_score: 0.69 }),
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('quality_score must be >= 0.7');
+    });
+
+    it('create rejects identified candidate with non-empty quality failures', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Failure metadata',
+          rationale: 'Should not enter the identified queue with quality failures',
+          ...validCandidateMetadata({ quality_failures: JSON.stringify(['missing-project-anchor']) }),
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('quality_failures must be an empty array');
+    });
+
+    it('create with valid identified metadata succeeds and persists metadata', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const metadata = validCandidateMetadata({
+        evidence_bundle_id: 'bundle-valid-001',
+        quality_score: 0.91,
+        coverage_matches: JSON.stringify(['active-skill:myco-existing']),
+        last_reconciled_at: 1_777_000_000,
+        reconciliation_reason: 'survey-refresh',
+      });
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Valid quality metadata',
+          rationale: 'Carries evidence quality details for review',
+          ...metadata,
+        },
+        undefined,
+      );
+
+      const candidate = parseResult(result) as {
+        error?: string;
+        evidence_bundle_id?: string;
+        quality_score?: number;
+        quality_failures?: string;
+        coverage_matches?: string;
+        last_reconciled_at?: number;
+        reconciliation_reason?: string;
+      };
+      expect(candidate.error).toBeUndefined();
+      expect(candidate.evidence_bundle_id).toBe('bundle-valid-001');
+      expect(candidate.quality_score).toBe(0.91);
+      expect(candidate.quality_failures).toBe('[]');
+      expect(candidate.coverage_matches).toBe(JSON.stringify(['active-skill:myco-existing']));
+      expect(candidate.last_reconciled_at).toBe(1_777_000_000);
+      expect(candidate.reconciliation_reason).toBe('survey-refresh');
+    });
+
+    it('create rejects malformed source_ids when provided', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler(
+        {
+          action: 'create',
+          topic: 'Malformed source refs',
+          rationale: 'Should reject source refs that cannot be normalized',
+          ...validCandidateMetadata({ source_ids: JSON.stringify([{ id: 'unknown-001', type: 'unknown' }]) }),
+        },
+        undefined,
+      );
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('source_ids must contain at least one valid source reference');
+    });
+
+    it('update enforces identified quality gate', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const dismissed = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            status: 'dismissed',
+            topic: 'Deferred until evidence exists',
+            rationale: 'Cleanup path should not require quality metadata',
+          },
+          undefined,
+        ),
+      ) as { id: string; error?: string };
+      expect(dismissed.error).toBeUndefined();
+
+      const identifiedResult = await t.handler(
+        { action: 'update', id: dismissed.id, status: 'identified' },
+        undefined,
+      );
+      const identified = parseResult(identifiedResult) as { error?: string };
+      expect(identified.error).toContain('evidence_bundle_id is required');
+
+      const valid = parseResult(
+        await t.handler(
+          {
+            action: 'update',
+            id: dismissed.id,
+            status: 'identified',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-update-001' }),
+          },
+          undefined,
+        ),
+      ) as { error?: string; status?: string };
+      expect(valid.error).toBeUndefined();
+      expect(valid.status).toBe('identified');
+
+      const lowScoreResult = await t.handler(
+        { action: 'update', id: dismissed.id, quality_score: 0.5 },
+        undefined,
+      );
+      const lowScore = parseResult(lowScoreResult) as { error?: string };
+      expect(lowScore.error).toContain('quality_score must be >= 0.7');
+    });
+
+    it('update to dismissed or deferred can proceed without quality metadata', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const created = parseResult(
+        await t.handler(
+          {
+            action: 'create',
+            topic: 'Dismiss quality metadata not required',
+            rationale: 'Identified candidate begins valid then exits queue',
+            ...validCandidateMetadata({ evidence_bundle_id: 'bundle-dismiss-001' }),
+          },
+          undefined,
+        ),
+      ) as { id: string; error?: string };
+      expect(created.error).toBeUndefined();
+
+      const dismissed = parseResult(
+        await t.handler({ action: 'update', id: created.id, status: 'dismissed' }, undefined),
+      ) as { status?: string; error?: string };
+      expect(dismissed.error).toBeUndefined();
+      expect(dismissed.status).toBe('dismissed');
+
+      const deferred = parseResult(
+        await t.handler({ action: 'update', id: created.id, status: 'deferred' }, undefined),
+      ) as { status?: string; error?: string };
+      expect(deferred.error).toBeUndefined();
+      expect(deferred.status).toBe('deferred');
+    });
+
     it('create returns candidate with topic', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       const result = await t.handler(
@@ -178,6 +361,7 @@ describe('vault skill tools', () => {
           topic: 'Error handling patterns',
           rationale: 'Recurring pattern across sessions',
           confidence: 0.8,
+          ...validCandidateMetadata(),
         },
         undefined,
       );
@@ -198,7 +382,7 @@ describe('vault skill tools', () => {
     it('get retrieves a created candidate', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       const createResult = await t.handler(
-        { action: 'create', topic: 'Test topic', rationale: 'Test rationale' },
+        { action: 'create', topic: 'Test topic', rationale: 'Test rationale', ...validCandidateMetadata() },
         undefined,
       );
       const created = parseResult(createResult) as { id: string };
@@ -215,7 +399,7 @@ describe('vault skill tools', () => {
     it('update modifies candidate fields', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       const createResult = await t.handler(
-        { action: 'create', topic: 'Original', rationale: 'Original rationale' },
+        { action: 'create', topic: 'Original', rationale: 'Original rationale', ...validCandidateMetadata() },
         undefined,
       );
       const created = parseResult(createResult) as { id: string };
@@ -232,11 +416,11 @@ describe('vault skill tools', () => {
     it('list returns created candidates', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       await t.handler(
-        { action: 'create', topic: 'Author agent pipeline tasks', rationale: 'Rationale A' },
+        { action: 'create', topic: 'Author agent pipeline tasks', rationale: 'Rationale A', ...validCandidateMetadata() },
         undefined,
       );
       await t.handler(
-        { action: 'create', topic: 'Configure cross-platform hook guard', rationale: 'Rationale B' },
+        { action: 'create', topic: 'Configure cross-platform hook guard', rationale: 'Rationale B', ...validCandidateMetadata() },
         undefined,
       );
 
@@ -251,13 +435,13 @@ describe('vault skill tools', () => {
 
       const createdA = parseResult(
         await projectATool.handler(
-          { action: 'create', topic: 'Shared project topic', rationale: 'Project A rationale' },
+          { action: 'create', topic: 'Shared project topic', rationale: 'Project A rationale', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string; project_id: string; error?: string };
       const createdB = parseResult(
         await projectBTool.handler(
-          { action: 'create', topic: 'Shared project topic', rationale: 'Project B rationale' },
+          { action: 'create', topic: 'Shared project topic', rationale: 'Project B rationale', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string; project_id: string; error?: string };
@@ -316,7 +500,7 @@ describe('vault skill tools', () => {
       ): Promise<string> {
         const t = makeTool();
         const created = parseResult(
-          await t.handler({ action: 'create', topic, rationale: 'seed' }, undefined),
+          await t.handler({ action: 'create', topic, rationale: 'seed', ...validCandidateMetadata() }, undefined),
         ) as { id: string };
         if (targetStatus !== 'identified') {
           updateCandidate(created.id, { status: targetStatus, updated_at: epochNow() }, ALL_PROJECTS_SCOPE);
@@ -334,6 +518,7 @@ describe('vault skill tools', () => {
               action: 'create',
               topic: 'Add a new MCP tool to the Myco vault daemon',
               rationale: 'Re-identified from a later survey run',
+              ...validCandidateMetadata(),
             },
             undefined,
           ),
@@ -356,6 +541,7 @@ describe('vault skill tools', () => {
               action: 'create',
               topic: 'Register a new PowerManager job',
               rationale: 'Duplicate of already-generated skill',
+              ...validCandidateMetadata(),
             },
             undefined,
           ),
@@ -376,6 +562,7 @@ describe('vault skill tools', () => {
               action: 'create',
               topic: 'Configure Cloudflare team sync',
               rationale: 'Duplicate of an already-queued candidate',
+              ...validCandidateMetadata(),
             },
             undefined,
           ),
@@ -396,6 +583,7 @@ describe('vault skill tools', () => {
               action: 'create',
               topic: 'Install and initialize Myco',
               rationale: 'Duplicate of a pending identified candidate',
+              ...validCandidateMetadata(),
             },
             undefined,
           ),
@@ -416,6 +604,7 @@ describe('vault skill tools', () => {
               action: 'create',
               topic: 'How to render a notification banner in the UI',
               rationale: 'Unrelated topic',
+              ...validCandidateMetadata(),
             },
             undefined,
           ),
@@ -683,7 +872,7 @@ describe('vault skill tools', () => {
       // skill-write tools' structural gate accepts it.
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateResult = await candidateTool.handler(
-        { action: 'create', topic: 'My topic', rationale: 'My rationale' },
+        { action: 'create', topic: 'My topic', rationale: 'My rationale', ...validCandidateMetadata() },
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
@@ -718,7 +907,7 @@ describe('vault skill tools', () => {
       const candidateToolA = findTool(projectATools, 'vault_skill_candidates');
       const created = parseResult(
         await candidateToolA.handler(
-          { action: 'create', topic: 'Scoped skill write', rationale: 'Project A only' },
+          { action: 'create', topic: 'Scoped skill write', rationale: 'Project A only', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string; project_id: string };
@@ -877,7 +1066,7 @@ describe('vault skill tools', () => {
       // Seed a candidate and fulfill it by writing a first skill.
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateResult = await candidateTool.handler(
-        { action: 'create', topic: 'Validator coercion', rationale: 'Seen twice in contributor PRs' },
+        { action: 'create', topic: 'Validator coercion', rationale: 'Seen twice in contributor PRs', ...validCandidateMetadata() },
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
@@ -924,7 +1113,7 @@ describe('vault skill tools', () => {
     it('allows writes to the same name when candidate is already linked (evolve path)', async () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateResult = await candidateTool.handler(
-        { action: 'create', topic: 'Evolution test', rationale: 'Needs to allow bumping generation' },
+        { action: 'create', topic: 'Evolution test', rationale: 'Needs to allow bumping generation', ...validCandidateMetadata() },
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
@@ -1069,7 +1258,7 @@ describe('vault skill tools', () => {
       // Seed a candidate
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateResult = await candidateTool.handler(
-        { action: 'create', topic: 'Staging topic', rationale: 'Test rationale' },
+        { action: 'create', topic: 'Staging topic', rationale: 'Test rationale', ...validCandidateMetadata() },
         undefined,
       );
       const candidate = parseResult(candidateResult) as { id: string };
@@ -1124,7 +1313,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Invalid name topic', rationale: 'r' },
+          { action: 'create', topic: 'Invalid name topic', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1157,7 +1346,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Iteration test', rationale: 'r' },
+          { action: 'create', topic: 'Iteration test', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1198,7 +1387,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Invalid staging', rationale: 'r' },
+          { action: 'create', topic: 'Invalid staging', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1238,7 +1427,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Overlap test', rationale: 'r' },
+          { action: 'create', topic: 'Overlap test', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1290,7 +1479,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate identified', rationale: 'r' },
+          { action: 'create', topic: 'Gate identified', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string; status: string };
@@ -1306,7 +1495,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate dismissed', rationale: 'r' },
+          { action: 'create', topic: 'Gate dismissed', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1323,7 +1512,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate generated', rationale: 'r' },
+          { action: 'create', topic: 'Gate generated', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1344,7 +1533,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate approved', rationale: 'r' },
+          { action: 'create', topic: 'Gate approved', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1359,7 +1548,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate malformed yaml', rationale: 'r' },
+          { action: 'create', topic: 'Gate malformed yaml', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1395,7 +1584,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate long description', rationale: 'r' },
+          { action: 'create', topic: 'Gate long description', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1435,7 +1624,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Gate write identified', rationale: 'r' },
+          { action: 'create', topic: 'Gate write identified', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1523,7 +1712,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Finalize topic', rationale: 'r' },
+          { action: 'create', topic: 'Finalize topic', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1606,7 +1795,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Defense test', rationale: 'r' },
+          { action: 'create', topic: 'Defense test', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1661,7 +1850,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidate = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Rollback cleanup topic', rationale: 'r' },
+          { action: 'create', topic: 'Rollback cleanup topic', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };
@@ -1719,7 +1908,7 @@ describe('vault skill tools', () => {
       const candidateTool = findTool(tools, 'vault_skill_candidates');
       const candidateRaw = parseResult(
         await candidateTool.handler(
-          { action: 'create', topic: 'Approved audit', rationale: 'r' },
+          { action: 'create', topic: 'Approved audit', rationale: 'r', ...validCandidateMetadata() },
           undefined,
         ),
       ) as { id: string };

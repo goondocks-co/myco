@@ -39,6 +39,7 @@ import {
   CANDIDATE_STATUS,
   AGENT_SETTABLE_STATUSES,
 } from '@myco/constants/skill-candidate-status.js';
+import { parseSourceRefs } from '@myco/agent/skill-candidate-evidence.js';
 import {
   validateSkillContent,
   checkFrontmatterPreservation,
@@ -56,6 +57,8 @@ import {
   type StagedManifest,
 } from './skill-staging.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
+
+const IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE = 0.7;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -121,6 +124,80 @@ export function createSkillTools(deps: VaultToolDeps) {
       default:
         return `Candidate rejected: the vault ${common} in status '${match.status}'.`;
     }
+  }
+
+  function parseJsonArrayParam(
+    fieldName: 'quality_failures' | 'coverage_matches',
+    value: string | undefined,
+  ): { array?: unknown[]; error?: string } {
+    if (value === undefined) return {};
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return { error: `${fieldName} must be a JSON array` };
+    }
+
+    if (!Array.isArray(parsed)) {
+      return { error: `${fieldName} must be a JSON array` };
+    }
+    return { array: parsed };
+  }
+
+  function validateCandidateSourceIds(sourceIds: string | undefined): Record<string, unknown> | null {
+    if (sourceIds === undefined) return null;
+    if (parseSourceRefs(sourceIds).length > 0) return null;
+    return { error: 'source_ids must contain at least one valid source reference' };
+  }
+
+  function validateCandidateWrite(args: {
+    status?: string;
+    source_ids?: string;
+    evidence_bundle_id?: string | null;
+    quality_score?: number | null;
+    quality_failures?: string;
+    coverage_matches?: string;
+  }, existing?: {
+    status: string;
+    evidence_bundle_id: string | null;
+    quality_score: number | null;
+    quality_failures: string;
+  }): Record<string, unknown> | null {
+    const sourceIdsError = validateCandidateSourceIds(args.source_ids);
+    if (sourceIdsError) return sourceIdsError;
+
+    const qualityFailures = parseJsonArrayParam('quality_failures', args.quality_failures);
+    if (qualityFailures.error) return { error: qualityFailures.error };
+
+    const coverageMatches = parseJsonArrayParam('coverage_matches', args.coverage_matches);
+    if (coverageMatches.error) return { error: coverageMatches.error };
+
+    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
+    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) return null;
+
+    const evidenceBundleId = args.evidence_bundle_id ?? existing?.evidence_bundle_id ?? null;
+    if (!evidenceBundleId || evidenceBundleId.trim().length === 0) {
+      return { error: 'evidence_bundle_id is required for identified skill candidates' };
+    }
+
+    const qualityScore = args.quality_score ?? existing?.quality_score ?? null;
+    if (qualityScore === null || qualityScore < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
+      return {
+        error: `quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE} for identified skill candidates`,
+      };
+    }
+
+    const qualityFailuresArray = args.quality_failures !== undefined
+      ? qualityFailures.array
+      : existing !== undefined
+        ? parseJsonArrayParam('quality_failures', existing.quality_failures).array
+        : undefined;
+    if (!qualityFailuresArray || qualityFailuresArray.length > 0) {
+      return { error: 'quality_failures must be an empty array for identified skill candidates' };
+    }
+
+    return null;
   }
 
   /**
@@ -425,6 +502,12 @@ export function createSkillTools(deps: VaultToolDeps) {
       source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
       skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
       supersedes: z.string().optional().describe('JSON array of skill record names this candidate would replace (for domain-level candidates that subsume existing narrow skills)'),
+      evidence_bundle_id: z.string().optional().describe('Evidence bundle ID supporting an identified candidate'),
+      quality_score: z.number().optional().describe('Evidence quality score for an identified candidate'),
+      quality_failures: z.string().optional().describe('JSON array of quality gate failure identifiers'),
+      coverage_matches: z.string().optional().describe('JSON array of existing skill/candidate coverage matches'),
+      last_reconciled_at: z.number().optional().describe('Epoch seconds timestamp for the last reconciliation pass'),
+      reconciliation_reason: z.string().optional().describe('Reason for the latest reconciliation update'),
       limit: z.number().optional().describe('Maximum candidates to return (for list)'),
     },
     async (args) => {
@@ -450,6 +533,9 @@ export function createSkillTools(deps: VaultToolDeps) {
           if (!args.topic || !args.rationale) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
+
+          const writeError = validateCandidateWrite(args);
+          if (writeError) return textResult(writeError);
 
           // Parse supersedes list (skill names this candidate would replace)
           let supersedesNames: string[] = [];
@@ -512,6 +598,12 @@ export function createSkillTools(deps: VaultToolDeps) {
             status: args.status,
             source_ids: args.source_ids,
             supersedes: args.supersedes,
+            evidence_bundle_id: args.evidence_bundle_id,
+            quality_score: args.quality_score,
+            quality_failures: args.quality_failures,
+            coverage_matches: args.coverage_matches,
+            last_reconciled_at: args.last_reconciled_at,
+            reconciliation_reason: args.reconciliation_reason,
             created_at: now,
             updated_at: now,
           });
@@ -536,6 +628,12 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'update': {
           if (!args.id) return textResult({ error: 'id is required for update action' });
+          const existing = getCandidate(args.id, scope);
+          if (!existing) return textResult({ error: `Candidate not found: ${args.id}` });
+
+          const writeError = validateCandidateWrite(args, existing);
+          if (writeError) return textResult(writeError);
+
           const now = epochSeconds();
           const updated = updateCandidate(args.id, {
             ...(args.topic !== undefined ? { topic: args.topic } : {}),
@@ -545,6 +643,12 @@ export function createSkillTools(deps: VaultToolDeps) {
             ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
             ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
             ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
+            ...(args.evidence_bundle_id !== undefined ? { evidence_bundle_id: args.evidence_bundle_id } : {}),
+            ...(args.quality_score !== undefined ? { quality_score: args.quality_score } : {}),
+            ...(args.quality_failures !== undefined ? { quality_failures: args.quality_failures } : {}),
+            ...(args.coverage_matches !== undefined ? { coverage_matches: args.coverage_matches } : {}),
+            ...(args.last_reconciled_at !== undefined ? { last_reconciled_at: args.last_reconciled_at } : {}),
+            ...(args.reconciliation_reason !== undefined ? { reconciliation_reason: args.reconciliation_reason } : {}),
             updated_at: now,
           }, scope);
           if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
