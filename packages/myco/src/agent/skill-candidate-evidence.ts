@@ -39,6 +39,7 @@ export interface CandidateEvidenceComparable {
   topic?: string;
   description?: string;
   rationale?: string;
+  status?: string | null;
 }
 
 export interface AssessCandidateEvidenceInput {
@@ -75,26 +76,45 @@ const SCORE_PENALTY_PER_FAILURE = 0.35;
 const MAX_EVIDENCE_BUNDLES = 8;
 const MAX_RELATED_SPORES_PER_BUNDLE = 6;
 const MIN_BUNDLE_SOURCE_REFS = 2;
+const RELATED_SPORE_MIN_SHARED_ANCHORS = 2;
+const RELATED_SPORE_MIN_OVERLAP = 0.12;
+const DISMISSED_CANDIDATE_STATUS = 'dismissed';
 
 const STOP_WORDS = new Set([
   'about',
   'after',
+  'above',
+  'assistant',
   'before',
   'candidate',
   'change',
   'changes',
+  'domain',
   'existing',
+  'exfiltrate',
   'from',
+  'developer',
+  'ignore',
   'into',
+  'instruction',
+  'instructions',
   'multiple',
+  'previous',
+  'prior',
+  'secret',
+  'secrets',
   'should',
   'skill',
+  'system',
   'that',
   'their',
   'there',
   'these',
   'this',
+  'through',
   'topic',
+  'tool',
+  'user',
   'when',
   'with',
   'workflow',
@@ -111,25 +131,33 @@ export function buildCandidateEvidenceBundles(
   const sessionById = new Map(sessions.map(session => [session.id, session]));
   const supportingSpores = [...decisions, ...gotchas];
   const bundles: SkillCandidateEvidenceBundle[] = [];
+  const seenSupportingIds = new Set<string>();
 
   for (const wisdom of sortSpores(wisdomSpores)) {
+    const relatedSpores = relatedSporesForSeed(wisdom, supportingSpores);
     const bundle = buildBundleFromSeed({
       seed: wisdom,
-      relatedSpores: relatedSporesForSeed(wisdom, supportingSpores),
+      relatedSpores,
       sessionById,
       activeSkills: safeInput.activeSkills as BuildCandidateEvidenceBundlesInput['activeSkills'],
       existingCandidates: safeInput.existingCandidates as BuildCandidateEvidenceBundlesInput['existingCandidates'],
       consolidatesWisdom: true,
     });
-    if (bundle) bundles.push(bundle);
+    if (bundle) {
+      bundles.push(bundle);
+      for (const related of relatedSpores) seenSupportingIds.add(related.id);
+    }
   }
 
-  const seenSupportingIds = new Set<string>();
   for (const spore of sortSpores(supportingSpores)) {
     if (seenSupportingIds.has(spore.id)) continue;
     const relatedSpores = relatedSporesForSeed(spore, supportingSpores)
       .filter(related => related.id !== spore.id);
-    for (const related of relatedSpores) seenSupportingIds.add(related.id);
+    for (const related of relatedSpores) {
+      if (sharedProjectAnchorCount(spore, related) >= RELATED_SPORE_MIN_SHARED_ANCHORS) {
+        seenSupportingIds.add(related.id);
+      }
+    }
     seenSupportingIds.add(spore.id);
 
     const bundle = buildBundleFromSeed({
@@ -190,10 +218,20 @@ export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): Ca
     coverageMatches.push(activeSkillMatch);
   }
 
-  const candidateMatch = bestOverlapMatch(candidateText, safeInput.existingCandidates, 'candidate');
+  const existingCandidateComparables = partitionExistingCandidateComparables(safeInput.existingCandidates);
+  const candidateMatch = bestOverlapMatch(candidateText, existingCandidateComparables.blocking, 'candidate');
   if (candidateMatch) {
     failures.push('existing-candidate-overlap');
     coverageMatches.push(candidateMatch);
+  }
+
+  const dismissedCandidateMatch = bestOverlapMatch(
+    candidateText,
+    existingCandidateComparables.dismissed,
+    'dismissed-candidate',
+  );
+  if (dismissedCandidateMatch) {
+    coverageMatches.push(dismissedCandidateMatch);
   }
 
   return {
@@ -258,23 +296,48 @@ function relatedSporesForSeed(
 ): CandidateEvidenceSpore[] {
   const seedAnchors = extractProjectAnchors(sporeText(seed));
   if (seedAnchors.length === 0) return [];
-  const seedTokenText = [...normalizedTokens(sporeText(seed))].join(' ');
+  const seedTextForOverlap = stripProjectAnchors(sporeText(seed));
 
   return candidates
     .filter(candidate => candidate.id !== seed.id)
     .map(candidate => {
       const candidateAnchors = extractProjectAnchors(sporeText(candidate));
-      const sharedAnchors = candidateAnchors.filter(anchor => seedAnchors.includes(anchor)).length;
-      const overlap = tokenOverlap(seedTokenText, sporeText(candidate));
+      const sharedAnchors = sharedAnchorCount(seedAnchors, candidateAnchors);
+      const overlap = tokenOverlap(seedTextForOverlap, stripProjectAnchors(sporeText(candidate)));
       return { candidate, sharedAnchors, overlap: overlap.score };
     })
-    .filter(item => item.sharedAnchors > 0 || item.overlap >= 0.2)
+    .filter(item => (
+      item.sharedAnchors >= RELATED_SPORE_MIN_SHARED_ANCHORS
+      || item.overlap >= RELATED_SPORE_MIN_OVERLAP
+    ))
     .sort((a, b) => {
       if (b.sharedAnchors !== a.sharedAnchors) return b.sharedAnchors - a.sharedAnchors;
       if (b.overlap !== a.overlap) return b.overlap - a.overlap;
       return compareSpores(a.candidate, b.candidate);
     })
     .map(item => item.candidate);
+}
+
+function sharedProjectAnchorCount(a: CandidateEvidenceSpore, b: CandidateEvidenceSpore): number {
+  return sharedAnchorCount(extractProjectAnchors(sporeText(a)), extractProjectAnchors(sporeText(b)));
+}
+
+function sharedAnchorCount(a: string[], b: string[]): number {
+  const aKeys = anchorComparisonKeys(a);
+  const bKeys = anchorComparisonKeys(b);
+  return bKeys.filter(anchor => aKeys.includes(anchor)).length;
+}
+
+function anchorComparisonKeys(anchors: string[]): string[] {
+  const fullPaths = anchors.filter(anchor => anchor.includes('/'));
+  return uniqueStrings(anchors.filter(anchor => {
+    if (!isBareFileAnchor(anchor)) return true;
+    return !fullPaths.some(pathAnchor => pathAnchor.endsWith(`/${anchor}`));
+  }));
+}
+
+function isBareFileAnchor(anchor: string): boolean {
+  return /^[a-z0-9_.-]+\.(?:ts|tsx|js|mjs|cjs|md|yaml|yml|json|sql|sh)$/i.test(anchor);
 }
 
 function sourceRefsForSpores(spores: CandidateEvidenceSpore[]): CandidateSourceRef[] {
@@ -433,6 +496,15 @@ function normalizeAnchor(anchor: string): string {
   return anchor.trim().replace(/[.,;:)]+$/g, '').toLowerCase();
 }
 
+function stripProjectAnchors(text: string): string {
+  return text
+    .replace(/`[^`]+`/g, ' ')
+    .replace(/\b((?:[a-z0-9_.-]+\/){1,}[a-z0-9_.-]+)\b/gi, ' ')
+    .replace(/\b[a-z0-9_.-]+\.(?:ts|tsx|js|mjs|cjs|md|yaml|yml|json|sql|sh)\b/gi, ' ')
+    .replace(/\b(?:make|bun|npm|pnpm|node|myco(?:-dev)?)\s+[a-z0-9:_./-]+\b/gi, ' ')
+    .replace(/\b(?:AGENTS\.md|ProjectScope|GroveProjectId|PowerManager|SKILL\.md|\.myco|vault_[a-z_]+)\b/gi, ' ');
+}
+
 function uniqueStrings(values: Iterable<string>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -501,11 +573,14 @@ export function renderEvidenceBundleForPrompt(bundle: SkillCandidateEvidenceBund
   const renderedFailures = failures.length > 0 ? failures.join(', ') : 'none';
   const renderedCoverageMatches = coverageMatches.length > 0 ? coverageMatches.join(', ') : 'none';
   const renderedSourceRefs = sourceRefs.length > 0
-    ? sourceRefs.map(ref => `${ref.type}:${ref.id}`).join(', ')
+    ? sourceRefs.map(ref => `${ref.type}:${promptSafeScalar(ref.id, 'unknown')}`).join(', ')
     : 'none';
+  const id = promptSafeScalar(safeBundle.id, 'unknown');
+  const topic = promptSafeScalar(safeBundle.topic, 'unknown');
 
   return [
-    `#### ${safeString(safeBundle.id, 'unknown')}: ${safeString(safeBundle.topic, 'unknown')}`,
+    `#### ${id}`,
+    `- topic: ${topic}`,
     `- score: ${formatScore(safeBundle.score)}`,
     `- failures: ${renderedFailures}`,
     `- coverage_matches: ${renderedCoverageMatches}`,
@@ -553,8 +628,26 @@ function hasProjectAnchor(text: string): boolean {
     /\b(?:[a-z0-9_.-]+\/){1,}[a-z0-9_.-]+\b/i,
     /\b[a-z0-9_.-]+\.(?:ts|tsx|js|mjs|cjs|md|yaml|yml|json|sql|sh)\b/i,
     /\b(?:make|bun|npm|pnpm|node|myco(?:-dev)?)\s+[a-z0-9:_./-]+\b/i,
-    /\b(?:AGENTS\.md|ProjectScope|GroveProjectId|PowerManager|SKILL\.md|\.myco|vault_[a-z_]+)\b/,
+    /\b(?:AGENTS\.md|ProjectScope|GroveProjectId|PowerManager|SKILL\.md|\.myco|vault_[a-z_]+)\b/i,
   ].some(pattern => pattern.test(text));
+}
+
+function partitionExistingCandidateComparables(value: unknown): { blocking: unknown[]; dismissed: unknown[] } {
+  const result: { blocking: unknown[]; dismissed: unknown[] } = { blocking: [], dismissed: [] };
+  if (!Array.isArray(value)) return result;
+
+  for (const comparable of value) {
+    if (
+      isRecord(comparable)
+      && safeString(comparable.status).toLowerCase() === DISMISSED_CANDIDATE_STATUS
+    ) {
+      result.dismissed.push(comparable);
+    } else {
+      result.blocking.push(comparable);
+    }
+  }
+
+  return result;
 }
 
 function bestOverlapMatch(
@@ -641,4 +734,19 @@ function safeString(value: unknown, fallback = ''): string {
 function formatScore(score: unknown): string {
   if (typeof score !== 'number' || !Number.isFinite(score)) return '0.00';
   return Number.isInteger(score) ? score.toFixed(2) : score.toFixed(2).replace(/0$/, '');
+}
+
+function promptSafeScalar(value: unknown, fallback: string): string {
+  let clean = safeString(value, fallback)
+    .replace(/\s+/g, ' ')
+    .replace(/[`<>]/g, '')
+    .trim();
+  if (!clean) clean = fallback;
+
+  clean = clean
+    .replace(/\b(?:ignore|disregard)\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?\b/gi, '[redacted]')
+    .replace(/\b(?:system|developer|assistant|user|tool)\s*:/gi, '[redacted]:')
+    .replace(/\/(?:system|developer|assistant|user|tool)\b/gi, '/[redacted]');
+
+  return truncateText(clean, 140);
 }
