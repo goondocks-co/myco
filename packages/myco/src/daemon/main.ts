@@ -1336,6 +1336,7 @@ export async function main(): Promise<void> {
     resolveDatabase: (databasePath) => databasePath === dataPaths.databasePath
       ? db
       : runtimeCache.getDatabase(databasePath),
+    logger,
   }));
 
   // --- Backup routes ---
