@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from 'bun:test';
+import { describe, expect, test, beforeEach, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -148,6 +148,34 @@ describe('LaunchdServiceManager', () => {
     expect(mgr.restartShellCommand('co.goondocks.myco-dev')).toBe(
       'launchctl kickstart -k gui/501/co.goondocks.myco-dev',
     );
+  });
+
+  test('install writes plist atomically via tempfile + rename', async () => {
+    // Regression guard: a torn write of the plist would let `launchctl
+    // bootstrap` register a structurally broken service. The write path
+    // must go through atomicWriteFileSync (tempfile + rename), not a
+    // direct writeFileSync to the final path.
+    const s = spec(home);
+    const plistPath = path.join(agentsDir, `${s.label}.plist`);
+    const writeSpy = spyOn(fs, 'writeFileSync');
+    const renameSpy = spyOn(fs, 'renameSync');
+    try {
+      await mgr.install(s);
+      const renamedToPlist = renameSpy.mock.calls.find(
+        (call) => call[1] === plistPath,
+      );
+      expect(renamedToPlist).toBeDefined();
+      const tmpSrc = renamedToPlist![0] as string;
+      expect(tmpSrc.startsWith(`${plistPath}.tmp-`)).toBe(true);
+      // The plist write itself targets the tempfile, never the final path.
+      const directPlistWrite = writeSpy.mock.calls.find(
+        (call) => call[0] === plistPath,
+      );
+      expect(directPlistWrite).toBeUndefined();
+    } finally {
+      writeSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
   });
 
   test('isInstalled returns true after install, false after uninstall', async () => {

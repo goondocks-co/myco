@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderSystemdUnit } from './systemd-unit.js';
 import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
 
@@ -55,7 +56,7 @@ export class SystemdUserServiceManager implements ServiceManager {
     fs.mkdirSync(this.unitDir, { recursive: true });
     fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
-    fs.writeFileSync(unitPath, rendered);
+    atomicWriteFileSync(unitPath, rendered);
 
     await this.runner.run(['--user', 'daemon-reload']);
     await this.runner.run(['--user', 'enable', `${spec.label}.service`]);
