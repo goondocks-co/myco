@@ -17,7 +17,7 @@ import {
 } from '../tools/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
-import { readDaemonState, writeDaemonState } from './service-state.js';
+import { readDaemonState, writeDaemonState, type DaemonState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
@@ -92,6 +92,15 @@ export class DaemonServer {
    */
   private authToken: string;
   /**
+   * ISO timestamp of the moment listen() resolved (this daemon's
+   * effective birth). Captured once so `currentDaemonState()` can
+   * return a stable `started` value across reconcile ticks; without
+   * this the re-asserted file would have a fresh `started` every
+   * tick and downstream consumers that compare uptime against the
+   * recorded value would see jitter.
+   */
+  private startedAt: string | null = null;
+  /**
    * Cache of post-injection dashboard HTML, keyed by source file path.
    * The token is fixed for the daemon's lifetime and the built HTML is
    * immutable, so reading + injecting on every request is wasted work.
@@ -121,6 +130,26 @@ export class DaemonServer {
     return this.authToken;
   }
 
+  /**
+   * Live snapshot of what daemon.json *should* contain for this
+   * process. Used by `reconcileSelf` to re-assert the state file
+   * against the in-memory truth on every PowerManager tick. The
+   * `started` field reflects when this daemon began listening, not
+   * when the snapshot was taken, so the file's `started` is stable
+   * across re-assertions.
+   */
+  currentDaemonState(): DaemonState {
+    return {
+      pid: process.pid,
+      port: this.port,
+      command: process.execPath,
+      started: this.startedAt ?? new Date().toISOString(),
+      sessions: [],
+      version: this.version,
+      auth_token: this.authToken,
+    };
+  }
+
   registerRoute(method: string, routePath: string, handler: RouteHandler): void {
     this.router.add(method, routePath, handler);
   }
@@ -146,6 +175,7 @@ export class DaemonServer {
       this.server.listen(port, '127.0.0.1', HTTP_LISTEN_BACKLOG, () => {
         const addr = this.server!.address() as { port: number };
         this.port = addr.port;
+        this.startedAt = new Date().toISOString();
         this.writeDaemonJson();
         this.logger.info(LOG_KINDS.DAEMON_PORT, 'Server started', { port: this.port, dashboard: `http://localhost:${this.port}/` });
         resolve();
@@ -529,16 +559,7 @@ export class DaemonServer {
   }
 
   private writeDaemonJson(): void {
-    const info = {
-      pid: process.pid,
-      port: this.port,
-      command: process.execPath,
-      started: new Date().toISOString(),
-      sessions: [] as string[],
-      version: this.version,
-      auth_token: this.authToken,
-    };
-    writeDaemonState(this.daemonStatePath, info);
+    writeDaemonState(this.daemonStatePath, this.currentDaemonState());
   }
 }
 

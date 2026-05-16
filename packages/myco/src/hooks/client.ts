@@ -420,6 +420,45 @@ export class DaemonClient {
     return this.readDaemonJson();
   }
 
+  /**
+   * Async sibling of `getInfo()` that falls back to a `/health` probe
+   * on the canonical port when daemon.json is missing or stale. The
+   * sync `getInfo()` returns null in that case, which loses sight of a
+   * healthy daemon any time the state file is externally nuked between
+   * its write and the daemon's next self-reconcile tick.
+   *
+   * The reconstructed `DaemonInfo` omits `auth_token` because /health
+   * deliberately doesn't expose it. Callers that need the bearer
+   * (context-switching requests) must wait for the daemon's next
+   * self-reconcile tick to re-write daemon.json.
+   */
+  async getInfoAsync(): Promise<DaemonInfo | null> {
+    const direct = this.readDaemonJson();
+    if (direct) return direct;
+    return this.discoverViaHealth();
+  }
+
+  /**
+   * Probe `/health` on the variant's canonical port. Used as a
+   * last-resort discovery path when daemon.json is missing. Returns
+   * null on any failure — a missing or non-Myco response is
+   * indistinguishable from "no daemon" for caller purposes.
+   */
+  private async discoverViaHealth(): Promise<DaemonInfo | null> {
+    const port = this.daemonService.canonicalPort;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { myco?: boolean; version?: string; pid?: number };
+      if (data.myco !== true || typeof data.pid !== 'number') return null;
+      return { pid: data.pid, port };
+    } catch {
+      return null;
+    }
+  }
+
   private requestHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
     if (Object.keys(this.defaultHeaders).length === 0) return headers;
     return { ...this.defaultHeaders, ...(headers ?? {}) };

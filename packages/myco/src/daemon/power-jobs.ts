@@ -2,6 +2,9 @@ import type { DaemonLogger, Logger } from './logger.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
+import type { DaemonServer } from './server.js';
+import type { DaemonServiceState } from './service-state.js';
+import { reconcileSelf } from './self-reconcile.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
@@ -84,6 +87,18 @@ export interface PowerJobDeps {
   mycoHome?: string;
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
+  /**
+   * The current daemon's resolved service state. Needed by the
+   * `self-reconcile` job so it can re-write daemon.json at the
+   * canonical path for this variant (dogfood vs production).
+   */
+  daemonService: DaemonServiceState;
+  /**
+   * Live server handle. The `self-reconcile` job calls
+   * `server.currentDaemonState()` on each tick to project the
+   * in-memory truth back into the state file.
+   */
+  server: DaemonServer;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
@@ -327,6 +342,23 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
     () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
+
+  // Continuously re-assert daemon.json against the live process state.
+  // Excludes 'deep_sleep' deliberately: at that point the daemon is
+  // essentially stopped and we don't want filesystem writes contending
+  // with system sleep. Runs first so even when later jobs starve a
+  // tick, the invariant tick still fires.
+  powerManager.register({
+    name: POWER_JOB_NAMES.SELF_RECONCILE,
+    runIn: ['active', 'idle', 'sleep'],
+    fn: async () => {
+      reconcileSelf({
+        daemonService: deps.daemonService,
+        currentState: () => deps.server.currentDaemonState(),
+        logger,
+      });
+    },
+  });
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.

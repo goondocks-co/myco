@@ -1774,6 +1774,8 @@ export async function main(): Promise<void> {
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
+    daemonService,
+    server,
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
