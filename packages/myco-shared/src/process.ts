@@ -2,12 +2,30 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Liveness check via the null signal.
+ *
+ * `process.kill(pid, 0)` succeeds when the kernel has a process for `pid` AND
+ * the caller has permission to signal it. The OS distinguishes the two
+ * failure modes via `errno`:
+ *
+ *   - `ESRCH` — no such process. The pid is genuinely dead.
+ *   - `EPERM` — the process exists but the caller cannot signal it (a
+ *     different uid owns it). For our purposes the pid is ALIVE; we just
+ *     can't talk to it.
+ *
+ * Conflating EPERM with "dead" is unsafe in the reconcileExistingDaemon
+ * polling ladder — it would unlink daemon.json out from under a live daemon
+ * owned by another user (self-mutation-discipline tenet violation). Any
+ * other unexpected error is treated conservatively as "alive" to err away
+ * from orphaning state.
+ */
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 

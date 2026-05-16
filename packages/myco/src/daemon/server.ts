@@ -17,7 +17,7 @@ import {
 } from '../tools/request-context.js';
 import { isProjectPaused } from '../grove/registry.js';
 import { pausedErrorResponse } from './api/error-envelope.js';
-import { readDaemonState, removeDaemonState, writeDaemonState } from './service-state.js';
+import { readDaemonState, writeDaemonState } from './service-state.js';
 import { vaultDbPath, withDatabase, type Database } from '../db/client.js';
 import { GroveRuntimeCache } from './grove-runtime-cache.js';
 
@@ -154,7 +154,14 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
-    this.removeDaemonJson();
+    // Cleanup ownership inversion: we do NOT call removeDaemonJson() here.
+    // If we unlinked first and gracefullyCloseHttpServer then hung (wedged
+    // background loop, deadlocked shutdown handler, etc.), we would leave a
+    // live process with no discoverable state file — the orphan-zombie
+    // failure mode the self-mutation-discipline tenet prohibits. Cleanup of
+    // daemon.json is owned by the successor process's reconcileExistingDaemon
+    // path, which only removes the file after confirming the recorded pid is
+    // actually dead.
     if (!this.server) {
       this.closeRequestDatabases();
       return;
@@ -532,10 +539,6 @@ export class DaemonServer {
       auth_token: this.authToken,
     };
     writeDaemonState(this.daemonStatePath, info);
-  }
-
-  private removeDaemonJson(): void {
-    removeDaemonState(this.daemonStatePath, process.pid);
   }
 }
 

@@ -25,7 +25,6 @@ import {
 import {
   daemonStateMtimeMs,
   readDaemonState,
-  removeDaemonState,
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
@@ -366,13 +365,22 @@ export class DaemonClient {
 
   /**
    * Kill the running daemon process.
+   *
+   * Cleanup ownership inversion: we never unlink daemon.json here. If we did,
+   * a wedged daemon that hangs on SIGTERM would be left running with no
+   * discoverable state file — the orphan-zombie failure that motivates the
+   * self-mutation-discipline tenet. Cleanup is owned exclusively by the
+   * successor process's `reconcileExistingDaemon` path, which only removes
+   * daemon.json after confirming the recorded pid is actually dead.
    */
   private killDaemon(info: DaemonInfo | null): void {
+    if (!info) return;
     try {
-      if (!info) return;
       process.kill(info.pid, 'SIGTERM');
-    } catch { /* already dead */ }
-    removeDaemonState(this.daemonService.statePath);
+    } catch {
+      // Already dead — the successor's reconcileExistingDaemon will clean
+      // up the stale state file. We never unlink here.
+    }
   }
 
   /**
@@ -451,9 +459,11 @@ export class DaemonClient {
     const prevPid = prevInfo?.pid;
     const prevPort = prevInfo?.port;
 
-    // Initiate the bounce. killDaemon issues SIGTERM and clears daemon.json;
-    // spawnDaemon (or the service supervisor's KeepAlive) brings a fresh
-    // daemon up.
+    // Initiate the bounce. killDaemon issues SIGTERM but never unlinks
+    // daemon.json — the successor's reconcileExistingDaemon owns state-file
+    // cleanup once the recorded pid is confirmed dead. spawnDaemon (or the
+    // service supervisor's KeepAlive) brings a fresh daemon up, which
+    // overwrites daemon.json with its own pid as part of normal startup.
     this.killDaemon(prevInfo);
     // Kick the spawn / supervisor start without blocking on retry delays —
     // the unified poll loop below is the single source of truth for the

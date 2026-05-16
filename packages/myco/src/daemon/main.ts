@@ -203,7 +203,11 @@ import type { MycoConfig } from '@myco/config/schema.js';
 import {
   DAEMON_HEALTH_CHECK_TIMEOUT_MS,
   DAEMON_STALE_GRACE_PERIOD_MS,
+  RECONCILE_POLL_MS,
+  RECONCILE_SIGKILL_GRACE_MS,
+  RECONCILE_SIGTERM_GRACE_MS,
 } from '../constants.js';
+import { isProcessAlive, waitForProcessExit } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -236,6 +240,22 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Test-only seam for reconcileExistingDaemon. Production callers pass nothing
+ * and the defaults route to `process.kill`, `isProcessAlive`, and the
+ * production constants. Tests inject short grace windows and synthetic
+ * kill/aliveness so they can exercise the SIGTERM → SIGKILL → step-aside
+ * ladder without spawning a truly unkillable process (which user-space can't
+ * produce on macOS/Linux anyway).
+ */
+export interface ReconcileDeps {
+  kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+  isProcessAlive?: (pid: number) => boolean;
+  sigtermGraceMs?: number;
+  sigkillGraceMs?: number;
+  pollMs?: number;
+}
+
+/**
  * Reconcile with any existing daemon for this vault before starting a new one.
  *
  * - If no daemon.json or the recorded pid is dead → 'ok' (take over).
@@ -243,13 +263,27 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
  *   version → 'step-aside' (a sibling just started; don't kill it). The caller
  *   exits cleanly. This is what stops the concurrent-spawn cascade where each
  *   new process SIGTERMs the last one standing.
- * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM the old
- *   daemon, unlink daemon.json, return 'ok' to proceed.
+ * - Otherwise (stale, unhealthy, or version-mismatch) → SIGTERM, poll for
+ *   exit, escalate to SIGKILL if needed, and only `removeDaemonState` once
+ *   the pid is confirmed dead. If the pid survives both signals, log an
+ *   error and return 'step-aside' WITHOUT unlinking — leaving the file in
+ *   place is structurally safer than orphaning a live daemon.
+ *
+ * Cleanup ownership inversion: this function is the SOLE production path
+ * that may remove daemon.json. `stop()` and `killDaemon()` no longer unlink.
+ * Self-mutation-discipline tenet: pid alive ⇔ daemon.json exists.
  */
 export async function reconcileExistingDaemon(
   daemonService: DaemonServiceState,
   logger: DaemonLogger,
+  deps: ReconcileDeps = {},
 ): Promise<'ok' | 'step-aside'> {
+  const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
+  const alive = deps.isProcessAlive ?? isProcessAlive;
+  const sigtermGraceMs = deps.sigtermGraceMs ?? RECONCILE_SIGTERM_GRACE_MS;
+  const sigkillGraceMs = deps.sigkillGraceMs ?? RECONCILE_SIGKILL_GRACE_MS;
+  const pollMs = deps.pollMs ?? RECONCILE_POLL_MS;
+
   const daemonJsonPath = daemonService.statePath;
   let info: { pid?: number; port?: number; command?: string | null };
   let mtimeMs: number;
@@ -266,10 +300,9 @@ export async function reconcileExistingDaemon(
   if (!info.pid) return 'ok';
   if (info.pid === process.pid) return 'ok';
 
-  // Is the recorded process actually alive?
-  try {
-    process.kill(info.pid, 0);
-  } catch {
+  // Is the recorded process actually alive? Use the dependency-injected
+  // probe so tests can simulate "still alive after SIGKILL".
+  if (!alive(info.pid)) {
     // Dead — clean up and take over.
     removeDaemonState(daemonJsonPath);
     return 'ok';
@@ -313,13 +346,60 @@ export async function reconcileExistingDaemon(
     } catch { /* health probe failed — fall through and replace */ }
   }
 
-  // Stale, unhealthy, or version mismatch: take over.
+  // Stale, unhealthy, or version mismatch: take over. We MUST confirm the
+  // predecessor pid is dead before unlinking daemon.json — otherwise a
+  // wedged shutdown leaves a live daemon with no discoverable state file
+  // (the orphan-zombie failure mode the tenet prohibits).
   try {
-    process.kill(info.pid, 'SIGTERM');
-    logger.info(LOG_KINDS.DAEMON_START, 'Killed stale daemon', { pid: info.pid });
+    kill(info.pid, 'SIGTERM');
+    logger.info(LOG_KINDS.DAEMON_RECONCILE, 'SIGTERM sent to stale daemon', { pid: info.pid });
+  } catch { /* already dead between alive() and kill() */ }
+
+  if (await waitForExit(info.pid, alive, sigtermGraceMs, pollMs)) {
+    removeDaemonState(daemonJsonPath);
+    return 'ok';
+  }
+
+  logger.warn(LOG_KINDS.DAEMON_RECONCILE, 'Predecessor ignored SIGTERM — escalating to SIGKILL', {
+    pid: info.pid,
+    grace_ms: sigtermGraceMs,
+  });
+  try {
+    kill(info.pid, 'SIGKILL');
   } catch { /* already dead */ }
-  removeDaemonState(daemonJsonPath);
-  return 'ok';
+
+  if (await waitForExit(info.pid, alive, sigkillGraceMs, pollMs)) {
+    removeDaemonState(daemonJsonPath);
+    return 'ok';
+  }
+
+  // Pid survived SIGKILL. user-space cannot kill it. Refusing to remove
+  // daemon.json is the safe move — the file still describes a live daemon,
+  // and stepping aside hands control back to the supervisor (launchd /
+  // systemd) without binding our own port on top of the live predecessor.
+  logger.error(
+    LOG_KINDS.DAEMON_RECONCILE,
+    `Refusing to remove daemon.json: prior daemon pid ${info.pid} is unkillable`,
+    { pid: info.pid, sigterm_grace_ms: sigtermGraceMs, sigkill_grace_ms: sigkillGraceMs },
+  );
+  return 'step-aside';
+}
+
+async function waitForExit(
+  pid: number,
+  alive: (pid: number) => boolean,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<boolean> {
+  if (alive === isProcessAlive) {
+    return waitForProcessExit(pid, timeoutMs, pollMs);
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!alive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return !alive(pid);
 }
 
 // ---------------------------------------------------------------------------
