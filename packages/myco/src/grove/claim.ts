@@ -775,12 +775,20 @@ export function releaseClaimedGrove(
       writeManifest(open.manifestPath, manifest);
     }
 
+    // Archive phase: the rename relocates the manifest itself. Checkpoint
+    // first so a crash mid-rename leaves the manifest flagged 'archived';
+    // resume below completes the rename even when 'archived' is already set
+    // (handles the "checkpointed but didn't rename" crash window).
+    const archiveRoot = groveArchiveDir(backupsRoot, grove.slug);
+    const archiveTarget = path.join(archiveRoot, path.basename(open.claimRoot));
     if (manifest.release_phase !== 'archived') {
-      const archiveRoot = groveArchiveDir(backupsRoot, grove.slug);
       fs.mkdirSync(archiveRoot, { recursive: true });
-      const archiveTarget = path.join(archiveRoot, path.basename(open.claimRoot));
       manifest = { ...manifest, release_phase: 'archived' };
       writeManifest(open.manifestPath, manifest);
+    }
+
+    if (fs.existsSync(open.claimRoot)) {
+      fs.mkdirSync(archiveRoot, { recursive: true });
       try {
         fs.renameSync(open.claimRoot, archiveTarget);
       } catch (err) {
@@ -790,24 +798,16 @@ export function releaseClaimedGrove(
           throw err;
         }
       }
-      const cutoffMs = Date.now() - ARCHIVE_RETENTION_DAYS * 86_400_000;
-      pruneArchivesOlderThan(archiveRoot, cutoffMs);
-
-      const refreshed = loadGroveRecord(grove.id, mycoHome) ?? grove;
-      return {
-        grove: refreshed,
-        manifest,
-        manifest_path: path.join(archiveTarget, MANIFEST_FILENAME),
-        archive_dir: archiveTarget,
-      };
     }
+    const cutoffMs = Date.now() - ARCHIVE_RETENTION_DAYS * 86_400_000;
+    pruneArchivesOlderThan(archiveRoot, cutoffMs);
 
     const refreshed = loadGroveRecord(grove.id, mycoHome) ?? grove;
     return {
       grove: refreshed,
       manifest,
-      manifest_path: open.manifestPath,
-      archive_dir: open.claimRoot,
+      manifest_path: path.join(archiveTarget, MANIFEST_FILENAME),
+      archive_dir: archiveTarget,
     };
   } finally {
     for (const { groveId: gid, projectId: pid } of pausedProjects) {
