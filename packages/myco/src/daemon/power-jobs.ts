@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import type { DaemonLogger, Logger } from './logger.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
@@ -5,6 +6,7 @@ import type { SessionRegistry } from './lifecycle.js';
 import type { DaemonServer } from './server.js';
 import type { DaemonServiceState } from './service-state.js';
 import { reconcileSelf } from './self-reconcile.js';
+import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
@@ -227,6 +229,57 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   };
 }
 
+/**
+ * Fork a detached child that asks the platform service supervisor to
+ * SIGTERM-and-respawn this daemon. The child is unref'd so it survives
+ * the SIGTERM that lands on us moments later.
+ *
+ * macOS:  `launchctl kickstart -k gui/<uid>/<label>` — KeepAlive-driven
+ *         respawn under the user's launchd domain.
+ * Linux:  `systemctl --user restart <label>.service` — the standard
+ *         systemd user-unit restart.
+ *
+ * Other platforms fall through with a warn log; the intent file has
+ * already been cleared so we don't loop.
+ *
+ * The service label is resolved via `serviceLabel(variant)` derived
+ * from the daemon's own service-state — NEVER hardcoded — so the
+ * dogfood (`co.goondocks.myco-dev`) and production
+ * (`co.goondocks.myco`) variants both route correctly.
+ */
+function requestSupervisorRestart(deps: PowerJobDeps): void {
+  const variant = serviceVariantForState(deps.daemonService);
+  const label = serviceLabel(variant);
+  if (process.platform === 'darwin') {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (uid === null) {
+      deps.logger.warn(
+        LOG_KINDS.DAEMON_RECONCILE,
+        'Supervisor restart skipped: process.getuid unavailable',
+        { platform: process.platform, label },
+      );
+      return;
+    }
+    spawn('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], {
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+    return;
+  }
+  if (process.platform === 'linux') {
+    spawn('systemctl', ['--user', 'restart', `${label}.service`], {
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+    return;
+  }
+  deps.logger.warn(
+    LOG_KINDS.DAEMON_RECONCILE,
+    'Supervisor restart not implemented on this platform',
+    { platform: process.platform, label },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -356,6 +409,7 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
         daemonService: deps.daemonService,
         currentState: () => deps.server.currentDaemonState(),
         logger,
+        requestSupervisorRestart: () => requestSupervisorRestart(deps),
       });
     },
   });

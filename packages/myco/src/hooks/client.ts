@@ -28,10 +28,10 @@ import {
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
-import { SERVICE_DEV_DIRNAME } from '../grove/paths.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
-import type { ServiceManager, ServiceVariant } from '../service/types.js';
+import { serviceVariantForState } from '../service/labels.js';
+import type { ServiceManager } from '../service/types.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -130,10 +130,6 @@ function defaultIsPortBound(port: number, pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-function serviceVariantForState(state: DaemonServiceState): ServiceVariant {
-  return path.basename(state.stateDir) === SERVICE_DEV_DIRNAME ? 'dev' : 'prod';
 }
 
 /**

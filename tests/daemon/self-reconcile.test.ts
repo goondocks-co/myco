@@ -1,8 +1,9 @@
 import { describe, test, expect } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reconcileSelf } from '../../packages/myco/src/daemon/self-reconcile.js';
+import { mergeIntent } from '../../packages/myco/src/daemon/intent.js';
 import type {
   DaemonServiceState,
   DaemonState,
@@ -100,6 +101,113 @@ describe('reconcileSelf', () => {
     // (potentially) the first write.
     const discrepancyLogs = logger.calls.filter((c) => c.kind === 'daemon.reconcile');
     expect(discrepancyLogs.length).toBeLessThanOrEqual(1);
+  });
+
+  test('consumes restart intent and invokes supervisor restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-intent-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    mergeIntent(daemonService, {
+      restart: { requested_at: new Date().toISOString(), reason: 'test' },
+    });
+    expect(existsSync(join(dir, 'intent.toml'))).toBe(true);
+
+    let restartCalls = 0;
+    reconcileSelf({
+      daemonService,
+      currentState: () => state,
+      logger,
+      requestSupervisorRestart: () => { restartCalls += 1; },
+    });
+
+    expect(restartCalls).toBe(1);
+    // clearIntentSection removes the file when no sections remain.
+    expect(existsSync(join(dir, 'intent.toml'))).toBe(false);
+    expect(logger.calls.some((c) => c.message.includes('Restart intent observed'))).toBe(true);
+  });
+
+  test('clears restart intent BEFORE invoking supervisor restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-intent-order-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    mergeIntent(daemonService, {
+      restart: { requested_at: new Date().toISOString(), reason: 'test' },
+    });
+
+    // Throwing inside requestSupervisorRestart simulates a supervisor
+    // invocation failure. The intent MUST already be cleared by the
+    // time we throw — otherwise a respawn loop would re-trigger the
+    // same restart on the next tick.
+    let intentClearedAtThrowTime: boolean | null = null;
+    expect(() =>
+      reconcileSelf({
+        daemonService,
+        currentState: () => state,
+        logger,
+        requestSupervisorRestart: () => {
+          intentClearedAtThrowTime = !existsSync(join(dir, 'intent.toml'));
+          throw new Error('supervisor failed');
+        },
+      }),
+    ).toThrow('supervisor failed');
+
+    expect(intentClearedAtThrowTime).toBe(true);
+  });
+
+  test('does nothing when intent.toml is absent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-no-intent-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    let restartCalls = 0;
+    reconcileSelf({
+      daemonService,
+      currentState: () => state,
+      logger,
+      requestSupervisorRestart: () => { restartCalls += 1; },
+    });
+
+    expect(restartCalls).toBe(0);
+  });
+
+  test('ignores a malformed intent.toml without throwing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-bad-intent-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    writeFileSync(join(dir, 'intent.toml'), 'this is not = valid = toml = at all');
+
+    let restartCalls = 0;
+    expect(() =>
+      reconcileSelf({
+        daemonService,
+        currentState: () => state,
+        logger,
+        requestSupervisorRestart: () => { restartCalls += 1; },
+      }),
+    ).not.toThrow();
+    expect(restartCalls).toBe(0);
+  });
+
+  test('does not require requestSupervisorRestart dep (clears intent and continues)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-no-spy-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    mergeIntent(daemonService, {
+      restart: { requested_at: new Date().toISOString(), reason: 'test' },
+    });
+
+    expect(() => reconcileSelf({ daemonService, currentState: () => state, logger })).not.toThrow();
+    // Intent still gets cleared even without the supervisor dep.
+    expect(existsSync(join(dir, 'intent.toml'))).toBe(false);
   });
 
   test('overwrites daemon.json when it points to a different pid', () => {
