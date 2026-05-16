@@ -7,6 +7,7 @@ import {
   resolveServiceDir,
 } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { derivePort } from './port.js';
 
 export class GroveBindingRequiredError extends Error {
@@ -113,15 +114,12 @@ export function readDaemonPort(vaultDir: string, options: ResolveDaemonServiceSt
 
 export function writeDaemonState(statePath: string, state: DaemonState): void {
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  // 0o600 because daemon.json now carries the daemon-issued bearer
-  // token (G4); leaking it would let other local users redirect
-  // context-switching requests at any registered Grove.
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
-  try {
-    fs.chmodSync(statePath, 0o600);
-  } catch {
-    // Best-effort; non-POSIX filesystems and read-only mounts.
-  }
+  // 0o600 because daemon.json carries the daemon-issued bearer token
+  // (G4); leaking it would let other local users redirect
+  // context-switching requests at any registered Grove. The atomic
+  // helper applies the mode to the tempfile before rename so the final
+  // path is never briefly readable at the default umask.
+  atomicWriteFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 });
 }
 
 export function removeDaemonState(statePath: string, ownerPid?: number): void {
