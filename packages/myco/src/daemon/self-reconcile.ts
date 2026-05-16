@@ -19,6 +19,20 @@ export interface ReconcileSelfDeps {
    * or `systemctl --user restart` via `power-jobs.ts`.
    */
   requestSupervisorRestart?: () => void;
+  /**
+   * Invoked when an update intent is observed for a version OTHER than
+   * the currently running daemon's version. Optional so unit tests can
+   * omit it. In production this delegates to `spawnUpdateScript` via
+   * `power-jobs.ts`.
+   *
+   * Pattern asymmetry vs `requestSupervisorRestart`: this runs BEFORE
+   * the intent section is cleared. On success the section is cleared
+   * (we're done). On failure the section is RETAINED so the next
+   * reconcile tick retries — installs are flaky (network, npm) and
+   * should be auto-resilient. The user-facing failure surface is
+   * `update-error.json`, written by the existing installer.
+   */
+  installUpdate?: (targetVersion: string) => Promise<void>;
 }
 
 /**
@@ -34,13 +48,17 @@ export interface ReconcileSelfDeps {
  * re-write only refreshes mtime, which keeps the freshness window
  * `reconcileExistingDaemon` consults for siblings accurate.
  *
- * Also consumes the intent file (`intent.toml`) — any `[restart]`
- * section is cleared and the supervisor restart is requested. The
- * clear-before-act ordering is load-bearing: if the supervisor
- * respawns us with the intent still present, the next tick would
- * read it again and trigger an infinite restart loop.
+ * Also consumes the intent file (`intent.toml`):
+ *   - `[restart]`: clear BEFORE invoking the supervisor restart, then
+ *     fan out via `requestSupervisorRestart`. The clear-before-act
+ *     ordering is load-bearing — a respawn with the intent still
+ *     present would trigger an infinite restart loop.
+ *   - `[update]`: invoke `installUpdate` THEN clear on success.
+ *     Retain on failure so the next tick can retry. If the target
+ *     version already matches the running daemon, clear without
+ *     invoking the installer.
  */
-export function reconcileSelf(deps: ReconcileSelfDeps): void {
+export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   const expected = deps.currentState();
   const observed = readDaemonState(deps.daemonService.statePath);
   if (observed && observed.pid === expected.pid && observed.port === expected.port) {
@@ -82,5 +100,41 @@ export function reconcileSelf(deps: ReconcileSelfDeps): void {
     // respawn could read the same intent again.
     clearIntentSection(deps.daemonService, 'restart');
     deps.requestSupervisorRestart?.();
+  }
+
+  if (intent.update) {
+    const current = deps.currentState().version;
+    if (intent.update.target_version === current) {
+      // Already at the requested version — the daemon was likely
+      // restarted into the target binary but the intent file wasn't
+      // cleared. Clean up so we don't re-evaluate forever.
+      deps.logger.info(
+        LOG_KINDS.DAEMON_RECONCILE,
+        'Update intent target matches current version; clearing',
+        { target_version: intent.update.target_version, current_version: current ?? null },
+      );
+      clearIntentSection(deps.daemonService, 'update');
+    } else if (deps.installUpdate) {
+      deps.logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Update intent observed', {
+        target_version: intent.update.target_version,
+        current_version: current ?? null,
+      });
+      try {
+        await deps.installUpdate(intent.update.target_version);
+        // Clear AFTER success — installs can fail (network, npm); the
+        // retained intent lets the next tick retry without re-issuing
+        // the CLI command.
+        clearIntentSection(deps.daemonService, 'update');
+      } catch (err) {
+        deps.logger.error(
+          LOG_KINDS.DAEMON_RECONCILE,
+          'Update failed; intent retained for retry',
+          {
+            target_version: intent.update.target_version,
+            err: String(err),
+          },
+        );
+      }
+    }
   }
 }

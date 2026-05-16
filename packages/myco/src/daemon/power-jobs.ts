@@ -7,6 +7,11 @@ import type { DaemonServer } from './server.js';
 import type { DaemonServiceState } from './service-state.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
+import { spawnUpdateScript } from './update-installer.js';
+import { resolveMycoBinary } from './update-checker.js';
+import { detectServiceManagedLabel } from './api/restart.js';
+import { getServiceManager } from '../service/manager.js';
+import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
@@ -101,6 +106,17 @@ export interface PowerJobDeps {
    * in-memory truth back into the state file.
    */
   server: DaemonServer;
+  /**
+   * Project root the daemon was launched against. Baked into update
+   * scripts so the post-install respawn happens in the right cwd.
+   */
+  projectRoot: string;
+  /**
+   * Schedules an in-process shutdown after the detached update script
+   * has been written and spawned. The update script waits a few
+   * seconds for this shutdown before running `npm install -g …`.
+   */
+  scheduleShutdown: () => void;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
@@ -280,6 +296,49 @@ function requestSupervisorRestart(deps: PowerJobDeps): void {
   );
 }
 
+/**
+ * Resolve the platform-native restart shell command for the
+ * service-managed daemon, or undefined when this process isn't
+ * service-managed. Mirrors the helper used inside
+ * `createUpdateHandlers` — both flows must agree on what the
+ * supervisor is so the post-install respawn lands on the same path.
+ */
+async function resolveServiceRestartCommandForInstall(): Promise<string | undefined> {
+  const serviceManager = getServiceManager();
+  const label = await detectServiceManagedLabel(serviceManager);
+  if (!label) return undefined;
+  try {
+    return serviceManager.restartShellCommand(label);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Generate-and-spawn the detached update script that installs
+ * `@goondocks/myco@<target>` globally and respawns the daemon.
+ *
+ * This is the `installUpdate` impl for `reconcileSelf`. Wraps
+ * `spawnUpdateScript` so the reconciler doesn't need to know about
+ * package specs or the runtime-command pin.
+ *
+ * Schedules an in-process shutdown after the script is on disk so
+ * the script's `sleep N && npm install` step lands while the daemon
+ * is gone — matching the existing `/api/update/apply` behavior.
+ */
+async function installUpdateToVersion(deps: PowerJobDeps, targetVersion: string): Promise<void> {
+  const mycoBinary = resolveMycoBinary();
+  const serviceRestartCommand = await resolveServiceRestartCommandForInstall();
+  spawnUpdateScript({
+    packageSpecs: [`${NPM_PACKAGE_NAME}@${targetVersion}`],
+    projectRoot: deps.projectRoot,
+    vaultDir: deps.daemonVaultDir,
+    mycoBinary,
+    serviceRestartCommand,
+  });
+  deps.scheduleShutdown();
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -405,11 +464,12 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
     name: POWER_JOB_NAMES.SELF_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
     fn: async () => {
-      reconcileSelf({
+      await reconcileSelf({
         daemonService: deps.daemonService,
         currentState: () => deps.server.currentDaemonState(),
         logger,
         requestSupervisorRestart: () => requestSupervisorRestart(deps),
+        installUpdate: (target: string) => installUpdateToVersion(deps, target),
       });
     },
   });

@@ -1776,6 +1776,12 @@ export async function main(): Promise<void> {
     daemonStateDir: daemonService.stateDir,
     daemonService,
     server,
+    projectRoot,
+    scheduleShutdown: () => {
+      setTimeout(() => {
+        process.kill(process.pid, 'SIGTERM');
+      }, RESTART_RESPONSE_FLUSH_MS);
+    },
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
