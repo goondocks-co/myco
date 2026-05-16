@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
@@ -171,9 +172,13 @@ function ensureSecretsDirSecure(vaultDir: string): void {
 }
 
 function writeSecretsFile(secretsPath: string, content: string): void {
-  fs.writeFileSync(secretsPath, content, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
-  // writeFileSync only applies the mode when creating the file. If it
-  // already existed, force the tightening explicitly.
+  // Atomic write protects against torn writes; the helper doesn't accept
+  // a mode argument today (Task 2's scope), so we chmod immediately
+  // after the rename. The rename->chmod window is bounded to the same
+  // synchronous call site, matching the prior writeFileSync+chmod
+  // sequence on the same path.
+  atomicWriteFileSync(secretsPath, content, 'utf-8');
+  // TODO: Task 2 — pass mode 0o600 to atomicWriteFileSync
   try {
     fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
   } catch {

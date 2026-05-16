@@ -16,6 +16,7 @@ import {
 import { runMigrations, CURRENT_MIGRATION_VERSION } from './migrations.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import {
   resolveGlobalConfigPath,
   resolveGroveConfigPath,
@@ -144,7 +145,7 @@ export function saveMachineConfig(config: MachineConfig, mycoHome = resolveMycoH
   const validated = MachineConfigSchema.parse(config);
   const filePath = resolveGlobalConfigPath(mycoHome);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, YAML.stringify(validated), 'utf-8');
+  atomicWriteFileSync(filePath, YAML.stringify(validated), 'utf-8');
   machineConfigCache.delete(filePath);
   invalidateMergedConfigCache();
 }
@@ -171,7 +172,7 @@ export function saveGroveConfig(
   const validated = GroveConfigSchema.parse(config);
   const filePath = resolveGroveConfigPath(groveId, mycoHome);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, YAML.stringify(validated), 'utf-8');
+  atomicWriteFileSync(filePath, YAML.stringify(validated), 'utf-8');
   groveConfigCache.delete(filePath);
   invalidateMergedConfigCache();
 }
@@ -413,7 +414,7 @@ function loadConfigInternal(vaultDir: string, options: LoadConfigOptions = {}): 
     // Zod-parsed full `config` — so the project file stays free of
     // Grove/Machine-tier fields and unrelated defaults. The returned
     // `config` still has every field defaulted for runtime consumers.
-    fs.writeFileSync(configPath, YAML.stringify(parsed), 'utf-8');
+    atomicWriteFileSync(configPath, YAML.stringify(parsed), 'utf-8');
   }
 
   return { config, parsed };
@@ -435,7 +436,7 @@ export function saveConfig(vaultDir: string, config: MycoConfig): void {
 
   const configPath = path.join(vaultDir, CONFIG_FILENAME);
   fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
+  atomicWriteFileSync(configPath, YAML.stringify(projectOnly), 'utf-8');
   invalidateMergedConfigCache(vaultDir);
 }
 
@@ -517,7 +518,7 @@ export function loadLocalConfig(vaultDir: string): Partial<MycoConfig> {
   // which would otherwise stamp legacy files with `config_version` for
   // no semantic reason.
   if (before !== after) {
-    fs.writeFileSync(filePath, after, 'utf-8');
+    atomicWriteFileSync(filePath, after, 'utf-8');
   }
 
   return doc as Partial<MycoConfig>;
@@ -672,7 +673,7 @@ function writeLocalYamlIfChanged<T>(vaultDir: string, current: T, next: T): T {
   if (existingYaml === nextYaml) return next;
 
   fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
+  atomicWriteFileSync(localConfigPath(vaultDir), nextYaml, 'utf-8');
   invalidateMergedConfigCache(vaultDir);
   return next;
 }
