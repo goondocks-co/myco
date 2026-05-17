@@ -250,11 +250,11 @@ describe('reconcileExistingDaemon', () => {
     expect(alive).toBe(false);
   });
 
-  it('steps aside and preserves daemon.json when pid survives SIGKILL', async () => {
+  it('steps aside and preserves daemon.json when an unkillable pid is a cross-uid myco daemon', async () => {
     // user-space can't truly produce an unkillable process — inject a fake
-    // `isProcessAlive` that always returns true and a no-op `kill`. The real
-    // sibling is just there to satisfy the "pid !== process.pid" guard;
-    // reconcile never touches it because we own the kill/alive seams.
+    // `isProcessAlive` that always returns true and a no-op `kill`. The
+    // cmdline reader returns a myco-looking string, so reconcile classifies
+    // the pid as "live cross-uid daemon" and steps aside.
     const svc = daemonService(vaultDir);
     fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
     fs.writeFileSync(
@@ -266,6 +266,7 @@ describe('reconcileExistingDaemon', () => {
     const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
       kill: (pid, signal) => { killCalls.push({ pid, signal }); },
       isProcessAlive: () => true,
+      readProcessCommandLine: () => '/usr/local/bin/node /opt/myco/bin/myco daemon',
       sigtermGraceMs: 50,
       sigkillGraceMs: 50,
       pollMs: 10,
@@ -278,6 +279,57 @@ describe('reconcileExistingDaemon', () => {
     // Both signals must have been attempted before stepping aside.
     expect(killCalls.map((c) => c.signal)).toEqual(['SIGTERM', 'SIGKILL']);
     expect(killCalls.every((c) => c.pid === siblingPid)).toBe(true);
+  });
+
+  it('steps aside conservatively when the unkillable pid\'s cmdline is unreadable', async () => {
+    // When readProcessCommandLine returns null (cross-uid process on some
+    // platforms, transient /proc state), we cannot prove the pid is
+    // foreign. Stay conservative — preserve daemon.json and step aside,
+    // matching the pre-C.4 behavior for this case.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(
+      svc.statePath,
+      JSON.stringify({ pid: siblingPid, port: 1 }),
+    );
+
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: () => {},
+      isProcessAlive: () => true,
+      readProcessCommandLine: () => null,
+      sigtermGraceMs: 50,
+      sigkillGraceMs: 50,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('step-aside');
+    expect(fs.existsSync(svc.statePath)).toBe(true);
+  });
+
+  it('takes over when an unkillable pid is provably a recycled foreign process (cmdline does not reference myco)', async () => {
+    // The class of bug C.4 closes: daemon.json records a pid that
+    // survived SIGKILL (EPERM swallowed), but the cmdline reveals the
+    // slot was stolen by an unrelated process. Stepping aside here
+    // would loop forever — instead, evict the stale state file and
+    // bind our own port.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(
+      svc.statePath,
+      JSON.stringify({ pid: siblingPid, port: 1 }),
+    );
+
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: () => {},
+      isProcessAlive: () => true,
+      readProcessCommandLine: () => '/usr/bin/postgres -D /var/lib/postgresql/data',
+      sigtermGraceMs: 50,
+      sigkillGraceMs: 50,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('ok');
+    expect(fs.existsSync(svc.statePath)).toBe(false);
   });
 });
 

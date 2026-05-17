@@ -65,21 +65,21 @@ describe('myco update --target-version writes intent', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('writes a [update] section with target_version when daemon is on a different version', async () => {
+  it('writes intent.update.toml with target_version when daemon is on a different version', async () => {
     fakeDaemon.info = { pid: 12345, port: 20915 };
     writeDaemonJson(serviceDir, '0.27.10');
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await run(['--target-version', '0.27.99']);
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.update.toml');
     expect(fs.existsSync(intentPath)).toBe(true);
     const parsed = parseToml(fs.readFileSync(intentPath, 'utf-8')) as {
-      update?: { target_version: string; requested_at: string };
+      target_version: string;
+      requested_at: string;
     };
-    expect(parsed.update).toBeDefined();
-    expect(parsed.update!.target_version).toBe('0.27.99');
-    expect(parsed.update!.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(parsed.target_version).toBe('0.27.99');
+    expect(parsed.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     logSpy.mockRestore();
   });
 
@@ -93,7 +93,7 @@ describe('myco update --target-version writes intent', () => {
 
     await run(['--target-version', '0.27.10']);
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.update.toml');
     expect(fs.existsSync(intentPath)).toBe(false);
     expect(logs.some((l) => l.toLowerCase().includes('already'))).toBe(true);
     logSpy.mockRestore();
@@ -109,7 +109,7 @@ describe('myco update --target-version writes intent', () => {
 
     await expect(run(['--target-version', '0.27.99'])).rejects.toThrow('__exit__');
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.update.toml');
     expect(fs.existsSync(intentPath)).toBe(false);
 
     exitSpy.mockRestore();
@@ -132,11 +132,11 @@ describe('myco update --target-version writes intent', () => {
   });
 
   it('--cancel-update clears a pending update intent', async () => {
-    // Seed an existing update intent.
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    // Seed an existing update intent in the per-section file.
+    const intentPath = path.join(serviceDir, 'intent.update.toml');
     fs.writeFileSync(
       intentPath,
-      'update = { target_version = "0.27.99", requested_at = "2026-05-16T00:00:00Z" }\n',
+      'target_version = "0.27.99"\nrequested_at = "2026-05-16T00:00:00Z"\n',
     );
 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});

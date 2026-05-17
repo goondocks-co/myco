@@ -369,9 +369,27 @@ async function runWorktreeBootstrap(): Promise<void> {
   // would otherwise miss a project pin entirely.
   const mainPin = path.join(mainVaultDir, 'runtime.command');
   if (fs.existsSync(mainPin)) {
-    const worktreePin = path.join(worktreeRoot, '.myco', 'runtime.command');
-    fs.copyFileSync(mainPin, worktreePin);
-    console.log(`  ✓ Mirrored runtime.command from main repo`);
+    // lstat (not stat) so we observe the link itself rather than its
+    // target. A symlinked runtime.command — planted by a malicious clone
+    // or a shared-repo collaborator — would otherwise be followed by
+    // copyFileSync to whatever the link points at, and then executed by
+    // myco-run.cjs as if it were a trusted binary path.
+    const pinStat = fs.lstatSync(mainPin);
+    if (pinStat.isSymbolicLink()) {
+      console.warn(
+        `  ⚠ Skipped mirroring runtime.command — main repo's pin is a symlink (refusing to follow). `
+        + `Resolve manually if intentional.`,
+      );
+    } else {
+      // Read + atomic-rewrite rather than copyFileSync so we never expose
+      // a partial write at the destination and so the source's mode bits
+      // don't carry over (we don't trust upstream permissions for an
+      // execution-relevant path).
+      const contents = fs.readFileSync(mainPin, 'utf-8');
+      const worktreePin = path.join(worktreeRoot, '.myco', 'runtime.command');
+      fs.writeFileSync(worktreePin, contents, { encoding: 'utf-8', mode: 0o644 });
+      console.log(`  ✓ Mirrored runtime.command from main repo`);
+    }
   }
 
   console.log('');

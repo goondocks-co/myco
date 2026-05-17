@@ -1,5 +1,5 @@
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
-import { mergeIntent } from '../daemon/intent.js';
+import { writeRestartIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 
@@ -22,8 +22,9 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     process.exit(1);
   }
 
-  mergeIntent(daemonService, {
-    restart: { requested_at: new Date().toISOString(), reason: 'cli' },
+  writeRestartIntent(daemonService, {
+    requested_at: new Date().toISOString(),
+    reason: 'cli',
   });
   console.log(`Restart requested for daemon ${before.pid} on port ${before.port}.`);
   console.log('Waiting for the reconciler to converge...');
@@ -43,8 +44,19 @@ export async function run(_args: string[], vaultDir: string): Promise<void> {
     }
   }
   console.error(
-    `Reconciler did not converge within ${RESTART_CONVERGE_DEADLINE_MS / 1000}s. `
-    + 'The intent file remains; the daemon will pick it up on the next tick.',
+    `Reconciler did not converge within ${RESTART_CONVERGE_DEADLINE_MS / 1000}s.`,
+  );
+  console.error('  The intent file remains and the daemon will pick it up on the next tick.');
+  console.error(
+    '  PowerManager tick cadence depends on the daemon\'s power state:'
+    + ` active is fast (seconds), sleep is slower (minutes), and deep_sleep`
+    + ` stops the timer entirely until the next external event (HTTP request,`
+    + ` hook fire, or signal). If you see no activity, prod the daemon — e.g.`
+    + ` open the dashboard or trigger a hook — to wake it.`,
+  );
+  console.error(
+    '  If you need an immediate restart and the supervisor (launchd/systemd)'
+    + ' is unavailable, run `myco daemon kill` and let the supervisor respawn.',
   );
   process.exit(1);
 }

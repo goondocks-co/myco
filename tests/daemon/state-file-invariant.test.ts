@@ -52,8 +52,9 @@ import { join } from 'node:path';
 import { reconcileExistingDaemon } from '../../packages/myco/src/daemon/main.js';
 import { reconcileSelf } from '../../packages/myco/src/daemon/self-reconcile.js';
 import {
-  mergeIntent,
   readIntent,
+  writeRestartIntent,
+  writeUpdateIntent,
 } from '../../packages/myco/src/daemon/intent.js';
 import { DaemonLogger } from '../../packages/myco/src/daemon/logger.js';
 import type {
@@ -137,12 +138,12 @@ describe('self-mutation-discipline invariants', () => {
     const logger = makeLogger(dir);
     const state = makeState();
 
-    mergeIntent(svc, {
-      restart: { requested_at: new Date().toISOString(), reason: 'tenet-both' },
-      update: { target_version: '0.27.99', requested_at: new Date().toISOString() },
-    });
-    const intentFile = join(svc.stateDir, 'intent.toml');
-    expect(existsSync(intentFile)).toBe(true);
+    writeRestartIntent(svc, { requested_at: new Date().toISOString(), reason: 'tenet-both' });
+    writeUpdateIntent(svc, { target_version: '0.27.99', requested_at: new Date().toISOString() });
+    const restartFile = join(svc.stateDir, 'intent.restart.toml');
+    const updateFile = join(svc.stateDir, 'intent.update.toml');
+    expect(existsSync(restartFile)).toBe(true);
+    expect(existsSync(updateFile)).toBe(true);
 
     const events: string[] = [];
     await reconcileSelf({
@@ -156,8 +157,13 @@ describe('self-mutation-discipline invariants', () => {
     // Both intents were invoked, restart first (it's processed before
     // update in reconcileSelf; this locks the ordering in).
     expect(events).toEqual(['restart', 'update:0.27.99']);
-    // INVARIANT: intent.toml fully gone after both clears.
-    expect(existsSync(intentFile)).toBe(false);
+    // INVARIANT: restart section cleared (clear-before-act); update
+    // section RETAINED across the spawn so the post-restart daemon can
+    // decide based on current.version vs target + update-error.json
+    // presence. Clearing here would defeat the retry semantics on
+    // install failure.
+    expect(existsSync(restartFile)).toBe(false);
+    expect(existsSync(updateFile)).toBe(true);
     // INVARIANT: daemon.json present and pointing at us.
     expect(existsSync(svc.statePath)).toBe(true);
     const written = JSON.parse(readFileSync(svc.statePath, 'utf-8'));
@@ -182,10 +188,8 @@ describe('self-mutation-discipline invariants', () => {
       error() {},
     } as unknown as DaemonLoggerType;
 
-    mergeIntent(svc, {
-      restart: { requested_at: new Date().toISOString(), reason: 'tenet-partial-fail' },
-      update: { target_version: '0.27.99', requested_at: new Date().toISOString() },
-    });
+    writeRestartIntent(svc, { requested_at: new Date().toISOString(), reason: 'tenet-partial-fail' });
+    writeUpdateIntent(svc, { target_version: '0.27.99', requested_at: new Date().toISOString() });
 
     let restartCalls = 0;
     let updateCalls = 0;
@@ -205,13 +209,14 @@ describe('self-mutation-discipline invariants', () => {
     expect(updateCalls).toBe(1);
 
     // INVARIANT: restart section cleared (it succeeded), update
-    // section retained (it failed) — proves clear-before-act for
-    // restart and retain-on-fail for update operate independently.
+    // section retained (sync-spawn failure path retries on next tick)
+    // — proves clear-before-act for restart and retain-on-sync-throw
+    // for update operate independently.
     const intent = readIntent(svc);
     expect(intent.restart).toBeUndefined();
     expect(intent.update?.target_version).toBe('0.27.99');
-    // File still exists because update section remains.
-    expect(existsSync(join(svc.stateDir, 'intent.toml'))).toBe(true);
+    expect(existsSync(join(svc.stateDir, 'intent.restart.toml'))).toBe(false);
+    expect(existsSync(join(svc.stateDir, 'intent.update.toml'))).toBe(true);
   });
 
   test('pid-reuse defense: stale daemon.json pointing at a recycled pid → takeover without orphaning the stranger', async () => {

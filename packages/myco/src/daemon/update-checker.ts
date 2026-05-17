@@ -548,6 +548,20 @@ export function readUpdateError(): string | null {
   }
 }
 
+/**
+ * Removes ~/.myco/update-error.json so a future install attempt starts
+ * from a clean slate. Idempotent — silently succeeds when the file is
+ * already absent. Reconciler calls this after surfacing the prior error
+ * so the next user-driven `myco update` is not gated on a stale failure.
+ */
+export function consumeUpdateError(): void {
+  try {
+    fs.unlinkSync(UPDATE_ERROR_PATH);
+  } catch {
+    // Already gone — expected.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Registry types
 // ---------------------------------------------------------------------------

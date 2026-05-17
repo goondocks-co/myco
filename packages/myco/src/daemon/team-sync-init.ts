@@ -34,7 +34,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove } from './scope-iteration.js';
-import { withDatabase } from '@myco/db/client.js';
+import { withDatabase, getDatabase } from '@myco/db/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,19 +97,36 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     try {
       const nowSec = epochSeconds();
       const joinedIso = new Date(nowSec * 1000).toISOString();
-      const { inserted, row } = upsertSelfMember(machineId, joinedIso);
-      if (!inserted) return;
-      enqueueOutbox({
-        table_name: 'team_members',
-        row_id: row.id,
-        operation: 'upsert',
-        payload: JSON.stringify(row),
-        machine_id: machineId,
-        created_at: nowSec,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
-        machine_id: machineId,
-      });
+      // Wrap upsert + enqueue in a single SQLite transaction. Without
+      // this, a crash (or enqueueOutbox throw) between INSERT OR IGNORE
+      // returning changes=1 and the enqueue call would leave the
+      // team_members row inserted but never queued — and because the
+      // upsert is idempotent, every subsequent reconnect reports
+      // inserted=false and skips the enqueue forever. The self member
+      // would be permanently invisible to peers. Transaction rollback
+      // restores the pre-insert state so the next call retries cleanly.
+      let inserted = false;
+      let row: ReturnType<typeof upsertSelfMember>['row'] | null = null;
+      getDatabase().transaction(() => {
+        const result = upsertSelfMember(machineId, joinedIso);
+        inserted = result.inserted;
+        row = result.row;
+        if (inserted && row) {
+          enqueueOutbox({
+            table_name: 'team_members',
+            row_id: row.id,
+            operation: 'upsert',
+            payload: JSON.stringify(row),
+            machine_id: machineId,
+            created_at: nowSec,
+          });
+        }
+      })();
+      if (inserted) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
+          machine_id: machineId,
+        });
+      }
     } catch (err) {
       logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Self team_members reconcile failed', {
         error: (err as Error).message,

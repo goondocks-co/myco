@@ -70,10 +70,8 @@ describe('myco restart writes intent', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('writes a [restart] section to intent.toml and converges on a new pid', async () => {
+  it('writes intent.restart.toml and converges on a new pid', async () => {
     fakeDaemon.before = { pid: 11111, port: 20915 };
-    // First poll: still old pid (shouldn't happen, but defensive).
-    // Second poll: new pid → CLI returns.
     fakeDaemon.pollResponses = [
       null, // gap during SIGTERM/respawn
       { pid: 22222, port: 20915 },
@@ -81,15 +79,16 @@ describe('myco restart writes intent', () => {
 
     await run([], vault);
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
     expect(fs.existsSync(intentPath)).toBe(true);
+    // Per-section file contents are the section payload directly — no
+    // `restart =` wrapper, since the filename already names the section.
     const parsed = parseToml(fs.readFileSync(intentPath, 'utf-8')) as {
-      restart?: { requested_at: string; reason?: string };
+      requested_at: string;
+      reason?: string;
     };
-    expect(parsed.restart).toBeDefined();
-    expect(parsed.restart!.reason).toBe('cli');
-    // ISO8601 timestamp shape
-    expect(parsed.restart!.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(parsed.reason).toBe('cli');
+    expect(parsed.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it('does NOT write intent when no daemon is discovered', async () => {
@@ -103,7 +102,7 @@ describe('myco restart writes intent', () => {
 
     await expect(run([], vault)).rejects.toThrow('__exit__');
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
     expect(fs.existsSync(intentPath)).toBe(false);
 
     exitSpy.mockRestore();
@@ -112,8 +111,6 @@ describe('myco restart writes intent', () => {
 
   it('treats null poll responses as "still restarting" (no early exit)', async () => {
     fakeDaemon.before = { pid: 11111, port: 20915 };
-    // Several nulls in a row, then convergence — proves the loop
-    // doesn't bail on the first null.
     fakeDaemon.pollResponses = [
       null,
       null,
@@ -123,7 +120,7 @@ describe('myco restart writes intent', () => {
 
     await run([], vault);
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
     expect(fs.existsSync(intentPath)).toBe(true);
   });
 });

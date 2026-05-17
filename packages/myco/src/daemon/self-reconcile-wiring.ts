@@ -5,7 +5,11 @@ import type { DaemonServiceState } from './service-state.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import { spawnUpdateScript } from './update-installer.js';
-import { resolveMycoBinary } from './update-checker.js';
+import {
+  resolveMycoBinary,
+  readUpdateError,
+  consumeUpdateError,
+} from './update-checker.js';
 import { detectServiceManagedLabel } from './api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
@@ -36,17 +40,31 @@ export function registerSelfReconcileJob(
   logger: DaemonLogger,
   deps: SelfReconcileWiringDeps,
 ): void {
+  // Single-flight guard: PowerManager.tick awaits each registered job
+  // sequentially within a tick, so single-tick re-entry can't happen,
+  // but a slow reconcileSelf could overlap a fresh tick if the cadence
+  // tightens or installUpdate's pre-spawn work blocks beyond an interval.
+  // Mirrors the running-flag pattern in team-sync-init's team-sync-flush.
+  let running = false;
   powerManager.register({
     name: POWER_JOB_NAMES.SELF_RECONCILE,
     runIn: ['active', 'idle', 'sleep'],
     fn: async () => {
-      await reconcileSelf({
-        daemonService: deps.daemonService,
-        currentState: () => deps.server.currentDaemonState(),
-        logger,
-        requestSupervisorRestart: () => requestSupervisorRestart(logger, deps.daemonService),
-        installUpdate: (target: string) => installUpdateToVersion(deps, target),
-      });
+      if (running) return;
+      running = true;
+      try {
+        await reconcileSelf({
+          daemonService: deps.daemonService,
+          currentState: () => deps.server.currentDaemonState(),
+          logger,
+          requestSupervisorRestart: () => requestSupervisorRestart(logger, deps.daemonService),
+          installUpdate: (target: string) => installUpdateToVersion(deps, target),
+          readUpdateError,
+          consumeUpdateError,
+        });
+      } finally {
+        running = false;
+      }
     },
   });
 }

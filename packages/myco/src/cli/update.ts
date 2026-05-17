@@ -10,7 +10,7 @@ import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
-import { mergeIntent, clearIntentSection, readIntent } from '../daemon/intent.js';
+import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
 import {
   activateProjectMigration,
@@ -380,8 +380,9 @@ async function runUpdateIntent(targetVersion: string): Promise<void> {
     return;
   }
 
-  mergeIntent(daemonService, {
-    update: { target_version: targetVersion, requested_at: new Date().toISOString() },
+  writeUpdateIntent(daemonService, {
+    target_version: targetVersion,
+    requested_at: new Date().toISOString(),
   });
   console.log(
     `Update to ${targetVersion} requested. The daemon will apply it on the next reconcile tick.`,
@@ -397,13 +398,13 @@ async function runUpdateIntent(targetVersion: string): Promise<void> {
 async function runCancelUpdate(): Promise<void> {
   const vaultDir = resolveVaultDir();
   const daemonService = resolveDaemonServiceState(vaultDir);
-  const intent = readIntent(daemonService);
-  if (!intent.update) {
+  const updateIntent = readUpdateIntent(daemonService);
+  if (!updateIntent) {
     console.log('No pending update intent.');
     return;
   }
   clearIntentSection(daemonService, 'update');
-  console.log(`Cleared pending update intent (target was ${intent.update.target_version}).`);
+  console.log(`Cleared pending update intent (target was ${updateIntent.target_version}).`);
 }
 
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
@@ -416,8 +417,20 @@ async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
       signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
     });
-    return response.status === 404;
+    if (response.status === 404) return true;
+    if (response.ok) return false;
+    // 5xx/4xx-not-404 — daemon is responding but /mcp is degraded
+    // (router half-registered, auth busted, internal error). Treat as
+    // missing so the caller triggers a restart to re-bind the route
+    // table from a clean boot.
+    return true;
   } catch {
-    return false;
+    // Network failure (ECONNREFUSED / ETIMEDOUT / abort): the caller
+    // already confirmed the daemon is "running" via ensureRunning's
+    // pid check, so an unreachable TCP socket is the wedged-shutdown
+    // shape this whole `myco update` finalizer exists to recover from.
+    // The previous `return false` here silently kept the wedge alive
+    // and the user had to `kill -9` manually. Restart it.
+    return true;
   }
 }
