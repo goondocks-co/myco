@@ -1,11 +1,12 @@
 /**
  * Canonical string values for skill_candidates.status.
  *
- * The skill lifecycle uses four states:
+ * The skill lifecycle uses five states:
  *   - identified: discovered by skill-survey, awaiting human review
  *   - approved:   human approved; queued for skill-generate
  *   - generated:  vault_finalize_skill promoted the staged skill to live
  *   - dismissed:  retired (human or agent)
+ *   - deferred:   postponed for later review or reconciliation
  *
  * See docs/superpowers/plans/2026-04-08-skill-lifecycle-audit-and-staging.md
  * for the lifecycle transitions and who is allowed to make each one.
@@ -15,6 +16,7 @@ export const CANDIDATE_STATUS = {
   APPROVED: 'approved',
   GENERATED: 'generated',
   DISMISSED: 'dismissed',
+  DEFERRED: 'deferred',
 } as const;
 
 export type SkillCandidateStatus = (typeof CANDIDATE_STATUS)[keyof typeof CANDIDATE_STATUS];
@@ -27,6 +29,7 @@ export type SkillCandidateStatus = (typeof CANDIDATE_STATUS)[keyof typeof CANDID
 export const AGENT_SETTABLE_STATUSES: readonly SkillCandidateStatus[] = [
   CANDIDATE_STATUS.IDENTIFIED,
   CANDIDATE_STATUS.DISMISSED,
+  CANDIDATE_STATUS.DEFERRED,
 ];
 
 /**
@@ -38,6 +41,7 @@ export const REST_SETTABLE_STATUSES: readonly SkillCandidateStatus[] = [
   CANDIDATE_STATUS.IDENTIFIED,
   CANDIDATE_STATUS.APPROVED,
   CANDIDATE_STATUS.DISMISSED,
+  CANDIDATE_STATUS.DEFERRED,
 ];
 
 /**

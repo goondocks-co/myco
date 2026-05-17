@@ -55,6 +55,6 @@ describe('release provenance schema', () => {
     const row = db.prepare(
       `SELECT MAX(version) AS v FROM schema_version`,
     ).get() as { v: number };
-    expect(row.v).toBe(41);
+    expect(row.v).toBe(SCHEMA_VERSION);
   });
 });

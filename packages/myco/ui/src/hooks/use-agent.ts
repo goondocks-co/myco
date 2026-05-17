@@ -222,6 +222,8 @@ export interface TaskRow {
 export interface TriggerRunPayload {
   task?: string;
   instruction?: string;
+  /** Explicit operator run; task-specific builders may bypass scheduler gates. */
+  force?: boolean;
   /** When true, writes are intercepted and recorded as write-intents. */
   dryRun?: boolean;
   /**
@@ -349,6 +351,8 @@ export interface RestoreDigestRevisionResponse {
 export interface TriggerRunResponse {
   ok: boolean;
   message: string;
+  status?: 'running' | 'skipped';
+  reason?: string;
   runId?: string;
 }
 

@@ -1,7 +1,15 @@
 /**
  * Skill lifecycle vault tools.
  *
- * 5 tools:
+ * 9 tools:
+ *   - vault_skill_survey_prepare: read-only deterministic preparation for
+ *     skill-survey runs, including queue snapshot and evidence bundles.
+ *   - vault_skill_survey_bundle_decisions: validates review-bundles
+ *     decisions against deterministic evidence bundles before phase handoff.
+ *   - vault_skill_survey_reconciliation_plan: validates and stores the
+ *     skill-survey queue reconciliation plan, rejecting incomplete plans.
+ *   - vault_skill_survey_apply_reconciliation: applies only the validated
+ *     reconciliation plan stored by vault_skill_survey_reconciliation_plan.
  *   - vault_skill_candidates: CRUD over skill candidate rows. The agent
  *     can only set 'identified' or 'dismissed' on updates; human-only
  *     'approved' transitions go through the UI / MCP approve action, and
@@ -29,6 +37,7 @@ import { getDatabase } from '@myco/db/client.js';
 import {
   insertCandidate, getCandidate, listCandidates, updateCandidate, deleteCandidate,
 } from '@myco/db/queries/skill-candidates.js';
+import { getState, setState } from '@myco/db/queries/agent-state.js';
 import {
   insertSkillRecord, getSkillRecord, getSkillRecordByName,
   listSkillRecords, updateSkillRecord, deleteSkillRecordCascade,
@@ -39,6 +48,17 @@ import {
   CANDIDATE_STATUS,
   AGENT_SETTABLE_STATUSES,
 } from '@myco/constants/skill-candidate-status.js';
+import { parseSourceRefs } from '@myco/agent/skill-candidate-evidence.js';
+import {
+  CANDIDATE_QUALITY_FAILURE_CODES,
+  IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE,
+  IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS,
+  SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY,
+  SKILL_SURVEY_RECONCILIATION_POLICY_MARKER,
+  SKILL_SURVEY_RECONCILIATION_STATE_KEY,
+  unknownCandidateQualityFailureCodes,
+  validateSkillCandidateQualityContract,
+} from '@myco/agent/skill-candidate-quality.js';
 import {
   validateSkillContent,
   checkFrontmatterPreservation,
@@ -56,6 +76,25 @@ import {
   type StagedManifest,
 } from './skill-staging.js';
 import { textResult, dryRunResult, projectScopeFromVaultToolDeps, rowProjectIdFromVaultToolDeps, type VaultToolDeps } from './types.js';
+import { buildSkillSurveyPreparation, hasHumanReviewEvidence } from '../skill-survey-prepare.js';
+
+type JsonRecord = Record<string, unknown>;
+
+const RECONCILIATION_HANDLED_GROUPS = ['Update', 'Defer', 'Dismiss', 'Blocked'] as const;
+const RECONCILIATION_RETAIN_GROUPS = ['Keep'] as const;
+
+const RECONCILIATION_GROUP_ALIASES: Record<typeof RECONCILIATION_HANDLED_GROUPS[number], string[]> = {
+  Update: ['Update', 'Updates', 'update', 'updates'],
+  Defer: ['Defer', 'Defers', 'defer', 'defers'],
+  Dismiss: ['Dismiss', 'Dismisses', 'dismiss', 'dismisses'],
+  Blocked: ['Blocked', 'blocked'],
+};
+const RECONCILIATION_RETAIN_ALIASES: Record<typeof RECONCILIATION_RETAIN_GROUPS[number], string[]> = {
+  Keep: ['Keep', 'Keeps', 'keep', 'keeps', 'Retain', 'Retains', 'retain', 'retains'],
+};
+const RECONCILIATION_CREATE_ALIASES = ['Create', 'Creates', 'create', 'creates'];
+const BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE', 'DEFER', 'DISMISS', 'SKIP']);
+const IDENTIFIED_BUNDLE_DECISION_ACTIONS = new Set(['CREATE', 'UPDATE']);
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -82,23 +121,23 @@ export function createSkillTools(deps: VaultToolDeps) {
    * metric. Reported `score` is the max of the two so the rejection
    * message surfaces the stronger signal.
    */
-  function findOverlappingCandidate(
+  function findOverlappingCandidates(
     newTopic: string,
     existing: ReturnType<typeof listCandidates>,
-  ): { candidate: typeof existing[number]; score: number } | null {
-    let best: { candidate: typeof existing[number]; score: number } | null = null;
+    options: { excludeId?: string } = {},
+  ): Array<{ candidate: typeof existing[number]; score: number }> {
+    const matches: Array<{ candidate: typeof existing[number]; score: number }> = [];
     for (const candidate of existing) {
+      if (candidate.id === options.excludeId) continue;
       const jaccard = descriptionSimilarity(newTopic, candidate.topic);
       const overlap = topicOverlapSimilarity(newTopic, candidate.topic);
       const hitsJaccard = jaccard >= DESCRIPTION_DUPLICATE_THRESHOLD;
       const hitsOverlap = overlap >= TOPIC_OVERLAP_THRESHOLD;
       if (!hitsJaccard && !hitsOverlap) continue;
       const score = Math.max(jaccard, overlap);
-      if (!best || score > best.score) {
-        best = { candidate, score };
-      }
+      matches.push({ candidate, score });
     }
-    return best;
+    return matches.sort((a, b) => b.score - a.score);
   }
 
   /**
@@ -122,6 +161,1347 @@ export function createSkillTools(deps: VaultToolDeps) {
         return `Candidate rejected: the vault ${common} in status '${match.status}'.`;
     }
   }
+
+  function parseJsonArrayParam(
+    fieldName: 'quality_failures' | 'coverage_matches',
+    value: string | undefined,
+  ): { array?: string[]; error?: string } {
+    if (value === undefined) return {};
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return { error: `${fieldName} must be a JSON array` };
+    }
+
+    if (!Array.isArray(parsed)) {
+      return { error: `${fieldName} must be a JSON array` };
+    }
+    if (!parsed.every((entry) => typeof entry === 'string')) {
+      return { error: `${fieldName} must be a JSON array of strings` };
+    }
+    if (fieldName === 'quality_failures') {
+      const unknown = unknownCandidateQualityFailureCodes(parsed);
+      if (unknown.length > 0) {
+        return {
+          error:
+            `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
+            `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
+        };
+      }
+    }
+    return { array: parsed };
+  }
+
+  function validateCandidateSourceIds(
+    sourceIds: string | undefined,
+    options: { required: boolean; minRefs: number },
+  ): { normalized?: string; error?: string } {
+    if (sourceIds === undefined) {
+      return options.required
+        ? { error: 'source_ids is required for identified skill candidates' }
+        : {};
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sourceIds);
+    } catch {
+      return { error: 'source_ids must be a JSON array of valid source references' };
+    }
+    if (!Array.isArray(parsed)) {
+      return { error: 'source_ids must be a JSON array of valid source references' };
+    }
+
+    const invalidEntries = parsed.filter((entry) => parseSourceRefs([entry]).length !== 1);
+    if (invalidEntries.length > 0) {
+      return { error: 'source_ids contains invalid source reference entries' };
+    }
+
+    const refs = parseSourceRefs(parsed);
+    if (refs.length < options.minRefs) {
+      return { error: `source_ids must contain at least ${options.minRefs} valid source references` };
+    }
+
+    return { normalized: JSON.stringify(refs) };
+  }
+
+  function parseSupersedesNames(value: string | undefined | null): string[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function isRecord(value: unknown): value is JsonRecord {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function parseJsonObjectParam(fieldName: string, value: string): { object?: JsonRecord; error?: string } {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!isRecord(parsed)) {
+        return { error: `${fieldName} must be a JSON object` };
+      }
+      return { object: parsed };
+    } catch {
+      return { error: `${fieldName} must be valid JSON` };
+    }
+  }
+
+  function parseOptionalStringArray(value: unknown): string[] | null {
+    if (value === undefined) return null;
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return null;
+    return value;
+  }
+
+  function sameStringSet(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    const bSet = new Set(b);
+    return a.every((entry) => bSet.has(entry));
+  }
+
+  function getReconciliationActionRoot(plan: JsonRecord): JsonRecord {
+    return isRecord(plan.actions) ? plan.actions : plan;
+  }
+
+  function reconciliationEntries(plan: JsonRecord, group: typeof RECONCILIATION_HANDLED_GROUPS[number]): JsonRecord[] {
+    const root = getReconciliationActionRoot(plan);
+    const entries: JsonRecord[] = [];
+    for (const alias of RECONCILIATION_GROUP_ALIASES[group]) {
+      const value = root[alias];
+      if (Array.isArray(value)) {
+        entries.push(...value.filter(isRecord));
+      }
+    }
+    return entries;
+  }
+
+  function reconciliationRetainEntries(plan: JsonRecord): JsonRecord[] {
+    const root = getReconciliationActionRoot(plan);
+    const entries: JsonRecord[] = [];
+    for (const alias of RECONCILIATION_RETAIN_ALIASES.Keep) {
+      const value = root[alias];
+      if (Array.isArray(value)) {
+        entries.push(...value.filter(isRecord));
+      }
+    }
+    return entries;
+  }
+
+  function reconciliationCreateEntries(plan: JsonRecord): JsonRecord[] {
+    const root = getReconciliationActionRoot(plan);
+    const entries: JsonRecord[] = [];
+    for (const alias of RECONCILIATION_CREATE_ALIASES) {
+      const value = root[alias];
+      if (Array.isArray(value)) {
+        entries.push(...value.filter(isRecord));
+      }
+    }
+    return entries;
+  }
+
+  function reconciliationEntryCandidateId(entry: JsonRecord): string | null {
+    for (const key of ['id', 'candidate_id', 'candidateId', 'target_candidate_id', 'targetCandidateId']) {
+      const value = entry[key];
+      if (typeof value === 'string' && value.trim().length > 0) return value;
+    }
+    return null;
+  }
+
+  function reconciliationEntryHasReason(entry: JsonRecord): boolean {
+    return ['reason', 'rationale', 'reconciliation_reason', 'reconciliationReason']
+      .some((key) => typeof entry[key] === 'string' && entry[key].trim().length > 0);
+  }
+
+  function parsePlanStringArrayField(
+    entry: JsonRecord,
+    fieldName: 'quality_failures' | 'coverage_matches',
+  ): { array?: string[]; error?: string } {
+    const value = entry[fieldName];
+    if (value === undefined) return {};
+
+    let parsed: unknown = value;
+    if (typeof value === 'string') {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        return { error: `${fieldName} must be a JSON array` };
+      }
+    }
+
+    if (!Array.isArray(parsed)) {
+      return { error: `${fieldName} must be a JSON array` };
+    }
+    if (!parsed.every((item) => typeof item === 'string')) {
+      return { error: `${fieldName} must be a JSON array of strings` };
+    }
+    if (fieldName === 'quality_failures') {
+      const unknown = unknownCandidateQualityFailureCodes(parsed);
+      if (unknown.length > 0) {
+        return {
+          error:
+            `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
+            `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
+        };
+      }
+    }
+    return { array: parsed };
+  }
+
+  function rawSourceRefCount(value: unknown): number | null {
+    if (Array.isArray(value)) return value.length;
+    if (typeof value !== 'string') return null;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function planStringArrayAsJson(
+    entry: JsonRecord,
+    fieldName: 'quality_failures' | 'coverage_matches',
+  ): string | undefined {
+    const parsed = parsePlanStringArrayField(entry, fieldName);
+    return parsed.array ? JSON.stringify(parsed.array) : undefined;
+  }
+
+  function planSourceRefsAsJson(entry: JsonRecord): string | undefined {
+    const rawCount = rawSourceRefCount(entry.source_ids);
+    if (rawCount === null) return undefined;
+    const refs = parseSourceRefs(entry.source_ids);
+    return JSON.stringify(refs);
+  }
+
+  function optionalStringField(entry: JsonRecord, key: string): string | undefined {
+    const value = entry[key];
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  function optionalNumberField(entry: JsonRecord, key: string): number | undefined {
+    const value = entry[key];
+    return typeof value === 'number' ? value : undefined;
+  }
+
+  function reconciliationReason(entry: JsonRecord, fallback: string): string {
+    const reason = optionalStringField(entry, 'reconciliation_reason')
+      ?? optionalStringField(entry, 'reconciliationReason')
+      ?? optionalStringField(entry, 'reason')
+      ?? optionalStringField(entry, 'rationale')
+      ?? fallback;
+    return reason.includes(SKILL_SURVEY_RECONCILIATION_POLICY_MARKER)
+      ? reason
+      : `${SKILL_SURVEY_RECONCILIATION_POLICY_MARKER}: ${reason}`;
+  }
+
+  function validateIdentifiedPlanEntry(entry: JsonRecord, label: string): string[] {
+    const errors: string[] = [];
+    if (typeof entry.evidence_bundle_id !== 'string' || entry.evidence_bundle_id.trim().length === 0) {
+      errors.push(`${label}: evidence_bundle_id is required`);
+    }
+    if (typeof entry.quality_score !== 'number' || entry.quality_score < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
+      errors.push(`${label}: quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE}`);
+    }
+
+    const qualityFailures = parsePlanStringArrayField(entry, 'quality_failures');
+    if (qualityFailures.error) {
+      errors.push(`${label}: ${qualityFailures.error}`);
+    } else if (!qualityFailures.array || qualityFailures.array.length > 0) {
+      errors.push(`${label}: quality_failures must be an empty array for identified candidates`);
+    }
+
+    const coverageMatches = parsePlanStringArrayField(entry, 'coverage_matches');
+    if (coverageMatches.error) {
+      errors.push(`${label}: ${coverageMatches.error}`);
+    }
+
+    const rawCount = rawSourceRefCount(entry.source_ids);
+    const sourceRefs = parseSourceRefs(entry.source_ids);
+    if (rawCount === null) {
+      errors.push(`${label}: source_ids must be a JSON array of source references`);
+    } else if (sourceRefs.length !== rawCount) {
+      errors.push(`${label}: source_ids contains invalid source reference entries`);
+    } else if (sourceRefs.length < IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS) {
+      errors.push(`${label}: source_ids must contain at least ${IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS} valid source references`);
+    }
+    return errors;
+  }
+
+  function evidenceBundleMetadataForPlan(
+    bundle: ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number],
+  ): Pick<JsonRecord, 'quality_score' | 'quality_failures' | 'coverage_matches' | 'source_ids'> {
+    const sourceRefs = parseSourceRefs(bundle.sourceRefs);
+    return {
+      quality_score: bundle.score,
+      quality_failures: bundle.failures,
+      coverage_matches: bundle.coverageMatches,
+      source_ids: sourceRefs,
+    };
+  }
+
+  function mergeHumanReviewEvidence(entry: JsonRecord, metadata: JsonRecord | null): boolean {
+    if (!metadata) return false;
+    let merged = false;
+    const rationale = optionalStringField(metadata, 'rationale');
+    if (rationale && !hasHumanReviewEvidence(optionalStringField(entry, 'rationale'))) {
+      entry.rationale = rationale;
+      merged = true;
+    }
+    const confidence = optionalNumberField(metadata, 'confidence');
+    if (confidence !== undefined && optionalNumberField(entry, 'confidence') === undefined) {
+      entry.confidence = confidence;
+      merged = true;
+    }
+    return merged;
+  }
+
+  function evidenceBundleMaps(
+    preparation: ReturnType<typeof buildSkillSurveyPreparation>,
+  ): {
+    bundlesById: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number]>;
+    bundlesByTopic: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles']>;
+  } {
+    const bundlesById = new Map(
+      preparation.evidence_bundles.map(bundle => [bundle.id, bundle]),
+    );
+    const bundlesByTopic = new Map<string, typeof preparation.evidence_bundles>();
+    for (const bundle of preparation.evidence_bundles) {
+      const key = normalizedBundleLookupKey(bundle.topic);
+      const existing = bundlesByTopic.get(key) ?? [];
+      existing.push(bundle);
+      bundlesByTopic.set(key, existing);
+    }
+    return { bundlesById, bundlesByTopic };
+  }
+
+  function hydrateIdentifiedPlanEntriesFromBundles(
+    plan: JsonRecord,
+    currentPreparation: ReturnType<typeof buildSkillSurveyPreparation>,
+  ): number {
+    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation);
+    let hydrated = 0;
+
+    const hydrate = (entry: JsonRecord): void => {
+      const status = typeof entry.status === 'string' ? entry.status : CANDIDATE_STATUS.IDENTIFIED;
+      if (status !== CANDIDATE_STATUS.IDENTIFIED) return;
+
+      const decisionMetadata = validatedBundleDecisionMetadataForPlanEntry(entry);
+      const bundle = evidenceBundleForPlanEntry(entry, bundlesById, bundlesByTopic);
+      if (bundle) {
+        entry.evidence_bundle_id = bundle.id;
+        Object.assign(entry, evidenceBundleMetadataForPlan(bundle));
+        mergeHumanReviewEvidence(entry, decisionMetadata);
+        hydrated += 1;
+        return;
+      }
+
+      if (decisionMetadata) {
+        Object.assign(entry, decisionMetadata);
+        hydrated += 1;
+      }
+    };
+
+    for (const entry of reconciliationCreateEntries(plan)) hydrate(entry);
+    for (const entry of reconciliationEntries(plan, 'Update')) hydrate(entry);
+
+    return hydrated;
+  }
+
+  function validatedBundleDecisions(): JsonRecord[] {
+    const stateProjectId = deps.requestContext?.projectId;
+    if (!stateProjectId) return [];
+    const state = getState(agentId, stateProjectId, SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY);
+    if (!state) return [];
+
+    const parsed = parseJsonObjectParam(SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY, state.value);
+    if (
+      parsed.error ||
+      !parsed.object ||
+      typeof parsed.object.validated_at !== 'number' ||
+      parsed.object.run_id !== deps.runId
+    ) {
+      return [];
+    }
+    const decisions = parsed.object.decisions;
+    return Array.isArray(decisions) ? decisions.filter(isRecord) : [];
+  }
+
+  function currentBundleDecisionState(): JsonRecord | null {
+    const stateProjectId = deps.requestContext?.projectId;
+    if (!stateProjectId) return null;
+    const state = getState(agentId, stateProjectId, SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY);
+    if (!state) return null;
+    const parsed = parseJsonObjectParam(SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY, state.value);
+    if (parsed.error || !parsed.object || typeof parsed.object.validated_at !== 'number') return null;
+    if (parsed.object.run_id !== deps.runId) return null;
+    return parsed.object;
+  }
+
+  function validatedBundleDecisionMetadataForPlanEntry(
+    entry: JsonRecord,
+  ): Pick<JsonRecord, 'evidence_bundle_id' | 'quality_score' | 'quality_failures' | 'coverage_matches' | 'source_ids' | 'rationale' | 'confidence'> | null {
+    const entryIds = [
+      entry.evidence_bundle_id,
+      entry.bundle_id,
+      entry.bundleId,
+    ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    const topicKey = normalizedBundleLookupKey(entry.topic);
+    const decisions = validatedBundleDecisions();
+    const matches = decisions.filter((decision) => {
+      const decisionIds = [
+        decision.evidence_bundle_id,
+        decision.bundle_id,
+        decision.bundleId,
+      ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      return entryIds.some((id) => decisionIds.includes(id))
+        || (topicKey.length > 0 && normalizedBundleLookupKey(decision.topic) === topicKey);
+    });
+    if (matches.length !== 1) return null;
+
+    const decision = matches[0]!;
+    return {
+      evidence_bundle_id: typeof decision.evidence_bundle_id === 'string'
+        ? decision.evidence_bundle_id
+        : typeof decision.bundle_id === 'string'
+          ? decision.bundle_id
+          : '',
+      quality_score: decision.quality_score,
+      quality_failures: parseOptionalStringArray(decision.quality_failures) ?? [],
+      coverage_matches: parseOptionalStringArray(decision.coverage_matches) ?? [],
+      source_ids: parseSourceRefs(decision.source_ids),
+      rationale: decision.rationale,
+      confidence: decision.confidence,
+    };
+  }
+
+  function validateAndStoreSkillSurveyBundleDecisions(args: {
+    decisions: string;
+    ignore_watermark?: boolean;
+  }): Record<string, unknown> {
+    const parsed = parseJsonObjectParam('decisions', args.decisions);
+    if (parsed.error || !parsed.object) return { error: parsed.error };
+
+    const rawDecisions = parsed.object.decisions;
+    if (!Array.isArray(rawDecisions)) {
+      return { error: 'decisions must be a JSON object with a decisions array' };
+    }
+
+    const currentPreparation = buildSkillSurveyPreparation(agentId, deps.requestContext, {
+      ignoreWatermark: args.ignore_watermark === true,
+    });
+    const { bundlesById, bundlesByTopic } = evidenceBundleMaps(currentPreparation);
+    const errors: string[] = [];
+    const canonicalDecisions: JsonRecord[] = [];
+    let hydrated = 0;
+    let rejected = 0;
+
+    rawDecisions.filter(isRecord).forEach((decision, index) => {
+      const action = typeof decision.action === 'string' ? decision.action.trim().toUpperCase() : '';
+      if (!BUNDLE_DECISION_ACTIONS.has(action)) {
+        errors.push(`decisions[${index}]: action must be CREATE, UPDATE, DEFER, DISMISS, or SKIP`);
+        return;
+      }
+
+      const canonical: JsonRecord = {
+        ...decision,
+        action,
+      };
+
+      const bundle = evidenceBundleForPlanEntry(decision, bundlesById, bundlesByTopic);
+      if (IDENTIFIED_BUNDLE_DECISION_ACTIONS.has(action)) {
+        if (!bundle) {
+          canonicalDecisions.push({
+            ...canonical,
+            action: 'SKIP',
+            original_action: action,
+            quality_score: 0,
+            quality_failures: ['missing-evidence-bundle'],
+            coverage_matches: [],
+            source_ids: [],
+            rejection_reason: 'CREATE/UPDATE decision did not reference an evidence bundle from vault_skill_survey_prepare',
+          });
+          rejected += 1;
+          return;
+        }
+        Object.assign(canonical, {
+          bundle_id: bundle.id,
+          evidence_bundle_id: bundle.id,
+          bundle_topic: bundle.topic,
+          ...evidenceBundleMetadataForPlan(bundle),
+        });
+        if (!hasHumanReviewEvidence(optionalStringField(canonical, 'rationale'))) {
+          errors.push(
+            `decisions[${index}]: rationale must preserve human-review evidence with verdicts for procedure, project-specificity, repeatability, breadth, cross-session evidence, and quality`,
+          );
+          return;
+        }
+        const metadataIssues = validateIdentifiedPlanEntry(canonical, `decisions[${index}]`);
+        if (metadataIssues.length > 0) {
+          errors.push(...metadataIssues);
+          return;
+        }
+        hydrated += 1;
+      } else if (bundle) {
+        Object.assign(canonical, {
+          bundle_id: bundle.id,
+          evidence_bundle_id: bundle.id,
+          bundle_topic: bundle.topic,
+          ...evidenceBundleMetadataForPlan(bundle),
+        });
+        hydrated += 1;
+      } else {
+        const failures = parsePlanStringArrayField(canonical, 'quality_failures');
+        if (failures.error) {
+          errors.push(`decisions[${index}]: ${failures.error}`);
+          return;
+        }
+      }
+
+      canonicalDecisions.push(canonical);
+    });
+
+    if (errors.length > 0) {
+      return {
+        error: 'Bundle decisions are not valid against the current evidence bundles',
+        issues: errors,
+      };
+    }
+
+    const stateProjectId = deps.requestContext?.projectId;
+    if (!stateProjectId) {
+      return { error: 'vault_skill_survey_bundle_decisions requires a project request context' };
+    }
+
+    const priorState = currentBundleDecisionState();
+    const priorDecisions = Array.isArray(priorState?.decisions)
+      ? priorState.decisions.filter(isRecord)
+      : [];
+    const mergedByKey = new Map<string, JsonRecord>();
+    const decisionKey = (decision: JsonRecord, index: number): string => {
+      for (const key of ['evidence_bundle_id', 'bundle_id', 'bundleId']) {
+        const value = decision[key];
+        if (typeof value === 'string' && value.trim().length > 0) return `id:${value}`;
+      }
+      const topicKey = normalizedBundleLookupKey(decision.topic);
+      return topicKey.length > 0 ? `topic:${topicKey}` : `entry:${index}`;
+    };
+    priorDecisions.forEach((decision, index) => {
+      mergedByKey.set(decisionKey(decision, index), decision);
+    });
+    canonicalDecisions.forEach((decision, index) => {
+      mergedByKey.set(decisionKey(decision, priorDecisions.length + index), decision);
+    });
+    const mergedDecisions = [...mergedByKey.values()];
+    const reviewedEvidenceBundleIds = currentPreparation.evidence_bundles
+      .filter((bundle) => mergedDecisions.some((decision) =>
+        decision.evidence_bundle_id === bundle.id ||
+        decision.bundle_id === bundle.id ||
+        normalizedBundleLookupKey(decision.topic) === normalizedBundleLookupKey(bundle.topic)
+      ))
+      .map((bundle) => bundle.id);
+    const unreviewedEvidenceBundleIds = currentPreparation.evidence_bundles
+      .map((bundle) => bundle.id)
+      .filter((id) => !reviewedEvidenceBundleIds.includes(id));
+
+    const now = epochSeconds();
+    const stateValue = JSON.stringify({
+      ...parsed.object,
+      decisions: mergedDecisions,
+      run_id: deps.runId,
+      evidence_bundle_ids: currentPreparation.evidence_bundles.map((bundle) => bundle.id),
+      reviewed_evidence_bundle_ids: reviewedEvidenceBundleIds,
+      unreviewed_evidence_bundle_ids: unreviewedEvidenceBundleIds,
+      complete: unreviewedEvidenceBundleIds.length === 0,
+      validated_at: now,
+      ignore_watermark: args.ignore_watermark === true,
+    });
+    const state = setState(agentId, stateProjectId, SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY, stateValue, now);
+
+    return {
+      ok: true,
+      state_key: SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY,
+      decision_count: mergedDecisions.length,
+      reviewed_evidence_bundle_ids: reviewedEvidenceBundleIds,
+      unreviewed_evidence_bundle_ids: unreviewedEvidenceBundleIds,
+      complete: unreviewedEvidenceBundleIds.length === 0,
+      hydrated_evidence_bundle_metadata_count: hydrated,
+      rejected_decision_count: rejected,
+      stored_at: state.updated_at,
+    };
+  }
+
+  function normalizedBundleLookupKey(value: unknown): string {
+    return typeof value === 'string'
+      ? value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
+      : '';
+  }
+
+  function evidenceBundleForPlanEntry(
+    entry: JsonRecord,
+    bundlesById: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number]>,
+    bundlesByTopic: Map<string, ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles']>,
+  ): ReturnType<typeof buildSkillSurveyPreparation>['evidence_bundles'][number] | null {
+    if (typeof entry.evidence_bundle_id === 'string') {
+      const exact = bundlesById.get(entry.evidence_bundle_id);
+      if (exact) return exact;
+    }
+
+    const byTopic = bundlesByTopic.get(normalizedBundleLookupKey(entry.topic));
+    if (byTopic?.length === 1) return byTopic[0];
+
+    return null;
+  }
+
+  function validateNonIdentifiedPlanEntry(
+    entry: JsonRecord,
+    label: string,
+    options: { requireQualityFailures: boolean },
+  ): string[] {
+    const failures = parsePlanStringArrayField(entry, 'quality_failures');
+    if (failures.error) return [`${label}: ${failures.error}`];
+    if (options.requireQualityFailures && (!failures.array || failures.array.length === 0)) {
+      return [`${label}: quality_failures must include at least one canonical reason code`];
+    }
+    return [];
+  }
+
+  function validateReconciliationPlanMetadata(plan: JsonRecord): string[] {
+    const errors: string[] = [];
+    reconciliationCreateEntries(plan).forEach((entry, index) => {
+      errors.push(...validateIdentifiedPlanEntry(entry, `Create[${index}]`));
+    });
+
+    reconciliationEntries(plan, 'Update').forEach((entry, index) => {
+      const status = typeof entry.status === 'string' ? entry.status : CANDIDATE_STATUS.IDENTIFIED;
+      if (status === CANDIDATE_STATUS.IDENTIFIED) {
+        errors.push(...validateIdentifiedPlanEntry(entry, `Update[${index}]`));
+      } else {
+        errors.push(...validateNonIdentifiedPlanEntry(entry, `Update[${index}]`, {
+          requireQualityFailures: status === CANDIDATE_STATUS.DEFERRED || status === CANDIDATE_STATUS.DISMISSED,
+        }));
+      }
+    });
+
+    for (const group of ['Defer', 'Dismiss'] as const) {
+      reconciliationEntries(plan, group).forEach((entry, index) => {
+        errors.push(...validateNonIdentifiedPlanEntry(entry, `${group}[${index}]`, {
+          requireQualityFailures: true,
+        }));
+      });
+    }
+    reconciliationEntries(plan, 'Blocked').forEach((entry, index) => {
+      errors.push(...validateNonIdentifiedPlanEntry(entry, `Blocked[${index}]`, {
+        requireQualityFailures: false,
+      }));
+    });
+    return errors;
+  }
+
+  function parsedExistingQualityFailures(candidate: { quality_failures: string }): string[] {
+    const parsed = parseJsonArrayParam('quality_failures', candidate.quality_failures);
+    return parsed.array ?? [];
+  }
+
+  function validateDispositionReasonsAgainstCandidateState(plan: JsonRecord): string[] {
+    const errors: string[] = [];
+    for (const group of ['Defer', 'Dismiss'] as const) {
+      reconciliationEntries(plan, group).forEach((entry, index) => {
+        const id = reconciliationEntryCandidateId(entry);
+        if (!id) return;
+        const existing = getCandidate(id, scope);
+        if (!existing) return;
+        const parsedFailures = parsePlanStringArrayField(entry, 'quality_failures');
+        if (parsedFailures.error || !parsedFailures.array) return;
+
+        const existingFailures = parsedExistingQualityFailures(existing);
+        const existingUnknownFailures = unknownCandidateQualityFailureCodes(existingFailures);
+        const existingSourceRefCount = parseSourceRefs(existing.source_ids).length;
+
+        for (const failure of parsedFailures.array) {
+          if (failure === 'missing-quality-metadata' && existing.quality_score !== null) {
+            errors.push(`${group}[${index}]: candidate ${id} already has quality_score; do not cite missing-quality-metadata`);
+          }
+          if (failure === 'quality-below-threshold' && (existing.quality_score === null || existing.quality_score >= IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE)) {
+            errors.push(`${group}[${index}]: candidate ${id} is not below the identified quality threshold`);
+          }
+          if (failure === 'identified-has-quality-failures' && existingFailures.length === 0) {
+            errors.push(`${group}[${index}]: candidate ${id} has no persisted quality_failures`);
+          }
+          if (failure === 'missing-evidence-bundle' && existing.evidence_bundle_id) {
+            errors.push(`${group}[${index}]: candidate ${id} already has evidence_bundle_id; do not cite missing-evidence-bundle`);
+          }
+          if (failure === 'insufficient-source-refs' && existingSourceRefCount >= IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS) {
+            errors.push(`${group}[${index}]: candidate ${id} has ${existingSourceRefCount} source refs; do not cite insufficient-source-refs`);
+          }
+          if (failure === 'missing-human-review-evidence' && hasHumanReviewEvidence(existing.rationale)) {
+            errors.push(`${group}[${index}]: candidate ${id} already has human-review evidence in rationale`);
+          }
+          if (failure === 'invalid-quality-failure-codes' && existingUnknownFailures.length === 0) {
+            errors.push(`${group}[${index}]: candidate ${id} has no unknown persisted quality failure codes`);
+          }
+          if (failure === 'never-reconciled' && existing.last_reconciled_at !== null) {
+            errors.push(`${group}[${index}]: candidate ${id} has already been reconciled`);
+          }
+          if (
+            failure === 'stale-reconciliation-policy' &&
+            existing.reconciliation_reason?.includes(SKILL_SURVEY_RECONCILIATION_POLICY_MARKER)
+          ) {
+            errors.push(`${group}[${index}]: candidate ${id} is already reconciled under the current policy`);
+          }
+        }
+      });
+    }
+    return errors;
+  }
+
+  function validateCreateEntriesDoNotRepresentActiveQueue(
+    plan: JsonRecord,
+    currentPreparation: ReturnType<typeof buildSkillSurveyPreparation>,
+  ): string[] {
+    const activeCandidates = currentPreparation.queue.candidates.filter((candidate) =>
+      candidate.status === CANDIDATE_STATUS.IDENTIFIED ||
+      candidate.status === CANDIDATE_STATUS.DEFERRED
+    );
+    const issues: string[] = [];
+
+    reconciliationCreateEntries(plan).forEach((entry, index) => {
+      const entryEvidenceBundleId =
+        optionalStringField(entry, 'evidence_bundle_id') ??
+        optionalStringField(entry, 'bundle_id') ??
+        optionalStringField(entry, 'bundleId');
+      const entryTopicKey = normalizedBundleLookupKey(entry.topic);
+      const match = activeCandidates.find((candidate) => {
+        if (entryEvidenceBundleId && candidate.evidence_bundle_id === entryEvidenceBundleId) return true;
+        return entryTopicKey.length > 0 && normalizedBundleLookupKey(candidate.topic) === entryTopicKey;
+      });
+      if (!match) return;
+
+      issues.push(
+        `Create[${index}]: matches existing active queue candidate ${match.id}; ` +
+        'classify that candidate as Keep, Update, Defer, Dismiss, or Blocked instead of Create',
+      );
+    });
+
+    return issues;
+  }
+
+  function validateAndStoreSkillSurveyReconciliationPlan(args: {
+    plan: string;
+    ignore_watermark?: boolean;
+  }): Record<string, unknown> {
+    const parsed = parseJsonObjectParam('plan', args.plan);
+    if (parsed.error || !parsed.object) return { error: parsed.error };
+
+    const currentPreparation = buildSkillSurveyPreparation(agentId, deps.requestContext, {
+      ignoreWatermark: args.ignore_watermark === true,
+    });
+    const createQueueIssues = validateCreateEntriesDoNotRepresentActiveQueue(
+      parsed.object,
+      currentPreparation,
+    );
+    if (createQueueIssues.length > 0) {
+      return {
+        error: 'Create entries cannot represent existing active queue candidates',
+        issues: createQueueIssues,
+      };
+    }
+
+    const bundleState = currentBundleDecisionState();
+    const unreviewedEvidenceBundleIds = parseOptionalStringArray(bundleState?.unreviewed_evidence_bundle_ids);
+    if (
+      reconciliationCreateEntries(parsed.object).length > 0 &&
+      bundleState &&
+      unreviewedEvidenceBundleIds &&
+      unreviewedEvidenceBundleIds.length > 0
+    ) {
+      return {
+        error: 'Bundle review handoff is incomplete: every current evidence bundle must be classified before creating new candidates; submit a cleanup-only plan or complete bundle review',
+        unreviewed_evidence_bundle_ids: unreviewedEvidenceBundleIds,
+      };
+    }
+    const hydratedEvidenceBundleMetadataCount = hydrateIdentifiedPlanEntriesFromBundles(
+      parsed.object,
+      currentPreparation,
+    );
+    const cleanupTargetIds = currentPreparation.queue.cleanup_target_ids;
+    const providedCleanupTargetIds = parseOptionalStringArray(parsed.object.cleanup_target_ids);
+    if (parsed.object.cleanup_target_ids !== undefined && providedCleanupTargetIds === null) {
+      return { error: 'cleanup_target_ids must be an array of strings when provided' };
+    }
+    if (providedCleanupTargetIds && !sameStringSet(providedCleanupTargetIds, cleanupTargetIds)) {
+      return {
+        error: 'cleanup_target_ids does not match the current vault_skill_survey_prepare worklist',
+        expected_cleanup_target_ids: cleanupTargetIds,
+        provided_cleanup_target_ids: providedCleanupTargetIds,
+      };
+    }
+    if (cleanupTargetIds.length > 0 && reconciliationCreateEntries(parsed.object).length > 0) {
+      return {
+        error: 'Queue cleanup must complete before creating new skill candidates',
+        cleanup_target_ids: cleanupTargetIds,
+        message: 'Submit a cleanup-only plan with Update, Defer, Dismiss, Blocked, and Keep entries. Run skill-survey again after the active queue is clean to create new candidates.',
+      };
+    }
+
+    const handledIds = new Set<string>();
+    const missingReasonEntries: Array<{ group: string; index: number; id: string | null }> = [];
+    for (const group of RECONCILIATION_HANDLED_GROUPS) {
+      const entries = reconciliationEntries(parsed.object, group);
+      entries.forEach((entry, index) => {
+        const id = reconciliationEntryCandidateId(entry);
+        if (id) handledIds.add(id);
+        if ((group === 'Defer' || group === 'Dismiss' || group === 'Blocked') && !reconciliationEntryHasReason(entry)) {
+          missingReasonEntries.push({ group, index, id });
+        }
+      });
+    }
+
+    if (missingReasonEntries.length > 0) {
+      return {
+        error: 'Defer, Dismiss, and Blocked reconciliation entries must include a concrete reason or rationale',
+        entries: missingReasonEntries,
+      };
+    }
+
+    const metadataErrors = validateReconciliationPlanMetadata(parsed.object);
+    const dispositionConsistencyErrors = validateDispositionReasonsAgainstCandidateState(parsed.object);
+    if (metadataErrors.length > 0 || dispositionConsistencyErrors.length > 0) {
+      return {
+        error: 'Reconciliation plan contains candidate metadata that would be rejected during persistence',
+        issues: [...metadataErrors, ...dispositionConsistencyErrors],
+      };
+    }
+
+    const handledCleanupTargetIds = cleanupTargetIds.filter((id) => handledIds.has(id));
+    const unhandledCleanupTargetIds = cleanupTargetIds.filter((id) => !handledIds.has(id));
+    if (unhandledCleanupTargetIds.length > 0) {
+      return {
+        error: 'Reconciliation plan is incomplete: every cleanup target must be handled by Update, Defer, Dismiss, or Blocked',
+        cleanup_target_ids: cleanupTargetIds,
+        handled_cleanup_target_ids: handledCleanupTargetIds,
+        unhandled_cleanup_target_ids: unhandledCleanupTargetIds,
+      };
+    }
+
+    const reviewedIds = new Set(handledIds);
+    for (const entry of reconciliationRetainEntries(parsed.object)) {
+      const id = reconciliationEntryCandidateId(entry);
+      if (id) reviewedIds.add(id);
+    }
+    const activeQueueCandidateIds = currentPreparation.queue.actionable_candidates.map((candidate) => candidate.id);
+    const reviewedCandidateIds = activeQueueCandidateIds.filter((id) => reviewedIds.has(id));
+    const unreviewedCandidateIds = activeQueueCandidateIds.filter((id) => !reviewedIds.has(id));
+    if (unreviewedCandidateIds.length > 0) {
+      return {
+        error: 'Reconciliation plan is incomplete: every active identified/deferred candidate must be classified as Update, Defer, Dismiss, Blocked, or Keep',
+        active_queue_candidate_ids: activeQueueCandidateIds,
+        reviewed_candidate_ids: reviewedCandidateIds,
+        unreviewed_candidate_ids: unreviewedCandidateIds,
+      };
+    }
+
+    const now = epochSeconds();
+    const stateProjectId = deps.requestContext?.projectId;
+    if (!stateProjectId) {
+      return { error: 'vault_skill_survey_reconciliation_plan requires a project request context' };
+    }
+    const stateValue = JSON.stringify({
+      ...parsed.object,
+      cleanup_target_ids: cleanupTargetIds,
+      handled_cleanup_target_ids: handledCleanupTargetIds,
+      unhandled_cleanup_target_ids: [],
+      active_queue_candidate_ids: activeQueueCandidateIds,
+      reviewed_candidate_ids: reviewedCandidateIds,
+      unreviewed_candidate_ids: [],
+      run_id: deps.runId,
+      validated_at: now,
+    });
+    const state = setState(agentId, stateProjectId, SKILL_SURVEY_RECONCILIATION_STATE_KEY, stateValue, now);
+
+    return {
+      ok: true,
+      state_key: SKILL_SURVEY_RECONCILIATION_STATE_KEY,
+      cleanup_target_ids: cleanupTargetIds,
+      handled_cleanup_target_ids: handledCleanupTargetIds,
+      unhandled_cleanup_target_ids: [],
+      active_queue_candidate_ids: activeQueueCandidateIds,
+      reviewed_candidate_ids: reviewedCandidateIds,
+      unreviewed_candidate_ids: [],
+      hydrated_evidence_bundle_metadata_count: hydratedEvidenceBundleMetadataCount,
+      stored_at: state.updated_at,
+    };
+  }
+
+  function checkCandidateCoverage(args: {
+    topic: string;
+    supersedes?: string | null;
+    excludeCandidateId?: string;
+  }): { error?: Record<string, unknown>; dismissedMatch?: ReturnType<typeof findOverlappingCandidates>[number] } {
+    const supersedesSet = new Set(parseSupersedesNames(args.supersedes));
+
+    const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
+    const topicLower = args.topic.toLowerCase();
+    const overlapping = activeSkills.filter((s) => {
+      if (supersedesSet.has(s.name)) return false;
+      const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
+      if (nameWords.length < 2) return false;
+      return nameWords.every((w: string) => topicLower.includes(w));
+    });
+    if (overlapping.length > 0) {
+      return {
+        error: {
+          error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
+          overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
+        },
+      };
+    }
+
+    const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
+    const matches = findOverlappingCandidates(args.topic, allExisting, {
+      excludeId: args.excludeCandidateId,
+    });
+    const match = matches.find((entry) => entry.candidate.status !== CANDIDATE_STATUS.DISMISSED)
+      ?? matches[0];
+    if (!match) return {};
+    if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
+      return { dismissedMatch: match };
+    }
+    return {
+      error: {
+        error: candidateOverlapError(match.candidate),
+        existing_candidate: {
+          id: match.candidate.id,
+          status: match.candidate.status,
+          topic: match.candidate.topic,
+        },
+        similarity: match.score,
+      },
+    };
+  }
+
+  function validateCandidateWrite(args: {
+    status?: string;
+    source_ids?: string;
+    evidence_bundle_id?: string | null;
+    quality_score?: number | null;
+    quality_failures?: string;
+    coverage_matches?: string;
+  }, existing?: {
+    status: string;
+    source_ids: string;
+    evidence_bundle_id: string | null;
+    quality_score: number | null;
+    quality_failures: string;
+    coverage_matches: string;
+  }): { error?: string; normalizedSourceIds?: string } {
+    const resultingStatus = args.status ?? existing?.status ?? CANDIDATE_STATUS.IDENTIFIED;
+    const sourceIds = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+      ? args.source_ids ?? existing?.source_ids
+      : args.source_ids;
+    const sourceIdsValidation = validateCandidateSourceIds(sourceIds, {
+      required: resultingStatus === CANDIDATE_STATUS.IDENTIFIED,
+      minRefs: resultingStatus === CANDIDATE_STATUS.IDENTIFIED ? IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS : 1,
+    });
+    if (sourceIdsValidation.error) return { error: sourceIdsValidation.error };
+
+    const qualityFailures = parseJsonArrayParam(
+      'quality_failures',
+      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+        ? args.quality_failures ?? existing?.quality_failures
+        : args.quality_failures,
+    );
+    if (qualityFailures.error) return { error: qualityFailures.error };
+
+    const coverageMatches = parseJsonArrayParam(
+      'coverage_matches',
+      resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+        ? args.coverage_matches ?? existing?.coverage_matches
+        : args.coverage_matches,
+    );
+    if (coverageMatches.error) return { error: coverageMatches.error };
+
+    if (
+      (args.status === CANDIDATE_STATUS.DEFERRED || args.status === CANDIDATE_STATUS.DISMISSED) &&
+      (!qualityFailures.array || qualityFailures.array.length === 0)
+    ) {
+      return { error: 'quality_failures must include at least one canonical reason code for deferred or dismissed skill candidates' };
+    }
+
+    if (resultingStatus !== CANDIDATE_STATUS.IDENTIFIED) {
+      return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
+    }
+
+    const evidenceBundleId = args.evidence_bundle_id ?? existing?.evidence_bundle_id ?? null;
+    if (!evidenceBundleId || evidenceBundleId.trim().length === 0) {
+      return { error: 'evidence_bundle_id is required for identified skill candidates' };
+    }
+
+    const qualityScore = args.quality_score ?? existing?.quality_score ?? null;
+    if (qualityScore === null || qualityScore < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
+      return {
+        error: `quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE} for identified skill candidates`,
+      };
+    }
+
+    if (!qualityFailures.array || qualityFailures.array.length > 0) {
+      return { error: 'quality_failures must be an empty array for identified skill candidates' };
+    }
+
+    return { normalizedSourceIds: args.source_ids !== undefined ? sourceIdsValidation.normalized : undefined };
+  }
+
+  function validateAndApplySkillSurveyReconciliation(args: {
+    ignore_watermark?: boolean;
+  }): Record<string, unknown> {
+    const stateProjectId = deps.requestContext?.projectId;
+    if (!stateProjectId) {
+      return { error: 'vault_skill_survey_apply_reconciliation requires a project request context' };
+    }
+
+    const state = getState(agentId, stateProjectId, SKILL_SURVEY_RECONCILIATION_STATE_KEY);
+    if (!state) {
+      return {
+        error: `Missing validated ${SKILL_SURVEY_RECONCILIATION_STATE_KEY} state. Run vault_skill_survey_reconciliation_plan first.`,
+      };
+    }
+    const parsed = parseJsonObjectParam(SKILL_SURVEY_RECONCILIATION_STATE_KEY, state.value);
+    if (parsed.error || !parsed.object) return { error: parsed.error };
+    const reconciliationState = parsed.object;
+    if (typeof reconciliationState.validated_at !== 'number') {
+      return {
+        error: `${SKILL_SURVEY_RECONCILIATION_STATE_KEY} is not validated. Run vault_skill_survey_reconciliation_plan first.`,
+      };
+    }
+    if (reconciliationState.run_id !== deps.runId) {
+      return {
+        error: `Stale ${SKILL_SURVEY_RECONCILIATION_STATE_KEY} state belongs to a different run. Run vault_skill_survey_reconciliation_plan in this run first.`,
+      };
+    }
+
+    const unhandled = parseOptionalStringArray(reconciliationState.unhandled_cleanup_target_ids);
+    if (unhandled === null) {
+      return { error: 'unhandled_cleanup_target_ids must be an array in reconciliation state' };
+    }
+    if (unhandled.length > 0) {
+      return {
+        error: 'Cannot apply reconciliation while cleanup targets remain unhandled',
+        unhandled_cleanup_target_ids: unhandled,
+      };
+    }
+
+    const currentPreparation = buildSkillSurveyPreparation(agentId, deps.requestContext, {
+      ignoreWatermark: args.ignore_watermark === true,
+    });
+    const reviewedCandidateIds = parseOptionalStringArray(reconciliationState.reviewed_candidate_ids);
+    if (reviewedCandidateIds === null) {
+      return { error: 'reviewed_candidate_ids must be an array in reconciliation state' };
+    }
+    const unreviewedCurrentCandidateIds = currentPreparation.queue.actionable_candidates
+      .map((candidate) => candidate.id)
+      .filter((id) => !reviewedCandidateIds.includes(id));
+    if (unreviewedCurrentCandidateIds.length > 0) {
+      return {
+        error: 'Cannot apply stale reconciliation state: current active queue has candidates not reviewed by the stored plan',
+        unreviewed_current_candidate_ids: unreviewedCurrentCandidateIds,
+      };
+    }
+
+    const now = epochSeconds();
+    const errors: string[] = [];
+    const skipped: Array<Record<string, unknown>> = [];
+
+    const createOps = reconciliationCreateEntries(reconciliationState).map((entry, index) => {
+      const topic = optionalStringField(entry, 'topic');
+      const rationale = optionalStringField(entry, 'rationale') ?? optionalStringField(entry, 'reason');
+      if (!topic || !rationale) {
+        errors.push(`Create[${index}]: topic and rationale are required`);
+        return null;
+      }
+      const argsForWrite = {
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        source_ids: planSourceRefsAsJson(entry),
+        evidence_bundle_id: optionalStringField(entry, 'evidence_bundle_id'),
+        quality_score: optionalNumberField(entry, 'quality_score') ?? null,
+        quality_failures: planStringArrayAsJson(entry, 'quality_failures'),
+        coverage_matches: planStringArrayAsJson(entry, 'coverage_matches'),
+      };
+      const writeValidation = validateCandidateWrite(argsForWrite);
+      if (writeValidation.error) {
+        errors.push(`Create[${index}]: ${writeValidation.error}`);
+        return null;
+      }
+      const coverage = checkCandidateCoverage({
+        topic,
+        supersedes: optionalStringField(entry, 'supersedes') ?? null,
+      });
+      if (coverage.error) {
+        skipped.push({
+          group: 'Create',
+          index,
+          topic,
+          reason: coverage.error.error,
+          existing_candidate: coverage.error.existing_candidate,
+          overlapping_skills: coverage.error.overlapping_skills,
+        });
+        return null;
+      }
+      return {
+        entry,
+        topic,
+        rationale,
+        source_ids: writeValidation.normalizedSourceIds ?? argsForWrite.source_ids,
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    const updateOps = reconciliationEntries(reconciliationState, 'Update').map((entry, index) => {
+      const id = reconciliationEntryCandidateId(entry);
+      if (!id) {
+        errors.push(`Update[${index}]: candidate id is required`);
+        return null;
+      }
+      const existing = getCandidate(id, scope);
+      if (!existing) {
+        errors.push(`Update[${index}]: candidate not found: ${id}`);
+        return null;
+      }
+      if (existing.status === CANDIDATE_STATUS.APPROVED || existing.status === CANDIDATE_STATUS.GENERATED) {
+        errors.push(`Update[${index}]: candidate ${id} is ${existing.status}; skill-survey cannot mutate lifecycle-owned candidates`);
+        return null;
+      }
+      const targetStatus = optionalStringField(entry, 'status') ?? CANDIDATE_STATUS.IDENTIFIED;
+      const argsForWrite = {
+        status: targetStatus,
+        source_ids: planSourceRefsAsJson(entry),
+        evidence_bundle_id: optionalStringField(entry, 'evidence_bundle_id') ?? existing.evidence_bundle_id,
+        quality_score: optionalNumberField(entry, 'quality_score') ?? existing.quality_score,
+        quality_failures: planStringArrayAsJson(entry, 'quality_failures') ?? existing.quality_failures,
+        coverage_matches: planStringArrayAsJson(entry, 'coverage_matches') ?? existing.coverage_matches,
+      };
+      const writeValidation = validateCandidateWrite(argsForWrite, existing);
+      if (writeValidation.error) {
+        errors.push(`Update[${index}]: ${writeValidation.error}`);
+        return null;
+      }
+      const resultingTopic = optionalStringField(entry, 'topic') ?? existing.topic;
+      if (targetStatus === CANDIDATE_STATUS.IDENTIFIED) {
+        const coverage = checkCandidateCoverage({
+          topic: resultingTopic,
+          supersedes: optionalStringField(entry, 'supersedes') ?? existing.supersedes,
+          excludeCandidateId: existing.id,
+        });
+        if (coverage.error) {
+          errors.push(`Update[${index}]: ${coverage.error.error}`);
+          return null;
+        }
+      }
+      return {
+        entry,
+        id,
+        targetStatus,
+        source_ids: writeValidation.normalizedSourceIds ?? argsForWrite.source_ids,
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    const dispositionOps = (['Defer', 'Dismiss'] as const).flatMap((group) =>
+      reconciliationEntries(reconciliationState, group).map((entry, index) => {
+        const id = reconciliationEntryCandidateId(entry);
+        if (!id) {
+          errors.push(`${group}[${index}]: candidate id is required`);
+          return null;
+        }
+        const existing = getCandidate(id, scope);
+        if (!existing) {
+          errors.push(`${group}[${index}]: candidate not found: ${id}`);
+          return null;
+        }
+        if (existing.status === CANDIDATE_STATUS.APPROVED || existing.status === CANDIDATE_STATUS.GENERATED) {
+          errors.push(`${group}[${index}]: candidate ${id} is ${existing.status}; skill-survey cannot mutate lifecycle-owned candidates`);
+          return null;
+        }
+        const status = group === 'Defer' ? CANDIDATE_STATUS.DEFERRED : CANDIDATE_STATUS.DISMISSED;
+        const quality_failures = planStringArrayAsJson(entry, 'quality_failures');
+        const writeValidation = validateCandidateWrite({
+          status,
+          quality_failures,
+        }, existing);
+        if (writeValidation.error) {
+          errors.push(`${group}[${index}]: ${writeValidation.error}`);
+          return null;
+        }
+        return { entry, id, status };
+      }).filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    );
+
+    if (errors.length > 0) {
+      return {
+        error: 'Validated reconciliation state could not be applied',
+        issues: errors,
+      };
+    }
+
+    const db = getDatabase();
+    const created: string[] = [];
+    const updated: string[] = [];
+    const deferred: string[] = [];
+    const dismissed: string[] = [];
+    db.transaction(() => {
+      for (const op of createOps) {
+        const entry = op.entry;
+        const candidate = insertCandidate({
+          id: crypto.randomUUID(),
+          project_id: projectId,
+          agent_id: agentId,
+          machine_id: machineId,
+          topic: op.topic,
+          rationale: op.rationale,
+          confidence: optionalNumberField(entry, 'confidence'),
+          status: CANDIDATE_STATUS.IDENTIFIED,
+          source_ids: op.source_ids,
+          supersedes: optionalStringField(entry, 'supersedes'),
+          evidence_bundle_id: optionalStringField(entry, 'evidence_bundle_id'),
+          quality_score: optionalNumberField(entry, 'quality_score'),
+          quality_failures: planStringArrayAsJson(entry, 'quality_failures'),
+          coverage_matches: planStringArrayAsJson(entry, 'coverage_matches'),
+          last_reconciled_at: now,
+          reconciliation_reason: reconciliationReason(entry, 'skill-survey reconciliation create'),
+          created_at: now,
+          updated_at: now,
+        });
+        created.push(candidate.id);
+      }
+
+      for (const op of updateOps) {
+        const entry = op.entry;
+        const updatedCandidate = updateCandidate(op.id, {
+          ...(optionalStringField(entry, 'topic') !== undefined ? { topic: optionalStringField(entry, 'topic') } : {}),
+          ...(optionalStringField(entry, 'rationale') !== undefined ? { rationale: optionalStringField(entry, 'rationale') } : {}),
+          ...(optionalNumberField(entry, 'confidence') !== undefined ? { confidence: optionalNumberField(entry, 'confidence') } : {}),
+          status: op.targetStatus,
+          ...(op.source_ids !== undefined ? { source_ids: op.source_ids } : {}),
+          ...(optionalStringField(entry, 'supersedes') !== undefined ? { supersedes: optionalStringField(entry, 'supersedes') } : {}),
+          ...(optionalStringField(entry, 'evidence_bundle_id') !== undefined ? { evidence_bundle_id: optionalStringField(entry, 'evidence_bundle_id') } : {}),
+          ...(optionalNumberField(entry, 'quality_score') !== undefined ? { quality_score: optionalNumberField(entry, 'quality_score') } : {}),
+          ...(planStringArrayAsJson(entry, 'quality_failures') !== undefined ? { quality_failures: planStringArrayAsJson(entry, 'quality_failures') } : {}),
+          ...(planStringArrayAsJson(entry, 'coverage_matches') !== undefined ? { coverage_matches: planStringArrayAsJson(entry, 'coverage_matches') } : {}),
+          last_reconciled_at: now,
+          reconciliation_reason: reconciliationReason(entry, 'skill-survey reconciliation update'),
+          updated_at: now,
+        }, scope);
+        if (updatedCandidate) updated.push(updatedCandidate.id);
+      }
+
+      for (const op of dispositionOps) {
+        const entry = op.entry;
+        const updatedCandidate = updateCandidate(op.id, {
+          status: op.status,
+          quality_failures: planStringArrayAsJson(entry, 'quality_failures'),
+          last_reconciled_at: now,
+          reconciliation_reason: reconciliationReason(entry, `skill-survey reconciliation ${op.status}`),
+          updated_at: now,
+        }, scope);
+        if (updatedCandidate?.status === CANDIDATE_STATUS.DEFERRED) deferred.push(updatedCandidate.id);
+        if (updatedCandidate?.status === CANDIDATE_STATUS.DISMISSED) dismissed.push(updatedCandidate.id);
+      }
+    })();
+
+    for (const id of created) {
+      const candidate = getCandidate(id, scope);
+      if (!candidate) continue;
+      notify(vaultDir, {
+        domain: 'skills',
+        type: 'skill.surveyed',
+        title: `Skill candidate: ${candidate.topic}`,
+        message: candidate.rationale.slice(0, 120),
+        link: '/skills?tab=candidates',
+        metadata: { candidateId: candidate.id, topic: candidate.topic },
+      });
+    }
+
+    const after = buildSkillSurveyPreparation(agentId, deps.requestContext, {
+      ignoreWatermark: args.ignore_watermark === true,
+    });
+
+    return {
+      ok: true,
+      state_key: SKILL_SURVEY_RECONCILIATION_STATE_KEY,
+      applied_counts: {
+        created: created.length,
+        updated: updated.length,
+        deferred: deferred.length,
+        dismissed: dismissed.length,
+        kept: reconciliationRetainEntries(reconciliationState).length,
+        blocked: reconciliationEntries(reconciliationState, 'Blocked').length,
+        skipped: skipped.length,
+      },
+      created_candidate_ids: created,
+      updated_candidate_ids: updated,
+      deferred_candidate_ids: deferred,
+      dismissed_candidate_ids: dismissed,
+      skipped_actions: skipped,
+      remaining_cleanup_target_ids: after.queue.cleanup_target_ids,
+      active_queue_count: after.queue.actionable,
+    };
+  }
+
+  const vaultSkillSurveyPrepare = tool(
+    'vault_skill_survey_prepare',
+    'Prepare deterministic read-only context for a skill-survey run: watermark details, settled evidence, active skill coverage, existing candidate queue, and candidate evidence bundles.',
+    {
+      ignore_watermark: z.boolean().optional().describe('When true, prepare a full scan instead of applying the stored skill-survey watermark. Manual Run Now flows should pass the value from the run admission instruction.'),
+    },
+    async (args) => textResult(buildSkillSurveyPreparation(agentId, deps.requestContext, {
+      ignoreWatermark: args.ignore_watermark === true,
+    })),
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const vaultSkillSurveyBundleDecisions = tool(
+    'vault_skill_survey_bundle_decisions',
+    'Validate and store review-bundles decisions against deterministic skill-survey evidence bundles. Hydrates canonical evidence metadata before later reconciliation phases consume the decisions.',
+    {
+      decisions: z.string().describe('JSON object with a decisions array. CREATE/UPDATE decisions must reference an evidence bundle from vault_skill_survey_prepare by bundle_id, evidence_bundle_id, or exact topic.'),
+      ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare for this run.'),
+    },
+    async (args) => textResult(validateAndStoreSkillSurveyBundleDecisions({
+      decisions: args.decisions,
+      ignore_watermark: args.ignore_watermark,
+    })),
+    { annotations: { idempotentHint: true } },
+  );
+
+  const vaultSkillSurveyReconciliationPlan = tool(
+    'vault_skill_survey_reconciliation_plan',
+    'Validate and store the skill-survey reconciliation plan. Rejects plans that do not classify every active queue candidate and handle every cleanup target from vault_skill_survey_prepare.',
+    {
+      plan: z.string().describe('JSON object containing reconciliation actions. Every identified/deferred queue candidate must appear in Update, Defer, Dismiss, Blocked, or Keep. Cleanup targets must appear in Update, Defer, Dismiss, or Blocked.'),
+      ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare for this run.'),
+    },
+    async (args) => textResult(validateAndStoreSkillSurveyReconciliationPlan({
+      plan: args.plan,
+      ignore_watermark: args.ignore_watermark,
+    })),
+    { annotations: { idempotentHint: true } },
+  );
+
+  const vaultSkillSurveyApplyReconciliation = tool(
+    'vault_skill_survey_apply_reconciliation',
+    'Apply only the validated skill-survey reconciliation plan stored by vault_skill_survey_reconciliation_plan. This is the sole write path for skill-survey queue persistence.',
+    {
+      ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare and vault_skill_survey_reconciliation_plan for this run.'),
+    },
+    async (args) => textResult(validateAndApplySkillSurveyReconciliation({
+      ignore_watermark: args.ignore_watermark,
+    })),
+    { annotations: { idempotentHint: true } },
+  );
 
   /**
    * Structural gate enforcing the skill lifecycle invariant: ONLY
@@ -151,6 +1531,37 @@ export function createSkillTools(deps: VaultToolDeps) {
         candidate_status: candidate.status,
       };
     }
+    return null;
+  }
+
+  function requireGenerationReadyCandidate(
+    candidateId: string,
+  ): Record<string, unknown> | null {
+    const approvalError = requireApprovedCandidate(candidateId);
+    if (approvalError) return approvalError;
+
+    const candidate = getCandidate(candidateId, scope);
+    if (!candidate) {
+      return {
+        error:
+          `Candidate ${candidateId} not found. Skill writes require a ` +
+          'candidate in the approved state.',
+      };
+    }
+
+    const issues = validateSkillCandidateQualityContract(candidate, {
+      requireResolvedSources: true,
+      scope,
+    });
+    if (issues.length > 0) {
+      return {
+        error:
+          `Candidate ${candidateId} is approved but not generation-ready. ` +
+          'Approve only candidates with complete, resolvable evidence metadata.',
+        issues,
+      };
+    }
+
     return null;
   }
 
@@ -422,9 +1833,22 @@ export function createSkillTools(deps: VaultToolDeps) {
         "and 'generated' are lifecycle transitions owned by the human UI " +
         'and vault_finalize_skill respectively.',
       ),
+      statuses: z.array(z.enum([
+        CANDIDATE_STATUS.IDENTIFIED,
+        CANDIDATE_STATUS.DEFERRED,
+        CANDIDATE_STATUS.DISMISSED,
+        CANDIDATE_STATUS.APPROVED,
+        CANDIDATE_STATUS.GENERATED,
+      ] as const)).optional().describe('Candidate statuses to include for list. Takes precedence over status.'),
       source_ids: z.string().optional().describe('JSON array of source spore/entity IDs'),
       skill_id: z.string().optional().describe('Associated skill record ID (after materialization)'),
       supersedes: z.string().optional().describe('JSON array of skill record names this candidate would replace (for domain-level candidates that subsume existing narrow skills)'),
+      evidence_bundle_id: z.string().optional().describe('Evidence bundle ID supporting an identified candidate'),
+      quality_score: z.number().optional().describe('Evidence quality score for an identified candidate'),
+      quality_failures: z.string().optional().describe('JSON array of quality gate failure identifiers'),
+      coverage_matches: z.string().optional().describe('JSON array of existing skill/candidate coverage matches'),
+      last_reconciled_at: z.number().optional().describe('Epoch seconds timestamp for the last reconciliation pass'),
+      reconciliation_reason: z.string().optional().describe('Reason for the latest reconciliation update'),
       limit: z.number().optional().describe('Maximum candidates to return (for list)'),
     },
     async (args) => {
@@ -434,6 +1858,7 @@ export function createSkillTools(deps: VaultToolDeps) {
             scope,
             agent_id: agentId,
             status: args.status,
+            statuses: args.statuses,
             limit: args.limit ?? DEFAULT_LIST_LIMIT,
           });
           return textResult(candidates);
@@ -451,54 +1876,16 @@ export function createSkillTools(deps: VaultToolDeps) {
             return textResult({ error: 'topic and rationale are required for create action' });
           }
 
-          // Parse supersedes list (skill names this candidate would replace)
-          let supersedesNames: string[] = [];
-          if (args.supersedes) {
-            try { supersedesNames = JSON.parse(args.supersedes); } catch { /* malformed */ }
-          }
-          const supersedesSet = new Set(supersedesNames);
+          const writeValidation = validateCandidateWrite(args);
+          if (writeValidation.error) return textResult({ error: writeValidation.error });
 
-          // Guard 1: reject if an active skill already covers this topic.
-          // Checks whether all significant words from a skill name appear in the topic.
-          // Superseded skills are exempt from this check.
-          const activeSkills = listSkillRecords({ scope, agent_id: agentId, status: 'active', limit: 100 });
-          const topicLower = args.topic.toLowerCase();
-          const overlapping = activeSkills.filter((s) => {
-            if (supersedesSet.has(s.name)) return false; // exempt superseded skills
-            const nameWords = s.name.split('-').filter((w: string) => w.length > 2);
-            if (nameWords.length < 2) return false;
-            return nameWords.every((w: string) => topicLower.includes(w));
-          });
-          if (overlapping.length > 0) {
-            return textResult({
-              error: 'Candidate rejected: active skill(s) already cover this topic. Update the existing skill via vault_skill_records instead.',
-              overlapping_skills: overlapping.map((s) => ({ name: s.name, display_name: s.display_name, description: s.description })),
-            });
-          }
+          const resultingStatus = args.status ?? CANDIDATE_STATUS.IDENTIFIED;
+          const coverage = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+            ? checkCandidateCoverage({ topic: args.topic, supersedes: args.supersedes })
+            : {};
+          if (coverage.error) return textResult(coverage.error);
 
-          // Guard 2: reject if an existing candidate (any status) has an
-          // overlapping topic. The skill-survey prompt tells the agent to
-          // check dismissed/generated candidates before re-identifying,
-          // but self-grading is unreliable so the check is enforced here.
-          // Dismissed candidates produce a soft warning rather than a hard rejection.
-          const allExisting = listCandidates({ scope, agent_id: agentId, limit: 500 });
-          const match = findOverlappingCandidate(args.topic, allExisting);
-          let dismissedMatch: typeof match | undefined;
-          if (match) {
-            if (match.candidate.status === CANDIDATE_STATUS.DISMISSED) {
-              dismissedMatch = match;
-            } else {
-              return textResult({
-                error: candidateOverlapError(match.candidate),
-                existing_candidate: {
-                  id: match.candidate.id,
-                  status: match.candidate.status,
-                  topic: match.candidate.topic,
-                },
-                similarity: match.score,
-              });
-            }
-          }
+          const dismissedMatch = coverage.dismissedMatch;
 
           const now = epochSeconds();
           const candidate = insertCandidate({
@@ -510,8 +1897,14 @@ export function createSkillTools(deps: VaultToolDeps) {
             rationale: args.rationale,
             confidence: args.confidence,
             status: args.status,
-            source_ids: args.source_ids,
+            source_ids: writeValidation.normalizedSourceIds ?? args.source_ids,
             supersedes: args.supersedes,
+            evidence_bundle_id: args.evidence_bundle_id,
+            quality_score: args.quality_score,
+            quality_failures: args.quality_failures,
+            coverage_matches: args.coverage_matches,
+            last_reconciled_at: args.last_reconciled_at,
+            reconciliation_reason: args.reconciliation_reason,
             created_at: now,
             updated_at: now,
           });
@@ -536,18 +1929,51 @@ export function createSkillTools(deps: VaultToolDeps) {
 
         case 'update': {
           if (!args.id) return textResult({ error: 'id is required for update action' });
+          const existing = getCandidate(args.id, scope);
+          if (!existing) return textResult({ error: `Candidate not found: ${args.id}` });
+
+          const writeValidation = validateCandidateWrite(args, existing);
+          if (writeValidation.error) return textResult({ error: writeValidation.error });
+
+          const resultingStatus = args.status ?? existing.status;
+          const resultingTopic = args.topic ?? existing.topic;
+          const coverage = resultingStatus === CANDIDATE_STATUS.IDENTIFIED
+            ? checkCandidateCoverage({
+              topic: resultingTopic,
+              supersedes: args.supersedes ?? existing.supersedes,
+              excludeCandidateId: existing.id,
+            })
+            : {};
+          if (coverage.error) return textResult(coverage.error);
+
           const now = epochSeconds();
           const updated = updateCandidate(args.id, {
             ...(args.topic !== undefined ? { topic: args.topic } : {}),
             ...(args.rationale !== undefined ? { rationale: args.rationale } : {}),
             ...(args.confidence !== undefined ? { confidence: args.confidence } : {}),
             ...(args.status !== undefined ? { status: args.status } : {}),
-            ...(args.source_ids !== undefined ? { source_ids: args.source_ids } : {}),
+            ...(args.source_ids !== undefined ? { source_ids: writeValidation.normalizedSourceIds ?? args.source_ids } : {}),
             ...(args.skill_id !== undefined ? { skill_id: args.skill_id } : {}),
             ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
+            ...(args.evidence_bundle_id !== undefined ? { evidence_bundle_id: args.evidence_bundle_id } : {}),
+            ...(args.quality_score !== undefined ? { quality_score: args.quality_score } : {}),
+            ...(args.quality_failures !== undefined ? { quality_failures: args.quality_failures } : {}),
+            ...(args.coverage_matches !== undefined ? { coverage_matches: args.coverage_matches } : {}),
+            ...(args.last_reconciled_at !== undefined ? { last_reconciled_at: args.last_reconciled_at } : {}),
+            ...(args.reconciliation_reason !== undefined ? { reconciliation_reason: args.reconciliation_reason } : {}),
             updated_at: now,
           }, scope);
           if (!updated) return textResult({ error: `Candidate not found: ${args.id}` });
+          if (coverage.dismissedMatch) {
+            return textResult({
+              ...updated,
+              warning: candidateOverlapError(coverage.dismissedMatch.candidate),
+              similar_dismissed_candidate: {
+                id: coverage.dismissedMatch.candidate.id,
+                topic: coverage.dismissedMatch.candidate.topic,
+              },
+            });
+          }
           return textResult(updated);
         }
 
@@ -757,11 +2183,11 @@ export function createSkillTools(deps: VaultToolDeps) {
       // agent may pass a truncated UUID in the instruction.
       if (!existing) {
         // Structural gate: if the caller passed a candidate_id, the
-        // candidate must be in 'approved' state. Evolve path (above)
-        // skips this because the caller is updating an existing skill,
-        // not materializing a fresh candidate.
+        // candidate must be approved and generation-ready. Evolve path
+        // (above) skips this because the caller is updating an existing
+        // skill, not materializing a fresh candidate.
         if (args.candidate_id) {
-          const candidateError = requireApprovedCandidate(args.candidate_id);
+          const candidateError = requireGenerationReadyCandidate(args.candidate_id);
           if (candidateError) {
             return textResult(candidateError);
           }
@@ -931,8 +2357,9 @@ export function createSkillTools(deps: VaultToolDeps) {
         });
       }
 
-      // Structural gate: candidate must exist and be in 'approved' state.
-      const candidateError = requireApprovedCandidate(args.candidate_id);
+      // Structural gate: candidate must exist, be approved, and carry
+      // complete resolvable evidence metadata.
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
       if (candidateError) return textResult(candidateError);
 
       // Dedup gate — create-only, so rejectSameName surfaces the
@@ -1015,7 +2442,7 @@ export function createSkillTools(deps: VaultToolDeps) {
       // finalize time. If a human (or another tool) dismissed the
       // candidate between stage and finalize, the finalize should
       // refuse rather than promote the now-rescinded skill.
-      const candidateError = requireApprovedCandidate(args.candidate_id);
+      const candidateError = requireGenerationReadyCandidate(args.candidate_id);
       if (candidateError) return textResult(candidateError);
 
       // Defense-in-depth: re-run validation against the staged content.
@@ -1087,6 +2514,10 @@ export function createSkillTools(deps: VaultToolDeps) {
   );
 
   return [
+    vaultSkillSurveyPrepare,
+    vaultSkillSurveyBundleDecisions,
+    vaultSkillSurveyReconciliationPlan,
+    vaultSkillSurveyApplyReconciliation,
     vaultSkillCandidates,
     vaultSkillRecords,
     vaultWriteSkill,

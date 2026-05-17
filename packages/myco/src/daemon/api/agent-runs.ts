@@ -13,7 +13,7 @@ import { listReports } from '@myco/db/queries/reports.js';
 import { listTurnsByRun } from '@myco/db/queries/turns.js';
 import { listWriteIntents, countWriteIntents, countWriteIntentsByTool } from '@myco/db/queries/write-intents.js';
 import { runDurationMs } from '@myco/agent/run-accounting.js';
-import { buildTaskInstruction, isInstructionRequiredTask } from '@myco/agent/instruction-builders.js';
+import { buildTaskInstruction, isInstructionRequiredTask, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
@@ -27,6 +27,7 @@ import type { EmbeddingManager } from '../embedding/manager.js';
 import type { DaemonLogger } from '../logger.js';
 import type { TeamSyncClient } from '../team-sync.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,6 +87,12 @@ const AgentRunBody = z.object({
   instruction: z.string().optional(),
   agentId: z.string().optional(),
   /**
+   * Explicit operator-triggered run. Currently used by skill-survey to bypass
+   * its incremental watermark so manual queue reconciliation can run even
+   * when the scheduler would skip for lack of new settled knowledge.
+   */
+  force: z.boolean().optional(),
+  /**
    * Run in dry-run mode — writes intercepted by the tool surface and
    * recorded to `agent_run_write_intents` instead of mutating the vault.
    */
@@ -137,9 +144,11 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
       instruction: rawInstruction,
       agentId,
       dryRun,
+      force,
       executionOverrides: rawExecutionOverrides,
     } = parsedBody.data;
     const scope = projectScopeFromRequestContext(req.requestContext);
+    const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
 
     // SSRF defense: strip caller-supplied baseUrl from any remote-provider
     // override. The daemon's bearer key cannot follow a redirected URL.
@@ -162,16 +171,21 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     let runContext: {
       candidate_id?: string;
       cortex_instruction_input_hash?: string;
+      skill_survey_watermark?: number;
     } | undefined;
     if (task && !instruction) {
       let built;
+      const configuredTaskParams = mycoConfig.agent.tasks?.[task]?.params;
+      const taskParams = force && task === SKILL_SURVEY_TASK
+        ? { ...(configuredTaskParams ?? {}), force: true }
+        : configuredTaskParams;
       try {
-        const taskParams = mycoConfig.agent.tasks?.[task]?.params;
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, taskParams, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
+        built = await buildTaskInstruction(task, taskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       } catch {
         const projectRoot = req.requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
-        built = await buildTaskInstruction(task, undefined, agentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
+        const fallbackTaskParams = force && task === SKILL_SURVEY_TASK ? { force: true } : undefined;
+        built = await buildTaskInstruction(task, fallbackTaskParams, effectiveAgentId, projectRoot, embeddingManager, mycoConfig, getTeamClient, req.requestContext);
       }
       instruction = built?.instruction;
       runContext = built?.context;
@@ -197,7 +211,7 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     const resultPromise = dispatchAgentRun(vaultDir, {
       task,
       instruction,
-      agentId,
+      agentId: effectiveAgentId,
       embeddingManager,
       requestContext: req.requestContext,
       runContext,
@@ -209,7 +223,6 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     // runAgent inserts the run row synchronously before the first await.
     // Query for the most recently created run matching this task to get
     // the correct ID — not getRunningRun which may return a different task.
-    const effectiveAgentId = agentId ?? 'myco-agent';
     const runId = getLatestRunId(effectiveAgentId, task, scope);
 
     resultPromise

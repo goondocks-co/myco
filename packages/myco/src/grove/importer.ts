@@ -497,6 +497,12 @@ interface SourceSkillCandidateRow {
   created_at: number;
   updated_at: number;
   approved_at: number | null;
+  evidence_bundle_id: string | null;
+  quality_score: number | null;
+  quality_failures: string | null;
+  coverage_matches: string | null;
+  last_reconciled_at: number | null;
+  reconciliation_reason: string | null;
   synced_at: number | null;
 }
 
@@ -2061,11 +2067,15 @@ function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow):
     `INSERT INTO skill_candidates (
        id, project_id, agent_id, machine_id, topic, rationale,
        confidence, status, source_ids, skill_id, supersedes,
-       created_at, updated_at, approved_at, synced_at
+       created_at, updated_at, approved_at, evidence_bundle_id,
+       quality_score, quality_failures, coverage_matches, last_reconciled_at,
+       reconciliation_reason, synced_at
      ) VALUES (
        ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?,
-       ?, ?, ?, ?
+       ?, ?, ?, ?,
+       ?, ?, ?, ?,
+       ?, ?
      )`,
   ).run(
     mapping.target_id,
@@ -2082,6 +2092,12 @@ function importSkillCandidate(ctx: ImportContext, row: SourceSkillCandidateRow):
     row.created_at,
     row.updated_at,
     row.approved_at,
+    row.evidence_bundle_id,
+    row.quality_score,
+    row.quality_failures ?? '[]',
+    row.coverage_matches ?? '[]',
+    row.last_reconciled_at,
+    row.reconciliation_reason,
     row.synced_at,
   );
 
@@ -3078,7 +3094,9 @@ function listSourceSkillCandidates(db: Database): SourceSkillCandidateRow[] {
     `SELECT
        id, agent_id, machine_id, topic, rationale, confidence,
        status, source_ids, skill_id, supersedes, created_at,
-       updated_at, approved_at, synced_at
+       updated_at, approved_at, evidence_bundle_id, quality_score,
+       quality_failures, coverage_matches, last_reconciled_at,
+       reconciliation_reason, synced_at
      FROM skill_candidates
      ORDER BY created_at ASC, id ASC`,
   ).all() as SourceSkillCandidateRow[];

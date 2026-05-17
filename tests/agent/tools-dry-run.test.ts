@@ -35,6 +35,7 @@ import { getDatabase } from '@myco/db/client.js';
 import { insertRun } from '@myco/db/queries/runs.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
@@ -74,6 +75,49 @@ function parseResult(result: { content: Array<{ type: string; text: string }> })
 
 function validSkillContent(name: string) {
   return `---\nname: myco:${name}\ndescription: Test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read\n---\n\n# Skill\n\nBody.`;
+}
+
+function seedCandidateQualityEvidence(candidateId: string, now: number) {
+  const sessionId = `session-${candidateId}`;
+  const sporeOne = `spore-${candidateId}-001`;
+  const sporeTwo = `spore-${candidateId}-002`;
+
+  upsertSession({
+    id: sessionId,
+    project_id: null,
+    agent: 'claude-code',
+    started_at: now - 100,
+    ended_at: now - 50,
+    status: 'completed',
+    title: `Evidence for ${candidateId}`,
+    summary: 'Dry-run test evidence for skill candidate generation readiness.',
+    created_at: now - 100,
+  });
+
+  for (const id of [sporeOne, sporeTwo]) {
+    insertSpore({
+      id,
+      project_id: null,
+      agent_id: TEST_AGENT_ID,
+      session_id: sessionId,
+      observation_type: 'decision',
+      content: `Resolved dry-run test source ${id} for candidate generation readiness.`,
+      importance: 5,
+      created_at: now - 90,
+    });
+  }
+
+  return {
+    evidence_bundle_id: `bundle-${candidateId}`,
+    quality_score: 0.86,
+    quality_failures: '[]',
+    coverage_matches: '[]',
+    source_ids: JSON.stringify([
+      { id: sporeOne, type: 'spore' },
+      { id: sporeTwo, type: 'spore' },
+      { id: sessionId, type: 'session' },
+    ]),
+  };
 }
 
 function countRows(table: string, runIdCol: string | null = null): number {
@@ -280,11 +324,13 @@ describe('vault tools dry-run interceptor (dryRun: true)', () => {
   describe('vault_stage_skill (exempt)', () => {
     it('still stages to the real filesystem under .myco/staging/skills/', async () => {
       const now = epochNow();
+      const candidateId = crypto.randomUUID();
       const candidate = insertCandidate({
-        id: crypto.randomUUID(),
+        id: candidateId,
         agent_id: TEST_AGENT_ID,
         topic: 'dry-run-exempt-staging',
         rationale: 'test-only candidate for staging exempt check',
+        ...seedCandidateQualityEvidence(candidateId, now),
         created_at: now,
         updated_at: now,
       });

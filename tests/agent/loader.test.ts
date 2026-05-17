@@ -126,6 +126,9 @@ describe('agent loader', () => {
       expect(def.tools).toContain('vault_search_semantic');
       expect(def.tools).toContain('vault_state');
       expect(def.tools).toContain('vault_edges');
+      expect(def.tools).toContain('vault_skill_survey_bundle_decisions');
+      expect(def.tools).toContain('vault_skill_survey_reconciliation_plan');
+      expect(def.tools).toContain('vault_skill_survey_apply_reconciliation');
 
       // Write tools
       expect(def.tools).toContain('vault_create_spore');
@@ -250,6 +253,44 @@ describe('agent loader', () => {
       const se = tasks.find((t) => t.name === 'skill-evolve');
       expect(se?.schedule?.enabled).toBe(false);
       expect(se?.schedule?.preCondition).toBe('has-active-skills');
+    });
+
+    it('loads skill-evolve candidate metadata triage guidance', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const se = tasks.find((t) => t.name === 'skill-evolve');
+      const assess = se?.phases?.find((phase) => phase.name === 'assess');
+
+      expect(assess?.tools).toContain('vault_skill_candidates');
+      expect(assess?.prompt).toContain('Candidate metadata is triage input');
+      expect(assess?.prompt).toContain('deferred or dismissed candidates');
+    });
+
+    it('loads skill-survey durable decision handoff phases', () => {
+      const tasks = loadAgentTasks(DEFINITIONS_DIR);
+      const ss = tasks.find((t) => t.name === 'skill-survey');
+      const review = ss?.phases?.find((phase) => phase.name === 'review-bundles');
+      const reconcile = ss?.phases?.find((phase) => phase.name === 'reconcile-queue');
+      const persist = ss?.phases?.find((phase) => phase.name === 'persist-decisions');
+
+      expect(review?.tools).toContain('vault_skill_survey_bundle_decisions');
+      expect(review?.tools).toContain('vault_skill_survey_prepare');
+      expect(review?.prompt).toContain('direct');
+      expect(review?.prompt).toContain('skill-survey-bundle-decisions');
+      expect(review?.prompt).toContain('Do not use vault_set_state for this');
+
+      expect(reconcile?.tools).toContain('vault_state');
+      expect(reconcile?.tools).toContain('vault_skill_survey_reconciliation_plan');
+      expect(reconcile?.prompt).toContain('skill-survey-reconciliation-decisions');
+      expect(reconcile?.prompt).toContain('unhandled_cleanup_target_ids');
+      expect(reconcile?.prompt).toContain('unreviewed_candidate_ids');
+
+      expect(persist?.tools).toContain('vault_state');
+      expect(persist?.tools).toContain('vault_skill_survey_apply_reconciliation');
+      expect(persist?.tools).not.toContain('vault_skill_candidates');
+      expect(persist?.tools).not.toContain('vault_set_state');
+      expect(persist?.prompt).toContain('write path');
+      expect(persist?.prompt).toContain('skill-survey-reconciliation-decisions');
+      expect(persist?.prompt).toContain('remaining_cleanup_target_ids');
     });
 
     it('does not add schedule to tasks without one', () => {

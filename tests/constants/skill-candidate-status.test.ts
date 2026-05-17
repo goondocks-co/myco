@@ -18,19 +18,24 @@ import {
 } from '@myco/constants/skill-candidate-status.js';
 
 describe('skill-candidate-status constants', () => {
-  it('AGENT_SETTABLE_STATUSES contains only identified and dismissed', () => {
+  it('AGENT_SETTABLE_STATUSES contains only identified, dismissed, and deferred', () => {
     expect([...AGENT_SETTABLE_STATUSES].sort()).toEqual(
-      [CANDIDATE_STATUS.IDENTIFIED, CANDIDATE_STATUS.DISMISSED].sort(),
+      [
+        CANDIDATE_STATUS.IDENTIFIED,
+        CANDIDATE_STATUS.DISMISSED,
+        CANDIDATE_STATUS.DEFERRED,
+      ].sort(),
     );
   });
 
-  it('REST_SETTABLE_STATUSES contains identified, approved, dismissed but not generated', () => {
+  it('REST_SETTABLE_STATUSES contains identified, approved, dismissed, deferred but not generated', () => {
     const rest = [...REST_SETTABLE_STATUSES].sort();
     expect(rest).toEqual(
       [
         CANDIDATE_STATUS.IDENTIFIED,
         CANDIDATE_STATUS.APPROVED,
         CANDIDATE_STATUS.DISMISSED,
+        CANDIDATE_STATUS.DEFERRED,
       ].sort(),
     );
     expect(rest).not.toContain(CANDIDATE_STATUS.GENERATED);

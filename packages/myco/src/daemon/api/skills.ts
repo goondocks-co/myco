@@ -35,9 +35,10 @@ import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
-import { REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
+import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,6 +93,7 @@ export async function handleGetCandidate(req: RouteRequest): Promise<RouteRespon
  * path calls updateCandidate directly rather than going through REST.
  */
 const ALLOWED_REST_STATUSES = new Set<string>(REST_SETTABLE_STATUSES);
+const NON_NULL_JSON_TEXT_CANDIDATE_FIELDS = ['quality_failures', 'coverage_matches'] as const;
 
 /**
  * Update a skill candidate's fields (typically used to advance its status).
@@ -107,7 +109,20 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
   if (!body) return { status: 400, body: { error: 'Request body required' } };
 
   // Pick only allowed mutable fields — reject arbitrary body fields
-  const { status, topic, rationale, confidence, source_ids, skill_id } = body as Record<string, unknown>;
+  const {
+    status,
+    topic,
+    rationale,
+    confidence,
+    source_ids,
+    skill_id,
+    evidence_bundle_id,
+    quality_score,
+    quality_failures,
+    coverage_matches,
+    last_reconciled_at,
+    reconciliation_reason,
+  } = body as Record<string, unknown>;
 
   // Status whitelist guard — defense in depth against a compromised or
   // misconfigured MCP client reaching this endpoint with an internal
@@ -127,6 +142,43 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
     }
   }
 
+  for (const field of NON_NULL_JSON_TEXT_CANDIDATE_FIELDS) {
+    if (body[field] === null) {
+      return {
+        status: 400,
+        body: { error: `${field} must be a JSON string when provided` },
+      };
+    }
+  }
+
+  const existing = getCandidate(id, scope);
+  if (!existing) return { status: 404, body: { error: `Candidate not found: ${id}` } };
+
+  const resultingStatus = (status as string | undefined) ?? existing.status;
+  if (resultingStatus === CANDIDATE_STATUS.APPROVED) {
+    const candidateForValidation = {
+      ...existing,
+      ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
+      ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
+      ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
+      ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
+      ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
+    };
+    const issues = validateSkillCandidateQualityContract(candidateForValidation, {
+      requireResolvedSources: true,
+      scope,
+    });
+    if (issues.length > 0) {
+      return {
+        status: 400,
+        body: {
+          error: 'Candidate cannot be approved until its evidence metadata is complete and resolvable.',
+          issues,
+        },
+      };
+    }
+  }
+
   const updated = updateCandidate(id, {
     ...(status !== undefined ? { status: status as string } : {}),
     ...(topic !== undefined ? { topic: topic as string } : {}),
@@ -134,6 +186,12 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
     ...(confidence !== undefined ? { confidence: confidence as number } : {}),
     ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
     ...(skill_id !== undefined ? { skill_id: skill_id as string | null } : {}),
+    ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
+    ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
+    ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
+    ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
+    ...(last_reconciled_at !== undefined ? { last_reconciled_at: last_reconciled_at as number | null } : {}),
+    ...(reconciliation_reason !== undefined ? { reconciliation_reason: reconciliation_reason as string | null } : {}),
     updated_at: epochSeconds(),
   }, scope);
 

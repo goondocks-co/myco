@@ -12,6 +12,7 @@ export const CANDIDATE_STATUS = {
   APPROVED: 'approved',
   GENERATED: 'generated',
   DISMISSED: 'dismissed',
+  DEFERRED: 'deferred',
 } as const;
 
 export type SkillCandidateStatus = (typeof CANDIDATE_STATUS)[keyof typeof CANDIDATE_STATUS];

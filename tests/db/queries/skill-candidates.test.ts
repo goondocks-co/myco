@@ -64,6 +64,12 @@ describe('skill candidate query helpers', () => {
       expect(row.confidence).toBe(0.0);
       expect(row.source_ids).toBe('[]');
       expect(row.skill_id).toBeNull();
+      expect(row.evidence_bundle_id).toBeNull();
+      expect(row.quality_score).toBeNull();
+      expect(row.quality_failures).toBe('[]');
+      expect(row.coverage_matches).toBe('[]');
+      expect(row.last_reconciled_at).toBeNull();
+      expect(row.reconciliation_reason).toBeNull();
 
       const fetched = getCandidate(data.id, ALL_PROJECTS_SCOPE);
       expect(fetched).not.toBeNull();
@@ -77,6 +83,12 @@ describe('skill candidate query helpers', () => {
         status: 'promoted',
         source_ids: '["sess-abc","sess-def"]',
         skill_id: 'skill-xyz',
+        evidence_bundle_id: 'bundle-123',
+        quality_score: 0.77,
+        quality_failures: '["missing-coverage"]',
+        coverage_matches: '["packages/myco/src/foo.ts"]',
+        last_reconciled_at: 1_700_000_000,
+        reconciliation_reason: 'matched source coverage',
       });
       const row = insertCandidate(data);
 
@@ -84,6 +96,12 @@ describe('skill candidate query helpers', () => {
       expect(row.status).toBe('promoted');
       expect(row.source_ids).toBe('["sess-abc","sess-def"]');
       expect(row.skill_id).toBe('skill-xyz');
+      expect(row.evidence_bundle_id).toBe('bundle-123');
+      expect(row.quality_score).toBe(0.77);
+      expect(row.quality_failures).toBe('["missing-coverage"]');
+      expect(row.coverage_matches).toBe('["packages/myco/src/foo.ts"]');
+      expect(row.last_reconciled_at).toBe(1_700_000_000);
+      expect(row.reconciliation_reason).toBe('matched source coverage');
     });
 
     it('uses defaults when optional fields are omitted', () => {
@@ -94,6 +112,12 @@ describe('skill candidate query helpers', () => {
       expect(row.status).toBe('identified');
       expect(row.source_ids).toBe('[]');
       expect(row.skill_id).toBeNull();
+      expect(row.evidence_bundle_id).toBeNull();
+      expect(row.quality_score).toBeNull();
+      expect(row.quality_failures).toBe('[]');
+      expect(row.coverage_matches).toBe('[]');
+      expect(row.last_reconciled_at).toBeNull();
+      expect(row.reconciliation_reason).toBeNull();
     });
   });
 
@@ -247,6 +271,37 @@ describe('skill candidate query helpers', () => {
       expect(row).not.toBeNull();
       expect(row!.skill_id).toBe('skill-abc');
       expect(row!.source_ids).toBe('["sess-1","sess-2"]');
+    });
+
+    it('updates quality metadata fields', () => {
+      const data = makeCandidate({
+        evidence_bundle_id: 'bundle-before',
+        quality_score: 0.2,
+        quality_failures: '["before"]',
+        coverage_matches: '["before.ts"]',
+        last_reconciled_at: 1_700_000_000,
+        reconciliation_reason: 'before',
+      });
+      insertCandidate(data);
+
+      const now = epochNow() + 10;
+      const row = updateCandidate(data.id, {
+        evidence_bundle_id: null,
+        quality_score: 0.94,
+        quality_failures: '["missing-example","ambiguous-trigger"]',
+        coverage_matches: '["packages/myco/src/agent/tools/skill-tools.ts"]',
+        last_reconciled_at: null,
+        reconciliation_reason: 'manual override',
+        updated_at: now,
+      }, ALL_PROJECTS_SCOPE);
+
+      expect(row).not.toBeNull();
+      expect(row!.evidence_bundle_id).toBeNull();
+      expect(row!.quality_score).toBe(0.94);
+      expect(row!.quality_failures).toBe('["missing-example","ambiguous-trigger"]');
+      expect(row!.coverage_matches).toBe('["packages/myco/src/agent/tools/skill-tools.ts"]');
+      expect(row!.last_reconciled_at).toBeNull();
+      expect(row!.reconciliation_reason).toBe('manual override');
     });
 
     it('returns null for non-existent candidate', () => {
