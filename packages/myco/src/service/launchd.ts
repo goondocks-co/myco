@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { renderLaunchdPlist } from './launchd-plist.js';
 import type { ServiceManager, ServiceSpec, ServiceStatus } from './types.js';
 
@@ -69,7 +70,7 @@ export class LaunchdServiceManager implements ServiceManager {
     fs.mkdirSync(this.agentsDir, { recursive: true });
     fs.mkdirSync(path.dirname(spec.stdoutPath), { recursive: true });
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
-    fs.writeFileSync(plistPath, rendered);
+    atomicWriteFileSync(plistPath, rendered);
 
     await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
     await this.runner.run(['enable', this.domainTarget(spec.label)]);

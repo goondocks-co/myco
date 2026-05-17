@@ -139,6 +139,19 @@ export const DAEMON_EVICT_TIMEOUT_MS = 3000;
 /** Poll interval when waiting for an evicted daemon to die (ms). */
 export const DAEMON_EVICT_POLL_MS = 100;
 
+/** reconcileExistingDaemon: grace period between SIGTERM and SIGKILL when
+ *  taking over from a stale/unhealthy/version-mismatched predecessor (ms).
+ *  Closes the orphan-zombie window — daemon.json must not be unlinked until
+ *  the recorded pid is confirmed dead. Self-mutation-discipline tenet. */
+export const RECONCILE_SIGTERM_GRACE_MS = 2000;
+/** reconcileExistingDaemon: grace period after SIGKILL before giving up and
+ *  stepping aside (ms). A pid that survives this window is unkillable from
+ *  user space; we refuse to remove daemon.json and return 'step-aside'. */
+export const RECONCILE_SIGKILL_GRACE_MS = 500;
+/** reconcileExistingDaemon: poll interval while waiting for the predecessor
+ *  pid to exit (ms). */
+export const RECONCILE_POLL_MS = 50;
+
 // --- Slug limits ---
 /** Max length for slugified artifact IDs. */
 

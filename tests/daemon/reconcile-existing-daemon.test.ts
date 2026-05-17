@@ -72,8 +72,10 @@ describe('reconcileExistingDaemon', () => {
   });
 
   afterEach(async () => {
-    sibling.kill('SIGKILL');
-    await new Promise<void>((resolve) => sibling.once('exit', () => resolve()));
+    if (sibling.exitCode === null && sibling.signalCode === null) {
+      sibling.kill('SIGKILL');
+      await new Promise<void>((resolve) => sibling.once('exit', () => resolve()));
+    }
     try { fs.unlinkSync(daemonService(vaultDir).statePath); } catch { /* gone */ }
     fs.rmSync(vaultDir, { recursive: true, force: true });
   });
@@ -197,6 +199,85 @@ describe('reconcileExistingDaemon', () => {
     const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir));
     expect(result).toBe('ok');
     expect(fs.existsSync(svc.statePath)).toBe(false);
+  });
+
+  it('escalates to SIGKILL when SIGTERM is ignored, then unlinks once dead', async () => {
+    // Spawn a child that swallows SIGTERM but exits on SIGKILL. The reconcile
+    // SIGTERM phase will time out, escalate to SIGKILL, and only then unlink
+    // daemon.json — proving the orphan-zombie window is closed.
+    sibling.kill('SIGKILL');
+    await new Promise<void>((resolve) => sibling.once('exit', () => resolve()));
+    sibling = spawn(process.execPath, [
+      '-e',
+      "process.on('SIGTERM',()=>{});process.stdout.write('ready\\n');setInterval(()=>{},1000)",
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('child did not signal ready')), 2_000);
+      sibling.stdout!.once('data', (chunk: Buffer) => {
+        if (chunk.toString().includes('ready')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+    if (!sibling.pid) throw new Error('child failed to spawn');
+    siblingPid = sibling.pid;
+
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(
+      svc.statePath,
+      // pid + bogus port so the health probe fails fast → takeover branch.
+      JSON.stringify({ pid: siblingPid, port: 1 }),
+    );
+
+    const result = await reconcileExistingDaemon(
+      svc,
+      makeLogger(vaultDir),
+      // Short grace windows so the test stays under a second; production
+      // defaults are 2s/500ms.
+      { sigtermGraceMs: 200, sigkillGraceMs: 500, pollMs: 25 },
+    );
+
+    expect(result).toBe('ok');
+    expect(fs.existsSync(svc.statePath)).toBe(false);
+    await new Promise<void>((resolve) => {
+      if (sibling.exitCode !== null || sibling.signalCode !== null) return resolve();
+      sibling.once('exit', () => resolve());
+    });
+    let alive = false;
+    try { process.kill(siblingPid, 0); alive = true; } catch { /* dead */ }
+    expect(alive).toBe(false);
+  });
+
+  it('steps aside and preserves daemon.json when pid survives SIGKILL', async () => {
+    // user-space can't truly produce an unkillable process — inject a fake
+    // `isProcessAlive` that always returns true and a no-op `kill`. The real
+    // sibling is just there to satisfy the "pid !== process.pid" guard;
+    // reconcile never touches it because we own the kill/alive seams.
+    const svc = daemonService(vaultDir);
+    fs.mkdirSync(path.dirname(svc.statePath), { recursive: true });
+    fs.writeFileSync(
+      svc.statePath,
+      JSON.stringify({ pid: siblingPid, port: 1 }),
+    );
+
+    const killCalls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const result = await reconcileExistingDaemon(svc, makeLogger(vaultDir), {
+      kill: (pid, signal) => { killCalls.push({ pid, signal }); },
+      isProcessAlive: () => true,
+      sigtermGraceMs: 50,
+      sigkillGraceMs: 50,
+      pollMs: 10,
+    });
+
+    expect(result).toBe('step-aside');
+    // daemon.json must survive — the (notionally still-live) predecessor
+    // owns it. Removing the file would orphan a live daemon.
+    expect(fs.existsSync(svc.statePath)).toBe(true);
+    // Both signals must have been attempted before stepping aside.
+    expect(killCalls.map((c) => c.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(killCalls.every((c) => c.pid === siblingPid)).toBe(true);
   });
 });
 

@@ -88,9 +88,11 @@ describe('DaemonClient.restart — stuck-shutdown recovery', () => {
       pollIntervalMs: 10,
     };
 
-    // killDaemon clears daemon.json before our poll loop runs — reinstate it
-    // so isHealthy can resolve the port. In production launchd writes a fresh
-    // daemon.json when it respawns.
+    // Simulate the supervisor writing a fresh daemon.json shortly after
+    // respawn. killDaemon itself no longer unlinks state (cleanup ownership
+    // inversion — the successor owns that), but in production launchd
+    // overwrites daemon.json with the new pid when it brings a fresh daemon
+    // up. We mimic that here so isHealthy can resolve the port.
     setTimeout(() => {
       fs.writeFileSync(statePath, JSON.stringify({ pid: FAKE_PID, port: healthPort }));
     }, 5);
