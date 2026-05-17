@@ -15,6 +15,8 @@ const {
   pruneOldMock,
   backfillUnsyncedMock,
   discardRowsMock,
+  enqueueOutboxMock,
+  upsertSelfMemberMock,
 } = vi.hoisted(() => ({
   connectMock: vi.fn(),
   enqueueBatchMock: vi.fn(),
@@ -24,6 +26,8 @@ const {
   pruneOldMock: vi.fn(),
   backfillUnsyncedMock: vi.fn(),
   discardRowsMock: vi.fn(),
+  enqueueOutboxMock: vi.fn(),
+  upsertSelfMemberMock: vi.fn(),
 }));
 
 mock.module('@myco/db/queries/team-outbox.js', () => ({
@@ -34,6 +38,11 @@ mock.module('@myco/db/queries/team-outbox.js', () => ({
   backfillUnsynced: backfillUnsyncedMock,
   discardRows: discardRowsMock,
   countPending: vi.fn(() => 0),
+  enqueueOutbox: enqueueOutboxMock,
+}));
+
+mock.module('@myco/db/queries/team-members.js', () => ({
+  upsertSelfMember: upsertSelfMemberMock,
 }));
 
 mock.module('@myco/daemon/team-sync.js', () => ({
@@ -69,6 +78,18 @@ describe('initTeamSync.reconcileClient', () => {
     enqueueBatchMock.mockResolvedValue({ accepted: 0, rejected: [] });
     listPendingMock.mockReturnValue([]);
     backfillUnsyncedMock.mockReturnValue(3);
+    upsertSelfMemberMock.mockReturnValue({
+      inserted: true,
+      row: {
+        id: 'machine-1',
+        user: 'machine-1',
+        role: null,
+        joined: '2026-05-17T12:00:00.000Z',
+        tags: null,
+        machine_id: 'machine-1',
+        synced_at: null,
+      },
+    });
     writeTeamConfig(true);
     fs.writeFileSync(path.join(vaultDir, 'secrets.env'), 'MYCO_TEAM_API_KEY=secret-token\n', 'utf-8');
   });
@@ -99,7 +120,44 @@ describe('initTeamSync.reconcileClient', () => {
       version: '1.2.3',
     });
     expect(backfillUnsyncedMock).toHaveBeenCalledWith('machine-1');
+    expect(upsertSelfMemberMock).toHaveBeenCalledWith('machine-1', expect.any(String));
+    expect(enqueueOutboxMock).toHaveBeenCalledWith(expect.objectContaining({
+      table_name: 'team_members',
+      row_id: 'machine-1',
+      machine_id: 'machine-1',
+    }));
     expect(teamSync.getTeamClient()).not.toBeNull();
+  });
+
+  it('skips outbox enqueue when self member row already exists', async () => {
+    upsertSelfMemberMock.mockReturnValueOnce({
+      inserted: false,
+      row: {
+        id: 'machine-1',
+        user: 'Alice',
+        role: 'owner',
+        joined: '2026-05-17T12:00:00.000Z',
+        tags: null,
+        machine_id: 'machine-1',
+        synced_at: 1779000000,
+      },
+    });
+    const teamSync = initTeamSync({
+      liveConfig: {
+        current: {
+          team: { enabled: true, worker_url: 'https://team.example.workers.dev' },
+        },
+      } as never,
+      machineId: 'machine-1',
+      logger: logger as never,
+      vaultDir,
+      serverVersion: '1.2.3',
+    });
+
+    await teamSync.reconcileClient();
+
+    expect(upsertSelfMemberMock).toHaveBeenCalledWith('machine-1', expect.any(String));
+    expect(enqueueOutboxMock).not.toHaveBeenCalled();
   });
 
   it('does nothing when the same client inputs are reconciled twice', async () => {

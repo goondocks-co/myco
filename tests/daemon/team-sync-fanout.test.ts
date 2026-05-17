@@ -33,9 +33,17 @@ mock.module('@myco/daemon/team-sync.js', () => ({
     }
     connect = connectMock;
     enqueueBatch = async (records: unknown[]) => {
-      const list = enqueueBatchByGrove.get(this.groveTag) ?? [];
-      list.push({ count: records.length });
-      enqueueBatchByGrove.set(this.groveTag, list);
+      // Filter out the `team_members` self-row enqueue that reconcileClient
+      // emits — these tests assert seeded-row fanout, and the self-member
+      // bookkeeping happens incidentally during reconcile().
+      const seeded = (records as Array<{ table_name?: string }>).filter(
+        (r) => r.table_name !== 'team_members',
+      );
+      if (seeded.length > 0) {
+        const list = enqueueBatchByGrove.get(this.groveTag) ?? [];
+        list.push({ count: seeded.length });
+        enqueueBatchByGrove.set(this.groveTag, list);
+      }
       return { accepted: records.length, rejected: [] };
     };
     getCollectiveStatus = vi.fn();

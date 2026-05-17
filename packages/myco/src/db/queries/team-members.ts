@@ -22,3 +22,33 @@ export function listTeamMembers(): TeamMemberRow[] {
      ORDER BY "user" ASC`,
   ).all() as TeamMemberRow[];
 }
+
+/**
+ * Ensure a team_members row exists for the local machine. Idempotent:
+ * a conflicting row is left untouched so any peer-synced edits to the
+ * display name are not clobbered on every reconciliation tick.
+ *
+ * `user` defaults to the machine_id itself — the machine_id file is the
+ * only stable local identity the daemon has at this layer; a friendlier
+ * display name can be supplied later through member-management UI.
+ *
+ * Returns `{ inserted: true }` on the first call (caller is expected to
+ * enqueue this row into the team outbox so peers learn about us);
+ * `false` thereafter.
+ */
+export function upsertSelfMember(machineId: string, joinedIso: string): {
+  inserted: boolean;
+  row: TeamMemberRow;
+} {
+  const info = getDatabase().prepare(
+    `INSERT OR IGNORE INTO team_members (id, "user", role, joined, tags, machine_id)
+     VALUES (?, ?, NULL, ?, NULL, ?)`,
+  ).run(machineId, machineId, joinedIso, machineId);
+
+  const row = getDatabase().prepare(
+    `SELECT id, "user", role, joined, tags, machine_id, synced_at
+     FROM team_members WHERE id = ?`,
+  ).get(machineId) as TeamMemberRow;
+
+  return { inserted: info.changes === 1, row };
+}

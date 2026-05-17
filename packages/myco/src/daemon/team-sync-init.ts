@@ -22,7 +22,9 @@ import {
   backfillUnsynced,
   discardRows,
   countPending,
+  enqueueOutbox,
 } from '@myco/db/queries/team-outbox.js';
+import { upsertSelfMember } from '@myco/db/queries/team-members.js';
 import {
   SYNC_PROTOCOL_VERSION,
   TEAM_API_KEY_SECRET,
@@ -90,6 +92,30 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
   const { machineId, logger, vaultDir, serverVersion, daemonStateDir, requestContext: defaultRequestContext } = deps;
   const teamClients = new Map<string, TeamSyncClient>();
   const clientSignatures = new Map<string, string>();
+
+  function reconcileSelfMember(): void {
+    try {
+      const nowSec = epochSeconds();
+      const joinedIso = new Date(nowSec * 1000).toISOString();
+      const { inserted, row } = upsertSelfMember(machineId, joinedIso);
+      if (!inserted) return;
+      enqueueOutbox({
+        table_name: 'team_members',
+        row_id: row.id,
+        operation: 'upsert',
+        payload: JSON.stringify(row),
+        machine_id: machineId,
+        created_at: nowSec,
+      });
+      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
+        machine_id: machineId,
+      });
+    } catch (err) {
+      logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Self team_members reconcile failed', {
+        error: (err as Error).message,
+      });
+    }
+  }
 
   async function flushPending(requestContext = defaultRequestContext): Promise<TeamFlushResult> {
     const result: TeamFlushResult = { handedOff: 0, rejected: 0, batches: 0 };
@@ -203,6 +229,8 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
         error: (err as Error).message,
       });
     }
+
+    reconcileSelfMember();
 
     try {
       const backfilled = backfillUnsynced(machineId);
