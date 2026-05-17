@@ -30,7 +30,7 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
     logger?.debug(LOG_KINDS.MCP_LIST, 'MCP tools listed', {
       tool_count: listed.length,
       session_id: sessionId ?? undefined,
-      request_id: extra?.requestId,
+      request_id: extra.requestId,
     });
     return { tools: listed };
   });
@@ -45,14 +45,14 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
     logger?.debug(LOG_KINDS.MCP_CALL, 'MCP tool call received', {
       tool_name: name,
       session_id: sessionId ?? undefined,
-      request_id: extra?.requestId,
+      request_id: extra.requestId,
     });
     try {
       const result = await tools.callTool(name, args);
       logger?.info(LOG_KINDS.MCP_CALL, 'MCP tool call completed', {
         tool_name: name,
         session_id: sessionId ?? undefined,
-        request_id: extra?.requestId,
+        request_id: extra.requestId,
         status: 'ok',
       });
       return { content: [{ type: 'text', text: serializeToolResult(name, result) }] };
@@ -61,7 +61,7 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
       logger?.warn(LOG_KINDS.MCP_CALL, 'MCP tool call failed', {
         tool_name: name,
         session_id: sessionId ?? undefined,
-        request_id: extra?.requestId,
+        request_id: extra.requestId,
         status: 'error',
         error_class: error?.name ?? 'Error',
         // First line only — keep grep-friendly. Full stack stays out of the log.

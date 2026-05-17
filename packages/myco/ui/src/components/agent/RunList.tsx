@@ -228,11 +228,17 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
 
 /* ---------- Component ---------- */
 
+/** Navigation options the parent can honor on auto-selection. */
+export interface RunListSelectOptions {
+  /** When true, the navigation replaces the current history entry rather than pushing. */
+  replace?: boolean;
+}
+
 export interface RunListProps {
   /** When set, the row with this run id renders as active. Also seeds the
    *  keyboard-nav cursor so j/k continues from the selection. */
   selectedId?: string;
-  onSelectRun: (id: string) => void;
+  onSelectRun: (id: string, options?: RunListSelectOptions) => void;
   onTriggerRun: () => void;
   /** Navigates to an ad-hoc comparison over the selected run ids. */
   onCompareRuns: (ids: string[]) => void;
@@ -301,11 +307,17 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
   const runs = data?.runs ?? [];
   const total = data?.total ?? 0;
 
-  // Master-detail default: when the Runs tab loads with nothing selected,
-  // jump to the topmost run so the detail pane is never blank. Driven
-  // through onSelectRun so the parent owns URL replace semantics.
+  // Master-detail default: on first arrival at the Runs tab with no
+  // row selected, jump to the topmost run. The `didAutoSelect` ref
+  // makes it a true one-shot per mount — without it, every poll
+  // refetch re-references the `runs` array and re-fires the navigate,
+  // corrupting back-button history when the user has since navigated
+  // to a run and then back. Parent owns URL replace semantics.
+  const didAutoSelect = useRef(false);
   useEffect(() => {
+    if (didAutoSelect.current) return;
     if (!selectedId && !isLoading && runs.length > 0) {
+      didAutoSelect.current = true;
       onSelectRun(runs[0].id, { replace: true });
     }
   }, [selectedId, isLoading, runs, onSelectRun]);

@@ -45,7 +45,15 @@ export function TeamPage() {
           subtitle="Grove-scoped team sync and membership"
           tabs={isConnected ? TABS : undefined}
           activeTab={isConnected ? tab : undefined}
-          onTabChange={isConnected ? (id) => setParams({ tab: id }) : undefined}
+          onTabChange={
+            isConnected
+              ? (id) => setParams((prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.set('tab', id);
+                  return next;
+                }, { replace: true })
+              : undefined
+          }
         />
       </div>
       <div className="flex-1 overflow-auto">
