@@ -381,14 +381,37 @@ async function runWorktreeBootstrap(): Promise<void> {
         + `Resolve manually if intentional.`,
       );
     } else {
-      // Read + atomic-rewrite rather than copyFileSync so we never expose
-      // a partial write at the destination and so the source's mode bits
-      // don't carry over (we don't trust upstream permissions for an
-      // execution-relevant path).
-      const contents = fs.readFileSync(mainPin, 'utf-8');
-      const worktreePin = path.join(worktreeRoot, '.myco', 'runtime.command');
-      fs.writeFileSync(worktreePin, contents, { encoding: 'utf-8', mode: 0o644 });
-      console.log(`  ✓ Mirrored runtime.command from main repo`);
+      // runtime.command is exec'd by myco-run.cjs — `cat` it, trust the
+      // contents, exec the binary it names. Two structural sanity checks
+      // before we mirror it into the worktree:
+      //   - 4 KiB cap: a real pin is one absolute path (~50–200 bytes);
+      //     anything larger smells like a planted payload trying to
+      //     overflow downstream parsers.
+      //   - single non-empty line: the consumer reads `${contents.trim()}`
+      //     as a single command, so a multi-line file is malformed
+      //     regardless of intent. Refuse rather than silently mirror.
+      const MAX_PIN_BYTES = 4 * 1024;
+      if (pinStat.size > MAX_PIN_BYTES) {
+        console.warn(
+          `  ⚠ Skipped mirroring runtime.command — main repo's pin is ${pinStat.size} bytes (>${MAX_PIN_BYTES}); refusing to mirror an oversized exec spec.`,
+        );
+      } else {
+        const contents = fs.readFileSync(mainPin, 'utf-8');
+        const lines = contents.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+        if (lines.length !== 1) {
+          console.warn(
+            `  ⚠ Skipped mirroring runtime.command — main repo's pin is not a single non-empty line; refusing to mirror.`,
+          );
+        } else {
+          // Read + atomic-rewrite rather than copyFileSync so we never expose
+          // a partial write at the destination and so the source's mode bits
+          // don't carry over (we don't trust upstream permissions for an
+          // execution-relevant path).
+          const worktreePin = path.join(worktreeRoot, '.myco', 'runtime.command');
+          fs.writeFileSync(worktreePin, contents, { encoding: 'utf-8', mode: 0o644 });
+          console.log(`  ✓ Mirrored runtime.command from main repo`);
+        }
+      }
     }
   }
 

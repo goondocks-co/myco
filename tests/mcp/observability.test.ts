@@ -121,6 +121,44 @@ describe('MCP server observability (#288)', () => {
     await client.close();
   });
 
+  it('redacts secret-shaped substrings out of error_message before logging (H.7)', async () => {
+    // A tool that surfaces an upstream HTTP error verbatim (the daemon's
+    // fetch helpers wrap upstream responses without scrubbing auth
+    // headers) could leak a bearer token, OpenAI sk-, GitHub ghp_, or
+    // auth_token=... into the persisted log. The MCP error log emitter
+    // pipes the first line through `redactSecrets` to defang that
+    // exposure regardless of which tool emitted the error.
+    const throwingTools = makeFakeTools({
+      callTool: async () => {
+        throw new Error(
+          'Upstream 401: Bearer abc123.def-456 — sk-1234567890abcdef1234567890abcdef — ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ — auth_token=zzz.yyy-xxx',
+        );
+      },
+    });
+    const { client } = await connectAndCall(throwingTools, {
+      logger: recording.logger,
+      sessionId: 'sess-test-redact',
+    });
+    await client.callTool({ name: 'anything', arguments: {} }).catch(() => undefined);
+
+    const errorEntry = recording.entries.find(
+      (e) => e.level === 'warn' && e.kind === 'mcp.call' && e.data?.session_id === 'sess-test-redact',
+    );
+    expect(errorEntry).toBeDefined();
+    const msg = errorEntry?.data?.error_message as string;
+    expect(msg).toContain('Bearer [REDACTED]');
+    expect(msg).toContain('sk-[REDACTED]');
+    expect(msg).toContain('ghp_[REDACTED]');
+    expect(msg).toContain('auth_token=[REDACTED]');
+    // And the raw secrets are gone.
+    expect(msg).not.toContain('abc123.def-456');
+    expect(msg).not.toContain('1234567890abcdef1234567890abcdef');
+    expect(msg).not.toContain('abcdefghijklmnopqrstuvwxyzABCDEFGHIJ');
+    expect(msg).not.toContain('zzz.yyy-xxx');
+
+    await client.close();
+  });
+
   it('logs listTools at debug level (lower verbosity than dispatches)', async () => {
     const { client } = await connectAndCall(makeFakeTools(), { logger: recording.logger });
 

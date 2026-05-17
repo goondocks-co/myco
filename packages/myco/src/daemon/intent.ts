@@ -14,6 +14,32 @@
  * Runtime shape guards (isRestartIntent / isUpdateIntent) reject malformed
  * but valid TOML — a structurally-wrong file is treated as empty, never
  * returned as an `Intent` via `as` cast.
+ *
+ * ## TRUST MODEL — these files drive code execution
+ *
+ * intent.update.toml interpolates `target_version` into
+ * `npm install -g @goondocks/myco@<value>` and spawns the resulting
+ * shell command. intent.restart.toml triggers the daemon to exit and be
+ * re-spawned by the supervisor. Both files are daemon-EXECUTED, not
+ * merely daemon-READ.
+ *
+ * Protections (single-machine, single-user trust boundary):
+ *   - Files live under `~/.myco/service/` (chmod 0o700 — see
+ *     `service-state.ts:writeDaemonState`) so directory enumeration is
+ *     restricted to the owner.
+ *   - Each file is chmod 0o600 (see writers below) so even with
+ *     directory descend, the bytes are owner-only.
+ *   - `target_version` is gated by strict semver at BOTH writers (HTTP
+ *     `POST /api/daemon/intent/update` in `api/intent.ts`, and the CLI
+ *     `myco update --target-version` in `cli/update.ts`) to defeat
+ *     npm-spec injection (`file:`, `git+ssh:`, etc.).
+ *   - `isRestartIntent` / `isUpdateIntent` shape guards reject
+ *     structurally-malformed TOML before the reconciler reads either as
+ *     an `Intent`.
+ *
+ * Any future writer of these files must preserve the chmod 0o600 + the
+ * semver gate. Any future field interpolated into a shell command must
+ * be validated at the writer (defense in depth: also at the reader).
  */
 
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';

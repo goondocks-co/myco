@@ -47,6 +47,30 @@ import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candida
 
 const DEFAULT_LIST_OFFSET = 0;
 
+/**
+ * Filesystem-safe shape for a skill `name`. The same regex is used as a
+ * filesystem-path gate before `fs.rmSync(recursive, force)` and as a
+ * defense-in-depth check before the resolved-path containment guard
+ * (`path.relative` startsWith `..`).
+ *
+ * Rules:
+ *   - lowercase a-z, 0-9, and hyphen only
+ *   - must start with [a-z0-9]
+ *   - length capped at 100 to keep symlink targets within typical PATH_MAX
+ *
+ * A skill_record row reaches this handler via team sync (peer Worker
+ * push), and the name field is replayed onto the local filesystem to
+ * cascade the delete. Without this gate, a peer-controlled name like
+ * `../../etc` or `../../../foo` would resolve outside `.agents/skills/`
+ * and `fs.rmSync({ recursive: true, force: true })` would happily walk
+ * the traversed path.
+ */
+const SAFE_SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,99}$/;
+
+export function isSafeSkillNameForFs(name: string): boolean {
+  return SAFE_SKILL_NAME_RE.test(name);
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -376,12 +400,37 @@ export function createSkillRecordDeleteHandler(deps: SkillDeleteDeps) {
     if ((result.body as Record<string, unknown>)?.deleted) {
       const record = result.body as { name?: string };
       if (record.name) {
+        // Path-traversal gate: a peer-controlled skill name (rows arrive
+        // via team-sync from the cloud Worker) reaching `fs.rmSync({
+        // recursive: true, force: true })` is a destructive primitive
+        // gated on attacker input. Two stacked checks:
+        //   1. Charset gate — reject anything that isn't a slug.
+        //   2. Containment gate — even if the charset check were too
+        //      permissive (defense in depth), the resolved path must
+        //      live under `<projectRoot>/.agents/skills/`.
+        if (!isSafeSkillNameForFs(record.name)) {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: unsafe name shape', { name: record.name });
+          return result;
+        }
         const projectRoot = resolveProjectRoot(vaultDir);
-        const skillDir = path.resolve(projectRoot, '.agents', 'skills', record.name);
+        const skillsRoot = path.resolve(projectRoot, '.agents', 'skills');
+        const skillDir = path.resolve(skillsRoot, record.name);
+        const rel = path.relative(skillsRoot, skillDir);
+        if (rel.startsWith('..') || path.isAbsolute(rel) || rel === '') {
+          logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Refused skill cleanup: resolved path escapes skills root', {
+            name: record.name,
+            resolved: skillDir,
+          });
+          return result;
+        }
         try { fs.rmSync(skillDir, { recursive: true, force: true }); } catch (err) {
           logger.warn(LOG_KINDS.PROCESSOR_BATCH, 'Failed to remove skill directory', { name: record.name, error: String(err) });
         }
-        // Remove agent-specific symlinks (e.g., .claude/skills/<name>)
+        // Remove agent-specific symlinks (e.g., .claude/skills/<name>).
+        // syncSkillSymlinks also touches filesystem paths derived from
+        // `record.name`; it now applies the same charset gate internally
+        // (see symbionts/installer.ts), but the outer guard above means
+        // we don't reach it with an unsafe name in the first place.
         try {
           const { syncSkillSymlinks } = await import('@myco/symbionts/installer.js');
           syncSkillSymlinks(projectRoot, record.name, { remove: true });

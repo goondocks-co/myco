@@ -4,6 +4,31 @@
  * Extracted from main.ts — creates the TeamSyncClient from saved config,
  * registers the node, backfills unsynced records, and exposes the outbox
  * flush power job.
+ *
+ * ## team_members trust model (audited 2026-05-17, Bucket H.6)
+ *
+ * The local SQLite `team_members` table is SELF-ONLY: the only write path
+ * on the daemon side is `upsertSelfMember(machineId, ...)` in
+ * `db/queries/team-members.ts`, called from `reconcileSelfMember` below.
+ * That call hard-codes `id = machineId = user = machine_id`, so a row in
+ * the local table is by construction a self-record (or a row legacy users
+ * inserted by hand pre-team-sync, which is treated as opaque).
+ *
+ * Peers never INSERT into this table on our local DB. The outbound flow
+ * pushes the self row to the cloud Worker via `enqueueOutbox`; the Worker
+ * stores per-machine rows in its own D1 instance for cross-machine
+ * directory queries. Inbound from the Worker is read-only — the
+ * `/api/team/members` daemon endpoint (`api/team-members.ts`) selects
+ * locally; cross-team listing happens via search APIs that return data
+ * shaped from D1, never INSERTing into the local SQLite.
+ *
+ * The reviewer's concern — "a peer-claimed row whose machine_id doesn't
+ * match the sender" — would only apply if we accepted peer rows into the
+ * local table. We don't. If a future change introduces an inbound
+ * write path (e.g. team-roster sync), the validator MUST live there at
+ * the write site (reject rows where `payload.machine_id !== sender.machine_id`,
+ * reject rows where `payload.id !== payload.machine_id`, etc.) and this
+ * docblock MUST be updated to point at it.
  */
 
 import type { DaemonLogger } from './logger.js';

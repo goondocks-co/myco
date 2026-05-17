@@ -6,6 +6,33 @@ import { type MycoTools } from '../tools/index.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import type { Logger } from '../daemon/logger.js';
 
+/**
+ * Redact secret-shaped substrings out of an error message before it
+ * reaches the log file. The log persists indefinitely, so a tool that
+ * embeds a bearer token in its error message (the daemon's HTTP fetch
+ * helpers wrap upstream responses without scrubbing auth headers; the
+ * `setup-llm` paths and a few team-sync paths handle bearer tokens
+ * directly) would leak the secret to anyone with log-read access.
+ *
+ * Patterns are common-prefix forms so we redact tokens regardless of
+ * which provider produced them. Replacement keeps the prefix so a
+ * grep for `Bearer [REDACTED]` still surfaces the shape.
+ */
+const SECRET_PATTERNS: { re: RegExp; replacement: string }[] = [
+  { re: /Bearer\s+[A-Za-z0-9._-]+/g, replacement: 'Bearer [REDACTED]' },
+  { re: /sk-[A-Za-z0-9]{20,}/g, replacement: 'sk-[REDACTED]' },
+  { re: /ghp_[A-Za-z0-9]{36,}/g, replacement: 'ghp_[REDACTED]' },
+  { re: /auth[_-]?token=[A-Za-z0-9._-]+/gi, replacement: 'auth_token=[REDACTED]' },
+];
+
+export function redactSecrets(input: string): string {
+  let out = input;
+  for (const { re, replacement } of SECRET_PATTERNS) {
+    out = out.replace(re, replacement);
+  }
+  return out;
+}
+
 export interface McpProtocolServerOptions {
   /**
    * Optional structured logger. When provided, every CallTool dispatch
@@ -64,8 +91,14 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
         request_id: extra.requestId,
         status: 'error',
         error_class: error?.name ?? 'Error',
-        // First line only — keep grep-friendly. Full stack stays out of the log.
-        error_message: (error?.message ?? String(err)).split('\n', 1)[0],
+        // First line only — keep grep-friendly. Full stack stays out of
+        // the log. Secret-shaped substrings (Bearer tokens, sk-, ghp_,
+        // auth_token=) are redacted before the message lands on disk
+        // so a tool that surfaces an upstream HTTP error verbatim (the
+        // daemon's fetch helpers wrap upstream responses without
+        // scrubbing auth headers) doesn't leak credentials to log
+        // readers.
+        error_message: redactSecrets((error?.message ?? String(err)).split('\n', 1)[0]),
       });
       throw err;
     }

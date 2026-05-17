@@ -360,6 +360,22 @@ async function runAllProjects(): Promise<void> {
  * the daemon is already at the requested version, no intent is written.
  */
 async function runUpdateIntent(targetVersion: string): Promise<void> {
+  // Strict semver gate at the CLI write boundary. The HTTP intent API
+  // (Bucket F) applies the same regex, but the CLI writes intent.toml
+  // directly via `writeUpdateIntent` without going through the HTTP
+  // surface — an attacker who controls argv could otherwise bypass the
+  // daemon-side validation and land an npm-spec like `file:/tmp/evil` or
+  // `git+ssh://...` that the reconciler interpolates into
+  // `npm install -g @goondocks/myco@<value>`. Keep this regex
+  // byte-identical to `SEMVER_RE` in `daemon/api/intent.ts`.
+  const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  if (!SEMVER_RE.test(targetVersion)) {
+    console.error(
+      `--target-version must be a strict semver (e.g. 0.27.11); got '${targetVersion}'`,
+    );
+    process.exit(1);
+  }
+
   const vaultDir = resolveVaultDir();
   const daemonService = resolveDaemonServiceState(vaultDir);
   const client = new DaemonClient(vaultDir);
