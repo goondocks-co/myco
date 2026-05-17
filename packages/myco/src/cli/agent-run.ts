@@ -5,9 +5,19 @@
  * The daemon's /api/agent/run endpoint fires-and-forgets the run.
  */
 
-import { connectToDaemon } from './shared.js';
+import { connectToDaemon, printHelpIfRequested } from './shared.js';
+
+const AGENT_USAGE = `Usage: myco agent [--task NAME] [--instruction TEXT]
+
+Options:
+  --task NAME          Run a specific agent task. Defaults to the configured default task.
+  --instruction TEXT  Additional instruction to pass to the agent run.
+  -h, --help          Show this help
+`;
 
 export async function run(args: string[], vaultDir: string): Promise<void> {
+  if (printHelpIfRequested(args, AGENT_USAGE)) return;
+
   const task = args.find((_, i) => args[i - 1] === '--task');
   const instruction = args.find((_, i) => args[i - 1] === '--instruction');
 

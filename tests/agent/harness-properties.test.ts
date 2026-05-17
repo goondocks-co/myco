@@ -60,7 +60,7 @@ describe('harness properties', () => {
       const readToolNames = [
         'vault_unprocessed', 'vault_batches', 'vault_session_summary_material', 'vault_spores', 'vault_sessions',
         'vault_search_fts', 'vault_search_semantic', 'vault_release_state', 'vault_state',
-        'vault_edges', 'vault_read_digest',
+        'vault_edges', 'vault_read_digest', 'vault_skill_survey_prepare',
       ];
       for (const name of readToolNames) {
         const t = tools.find(tool => tool.name === name);

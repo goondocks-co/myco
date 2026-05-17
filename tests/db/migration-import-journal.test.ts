@@ -36,7 +36,7 @@ describe('migration import journal', () => {
   });
 
   it('is installed by the current schema', () => {
-    expect(SCHEMA_VERSION).toBe(41);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(41);
     expect(tableExists('migration_import_journal')).toBe(true);
     expect(indexExists('idx_migration_import_journal_source')).toBe(true);
     expect(indexExists('idx_migration_import_journal_target')).toBe(true);

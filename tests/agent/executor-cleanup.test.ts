@@ -17,9 +17,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { cleanupOnTaskFailure, finalizeOnTaskSuccess } from '@myco/agent/executor.js';
-import { CORTEX_INSTRUCTIONS_TASK, SKILL_GENERATE_TASK } from '@myco/agent/instruction-builders.js';
+import {
+  CORTEX_INSTRUCTIONS_TASK,
+  SKILL_GENERATE_TASK,
+  SKILL_SURVEY_TASK,
+  SKILL_SURVEY_WATERMARK_KEY,
+} from '@myco/agent/instruction-builders.js';
 import { CONTENT_HASH_ALGORITHM, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { registerAgent } from '@myco/db/queries/agents.js';
+import { getState } from '@myco/db/queries/agent-state.js';
 import { getCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
 import { insertReport } from '@myco/db/queries/reports.js';
 import { insertRun } from '@myco/db/queries/runs.js';
@@ -257,6 +263,22 @@ describe('finalizeOnTaskSuccess', () => {
     });
 
     expect(getCortexInstructions(DEFAULT_AGENT_ID, ALL_PROJECTS_SCOPE)).toBeNull();
+  });
+
+  it('advances the skill-survey watermark only after successful completion', async () => {
+    const watermark = NOW + 123;
+
+    await finalizeOnTaskSuccess({
+      requestContext: TEST_REQUEST_CONTEXT,
+      taskName: SKILL_SURVEY_TASK,
+      agentId: DEFAULT_AGENT_ID,
+      runId: 'run-skill-survey-success',
+      runContext: { skill_survey_watermark: watermark },
+    });
+
+    const state = getState(DEFAULT_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, SKILL_SURVEY_WATERMARK_KEY);
+    expect(state?.value).toBe(String(watermark));
+    expect(state?.updated_at).toBe(watermark);
   });
 
   it('is a no-op for unrelated tasks', async () => {

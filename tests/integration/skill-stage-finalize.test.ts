@@ -34,6 +34,8 @@ import { registerAgent } from '@myco/db/queries/agents.js';
 import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { listSkillRecords, getSkillRecordByName } from '@myco/db/queries/skill-records.js';
 import { insertRun } from '@myco/db/queries/runs.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { cleanupStagedSkill, stagingPath, stagingManifestPath } from '@myco/agent/tools/skill-staging.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
@@ -57,6 +59,49 @@ function findTool(tools: ReturnType<typeof createVaultTools>, name: string) {
 
 function parseResult(result: { content: Array<{ type: string; text: string }> }): unknown {
   return JSON.parse(result.content[0].text);
+}
+
+function seedCandidateQualityEvidence(candidateId: string, now: number) {
+  const sessionId = `session-${candidateId}`;
+  const sporeOne = `spore-${candidateId}-001`;
+  const sporeTwo = `spore-${candidateId}-002`;
+
+  upsertSession({
+    id: sessionId,
+    project_id: null,
+    agent: 'claude-code',
+    started_at: now - 100,
+    ended_at: now - 50,
+    status: 'completed',
+    title: `Evidence for ${candidateId}`,
+    summary: 'Integration-test evidence for skill candidate generation readiness.',
+    created_at: now - 100,
+  });
+
+  for (const id of [sporeOne, sporeTwo]) {
+    insertSpore({
+      id,
+      project_id: null,
+      agent_id: AGENT_ID,
+      session_id: sessionId,
+      observation_type: 'decision',
+      content: `Resolved integration-test source ${id} for candidate generation readiness.`,
+      importance: 5,
+      created_at: now - 90,
+    });
+  }
+
+  return {
+    evidence_bundle_id: `bundle-${candidateId}`,
+    quality_score: 0.86,
+    quality_failures: '[]',
+    coverage_matches: '[]',
+    source_ids: JSON.stringify([
+      { id: sporeOne, type: 'spore' },
+      { id: sporeTwo, type: 'spore' },
+      { id: sessionId, type: 'session' },
+    ]),
+  };
 }
 
 describe('skill staging → finalize pipeline', () => {
@@ -106,6 +151,7 @@ describe('skill staging → finalize pipeline', () => {
       agent_id: AGENT_ID,
       topic: 'Happy path topic',
       rationale: 'Integration rationale',
+      ...seedCandidateQualityEvidence('cand-happy', now),
       created_at: now - 100,
       updated_at: now - 100,
     });
@@ -171,6 +217,7 @@ describe('skill staging → finalize pipeline', () => {
       agent_id: AGENT_ID,
       topic: 'Orphan test',
       rationale: 'Integration rationale',
+      ...seedCandidateQualityEvidence('cand-orphan', now),
       created_at: now - 100,
       updated_at: now - 100,
     });
@@ -224,6 +271,7 @@ describe('skill staging → finalize pipeline', () => {
       agent_id: AGENT_ID,
       topic: 'Iterative test',
       rationale: 'r',
+      ...seedCandidateQualityEvidence('cand-iter', now),
       created_at: now,
       updated_at: now,
     });
@@ -274,6 +322,7 @@ describe('skill staging → finalize pipeline', () => {
       agent_id: AGENT_ID,
       topic: 'Race test',
       rationale: 'r',
+      ...seedCandidateQualityEvidence('cand-race', now),
       created_at: now,
       updated_at: now,
     });

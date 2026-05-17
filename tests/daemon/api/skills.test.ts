@@ -12,6 +12,7 @@ import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertSkillUsage } from '@myco/db/queries/skill-usage.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
 import type { CandidateInsert } from '@myco/db/queries/skill-candidates.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
 import type { RouteRequest } from '@myco/daemon/router';
@@ -55,6 +56,47 @@ function makeCandidate(overrides: Partial<CandidateInsert> = {}): CandidateInser
     updated_at: now,
     ...overrides,
   };
+}
+
+function qualityMetadata(): Partial<CandidateInsert> {
+  return {
+    evidence_bundle_id: 'bundle-api-test-001',
+    quality_score: 0.86,
+    quality_failures: '[]',
+    coverage_matches: '[]',
+    source_ids: JSON.stringify([
+      { id: 'spore-api-source-001', type: 'spore' },
+      { id: 'spore-api-source-002', type: 'spore' },
+      { id: 'session-api-source-001', type: 'session' },
+    ]),
+  };
+}
+
+function seedQualitySources(): void {
+  const now = epochNow();
+  upsertSession({
+    id: 'session-api-source-001',
+    project_id: null,
+    agent: 'claude-code',
+    started_at: now - 100,
+    ended_at: now - 50,
+    status: 'completed',
+    title: 'API source session',
+    summary: 'Resolved source session for candidate approval.',
+    created_at: now - 100,
+  });
+  for (const id of ['spore-api-source-001', 'spore-api-source-002']) {
+    insertSpore({
+      id,
+      project_id: null,
+      agent_id: 'agent-test',
+      session_id: 'session-api-source-001',
+      observation_type: 'decision',
+      content: `Resolved source ${id} for approval quality checks.`,
+      importance: 5,
+      created_at: now - 90,
+    });
+  }
 }
 
 /** Build a minimal valid SkillRecordInsert. */
@@ -203,8 +245,20 @@ describe('handleListCandidates multi-status filter', () => {
 });
 
 describe('handleUpdateCandidate', () => {
-  it('updates the candidate status and returns updated row', async () => {
+  it('rejects approval when evidence metadata is incomplete', async () => {
     insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified' }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch(/evidence metadata/i);
+  });
+
+  it('updates the candidate status and returns updated row', async () => {
+    seedQualitySources();
+    insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified', ...qualityMetadata() }));
 
     const result = await handleUpdateCandidate(
       makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),

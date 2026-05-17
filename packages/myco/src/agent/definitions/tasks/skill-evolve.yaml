@@ -110,6 +110,13 @@ phases:
         - key: skill-evolve-inventory (merge/narrow candidates)
         - key: skill-evolve-drift (mechanical drift + growth reports)
 
+      Candidate metadata is triage input, not source-of-truth.
+      If deferred or dismissed candidates overlap an active skill, use
+      that as a signal that the skill's boundary may need expansion.
+      Do not rewrite a skill based solely on candidate metadata; verify
+      against spores, sessions, plans, or code before classifying STALE,
+      MERGE, or NARROW.
+
       There are THREE sources of skills to assess:
 
       **A. Skills with new knowledge** — listed in the instruction
@@ -265,6 +272,7 @@ phases:
     tools:
       - vault_spores
       - vault_search_fts
+      - vault_skill_candidates
       - vault_skill_records
       - vault_set_state
       - vault_report

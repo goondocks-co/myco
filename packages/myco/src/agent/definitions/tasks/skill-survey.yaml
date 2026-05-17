@@ -7,11 +7,11 @@ description: >-
 agent: myco-agent
 prompt: >-
   Survey the vault knowledge graph for procedural domain candidates.
-  The instruction contains pre-assembled vault context.
+  The first phase prepares deterministic vault context.
 isDefault: false
 reasoningLevel: default
-maxTurns: 55
-timeoutSeconds: 2700
+maxTurns: 112
+timeoutSeconds: 4200
 schedule:
   enabled: true
   intervalSeconds: 21600
@@ -20,12 +20,46 @@ schedule:
     - sleep
   preCondition: has-skill-survey-evidence
 phases:
+  - name: prepare
+    prompt: |
+      The run admission instruction says whether this run should ignore
+      the stored survey watermark. Call vault_skill_survey_prepare
+      exactly once, passing the same ignore_watermark boolean from the
+      instruction.
+
+      The tool output is the mechanical preparation source of truth for
+      this run. It includes watermark details, settled evidence counts,
+      active skill inventory, a compact existing-candidate queue audit,
+      candidate evidence bundles, and prompt_markdown for downstream
+      phases. Treat queue.cleanup_targets as authoritative: if it is
+      non-empty, this run includes queue cleanup work even if no new
+      evidence bundle should be created.
+
+      After the tool returns, summarize only:
+      - watermark mode
+      - settled corpus counts
+      - existing queue count and actionable count
+      - cleanup target count and the cleanup reason codes represented
+      - evidence bundle count
+      - whether this appears to be primarily queue reconciliation,
+        new candidate discovery, or both
+
+      Do not make final candidate decisions in this phase.
+    tools:
+      - vault_skill_survey_prepare
+    maxTurns: 4
+    required: true
+    readOnly: true
+
   - name: explore
     prompt: |
-      The instruction contains pre-assembled vault context: digest,
-      recent wisdom spores, decisions, gotchas, sessions, and the
-      current skill inventory. Read it carefully — this is your
-      primary input.
+      The prepare phase produced deterministic vault context: digest,
+      recent wisdom spores, decisions, gotchas, sessions, active skill
+      inventory, existing candidate queue, and candidate evidence
+      bundles. Read its prompt_markdown carefully — this is your
+      primary input. If prepare reported cleanup targets, preserve them
+      for the later queue phases; do not let exploratory discovery
+      replace the cleanup obligation.
 
       Your goal: identify PROCEDURAL DOMAINS — broad categories of
       recurring work where a developer benefits from guided context.
@@ -58,7 +92,7 @@ phases:
 
       ## Process
 
-      1. Read the pre-assembled context for orientation.
+      1. Read the prepared context for orientation.
          It already excludes active-session data and only exists when
          the vault has enough settled knowledge to support a serious
          candidate review.
@@ -90,20 +124,26 @@ phases:
       - vault_sessions
       - vault_search_fts
       - vault_search_semantic
-    maxTurns: 15
+    maxTurns: 22
     required: true
     readOnly: true
+    dependsOn:
+      - prepare
 
   - name: review-bundles
     reasoningLevel: default
     prompt: |
-      The explore phase identified procedural domain clusters from
-      the vault. Now evaluate the pre-assembled Candidate Evidence
-      Bundles and decide which bundles deserve queue action.
+      The prepare and explore phases identified procedural domain
+      clusters from the vault. Now evaluate the prepared Candidate
+      Evidence Bundles and decide which bundles deserve queue action.
 
       Load the current coverage context:
-      1. vault_skill_records (action: list) — all active skills
-      2. vault_skill_candidates (action: list) — all existing candidates
+      1. vault_skill_survey_prepare — call once with the same
+         ignore_watermark value used in prepare. This is the direct
+         source for Candidate Evidence Bundles and cleanup_target_ids;
+         do not rely on the prepare phase summary for bundle details.
+      2. vault_skill_records (action: list) — all active skills
+      3. vault_skill_candidates (action: list, statuses: ["identified","deferred"], limit: 200) — the full active review queue
       Keep both lists for reference. Do not write anything in this
       phase. Only use action: list or action: get on skill tools.
       Skill tools are write-capable, so follow this action restriction
@@ -188,18 +228,66 @@ phases:
       - missing-project-anchor
       - active-skill-overlap
       - existing-candidate-overlap
+      - missing-quality-metadata
+      - missing-evidence-bundle
+      - quality-below-threshold
+      - identified-has-quality-failures
+      - invalid-quality-failure-codes
+      - deferred-review-required
+      - missing-human-review-evidence
+      - never-reconciled
+      - stale-reconciliation-policy
 
       If a bundle fails for judgment reasons not represented by those
       codes, explain the reason in the rationale and choose SKIP. Do
       not invent new persisted quality_failures codes.
+
+      ## Durable handoff
+
+      Store the complete decision list with
+      vault_skill_survey_bundle_decisions. Pass one JSON object in the
+      `decisions` argument with `decisions` array and `summary` object.
+      The tool stores validated state at skill-survey-bundle-decisions.
+      You may call it in batches; later calls merge into the same run's
+      state by bundle id/topic. The state is usable by later phases only
+      when the tool reports `complete: true` and
+      `unreviewed_evidence_bundle_ids: []`.
+      Use the same ignore_watermark value used for
+      vault_skill_survey_prepare. Do not use vault_set_state for this
+      handoff.
+
+      This handoff is only for the `evidence_bundles` returned by
+      vault_skill_survey_prepare. Use each bundle's canonical `id` as
+      bundle_id/evidence_bundle_id, or use the exact bundle topic. Do
+      not use existing skill candidate IDs or the queue row's persisted
+      evidence_bundle_id as substitutes for prepared bundle IDs. The
+      existing queue is reconciled in the next phase; in this phase it
+      is reference material for deduplication only.
+
+      Each decision must include bundle_id, action, target_candidate_id
+      when applicable, topic, rationale, confidence, source_ids,
+      evidence_bundle_id, quality_score, quality_failures,
+      coverage_matches, and supersedes. The tool will validate CREATE
+      and UPDATE decisions against the deterministic evidence bundles
+      and hydrate canonical source_ids, quality_score,
+      quality_failures, and coverage_matches before storing state.
+      For CREATE or UPDATE decisions, rationale is a durable human
+      review artifact, not a bookkeeping sentence: preserve the
+      evidence and verdicts for procedure, project-specificity,
+      repeatability, breadth, cross-session evidence, dedup/coverage,
+      and quality score so the Skills UI can explain the confidence.
+      Do not rely on narrative phase output as the source of truth for
+      later persistence.
     tools:
+      - vault_skill_survey_prepare
       - vault_skill_candidates
       - vault_skill_records
       - vault_spores
       - vault_sessions
       - vault_search_fts
       - vault_search_semantic
-    maxTurns: 12
+      - vault_skill_survey_bundle_decisions
+    maxTurns: 32
     required: true
     dependsOn:
       - explore
@@ -214,16 +302,40 @@ phases:
       restriction even though the tool surface permits more.
 
       Reload the current queue and skill inventory:
-      1. vault_skill_records (action: list) — all active skills
-      2. vault_skill_candidates (action: list) — all candidates,
-         including identified, deferred, dismissed, approved, and
-         generated candidates.
+      1. vault_state — read skill-survey-bundle-decisions from
+         review-bundles. Treat this state as usable only when it
+         contains validated_at; otherwise report blocked instead of
+         rebuilding decisions from prose.
+      2. vault_skill_records (action: list) — all active skills
+      3. vault_skill_survey_prepare — call once with the same
+         ignore_watermark value used in prepare so you get the compact
+         queue audit and cleanup_targets
+      4. vault_skill_candidates (action: list, statuses:
+         ["identified","deferred"], limit: 200) — the full active
+         review queue. The count here must match the prepare queue's
+         actionable count before you claim the queue is clean.
 
       ## Reconciliation rules
 
+      - Treat queue.cleanup_target_ids from vault_skill_survey_prepare
+        as an exhaustive worklist. Bundle decisions do not limit this
+        worklist; legacy low-quality queue items with no bundle still
+        require UPDATE, DEFER, DISMISS, or BLOCKED.
       - Existing non-dismissed duplicate candidates should not remain
         side by side. Choose the stronger candidate to keep and mark
         weaker duplicates for dismissed or deferred status.
+      - Any identified candidate missing quality_score, evidence_bundle_id,
+        at least 3 valid source_ids, or human-review evidence in its
+        rationale is not ready for human approval.
+        Plan UPDATE if you can attach valid evidence now; otherwise plan
+        DEFER or DISMISS with quality_failures.
+      - Every identified/deferred candidate in
+        queue.actionable_candidates must appear in Update, Defer,
+        Dismiss, Blocked, or Keep. Keep is an explicit judgment that
+        the candidate should remain in the human review queue.
+      - Any queue.cleanup_targets entry from vault_skill_survey_prepare
+        must appear in Update, Defer, Dismiss, or Blocked. A no-op plan
+        is invalid while cleanup_targets is non-empty.
       - Prefer DEFERRED when the domain may become valid later but
         lacks enough settled evidence now.
       - Prefer DISMISSED when the topic is generic, too narrow, already
@@ -233,6 +345,9 @@ phases:
         supersedes information.
       - Prefer CREATE only when no non-dismissed candidate or active
         skill already covers the domain.
+      - Never put an existing identified/deferred queue candidate in
+        Create. If the candidate should remain available for human
+        review, use Keep. If it needs metadata correction, use Update.
       - Never create a candidate to preserve a weak bundle. A weak
         bundle should become SKIP, DEFER, or a cleanup action against
         an existing queue item.
@@ -244,9 +359,12 @@ phases:
         appears stale or duplicate, report it as blocked/stale for
         human follow-up instead of mutating it.
 
-      ## Output for persist-decisions
+      ## Durable handoff for persist-decisions
 
-      Produce a compact plan grouped as:
+      Store the compact plan with
+      vault_skill_survey_reconciliation_plan. Pass a single JSON object
+      in the `plan` argument. The tool stores the validated result at
+      state key skill-survey-reconciliation-decisions. Group actions as:
       - Create: new candidates with complete metadata
       - Update: existing candidate id plus fields to update
       - Defer: existing candidate id plus reason
@@ -254,6 +372,53 @@ phases:
       - Skip: rejected bundles with failure codes
       - Blocked: approved/generated candidates that look stale or
         duplicate but should not be changed by skill-survey
+      - Keep: existing identified/deferred candidates that were reviewed
+        and should stay in the human review queue, with rationale
+
+      When queue.cleanup_target_ids is non-empty, make cleanup the first
+      invariant: every cleanup target must appear in Update, Defer,
+      Dismiss, or Blocked, and the plan must not include Create
+      entries. Skill-survey must not add new candidates while the
+      existing human review queue needs cleanup. Run skill-survey again
+      after the queue is clean to create new candidates.
+
+      Existing queue cleanup is independent from fresh bundle creation.
+      If skill-survey-bundle-decisions is incomplete, you may still
+      submit a cleanup-only plan with Update/Defer/Dismiss/Blocked/Keep
+      and no Create entries. Do this instead of reporting no work when
+      queue.actionable_candidates or queue.cleanup_target_ids is
+      non-empty.
+
+      For CREATE or UPDATE-to-identified entries, the evidence bundle is
+      the authority for quality metadata. Prefer the canonical
+      evidence_bundle_id stored in the validated
+      skill-survey-bundle-decisions state. If you only have the bundle
+      topic, set topic to the exact bundle topic; the reconciliation
+      tool will hydrate canonical evidence_bundle_id, quality_score,
+      quality_failures, coverage_matches, source_ids, confidence, and
+      the durable human-review rationale from validated bundle decisions
+      or deterministic bundles. Do not invent bundle IDs.
+
+      The state value must also include:
+      - cleanup_target_ids: exact array from vault_skill_survey_prepare
+      - handled_cleanup_target_ids: IDs appearing in Update, Defer,
+        Dismiss, or Blocked
+      - unhandled_cleanup_target_ids: cleanup_target_ids not handled
+      - active_queue_candidate_ids: exact IDs from
+        queue.actionable_candidates
+      - reviewed_candidate_ids: IDs appearing in Update, Defer,
+        Dismiss, Blocked, or Keep
+      - unreviewed_candidate_ids: active queue IDs not reviewed
+
+      vault_skill_survey_reconciliation_plan recomputes the current
+      active queue and cleanup_target_ids from
+      vault_skill_survey_prepare and refuses to store the plan if any
+      active queue item is unreviewed, any cleanup target is missing
+      from Update, Defer, Dismiss, or Blocked, cleanup targets are
+      present alongside Create entries, a Create entry matches an
+      existing active queue candidate, or fresh Create entries depend on
+      incomplete bundle-review handoff. If it rejects the plan, revise
+      the plan instead of falling back to vault_set_state.
 
       Every CREATE or UPDATE that results in status identified must
       include:
@@ -262,14 +427,30 @@ phases:
       - quality_failures: []
       - coverage_matches: JSON array of string identifiers
       - source_ids: JSON array with at least 3 valid source refs
+      - rationale with the human-review evidence and criterion verdicts
 
       Every DEFER or DISMISS must include quality_failures explaining
       why it should not remain in the active review queue. Use only
-      canonical failure codes from review-bundles.
+      canonical failure codes from review-bundles. If the reason is a
+      legacy candidate with missing metadata, use missing-quality-metadata
+      and missing-evidence-bundle as appropriate. If the candidate has
+      scores and sources but the rationale does not explain the evidence
+      behind them, use missing-human-review-evidence.
+      If a candidate is a cleanup target only because it was reviewed
+      before the current queue policy, use UPDATE to re-certify it with
+      current evidence metadata, or DEFER/DISMISS if it fails the current
+      criteria. Keep does not satisfy stale policy cleanup targets.
+      Do not cite a mechanical metadata failure that the current
+      candidate does not actually have. For example, do not use
+      missing-evidence-bundle for a candidate whose current queue row
+      already has evidence_bundle_id.
     tools:
+      - vault_skill_survey_prepare
+      - vault_state
       - vault_skill_candidates
       - vault_skill_records
-    maxTurns: 10
+      - vault_skill_survey_reconciliation_plan
+    maxTurns: 22
     required: true
     dependsOn:
       - review-bundles
@@ -279,62 +460,31 @@ phases:
     prompt: |
       Persist the queue management plan from reconcile-queue.
 
-      Before each write, briefly re-check the target with
-      vault_skill_candidates or vault_skill_records if needed. The tool
-      enforces quality gates, so fix the plan instead of retrying a
-      rejected write unchanged.
+      Call vault_skill_survey_apply_reconciliation once with the same
+      ignore_watermark value used by earlier phases. This is the only
+      write path for this phase. Do not call vault_skill_candidates,
+      vault_skill_records, or vault_set_state from persist-decisions.
+      The apply tool reads the validated
+      skill-survey-reconciliation-decisions state, verifies the current
+      active queue was reviewed, applies only stored Create/Update/
+      Defer/Dismiss actions, and ignores Keep/Blocked/Skip entries.
 
-      ## Candidate writes
+      If vault_skill_survey_apply_reconciliation reports an error,
+      report blocked with the exact issues. Do not synthesize new
+      writes from phase prose.
 
-      Use vault_skill_candidates (action: create) with:
-      - topic: the domain name (e.g., "Vault Schema and Data Layer Extension")
-      - rationale: markdown with these sections:
-        - **Domain scope**: what procedures this covers (bulleted list)
-        - **Procedure verdict**: PASS/FAIL
-        - **Repeatability verdict**: PASS/FAIL with justification
-        - **Breadth verdict**: PASS/FAIL with section count estimate
-        - **Cross-session evidence**: session IDs and source count
-        - **Existing coverage**: skills/candidates checked and why this
-          is new or broader (name what you checked, not "NONE")
-        - **Supersedes**: which existing narrow skills this replaces
-          (if any)
-      - confidence: 0.0-1.0
-      - evidence_bundle_id: bundle id from the review
-      - quality_score: 0.7-1.0
-      - quality_failures: [] for identified candidates
-      - coverage_matches: JSON array of string identifiers for related
-        skills/candidates/dismissed candidates
-      - source_ids: JSON array of {id, type} objects
-        (at least 3 valid refs for identified candidates)
-      - supersedes: JSON array of skill names this replaces (or omit)
-
-      If an existing candidate has new evidence, use action: update
-      with the same metadata requirements.
-
-      Defer candidates that are plausible but not ready:
-      action: update, status: deferred, quality_failures containing the
-      canonical reason codes. Only defer existing queue items; do not
-      create new deferred candidates from weak bundles.
-
-      Dismiss candidates that are generic, duplicates, covered by an
-      active skill, or superseded by newer knowledge:
-      action: update, status: dismissed, quality_failures containing
-      the canonical reason codes.
-
-      Do not update approved or generated candidates. Report any
-      stale/duplicate approved or generated candidates in vault_report
-      for human follow-up.
-
-      Do not leave duplicate low-quality identified candidates in the
-      queue just because the human may review them later.
+      After applying writes, call vault_skill_survey_prepare again. If
+      queue.cleanup_targets is still non-empty, do not summarize the
+      run as clean. Report remaining cleanup_target_ids in vault_report
+      under `remaining_cleanup_target_ids`.
 
       Report a summary via vault_report.
     tools:
-      - vault_skill_candidates
-      - vault_skill_records
-      - vault_set_state
+      - vault_skill_survey_prepare
+      - vault_state
+      - vault_skill_survey_apply_reconciliation
       - vault_report
-    maxTurns: 10
+    maxTurns: 24
     required: true
     dependsOn:
       - reconcile-queue

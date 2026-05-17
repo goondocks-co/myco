@@ -18,11 +18,15 @@ mock.module('@myco/intelligence/embed-query.js', () => ({ tryEmbed: async () => 
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../helpers/db';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
 import { getDatabase } from '@myco/db/client.js';
-import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
+import { insertCandidate, getCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
+import { getState } from '@myco/db/queries/agent-state.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertRun } from '@myco/db/queries/runs.js';
+import { upsertSession } from '@myco/db/queries/sessions.js';
 import { createVaultTools } from '@myco/agent/tools.js';
 import { MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
+import { SKILL_SURVEY_RECONCILIATION_POLICY_MARKER } from '@myco/agent/skill-candidate-quality.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
@@ -50,6 +54,7 @@ function validCandidateMetadata(overrides: Record<string, unknown> = {}) {
     quality_score: 0.82,
     quality_failures: '[]',
     coverage_matches: '[]',
+    reconciliation_reason: `${SKILL_SURVEY_RECONCILIATION_POLICY_MARKER}: test reconciliation`,
     source_ids: JSON.stringify([
       { id: 'spore-test-001', type: 'spore' },
       { id: 'spore-test-002', type: 'spore' },
@@ -57,6 +62,60 @@ function validCandidateMetadata(overrides: Record<string, unknown> = {}) {
     ]),
     ...overrides,
   };
+}
+
+function detailedCandidateReviewRationale(subject = 'Candidate'): string {
+  return [
+    `PROCEDURE TEST: PASS - ${subject} covers repeatable Myco workflow procedures rather than static project facts.`,
+    'PROJECT-SPECIFICITY TEST: PASS - Anchored to packages/myco source files, vault tools, and task orchestration conventions.',
+    'REPEATABILITY TEST: PASS - Developers will repeat these procedures as the skill lifecycle evolves.',
+    'BREADTH TEST: PASS - Covers multiple related procedures that belong in one reviewable skill domain.',
+    'CROSS-SESSION EVIDENCE: PASS - Supported by multiple source refs from spores and sessions.',
+    'QUALITY SCORE: PASS - Evidence metadata and coverage are explicit enough for human review.',
+  ].join(' ');
+}
+
+function candidateMetadataWithSourceIds(
+  sourceIds: Array<{ id: string; type: string }>,
+  overrides: Record<string, unknown> = {},
+) {
+  return validCandidateMetadata({
+    source_ids: JSON.stringify(sourceIds),
+    ...overrides,
+  });
+}
+
+function seedCandidateSourceRecords(
+  projectId: string | null = null,
+  sourceIds = {
+    session: 'session-test-001',
+    spores: ['spore-test-001', 'spore-test-002'],
+  },
+): void {
+  const now = epochNow();
+  upsertSession({
+    id: sourceIds.session,
+    project_id: projectId,
+    agent: 'claude-code',
+    started_at: now - 100,
+    ended_at: null,
+    status: 'active',
+    title: 'Candidate source session',
+    summary: 'Candidate source session covering resolved skill evidence.',
+    created_at: now - 100,
+  });
+  for (const id of sourceIds.spores) {
+    insertSpore({
+      id,
+      project_id: projectId,
+      agent_id: TEST_AGENT_ID,
+      session_id: sourceIds.session,
+      observation_type: 'decision',
+      content: `Resolved source ${id} for skill candidate quality tests.`,
+      importance: 5,
+      created_at: now - 90,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +213,7 @@ describe('vault skill tools', () => {
 
     createAgent(TEST_AGENT_ID);
     createRun(TEST_RUN_ID, TEST_AGENT_ID);
+    seedCandidateSourceRecords();
 
     tools = createVaultTools(TEST_AGENT_ID, TEST_RUN_ID, { requestContext: TEST_REQUEST_CONTEXT,
       projectRoot: tmpDir,
@@ -174,6 +234,939 @@ describe('vault skill tools', () => {
   }
 
   // -------------------------------------------------------------------------
+  // vault_skill_survey_prepare
+  // -------------------------------------------------------------------------
+
+  describe('vault_skill_survey_prepare', () => {
+    function createSession(id: string, createdAt: number): void {
+      upsertSession({
+        id,
+        agent: 'claude-code',
+        started_at: createdAt,
+        created_at: createdAt,
+        ended_at: createdAt + 60,
+        status: 'completed',
+        title: `${id} title`,
+        summary: `${id} summary covering repo-specific work`,
+      });
+    }
+
+    it('is read-only and returns prepared survey context', async () => {
+      const now = epochNow();
+      createSession('survey-tool-session-1', now - 300);
+      createSession('survey-tool-session-2', now - 200);
+      insertSpore({
+        id: 'survey-tool-wisdom',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-tool-session-1',
+        observation_type: 'wisdom',
+        content: 'Daemon workflow in `packages/myco/src/daemon/main.ts` requires `make build` before `myco-dev restart`.',
+        importance: 9,
+        properties: JSON.stringify({ consolidated_from: ['survey-tool-source-1', 'survey-tool-source-2'] }),
+        created_at: now - 180,
+      });
+      insertSpore({
+        id: 'survey-tool-decision',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-tool-session-2',
+        observation_type: 'decision',
+        content: 'Keep PowerManager task wiring project-specific in `packages/myco/src/daemon/power-manager.ts`.',
+        importance: 7,
+        created_at: now - 170,
+      });
+      insertSpore({
+        id: 'survey-tool-gotcha',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-tool-session-1',
+        observation_type: 'gotcha',
+        content: 'Dogfooding can keep old daemon code until restart after build.',
+        importance: 6,
+        created_at: now - 160,
+      });
+      insertCandidate({
+        id: 'survey-tool-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Daemon workflow candidate',
+        rationale: 'Existing candidate should be visible to queue reconciliation.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_prepare');
+      expect(t.annotations?.readOnlyHint).toBe(true);
+
+      const result = await t.handler({ ignore_watermark: true }, undefined);
+      const data = parseResult(result) as {
+        watermark: { ignore_watermark: boolean };
+        corpus_counts: { wisdom_spores: number; decisions: number; gotchas: number; sessions: number };
+        queue: {
+          total: number;
+          actionable: number;
+          cleanup_targets: Array<{ id: string; reconciliation_reasons: string[] }>;
+          cleanup_target_ids: string[];
+        };
+        evidence_bundles: unknown[];
+        prompt_markdown: string;
+      };
+
+      expect(data.watermark.ignore_watermark).toBe(true);
+      expect(data.corpus_counts).toMatchObject({
+        wisdom_spores: 1,
+        decisions: 1,
+        gotchas: 1,
+        sessions: 2,
+      });
+      expect(data.queue).toMatchObject({ total: 1, actionable: 1 });
+      expect(data.queue.cleanup_targets).toEqual([
+        expect.objectContaining({
+          id: 'survey-tool-candidate',
+          reconciliation_reasons: expect.arrayContaining([
+            'missing-quality-metadata',
+            'missing-evidence-bundle',
+            'insufficient-source-refs',
+            'never-reconciled',
+          ]),
+        }),
+      ]);
+      expect(data.queue.cleanup_target_ids).toEqual(['survey-tool-candidate']);
+      expect(data.evidence_bundles.length).toBeGreaterThanOrEqual(1);
+      expect(data.prompt_markdown).toContain('### Existing Candidate Queue (1; 1 actionable; 1 cleanup targets)');
+      expect(data.prompt_markdown).toContain('Required cleanup target IDs: ["survey-tool-candidate"]');
+      expect(data.prompt_markdown).toContain('survey-tool-candidate');
+      expect(data.prompt_markdown).toContain('### Candidate Evidence Bundles');
+      expect(JSON.stringify(data).length).toBeLessThan(25_000);
+    });
+
+    it('marks stale policy and active coverage overlap candidates as cleanup targets', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-stale-policy-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Stale policy candidate',
+        rationale: 'Looks mechanically valid but was reviewed before the current queue policy.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          last_reconciled_at: now - 20,
+          reconciliation_reason: 'old survey review',
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+      insertCandidate({
+        id: 'survey-active-coverage-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Active coverage candidate',
+        rationale: 'Looks mechanically valid but carries active skill overlap coverage.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          coverage_matches: JSON.stringify(['skill_existing_active']),
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 140,
+        updated_at: now - 140,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_prepare');
+      const prepare = parseResult(await t.handler({ ignore_watermark: true }, undefined)) as {
+        queue: {
+          cleanup_targets: Array<{ id: string; reconciliation_reasons: string[] }>;
+          cleanup_target_ids: string[];
+        };
+      };
+
+      expect(prepare.queue.cleanup_target_ids).toHaveLength(2);
+      expect(prepare.queue.cleanup_target_ids).toEqual(expect.arrayContaining([
+        'survey-stale-policy-candidate',
+        'survey-active-coverage-candidate',
+      ]));
+      expect(prepare.queue.cleanup_targets).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'survey-stale-policy-candidate',
+          reconciliation_reasons: expect.arrayContaining([
+            'stale-reconciliation-policy',
+            'missing-human-review-evidence',
+          ]),
+        }),
+        expect.objectContaining({
+          id: 'survey-active-coverage-candidate',
+          reconciliation_reasons: expect.arrayContaining([
+            'active-skill-overlap',
+            'missing-human-review-evidence',
+          ]),
+        }),
+      ]));
+    });
+
+    it('treats reconciled candidates with thin human-review evidence as eligible cleanup work', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-thin-evidence-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Thin evidence candidate',
+        rationale: 'Updating with validated bundle evidence.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 140,
+        updated_at: now - 140,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_prepare');
+      const prepare = parseResult(await t.handler({}, undefined)) as {
+        eligibility_gate: { eligible: boolean; reason: string | null };
+        queue: {
+          cleanup_targets: Array<{ id: string; reconciliation_reasons: string[] }>;
+          cleanup_target_ids: string[];
+        };
+      };
+
+      expect(prepare.eligibility_gate).toMatchObject({ eligible: true, reason: null });
+      expect(prepare.queue.cleanup_target_ids).toEqual(['survey-thin-evidence-candidate']);
+      expect(prepare.queue.cleanup_targets).toEqual([
+        expect.objectContaining({
+          id: 'survey-thin-evidence-candidate',
+          reconciliation_reasons: ['missing-human-review-evidence'],
+        }),
+      ]);
+    });
+
+    it('validates and stores exhaustive reconciliation plans', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-plan-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Daemon workflow candidate',
+        rationale: 'Legacy candidate must be reconciled.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+
+      const incomplete = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({ Update: [] }),
+      }, undefined);
+      expect(parseResult(incomplete)).toMatchObject({
+        error: expect.stringContaining('incomplete'),
+        unhandled_cleanup_target_ids: ['survey-plan-candidate'],
+      });
+
+      const complete = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Update: [{
+            id: 'survey-plan-candidate',
+            rationale: 'Attach valid evidence metadata.',
+            evidence_bundle_id: 'bundle-survey-plan-candidate',
+            quality_score: 0.82,
+            quality_failures: [],
+            coverage_matches: [],
+            source_ids: [
+              { id: 'spore-plan-1', type: 'spore' },
+              { id: 'spore-plan-2', type: 'spore' },
+              { id: 'session-plan-1', type: 'session' },
+            ],
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(complete)).toMatchObject({
+        ok: true,
+        state_key: 'skill-survey-reconciliation-decisions',
+        cleanup_target_ids: ['survey-plan-candidate'],
+        handled_cleanup_target_ids: ['survey-plan-candidate'],
+        unhandled_cleanup_target_ids: [],
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      expect(state).not.toBeNull();
+      expect(JSON.parse(state!.value)).toMatchObject({
+        cleanup_target_ids: ['survey-plan-candidate'],
+        handled_cleanup_target_ids: ['survey-plan-candidate'],
+        unhandled_cleanup_target_ids: [],
+      });
+    });
+
+    it('rejects new candidate creation while queue cleanup targets remain', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-cleanup-before-create',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Legacy cleanup candidate',
+        rationale: 'Existing candidate must be cleaned before adding new queue work.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const result = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Create: [{
+            topic: 'New candidate while cleanup pending',
+            rationale: 'Should wait until the review queue is clean.',
+            confidence: 0.8,
+            ...validCandidateMetadata({ evidence_bundle_id: 'new-cleanup-blocked-bundle' }),
+          }],
+          Dismiss: [{
+            id: 'survey-cleanup-before-create',
+            reason: 'Legacy candidate is missing required evidence metadata.',
+            quality_failures: ['missing-quality-metadata', 'missing-evidence-bundle'],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(result)).toMatchObject({
+        error: 'Queue cleanup must complete before creating new skill candidates',
+        cleanup_target_ids: ['survey-cleanup-before-create'],
+      });
+    });
+
+    it('requires reconciliation plans to classify the full active queue', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-plan-clean-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Clean candidate',
+        rationale: detailedCandidateReviewRationale('Clean candidate'),
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'bundle-clean-candidate',
+          quality_score: 0.88,
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+      insertCandidate({
+        id: 'survey-plan-legacy-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Legacy candidate',
+        rationale: 'Legacy candidate must be reconciled.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 140,
+        updated_at: now - 140,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const missingQueueReview = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Dismiss: [{
+            id: 'survey-plan-legacy-candidate',
+            reason: 'Weak legacy candidate.',
+            quality_failures: ['missing-quality-metadata', 'missing-evidence-bundle'],
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(missingQueueReview)).toMatchObject({
+        error: expect.stringContaining('every active identified/deferred candidate'),
+        unreviewed_candidate_ids: ['survey-plan-clean-candidate'],
+      });
+
+      const complete = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Dismiss: [{
+            id: 'survey-plan-legacy-candidate',
+            reason: 'Weak legacy candidate.',
+            quality_failures: ['missing-quality-metadata', 'missing-evidence-bundle'],
+          }],
+          Keep: [{
+            id: 'survey-plan-clean-candidate',
+            rationale: 'Reviewed and remains suitable for human review.',
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(complete)).toMatchObject({
+        ok: true,
+        active_queue_candidate_ids: expect.arrayContaining([
+          'survey-plan-clean-candidate',
+          'survey-plan-legacy-candidate',
+        ]),
+        reviewed_candidate_ids: expect.arrayContaining([
+          'survey-plan-clean-candidate',
+          'survey-plan-legacy-candidate',
+        ]),
+        unreviewed_candidate_ids: [],
+      });
+    });
+
+    it('applies only the validated reconciliation state', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-apply-clean-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Clean apply candidate',
+        rationale: detailedCandidateReviewRationale('Clean apply candidate'),
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'bundle-clean-apply-candidate',
+          quality_score: 0.88,
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+      insertCandidate({
+        id: 'survey-apply-legacy-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Legacy apply candidate',
+        rationale: 'Legacy candidate should leave the active queue.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 140,
+        updated_at: now - 140,
+      });
+      const planTool = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const plan = await planTool.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Dismiss: [{
+            id: 'survey-apply-legacy-candidate',
+            reason: 'Weak legacy candidate.',
+            quality_failures: ['missing-quality-metadata', 'missing-evidence-bundle'],
+          }],
+          Keep: [{
+            id: 'survey-apply-clean-candidate',
+            rationale: 'Reviewed and remains suitable for human review.',
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(plan)).toMatchObject({ ok: true });
+
+      const applyTool = findTool(tools, 'vault_skill_survey_apply_reconciliation');
+      const applied = await applyTool.handler({ ignore_watermark: true }, undefined);
+      expect(parseResult(applied)).toMatchObject({
+        ok: true,
+        applied_counts: expect.objectContaining({
+          dismissed: 1,
+          kept: 1,
+          skipped: 0,
+        }),
+        dismissed_candidate_ids: ['survey-apply-legacy-candidate'],
+        remaining_cleanup_target_ids: [],
+      });
+
+      expect(getCandidate('survey-apply-legacy-candidate', ALL_PROJECTS_SCOPE)?.status).toBe(CANDIDATE_STATUS.DISMISSED);
+      expect(getCandidate('survey-apply-clean-candidate', ALL_PROJECTS_SCOPE)?.status).toBe(CANDIDATE_STATUS.IDENTIFIED);
+      const listed = parseResult(await findTool(tools, 'vault_skill_candidates').handler({
+        action: 'list',
+        statuses: [CANDIDATE_STATUS.IDENTIFIED],
+        limit: 10,
+      }, undefined)) as Array<{ topic: string }>;
+      expect(listed.filter((candidate) => candidate.topic === 'Clean apply candidate')).toHaveLength(1);
+    });
+
+    it('hydrates identified plan metadata from deterministic evidence bundles', async () => {
+      const now = epochNow();
+      createSession('survey-hydrate-session-1', now - 300);
+      createSession('survey-hydrate-session-2', now - 200);
+      insertSpore({
+        id: 'survey-hydrate-wisdom',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-hydrate-session-1',
+        observation_type: 'wisdom',
+        content: 'Agent task authoring in `packages/myco/src/agent/definitions/tasks/skill-survey.yaml` uses phased YAML, dependsOn, and vault tools.',
+        importance: 9,
+        created_at: now - 180,
+      });
+      insertSpore({
+        id: 'survey-hydrate-decision',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-hydrate-session-2',
+        observation_type: 'decision',
+        content: 'Agent task authoring in `packages/myco/src/agent/definitions/tasks/skill-generate.yaml` must budget maxTurns across phases.',
+        importance: 7,
+        created_at: now - 170,
+      });
+      insertSpore({
+        id: 'survey-hydrate-gotcha',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-hydrate-session-1',
+        observation_type: 'gotcha',
+        content: 'Agent task authoring in `packages/myco/src/agent/definitions/tasks/skill-evolve.yaml` fails when phase handoff state is stale.',
+        importance: 6,
+        created_at: now - 160,
+      });
+
+      const prepareTool = findTool(tools, 'vault_skill_survey_prepare');
+      const prepare = parseResult(await prepareTool.handler({ ignore_watermark: true }, undefined)) as {
+        evidence_bundles: Array<{
+          id: string;
+          score: number;
+          failures: string[];
+          coverageMatches: string[];
+          sourceRefs: Array<{ id: string; type: string }>;
+        }>;
+      };
+      const bundle = prepare.evidence_bundles.find((entry) =>
+        entry.failures.length === 0 && entry.sourceRefs.length >= 3,
+      );
+      expect(bundle).toBeTruthy();
+
+      const planTool = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const result = await planTool.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Create: [{
+            topic: bundle!.topic,
+            rationale: 'The plan selects the deterministic bundle topic but sends malformed source ids and an invented bundle id.',
+            confidence: 0.82,
+            evidence_bundle_id: 'invented-agent-task-authoring-bundle',
+            quality_score: 0.99,
+            quality_failures: [],
+            coverage_matches: [],
+            source_ids: ['not-a-valid-source-ref'],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(result)).toMatchObject({
+        ok: true,
+        hydrated_evidence_bundle_metadata_count: 1,
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      expect(state).not.toBeNull();
+      const stored = JSON.parse(state!.value) as {
+        Create: Array<{
+          evidence_bundle_id: string;
+          quality_score: number;
+          quality_failures: string[];
+          coverage_matches: string[];
+          source_ids: Array<{ id: string; type: string }>;
+        }>;
+      };
+      expect(stored.Create[0]).toMatchObject({
+        evidence_bundle_id: bundle!.id,
+        quality_score: bundle!.score,
+        quality_failures: bundle!.failures,
+        coverage_matches: bundle!.coverageMatches,
+      });
+      expect(stored.Create[0].source_ids).toEqual(bundle!.sourceRefs);
+    });
+
+    it('validates bundle decisions before reconciliation consumes them', async () => {
+      const now = epochNow();
+      createSession('survey-decision-session-1', now - 300);
+      createSession('survey-decision-session-2', now - 200);
+      insertSpore({
+        id: 'survey-decision-wisdom',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-decision-session-1',
+        observation_type: 'wisdom',
+        content: 'Skill survey queue management in `packages/myco/src/agent/tools/skill-tools.ts` validates bundle decisions before reconciliation.',
+        importance: 9,
+        created_at: now - 180,
+      });
+      insertSpore({
+        id: 'survey-decision-followup',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-decision-session-2',
+        observation_type: 'decision',
+        content: 'Skill survey queue management in `packages/myco/src/agent/definitions/tasks/skill-survey.yaml` must not use vault_set_state for bundle decisions.',
+        importance: 8,
+        created_at: now - 170,
+      });
+      insertSpore({
+        id: 'survey-decision-gotcha',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-decision-session-1',
+        observation_type: 'gotcha',
+        content: 'Skill survey queue management in `packages/myco/src/agent/skill-survey-prepare.ts` can produce stale queue data if phase handoff is unvalidated.',
+        importance: 7,
+        created_at: now - 160,
+      });
+
+      const prepareTool = findTool(tools, 'vault_skill_survey_prepare');
+      const prepare = parseResult(await prepareTool.handler({ ignore_watermark: true }, undefined)) as {
+        evidence_bundles: Array<{
+          id: string;
+          topic: string;
+          score: number;
+          failures: string[];
+          coverageMatches: string[];
+          sourceRefs: Array<{ id: string; type: string }>;
+        }>;
+      };
+      const bundle = prepare.evidence_bundles.find((entry) =>
+        entry.failures.length === 0 && entry.sourceRefs.length >= 3,
+      );
+      expect(bundle).toBeTruthy();
+
+      const decisionTool = findTool(tools, 'vault_skill_survey_bundle_decisions');
+      const detailedRationale = [
+        'PROCEDURE TEST: PASS - Covers how to validate skill survey queue management, bundle handoff, and reconciliation writes in this project.',
+        'PROJECT-SPECIFICITY TEST: PASS - Anchored to packages/myco/src/agent/tools/skill-tools.ts, packages/myco/src/agent/definitions/tasks/skill-survey.yaml, and packages/myco/src/agent/skill-survey-prepare.ts.',
+        'REPEATABILITY TEST: PASS - These procedures recur whenever the survey harness or queue policy changes.',
+        'BREADTH TEST: PASS - Covers bundle review, reconciliation validation, and persisted queue cleanup.',
+        'CROSS-SESSION EVIDENCE: PASS - Supported by multiple spores and sessions in the prepared source refs.',
+        'QUALITY SCORE: PASS - Strong source coverage with no active skill overlap.',
+      ].join(' ');
+      const rejected = await decisionTool.handler({
+        ignore_watermark: true,
+        decisions: JSON.stringify({
+          decisions: [{
+            action: 'CREATE',
+            topic: 'Invented survey queue architecture',
+            evidence_bundle_id: 'invented-bundle-id',
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(rejected)).toMatchObject({
+        ok: true,
+        state_key: 'skill-survey-bundle-decisions',
+        decision_count: 1,
+        complete: false,
+        rejected_decision_count: 1,
+      });
+
+      const accepted = await decisionTool.handler({
+        ignore_watermark: true,
+        decisions: JSON.stringify({
+          decisions: [{
+            action: 'CREATE',
+            topic: bundle!.topic,
+            evidence_bundle_id: bundle!.id,
+            rationale: detailedRationale,
+            source_ids: ['bad-agent-copied-source'],
+            quality_score: 0.99,
+            quality_failures: [],
+            coverage_matches: [],
+          }],
+          summary: { created: 1 },
+        }),
+      }, undefined);
+      expect(parseResult(accepted)).toMatchObject({
+        ok: true,
+        state_key: 'skill-survey-bundle-decisions',
+        decision_count: 2,
+        reviewed_evidence_bundle_ids: expect.arrayContaining([bundle!.id]),
+        hydrated_evidence_bundle_metadata_count: 1,
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-bundle-decisions');
+      expect(state).not.toBeNull();
+      const stored = JSON.parse(state!.value) as {
+        validated_at: number;
+        decisions: Array<{
+          bundle_id: string;
+          evidence_bundle_id: string;
+          quality_score: number;
+          quality_failures: string[];
+          coverage_matches: string[];
+          source_ids: Array<{ id: string; type: string }>;
+          rationale: string;
+        }>;
+      };
+      expect(stored.validated_at).toBeGreaterThan(0);
+      const storedBundleDecision = stored.decisions.find((decision) => decision.bundle_id === bundle!.id);
+      expect(storedBundleDecision).toMatchObject({
+        bundle_id: bundle!.id,
+        evidence_bundle_id: bundle!.id,
+        quality_score: bundle!.score,
+        quality_failures: bundle!.failures,
+        coverage_matches: bundle!.coverageMatches,
+      });
+      expect(storedBundleDecision!.source_ids).toEqual(bundle!.sourceRefs);
+      expect(storedBundleDecision!.rationale).toBe(detailedRationale);
+
+      const planTool = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const plan = await planTool.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Create: [{
+            topic: bundle!.topic,
+            evidence_bundle_id: bundle!.id,
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(plan)).toMatchObject({
+        ok: true,
+        hydrated_evidence_bundle_metadata_count: 1,
+      });
+      const reconciliationState = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      const storedPlan = JSON.parse(reconciliationState!.value) as { Create: Array<{ rationale: string }> };
+      expect(storedPlan.Create[0]!.rationale).toBe(detailedRationale);
+    });
+
+    it('allows existing queue cleanup while fresh evidence bundle review is incomplete', async () => {
+      const now = epochNow();
+      createSession('survey-cleanup-incomplete-bundle-session-1', now - 300);
+      createSession('survey-cleanup-incomplete-bundle-session-2', now - 200);
+      insertSpore({
+        id: 'survey-cleanup-incomplete-bundle-wisdom',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-cleanup-incomplete-bundle-session-1',
+        observation_type: 'wisdom',
+        content: 'Skill survey queue cleanup in `packages/myco/src/agent/tools/skill-tools.ts` must clean existing candidates even when new bundle review is incomplete.',
+        importance: 9,
+        created_at: now - 180,
+      });
+      insertSpore({
+        id: 'survey-cleanup-incomplete-bundle-decision',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-cleanup-incomplete-bundle-session-2',
+        observation_type: 'decision',
+        content: 'Skill survey queue cleanup in `packages/myco/src/agent/definitions/tasks/skill-survey.yaml` separates existing candidate reconciliation from fresh candidate creation.',
+        importance: 8,
+        created_at: now - 170,
+      });
+      insertSpore({
+        id: 'survey-cleanup-incomplete-bundle-gotcha',
+        agent_id: TEST_AGENT_ID,
+        session_id: 'survey-cleanup-incomplete-bundle-session-1',
+        observation_type: 'gotcha',
+        content: 'Skill survey queue cleanup in `packages/myco/src/agent/skill-survey-prepare.ts` can expose fresh evidence bundles that are unrelated to pending queue candidates.',
+        importance: 7,
+        created_at: now - 160,
+      });
+      insertCandidate({
+        id: 'survey-cleanup-active-overlap',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Agent harness overlap candidate',
+        rationale: 'Existing queue item should be dismissed without requiring every new bundle to be reviewed first.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'queue-overlap-bundle',
+          quality_failures: JSON.stringify(['active-skill-overlap']),
+          coverage_matches: JSON.stringify(['skill-agent-harness']),
+          last_reconciled_at: now - 60,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const decisionTool = findTool(tools, 'vault_skill_survey_bundle_decisions');
+      const incompleteBundleState = await decisionTool.handler({
+        ignore_watermark: true,
+        decisions: JSON.stringify({
+          decisions: [{
+            action: 'CREATE',
+            topic: 'Invented unrelated bundle',
+            evidence_bundle_id: 'not-a-current-bundle',
+          }],
+        }),
+      }, undefined);
+      expect(parseResult(incompleteBundleState)).toMatchObject({
+        ok: true,
+        complete: false,
+      });
+
+      const planTool = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const plan = await planTool.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Dismiss: [{
+            id: 'survey-cleanup-active-overlap',
+            reason: 'Covered by an existing active skill.',
+            quality_failures: ['active-skill-overlap'],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(plan)).toMatchObject({
+        ok: true,
+        cleanup_target_ids: ['survey-cleanup-active-overlap'],
+        reviewed_candidate_ids: ['survey-cleanup-active-overlap'],
+      });
+    });
+
+    it('rejects Create entries that represent existing active queue candidates', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-create-existing-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Existing survey candidate',
+        rationale: 'The queue already has this candidate.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'existing-survey-candidate-bundle',
+          last_reconciled_at: now - 60,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const planTool = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const plan = await planTool.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Create: [{
+            topic: 'Existing survey candidate',
+            rationale: 'Incorrectly modeled as a fresh candidate.',
+            evidence_bundle_id: 'existing-survey-candidate-bundle',
+            quality_score: 0.82,
+            quality_failures: [],
+            coverage_matches: [],
+            source_ids: [
+              { id: 'spore-test-001', type: 'spore' },
+              { id: 'spore-test-002', type: 'spore' },
+              { id: 'session-test-001', type: 'session' },
+            ],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(plan)).toMatchObject({
+        error: expect.stringContaining('Create entries cannot represent existing active queue candidates'),
+        issues: expect.arrayContaining([
+          expect.stringContaining('survey-create-existing-candidate'),
+        ]),
+      });
+    });
+
+    it('rejects reconciliation plans with invalid identified metadata before persistence', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-plan-invalid-metadata',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Daemon workflow candidate',
+        rationale: 'Legacy candidate must be reconciled.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const result = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Update: [{
+            id: 'survey-plan-invalid-metadata',
+            rationale: 'Bad source refs should be rejected before persist.',
+            evidence_bundle_id: 'bundle-invalid-metadata',
+            quality_score: 0.82,
+            quality_failures: [],
+            coverage_matches: [],
+            source_ids: [
+              { id: 'spore-plan-1', type: 'spore' },
+              { id: 'spore-plan-2', type: 'spore' },
+            ],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(result)).toMatchObject({
+        error: expect.stringContaining('candidate metadata'),
+        issues: expect.arrayContaining([
+          expect.stringContaining('source_ids must contain at least 3 valid source references'),
+        ]),
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      expect(state).toBeNull();
+    });
+
+    it('rejects cleanup deferrals without canonical quality failure reasons', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-plan-defer-without-failures',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Daemon workflow candidate',
+        rationale: 'Legacy candidate must be reconciled.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const result = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Defer: [{
+            id: 'survey-plan-defer-without-failures',
+            reason: 'Needs better evidence later.',
+            quality_failures: [],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(result)).toMatchObject({
+        error: expect.stringContaining('candidate metadata'),
+        issues: expect.arrayContaining([
+          expect.stringContaining('quality_failures must include at least one canonical reason code'),
+        ]),
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      expect(state).toBeNull();
+    });
+
+    it('rejects disposition reasons contradicted by current candidate metadata', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-plan-contradicted-reason',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Canopy file safety candidate',
+        rationale: 'Candidate already carries evidence metadata.',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        ...validCandidateMetadata({
+          evidence_bundle_id: 'bundle-canopy-file-safety',
+          quality_score: 0.82,
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const t = findTool(tools, 'vault_skill_survey_reconciliation_plan');
+      const result = await t.handler({
+        ignore_watermark: true,
+        plan: JSON.stringify({
+          Dismiss: [{
+            id: 'survey-plan-contradicted-reason',
+            reason: 'Bad handoff claimed this candidate had no bundle.',
+            quality_failures: ['missing-evidence-bundle'],
+          }],
+        }),
+      }, undefined);
+
+      expect(parseResult(result)).toMatchObject({
+        error: expect.stringContaining('candidate metadata'),
+        issues: expect.arrayContaining([
+          expect.stringContaining('already has evidence_bundle_id'),
+        ]),
+      });
+
+      const state = getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, 'skill-survey-reconciliation-decisions');
+      expect(state).toBeNull();
+    });
+
+    it('does not mark reconciled deferred candidates as immediate cleanup targets', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'survey-prepare-reconciled-deferred',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Reconciled deferred candidate',
+        rationale: 'Candidate was intentionally deferred with a reason.',
+        status: CANDIDATE_STATUS.DEFERRED,
+        ...validCandidateMetadata({
+          quality_failures: JSON.stringify(['existing-candidate-overlap']),
+          last_reconciled_at: now - 20,
+        }),
+        created_at: now - 150,
+        updated_at: now - 150,
+      });
+
+      const prepareTool = findTool(tools, 'vault_skill_survey_prepare');
+      const prepare = parseResult(await prepareTool.handler({ ignore_watermark: true }, undefined)) as {
+        queue: {
+          actionable: number;
+          cleanup_target_ids: string[];
+        };
+      };
+
+      expect(prepare.queue.actionable).toBe(1);
+      expect(prepare.queue.cleanup_target_ids).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // vault_skill_candidates
   // -------------------------------------------------------------------------
 
@@ -183,6 +1176,50 @@ describe('vault skill tools', () => {
       const result = await t.handler({ action: 'list' }, undefined);
       const data = parseResult(result) as unknown[];
       expect(data).toEqual([]);
+    });
+
+    it('list supports multi-status filtering for active review queue audits', async () => {
+      const now = epochNow();
+      insertCandidate({
+        id: 'identified-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Identified candidate',
+        rationale: 'Active queue item',
+        status: CANDIDATE_STATUS.IDENTIFIED,
+        created_at: now,
+        updated_at: now,
+      });
+      insertCandidate({
+        id: 'deferred-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Deferred candidate',
+        rationale: 'Deferred queue item',
+        status: CANDIDATE_STATUS.DEFERRED,
+        created_at: now,
+        updated_at: now,
+      });
+      insertCandidate({
+        id: 'dismissed-candidate',
+        agent_id: TEST_AGENT_ID,
+        topic: 'Dismissed candidate',
+        rationale: 'Not active queue item',
+        status: CANDIDATE_STATUS.DISMISSED,
+        created_at: now,
+        updated_at: now,
+      });
+
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler({
+        action: 'list',
+        statuses: [CANDIDATE_STATUS.IDENTIFIED, CANDIDATE_STATUS.DEFERRED],
+        limit: 50,
+      }, undefined);
+      const data = parseResult(result) as Array<{ id: string }>;
+
+      expect(data.map((candidate) => candidate.id).sort()).toEqual([
+        'deferred-candidate',
+        'identified-candidate',
+      ]);
     });
 
     it('create rejects identified candidate without evidence metadata', async () => {
@@ -376,6 +1413,21 @@ describe('vault skill tools', () => {
       expect(badFailures.error).toContain('quality_failures must be a JSON array of strings');
     });
 
+    it('rejects unknown quality failure codes', async () => {
+      const t = findTool(tools, 'vault_skill_candidates');
+      const result = await t.handler({
+        action: 'create',
+        topic: 'Deferred candidate with invalid failure code',
+        rationale: 'Unknown failure codes should not be persisted.',
+        status: CANDIDATE_STATUS.DEFERRED,
+        quality_failures: JSON.stringify(['insufficient_source_references']),
+      }, undefined);
+
+      const data = parseResult(result) as { error?: string };
+      expect(data.error).toContain('quality_failures contains unknown reason code');
+      expect(data.error).toContain('insufficient-source-refs');
+    });
+
     it('update enforces identified quality gate', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       const dismissed = parseResult(
@@ -384,7 +1436,8 @@ describe('vault skill tools', () => {
             action: 'create',
             status: 'dismissed',
             topic: 'Deferred until evidence exists',
-            rationale: 'Cleanup path should not require quality metadata',
+            rationale: 'Cleanup path records why it left the active queue',
+            quality_failures: JSON.stringify(['missing-evidence-bundle']),
           },
           undefined,
         ),
@@ -432,7 +1485,7 @@ describe('vault skill tools', () => {
       expect(lowScore.error).toContain('quality_score must be >= 0.7');
     });
 
-    it('update to dismissed or deferred can proceed without quality metadata', async () => {
+    it('update to dismissed or deferred requires quality failure metadata', async () => {
       const t = findTool(tools, 'vault_skill_candidates');
       const created = parseResult(
         await t.handler(
@@ -447,14 +1500,29 @@ describe('vault skill tools', () => {
       ) as { id: string; error?: string };
       expect(created.error).toBeUndefined();
 
-      const dismissed = parseResult(
+      const missingReason = parseResult(
         await t.handler({ action: 'update', id: created.id, status: 'dismissed' }, undefined),
+      ) as { error?: string };
+      expect(missingReason.error).toContain('quality_failures must include at least one canonical reason code');
+
+      const dismissed = parseResult(
+        await t.handler({
+          action: 'update',
+          id: created.id,
+          status: 'dismissed',
+          quality_failures: JSON.stringify(['active-skill-overlap']),
+        }, undefined),
       ) as { status?: string; error?: string };
       expect(dismissed.error).toBeUndefined();
       expect(dismissed.status).toBe('dismissed');
 
       const deferred = parseResult(
-        await t.handler({ action: 'update', id: created.id, status: 'deferred' }, undefined),
+        await t.handler({
+          action: 'update',
+          id: created.id,
+          status: 'deferred',
+          quality_failures: JSON.stringify(['deferred-review-required']),
+        }, undefined),
       ) as { status?: string; error?: string };
       expect(deferred.error).toBeUndefined();
       expect(deferred.status).toBe('deferred');
@@ -476,7 +1544,12 @@ describe('vault skill tools', () => {
       });
 
       const result = parseResult(
-        await t.handler({ action: 'update', id: inserted.id, status: 'dismissed' }, undefined),
+        await t.handler({
+          action: 'update',
+          id: inserted.id,
+          status: 'dismissed',
+          quality_failures: JSON.stringify(['missing-evidence-bundle']),
+        }, undefined),
       ) as { status?: string; error?: string };
 
       expect(result.error).toBeUndefined();
@@ -1233,10 +2306,23 @@ describe('vault skill tools', () => {
     it('creates skill records and candidate transitions in the request project', async () => {
       const projectATools = createProjectTools('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
       const projectBTools = createProjectTools('proj_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+      seedCandidateSourceRecords('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+        session: 'session-project-a-source-001',
+        spores: ['spore-project-a-source-001', 'spore-project-a-source-002'],
+      });
       const candidateToolA = findTool(projectATools, 'vault_skill_candidates');
       const created = parseResult(
         await candidateToolA.handler(
-          { action: 'create', topic: 'Scoped skill write', rationale: 'Project A only', ...validCandidateMetadata() },
+          {
+            action: 'create',
+            topic: 'Scoped skill write',
+            rationale: 'Project A only',
+            ...candidateMetadataWithSourceIds([
+              { id: 'spore-project-a-source-001', type: 'spore' },
+              { id: 'spore-project-a-source-002', type: 'spore' },
+              { id: 'session-project-a-source-001', type: 'session' },
+            ]),
+          },
           undefined,
         ),
       ) as { id: string; project_id: string };

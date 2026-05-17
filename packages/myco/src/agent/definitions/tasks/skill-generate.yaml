@@ -102,6 +102,15 @@ phases:
         instruction as the approval record for this candidate. Use the
         source material to ground the skill; do not broaden the skill
         beyond what the approved evidence supports.
+      - **Enforce the evidence contract before staging.** If
+        `evidence_bundle_id` is missing, `quality_failures` is not `[]`,
+        or `source_ids` is empty/malformed, report failure via
+        vault_report and do not call vault_stage_skill. Approval is a
+        human decision, not permission to ignore broken provenance.
+      - **Respect overlap metadata.** If `coverage_matches` shows
+        overlap with an active skill or prior candidate, preserve the
+        distinct boundary or supersession rationale in the generated
+        skill. Do not erase that boundary in broad prose.
       - **A well-scoped skill has 3-6 major sections**, each describing
         a distinct procedure within the domain. If the candidate maps
         to fewer than 2 sections, note this in the rationale — it may
@@ -200,6 +209,11 @@ phases:
          and re-stage with corrected content. Do not finalize a skill
          whose load-bearing paths can't be verified against the
          current codebase — that's how hallucinated paths ship.
+
+      8. **Evidence contract:** source_ids resolve, evidence_bundle_id
+         is present, quality_failures is empty, and coverage_matches are
+         reflected by a clear skill boundary or supersession rationale.
+         If this fails, report failure and do not finalize.
 
       ## If criteria fail
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { loadEnv } from './cli/shared.js';
+import { isHelpRequest, loadEnv } from './cli/shared.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { activateDevBuildModeIfDetected } from './daemon/update-checker.js';
 import fs from 'node:fs';
@@ -39,10 +39,45 @@ Commands:
   daemon                   Start the daemon for the current project
 `;
 
+const COMMAND_HELP: Record<string, string> = {
+  agent: `Usage: myco agent [--task NAME] [--instruction TEXT]
+
+Options:
+  --task NAME          Run a specific agent task. Defaults to the configured default task.
+  --instruction TEXT  Additional instruction to pass to the agent run.
+  -h, --help          Show this help
+`,
+  task: `Usage: myco task <subcommand> [args]
+
+Subcommands:
+  list [--source built-in|user]   List all tasks
+  show <name>                     Show task details and phases
+  create <name> --from <template> Copy a task template to your user dir
+  delete <name>                   Delete a user task
+  run <name> [--instruction TEXT] Run a task via the agent
+`,
+  'task run': `Usage: myco task run <name> [--instruction TEXT]
+
+Options:
+  --instruction TEXT  Additional instruction to pass to the agent run.
+  -h, --help          Show this help
+`,
+};
+
+function helpForCommand(command: string, args: readonly string[] = []): string {
+  const nestedCommand = args[0] ? `${command} ${args[0]}` : command;
+  if (COMMAND_HELP[nestedCommand]) return COMMAND_HELP[nestedCommand];
+  return COMMAND_HELP[command] ?? `Usage: myco ${command} [args]\n\nRun \`myco --help\` for the full command list.\n`;
+}
+
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
     process.stdout.write(USAGE);
+    return;
+  }
+  if (isHelpRequest(args)) {
+    process.stdout.write(helpForCommand(cmd, args));
     return;
   }
 

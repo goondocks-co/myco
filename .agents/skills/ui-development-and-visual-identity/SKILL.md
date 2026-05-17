@@ -26,17 +26,16 @@ Design components that work across daemon, collective, and marketing contexts:
 
 ```typescript
 // Use context providers for instance-aware behavior
-const InstanceContext = createContext<'daemon' | 'collective' | 'marketing'>()
+const InstanceContext = createContext<'daemon' | 'collective' | 'marketing'>();
 
-// Component adapts behavior based on instance
 function NavigationComponent() {
-  const instance = useContext(InstanceContext)
-  const baseClasses = "nav-component"
-  const instanceClasses = instance === 'collective' ? 'nav-collective' : 'nav-daemon'
+  const instance = useContext(InstanceContext);
+  const baseClasses = "nav-component";
+  const instanceClasses = instance === 'collective' ? 'nav-collective' : 'nav-daemon';
   
   return <nav className={`${baseClasses} ${instanceClasses}`}>
     {/* Instance-specific navigation items */}
-  </nav>
+  </nav>;
 }
 ```
 
@@ -58,37 +57,13 @@ Pages (packages/myco/ui/src/pages/)
 └── Uses domain components, adds layout context
 ```
 
-### Hub Base-Path Routing Integration
-
-Handle base-path routing for hub-proxied daemon UIs:
-
-```typescript
-// Detect hub context and configure router base-path
-function detectHubBasePrefix(): string {
-  if (window !== window.top) {
-    const hubPrefix = (window as any).__MYCO_HUB_PREFIX__;
-    if (hubPrefix) return hubPrefix;
-  }
-  return '/'; // Default to root for standalone daemon
-}
-
-// Configure React Router with dynamic base
-<BrowserRouter basename={detectHubBasePrefix()}>
-  <Routes>{/* App routes */}</Routes>
-</BrowserRouter>
-```
-
 ### Grove Multi-Project UI Switcher
 
 Implement Slack/Linear-style project switcher for Grove multi-tenant navigation:
 
 ```typescript
-// Project switcher component with URL-driven navigation
 function ProjectSwitcher() {
-  const { groveSlug, projectSlug } = useParams<{
-    groveSlug: string; projectSlug: string;
-  }>();
-  
+  const { groveSlug, projectSlug } = useParams();
   const { projects } = useGroveProjects(groveSlug);
   const navigate = useNavigate();
   
@@ -125,7 +100,6 @@ function ProjectSwitcher() {
 Inject project context into API requests for multi-tenant safety:
 
 ```typescript
-// Grove context headers injection
 function useGroveApiClient() {
   const { groveSlug, projectSlug } = useGroveContext();
   
@@ -134,16 +108,85 @@ function useGroveApiClient() {
       baseURL: '/api/v1',
       headers: { 'X-Grove-Slug': groveSlug, 'X-Project-Slug': projectSlug }
     });
-    
-    client.interceptors.request.use(config => {
-      config.headers = { ...config.headers, 'X-Grove-Slug': groveSlug, 'X-Project-Slug': projectSlug };
-      return config;
-    });
-    
     return client;
   }, [groveSlug, projectSlug]);
   
   return apiClient;
+}
+```
+
+### TabSwitcher Component for Team Consolidation
+
+**Critical Phase 6 update**: Implement unified tabbed interface for team surface consolidation:
+
+```typescript
+interface TabSwitcherProps {
+  tabs: Array<{ id: string; label: string; icon?: React.ReactNode; count?: number }>;
+  activeTab: string;
+  onTabChange: (tabId: string) => void;
+  className?: string;
+}
+
+export function TabSwitcher({ tabs, activeTab, onTabChange, className }: TabSwitcherProps) {
+  return (
+    <div className={`tab-switcher ${className || ''}`} role="tablist">
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          role="tab"
+          aria-selected={tab.id === activeTab}
+          className={`tab-button ${tab.id === activeTab ? 'active' : ''}`}
+          onClick={() => onTabChange(tab.id)}
+        >
+          {tab.icon && <span className="tab-icon">{tab.icon}</span>}
+          <span className="tab-label">{tab.label}</span>
+          {tab.count !== undefined && (
+            <span className="tab-count">{tab.count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Team consolidation usage - replaces separate status/sync components
+function TeamSurface() {
+  const [activeTab, setActiveTab] = useState('overview');
+  const location = useLocation();
+  
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: <BarChart3 /> },
+    { id: 'members', label: 'Members', icon: <Users />, count: memberCount },
+    { id: 'projects', label: 'Projects', icon: <FolderOpen />, count: projectCount },
+    { id: 'activity', label: 'Activity', icon: <Activity /> }
+  ];
+  
+  // Sync tab state with URL
+  useEffect(() => {
+    const urlTab = new URLSearchParams(location.search).get('tab');
+    if (urlTab && tabs.find(t => t.id === urlTab)) {
+      setActiveTab(urlTab);
+    }
+  }, [location.search]);
+  
+  return (
+    <div className="team-surface">
+      <TabSwitcher 
+        tabs={tabs}
+        activeTab={activeTab}
+        onTabChange={(tabId) => {
+          setActiveTab(tabId);
+          navigate(`${location.pathname}?tab=${tabId}`);
+        }}
+      />
+      <div className="tab-content">
+        {activeTab === 'overview' && <TeamOverview />}
+        {activeTab === 'members' && <TeamMembers />}
+        {activeTab === 'projects' && <TeamProjects />}
+        {activeTab === 'activity' && <TeamActivity />}
+      </div>
+    </div>
+  );
 }
 ```
 
@@ -152,7 +195,6 @@ function useGroveApiClient() {
 Implement sidebar badges to display DEV/BETA runtime status:
 
 ```typescript
-// Runtime status badge component for sidebar footer
 function RuntimeStatusBadge() {
   const { runtimeOrigin } = useDaemonStats();
   
@@ -167,27 +209,16 @@ function RuntimeStatusBadge() {
   
   const config = badgeConfig[runtimeOrigin as keyof typeof badgeConfig];
   
-  return (
-    <Badge 
-      variant="outline" 
-      className={`runtime-status-badge ${config.className}`}
-    >
-      {config.label}
-    </Badge>
-  );
+  return <Badge variant="outline" className={`runtime-status-badge ${config.className}`}>{config.label}</Badge>;
 }
 
-// Hook to fetch daemon stats including runtime origin
 function useDaemonStats() {
   return useQuery({
     queryKey: ['daemon-stats'],
     queryFn: async () => {
       const response = await fetch('/api/stats');
       if (!response.ok) throw new Error('Failed to fetch daemon stats');
-      return response.json() as {
-        runtimeOrigin: 'dev' | 'beta' | 'stable';
-        version: string; uptime: number;
-      };
+      return response.json() as { runtimeOrigin: 'dev' | 'beta' | 'stable'; version: string; uptime: number; };
     },
     refetchInterval: 30000
   });
@@ -239,31 +270,22 @@ The 6-theme system uses CSS custom properties with color coordination:
 Generate distinct browser tab titles that identify both project and instance type:
 
 ```typescript
-// In daemon initialization
 function generateDynamicTitle(projectConfig: MycoConfig): string {
-  const projectName = projectConfig.project?.name || 'Myco Project'
-  const instanceType = 'Daemon' // or 'Collective', 'Marketing'
-  return `${projectName} | Myco ${instanceType}`
+  const projectName = projectConfig.project?.name || 'Myco Project';
+  const instanceType = 'Daemon'; // or 'Collective', 'Marketing'
+  return `${projectName} | Myco ${instanceType}`;
 }
 
 // Update document title
-document.title = generateDynamicTitle(config)
+document.title = generateDynamicTitle(config);
 ```
 
 ### Family Cohesion vs Instance Recognition
 
 Balance unified Myco identity with practical tab distinction:
 
-**Family cohesion**:
-- Consistent typography (same font stack across instances)
-- Shared component design language
-- Common interaction patterns
-
-**Instance recognition**:
-- Theme-based color distinction (daemon themes vs collective ochre)
-- Dynamic tab titles with project context
-- Instance-specific favicon variants
-- Contextual navigation differences
+**Family cohesion**: Consistent typography, shared component design language, common interaction patterns
+**Instance recognition**: Theme-based color distinction, dynamic tab titles, instance-specific favicon variants, contextual navigation differences
 
 ## Procedure D: Frontend Build Integration
 
@@ -272,41 +294,50 @@ Balance unified Myco identity with practical tab distinction:
 Configure Vite for monorepo structure with theme asset coordination:
 
 ```typescript
-// vite.config.ts pattern for UI packages
 export default defineConfig({
   build: {
     lib: { entry: 'src/index.ts', formats: ['es', 'cjs'] },
-    rollupOptions: {
-      external: ['react', 'react-dom'],
-      output: { globals: { react: 'React', 'react-dom': 'ReactDOM' } }
-    }
+    rollupOptions: { external: ['react', 'react-dom'], output: { globals: { react: 'React', 'react-dom': 'ReactDOM' } } }
   },
-  css: {
-    preprocessorOptions: {
-      scss: { additionalData: `@import "src/themes/variables.scss";` }
-    }
-  }
-})
+  css: { preprocessorOptions: { scss: { additionalData: `@import "src/themes/variables.scss";` } } }
+});
 ```
 
 ### Worktree Build Environment Setup
 
-Git worktrees require independent UI workspace installation for proper builds:
+**Critical Grove architecture**: Git worktrees require independent UI workspace installation and clean multi-worktree setup:
 
 ```bash
-# After creating a worktree, install nested UI dependencies
-cd .worktrees/feature-branch-name
-npm install
-
-# Install each nested UI workspace separately  
-cd packages/myco/ui && npm install
-cd ../../myco-hub/ui && npm install
-
-# Now build commands work correctly
-npm run build:ui
+# Automated Grove worktree setup for Phase 6 development
+function init_myco_worktree() {
+  local branch_name="$1"
+  local worktree_path=".worktrees/$branch_name"
+  
+  # Create and enter worktree
+  git worktree add "$worktree_path" "$branch_name"
+  cd "$worktree_path"
+  
+  # Install root dependencies
+  npm install
+  
+  # Install nested UI workspaces separately (critical for Grove)
+  for ui_workspace in packages/myco/ui packages/myco-hub/ui; do
+    if [ -d "$ui_workspace" ]; then
+      echo "Installing $ui_workspace..."
+      (cd "$ui_workspace" && npm install)
+    fi
+  done
+  
+  # Build UI components
+  npm run build:ui
+  
+  echo "Grove worktree $branch_name ready for Phase 6 development"
+}
 ```
 
-**Critical gotcha**: The monorepo root `npm install` does not install dependencies for nested UI workspaces in worktrees. Each `packages/*/ui` workspace needs its own `npm install` run.
+**Critical gotcha**: Each `packages/*/ui` workspace needs its own `npm install` run in worktrees.
+
+**Phase 6 worktree benefits**: Clean isolation for Grove + Team rebuild, independent dependency resolution, parallel development workflow, easier branch switching without stale node_modules.
 
 ## Procedure E: Appearance Controls and User Preferences
 
@@ -315,7 +346,6 @@ npm run build:ui
 Store appearance preferences in `.myco/local.yaml` for personal overrides:
 
 ```yaml
-# .myco/local.yaml (personal, gitignored)
 appearance:
   theme: "terracotta"
   font_size: "large"
@@ -327,10 +357,10 @@ appearance:
 
 ```typescript
 interface AppearanceConfig {
-  theme: 'sage' | 'moss' | 'terracotta' | 'dusk' | 'plum' | 'slate'
-  fontSize: 'small' | 'medium' | 'large'
-  darkMode: boolean
-  density: 'compact' | 'comfortable' | 'spacious'
+  theme: 'sage' | 'moss' | 'terracotta' | 'dusk' | 'plum' | 'slate';
+  fontSize: 'small' | 'medium' | 'large';
+  darkMode: boolean;
+  density: 'compact' | 'comfortable' | 'spacious';
 }
 
 function useAppearanceConfig(): [AppearanceConfig, (config: Partial<AppearanceConfig>) => void] {
@@ -339,17 +369,9 @@ function useAppearanceConfig(): [AppearanceConfig, (config: Partial<AppearanceCo
 }
 ```
 
-### Per-Session vs Persistent Preferences
-
-**Persistent** (stored in `.myco/local.yaml`):
-- Theme selection, Font size, Dark mode preference, UI density
-
-**Per-session** (component state only):
-- Panel open/closed states, Sort order for lists, Temporary view filters, Modal/dialog visibility
-
 ## Procedure F: Component Development Lifecycle
 
-### Adding New UI Components to Settings
+### Adding New UI Components
 
 Follow the established pattern for settings page components:
 
@@ -358,42 +380,29 @@ Follow the established pattern for settings page components:
 3. **Test across themes**: Verify component works correctly with all 6 themes
 4. **Add Playwright tests**: Test component behavior and visual state
 
-### DevTools Workflow for Component Development
-
-Use browser DevTools effectively for UI development:
-
-1. **Theme debugging**: Inspect CSS custom properties in Elements panel
-2. **State debugging**: Use React DevTools to inspect component state
-3. **Performance**: Use Performance panel to identify render bottlenecks
-4. **Responsive testing**: Use device emulation for different screen sizes
-
 ### Playwright Testing Patterns for Visual State
 
 Write Playwright tests that verify visual state across themes and configurations:
 
 ```typescript
 test('theme picker updates appearance correctly', async ({ page }) => {
-  await page.goto('/settings')
+  await page.goto('/settings');
   
-  // Test each theme
   for (const theme of ['sage', 'moss', 'terracotta']) {
-    await page.selectOption('[data-testid="theme-picker"]', theme)
-    
-    // Verify CSS custom property is updated
+    await page.selectOption('[data-testid="theme-picker"]', theme);
     const primaryColor = await page.evaluate(() => 
       getComputedStyle(document.documentElement).getPropertyValue('--primary')
-    )
-    
-    expect(primaryColor).toMatch(EXPECTED_THEME_COLORS[theme])
+    );
+    expect(primaryColor).toMatch(EXPECTED_THEME_COLORS[theme]);
   }
-})
+});
 ```
 
 ## Procedure G: Master-Detail Layout Architecture
 
 ### MasterDetailSplit Component Implementation
 
-Implement responsive master-detail layout with keyboard navigation for Sessions, Agent, and RunDetail surfaces:
+Implement responsive master-detail layout with keyboard navigation:
 
 ```typescript
 interface MasterDetailSplitProps {
@@ -404,16 +413,7 @@ interface MasterDetailSplitProps {
   className?: string;
 }
 
-export function MasterDetailSplit({
-  masterContent,
-  detailContent,
-  showDetail,
-  onCloseDetail,
-  className
-}: MasterDetailSplitProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Keyboard navigation for closing detail view
+export function MasterDetailSplit({ masterContent, detailContent, showDetail, onCloseDetail, className }: MasterDetailSplitProps) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape' && showDetail) {
@@ -426,22 +426,11 @@ export function MasterDetailSplit({
   }, [showDetail, onCloseDetail]);
 
   return (
-    <div 
-      ref={containerRef}
-      className={`master-detail-split ${showDetail ? 'detail-open' : ''} ${className || ''}`}
-    >
-      <div className="master-panel">
-        {masterContent}
-      </div>
+    <div className={`master-detail-split ${showDetail ? 'detail-open' : ''} ${className || ''}`}>
+      <div className="master-panel">{masterContent}</div>
       {showDetail && (
         <div className="detail-panel">
-          <button 
-            className="close-detail-btn"
-            onClick={onCloseDetail}
-            aria-label="Close detail view"
-          >
-            ×
-          </button>
+          <button className="close-detail-btn" onClick={onCloseDetail} aria-label="Close detail view">×</button>
           {detailContent}
         </div>
       )}
@@ -462,52 +451,35 @@ Define CSS patterns for responsive master-detail behavior:
   transition: grid-template-columns 0.2s ease-in-out;
 }
 
-.master-detail-split.detail-open {
-  grid-template-columns: 350px 1fr;
-}
+.master-detail-split.detail-open { grid-template-columns: 350px 1fr; }
+.master-panel { overflow: auto; border-right: 1px solid var(--border-color); }
+.detail-panel { position: relative; overflow: auto; background: var(--surface-container); }
 
-.master-panel {
-  overflow: auto;
-  border-right: 1px solid var(--border-color);
-}
-
-.detail-panel {
-  position: relative;
-  overflow: auto;
-  background: var(--surface-container);
-}
-
-/* Mobile responsive */
 @media (max-width: 768px) {
-  .master-detail-split.detail-open {
-    grid-template-columns: 0 1fr;
-  }
-  
-  .master-panel {
-    overflow: hidden;
-  }
+  .master-detail-split.detail-open { grid-template-columns: 0 1fr; }
+  .master-panel { overflow: hidden; }
 }
 ```
 
-### Keyboard Navigation Integration
-
-Implement arrow key navigation within master lists using `useMasterListNavigation` hook for consistent behavior across Sessions, Agent, and RunDetail surfaces.
-
 ## Procedure H: Operations Surface URL Routing
 
-### Nested URL Structure for Operations
+### Scope-Encoded URL Structure
 
-Implement hierarchical URL routing for the Operations surface with proper breadcrumb navigation:
+Implement hierarchical URL routing that encodes scope context for proper multi-tenant operations:
 
 ```typescript
-// URL structure: /operations/:category/:operationId?
+// URL structure: /operations/:scope/:category/:operationId?
+// Examples: /operations/machine/daemons/daemon-123, /operations/grove/projects/grove-abc/proj-xyz
+
 export function OperationsRouter() {
   return (
     <Routes>
       <Route path="/operations" element={<OperationsLayout />}>
         <Route index element={<OperationsOverview />} />
-        <Route path=":category" element={<OperationsCategoryView />}>
-          <Route path=":operationId" element={<OperationDetailView />} />
+        <Route path=":scope" element={<OperationsScopeView />}>
+          <Route path=":category" element={<OperationsCategoryView />}>
+            <Route path="*" element={<OperationDetailView />} />
+          </Route>
         </Route>
       </Route>
     </Routes>
@@ -515,132 +487,197 @@ export function OperationsRouter() {
 }
 
 function OperationsLayout() {
-  const { category, operationId } = useParams();
+  const { scope, category } = useParams();
   const location = useLocation();
   
-  const breadcrumbs = useMemo(() => {
-    const crumbs = [{ label: 'Operations', path: '/operations' }];
+  const scopeContext = useMemo(() => {
+    const pathSegments = location.pathname.split('/').filter(Boolean);
+    const operationsIndex = pathSegments.indexOf('operations');
     
-    if (category) {
-      crumbs.push({ 
-        label: formatCategoryLabel(category), 
-        path: `/operations/${category}` 
-      });
+    if (operationsIndex === -1 || pathSegments.length < 3) return null;
+    
+    const scopeType = pathSegments[operationsIndex + 1];
+    const category = pathSegments[operationsIndex + 2];
+    
+    // Parse scope-specific identifiers
+    if (scopeType === 'grove' && pathSegments.length >= 5) {
+      return {
+        scope: 'grove',
+        groveSlug: pathSegments[operationsIndex + 3],
+        projectSlug: pathSegments[operationsIndex + 4]
+      };
     }
     
-    if (operationId) {
-      crumbs.push({ 
-        label: operationId, 
-        path: location.pathname 
-      });
-    }
-    
-    return crumbs;
-  }, [category, operationId, location.pathname]);
+    return { scope: scopeType, category };
+  }, [location.pathname]);
   
   return (
     <div className="operations-layout">
-      <Breadcrumbs crumbs={breadcrumbs} />
-      <Outlet />
+      <Breadcrumbs crumbs={buildBreadcrumbs(scopeContext)} />
+      <ScopeContextProvider context={scopeContext}>
+        <Outlet />
+      </ScopeContextProvider>
     </div>
   );
 }
 ```
 
-### URL-Driven State Management
-
-Synchronize component state with URL parameters for deep linking and browser history. Use URL params as source of truth, extract operation ID from location.pathname, and wire MasterDetailSplit to URL navigation.
-
 ## Procedure I: Unified Settings Registry
 
-### Settings Registry Architecture
+### Zod-Validated Settings Architecture
 
-Implement centralized settings registry for consistent configuration management:
+Implement centralized settings registry with Zod schema validation:
 
 ```typescript
-interface SettingDefinition {
+import { z } from 'zod';
+
+interface SettingDefinition<T = any> {
   key: string;
   label: string;
   description?: string;
-  type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect';
-  options?: Array<{ value: string; label: string }>;
+  schema: z.ZodType<T>;
   scope: 'machine' | 'grove' | 'project';
   section: string;
-  validation?: (value: any) => string | null;
-  defaultValue: any;
+  defaultValue: T;
+  hidden?: boolean;
+  deprecated?: { since: string; message: string };
 }
 
 class SettingsRegistry {
   private settings = new Map<string, SettingDefinition>();
   private sections = new Set<string>();
   
-  register(setting: SettingDefinition) {
+  register<T>(setting: SettingDefinition<T>) {
+    if (!setting.key || !setting.label || !setting.schema) {
+      throw new Error(`Invalid setting definition: ${setting.key}`);
+    }
+    
     this.settings.set(setting.key, setting);
     this.sections.add(setting.section);
   }
   
-  getSettingsBySection(section: string): SettingDefinition[] {
-    return Array.from(this.settings.values())
-      .filter(setting => setting.section === section)
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }
-  
-  getSections(): string[] {
-    return Array.from(this.sections).sort();
-  }
-  
-  getSetting(key: string): SettingDefinition | undefined {
-    return this.settings.get(key);
+  validate<T>(key: string, value: unknown): T | ValidationError {
+    const setting = this.settings.get(key);
+    if (!setting) throw new Error(`Unknown setting: ${key}`);
+    
+    const result = setting.schema.safeParse(value);
+    if (!result.success) return new ValidationError(key, result.error.errors);
+    
+    return result.data;
   }
 }
 
 export const settingsRegistry = new SettingsRegistry();
+
+// Example registrations
+settingsRegistry.register({
+  key: 'daemon.port', label: 'Daemon Port', description: 'TCP port for the Myco daemon to listen on',
+  schema: z.number().int().min(1024).max(65535), scope: 'machine', section: 'daemon', defaultValue: 3456
+});
+
+settingsRegistry.register({
+  key: 'appearance.theme', label: 'UI Theme', description: 'Visual theme for the Myco interface',
+  schema: z.enum(['sage', 'moss', 'terracotta', 'dusk', 'plum', 'slate']), scope: 'project', section: 'appearance', defaultValue: 'sage'
+});
 ```
 
-### Dynamic Settings Form Generation
+## Procedure J: Cloudflare API Constraint Adaptations
 
-Generate settings forms dynamically from registry definitions using SettingsSection component that maps registry definitions to appropriate form controls (Switch, Select, Input) with validation.
+### Worker Environment Limitations
 
-### Settings Registration Patterns
+**Critical constraint**: Cloudflare Workers have strict API limitations affecting UI design decisions:
 
-Register settings during application initialization with proper scope, validation, and default values for theme, daemon port, and other configuration options.
+```typescript
+// Adapt UI patterns for Cloudflare Worker constraints
+function WorkerCompatibleImageUpload() {
+  // CONSTRAINT: Limited file size and processing time
+  const MAX_FILE_SIZE = 1024 * 1024; // 1MB limit for worker processing
+  const SUPPORTED_FORMATS = ['image/jpeg', 'image/png', 'image/webp'];
+  
+  function handleFileUpload(file: File) {
+    if (file.size > MAX_FILE_SIZE) {
+      throw new Error('File too large for Cloudflare Worker processing');
+    }
+    
+    if (!SUPPORTED_FORMATS.includes(file.type)) {
+      throw new Error('Unsupported format for worker environment');
+    }
+    
+    // Process with worker-compatible approach
+    return processImageInWorker(file);
+  }
+}
+
+// API call patterns adapted for worker constraints
+function useWorkerApi() {
+  return useMutation({
+    mutationFn: async (data: ApiRequest) => {
+      // CONSTRAINT: 10 second execution limit
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000); // 9s timeout
+      
+      try {
+        const response = await fetch('/api/worker-endpoint', {
+          method: 'POST',
+          body: JSON.stringify(data),
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        clearTimeout(timeoutId);
+        return response.json();
+      } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+          throw new Error('Request timed out due to Cloudflare Worker constraints');
+        }
+        throw error;
+      }
+    }
+  });
+}
+```
+
+**UI design adaptations**: Smaller file upload limits, simplified processing workflows, timeout-aware user feedback, progressive enhancement for worker limitations.
 
 ## Cross-Cutting Gotchas
 
-**Theme Development Cache Issues**: Browser aggressively caches CSS files. Always hard refresh (Cmd+Shift+R / Ctrl+Shift+R) when developing themes or you'll see stale styles.
+### Theme Development Cache Issues
 
-**CSS Custom Property Inheritance**: Theme variables are set on `:root` but can be overridden at component level. Check the cascade when debugging color issues.
+**Browser aggressively caches CSS files**. Always hard refresh (Cmd+Shift+R / Ctrl+Shift+R) when developing themes or you'll see stale styles.
 
-**Instance Context Lost**: When components don't receive instance context, they default to daemon behavior. Ensure InstanceContext provider wraps the entire app tree.
+### CSS Custom Property Inheritance
 
-**Favicon Not Updating**: Browser favicon cache is persistent. For immediate testing during development, open in private/incognito window or manually clear browser cache.
+**Theme variables are set on `:root` but can be overridden at component level**. Check the cascade when debugging color issues.
 
-**Build Asset Missing**: If theme CSS or favicon assets aren't included in production build, check that they're explicitly imported in the entry point, not just referenced in component code.
+### Instance Context Lost
 
-**Hub Base-Path Version Mismatch**: Pre-#161 daemon versions don't understand `__MYCO_HUB_PREFIX__`, causing routing failures when proxied through hub. Verify daemon version compatibility before hub deployment.
+**When components don't receive instance context, they default to daemon behavior**. Ensure InstanceContext provider wraps the entire app tree.
 
-**Worktree Nested UI Install Required**: New worktrees need `npm install` inside each nested UI workspace (`packages/*/ui/`) — root install doesn't cover them, leading to build failures.
+### Worktree Nested UI Install Required
 
-**Grove Project Context Loss**: Without proper context headers and query cache scoping, data can leak between projects. Always inject `X-Grove-Slug` and `X-Project-Slug` headers and scope cache keys by project.
+**New Grove worktrees need `npm install` inside each nested UI workspace** (`packages/*/ui/`) — root install doesn't cover them, leading to build failures during Phase 6 development.
 
-**Multi-Project Navigation State**: Project switcher state can become stale if not properly synchronized with URL changes. Use URL params as source of truth, not component state.
+### Grove Project Context Loss
 
-**Runtime Status Badge Missing**: If runtime badges don't appear, verify `/api/stats` endpoint returns `runtimeOrigin` field and hook is properly polling. DEV builds should show badges, stable should not.
+**Without proper context headers and query cache scoping, data can leak between projects**. Always inject `X-Grove-Slug` and `X-Project-Slug` headers and scope cache keys by project.
 
-**Machine-Scoped Runtime Context Lost**: Runtime status detection depends on machine-scoped runtime.command files. If context is lost, check that the runtime.command resolution is working and the stats endpoint reflects the correct runtime origin.
+### Runtime Status Badge Missing
 
-**Runtime Badge State Desync**: Runtime badges can become stale if not properly refreshed. Use polling intervals and ensure the daemon stats are being updated correctly when runtime origin changes.
+**If runtime badges don't appear, verify `/api/stats` endpoint returns `runtimeOrigin` field** and hook is properly polling. DEV builds should show badges, stable should not.
 
-**Master-Detail State Sync**: URL params must drive master-detail state, not vice versa. Component state that doesn't reflect in the URL breaks browser history and deep linking.
+### Master-Detail State Sync
 
-**Keyboard Navigation Scope**: Keyboard event listeners for master-detail navigation must be properly scoped to avoid conflicts. Use capture phase carefully and always cleanup listeners.
+**URL params must drive master-detail state, not vice versa**. Component state that doesn't reflect in the URL breaks browser history and deep linking.
 
-**Responsive Breakpoint Coordination**: Master-detail responsive behavior must coordinate with global layout breakpoints. Test mobile behavior thoroughly when detail panel is open.
+### TabSwitcher State Persistence
 
-**URL Routing Case Sensitivity**: Operations category URLs are case-sensitive. Ensure consistent casing between route definitions and navigation calls.
+**Tab state should sync with URL query parameters for proper browser history**. Don't rely on component state alone for active tab tracking from Phase 6 consolidation.
 
-**Settings Registry Timing**: Register all settings before first Settings page render. Late registration causes missing controls and inconsistent state.
+### Phase 6 Worktree Dependencies
 
-**Settings Validation Scope**: Validate setting values both in the UI and in the config update handlers. UI validation prevents bad input, server validation prevents corruption.
+**Phase 6 Grove worktree setup must install dependencies independently in each UI workspace**. Missing nested installs cause build failures during Grove + Team rebuild development.
 
-**Config Override Resolution**: Settings registry must respect the three-tier config architecture (Machine > Grove > Project). UI should clearly indicate which scope a setting comes from and which scope changes will affect.
+### Cloudflare Worker UI Constraints
+
+**Cloudflare Worker API limitations require UI adaptations**: reduced file upload limits, timeout-aware processing, worker-compatible data formats, graceful degradation when worker APIs fail.

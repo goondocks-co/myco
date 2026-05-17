@@ -1,3 +1,5 @@
+import type { CandidateQualityFailureCode } from './skill-candidate-quality.js';
+
 export type CandidateSourceType = 'spore' | 'session' | 'plan' | 'artifact';
 
 export interface CandidateSourceRef {
@@ -63,7 +65,7 @@ export interface BuildCandidateEvidenceBundlesInput {
 
 export interface CandidateEvidenceAssessment {
   score: number;
-  failures: string[];
+  failures: CandidateQualityFailureCode[];
   coverageMatches: string[];
 }
 
@@ -194,7 +196,7 @@ export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
 
 export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): CandidateEvidenceAssessment {
   const safeInput = isRecord(input) ? input : {};
-  const failures: string[] = [];
+  const failures: CandidateQualityFailureCode[] = [];
   const coverageMatches: string[] = [];
   const sourceRefs = normalizeSourceRefs(safeInput.sourceRefs);
 

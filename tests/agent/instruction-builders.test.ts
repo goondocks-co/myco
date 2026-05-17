@@ -20,6 +20,7 @@ import { resolveRequestContextForVault } from '@myco/tools/request-context.js';
 import { getDatabase } from '@myco/db/client.js';
 import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
+import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { insertSpore } from '@myco/db/queries/spores.js';
 import { insertCandidate, updateCandidate } from '@myco/db/queries/skill-candidates.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
@@ -39,7 +40,10 @@ import {
   selectOutlierPairs,
   SKILL_GENERATE_TASK,
   SKILL_EVOLVE_TASK,
+  SKILL_SURVEY_TASK,
+  SKILL_SURVEY_WATERMARK_KEY,
 } from '@myco/agent/instruction-builders.js';
+import { buildSkillSurveyPreparation } from '@myco/agent/skill-survey-prepare.js';
 import { CANDIDATE_STATUS } from '@myco/constants/skill-candidate-status.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 
@@ -562,6 +566,19 @@ describe('buildSkillSurveyInstruction', () => {
     createAgent(TEST_AGENT_ID);
   });
 
+  function seedSurveyCandidate(id: string, status = CANDIDATE_STATUS.IDENTIFIED): void {
+    const now = epochSeconds();
+    insertCandidate({
+      id,
+      agent_id: TEST_AGENT_ID,
+      topic: `Queued survey candidate ${id}`,
+      rationale: `Existing candidate ${id} should be reconciled by skill-survey`,
+      status,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
   it('returns undefined when only active-session data exists', () => {
     const now = epochSeconds();
     createSession('active-only', 'active', now - 100);
@@ -620,37 +637,133 @@ describe('buildSkillSurveyInstruction', () => {
     expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeUndefined();
   });
 
+  it('treats unreconciled identified candidates as survey work even when settled corpus is sparse', async () => {
+    seedSurveyCandidate('queued-identified');
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
+      eligible: true,
+      reason: null,
+    });
+
+    const result = await buildTaskInstruction(
+      SKILL_SURVEY_TASK,
+      { force: true },
+      TEST_AGENT_ID,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      TEST_REQUEST_CONTEXT,
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('Skill Survey Run Admission');
+    expect(result!.instruction).toContain('vault_skill_survey_prepare exactly once');
+    expect(result!.instruction).toContain('ignore_watermark: true');
+    expect(result!.instruction).not.toContain('### Existing Candidate Queue');
+    expect(result!.instruction).not.toContain('queued-identified');
+
+    const preparation = buildSkillSurveyPreparation(TEST_AGENT_ID, TEST_REQUEST_CONTEXT, { ignoreWatermark: true });
+    expect(preparation.prompt_markdown).toContain('### Existing Candidate Queue (1; 1 actionable; 1 cleanup targets)');
+    expect(preparation.prompt_markdown).toContain('queued-identified');
+    expect(preparation.queue.cleanup_targets[0]).toMatchObject({
+      id: 'queued-identified',
+      reconciliation_reasons: expect.arrayContaining([
+        'missing-quality-metadata',
+        'missing-evidence-bundle',
+        'insufficient-source-refs',
+      ]),
+    });
+    expect(preparation.queue.cleanup_target_ids).toEqual(['queued-identified']);
+    expect(preparation.prompt_markdown).toContain('Required cleanup target IDs: ["queued-identified"]');
+  });
+
+  it('lets forced survey reconcile deferred candidates without new settled evidence', () => {
+    seedSurveyCandidate('queued-deferred', CANDIDATE_STATUS.DEFERRED);
+
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
+      eligible: false,
+      reason: 'insufficient-settled-sessions',
+    });
+    expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT, { ignoreWatermark: true })).toEqual({
+      eligible: true,
+      reason: null,
+    });
+
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT, { ignoreWatermark: true });
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('ignore_watermark: true');
+    expect(result!.instruction).not.toContain('### Existing Candidate Queue');
+
+    const preparation = buildSkillSurveyPreparation(TEST_AGENT_ID, TEST_REQUEST_CONTEXT, { ignoreWatermark: true });
+    expect(preparation.prompt_markdown).toContain('### Existing Candidate Queue (1; 1 actionable; 1 cleanup targets)');
+    expect(preparation.prompt_markdown).toContain('queued-deferred');
+  });
+
+  it('keeps prepared survey output compact while preserving all actionable queue items', () => {
+    for (let i = 0; i < 18; i += 1) {
+      seedSurveyCandidate(`legacy-queued-${String(i).padStart(2, '0')}`);
+    }
+    for (let i = 0; i < 60; i += 1) {
+      seedSurveyCandidate(`old-dismissed-${String(i).padStart(2, '0')}`, CANDIDATE_STATUS.DISMISSED);
+    }
+
+    const preparation = buildSkillSurveyPreparation(TEST_AGENT_ID, TEST_REQUEST_CONTEXT, { ignoreWatermark: true });
+
+    expect(preparation.queue.total).toBe(78);
+    expect(preparation.queue.actionable).toBe(18);
+    expect(preparation.queue.cleanup_targets).toHaveLength(18);
+    expect(preparation.queue.cleanup_target_ids).toHaveLength(18);
+    expect(preparation.queue.cleanup_target_ids).toContain('legacy-queued-00');
+    expect(preparation.queue.cleanup_target_ids).toContain('legacy-queued-17');
+    expect(preparation.queue.omitted_non_actionable).toBe(50);
+    expect(JSON.stringify(preparation).length).toBeLessThan(35_000);
+    expect(preparation.prompt_markdown).toContain('18 cleanup targets');
+    expect(preparation.prompt_markdown).not.toContain('Existing candidate legacy-queued-00 should be reconciled');
+  });
+
   it('returns instruction only after enough settled sessions and spores exist', () => {
     createSettledSurveyCorpus();
 
     const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
-    expect(result!.instruction).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
-    expect(result!.instruction).toContain('only propose project-specific procedural domains');
-    expect(result!.instruction).toContain('### Candidate Evidence Bundles (0)');
-    expect(result!.instruction).toContain('settled-1');
-    expect(result!.instruction).toContain('spore-survey-1');
+    expect(result!.instruction).toContain('Skill Survey Run Admission');
+    expect(result!.instruction).toContain('Pass ignore_watermark: false');
+    expect(result!.instruction).not.toContain('### Candidate Evidence Bundles');
+    expect(result!.instruction).not.toContain('spore-survey-1');
+
+    const preparation = buildSkillSurveyPreparation(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
+    expect(preparation.prompt_markdown).toContain('Eligibility gate: requires 2+ settled sessions and 3+ active spores');
+    expect(preparation.prompt_markdown).toContain('only propose project-specific procedural domains');
+    expect(preparation.prompt_markdown).toContain('### Candidate Evidence Bundles (0)');
+    expect(preparation.prompt_markdown).toContain('settled-1');
+    expect(preparation.prompt_markdown).toContain('spore-survey-1');
   });
 
   it('includes candidate evidence bundles from anchor-rich settled corpus', () => {
     createAnchorRichSurveyCorpus();
 
     const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
+    const preparation = buildSkillSurveyPreparation(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
 
     expect(result).toBeDefined();
-    expect(result!.instruction).toContain('### Candidate Evidence Bundles (1)');
-    expect(result!.instruction).toContain('- score: 1.00');
-    expect(result!.instruction).toContain('source_refs:');
-    expect(result!.instruction).toContain('spore:spore-anchor-wisdom');
-    expect(result!.instruction).toContain('spore:spore-anchor-source-1');
-    expect(result!.instruction).toContain('session:settled-anchor-1');
-    expect(result!.instruction).toContain('session:settled-anchor-2');
+    expect(result!.instruction).not.toContain('### Candidate Evidence Bundles');
+    expect(preparation.prompt_markdown).toContain('### Candidate Evidence Bundles (1)');
+    expect(preparation.prompt_markdown).toContain('- score: 1.00');
+    expect(preparation.prompt_markdown).toContain('source_refs:');
+    expect(preparation.prompt_markdown).toContain('spore:spore-anchor-wisdom');
+    expect(preparation.prompt_markdown).toContain('spore:spore-anchor-source-1');
+    expect(preparation.prompt_markdown).toContain('session:settled-anchor-1');
+    expect(preparation.prompt_markdown).toContain('session:settled-anchor-2');
   });
 
   it('returns undefined when no new settled knowledge exists after the watermark', () => {
     createSettledSurveyCorpus();
 
-    expect(buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toBeDefined();
+    const result = buildSkillSurveyInstruction(TEST_AGENT_ID, TEST_REQUEST_CONTEXT);
+    expect(result).toBeDefined();
+    const watermark = result!.context!.skill_survey_watermark!;
+    setState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, SKILL_SURVEY_WATERMARK_KEY, String(watermark), watermark);
     expect(getSkillSurveyEligibility(TEST_AGENT_ID, TEST_REQUEST_CONTEXT)).toEqual({
       eligible: false,
       reason: 'no-new-settled-knowledge',
@@ -747,7 +860,23 @@ describe('buildTaskInstruction', () => {
 
     const result = await buildTaskInstruction('skill-survey', undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
     expect(result).toBeDefined();
-    expect(result!.instruction).toContain('project-specific procedural domains');
+    expect(result!.instruction).toContain('Skill Survey Run Admission');
+    expect(result!.instruction).toContain('vault_skill_survey_prepare');
+    expect(result!.context?.skill_survey_watermark).toBeGreaterThan(0);
+    expect(getState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, SKILL_SURVEY_WATERMARK_KEY)).toBeNull();
+  });
+
+  it('allows manual skill-survey runs to bypass the incremental watermark', async () => {
+    createSettledSurveyCorpus();
+    const now = epochSeconds();
+    setState(TEST_AGENT_ID, TEST_REQUEST_CONTEXT.projectId, SKILL_SURVEY_WATERMARK_KEY, String(now), now);
+
+    await expect(buildTaskInstruction(SKILL_SURVEY_TASK, undefined, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT)).resolves.toBeUndefined();
+
+    const result = await buildTaskInstruction(SKILL_SURVEY_TASK, { force: true }, TEST_AGENT_ID, undefined, undefined, undefined, undefined, TEST_REQUEST_CONTEXT);
+    expect(result).toBeDefined();
+    expect(result!.instruction).toContain('ignore_watermark: true');
+    expect(result!.instruction).toContain('vault_skill_survey_prepare');
   });
 
   it('returns bundle for skill-generate when an approved candidate exists', async () => {
@@ -766,6 +895,7 @@ describe('buildTaskInstruction', () => {
       quality_score: 0.88,
       quality_failures: '[]',
       coverage_matches: JSON.stringify(['dismissed-candidate:old-ready-topic']),
+      reconciliation_reason: 'approved after source-backed review',
       created_at: now,
       updated_at: now,
     });
@@ -778,6 +908,7 @@ describe('buildTaskInstruction', () => {
     expect(result!.instruction).toContain('evidence_bundle_id: bundle-ready-001');
     expect(result!.instruction).toContain('quality_score: 0.88');
     expect(result!.instruction).toContain('dismissed-candidate:old-ready-topic');
+    expect(result!.instruction).toContain('reconciliation_reason: approved after source-backed review');
     expect(result!.instruction).toContain('plan:plan-ready-001');
     expect(result!.context?.candidate_id).toBe('ready-to-generate');
   });

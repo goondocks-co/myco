@@ -75,13 +75,36 @@ function sourceRefLabel(value: unknown): string | null {
   return `${ref.type}:${ref.id}`;
 }
 
+function EvidenceDetailList({ label, values }: { label: string; values: string[] }) {
+  if (values.length === 0) return null;
+  return (
+    <div className="min-w-0">
+      <dt className="text-on-surface-variant">{label}</dt>
+      <dd className="mt-1 flex flex-wrap gap-1.5">
+        {values.map((value) => (
+          <code
+            key={value}
+            className="max-w-full truncate rounded border border-outline-variant/40 bg-surface-container px-1.5 py-0.5 font-mono text-[11px] text-on-surface"
+            title={value}
+          >
+            {value}
+          </code>
+        ))}
+      </dd>
+    </div>
+  );
+}
+
 function CandidateQualityMetadata({ candidate }: { candidate: SkillCandidate }) {
   const sourceRefs = parseJsonArray(candidate.source_ids).map(sourceRefLabel).filter((label): label is string => Boolean(label));
   const failures = parseJsonArray(candidate.quality_failures).filter((value): value is string => typeof value === 'string');
   const coverageMatches = parseJsonArray(candidate.coverage_matches).filter((value): value is string => typeof value === 'string');
+  const qualityScore = typeof candidate.quality_score === 'number' && Number.isFinite(candidate.quality_score)
+    ? candidate.quality_score
+    : null;
   const hasMetadata =
     candidate.evidence_bundle_id ||
-    candidate.quality_score !== null ||
+    qualityScore !== null ||
     failures.length > 0 ||
     coverageMatches.length > 0 ||
     sourceRefs.length > 0 ||
@@ -90,43 +113,60 @@ function CandidateQualityMetadata({ candidate }: { candidate: SkillCandidate }) 
   if (!hasMetadata) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 font-sans text-xs text-on-surface-variant">
-      {candidate.quality_score !== null && (
-        <Badge variant={candidate.quality_score >= 0.7 ? 'secondary' : 'outline'}>
-          Quality {(candidate.quality_score * 100).toFixed(0)}%
-        </Badge>
-      )}
-      {candidate.evidence_bundle_id && (
-        <Badge variant="outline" className="max-w-[240px] truncate" title={candidate.evidence_bundle_id}>
-          Bundle {candidate.evidence_bundle_id}
-        </Badge>
-      )}
-      {sourceRefs.length > 0 && (
-        <Badge variant="outline" title={sourceRefs.join(', ')}>
-          {sourceRefs.length} source{sourceRefs.length === 1 ? '' : 's'}
-        </Badge>
-      )}
-      {coverageMatches.length > 0 && (
-        <Badge variant="outline" title={coverageMatches.join(', ')}>
-          {coverageMatches.length} overlap{coverageMatches.length === 1 ? '' : 's'}
-        </Badge>
-      )}
-      {failures.slice(0, 3).map((failure) => (
-        <Badge key={failure} variant="outline" className="opacity-70">
-          {failure}
-        </Badge>
-      ))}
-      {failures.length > 3 && (
-        <Badge variant="outline" className="opacity-70">
-          +{failures.length - 3} more
-        </Badge>
-      )}
-      {candidate.reconciliation_reason && (
-        <span className="min-w-0 truncate" title={candidate.reconciliation_reason}>
-          {candidate.reconciliation_reason}
+    <details className="group font-sans text-xs text-on-surface-variant">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 [&::-webkit-details-marker]:hidden">
+        {qualityScore !== null && (
+          <Badge variant={qualityScore >= 0.7 ? 'secondary' : 'outline'}>
+            Quality {(qualityScore * 100).toFixed(0)}%
+          </Badge>
+        )}
+        {candidate.evidence_bundle_id && (
+          <Badge variant="outline" className="max-w-[240px] truncate" title={candidate.evidence_bundle_id}>
+            Bundle {candidate.evidence_bundle_id}
+          </Badge>
+        )}
+        {sourceRefs.length > 0 && (
+          <Badge variant="outline" title={sourceRefs.join(', ')}>
+            {sourceRefs.length} source{sourceRefs.length === 1 ? '' : 's'}
+          </Badge>
+        )}
+        {coverageMatches.length > 0 && (
+          <Badge variant="outline" title={coverageMatches.join(', ')}>
+            {coverageMatches.length} overlap{coverageMatches.length === 1 ? '' : 's'}
+          </Badge>
+        )}
+        {failures.slice(0, 3).map((failure) => (
+          <Badge key={failure} variant="outline" className="opacity-70">
+            {failure}
+          </Badge>
+        ))}
+        {failures.length > 3 && (
+          <Badge variant="outline" className="opacity-70">
+            +{failures.length - 3} more
+          </Badge>
+        )}
+        <span className="text-on-surface-variant underline-offset-2 group-open:underline">
+          Evidence details
         </span>
-      )}
-    </div>
+      </summary>
+
+      <dl className="mt-3 grid gap-3 border-l border-outline-variant/40 pl-3 sm:grid-cols-2">
+        {candidate.evidence_bundle_id && (
+          <EvidenceDetailList label="Bundle" values={[candidate.evidence_bundle_id]} />
+        )}
+        <EvidenceDetailList label="Sources" values={sourceRefs} />
+        <EvidenceDetailList label="Coverage matches" values={coverageMatches} />
+        <EvidenceDetailList label="Quality failures" values={failures} />
+        {candidate.reconciliation_reason && (
+          <div className="min-w-0 sm:col-span-2">
+            <dt className="text-on-surface-variant">Latest reconciliation</dt>
+            <dd className="mt-1 leading-relaxed text-on-surface">
+              {candidate.reconciliation_reason}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </details>
   );
 }
 

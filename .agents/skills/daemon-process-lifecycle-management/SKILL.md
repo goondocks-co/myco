@@ -134,40 +134,6 @@ class GroveRuntimeCache {
 
 **Cache safety mechanisms**: Bounded eviction (100 entries), pin protection for critical handles, TTL expiration (5 minutes), re-resolution on demand.
 
-### Version-Specific Migration Constant Patterns
-
-**Migration constant-freeze pattern for version-gated migrations:**
-
-```typescript
-// Version-specific migration blocks with constant values
-const SCHEMA_V8_MIGRATION_CONSTANTS = Object.freeze({
-  NOTIFICATION_TABLE_SCHEMA: `
-    CREATE TABLE notifications (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      data TEXT NOT NULL
-    )
-  `,
-  MIGRATION_BATCH_SIZE: 1000,
-  TARGET_VERSION: '0.15.0'
-});
-
-async function executeSchemaV8Migration(): Promise<void> {
-  // Use frozen constants to prevent runtime modification
-  await db.exec(SCHEMA_V8_MIGRATION_CONSTANTS.NOTIFICATION_TABLE_SCHEMA);
-  
-  // Process in fixed batch sizes
-  let processed = 0;
-  while (processed < totalRecords) {
-    await processBatch(SCHEMA_V8_MIGRATION_CONSTANTS.MIGRATION_BATCH_SIZE);
-    processed += SCHEMA_V8_MIGRATION_CONSTANTS.MIGRATION_BATCH_SIZE;
-  }
-}
-```
-
-**Constant-freeze benefits**: Runtime immutability, version consistency, debugging reliability, rollback safety.
-
 ### Grove Boundary Violation Prevention
 
 **Critical pattern**: Prevent grove boundary violations in `forEachGrove()` operations:
@@ -201,54 +167,6 @@ async function safeGroveOperation() {
 **Grove boundary violation symptoms**: Manifest corruption during multi-grove operations, ownership gaps in grove-specific resources, race conditions in grove state management.
 
 **Prevention pattern**: Always resolve external bindings outside of `forEachGrove()` iterations to maintain proper grove ownership boundaries.
-
-### Machine-Scoped Runtime Command Architecture
-
-```typescript
-// Machine-scoped runtime command handling
-const MACHINE_RUNTIME_COMMAND_PATH = path.join(os.homedir(), '.myco', 'runtime.command');
-
-// Reading machine runtime command
-const runtimeCommand = fs.readFileSync(MACHINE_RUNTIME_COMMAND_PATH, 'utf-8').trim();
-```
-
-**Machine runtime patterns**: Location `~/.myco/runtime.command`, provides consistent runtime across all groves, eliminates grove-specific complexity.
-
-### Configuration Performance Optimization
-
-**Critical performance issue**: Avoid TOML re-parsing on every HTTP request:
-
-```typescript
-// WRONG: Parse TOML on every request (grove coordination race)
-app.use((req, res, next) => {
-  const config = parseMycoToml(projectRoot); // Heavy operation on every request
-  req.groveConfig = config;
-  next();
-});
-
-// RIGHT: Cache parsed TOML with invalidation
-const configCache = new Map();
-const CACHE_TTL = 30000; // 30 seconds
-
-app.use((req, res, next) => {
-  const projectRoot = getProjectRoot(req);
-  const cacheKey = `${projectRoot}:myco.yaml`;
-  const cached = configCache.get(cacheKey);
-
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-    req.groveConfig = cached.config;
-    return next();
-  }
-
-  // Parse and cache with timestamp
-  const config = parseMycoToml(projectRoot);
-  configCache.set(cacheKey, { config, timestamp: Date.now() });
-  req.groveConfig = config;
-  next();
-});
-```
-
-**Performance gotcha**: Re-parsing TOML on every HTTP request causes grove coordination races and degrades daemon responsiveness.
 
 ## Procedure B: Unified Eviction and Restart
 
@@ -288,9 +206,56 @@ fi
 
 ### Grove-Coordinated Restart Paths
 
-**Common global restart triggers**: `myco restart` CLI command, global daemon health reconciliation, system update application, cross-grove health-check fallback recovery, global version-sync operations, Hub removal cleanup.
+**Common global restart triggers**: `myco restart` CLI command, global daemon health reconciliation, system update application, cross-grove health-check fallback recovery, global version-sync operations, Hub removal cleanup, **MCP bridge reconnect failures**.
 
 All use the same grove-aware eviction → spawn cycle for consistency.
+
+### Four Daemon Restart Failure Modes and Mitigations
+
+**Critical wisdom**: Daemon restarts during active sessions trigger four distinct failure modes that require different recovery patterns:
+
+#### Mode 1: Parallel Spawn Race (Multiple Daemons Launch Simultaneously)
+**Symptoms**: Multiple daemon processes, port conflict errors, inconsistent daemon.json state
+**Mitigation**: 3-second coalesce window in spawn logic, atomic daemon.json updates, process discovery verification
+
+#### Mode 2: Port Binding Collision (Previous Process Holds Port)
+**Symptoms**: "Port already in use" errors, new daemon fails to start, stale process detection
+**Mitigation**: SIGTERM → SIGKILL sequence with port release verification, process cleanup before spawn
+
+#### Mode 3: Stale Process Lingering (Old Daemon Orphaned)
+**Symptoms**: Healthy new daemon but stale processes consuming resources, confusion in process discovery
+**Mitigation**: PID validation via kill -0, cleanup of orphaned processes, daemon.json reconciliation
+
+#### Mode 4: MCP Bridge Reconnect Failure (Session Tool Loss)
+**Symptoms**: Agent sessions lose MCP tool access, "myco_remember" and vault tools fail, session must be restarted
+**Recovery patterns**:
+- **Session restart required** - MCP bridge cannot auto-reconnect after daemon restart
+- **Detection**: Tool calls return connection errors, MCP stdio bridge reports broken pipe
+- **User mitigation**: Close and reopen agent session to spawn fresh MCP bridge
+- **Development workaround**: Use CLI fallbacks (`myco spore` commands) until session restart
+
+```typescript
+// MCP Bridge Health Check for Restart Detection
+async function detectMcpBridgeHealth(): Promise<{ healthy: boolean; reason?: string }> {
+  try {
+    // Test basic MCP tool connectivity
+    const response = await mcpClient.call('myco_vault_state', {});
+    return { healthy: true };
+  } catch (error) {
+    if (error.message.includes('connection') || error.message.includes('pipe')) {
+      return { 
+        healthy: false, 
+        reason: 'MCP bridge connection lost - daemon likely restarted, session restart required'
+      };
+    }
+    return { healthy: false, reason: error.message };
+  }
+}
+```
+
+**MCP Bridge Failure Detection Signals**: Tool calls failing with connection errors, stdio bridge reporting broken pipe, MCP child process exit without restart capability, agent harness losing vault access mid-session.
+
+**Critical limitation**: Unlike daemon process restart which is automatic, MCP bridge reconnect requires manual session restart due to stdio bridge architecture constraints.
 
 ## Procedure C: Process Identity and State Management
 
@@ -442,20 +407,6 @@ app.get('/ready', async (req, res) => {
 });
 ```
 
-**Liveness probe characteristics:**
-- Fast response (< 100ms typical)
-- Process-level health only
-- No external dependencies
-- No database queries
-- No grove coordination
-
-**Readiness probe characteristics:**
-- Context-aware validation
-- Database connectivity check
-- Grove coordination validation
-- Full service stack verification
-- May fail while process is alive
-
 ### Session Freshness Check with Tool-Use Activity Detection
 
 **Critical fix**: Session freshness checks must account for tool-use activity during long agentic turns:
@@ -497,8 +448,6 @@ async function isSessionFresh(sessionId: string): Promise<boolean> {
 
 **Session freshness bug symptoms**: Sessions marked stale during active agentic workflows, premature session termination in long-running agent tasks, health checks missing ongoing tool-use activity.
 
-**Fix pattern**: Always include tool-use activity timestamps in session freshness calculations to properly handle long agentic turns.
-
 ### Dual-Probe Health Validation
 
 ```bash
@@ -533,24 +482,6 @@ fi
 7. **Evict and restart global daemon** if unresponsive
 8. **Re-establish grove connections** after restart
 
-### Grove Responsiveness Monitoring
-
-```typescript
-const startTime = Date.now();
-const response = await fetch(`http://localhost:${globalPort}/health`);
-const responseTime = Date.now() - startTime;
-
-if (responseTime > GLOBAL_SLOW_RESPONSE_THRESHOLD) {
-  // Global daemon degraded - may need restart with grove coordination
-  
-  // Check if TOML parsing is causing slowdown
-  if (responseTime > TOML_PARSING_THRESHOLD) {
-    console.warn('Possible TOML re-parsing performance issue detected');
-    await optimizeConfigCaching();
-  }
-}
-```
-
 ## Procedure F: Update Application Workflow
 
 ### Global Daemon Replacement During Updates
@@ -579,24 +510,6 @@ myco daemon snapshot --output ~/.myco/pre-update-snapshot.json --include-groves 
 myco daemon restore --input ~/.myco/pre-update-snapshot.json --coordinate-groves --verify-hub-migration
 ```
 
-### Hub Removal Migration During Updates
-
-```bash
-# Update workflow with Hub cleanup
-if myco daemon check-hub-dependency --version-target "$NEW_VERSION"; then
-  echo "New version removes Hub dependency - preparing migration"
-  
-  # Capture Hub state before update
-  myco daemon export-hub-state --output ~/.myco/hub-migration.json
-  
-  # Update with Hub migration
-  myco daemon update --migrate-hub --hub-state ~/.myco/hub-migration.json
-  
-  # Verify Hub removal
-  myco daemon verify-hub-removal
-fi
-```
-
 ## Procedure G: Multi-Environment Isolation and Grove Ownership
 
 ### Grove Ownership Enforcement
@@ -611,26 +524,20 @@ forEachGrove((grove) => {
   }
   // Proceed with grove operations
 });
+
+// Ownership validation function
+async function validateOwnership(grove: Grove, operation: string): Promise<void> {
+  const currentVariant = daemonVariant(daemonStateDir);
+  if (grove.served_by !== currentVariant) {
+    throw new Error(`Cannot ${operation} grove ${grove.id}: owned by ${grove.served_by}, not ${currentVariant}`);
+  }
+}
 ```
 
 **Ownership validation patterns:**
 - Ensure every Grove has a `served_by` field matching its daemon variant (`'service'` or `'service-dev'`)
 - Validate variant consistency during Grove loading
-- Reject operations on Groves with mismatched ownership
-
-### Multi-Environment Service Directory Isolation
-
-Coordinate separate service directories with mutual eviction prevention:
-
-```bash
-# Production: ~/.myco/service/ (default daemon variant 'service')
-# Development: ~/.myco/service-dev/ (dogfood daemon variant 'service-dev')
-```
-
-**Environment-specific isolation:**
-- Use environment-specific lock files
-- Prevent binding conflicts between daemon variants  
-- Validate service directory ownership before startup using `daemonVariant(daemonStateDir)`
+- Reject operations on Groves with mismatched ownership using `validateOwnership()`
 
 ### Scope-Aware Daemon Operations
 
@@ -638,47 +545,16 @@ Implement daemon-scope-aware operations that respect ownership boundaries:
 
 ```typescript
 async function resolveAfterRepair(grove: Grove) {
-  // Add ownership gate
-  const currentVariant = daemonVariant(daemonStateDir);
-  if (grove.served_by !== currentVariant) {
-    throw new Error(`Cannot repair grove ${grove.id}: owned by ${grove.served_by}, not ${currentVariant}`);
-  }
+  // Add ownership gate using validateOwnership()
+  await validateOwnership(grove, 'repair');
   // Proceed with repair operation
 }
 ```
 
 **Ownership gates in shared code paths:**
-- Add ownership checks to vault mutation operations
-- Validate scope before database writes using `validateOwnership()`
+- Add ownership checks to vault mutation operations using `validateOwnership()`
+- Validate scope before database writes  
 - Prevent dogfood daemons from mutating production vaults
-
-### Multi-Tenant Daemon Coordination
-
-Coordinate multiple daemon instances with isolation guarantees and cross-project query leak prevention:
-
-```typescript
-// Add request context to all database operations
-async function queryWithProjectScoping(query: string, params: any[], requestContext: MycoRequestContext) {
-  // Ensure project_id is always included in queries
-  const projectId = rowProjectIdFromRequestContext(requestContext);
-  const scopedQuery = `${query} AND project_id = ?`;
-  const scopedParams = [...params, projectId];
-  
-  return await db.all(scopedQuery, scopedParams);
-}
-
-// Validate request context propagation in daemon operations
-function validateRequestContextPropagation(operation: string, context: MycoRequestContext) {
-  if (!context || !context.projectId) {
-    throw new Error(`Request context missing for operation ${operation} - potential cross-project data leak`);
-  }
-}
-```
-
-**Multi-tenancy isolation requirements:**
-- Thread request context through all database query paths to prevent cross-project data leakage
-- Add isolation verification tests using `isProjectActive()` checks
-- Implement request context validation at database query entry points
 
 ## Cross-Cutting Gotchas
 
@@ -707,74 +583,33 @@ try {
 }
 ```
 
-### Global State Synchronization
+### MCP Bridge Session Dependencies
 
-**Grove state drift detection**: Always validate grove state consistency with global daemon:
+**MCP bridge restart gotcha**: Unlike daemon processes that restart automatically, MCP bridges require manual session restart:
 
-```bash
-# Wrong - trusting global daemon state blindly
-kill $(jq -r '.pid' ~/.myco/daemon.json)
+```typescript
+// Wrong - assuming MCP bridge auto-reconnects after daemon restart
+async function handleDaemonRestart() {
+  await restartDaemon();
+  // MCP bridge connection lost - tool calls will fail
+  await mcpClient.call('myco_vault_state', {}); // This will fail
+}
 
-# Correct - validate grove coordination first
-DAEMON_PID=$(jq -r '.pid' ~/.myco/daemon.json)
-if [ "$(jq -r '.groveCoordination' ~/.myco/daemon.json)" = "true" ]; then
-  # Coordinate grove shutdown first
-  myco daemon coordinate-shutdown
-fi
-kill -TERM $DAEMON_PID
+// Right - detect MCP bridge health and guide user to restart session
+async function handleMcpBridgeFailure() {
+  const bridgeHealth = await detectMcpBridgeHealth();
+  if (!bridgeHealth.healthy && bridgeHealth.reason?.includes('connection lost')) {
+    console.warn('MCP bridge connection lost - session restart required');
+    console.log('Please close and reopen your agent session to restore MCP tool access');
+    return { requiresSessionRestart: true };
+  }
+}
 ```
-
-### Hub Migration State Tracking
-
-**Hub removal gotcha**: Always verify Hub migration completion before removing Hub artifacts:
-
-```bash
-# Wrong - remove Hub without verification
-rm -rf ~/.myco/hub
-
-# Right - verify migration first
-if [ "$(jq -r '.hubMigrated' ~/.myco/daemon.json)" = "true" ]; then
-  rm -rf ~/.myco/hub
-else
-  echo "Hub migration not complete - preserving Hub artifacts"
-fi
-```
-
-### Liveness vs Readiness Probe Usage
-
-**Probe selection gotcha**: Choose the appropriate probe for each use case:
-
-```bash
-# Wrong - using readiness probe for process restart decisions
-if ! curl -s "http://localhost:$PORT/ready"; then
-  myco daemon restart  # May restart healthy process with temporary readiness issues
-fi
-
-# Right - use liveness probe for restart decisions
-if ! curl -s "http://localhost:$PORT/health"; then
-  myco daemon restart  # Only restart when process is actually dead
-fi
-
-# Right - use readiness probe for load balancing and request routing
-if curl -s "http://localhost:$PORT/ready"; then
-  # Safe to route requests to this daemon
-  route_requests_to_daemon
-fi
-```
-
-**Probe timing gotchas**:
-- Liveness probes should timeout quickly (< 5 seconds) to detect process death
-- Readiness probes can timeout longer (10-30 seconds) for thorough validation
-- Never use readiness failure as sole trigger for process restart
 
 ### Grove Ownership and Multi-Environment Coordination
 
-**Always validate Grove ownership** before any mutation operation - shared code paths can easily bypass scope boundaries
+**Always validate Grove ownership** using `validateOwnership()` before any mutation operation - shared code paths can easily bypass scope boundaries
 
-**Service directory isolation** requires careful path management - ensure environment-specific directories are properly isolated using `SERVICE_DEV_DIRNAME` constant
-
-**Legacy scope elimination** must be systematic - any remaining `'legacy-project'` references in connection scopes can create ownership bypass vulnerabilities
+**Service directory isolation** requires careful path management - ensure environment-specific directories are properly isolated
 
 **Request context propagation gaps** - any database query path without request context creates potential cross-project data leakage in multi-tenant environments. All DB operations must validate and include project scoping to prevent query leaks across project boundaries
-
-**Additional gotchas**: Global daemon port scanning must account for grove-specific coordination requirements. Machine runtime preference compatibility with global daemon version-sync operations prevents infinite restart loops. The global daemon state must stay synchronized with grove-specific configuration to prevent coordination failures.

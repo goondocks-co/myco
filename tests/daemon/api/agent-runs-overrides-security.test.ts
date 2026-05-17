@@ -12,9 +12,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun
 import { vi } from '../../helpers/vi-shim.js';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { registerAgent } from '@myco/db/queries/agents.js';
+import { insertCandidate } from '@myco/db/queries/skill-candidates.js';
 import { createAgentRunHandlers } from '@myco/daemon/api/agent-runs';
 import type { RouteRequest } from '@myco/daemon/router';
 import { TEST_REQUEST_CONTEXT } from '../../helpers/request-context';
+import { DEFAULT_AGENT_ID } from '@myco/constants.js';
 
 const epochNow = () => Math.floor(Date.now() / 1000);
 
@@ -48,7 +50,7 @@ describe('POST /api/agent/run — executionOverrides security', () => {
   beforeEach(() => {
     cleanTestDb();
     runAgentSpy.mockClear();
-    registerAgent({ id: 'myco-agent', name: 'Test', created_at: epochNow() });
+    registerAgent({ id: DEFAULT_AGENT_ID, name: 'Test', created_at: epochNow() });
   });
 
   it('rejects provider.apiKey in executionOverrides', async () => {
@@ -132,5 +134,32 @@ describe('POST /api/agent/run — executionOverrides security', () => {
     }];
     expect(opts.executionOverrides?.phases?.extract?.provider?.baseUrl).toBeUndefined();
     expect(opts.executionOverrides?.phases?.embed?.provider?.baseUrl).toBe('http://localhost:8080');
+  });
+
+  it('uses the default agent id when building manual skill-survey admission', async () => {
+    const now = epochNow();
+    insertCandidate({
+      id: 'queued-skill-survey-candidate',
+      agent_id: DEFAULT_AGENT_ID,
+      topic: 'Queued candidate',
+      rationale: 'Needs reconciliation',
+      created_at: now,
+      updated_at: now,
+    });
+
+    const { handleRun } = makeHandlers();
+    const response = await handleRun(makeRequest({
+      body: {
+        task: 'skill-survey',
+        force: true,
+      },
+    }));
+
+    expect(response.body).toMatchObject({ ok: true, message: 'Agent started' });
+    expect(JSON.stringify(response.body)).not.toContain('skipped');
+    expect(runAgentSpy).toHaveBeenCalledTimes(1);
+    const [, opts] = runAgentSpy.mock.calls[0] as [string, { agentId?: string; instruction?: string }];
+    expect(opts.agentId).toBe(DEFAULT_AGENT_ID);
+    expect(opts.instruction).toContain('ignore_watermark: true');
   });
 });

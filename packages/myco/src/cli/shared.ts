@@ -12,6 +12,16 @@ import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
 
+export function isHelpRequest(args: readonly string[]): boolean {
+  return args.includes('--help') || args.includes('-h');
+}
+
+export function printHelpIfRequested(args: readonly string[], usage: string): boolean {
+  if (!isHelpRequest(args)) return false;
+  process.stdout.write(usage);
+  return true;
+}
+
 /**
  * Initialize the singleton database for direct CLI reads.
  * Used by CLI commands that only need reads (stats, search, session).

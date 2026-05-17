@@ -66,6 +66,7 @@ const REASONING_OPTIONS: ReasoningLevel[] = ['low', 'default', 'high'];
  *  `undefined`, so "use task default" gets encoded as this literal and
  *  converted back to `undefined` in the onChange handler. */
 const TASK_DEFAULT_SENTINEL = '__task_default__';
+const SKILL_SURVEY_TASK = 'skill-survey';
 
 function varLabel(name: string): string {
   return VAR_LABELS[name] ?? name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -106,6 +107,7 @@ export function RunTaskDialog({
   const [varValues, setVarValues] = useState<Record<string, string>>({});
   const [instruction, setInstruction] = useState('');
   const [dryRun, setDryRun] = useState(false);
+  const [runNotice, setRunNotice] = useState<string | null>(null);
 
   // Run-configuration form state. `undefined` in any slot means "use task
   // default"; the submit path only sends fields that actually differ (see
@@ -177,6 +179,7 @@ export function RunTaskDialog({
       setVarValues({});
       setInstruction('');
       setDryRun(false);
+      setRunNotice(null);
       setOverridesOpen(false);
       setReasoning(undefined);
       setPhaseOverrides({});
@@ -351,6 +354,7 @@ export function RunTaskDialog({
   }
 
   function handleRun() {
+    setRunNotice(null);
     const parts: string[] = [];
     for (const v of templateVars) {
       const val = varValues[v]?.trim();
@@ -367,12 +371,17 @@ export function RunTaskDialog({
         task: effectiveSelection || undefined,
         instruction: fullInstruction,
         ...(dryRun ? { dryRun: true } : {}),
+        ...(effectiveSelection === SKILL_SURVEY_TASK ? { force: true } : {}),
         ...(overrides ? { executionOverrides: overrides } : {}),
       },
       {
         onSuccess: (data) => {
+          if (data?.status === 'skipped' || !data?.runId) {
+            setRunNotice(data?.message ?? 'Task skipped — no work to do.');
+            return;
+          }
           onOpenChange(false);
-          onTriggered?.(data?.runId);
+          onTriggered?.(data.runId);
         },
       },
     );
@@ -637,6 +646,12 @@ export function RunTaskDialog({
           {error && (
             <p className="font-sans text-xs text-tertiary">
               {error instanceof Error ? error.message : 'Failed to trigger run'}
+            </p>
+          )}
+
+          {runNotice && (
+            <p className="rounded-md bg-surface-container-low px-3 py-2 font-sans text-xs text-on-surface-variant">
+              {runNotice}
             </p>
           )}
         </div>

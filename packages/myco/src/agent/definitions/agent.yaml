@@ -23,6 +23,10 @@ tools:
   - vault_release_state
   - vault_state
   - vault_edges
+  - vault_skill_survey_prepare
+  - vault_skill_survey_bundle_decisions
+  - vault_skill_survey_reconciliation_plan
+  - vault_skill_survey_apply_reconciliation
   - vault_skill_candidates
   - vault_skill_records
   # Write tools

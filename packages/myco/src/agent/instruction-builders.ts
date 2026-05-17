@@ -33,12 +33,10 @@ import { listCandidates } from '@myco/db/queries/skill-candidates.js';
 import { describedCanopyEntriesPredicate, CANOPY_ENTRIES_ORDER_BY } from '@myco/db/queries/canopy.js';
 import { buildScheduledCortexInstruction } from '@myco/context/cortex-brief.js';
 import { getDatabase } from '@myco/db/client.js';
-import { countSpores, getSpore, listSpores } from '@myco/db/queries/spores.js';
-import { countSessions, getSession, listSessions } from '@myco/db/queries/sessions.js';
+import { getSpore, listSpores } from '@myco/db/queries/spores.js';
+import { getSession } from '@myco/db/queries/sessions.js';
 import { listSkillRecords, updateSkillRecord } from '@myco/db/queries/skill-records.js';
 import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
-import { listDigestExtracts } from '@myco/db/queries/digest-extracts.js';
-import { getState, setState } from '@myco/db/queries/agent-state.js';
 import { epochSeconds } from '@myco/constants.js';
 import { shortlistSemanticIds, type SemanticShortlistProvider } from '@myco/agent/semantic-shortlist.js';
 import { detectDrift, type SkillFileFingerprint } from '@myco/agent/skill-drift.js';
@@ -46,7 +44,12 @@ import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
 } from './tools/skill-validator.js';
-import { buildCandidateEvidenceBundles, renderEvidenceBundlesForPrompt } from './skill-candidate-evidence.js';
+import {
+  getSkillSurveyEligibility,
+  SKILL_SURVEY_WATERMARK_KEY,
+} from './skill-survey-prepare.js';
+
+export { getSkillSurveyEligibility, SKILL_SURVEY_WATERMARK_KEY };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +67,7 @@ export interface TaskRunContext {
   candidate_id?: string;
   cortex_instruction_input_hash?: string;
   canopy_map_inputs_hash?: string;
+  skill_survey_watermark?: number;
 }
 
 /**
@@ -93,74 +97,8 @@ export const CANOPY_MAP_REPORT_ACTION = 'canopy_map';
 /** details.content key on the canopy_map vault_report payload. */
 export const CANOPY_MAP_CONTENT_KEY = 'content';
 
-/** Caps for pre-assembled survey context. */
-const SURVEY_MAX_WISDOM_SPORES = 30;
-const SURVEY_MAX_SESSIONS = 15;
-const SURVEY_MIN_SETTLED_SESSIONS = 2;
-const SURVEY_MIN_SETTLED_ACTIVE_SPORES = 3;
-
-/** State key for the survey watermark. */
-const SURVEY_WATERMARK_KEY = 'skill-survey-watermark';
-
-export interface SkillSurveyEligibility {
-  eligible: boolean;
-  reason: 'insufficient-settled-sessions' | 'insufficient-settled-spores' | 'no-new-settled-knowledge' | null;
-}
-
 function scopedOptions(scope: ProjectScope): { scope: ProjectScope } {
   return { scope };
-}
-
-/**
- * Determine whether skill-survey has enough settled knowledge to produce
- * meaningful, project-specific candidates.
- */
-export function getSkillSurveyEligibility(
-  agentId?: string,
-  requestContext?: MycoRequestContext,
-): SkillSurveyEligibility {
-  const scope = projectScopeFromRequestContext(requestContext);
-  const projectId = requestContext!.projectId;
-  const settledSessionCount = countSessions({ ...scopedOptions(scope), includeActive: false });
-  if (settledSessionCount < SURVEY_MIN_SETTLED_SESSIONS) {
-    return { eligible: false, reason: 'insufficient-settled-sessions' };
-  }
-
-  const settledSporeCount = countSpores({ ...scopedOptions(scope), includeActive: false, status: 'active' });
-  if (settledSporeCount < SURVEY_MIN_SETTLED_ACTIVE_SPORES) {
-    return { eligible: false, reason: 'insufficient-settled-spores' };
-  }
-
-  if (!agentId) {
-    return { eligible: true, reason: null };
-  }
-
-  const watermarkState = getState(agentId, projectId, SURVEY_WATERMARK_KEY);
-  const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
-  if (watermarkEpoch <= 0) {
-    return { eligible: true, reason: null };
-  }
-
-  const hasNewSettledSessions = countSessions({
-    ...scopedOptions(scope),
-    includeActive: false,
-    since: watermarkEpoch,
-  }) > 0;
-  if (hasNewSettledSessions) {
-    return { eligible: true, reason: null };
-  }
-
-  const hasNewSettledSpores = countSpores({
-    ...scopedOptions(scope),
-    includeActive: false,
-    status: 'active',
-    since: watermarkEpoch,
-  }) > 0;
-  if (hasNewSettledSpores) {
-    return { eligible: true, reason: null };
-  }
-
-  return { eligible: false, reason: 'no-new-settled-knowledge' };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +135,7 @@ export function buildSkillGenerateInstruction(
     `quality_score: ${c.quality_score ?? '(none)'}`,
     `quality_failures: ${c.quality_failures || '[]'}`,
     `coverage_matches: ${c.coverage_matches || '[]'}`,
+    `reconciliation_reason: ${c.reconciliation_reason ?? '(none)'}`,
     `source_ids: ${c.source_ids || '[]'}`,
     `supersedes: ${c.supersedes || '[]'}`,
     '',
@@ -241,135 +180,41 @@ export function buildSkillGenerateInstruction(
 /**
  * Build the instruction for a skill-survey run.
  *
- * Pre-assembles a baseline context document from the vault so the explore
- * phase gets zero-turn orientation. Caps the input to keep turn budgets
- * predictable regardless of time gaps between runs. Tracks a watermark
- * via agent_state so subsequent runs process incrementally.
+ * Performs run admission only. Deterministic survey preparation happens
+ * inside the harness via vault_skill_survey_prepare so the read is audited
+ * as part of the run rather than hidden in the pre-run UI check.
  */
 export function buildSkillSurveyInstruction(
   agentId: string,
   requestContext?: MycoRequestContext,
+  options: { ignoreWatermark?: boolean } = {},
 ): BuiltTaskInstruction | undefined {
-  const scope = projectScopeFromRequestContext(requestContext);
-  const projectId = requestContext!.projectId;
-  const eligibility = getSkillSurveyEligibility(agentId, requestContext);
+  const eligibility = getSkillSurveyEligibility(agentId, requestContext, options);
   if (!eligibility.eligible) {
     return undefined;
   }
 
   const now = epochSeconds();
-
-  // Read watermark — 0 means "never surveyed, scan everything"
-  const watermarkState = getState(agentId, projectId, SURVEY_WATERMARK_KEY);
-  const watermarkEpoch = watermarkState ? Number(watermarkState.value) : 0;
-  const sinceFilter = watermarkEpoch > 0 ? { since: watermarkEpoch } : {};
+  const ignoreWatermark = options.ignoreWatermark === true;
 
   const parts: string[] = [
-    '## Pre-assembled Vault Context',
+    '## Skill Survey Run Admission',
     '',
-    `Survey watermark: ${watermarkEpoch === 0 ? 'first run (full scan)' : new Date(watermarkEpoch * 1000).toISOString()}`,
-    `Eligibility gate: requires ${SURVEY_MIN_SETTLED_SESSIONS}+ settled sessions and ${SURVEY_MIN_SETTLED_ACTIVE_SPORES}+ active spores from settled work.`,
+    'Pre-run admission confirmed skill-survey has work to do.',
+    `ignore_watermark: ${ignoreWatermark ? 'true' : 'false'}`,
+    `admission_reason: ${eligibility.reason ?? 'eligible'}`,
     '',
-    'CRITICAL: only propose project-specific procedural domains.',
-    '- A valid domain must be anchored to this repository\'s components, files, commands, or conventions.',
-    '- Generic engineering topics that could apply to any Node/TypeScript/React repo are not candidates.',
-    '- If a domain fails repo-specificity or cross-session evidence, reject it instead of creating or updating a candidate.',
+    'The prepare phase must call vault_skill_survey_prepare exactly once.',
+    `Pass ignore_watermark: ${ignoreWatermark ? 'true' : 'false'} to that tool.`,
+    'Treat the tool response as the source of truth for digest context, settled evidence, existing queue state, and candidate evidence bundles.',
+    'Do not infer queue cleanup or candidate quality from this admission instruction alone.',
     '',
   ];
 
-  // 1. Digest — smallest tier only (landscape overview without flooding context).
-  // Full digests can be 50K+ chars across tiers; the smallest tier provides
-  // sufficient orientation for the explore phase to direct follow-up queries.
-  const digests = listDigestExtracts(agentId, scope);
-  if (digests.length > 0) {
-    const smallest = digests.reduce((a, b) => a.tier < b.tier ? a : b);
-    parts.push('### Digest');
-    parts.push(`**Tier ${smallest.tier}** (${smallest.content.length} chars):`);
-    parts.push(smallest.content);
-    parts.push('');
-  }
-
-  // 2. Wisdom spores — highest signal observations.
-  // Skill-survey runs against settled work only so spores from in-flight
-  // sessions don't bait candidates for procedures that haven't stabilized.
-  const wisdomSpores = listSpores({
-    ...scopedOptions(scope),
-    observation_type: 'wisdom',
-    limit: SURVEY_MAX_WISDOM_SPORES,
-    includeActive: false,
-    ...sinceFilter,
-  });
-  if (wisdomSpores.length > 0) {
-    parts.push(`### Wisdom Spores (${wisdomSpores.length})`);
-    for (const s of wisdomSpores) {
-      parts.push(`- **${s.id}** (importance ${s.importance}): ${s.content.slice(0, 300)}`);
-    }
-    parts.push('');
-  }
-
-  // 3. Recent decisions and gotchas
-  const decisions = listSpores({
-    ...scopedOptions(scope),
-    observation_type: 'decision',
-    limit: 20,
-    includeActive: false,
-    ...sinceFilter,
-  });
-  const gotchas = listSpores({
-    ...scopedOptions(scope),
-    observation_type: 'gotcha',
-    limit: 10,
-    includeActive: false,
-    ...sinceFilter,
-  });
-  if (decisions.length > 0 || gotchas.length > 0) {
-    parts.push(`### Decisions (${decisions.length}) & Gotchas (${gotchas.length})`);
-    for (const s of [...decisions, ...gotchas]) {
-      parts.push(`- **${s.observation_type}** ${s.id}: ${s.content.slice(0, 200)}`);
-    }
-    parts.push('');
-  }
-
-  // 4. Recent sessions
-  const sessions = listSessions({
-    ...scopedOptions(scope),
-    limit: SURVEY_MAX_SESSIONS,
-    includeActive: false,
-    ...sinceFilter,
-  });
-  if (sessions.length > 0) {
-    parts.push(`### Recent Sessions (${sessions.length})`);
-    for (const s of sessions) {
-      parts.push(`- **${s.id}**: ${s.title ?? '(untitled)'} — ${(s.summary ?? '').slice(0, 200)}`);
-    }
-    parts.push('');
-  }
-
-  // 5. Current skill inventory (for dedup awareness)
-  const activeSkills = listSkillRecords({ ...scopedOptions(scope), status: 'active', limit: 100 });
-  parts.push(`### Active Skills (${activeSkills.length})`);
-  for (const s of activeSkills) {
-    parts.push(`- **${s.name}**: ${s.description.slice(0, 150)}`);
-  }
-  parts.push('');
-
-  // 6. Candidate evidence bundles
-  const existingCandidates = listCandidates({ ...scopedOptions(scope), limit: 200 });
-  const evidenceBundles = buildCandidateEvidenceBundles({
-    wisdomSpores,
-    decisions,
-    gotchas,
-    sessions,
-    activeSkills,
-    existingCandidates,
-  });
-  parts.push(renderEvidenceBundlesForPrompt(evidenceBundles));
-  parts.push('');
-
-  // Advance watermark
-  setState(agentId, projectId, SURVEY_WATERMARK_KEY, String(now), now);
-
-  return { instruction: parts.join('\n') };
+  return {
+    instruction: parts.join('\n'),
+    context: { skill_survey_watermark: now },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,7 +1035,9 @@ export async function buildTaskInstruction(
     case SKILL_GENERATE_TASK:
       return buildSkillGenerateInstruction(requestContext);
     case SKILL_SURVEY_TASK:
-      return agentId ? buildSkillSurveyInstruction(agentId, requestContext) : undefined;
+      return agentId ? buildSkillSurveyInstruction(agentId, requestContext, {
+        ignoreWatermark: taskParams?.force === true,
+      }) : undefined;
     case SKILL_EVOLVE_TASK: {
       const instruction = await buildSkillEvolveInstruction(taskParams, projectRoot, retrievalProvider, requestContext);
       return instruction ? { instruction } : undefined;

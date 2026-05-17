@@ -35,9 +35,10 @@ import { listLineageForSkill } from '@myco/db/queries/skill-lineage.js';
 import { countUsageForSkill } from '@myco/db/queries/skill-usage.js';
 import { enqueueOutbox } from '@myco/db/queries/team-outbox.js';
 import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
-import { REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
+import { CANDIDATE_STATUS, REST_SETTABLE_STATUSES } from '@myco/constants/skill-candidate-status.js';
 import { parseCsvList } from '@myco/utils/parse-csv-list.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
+import { validateSkillCandidateQualityContract } from '@myco/agent/skill-candidate-quality.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -146,6 +147,34 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
       return {
         status: 400,
         body: { error: `${field} must be a JSON string when provided` },
+      };
+    }
+  }
+
+  const existing = getCandidate(id, scope);
+  if (!existing) return { status: 404, body: { error: `Candidate not found: ${id}` } };
+
+  const resultingStatus = (status as string | undefined) ?? existing.status;
+  if (resultingStatus === CANDIDATE_STATUS.APPROVED) {
+    const candidateForValidation = {
+      ...existing,
+      ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
+      ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
+      ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
+      ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
+      ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
+    };
+    const issues = validateSkillCandidateQualityContract(candidateForValidation, {
+      requireResolvedSources: true,
+      scope,
+    });
+    if (issues.length > 0) {
+      return {
+        status: 400,
+        body: {
+          error: 'Candidate cannot be approved until its evidence metadata is complete and resolvable.',
+          issues,
+        },
       };
     }
   }
