@@ -1465,7 +1465,7 @@ export function createSkillTools(deps: VaultToolDeps) {
 
   const vaultSkillSurveyBundleDecisions = tool(
     'vault_skill_survey_bundle_decisions',
-    'Validate and store review-bundles decisions against deterministic skill-survey evidence bundles. Hydrates canonical evidence metadata before later reconciliation phases consume the decisions.',
+    'Validate and store review-bundles decisions against deterministic skill-survey evidence bundles. Hydrates canonical evidence metadata before later reconciliation phases consume the decisions. INTERNAL: requires an active skill-survey run context (deps.runId); external MCP callers will see errors about stale or missing run state.',
     {
       decisions: z.string().describe('JSON object with a decisions array. CREATE/UPDATE decisions must reference an evidence bundle from vault_skill_survey_prepare by bundle_id, evidence_bundle_id, or exact topic.'),
       ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare for this run.'),
@@ -1474,12 +1474,15 @@ export function createSkillTools(deps: VaultToolDeps) {
       decisions: args.decisions,
       ignore_watermark: args.ignore_watermark,
     })),
-    { annotations: { idempotentHint: true } },
+    // Explicitly NOT idempotent: each call updates agent_state
+    // (validated_at, stored_at, merged decisions list). MCP auto-retry
+    // layers must not treat a repeat call as a safe replay.
+    { annotations: { idempotentHint: false, readOnlyHint: false } },
   );
 
   const vaultSkillSurveyReconciliationPlan = tool(
     'vault_skill_survey_reconciliation_plan',
-    'Validate and store the skill-survey reconciliation plan. Rejects plans that do not classify every active queue candidate and handle every cleanup target from vault_skill_survey_prepare.',
+    'Validate and store the skill-survey reconciliation plan. Rejects plans that do not classify every active queue candidate and handle every cleanup target from vault_skill_survey_prepare. INTERNAL: requires an active skill-survey run context (deps.runId); external MCP callers will see errors about stale or missing run state.',
     {
       plan: z.string().describe('JSON object containing reconciliation actions. Every identified/deferred queue candidate must appear in Update, Defer, Dismiss, Blocked, or Keep. Cleanup targets must appear in Update, Defer, Dismiss, or Blocked.'),
       ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare for this run.'),
@@ -1488,19 +1491,23 @@ export function createSkillTools(deps: VaultToolDeps) {
       plan: args.plan,
       ignore_watermark: args.ignore_watermark,
     })),
-    { annotations: { idempotentHint: true } },
+    // Explicitly NOT idempotent: persists plan state keyed by runId.
+    { annotations: { idempotentHint: false, readOnlyHint: false } },
   );
 
   const vaultSkillSurveyApplyReconciliation = tool(
     'vault_skill_survey_apply_reconciliation',
-    'Apply only the validated skill-survey reconciliation plan stored by vault_skill_survey_reconciliation_plan. This is the sole write path for skill-survey queue persistence.',
+    'Apply only the validated skill-survey reconciliation plan stored by vault_skill_survey_reconciliation_plan. This is the sole write path for skill-survey queue persistence. INTERNAL: requires an active skill-survey run context (deps.runId); external MCP callers will see errors about stale or missing run state.',
     {
       ignore_watermark: z.boolean().optional().describe('Use the same ignore_watermark value passed to vault_skill_survey_prepare and vault_skill_survey_reconciliation_plan for this run.'),
     },
     async (args) => textResult(validateAndApplySkillSurveyReconciliation({
       ignore_watermark: args.ignore_watermark,
     })),
-    { annotations: { idempotentHint: true } },
+    // Explicitly NOT idempotent: performs CRUD on skill_candidates
+    // within a DB transaction (insertCandidate, updateCandidate,
+    // notify). Replays can double-apply mutations.
+    { annotations: { idempotentHint: false, readOnlyHint: false, destructiveHint: true } },
   );
 
   /**
@@ -1854,10 +1861,14 @@ export function createSkillTools(deps: VaultToolDeps) {
     async (args) => {
       switch (args.action) {
         case 'list': {
+          // `statuses` takes precedence over `status` per the schema
+          // description. Enforce that at the tool boundary so downstream
+          // listCandidates receives only one of the two filters and the
+          // contract is not implicit in the query layer's resolution.
           const candidates = listCandidates({
             scope,
             agent_id: agentId,
-            status: args.status,
+            status: args.statuses !== undefined ? undefined : args.status,
             statuses: args.statuses,
             limit: args.limit ?? DEFAULT_LIST_LIMIT,
           });

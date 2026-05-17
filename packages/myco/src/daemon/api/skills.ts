@@ -12,6 +12,7 @@
  *   GET /api/skill-records/:id       — get a single skill record with lineage + usage
  */
 
+import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { DaemonLogger } from '../logger.js';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
@@ -93,7 +94,32 @@ export async function handleGetCandidate(req: RouteRequest): Promise<RouteRespon
  * path calls updateCandidate directly rather than going through REST.
  */
 const ALLOWED_REST_STATUSES = new Set<string>(REST_SETTABLE_STATUSES);
-const NON_NULL_JSON_TEXT_CANDIDATE_FIELDS = ['quality_failures', 'coverage_matches'] as const;
+
+/**
+ * Schema for PUT /api/skill-candidates/:id bodies.
+ *
+ * Every field is optional (the handler patches only what's supplied). The
+ * `status` whitelist is checked after parsing because Zod doesn't carry the
+ * REST/agent split that {@link REST_SETTABLE_STATUSES} encodes.
+ *
+ * `quality_failures` and `coverage_matches` reject `null` because v42 stores
+ * them as `NOT NULL DEFAULT '[]'` JSON-text columns — a null write would
+ * violate the schema constraint downstream.
+ */
+const UpdateCandidateBody = z.object({
+  status: z.string().optional(),
+  topic: z.string().optional(),
+  rationale: z.string().optional(),
+  confidence: z.number().optional(),
+  source_ids: z.string().optional(),
+  skill_id: z.string().nullable().optional(),
+  evidence_bundle_id: z.string().nullable().optional(),
+  quality_score: z.number().nullable().optional(),
+  quality_failures: z.string().optional(),
+  coverage_matches: z.string().optional(),
+  last_reconciled_at: z.number().int().nullable().optional(),
+  reconciliation_reason: z.string().nullable().optional(),
+});
 
 /**
  * Update a skill candidate's fields (typically used to advance its status).
@@ -104,11 +130,28 @@ const NON_NULL_JSON_TEXT_CANDIDATE_FIELDS = ['quality_failures', 'coverage_match
  */
 export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteResponse> {
   const id = req.params.id;
-  const body = req.body as Record<string, unknown> | undefined;
   const scope = projectScopeFromRequestContext(req.requestContext);
-  if (!body) return { status: 400, body: { error: 'Request body required' } };
+  if (req.body === undefined || req.body === null) {
+    return { status: 400, body: { error: 'Request body required' } };
+  }
 
-  // Pick only allowed mutable fields — reject arbitrary body fields
+  // Validate the shape FIRST. Field-level typeof guards land here so a
+  // client sending `quality_score: "high"` or `last_reconciled_at: "today"`
+  // is rejected with a structured error envelope rather than silently
+  // storing a wrong-typed value that downstream validators read back as
+  // garbage. The schema's `.optional()` defaults mean callers still patch
+  // only the fields they supply; unknown fields are stripped.
+  const parsed = UpdateCandidateBody.safeParse(req.body);
+  if (!parsed.success) {
+    return {
+      status: 400,
+      body: {
+        error: 'Invalid request body',
+        details: { issues: parsed.error.issues },
+      },
+    };
+  }
+  const patch = parsed.data;
   const {
     status,
     topic,
@@ -122,81 +165,97 @@ export async function handleUpdateCandidate(req: RouteRequest): Promise<RouteRes
     coverage_matches,
     last_reconciled_at,
     reconciliation_reason,
-  } = body as Record<string, unknown>;
+  } = patch;
 
   // Status whitelist guard — defense in depth against a compromised or
   // misconfigured MCP client reaching this endpoint with an internal
   // status. The agent-facing vault_skill_candidates tool also narrows
   // its Zod enum to the same set.
-  if (status !== undefined) {
-    if (typeof status !== 'string' || !ALLOWED_REST_STATUSES.has(status)) {
-      return {
-        status: 400,
-        body: {
-          error:
-            `Invalid status '${String(status)}'. REST callers may only set: ` +
-            `${[...ALLOWED_REST_STATUSES].join(', ')}. The 'generated' status ` +
-            "is set internally by vault_finalize_skill after validation.",
-        },
-      };
-    }
-  }
-
-  for (const field of NON_NULL_JSON_TEXT_CANDIDATE_FIELDS) {
-    if (body[field] === null) {
-      return {
-        status: 400,
-        body: { error: `${field} must be a JSON string when provided` },
-      };
-    }
+  if (status !== undefined && !ALLOWED_REST_STATUSES.has(status)) {
+    return {
+      status: 400,
+      body: {
+        error:
+          `Invalid status '${status}'. REST callers may only set: ` +
+          `${[...ALLOWED_REST_STATUSES].join(', ')}. The 'generated' status ` +
+          "is set internally by vault_finalize_skill after validation.",
+      },
+    };
   }
 
   const existing = getCandidate(id, scope);
   if (!existing) return { status: 404, body: { error: `Candidate not found: ${id}` } };
 
-  const resultingStatus = (status as string | undefined) ?? existing.status;
+  const resultingStatus = status ?? existing.status;
+  const approvalWarnings: string[] = [];
   if (resultingStatus === CANDIDATE_STATUS.APPROVED) {
-    const candidateForValidation = {
-      ...existing,
-      ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
-      ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
-      ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
-      ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
-      ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
-    };
-    const issues = validateSkillCandidateQualityContract(candidateForValidation, {
-      requireResolvedSources: true,
-      scope,
-    });
-    if (issues.length > 0) {
-      return {
-        status: 400,
-        body: {
-          error: 'Candidate cannot be approved until its evidence metadata is complete and resolvable.',
-          issues,
-        },
+    // A row is treated as "legacy" — predating the v42 quality pipeline —
+    // when none of the v42 metadata fields are populated on the existing
+    // row AND the patch doesn't supply any. Any row the v42 pipeline has
+    // touched will have evidence_bundle_id set (or one of the other
+    // metadata columns moved off its default), so this only matches rows
+    // that existed in user vaults before v42 shipped. Those rows must
+    // remain approvable — refusing them would strand candidates the user
+    // already triaged. Post-v42 candidates always go through the gate.
+    const isLegacyCandidate =
+      existing.evidence_bundle_id === null && evidence_bundle_id === undefined
+      && existing.quality_score === null && quality_score === undefined
+      && existing.quality_failures === '[]' && quality_failures === undefined
+      && existing.coverage_matches === '[]' && coverage_matches === undefined
+      && existing.last_reconciled_at === null && last_reconciled_at === undefined
+      && existing.reconciliation_reason === null && reconciliation_reason === undefined;
+
+    if (isLegacyCandidate) {
+      approvalWarnings.push('legacy-candidate-approved-without-v42-quality-gate');
+    } else {
+      const candidateForValidation = {
+        ...existing,
+        ...(source_ids !== undefined ? { source_ids } : {}),
+        ...(evidence_bundle_id !== undefined ? { evidence_bundle_id } : {}),
+        ...(quality_score !== undefined ? { quality_score } : {}),
+        ...(quality_failures !== undefined ? { quality_failures } : {}),
+        ...(coverage_matches !== undefined ? { coverage_matches } : {}),
       };
+      const issues = validateSkillCandidateQualityContract(candidateForValidation, {
+        requireResolvedSources: true,
+        scope,
+      });
+      if (issues.length > 0) {
+        return {
+          status: 400,
+          body: {
+            error: 'Candidate cannot be approved until its evidence metadata is complete and resolvable.',
+            details: { issues },
+          },
+        };
+      }
     }
   }
 
   const updated = updateCandidate(id, {
-    ...(status !== undefined ? { status: status as string } : {}),
-    ...(topic !== undefined ? { topic: topic as string } : {}),
-    ...(rationale !== undefined ? { rationale: rationale as string } : {}),
-    ...(confidence !== undefined ? { confidence: confidence as number } : {}),
-    ...(source_ids !== undefined ? { source_ids: source_ids as string } : {}),
-    ...(skill_id !== undefined ? { skill_id: skill_id as string | null } : {}),
-    ...(evidence_bundle_id !== undefined ? { evidence_bundle_id: evidence_bundle_id as string | null } : {}),
-    ...(quality_score !== undefined ? { quality_score: quality_score as number | null } : {}),
-    ...(quality_failures !== undefined ? { quality_failures: quality_failures as string } : {}),
-    ...(coverage_matches !== undefined ? { coverage_matches: coverage_matches as string } : {}),
-    ...(last_reconciled_at !== undefined ? { last_reconciled_at: last_reconciled_at as number | null } : {}),
-    ...(reconciliation_reason !== undefined ? { reconciliation_reason: reconciliation_reason as string | null } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(topic !== undefined ? { topic } : {}),
+    ...(rationale !== undefined ? { rationale } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(source_ids !== undefined ? { source_ids } : {}),
+    ...(skill_id !== undefined ? { skill_id } : {}),
+    ...(evidence_bundle_id !== undefined ? { evidence_bundle_id } : {}),
+    ...(quality_score !== undefined ? { quality_score } : {}),
+    ...(quality_failures !== undefined ? { quality_failures } : {}),
+    ...(coverage_matches !== undefined ? { coverage_matches } : {}),
+    ...(last_reconciled_at !== undefined ? { last_reconciled_at } : {}),
+    ...(reconciliation_reason !== undefined ? { reconciliation_reason } : {}),
     updated_at: epochSeconds(),
   }, scope);
 
   if (!updated) return { status: 404, body: { error: `Candidate not found: ${id}` } };
-  return { status: 200, body: { candidate: updated } };
+  return {
+    status: 200,
+    body: {
+      candidate: updated,
+      ...(approvalWarnings.length > 0 ? { warnings: approvalWarnings } : {}),
+    },
+  };
 }
 
 /**

@@ -37,7 +37,7 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
-import { createListTeamMembersHandler } from './api/team-members.js';
+import { listTeamMembersHandler } from './api/team-members.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
@@ -1521,7 +1521,10 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleStatus(req);
   });
-  server.registerRoute('GET', '/api/team/members', createListTeamMembersHandler());
+  server.registerRoute('GET', '/api/team/members', async (req) => {
+    await reconcileTeamRoute(req);
+    return listTeamMembersHandler(req);
+  });
   server.registerRoute('POST', '/api/team/backfill', async (req) => {
     const startedAt = Date.now();
     await reconcileTeamRoute(req);
