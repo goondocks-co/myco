@@ -359,24 +359,13 @@ export class DaemonClient {
     }
   }
 
-  /**
-   * Kill the running daemon process.
-   *
-   * Cleanup ownership inversion: we never unlink daemon.json here. If we did,
-   * a wedged daemon that hangs on SIGTERM would be left running with no
-   * discoverable state file — the orphan-zombie failure that motivates the
-   * self-mutation-discipline tenet. Cleanup is owned exclusively by the
-   * successor process's `reconcileExistingDaemon` path, which only removes
-   * daemon.json after confirming the recorded pid is actually dead.
-   */
+  // SIGTERM only. Never unlinks daemon.json — see reconcileExistingDaemon
+  // for the cleanup-ownership-inversion rationale (the canonical comment).
   private killDaemon(info: DaemonInfo | null): void {
     if (!info) return;
     try {
       process.kill(info.pid, 'SIGTERM');
-    } catch {
-      // Already dead — the successor's reconcileExistingDaemon will clean
-      // up the stale state file. We never unlink here.
-    }
+    } catch { /* already dead */ }
   }
 
   /**

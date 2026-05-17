@@ -36,7 +36,7 @@ export function readIntent(daemonService: DaemonServiceState): Intent {
 }
 
 export function writeIntent(daemonService: DaemonServiceState, intent: Intent): void {
-  atomicWriteFileSync(intentPath(daemonService), stringify(intent as never));
+  atomicWriteFileSync(intentPath(daemonService), stringify(intent as Record<string, unknown>));
 }
 
 export function mergeIntent(daemonService: DaemonServiceState, patch: Intent): void {

@@ -1,17 +1,7 @@
-import { spawn } from 'node:child_process';
 import type { DaemonLogger, Logger } from './logger.js';
 import type { PowerManager } from './power.js';
 import type { EmbeddingManager } from './embedding/manager.js';
 import type { SessionRegistry } from './lifecycle.js';
-import type { DaemonServer } from './server.js';
-import type { DaemonServiceState } from './service-state.js';
-import { reconcileSelf } from './self-reconcile.js';
-import { serviceLabel, serviceVariantForState } from '../service/labels.js';
-import { spawnUpdateScript } from './update-installer.js';
-import { resolveMycoBinary } from './update-checker.js';
-import { detectServiceManagedLabel } from './api/restart.js';
-import { getServiceManager } from '../service/manager.js';
-import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { DatabaseMaintenanceManager } from './database/manager.js';
@@ -94,29 +84,6 @@ export interface PowerJobDeps {
   mycoHome?: string;
   /** The current daemon's service dir; passed through to `forEachGrove` to enforce the served-by boundary. */
   daemonStateDir: string;
-  /**
-   * The current daemon's resolved service state. Needed by the
-   * `self-reconcile` job so it can re-write daemon.json at the
-   * canonical path for this variant (dogfood vs production).
-   */
-  daemonService: DaemonServiceState;
-  /**
-   * Live server handle. The `self-reconcile` job calls
-   * `server.currentDaemonState()` on each tick to project the
-   * in-memory truth back into the state file.
-   */
-  server: DaemonServer;
-  /**
-   * Project root the daemon was launched against. Baked into update
-   * scripts so the post-install respawn happens in the right cwd.
-   */
-  projectRoot: string;
-  /**
-   * Schedules an in-process shutdown after the detached update script
-   * has been written and spawned. The update script waits a few
-   * seconds for this shutdown before running `npm install -g …`.
-   */
-  scheduleShutdown: () => void;
   onCanopyMassAdd?: (groveId: string, projectId: GroveProjectId) => void;
 }
 
@@ -245,100 +212,6 @@ function makeTotalPendingProbe(deps: PowerJobDeps): () => number {
   };
 }
 
-/**
- * Fork a detached child that asks the platform service supervisor to
- * SIGTERM-and-respawn this daemon. The child is unref'd so it survives
- * the SIGTERM that lands on us moments later.
- *
- * macOS:  `launchctl kickstart -k gui/<uid>/<label>` — KeepAlive-driven
- *         respawn under the user's launchd domain.
- * Linux:  `systemctl --user restart <label>.service` — the standard
- *         systemd user-unit restart.
- *
- * Other platforms fall through with a warn log; the intent file has
- * already been cleared so we don't loop.
- *
- * The service label is resolved via `serviceLabel(variant)` derived
- * from the daemon's own service-state — NEVER hardcoded — so the
- * dogfood (`co.goondocks.myco-dev`) and production
- * (`co.goondocks.myco`) variants both route correctly.
- */
-function requestSupervisorRestart(deps: PowerJobDeps): void {
-  const variant = serviceVariantForState(deps.daemonService);
-  const label = serviceLabel(variant);
-  if (process.platform === 'darwin') {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    if (uid === null) {
-      deps.logger.warn(
-        LOG_KINDS.DAEMON_RECONCILE,
-        'Supervisor restart skipped: process.getuid unavailable',
-        { platform: process.platform, label },
-      );
-      return;
-    }
-    spawn('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref();
-    return;
-  }
-  if (process.platform === 'linux') {
-    spawn('systemctl', ['--user', 'restart', `${label}.service`], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref();
-    return;
-  }
-  deps.logger.warn(
-    LOG_KINDS.DAEMON_RECONCILE,
-    'Supervisor restart not implemented on this platform',
-    { platform: process.platform, label },
-  );
-}
-
-/**
- * Resolve the platform-native restart shell command for the
- * service-managed daemon, or undefined when this process isn't
- * service-managed. Mirrors the helper used inside
- * `createUpdateHandlers` — both flows must agree on what the
- * supervisor is so the post-install respawn lands on the same path.
- */
-async function resolveServiceRestartCommandForInstall(): Promise<string | undefined> {
-  const serviceManager = getServiceManager();
-  const label = await detectServiceManagedLabel(serviceManager);
-  if (!label) return undefined;
-  try {
-    return serviceManager.restartShellCommand(label);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Generate-and-spawn the detached update script that installs
- * `@goondocks/myco@<target>` globally and respawns the daemon.
- *
- * This is the `installUpdate` impl for `reconcileSelf`. Wraps
- * `spawnUpdateScript` so the reconciler doesn't need to know about
- * package specs or the runtime-command pin.
- *
- * Schedules an in-process shutdown after the script is on disk so
- * the script's `sleep N && npm install` step lands while the daemon
- * is gone — matching the existing `/api/update/apply` behavior.
- */
-async function installUpdateToVersion(deps: PowerJobDeps, targetVersion: string): Promise<void> {
-  const mycoBinary = resolveMycoBinary();
-  const serviceRestartCommand = await resolveServiceRestartCommandForInstall();
-  spawnUpdateScript({
-    packageSpecs: [`${NPM_PACKAGE_NAME}@${targetVersion}`],
-    projectRoot: deps.projectRoot,
-    vaultDir: deps.daemonVaultDir,
-    mycoBinary,
-    serviceRestartCommand,
-  });
-  deps.scheduleShutdown();
-}
-
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -454,25 +327,6 @@ export function registerPowerJobs(powerManager: PowerManager, deps: PowerJobDeps
 
   const fanOutGroves = (jobName: PowerJobName, body: (scope: GroveScope) => Promise<void>) =>
     () => forEachGrove(cache, logger, body, { mycoHome, daemonStateDir, jobName }).then(() => undefined);
-
-  // Continuously re-assert daemon.json against the live process state.
-  // Excludes 'deep_sleep' deliberately: at that point the daemon is
-  // essentially stopped and we don't want filesystem writes contending
-  // with system sleep. Runs first so even when later jobs starve a
-  // tick, the invariant tick still fires.
-  powerManager.register({
-    name: POWER_JOB_NAMES.SELF_RECONCILE,
-    runIn: ['active', 'idle', 'sleep'],
-    fn: async () => {
-      await reconcileSelf({
-        daemonService: deps.daemonService,
-        currentState: () => deps.server.currentDaemonState(),
-        logger,
-        requestSupervisorRestart: () => requestSupervisorRestart(deps),
-        installUpdate: (target: string) => installUpdateToVersion(deps, target),
-      });
-    },
-  });
 
   // Every tick processes one batch per Grove that has pending work; a Grove
   // with N records drains in N / batch ticks while peers drain in parallel.

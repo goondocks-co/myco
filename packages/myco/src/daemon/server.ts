@@ -91,14 +91,8 @@ export class DaemonServer {
    * that didn't inherit the env) can recover it.
    */
   private authToken: string;
-  /**
-   * ISO timestamp of the moment listen() resolved (this daemon's
-   * effective birth). Captured once so `currentDaemonState()` can
-   * return a stable `started` value across reconcile ticks; without
-   * this the re-asserted file would have a fresh `started` every
-   * tick and downstream consumers that compare uptime against the
-   * recorded value would see jitter.
-   */
+  // Captured once at listen() so currentDaemonState() returns a stable
+  // `started` across reconcile re-writes (otherwise uptime jitters).
   private startedAt: string | null = null;
   /**
    * Cache of post-injection dashboard HTML, keyed by source file path.
@@ -184,14 +178,7 @@ export class DaemonServer {
   }
 
   async stop(): Promise<void> {
-    // Cleanup ownership inversion: we do NOT call removeDaemonJson() here.
-    // If we unlinked first and gracefullyCloseHttpServer then hung (wedged
-    // background loop, deadlocked shutdown handler, etc.), we would leave a
-    // live process with no discoverable state file — the orphan-zombie
-    // failure mode the self-mutation-discipline tenet prohibits. Cleanup of
-    // daemon.json is owned by the successor process's reconcileExistingDaemon
-    // path, which only removes the file after confirming the recorded pid is
-    // actually dead.
+    // No daemon.json unlink — see reconcileExistingDaemon for cleanup ownership.
     if (!this.server) {
       this.closeRequestDatabases();
       return;

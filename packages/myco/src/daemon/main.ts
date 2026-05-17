@@ -168,6 +168,7 @@ import { PowerManager } from './power.js';
 import { EventLoopLagProbe } from './event-loop-lag.js';
 import { InflightRunRegistry } from './inflight-runs.js';
 import { registerPowerJobs } from './power-jobs.js';
+import { registerSelfReconcileJob } from './self-reconcile-wiring.js';
 import {
   handleUserPrompt, handleToolUse, handleStopBatches, handleToolFailure,
   handleSubagentStart, handleSubagentStop, handleStopFailure,
@@ -239,14 +240,7 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
 // Stale daemon cleanup
 // ---------------------------------------------------------------------------
 
-/**
- * Test-only seam for reconcileExistingDaemon. Production callers pass nothing
- * and the defaults route to `process.kill`, `isProcessAlive`, and the
- * production constants. Tests inject short grace windows and synthetic
- * kill/aliveness so they can exercise the SIGTERM → SIGKILL → step-aside
- * ladder without spawning a truly unkillable process (which user-space can't
- * produce on macOS/Linux anyway).
- */
+/** Test seam for reconcileExistingDaemon: production callers pass nothing. */
 export interface ReconcileDeps {
   kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
   isProcessAlive?: (pid: number) => boolean;
@@ -1774,8 +1768,11 @@ export async function main(): Promise<void> {
       scheduledTaskKicker.kick('canopy-describe', { groveId, projectId }),
     daemonVaultDir: bootstrapVaultDir,
     daemonStateDir: daemonService.stateDir,
+  });
+  registerSelfReconcileJob(powerManager, logger, {
     daemonService,
     server,
+    daemonVaultDir: bootstrapVaultDir,
     projectRoot,
     scheduleShutdown: () => {
       setTimeout(() => {
