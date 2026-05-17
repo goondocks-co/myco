@@ -64,7 +64,7 @@ describe('MCP server observability (#288)', () => {
     recording = makeRecordingLogger();
   });
 
-  it('logs an info entry on successful tool dispatch', async () => {
+  it('logs an info entry on successful tool dispatch (received is debug; completed is info)', async () => {
     const { client } = await connectAndCall(makeFakeTools(), {
       logger: recording.logger,
       sessionId: 'sess-test-1',
@@ -75,8 +75,12 @@ describe('MCP server observability (#288)', () => {
     const calls = recording.entries.filter((e) => e.kind === 'mcp.call');
     expect(calls.length).toBeGreaterThanOrEqual(2); // received + completed
 
+    // `received` lives at debug to keep the dispatch hot path off
+    // two-sync-writes-per-call. `completed` stays at info so a
+    // production operator running at info still gets one entry per
+    // dispatch with the outcome.
     const received = calls.find((e) => e.message === 'MCP tool call received');
-    expect(received?.level).toBe('info');
+    expect(received?.level).toBe('debug');
     expect(received?.data).toMatchObject({ tool_name: 'fake_tool', session_id: 'sess-test-1' });
 
     const completed = calls.find((e) => e.message === 'MCP tool call completed');

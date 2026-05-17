@@ -135,7 +135,7 @@ describe('assessCandidateEvidence', () => {
     expect(result.failures).toContain('missing-project-anchor');
   });
 
-  it('keeps missing project anchor failures below the selection threshold', () => {
+  it('reports score gradient (not threshold) for missing project anchor', () => {
     const result = assessCandidateEvidence({
       topic: 'Testing habits',
       rationale: 'The team should write reliable tests before changing behavior.',
@@ -148,10 +148,14 @@ describe('assessCandidateEvidence', () => {
     });
 
     expect(result.failures).toEqual(['missing-project-anchor']);
-    expect(result.score).toBeLessThan(0.7);
+    // Score is a triage signal, not the approval gate (the validator's
+    // separate failures-must-be-empty check is the real gate). One
+    // failure → 0.8 under the 0.2 per-failure penalty so the score
+    // ranks candidates by failure count without being binary.
+    expect(result.score).toBeCloseTo(0.8, 5);
   });
 
-  it('keeps overlap failures below the selection threshold', () => {
+  it('reports score gradient (not threshold) for overlap failures', () => {
     const result = assessCandidateEvidence({
       topic: 'Daemon restart workflow',
       rationale: 'Multiple sessions showed that hook or daemon changes require `make build` and `myco-dev restart` before verification.',
@@ -170,7 +174,7 @@ describe('assessCandidateEvidence', () => {
     });
 
     expect(result.failures).toEqual(['active-skill-overlap']);
-    expect(result.score).toBeLessThan(0.7);
+    expect(result.score).toBeCloseTo(0.8, 5);
   });
 
   it('counts distinct valid source refs for the source gate', () => {
@@ -289,10 +293,16 @@ describe('assessCandidateEvidence', () => {
 
     expect(dismissed.failures).not.toContain('existing-candidate-overlap');
     expect(dismissed.coverageMatches).toContain('dismissed-candidate:candidate-dismissed');
-    expect(dismissed.score).toBeGreaterThan(0.8);
     expect(identified.failures).toContain('existing-candidate-overlap');
     expect(identified.coverageMatches).toContain('candidate:candidate-identified');
-    expect(identified.score).toBeLessThan(0.8);
+    // Score gradient: dismissed-only overlap is informational and
+    // doesn't apply a failure, so its score stays at the no-failure
+    // ceiling; identified-overlap applies the failure and lowers the
+    // score by exactly one penalty step. The relative ordering matters
+    // more than the absolute values (penalty is tunable, ordering isn't).
+    expect(dismissed.score).toBeGreaterThan(identified.score);
+    expect(dismissed.score).toBeCloseTo(1, 5);
+    expect(identified.score).toBeCloseTo(0.8, 5);
   });
 });
 

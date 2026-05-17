@@ -37,7 +37,12 @@ export function createMcpProtocolServer(tools: MycoTools, options: McpProtocolSe
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args = {} } = request.params;
-    logger?.info(LOG_KINDS.MCP_CALL, 'MCP tool call received', {
+    // Demoted to debug: the per-call info log was 2 sync fs.writeSync
+    // hits on the dispatch hot path (received + completed). The
+    // `completed` info log below still carries tool_name + status, so
+    // an operator can `grep mcp.call` and see one entry per call.
+    // Verbose tracing remains available via debug.
+    logger?.debug(LOG_KINDS.MCP_CALL, 'MCP tool call received', {
       tool_name: name,
       session_id: sessionId ?? undefined,
       request_id: extra?.requestId,

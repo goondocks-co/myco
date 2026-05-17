@@ -10,7 +10,11 @@ import { Pagination } from '../ui/pagination';
 import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
-import { CANDIDATE_STATUS, PIPELINE_FILTER_VALUE } from '../../lib/skill-candidate-status';
+import {
+  CANDIDATE_STATUS,
+  PIPELINE_FILTER_VALUE,
+  type SkillCandidateStatus,
+} from '../../lib/skill-candidate-status';
 
 /* ---------- Constants ---------- */
 
@@ -48,13 +52,26 @@ function timeAgo(epoch: number): string {
 }
 
 function statusBadge(status: string) {
-  switch (status) {
+  // Narrow string → SkillCandidateStatus when possible so an exhaustive
+  // switch enforces that every known status has a badge. The string
+  // default catches values from the wire that the UI types don't
+  // recognize (e.g. a backend-only status that hasn't been mirrored
+  // here yet) — better to render the raw value than crash.
+  switch (status as SkillCandidateStatus) {
     case CANDIDATE_STATUS.IDENTIFIED: return <Badge variant="outline">Identified</Badge>;
     case CANDIDATE_STATUS.APPROVED: return <Badge variant="secondary">Awaiting generation</Badge>;
     case CANDIDATE_STATUS.GENERATED: return <Badge variant="default">Generated</Badge>;
     case CANDIDATE_STATUS.DEFERRED: return <Badge variant="outline">Deferred</Badge>;
     case CANDIDATE_STATUS.DISMISSED: return <Badge variant="outline" className="opacity-50">Dismissed</Badge>;
-    default: return <Badge variant="outline">{status}</Badge>;
+    default: {
+      // If the value matched a SkillCandidateStatus case it was handled
+      // above; reaching here means the wire value is outside the known
+      // set. The `never` assertion fires at compile time when a new
+      // status is added to the union without a corresponding case.
+      const _exhaustive: never = status as never;
+      void _exhaustive;
+      return <Badge variant="outline">{status}</Badge>;
+    }
   }
 }
 

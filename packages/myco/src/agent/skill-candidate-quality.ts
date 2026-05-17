@@ -1,9 +1,6 @@
 import { getDatabase } from '@myco/db/client.js';
-import { getPlan } from '@myco/db/queries/plans.js';
 import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
-import { getSession } from '@myco/db/queries/sessions.js';
-import { getSpore } from '@myco/db/queries/spores.js';
-import { parseSourceRefs } from './skill-candidate-evidence.js';
+import { parseSourceRefsWithRawCount } from './skill-candidate-evidence.js';
 
 export const CANDIDATE_QUALITY_FAILURE_CODES = [
   'insufficient-source-refs',
@@ -70,20 +67,28 @@ export function validateSkillCandidateQualityContract(
     issues.push(`quality_score must be >= ${IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE}`);
   }
 
-  const qualityFailures = parseStringArrayField(candidate.quality_failures, 'quality_failures');
+  const qualityFailures = parseJsonStringArray(candidate.quality_failures, 'quality_failures');
   if (qualityFailures.error) {
     issues.push(qualityFailures.error);
-  } else if (qualityFailures.values.length > 0) {
-    issues.push('quality_failures must be an empty array');
+  } else {
+    const unknownCodes = unknownCandidateQualityFailureCodes(qualityFailures.values);
+    if (unknownCodes.length > 0) {
+      issues.push(
+        `quality_failures contains unknown reason code(s): ${unknownCodes.join(', ')}. ` +
+        `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
+      );
+    } else if (qualityFailures.values.length > 0) {
+      issues.push('quality_failures must be an empty array');
+    }
   }
 
-  const coverageMatches = parseStringArrayField(candidate.coverage_matches, 'coverage_matches');
+  const coverageMatches = parseJsonStringArray(candidate.coverage_matches, 'coverage_matches');
   if (coverageMatches.error) {
     issues.push(coverageMatches.error);
   }
 
-  const sourceRefs = parseSourceRefs(candidate.source_ids);
-  const rawSourceRefCount = rawJsonArrayLength(candidate.source_ids);
+  const { refs: sourceRefs, rawCount: rawSourceRefCount } =
+    parseSourceRefsWithRawCount(candidate.source_ids);
   if (rawSourceRefCount === null) {
     issues.push('source_ids must be a JSON array of source references');
   } else if (sourceRefs.length !== rawSourceRefCount) {
@@ -94,7 +99,7 @@ export function validateSkillCandidateQualityContract(
     if (!options.scope) {
       issues.push('project scope is required to resolve source_ids');
     } else {
-      const missing = sourceRefs.filter((ref) => !sourceRefExists(ref, options.scope!));
+      const missing = missingSourceRefs(sourceRefs, options.scope);
       if (missing.length > 0) {
         issues.push(`source_ids reference missing vault records: ${missing.map((ref) => `${ref.type}:${ref.id}`).join(', ')}`);
       }
@@ -104,9 +109,18 @@ export function validateSkillCandidateQualityContract(
   return issues;
 }
 
-function parseStringArrayField(
+/**
+ * Pure JSON-array-of-strings parser. Returns the array on success, or
+ * an `error` message when the JSON is malformed / not an array / not
+ * all-strings. Empty/null/undefined inputs return `{ values: [] }` so
+ * callers don't have to handle the "field not set" case separately.
+ *
+ * Per-field semantic validation (e.g. unknown quality-failure codes)
+ * lives at the call site so this stays a single-purpose JSON helper.
+ */
+function parseJsonStringArray(
   value: string | null | undefined,
-  fieldName: 'quality_failures' | 'coverage_matches',
+  fieldName: string,
 ): { values: string[]; error?: string } {
   if (value === undefined || value === null || value === '') {
     return { values: [] };
@@ -124,48 +138,48 @@ function parseStringArrayField(
   if (!parsed.every((entry) => typeof entry === 'string')) {
     return { values: [], error: `${fieldName} must be a JSON array of strings` };
   }
-  if (fieldName === 'quality_failures') {
-    const unknown = unknownCandidateQualityFailureCodes(parsed);
-    if (unknown.length > 0) {
-      return {
-        values: parsed,
-        error:
-          `${fieldName} contains unknown reason code(s): ${unknown.join(', ')}. ` +
-          `Accepted codes: ${CANDIDATE_QUALITY_FAILURE_CODES.join(', ')}`,
-      };
-    }
-  }
   return { values: parsed };
 }
 
-function rawJsonArrayLength(value: unknown): number | null {
-  if (Array.isArray(value)) return value.length;
-  if (typeof value !== 'string') return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.length : null;
-  } catch {
-    return null;
+/**
+ * Returns the subset of `refs` whose target vault record does not
+ * exist under `scope`. One DB round-trip per source TYPE (spore /
+ * session / plan / artifact), batched via `WHERE id IN (...)`. The
+ * earlier `sourceRefExists`-per-ref pattern was N round-trips per
+ * approval which compounded badly on bundle-rich candidates.
+ */
+function missingSourceRefs(
+  refs: ReadonlyArray<ReturnType<typeof parseSourceRefsWithRawCount>['refs'][number]>,
+  scope: ProjectScope,
+): Array<ReturnType<typeof parseSourceRefsWithRawCount>['refs'][number]> {
+  if (refs.length === 0) return [];
+  const byType = new Map<string, string[]>();
+  for (const ref of refs) {
+    const ids = byType.get(ref.type) ?? [];
+    ids.push(ref.id);
+    byType.set(ref.type, ids);
   }
+  const present = new Map<string, Set<string>>();
+  for (const [type, ids] of byType) {
+    present.set(type, presentIdsForType(type, ids, scope));
+  }
+  return refs.filter((ref) => !(present.get(ref.type)?.has(ref.id) ?? false));
 }
 
-function sourceRefExists(ref: ReturnType<typeof parseSourceRefs>[number], scope: ProjectScope): boolean {
-  switch (ref.type) {
-    case 'spore':
-      return getSpore(ref.id, scope) !== null;
-    case 'session':
-      return getSession(ref.id, scope) !== null;
-    case 'plan':
-      return getPlan(ref.id, scope) !== null;
-    case 'artifact':
-      return artifactExists(ref.id, scope);
-  }
-}
+const SOURCE_REF_TABLE_BY_TYPE: Record<string, string> = {
+  spore: 'spores',
+  session: 'sessions',
+  plan: 'plans',
+  artifact: 'artifacts',
+};
 
-function artifactExists(id: string, scope: ProjectScope): boolean {
+function presentIdsForType(type: string, ids: string[], scope: ProjectScope): Set<string> {
+  const table = SOURCE_REF_TABLE_BY_TYPE[type];
+  if (!table || ids.length === 0) return new Set();
   const clause = projectScopeClause(scope);
-  const row = getDatabase()
-    .prepare(`SELECT id FROM artifacts WHERE id = ?${clause.sql} LIMIT 1`)
-    .get(id, ...clause.params) as { id: string } | undefined;
-  return Boolean(row);
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = getDatabase()
+    .prepare(`SELECT id FROM ${table} WHERE id IN (${placeholders})${clause.sql}`)
+    .all(...ids, ...clause.params) as Array<{ id: string }>;
+  return new Set(rows.map((row) => row.id));
 }

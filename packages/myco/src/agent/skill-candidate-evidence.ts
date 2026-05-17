@@ -74,7 +74,14 @@ const MIN_SOURCE_REFS = 3;
 const MIN_DISTINCT_SESSIONS = 2;
 const OVERLAP_SIMILARITY_THRESHOLD = 0.18;
 const OVERLAP_SHARED_TOKEN_THRESHOLD = 3;
-const SCORE_PENALTY_PER_FAILURE = 0.35;
+// Per-failure score penalty. The validator's separate "quality_failures
+// must be empty" check is the real approval gate, so the score is a
+// triage signal rather than a gate. Penalty 0.2 gives a useful gradient
+// (1 failure → 0.8, 2 → 0.6, 3 → 0.4) that ranks candidates by how far
+// they are from clean. The earlier value (0.35) made any single failure
+// fall below the 0.7 threshold, making the score effectively binary and
+// the threshold dead code.
+const SCORE_PENALTY_PER_FAILURE = 0.2;
 const MAX_EVIDENCE_BUNDLES = 8;
 const MAX_RELATED_SPORES_PER_BUNDLE = 6;
 const MIN_BUNDLE_SOURCE_REFS = 2;
@@ -122,6 +129,19 @@ const STOP_WORDS = new Set([
   'workflow',
 ]);
 
+interface SporeFeatures {
+  anchors: string[];
+  strippedText: string;
+}
+
+function computeSporeFeatures(spore: CandidateEvidenceSpore): SporeFeatures {
+  const text = sporeText(spore);
+  return {
+    anchors: extractProjectAnchors(text),
+    strippedText: stripProjectAnchors(text),
+  };
+}
+
 export function buildCandidateEvidenceBundles(
   input: BuildCandidateEvidenceBundlesInput,
 ): SkillCandidateEvidenceBundle[] {
@@ -135,8 +155,20 @@ export function buildCandidateEvidenceBundles(
   const bundles: SkillCandidateEvidenceBundle[] = [];
   const seenSupportingIds = new Set<string>();
 
+  // Precompute anchors + stripped text per spore exactly once. Without
+  // this, relatedSporesForSeed re-ran extractProjectAnchors + tokenOverlap
+  // on the same candidate spore for every seed iteration, producing an
+  // O(S²) regex pass. Now each spore's features are computed once and
+  // looked up O(1) per inner-loop iteration.
+  const featuresCache = new Map<string, SporeFeatures>();
+  for (const spore of [...wisdomSpores, ...supportingSpores]) {
+    if (!featuresCache.has(spore.id)) {
+      featuresCache.set(spore.id, computeSporeFeatures(spore));
+    }
+  }
+
   for (const wisdom of sortSpores(wisdomSpores)) {
-    const relatedSpores = relatedSporesForSeed(wisdom, supportingSpores);
+    const relatedSpores = relatedSporesForSeed(wisdom, supportingSpores, featuresCache);
     const bundle = buildBundleFromSeed({
       seed: wisdom,
       relatedSpores,
@@ -153,10 +185,10 @@ export function buildCandidateEvidenceBundles(
 
   for (const spore of sortSpores(supportingSpores)) {
     if (seenSupportingIds.has(spore.id)) continue;
-    const relatedSpores = relatedSporesForSeed(spore, supportingSpores)
+    const relatedSpores = relatedSporesForSeed(spore, supportingSpores, featuresCache)
       .filter(related => related.id !== spore.id);
     for (const related of relatedSpores) {
-      if (sharedProjectAnchorCount(spore, related) >= RELATED_SPORE_MIN_SHARED_ANCHORS) {
+      if (sharedProjectAnchorCount(spore, related, featuresCache) >= RELATED_SPORE_MIN_SHARED_ANCHORS) {
         seenSupportingIds.add(related.id);
       }
     }
@@ -178,20 +210,48 @@ export function buildCandidateEvidenceBundles(
     .slice(0, MAX_EVIDENCE_BUNDLES);
 }
 
+function featuresFor(
+  spore: CandidateEvidenceSpore,
+  cache: Map<string, SporeFeatures>,
+): SporeFeatures {
+  const cached = cache.get(spore.id);
+  if (cached) return cached;
+  const computed = computeSporeFeatures(spore);
+  cache.set(spore.id, computed);
+  return computed;
+}
+
+/**
+ * Parses source_ids and returns both the normalized refs and the raw
+ * pre-normalization entry count, so callers can detect "input had N
+ * entries but only M were valid type/id shapes" without a second
+ * JSON.parse pass.
+ *
+ * `rawCount` is `null` when the value isn't a JSON array (or isn't a
+ * string at all) — meaning the field is structurally absent rather
+ * than "present but empty".
+ */
+export function parseSourceRefsWithRawCount(
+  value: unknown,
+): { refs: CandidateSourceRef[]; rawCount: number | null } {
+  const raw = readJsonArray(value);
+  if (raw === null) return { refs: [], rawCount: null };
+  return { refs: normalizeSourceRefs(raw), rawCount: raw.length };
+}
+
 export function parseSourceRefs(value: unknown): CandidateSourceRef[] {
-  if (Array.isArray(value)) return normalizeSourceRefs(value);
-  if (typeof value !== 'string') return [];
+  return parseSourceRefsWithRawCount(value).refs;
+}
 
-  let parsed: unknown;
+function readJsonArray(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
   try {
-    parsed = JSON.parse(value);
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return [];
+    return null;
   }
-
-  if (!Array.isArray(parsed)) return [];
-
-  return normalizeSourceRefs(parsed);
 }
 
 export function assessCandidateEvidence(input: AssessCandidateEvidenceInput): CandidateEvidenceAssessment {
@@ -295,17 +355,17 @@ function buildBundleFromSeed(input: BuildBundleFromSeedInput): SkillCandidateEvi
 function relatedSporesForSeed(
   seed: CandidateEvidenceSpore,
   candidates: CandidateEvidenceSpore[],
+  featuresCache: Map<string, SporeFeatures>,
 ): CandidateEvidenceSpore[] {
-  const seedAnchors = extractProjectAnchors(sporeText(seed));
-  if (seedAnchors.length === 0) return [];
-  const seedTextForOverlap = stripProjectAnchors(sporeText(seed));
+  const seedFeatures = featuresFor(seed, featuresCache);
+  if (seedFeatures.anchors.length === 0) return [];
 
   return candidates
     .filter(candidate => candidate.id !== seed.id)
     .map(candidate => {
-      const candidateAnchors = extractProjectAnchors(sporeText(candidate));
-      const sharedAnchors = sharedAnchorCount(seedAnchors, candidateAnchors);
-      const overlap = tokenOverlap(seedTextForOverlap, stripProjectAnchors(sporeText(candidate)));
+      const candidateFeatures = featuresFor(candidate, featuresCache);
+      const sharedAnchors = sharedAnchorCount(seedFeatures.anchors, candidateFeatures.anchors);
+      const overlap = tokenOverlap(seedFeatures.strippedText, candidateFeatures.strippedText);
       return { candidate, sharedAnchors, overlap: overlap.score };
     })
     .filter(item => (
@@ -320,8 +380,15 @@ function relatedSporesForSeed(
     .map(item => item.candidate);
 }
 
-function sharedProjectAnchorCount(a: CandidateEvidenceSpore, b: CandidateEvidenceSpore): number {
-  return sharedAnchorCount(extractProjectAnchors(sporeText(a)), extractProjectAnchors(sporeText(b)));
+function sharedProjectAnchorCount(
+  a: CandidateEvidenceSpore,
+  b: CandidateEvidenceSpore,
+  featuresCache: Map<string, SporeFeatures>,
+): number {
+  return sharedAnchorCount(
+    featuresFor(a, featuresCache).anchors,
+    featuresFor(b, featuresCache).anchors,
+  );
 }
 
 function sharedAnchorCount(a: string[], b: string[]): number {
@@ -735,7 +802,10 @@ function safeString(value: unknown, fallback = ''): string {
 
 function formatScore(score: unknown): string {
   if (typeof score !== 'number' || !Number.isFinite(score)) return '0.00';
-  return Number.isInteger(score) ? score.toFixed(2) : score.toFixed(2).replace(/0$/, '');
+  // Always two decimal places. The earlier integer/non-integer split
+  // produced "1.00" for 1.0 but "0.7" for 0.7, an inconsistency visible
+  // in the prompts shown to the model.
+  return score.toFixed(2);
 }
 
 function promptSafeScalar(value: unknown, fallback: string): string {

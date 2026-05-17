@@ -17,6 +17,8 @@ import {
   renderEvidenceBundlesForPrompt,
 } from './skill-candidate-evidence.js';
 import {
+  IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE,
+  IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS,
   SKILL_SURVEY_RECONCILIATION_POLICY_MARKER,
   unknownCandidateQualityFailureCodes,
   type CandidateQualityFailureCode,
@@ -30,8 +32,6 @@ const SURVEY_MAX_VISIBLE_NON_ACTIONABLE_CANDIDATES = 10;
 const SURVEY_MAX_DIGEST_CHARS = 1600;
 const SURVEY_MIN_SETTLED_SESSIONS = 2;
 const SURVEY_MIN_SETTLED_ACTIVE_SPORES = 3;
-const SURVEY_MIN_IDENTIFIED_SOURCE_REFS = 3;
-const SURVEY_MIN_IDENTIFIED_QUALITY_SCORE = 0.7;
 const SURVEY_RECONCILE_STATUSES = [
   CANDIDATE_STATUS.IDENTIFIED,
   CANDIDATE_STATUS.DEFERRED,
@@ -165,7 +165,7 @@ function summarizeCandidate(candidate: CandidateRow): PreparedSkillCandidate {
 
   if (candidate.status === CANDIDATE_STATUS.IDENTIFIED) {
     if (candidate.quality_score === null) reasons.push('missing-quality-metadata');
-    if (candidate.quality_score !== null && candidate.quality_score < SURVEY_MIN_IDENTIFIED_QUALITY_SCORE) {
+    if (candidate.quality_score !== null && candidate.quality_score < IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE) {
       reasons.push('quality-below-threshold');
     }
     if (qualityFailures.length > 0) reasons.push('identified-has-quality-failures');
@@ -176,7 +176,7 @@ function summarizeCandidate(candidate: CandidateRow): PreparedSkillCandidate {
       reasons.push('existing-candidate-overlap');
     }
     if (!candidate.evidence_bundle_id) reasons.push('missing-evidence-bundle');
-    if (sourceRefCount < SURVEY_MIN_IDENTIFIED_SOURCE_REFS) reasons.push('insufficient-source-refs');
+    if (sourceRefCount < IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS) reasons.push('insufficient-source-refs');
     if (!hasHumanReviewEvidence(candidate.rationale)) reasons.push('missing-human-review-evidence');
   } else if (
     candidate.status === CANDIDATE_STATUS.DEFERRED &&
