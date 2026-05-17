@@ -1,4 +1,5 @@
 import { useTeamMembers, type TeamMember } from '../../hooks/use-team-members';
+import { useTeamStatus } from '../../hooks/use-team';
 import { Surface } from '../../components/ui/surface';
 import { SectionHeader } from '../../components/ui/section-header';
 import { Badge } from '../../components/ui/badge';
@@ -18,7 +19,7 @@ function timeAgo(at: number | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function MemberRow({ m }: { m: TeamMember }) {
+function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
   return (
     <li className="flex items-center gap-3 py-3 border-b border-outline-variant/10 last:border-b-0">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
@@ -27,12 +28,13 @@ function MemberRow({ m }: { m: TeamMember }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm text-on-surface">{m.user}</span>
+          {isSelf && <Badge variant="outline">this machine</Badge>}
           {m.role && <Badge variant={m.role === 'owner' ? 'default' : 'outline'}>{m.role}</Badge>}
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-on-surface-variant">
           <span className="font-mono">{m.machine_id}</span>
           {m.joined && <span>joined {m.joined}</span>}
-          <span>synced {timeAgo(m.synced_at)}</span>
+          {!isSelf && <span>last received {timeAgo(m.synced_at)}</span>}
           {m.tags.map((t) => <span key={t} className="font-mono">#{t}</span>)}
         </div>
       </div>
@@ -42,6 +44,8 @@ function MemberRow({ m }: { m: TeamMember }) {
 
 export function MembersTab() {
   const { data, isLoading } = useTeamMembers();
+  const { data: status } = useTeamStatus();
+  const selfMachineId = status?.machine_id ?? null;
 
   return (
     <div className="space-y-4">
@@ -60,7 +64,9 @@ export function MembersTab() {
           </p>
         ) : (
           <ul>
-            {data.members.map((m) => <MemberRow key={m.id} m={m} />)}
+            {data.members.map((m) => (
+              <MemberRow key={m.id} m={m} isSelf={m.machine_id === selfMachineId} />
+            ))}
           </ul>
         )}
       </Surface>

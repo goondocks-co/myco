@@ -71,6 +71,15 @@ mock.module('../../packages/myco/ui/src/hooks/use-team-members', () => ({
           joined: '2026-04-01',
           tags: ['core'],
           machine_id: 'machine-1',
+          synced_at: 1779000000,
+        },
+        {
+          id: 'm',
+          user: 'm',
+          role: null,
+          joined: '2026-05-17',
+          tags: [],
+          machine_id: 'm',
           synced_at: null,
         },
       ],
@@ -131,6 +140,13 @@ describe('TeamPage tabs', () => {
     await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     expect(screen.getByText('owner')).toBeInTheDocument();
     expect(screen.getByText('machine-1')).toBeInTheDocument();
+  });
+  it('flags the local machine and hides the inbound-sync chip for self', async () => {
+    render(wrap('/g/foo/team?tab=members'));
+    await waitFor(() => expect(screen.getByText('this machine')).toBeInTheDocument());
+    // Peer row still shows "last received <ago>"; self row must not.
+    const lastReceived = screen.queryAllByText(/last received/);
+    expect(lastReceived).toHaveLength(1);
   });
   it('redirects /team/maintenance → /team?tab=sync', async () => {
     render(wrapWithRoutes('/g/foo/team/maintenance'));
