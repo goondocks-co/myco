@@ -97,6 +97,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 39, migrate: (db) => migrateV38ToV39(db) },
   { version: 40, migrate: (db) => migrateV39ToV40(db) },
   { version: 41, migrate: (db) => migrateV40ToV41(db) },
+  { version: 42, migrate: (db) => migrateV41ToV42(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2550,6 +2551,44 @@ function migrateV40ToV41(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(41, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 42 adds quality and reconciliation metadata to skill_candidates so
+ * candidate selection can record scoring evidence without replacing rows.
+ */
+function migrateV41ToV42(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    const columns = getTableColumnSet(db, 'skill_candidates');
+    if (!columns.has('evidence_bundle_id')) {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN evidence_bundle_id TEXT');
+    }
+    if (!columns.has('quality_score')) {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN quality_score REAL');
+    }
+    if (!columns.has('quality_failures')) {
+      db.exec(`ALTER TABLE skill_candidates ADD COLUMN quality_failures TEXT NOT NULL DEFAULT '[]'`);
+    }
+    if (!columns.has('coverage_matches')) {
+      db.exec(`ALTER TABLE skill_candidates ADD COLUMN coverage_matches TEXT NOT NULL DEFAULT '[]'`);
+    }
+    if (!columns.has('last_reconciled_at')) {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN last_reconciled_at INTEGER');
+    }
+    if (!columns.has('reconciliation_reason')) {
+      db.exec('ALTER TABLE skill_candidates ADD COLUMN reconciliation_reason TEXT');
+    }
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(42, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

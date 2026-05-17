@@ -14,6 +14,7 @@ import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
 import { initDatabase, vaultDbPath } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { upsertCortexInstructions } from '@myco/db/queries/cortex-instructions.js';
+import { setState } from '@myco/db/queries/agent-state.js';
 import { listReports } from '@myco/db/queries/reports.js';
 import { writeCanopyMap } from '@myco/canopy/map/store.js';
 import { getMachineId } from '@myco/daemon/machine-id.js';
@@ -42,6 +43,8 @@ import { validateTaskPostconditions } from './task-postconditions.js';
 import {
   CORTEX_INSTRUCTIONS_TASK,
   SKILL_GENERATE_TASK,
+  SKILL_SURVEY_TASK,
+  SKILL_SURVEY_WATERMARK_KEY,
   CANOPY_MAP_TASK,
   CANOPY_MAP_REPORT_ACTION,
   CANOPY_MAP_CONTENT_KEY,
@@ -694,10 +697,32 @@ export async function finalizeOnTaskSuccess(args: {
     finalizeCortexInstructions(args);
     return;
   }
+  if (args.taskName === SKILL_SURVEY_TASK) {
+    finalizeSkillSurvey(args);
+    return;
+  }
   if (args.taskName === CANOPY_MAP_TASK) {
     finalizeCanopyMap(args);
     return;
   }
+}
+
+function finalizeSkillSurvey(args: {
+  agentId: string;
+  runContext: RunOptions['runContext'];
+  requestContext?: RunOptions['requestContext'];
+}): void {
+  const watermark = args.runContext?.skill_survey_watermark;
+  if (!watermark) return;
+  const projectId = args.requestContext?.projectId;
+  if (!projectId) return;
+  setState(
+    args.agentId,
+    projectId,
+    SKILL_SURVEY_WATERMARK_KEY,
+    String(watermark),
+    watermark,
+  );
 }
 
 function findLastReportByAction(

@@ -79,7 +79,53 @@ If you catch yourself writing "now supports," "we've added," or "previously," re
 
 > **Gotcha — commit message creep**: It's easy to write docs that read like a commit message, especially immediately after implementing a feature. Step back and describe the tool as if the user is encountering it for the first time.
 
-### 6. Ensure legal/IP clarity in public messaging
+### 6. Document multi-symbiont vault usage patterns
+
+When documenting features that work across multiple AI agents in a project, emphasize the vault as the shared memory system and document the saving requirements:
+
+```
+❌ "Save insights to your agent's memory file."
+
+✅ "Save project insights to the Myco vault so all agents in your
+    workspace can access them. Use individual agent memory only
+    for session-specific notes."
+```
+
+Document the requirement that all agents in a multi-symbiont setup must save to the shared vault:
+
+```
+✅ "When working with multiple agents in one project, ensure each
+    agent saves important insights to the shared Myco vault.
+    This keeps project knowledge accessible to all team members
+    regardless of which agent they're using."
+```
+
+Document skill discovery and layout patterns that users encounter:
+
+```
+✅ "Skills are stored in `.agents/skills/` with a `SKILL.md` file.
+    Run `myco skills list` to see available skills in your project.
+    Skill directories use kebab-case names and contain symlinks
+    that allow agents to discover and load them automatically."
+```
+
+### 7. Document CLI help and command patterns
+
+When writing CLI help text or documenting command usage, follow consistent patterns that match user expectations:
+
+```
+✅ "Use `myco help <command>` to see detailed options for any command.
+    All Myco commands support `--help` for quick reference."
+```
+
+Document auto-completion and discovery features:
+
+```
+✅ "Myco commands provide tab completion in most shells.
+    Run `myco --help` to see all available commands."
+```
+
+### 8. Ensure legal/IP clarity in public messaging
 
 When writing public-facing content that references Myco's relationship to other tools or projects, be precise about intellectual property boundaries:
 
@@ -97,7 +143,7 @@ If mentioning predecessor tools is necessary for context, frame it as user migra
 ✅ "Users migrating from OAK can import their activity history with `myco migrate`"
 ```
 
-### 7. Apply the voice checklist
+### 9. Apply the voice checklist
 
 After drafting, read each paragraph through this gate:
 
@@ -109,7 +155,7 @@ After drafting, read each paragraph through this gate:
 | Could a user act on this information directly? | ✅ | Consider removing |
 | Are any IP/legal claims clear and accurate? | ✅ | Clarify relationships and boundaries |
 
-### 8. Add docs to the PR as the final step
+### 10. Add docs to the PR as the final step
 
 Documentation is a merge gate, not a mid-implementation artifact. Write docs after implementation is complete and review them with fresh eyes — ideally after stepping away from the implementation context.
 

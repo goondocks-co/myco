@@ -25,8 +25,9 @@ phases:
     prompt: |
       Write a SKILL.md from the source material in the instruction.
       The instruction contains the candidate ID, topic, rationale,
-      and the full text of each source spore and session. Do NOT
-      call any search or read tools — the material is already here.
+      candidate quality metadata, and the full text of each renderable
+      source spore and session. Do NOT call any search or read tools —
+      the material is already here.
 
       ## SKILL.md Format
 
@@ -96,6 +97,20 @@ phases:
       - **This candidate represents a procedural domain** — a family
         of related tasks that share prerequisite knowledge. The skill
         should cover the full domain, not just a single procedure.
+      - **Honor the evidence metadata.** Treat `evidence_bundle_id`,
+        `quality_score`, `coverage_matches`, and `source_ids` in the
+        instruction as the approval record for this candidate. Use the
+        source material to ground the skill; do not broaden the skill
+        beyond what the approved evidence supports.
+      - **Enforce the evidence contract before staging.** If
+        `evidence_bundle_id` is missing, `quality_failures` is not `[]`,
+        or `source_ids` is empty/malformed, report failure via
+        vault_report and do not call vault_stage_skill. Approval is a
+        human decision, not permission to ignore broken provenance.
+      - **Respect overlap metadata.** If `coverage_matches` shows
+        overlap with an active skill or prior candidate, preserve the
+        distinct boundary or supersession rationale in the generated
+        skill. Do not erase that boundary in broad prose.
       - **A well-scoped skill has 3-6 major sections**, each describing
         a distinct procedure within the domain. If the candidate maps
         to fewer than 2 sections, note this in the rationale — it may
@@ -125,7 +140,8 @@ phases:
       - display_name: human-readable title
       - description: the frontmatter description text
       - content: the full SKILL.md including frontmatter
-      - source_ids: JSON array of source item IDs from the instruction
+      - source_ids: the exact JSON array from the instruction's
+        `source_ids` quality metadata
       - rationale: "Initial generation from candidate survey"
 
       **Important:** the skill is NOT live after vault_stage_skill.
@@ -193,6 +209,11 @@ phases:
          and re-stage with corrected content. Do not finalize a skill
          whose load-bearing paths can't be verified against the
          current codebase — that's how hallucinated paths ship.
+
+      8. **Evidence contract:** source_ids resolve, evidence_bundle_id
+         is present, quality_failures is empty, and coverage_matches are
+         reflected by a clear skill boundary or supersession rationale.
+         If this fails, report failure and do not finalize.
 
       ## If criteria fail
 

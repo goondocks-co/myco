@@ -46,6 +46,8 @@ Navigate to the project root and run:
 myco init
 ```
 
+**Project Root Safety:** `myco init` includes safety guards to prevent initialization in dangerous locations. Specifically, it will refuse to run in unsafe project roots like `$HOME` to prevent accidental vault creation in your home directory. Choose a proper project directory (e.g., `/Users/yourname/projects/myapp`) before running init.
+
 **What `myco init` does:**
 
 1. Creates `.myco/` directory (vault database, config, secrets)
@@ -92,6 +94,7 @@ myco doctor
 
 `myco doctor` checks:
 - Daemon is running and reachable
+- **Binary version** — Validates that the daemon and CLI binary versions match to prevent version-skew issues
 - MCP entries are registered correctly for each active symbiont
 - Hook files are present and executable
 - Vault database is accessible
@@ -274,6 +277,8 @@ This function is the single source of truth. Do not read `.myco/myco.yaml.symbio
 **CLI flags are ignored on re-init of an existing vault.** Provider flags like `--embedding-provider` and `--agent-provider` are scoped exclusively to new vault creation. Running `myco init --agent-provider anthropic` on a project that already has a `.myco/` vault has no effect on provider settings — the existing configuration is preserved. To change providers on an existing vault, use the Settings UI in the daemon.
 
 **CLI help shows before config processing.** Commands like `myco init --help` and `myco update --help` display usage information immediately without reading or validating configuration files. This means help is available even in projects with broken or missing `.myco/myco.yaml` files.
+
+**Attempting to init in unsafe locations.** `myco init` will refuse to run in dangerous project roots like `$HOME` or other system directories to prevent accidental vault creation in inappropriate locations. Always navigate to a proper project directory before running init.
 
 ### Development Environment Gotchas
 

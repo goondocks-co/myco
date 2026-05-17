@@ -11,7 +11,7 @@
  *   task run <name> [--instruction TEXT] Run a task via the agent
  */
 
-import { connectToDaemon } from './shared.js';
+import { connectToDaemon, printHelpIfRequested } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,6 +205,8 @@ async function deleteTask(args: string[], vaultDir: string): Promise<void> {
 }
 
 async function runTask(args: string[], vaultDir: string): Promise<void> {
+  if (printHelpIfRequested(args, TASK_RUN_USAGE)) return;
+
   const name = args[0];
   const instruction = args.find((_, i) => args[i - 1] === '--instruction');
 
@@ -242,9 +244,21 @@ Subcommands:
   run <name> [--instruction TEXT] Run a task via the agent
 `;
 
+const TASK_RUN_USAGE = `Usage: myco task run <name> [--instruction TEXT]
+
+Options:
+  --instruction TEXT  Additional instruction to pass to the agent run.
+  -h, --help          Show this help
+`;
+
 export async function run(args: string[], vaultDir: string): Promise<void> {
   const subcommand = args[0];
   const subArgs = args.slice(1);
+
+  if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+    process.stdout.write(TASK_USAGE);
+    return;
+  }
 
   switch (subcommand) {
     case 'list': return listTasks(subArgs, vaultDir);
@@ -253,10 +267,8 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     case 'delete': return deleteTask(subArgs, vaultDir);
     case 'run': return runTask(subArgs, vaultDir);
     default:
-      if (subcommand) {
-        console.error(`Unknown task subcommand: ${subcommand}`);
-      }
+      console.error(`Unknown task subcommand: ${subcommand}`);
       process.stdout.write(TASK_USAGE);
-      if (subcommand) process.exit(1);
+      process.exit(1);
   }
 }

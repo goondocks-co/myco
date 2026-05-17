@@ -13,6 +13,13 @@ export interface SkillCandidate {
   status: string;
   source_ids: string; // JSON-encoded string
   skill_id: string | null;
+  supersedes: string | null;
+  evidence_bundle_id: string | null;
+  quality_score: number | null;
+  quality_failures: string;
+  coverage_matches: string;
+  last_reconciled_at: number | null;
+  reconciliation_reason: string | null;
   /**
    * Epoch seconds of the first transition into status='approved'.
    * Null for candidates that have never been approved. Auto-set by

@@ -36,6 +36,12 @@ export interface CandidateInsert {
   skill_id?: string | null;
   supersedes?: string | null;
   approved_at?: number | null;
+  evidence_bundle_id?: string | null;
+  quality_score?: number | null;
+  quality_failures?: string;
+  coverage_matches?: string;
+  last_reconciled_at?: number | null;
+  reconciliation_reason?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -56,6 +62,12 @@ export interface CandidateUpdate {
   skill_id?: string | null;
   supersedes?: string | null;
   approved_at?: number | null;
+  evidence_bundle_id?: string | null;
+  quality_score?: number | null;
+  quality_failures?: string;
+  coverage_matches?: string;
+  last_reconciled_at?: number | null;
+  reconciliation_reason?: string | null;
   updated_at: number;
 }
 
@@ -73,6 +85,12 @@ export interface CandidateRow {
   skill_id: string | null;
   supersedes: string | null;
   approved_at: number | null;
+  evidence_bundle_id: string | null;
+  quality_score: number | null;
+  quality_failures: string;
+  coverage_matches: string;
+  last_reconciled_at: number | null;
+  reconciliation_reason: string | null;
   created_at: number;
   updated_at: number;
   synced_at: number | null;
@@ -112,6 +130,12 @@ export const CANDIDATE_COLUMNS = [
   'skill_id',
   'supersedes',
   'approved_at',
+  'evidence_bundle_id',
+  'quality_score',
+  'quality_failures',
+  'coverage_matches',
+  'last_reconciled_at',
+  'reconciliation_reason',
   'created_at',
   'updated_at',
   'synced_at',
@@ -138,6 +162,12 @@ function toCandidateRow(row: Record<string, unknown>): CandidateRow {
     skill_id: (row.skill_id as string) ?? null,
     supersedes: (row.supersedes as string) ?? null,
     approved_at: (row.approved_at as number) ?? null,
+    evidence_bundle_id: (row.evidence_bundle_id as string) ?? null,
+    quality_score: (row.quality_score as number) ?? null,
+    quality_failures: (row.quality_failures as string) ?? '[]',
+    coverage_matches: (row.coverage_matches as string) ?? '[]',
+    last_reconciled_at: (row.last_reconciled_at as number) ?? null,
+    reconciliation_reason: (row.reconciliation_reason as string) ?? null,
     created_at: row.created_at as number,
     updated_at: row.updated_at as number,
     synced_at: (row.synced_at as number) ?? null,
@@ -192,11 +222,13 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
     `INSERT INTO skill_candidates (
        id, project_id, agent_id, machine_id, topic, rationale,
        confidence, status, source_ids, skill_id, supersedes, approved_at,
-       created_at, updated_at
+       evidence_bundle_id, quality_score, quality_failures, coverage_matches,
+       last_reconciled_at, reconciliation_reason, created_at, updated_at
      ) VALUES (
        ?, ?, ?, ?, ?, ?,
        ?, ?, ?, ?, ?, ?,
-       ?, ?
+       ?, ?, ?, ?,
+       ?, ?, ?, ?
      )`,
   ).run(
     data.id,
@@ -211,6 +243,12 @@ export function insertCandidate(data: CandidateInsert): CandidateRow {
     data.skill_id ?? null,
     data.supersedes ?? null,
     data.approved_at ?? null,
+    data.evidence_bundle_id ?? null,
+    data.quality_score ?? null,
+    data.quality_failures ?? '[]',
+    data.coverage_matches ?? '[]',
+    data.last_reconciled_at ?? null,
+    data.reconciliation_reason ?? null,
     data.created_at,
     data.updated_at,
   );
@@ -308,6 +346,12 @@ export function updateCandidate(
     skill_id: 'skill_id',
     supersedes: 'supersedes',
     approved_at: 'approved_at',
+    evidence_bundle_id: 'evidence_bundle_id',
+    quality_score: 'quality_score',
+    quality_failures: 'quality_failures',
+    coverage_matches: 'coverage_matches',
+    last_reconciled_at: 'last_reconciled_at',
+    reconciliation_reason: 'reconciliation_reason',
     updated_at: 'updated_at',
   };
 

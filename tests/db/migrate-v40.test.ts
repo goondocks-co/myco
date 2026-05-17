@@ -102,8 +102,8 @@ describe('migrateV39ToV40', () => {
     closeDatabase();
   });
 
-  it('SCHEMA_VERSION is 41', () => {
-    expect(SCHEMA_VERSION).toBe(41);
+  it('SCHEMA_VERSION includes this migration', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(40);
   });
 
   it('is registered in MIGRATIONS at version 40', () => {

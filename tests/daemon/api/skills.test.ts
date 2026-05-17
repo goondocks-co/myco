@@ -12,6 +12,7 @@ import { insertSkillRecord } from '@myco/db/queries/skill-records.js';
 import { insertLineage } from '@myco/db/queries/skill-lineage.js';
 import { insertSkillUsage } from '@myco/db/queries/skill-usage.js';
 import { upsertSession } from '@myco/db/queries/sessions.js';
+import { insertSpore } from '@myco/db/queries/spores.js';
 import type { CandidateInsert } from '@myco/db/queries/skill-candidates.js';
 import type { SkillRecordInsert } from '@myco/db/queries/skill-records.js';
 import type { RouteRequest } from '@myco/daemon/router';
@@ -55,6 +56,47 @@ function makeCandidate(overrides: Partial<CandidateInsert> = {}): CandidateInser
     updated_at: now,
     ...overrides,
   };
+}
+
+function qualityMetadata(): Partial<CandidateInsert> {
+  return {
+    evidence_bundle_id: 'bundle-api-test-001',
+    quality_score: 0.86,
+    quality_failures: '[]',
+    coverage_matches: '[]',
+    source_ids: JSON.stringify([
+      { id: 'spore-api-source-001', type: 'spore' },
+      { id: 'spore-api-source-002', type: 'spore' },
+      { id: 'session-api-source-001', type: 'session' },
+    ]),
+  };
+}
+
+function seedQualitySources(): void {
+  const now = epochNow();
+  upsertSession({
+    id: 'session-api-source-001',
+    project_id: null,
+    agent: 'claude-code',
+    started_at: now - 100,
+    ended_at: now - 50,
+    status: 'completed',
+    title: 'API source session',
+    summary: 'Resolved source session for candidate approval.',
+    created_at: now - 100,
+  });
+  for (const id of ['spore-api-source-001', 'spore-api-source-002']) {
+    insertSpore({
+      id,
+      project_id: null,
+      agent_id: 'agent-test',
+      session_id: 'session-api-source-001',
+      observation_type: 'decision',
+      content: `Resolved source ${id} for approval quality checks.`,
+      importance: 5,
+      created_at: now - 90,
+    });
+  }
 }
 
 /** Build a minimal valid SkillRecordInsert. */
@@ -203,8 +245,20 @@ describe('handleListCandidates multi-status filter', () => {
 });
 
 describe('handleUpdateCandidate', () => {
-  it('updates the candidate status and returns updated row', async () => {
+  it('rejects approval when evidence metadata is incomplete', async () => {
     insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified' }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch(/evidence metadata/i);
+  });
+
+  it('updates the candidate status and returns updated row', async () => {
+    seedQualitySources();
+    insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified', ...qualityMetadata() }));
 
     const result = await handleUpdateCandidate(
       makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),
@@ -214,6 +268,118 @@ describe('handleUpdateCandidate', () => {
     const body = result.body as { candidate: { id: string; status: string } };
     expect(body.candidate.id).toBe('cand-update');
     expect(body.candidate.status).toBe('approved');
+  });
+
+  it('updates candidate quality metadata fields', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-quality-update',
+      evidence_bundle_id: 'bundle-before',
+      quality_score: 0.1,
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+      last_reconciled_at: 1_700_000_000,
+      reconciliation_reason: 'before',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-quality-update' },
+        body: {
+          evidence_bundle_id: null,
+          quality_score: 0.88,
+          quality_failures: '["missing-examples"]',
+          coverage_matches: '["packages/myco/src/agent/tools/skill-tools.ts"]',
+          last_reconciled_at: null,
+          reconciliation_reason: 'manual review',
+        },
+      }),
+    );
+
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      candidate: {
+        evidence_bundle_id: string | null;
+        quality_score: number | null;
+        quality_failures: string;
+        coverage_matches: string;
+        last_reconciled_at: number | null;
+        reconciliation_reason: string | null;
+      };
+    };
+    expect(body.candidate.evidence_bundle_id).toBeNull();
+    expect(body.candidate.quality_score).toBe(0.88);
+    expect(body.candidate.quality_failures).toBe('["missing-examples"]');
+    expect(body.candidate.coverage_matches).toBe('["packages/myco/src/agent/tools/skill-tools.ts"]');
+    expect(body.candidate.last_reconciled_at).toBeNull();
+    expect(body.candidate.reconciliation_reason).toBe('manual review');
+  });
+
+  it('rejects null quality_failures with 400 and leaves the candidate unchanged', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-null-quality-failures',
+      status: 'identified',
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-null-quality-failures' },
+        body: { status: 'approved', quality_failures: null },
+      }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch('quality_failures');
+
+    const getResult = await handleGetCandidate(
+      makeReq({ params: { id: 'cand-null-quality-failures' } }),
+    );
+    expect(getResult.status).toBe(200);
+    const body = getResult.body as {
+      candidate: {
+        status: string;
+        quality_failures: string;
+        coverage_matches: string;
+      };
+    };
+    expect(body.candidate.status).toBe('identified');
+    expect(body.candidate.quality_failures).toBe('["before"]');
+    expect(body.candidate.coverage_matches).toBe('["before.ts"]');
+  });
+
+  it('rejects null coverage_matches with 400 and leaves the candidate unchanged', async () => {
+    insertCandidate(makeCandidate({
+      id: 'cand-null-coverage-matches',
+      status: 'identified',
+      quality_failures: '["before"]',
+      coverage_matches: '["before.ts"]',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({
+        params: { id: 'cand-null-coverage-matches' },
+        body: { status: 'approved', coverage_matches: null },
+      }),
+    );
+
+    expect(result.status).toBe(400);
+    expect((result.body as { error: string }).error).toMatch('coverage_matches');
+
+    const getResult = await handleGetCandidate(
+      makeReq({ params: { id: 'cand-null-coverage-matches' } }),
+    );
+    expect(getResult.status).toBe(200);
+    const body = getResult.body as {
+      candidate: {
+        status: string;
+        quality_failures: string;
+        coverage_matches: string;
+      };
+    };
+    expect(body.candidate.status).toBe('identified');
+    expect(body.candidate.quality_failures).toBe('["before"]');
+    expect(body.candidate.coverage_matches).toBe('["before.ts"]');
   });
 
   it('returns 400 when body is missing', async () => {
@@ -279,6 +445,18 @@ describe('handleUpdateCandidate', () => {
       );
 
       expect(result.status).toBe(200);
+    });
+
+    it('accepts status=deferred', async () => {
+      insertCandidate(makeCandidate({ id: 'cand-deferred', status: 'identified' }));
+
+      const result = await handleUpdateCandidate(
+        makeReq({ params: { id: 'cand-deferred' }, body: { status: 'deferred' } }),
+      );
+
+      expect(result.status).toBe(200);
+      const body = result.body as { candidate: { status: string } };
+      expect(body.candidate.status).toBe('deferred');
     });
   });
 });

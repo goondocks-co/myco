@@ -403,6 +403,7 @@ export interface RunOptions {
     candidate_id?: string;
     cortex_instruction_input_hash?: string;
     canopy_map_inputs_hash?: string;
+    skill_survey_watermark?: number;
   };
   resumeMode?: 'manual' | 'scheduled';
   /**

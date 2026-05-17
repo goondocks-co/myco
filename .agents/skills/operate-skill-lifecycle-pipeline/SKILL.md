@@ -117,6 +117,26 @@ This tool is human-only — agents cannot call it directly. It provides the fina
 
 **Critical when updating:** Check `allowed-tools` in the existing frontmatter **before** carrying it forward. If it contains vault_* names (vault_create_spore, vault_search_semantic, vault_write_skill, etc.), replace them with Claude Code tools. The gate will reject the write otherwise. See Contamination section below.
 
+### Hand-authoring skills in feature PRs
+
+When manually creating or editing skills during development (e.g., in a feature branch), additional symlink setup is required for discoverability in Claude Code and Cursor:
+
+1. Create or edit the skill in `.agents/skills/<name>/SKILL.md` as usual
+2. Create symlinks for editor discovery:
+   ```bash
+   # For Claude Code
+   mkdir -p .claude/skills/
+   ln -sf ../../.agents/skills/<name> .claude/skills/<name>
+   
+   # For Cursor  
+   mkdir -p .cursor/skills/
+   ln -sf ../../.agents/skills/<name> .cursor/skills/<name>
+   ```
+3. Commit both the skill and the symlinks to your feature branch
+4. The symlinks ensure the skill is discoverable during manual authoring sessions
+
+**Without these symlinks,** hand-authored skills remain invisible to Claude Code and Cursor even though they exist in `.agents/skills/`. The editors only scan their respective skill directories (`.claude/skills/` and `.cursor/skills/`) during session startup.
+
 ### Splitting an oversized skill
 
 1. Identify distinct procedures in the current skill
@@ -190,6 +210,7 @@ Skills are loaded by Claude Code when the frontmatter `description` matches the 
 4. **Description degraded?** Check if the skill was recently evolved — the rewrite may have shortened the description (see Over-Evolution section below). Compare with the previous generation.
 5. **allowed-tools correct?** Confirm `allowed-tools` lists Claude Code tools only
 6. **Still in staging?** Check if the skill is stuck in `.myco/staging/` awaiting promotion
+7. **Symlinks present?** For hand-authored skills, verify `.claude/skills/` and `.cursor/skills/` symlinks exist
 
 ## Diagnosing skill-evolve Over-Evolution
 
