@@ -203,8 +203,8 @@ export default function Agent() {
 
   /** Select a run by navigating to the path-based `/agent/<id>` URL. Clears
    *  any tab/comparison query state. */
-  const selectRun = useCallback((runId: string) => {
-    navigate(`${agentBasePath}/${runId}`);
+  const selectRun = useCallback((runId: string, options?: { replace?: boolean }) => {
+    navigate(`${agentBasePath}/${runId}`, options);
   }, [agentBasePath, navigate]);
 
   const switchTab = useCallback((id: string) => {

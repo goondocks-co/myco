@@ -14,7 +14,7 @@ import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { sectionRows } from '../../lib/section-rows';
 import { cn } from '../../lib/cn';
-import { forwardRef, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
 /* ---------- Constants ---------- */
@@ -224,6 +224,16 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
 
   const sessions = data?.sessions ?? [];
   const total = data?.total ?? 0;
+
+  // Master-detail default: when the user lands on `/sessions` with no row
+  // selected, jump to the topmost entry so the detail pane is never blank.
+  // `replace: true` keeps `/sessions` out of history so back-navigation
+  // skips the redirect.
+  useEffect(() => {
+    if (!selectedId && !isLoading && sessions.length > 0) {
+      navigate(`/sessions/${sessions[0].id}`, { replace: true });
+    }
+  }, [selectedId, isLoading, sessions, navigate]);
 
   const nav = useListKeyboardNav({
     items: sessions,

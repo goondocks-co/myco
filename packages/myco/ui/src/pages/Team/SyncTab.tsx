@@ -1,9 +1,7 @@
 import { useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { WifiOff, RefreshCw, Copy, Check, Eye, EyeOff, ArrowUpCircle, Wrench, ArrowLeft } from 'lucide-react';
+import { RefreshCw, ArrowUpCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  useTeamStatus,
   useTeamQueueStats,
   useTeamSyncSummary,
   useTeamDlq,
@@ -11,391 +9,15 @@ import {
   type TeamStatusResponse,
   type DlqMessage,
   type TeamSyncSummaryResponse,
-} from '../hooks/use-team';
-import { useDaemon } from '../hooks/use-daemon';
-import { postJson, ApiError } from '../lib/api';
-import { PageHeader } from '../components/ui/page-header';
-import { PageLoading } from '../components/ui/page-loading';
-import { Surface } from '../components/ui/surface';
-import { SectionHeader } from '../components/ui/section-header';
-import { Button, buttonVariants } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
-import { Input } from '../components/ui/input';
-import { StatCard } from '../components/ui/stat-card';
-import { ConfirmDialog } from '../components/ui/confirm-dialog';
-
-/* ---------- Helpers ---------- */
-
-function CopyableField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [value]);
-
-  return (
-    <div className="space-y-1">
-      <span className="text-xs text-on-surface-variant">{label}</span>
-      <div className="flex items-center gap-2 group">
-        <span className={`text-sm text-on-surface break-all ${mono ? 'font-mono' : ''}`}>
-          {value}
-        </span>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Copy to clipboard"
-        >
-          {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function RedactedField({ label, value }: { label: string; value: string }) {
-  const [visible, setVisible] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [value]);
-
-  const redacted = `${value.slice(0, 8)}${'*'.repeat(Math.max(0, value.length - 12))}${value.slice(-4)}`;
-
-  return (
-    <div className="space-y-1">
-      <span className="text-xs text-on-surface-variant">{label}</span>
-      <div className="flex items-center gap-2 group">
-        <span className="text-sm text-on-surface font-mono break-all">
-          {visible ? value : redacted}
-        </span>
-        <button
-          type="button"
-          onClick={() => setVisible(!visible)}
-          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface transition-opacity"
-          title={visible ? 'Hide' : 'Reveal'}
-        >
-          {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-        </button>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Copy to clipboard"
-        >
-          {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- Sub-components ---------- */
-
-function ConnectForm({
-  onConnected,
-  scopeName,
-}: {
-  onConnected: () => void;
-  scopeName: string;
-}) {
-  const [url, setUrl] = useState('');
-  const [teamKey, setTeamKey] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      await postJson('/team/connect', { url, api_key: teamKey });
-      onConnected();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Surface level="low" ghostBorder className="p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <WifiOff className="h-4 w-4 text-on-surface-variant" />
-        <SectionHeader>Connect Grove</SectionHeader>
-      </div>
-      <p className="text-sm text-on-surface-variant mb-4">
-        Provision {scopeName} with <code className="font-mono">myco-team install</code> first
-        (<code className="font-mono">myco-team-dev install</code> in dev), then enter the Worker URL and Team key.
-      </p>
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <div>
-          <label className="block text-xs font-medium text-on-surface-variant mb-1">Worker URL</label>
-          <Input
-            type="url"
-            placeholder="https://myco-team.your-account.workers.dev"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            required
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-on-surface-variant mb-1">Team key</label>
-          <Input
-            type="password"
-            placeholder="paste team key"
-            value={teamKey}
-            onChange={(e) => setTeamKey(e.target.value)}
-            required
-          />
-        </div>
-        {error && (
-          <p className="text-sm text-tertiary">{error}</p>
-        )}
-        <Button type="submit" size="sm" disabled={loading || !url || !teamKey}>
-          {loading ? (
-            <>
-              <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" />
-              Connecting...
-            </>
-          ) : (
-            'Connect'
-          )}
-        </Button>
-      </form>
-    </Surface>
-  );
-}
-
-function StatusTab({ status }: { status: TeamStatusResponse }) {
-  const queryClient = useQueryClient();
-  const [disconnecting, setDisconnecting] = useState(false);
-  const [showMcpSnippet, setShowMcpSnippet] = useState(false);
-  const [showRotateConfirm, setShowRotateConfirm] = useState(false);
-  const [rotating, setRotating] = useState(false);
-
-  const handleDisconnect = async () => {
-    setDisconnecting(true);
-    try {
-      await postJson('/team/disconnect');
-      queryClient.invalidateQueries({ queryKey: ['team-status'] });
-    } finally {
-      setDisconnecting(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
-          label="Status"
-          value={status.healthy ? 'Connected' : 'Unhealthy'}
-          accent={status.healthy ? 'sage' : 'terracotta'}
-        />
-        <StatCard
-          label="Grove"
-          value={status.grove?.name ?? status.project.name}
-          accent="outline"
-        />
-        <StatCard
-          label="Protocol"
-          value={`v${status.sync_protocol_version}`}
-          accent="outline"
-        />
-        <StatCard
-          label="Schema"
-          value={`v${status.schema_version}`}
-          accent="outline"
-        />
-      </div>
-
-      <Surface level="low" ghostBorder className="p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Grove Credentials</SectionHeader>
-          <Badge variant={status.healthy ? 'default' : 'destructive'}>
-            {status.healthy ? 'healthy' : 'unhealthy'}
-          </Badge>
-        </div>
-        <p className="text-xs text-on-surface-variant">
-          Use these to connect another machine to this team Grove.
-        </p>
-
-        <div className="space-y-3">
-          {status.worker_url && (
-            <CopyableField label="Worker URL" value={status.worker_url} />
-          )}
-          {status.team_key && (
-            <RedactedField label="Team key" value={status.team_key} />
-          )}
-        </div>
-      </Surface>
-
-      {status.mcp_token && status.mcp_endpoint && (
-        <Surface level="low" ghostBorder className="p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <SectionHeader>Cloud MCP Endpoint</SectionHeader>
-              <Badge variant={status.mcp_healthy ? 'default' : 'destructive'}>
-                {status.mcp_healthy ? 'healthy' : 'unhealthy'}
-              </Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowMcpSnippet(!showMcpSnippet)}
-                className="text-xs text-on-surface-variant hover:text-on-surface transition-colors"
-              >
-                {showMcpSnippet ? 'Hide snippet' : 'Config snippet'}
-              </button>
-              <button
-                onClick={() => setShowRotateConfirm(true)}
-                className="text-xs text-on-surface-variant hover:text-terracotta-text transition-colors"
-              >
-                Rotate token
-              </button>
-            </div>
-          </div>
-          <p className="text-xs text-on-surface-variant">
-            Configure cloud agents with this endpoint to access Grove team intelligence.
-          </p>
-          <div className="space-y-3">
-            <CopyableField label="MCP URL" value={status.mcp_endpoint} />
-            <RedactedField label="MCP Access Token" value={status.mcp_token} />
-          </div>
-
-          {showMcpSnippet && (() => {
-            const snippet = JSON.stringify({
-              mcp_servers: [{
-                type: 'url',
-                url: status.mcp_endpoint,
-                name: 'myco',
-                authorization_token: status.mcp_token,
-              }],
-            }, null, 2);
-            return (
-              <div className="relative">
-                <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
-                  {snippet}
-                </pre>
-                <button
-                  onClick={() => navigator.clipboard.writeText(snippet)}
-                  className="absolute top-2 right-2 p-1 rounded hover:bg-surface-container-high transition-colors"
-                >
-                  <Copy className="h-3.5 w-3.5 text-on-surface-variant" />
-                </button>
-              </div>
-            );
-          })()}
-        </Surface>
-      )}
-
-      <Surface level="low" ghostBorder className="p-5 space-y-4">
-        <SectionHeader>This Node</SectionHeader>
-        <div className="grid gap-3">
-          <CopyableField label="Machine ID" value={status.machine_id} />
-          <CopyableField label="Package Version" value={status.package_version} />
-        </div>
-
-        {status.health_error && (
-          <p className="text-sm text-tertiary mt-2">
-            {status.health_error}
-          </p>
-        )}
-      </Surface>
-
-      <Surface level="low" ghostBorder className="p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Collective</SectionHeader>
-          <Badge variant={status.collective_connected ? 'default' : 'outline'}>
-            {status.collective_connected ? 'connected' : 'not connected'}
-          </Badge>
-        </div>
-        {status.collective_connected ? (
-          <div className="space-y-3">
-            {status.collective_url && (
-              <CopyableField label="Collective URL" value={status.collective_url} />
-            )}
-            {status.collective_project_id && (
-              <CopyableField label="Project ID" value={status.collective_project_id} />
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <span className="text-xs text-on-surface-variant">Last settings sync</span>
-                <p className="text-sm text-on-surface">
-                  {status.collective_last_settings_sync ? new Date(status.collective_last_settings_sync * 1000).toLocaleString() : 'Never'}
-                </p>
-              </div>
-              <div className="space-y-1">
-                <span className="text-xs text-on-surface-variant">Last heartbeat</span>
-                <p className="text-sm text-on-surface">
-                  {status.collective_last_heartbeat ? new Date(status.collective_last_heartbeat * 1000).toLocaleString() : 'Never'}
-                </p>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Capabilities</span>
-              <div className="flex flex-wrap gap-2">
-                {status.collective_capabilities.map((capability) => (
-                  <Badge key={capability} variant="outline">{capability}</Badge>
-                ))}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-on-surface-variant">Effective overrides</span>
-              <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
-                {JSON.stringify(status.collective_settings, null, 2)}
-              </pre>
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-on-surface-variant">
-            This team worker is not currently connected to a Myco Collective.
-          </p>
-        )}
-      </Surface>
-      <div className="flex justify-end">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleDisconnect}
-          disabled={disconnecting}
-        >
-          {disconnecting ? 'Disconnecting...' : 'Disconnect'}
-        </Button>
-      </div>
-
-      <ConfirmDialog
-        open={showRotateConfirm}
-        onOpenChange={setShowRotateConfirm}
-        title="Rotate MCP Access Token"
-        description="This will invalidate the current MCP token. Any cloud agents using it will lose access until reconfigured with the new token."
-        confirmLabel="Rotate Token"
-        variant="destructive"
-        isPending={rotating}
-        onConfirm={async () => {
-          setRotating(true);
-          try {
-            await postJson('/team/rotate-mcp-token');
-            queryClient.invalidateQueries({ queryKey: ['team-status'] });
-            setShowRotateConfirm(false);
-          } catch {
-            // Error visible via status refetch
-          } finally {
-            setRotating(false);
-          }
-        }}
-      />
-    </div>
-  );
-}
-
-/* ---------- SyncTab ---------- */
+} from '../../hooks/use-team';
+import { useDaemon } from '../../hooks/use-daemon';
+import { postJson, ApiError } from '../../lib/api';
+import { Surface } from '../../components/ui/surface';
+import { SectionHeader } from '../../components/ui/section-header';
+import { Button } from '../../components/ui/button';
+import { Badge } from '../../components/ui/badge';
+import { StatCard } from '../../components/ui/stat-card';
+import { QueueTile } from '../../components/team/QueueTile';
 
 const SECONDS_PER_MIN = 60;
 const SECONDS_PER_HOUR = 3600;
@@ -572,7 +194,7 @@ function DlqRow({ message, onAction, busy }: { message: DlqMessage; onAction: (a
   );
 }
 
-function SyncTab({ status }: { status: TeamStatusResponse }) {
+export function SyncTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
   const enabled = status.enabled && status.healthy;
   const { data: queueStats, isLoading: queueLoading } = useTeamQueueStats(enabled);
@@ -880,15 +502,33 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : queueUnavailable ? (
           <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard label="Waiting" value={main?.depth == null ? '—' : String(main.depth)} accent="outline" />
-            <StatCard label="Oldest" value={formatAge(main?.oldest_msg_age_s ?? null)} accent="outline" />
-            <StatCard
-              label="Failed"
-              value={dlqStats?.depth == null ? String(dlqMessages.length) : String(dlqStats.depth)}
-              accent={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+          /* Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s
+             (no in-flight/consumer count), so there's no "Processing" tile.
+             Subtitles surface the oldest-message age on Pending and Failed. */
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <QueueTile
+              label="Pending"
+              value={main?.depth ?? 0}
+              tone={(main?.depth ?? 0) > 0 ? 'ochre' : 'outline'}
+              sub={(() => {
+                const age = formatAge(main?.oldest_msg_age_s ?? null);
+                return age === '—' ? undefined : `Oldest ${age}`;
+              })()}
             />
-            <StatCard label="Oldest failed" value={formatAge(dlqStats?.oldest_msg_age_s ?? null)} accent="outline" />
+            <QueueTile
+              label="Failed"
+              value={dlqStats?.depth ?? dlqMessages.length}
+              tone={(dlqStats?.depth ?? dlqMessages.length) > 0 ? 'terracotta' : 'outline'}
+              sub={(() => {
+                const age = formatAge(dlqStats?.oldest_msg_age_s ?? null);
+                return age === '—' ? undefined : `Oldest ${age}`;
+              })()}
+            />
+            <QueueTile
+              label="DLQ"
+              value={dlqMessages.length}
+              tone={dlqMessages.length > 0 ? 'terracotta' : 'outline'}
+            />
           </div>
         )}
       </Surface>
@@ -969,160 +609,6 @@ function SyncTab({ status }: { status: TeamStatusResponse }) {
           )}
         </Surface>
       )}
-    </div>
-  );
-}
-
-/* ---------- Page wrappers ---------- */
-
-/**
- * Onboarding fallback shown on Team Dashboard when team sync isn't
- * connected yet — install command, provision command, paste-credentials
- * form. Dashboard is the entry point for first-time setup; once
- * connected, the user normally never visits this content again.
- */
-function NotConnectedView({ scopeName, onConnected }: { scopeName: string; onConnected: () => void }) {
-  return (
-    <div className="space-y-4">
-      <Surface level="low" ghostBorder className="p-6 space-y-4">
-        <SectionHeader>Getting Started</SectionHeader>
-        <p className="text-sm text-on-surface-variant">
-          Team sync connects a Grove to shared knowledge infrastructure through a Cloudflare Worker.
-          One team member provisions the worker, then shares the connection details.
-        </p>
-
-        <div className="space-y-3">
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">1. Install prerequisites</p>
-            <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-              npm install -g @goondocks/myco-team wrangler && wrangler login
-            </code>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">2. Provision the Grove worker</p>
-            <code className="block font-mono text-xs bg-surface-container rounded px-3 py-2 text-on-surface-variant">
-              myco-team install
-            </code>
-            <p className="text-xs text-on-surface-variant mt-1">
-              Creates a D1 database, Vectorize index, and deploys the sync worker.
-              Outputs a Worker URL and Team key for the Grove.
-            </p>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-on-surface mb-1">3. Connect</p>
-            <p className="text-xs text-on-surface-variant">
-              Paste the Worker URL and Team key below, or if you ran <code className="font-mono">myco-team install</code>,
-              you're already connected.
-            </p>
-          </div>
-        </div>
-      </Surface>
-
-      <ConnectForm scopeName={scopeName} onConnected={onConnected} />
-    </div>
-  );
-}
-
-/**
- * Team Dashboard — connection state, credentials, MCP endpoint,
- * worker version. The Disconnect button lives here; this is also
- * where the not-connected onboarding flow renders.
- */
-export function TeamDashboard() {
-  const { data: status, isLoading } = useTeamStatus();
-  const queryClient = useQueryClient();
-
-  if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
-
-  const isConnected = status?.enabled && status?.worker_url;
-  const scopeName = status?.grove?.name ?? status?.project.name ?? 'this Grove';
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="px-6 pt-6">
-        <PageHeader
-          title="Team"
-          subtitle={isConnected && status
-            ? 'Connection and team credentials'
-            : `Connect ${scopeName} to team sync`}
-          actions={isConnected ? (
-            <Link
-              to="maintenance"
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
-            >
-              <Wrench size={14} />
-              Maintenance
-            </Link>
-          ) : undefined}
-        />
-      </div>
-
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 pb-6">
-          {isConnected && status ? (
-            <StatusTab status={status} />
-          ) : (
-            <NotConnectedView
-              scopeName={scopeName}
-              onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Team Maintenance — sync metrics, queue health, DLQ retry/discard,
- * remote vector index status, backfill controls. Renamed from "Sync"
- * tab; "Sync" is implementation detail, "Maintenance" matches the
- * dashboard/settings/maintenance shape used across every section.
- */
-export function TeamMaintenance() {
-  const { data: status, isLoading } = useTeamStatus();
-  const queryClient = useQueryClient();
-
-  if (isLoading) return <PageLoading isLoading={true} error={null}><span /></PageLoading>;
-
-  const isConnected = status?.enabled && status?.worker_url;
-  const scopeName = status?.grove?.name ?? status?.project.name ?? 'this Grove';
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="px-6 pt-6">
-        <PageHeader
-          title="Team maintenance"
-          subtitle={isConnected
-            ? 'Backlog, queue health, and failed syncs'
-            : `Connect ${scopeName} to team sync to access maintenance`}
-          actions={
-            <Link
-              to=".."
-              relative="path"
-              className={buttonVariants({ variant: 'ghost', size: 'sm' })}
-            >
-              <ArrowLeft size={14} />
-              Back to Team
-            </Link>
-          }
-        />
-      </div>
-
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 pb-6">
-          {isConnected && status ? (
-            <SyncTab status={status} />
-          ) : (
-            <NotConnectedView
-              scopeName={scopeName}
-              onConnected={() => queryClient.invalidateQueries({ queryKey: ['team-status'] })}
-            />
-          )}
-        </div>
-      </div>
     </div>
   );
 }
