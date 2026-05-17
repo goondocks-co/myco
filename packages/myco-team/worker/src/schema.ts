@@ -435,6 +435,35 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
     }
   }
 
+  // Verify the ALTER chain made every expected column addressable on this
+  // connection. Each entry is `(table, columns[])` covering columns this
+  // helper ALTERs above. The parser fails fast on "no such column" — if
+  // any ALTER hasn't propagated (lazy schema cache, partial replica
+  // refresh, deploy race), this surfaces the gap before any write hits
+  // it. Callers retry on throw; the next request will re-enter
+  // initD1Schema and re-attempt the ALTERs.
+  await verifyColumnsAddressable(db, [
+    ['skill_candidates', [
+      'approved_at', 'supersedes',
+      'evidence_bundle_id', 'quality_score',
+      'quality_failures', 'coverage_matches',
+      'last_reconciled_at', 'reconciliation_reason',
+      'project_id',
+    ]],
+    ['prompt_batches', ['parent_prompt_batch_id', 'kind', 'origin', 'project_id']],
+    ['plans', ['logical_key', 'project_id']],
+    ['skill_usage', ['synced_at', 'project_id']],
+    ['sessions', ['project_id']],
+    ['spores', ['project_id']],
+    ['entities', ['project_id']],
+    ['graph_edges', ['project_id']],
+    ['artifacts', ['project_id']],
+    ['entity_mentions', ['project_id']],
+    ['resolution_events', ['project_id']],
+    ['digest_extracts', ['project_id']],
+    ['skill_records', ['project_id']],
+  ]);
+
   for (const sql of [...POST_MIGRATION_INDEXES, ...PROJECT_SCOPE_INDEXES]) {
     await db.prepare(sql).run();
   }
@@ -566,6 +595,32 @@ export async function initD1Schema(db: D1Database, options: InitD1Options = {}):
       .prepare(`INSERT INTO team_config (key, value) VALUES (?, ?)`)
       .bind('project_id_orphans_pruned_v36', '1')
       .run();
+  }
+}
+
+/**
+ * Verify the listed columns are addressable on `db`. Issues one
+ * `SELECT <columns> FROM <table> LIMIT 0` per table. A `no such
+ * column` parser error throws with the missing table+column so the
+ * caller can surface the gap and retry.
+ */
+async function verifyColumnsAddressable(
+  db: D1Database,
+  expected: ReadonlyArray<readonly [string, readonly string[]]>,
+): Promise<void> {
+  for (const [table, columns] of expected) {
+    if (columns.length === 0) continue;
+    const projection = columns.join(', ');
+    try {
+      await db.prepare(`SELECT ${projection} FROM ${table} LIMIT 0`).run();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `D1 schema verification failed for ${table}(${projection}): ${reason}. ` +
+        `Expected ALTER TABLE columns are not addressable on this connection. ` +
+        `Subsequent requests will retry initD1Schema.`,
+      );
+    }
   }
 }
 

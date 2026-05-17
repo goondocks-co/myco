@@ -485,13 +485,13 @@ export const SKILL_CANDIDATES_TABLE = `
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     approved_at     INTEGER,
+    synced_at       INTEGER,
     evidence_bundle_id TEXT,
     quality_score   REAL,
     quality_failures TEXT NOT NULL DEFAULT '[]',
     coverage_matches TEXT NOT NULL DEFAULT '[]',
     last_reconciled_at INTEGER,
-    reconciliation_reason TEXT,
-    synced_at       INTEGER
+    reconciliation_reason TEXT
   )`;
 
 export const SKILL_RECORDS_TABLE = `

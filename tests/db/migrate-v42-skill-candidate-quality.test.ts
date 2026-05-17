@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initDatabase, closeDatabase } from '@myco/db/client.js';
 import { MIGRATIONS } from '@myco/db/migrations.js';
-import { SCHEMA_VERSION } from '@myco/db/schema.js';
-import type { Database } from 'bun:sqlite';
+import { SCHEMA_VERSION, createSchema } from '@myco/db/schema.js';
+import { Database } from 'bun:sqlite';
 
 interface ColumnInfo {
   name: string;
@@ -161,5 +161,117 @@ describe('migrateV41ToV42 skill candidate quality metadata', () => {
     const version = db.prepare(`SELECT count(*) AS count FROM schema_version WHERE version = 42`)
       .get() as { count: number };
     expect(version.count).toBe(1);
+  });
+
+  it('rolls back the ALTER chain and schema_version when a mid-migration ALTER throws', () => {
+    const migration = MIGRATIONS.find((m) => m.version === 42)!;
+
+    const originalExec = db.exec.bind(db);
+    const failingExec = (sql: string): void => {
+      if (sql.includes('coverage_matches')) {
+        throw new Error('simulated mid-migration failure');
+      }
+      return originalExec(sql);
+    };
+    db.exec = failingExec as typeof db.exec;
+
+    try {
+      expect(() => migration.migrate(db, 'local')).toThrow('simulated mid-migration failure');
+    } finally {
+      db.exec = originalExec;
+    }
+
+    const cols = getColumnInfo(db, 'skill_candidates');
+    expect(cols.has('evidence_bundle_id'), 'evidence_bundle_id should have rolled back').toBe(false);
+    expect(cols.has('quality_score'), 'quality_score should have rolled back').toBe(false);
+    expect(cols.has('quality_failures'), 'quality_failures should have rolled back').toBe(false);
+    expect(cols.has('coverage_matches')).toBe(false);
+    expect(cols.has('last_reconciled_at')).toBe(false);
+    expect(cols.has('reconciliation_reason')).toBe(false);
+
+    const version = db.prepare(
+      `SELECT count(*) AS count FROM schema_version WHERE version = 42`,
+    ).get() as { count: number };
+    expect(version.count, 'schema_version row for v42 must not exist after rollback').toBe(0);
+
+    expect(() => migration.migrate(db, 'local')).not.toThrow();
+    const versionAfter = db.prepare(
+      `SELECT count(*) AS count FROM schema_version WHERE version = 42`,
+    ).get() as { count: number };
+    expect(versionAfter.count).toBe(1);
+  });
+});
+
+describe('skill_candidates column shape: fresh install ≡ upgraded vault', () => {
+  it('produces an identical column set and order whether built from fresh DDL or v41→v42 ALTERs', () => {
+    const upgraded = initDatabase();
+    try {
+      const v41Db = upgraded;
+      v41Db.prepare(
+        `CREATE TABLE schema_version (
+           version    INTEGER PRIMARY KEY,
+           applied_at INTEGER NOT NULL
+         )`,
+      ).run();
+      v41Db.prepare(
+        `CREATE TABLE agents (
+           id         TEXT PRIMARY KEY,
+           name       TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         )`,
+      ).run();
+      v41Db.prepare(
+        `CREATE TABLE skill_candidates (
+           id              TEXT PRIMARY KEY,
+           project_id      TEXT,
+           agent_id        TEXT NOT NULL REFERENCES agents(id),
+           machine_id      TEXT NOT NULL DEFAULT 'local',
+           topic           TEXT NOT NULL,
+           rationale       TEXT NOT NULL,
+           confidence      REAL NOT NULL DEFAULT 0.0,
+           status          TEXT NOT NULL DEFAULT 'identified',
+           source_ids      TEXT NOT NULL DEFAULT '[]',
+           skill_id        TEXT,
+           supersedes      TEXT,
+           created_at      INTEGER NOT NULL,
+           updated_at      INTEGER NOT NULL,
+           approved_at     INTEGER,
+           synced_at       INTEGER
+         )`,
+      ).run();
+      v41Db.prepare(`INSERT INTO schema_version (version, applied_at) VALUES (41, 1000)`).run();
+
+      MIGRATIONS.find((m) => m.version === 42)!.migrate(v41Db, 'local');
+
+      const upgradedCols = (
+        v41Db.prepare(`PRAGMA table_info(skill_candidates)`).all() as Array<{ cid: number; name: string }>
+      )
+        .slice()
+        .sort((a, b) => a.cid - b.cid)
+        .map((col) => col.name);
+
+      const fresh = new Database(':memory:');
+      try {
+        createSchema(fresh, 'local');
+        const freshCols = (
+          fresh.prepare(`PRAGMA table_info(skill_candidates)`).all() as Array<{ cid: number; name: string }>
+        )
+          .slice()
+          .sort((a, b) => a.cid - b.cid)
+          .map((col) => col.name);
+
+        expect(new Set(freshCols), 'column NAME SET must match between fresh and upgraded').toEqual(
+          new Set(upgradedCols),
+        );
+
+        expect(freshCols, 'column ORDER must match — prevents PRAGMA-positional drift between vaults').toEqual(
+          upgradedCols,
+        );
+      } finally {
+        fresh.close();
+      }
+    } finally {
+      closeDatabase();
+    }
   });
 });
