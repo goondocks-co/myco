@@ -63,6 +63,11 @@ describe('myco_maintenance handler', () => {
       'backup_list',
       'restore_preview',
       'restore',
+      // Daemon lifecycle intent ops (F.1-F.3).
+      'intent_status',
+      'restart',
+      'update_pin',
+      'cancel_update',
     ]);
   });
 

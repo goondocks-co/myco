@@ -30,6 +30,7 @@ import {
 import { registerConfigRoutes } from './api/register-config-routes.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
+import { createIntentHandlers } from './api/intent.js';
 import { createUpdateHandlers } from './api/update.js';
 import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
@@ -1211,6 +1212,17 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/models', async (req) => handleGetModels(req, logger));
   server.registerRoute('GET', '/api/git/status', handleGetGitStatus);
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
+
+  // Intent surface: read + write the per-section intent files behind
+  // `myco restart` / `myco update --target-version`. Surfacing these via
+  // HTTP lets MCP tool callers and the UI drive daemon lifecycle ops
+  // without shelling to the CLI. Reconciler still owns convergence.
+  const intentHandlers = createIntentHandlers(daemonService);
+  server.registerRoute('GET',    '/api/daemon/intent',         intentHandlers.status);
+  server.registerRoute('POST',   '/api/daemon/intent/restart', intentHandlers.requestRestart);
+  server.registerRoute('POST',   '/api/daemon/intent/update',  intentHandlers.requestUpdate);
+  server.registerRoute('DELETE', '/api/daemon/intent/restart', intentHandlers.cancelRestart);
+  server.registerRoute('DELETE', '/api/daemon/intent/update',  intentHandlers.cancelUpdate);
 
   // --- Update routes ---
   const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);

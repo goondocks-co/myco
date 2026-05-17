@@ -63,6 +63,7 @@ export const TOOL_CORTEX = 'myco_cortex';
 export const TOOL_PLANS = 'myco_plans';
 export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
+export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
 export const TOOL_MAINTENANCE = 'myco_maintenance';
@@ -287,6 +288,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   // -------------------------------------------------------------------------
   // Operator action tools (Stream J — agent-native parity).
   //
+  {
+    name: TOOL_SKILL_CANDIDATES,
+    description: 'Triage skill candidates surfaced by the skill-survey pipeline: list (with optional status filter), get a single candidate, update its status (agent-allowed: identified, dismissed, deferred — approved is human-only), or delete. Lets an agent close the loop on candidates it produces without driving the UI.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        op: { type: 'string', enum: ['list', 'get', 'update', 'delete'], description: 'Operation (default: list).' },
+        id: { type: 'string', description: 'Candidate id — required for get / update / delete.' },
+        status: { type: 'string', enum: ['identified', 'dismissed', 'deferred'], description: 'update — new status. Pre-flight rejects approved/generated (human-only / internal).' },
+        limit: { type: 'number', description: 'list — max candidates to return.' },
+        offset: { type: 'number', description: 'list — pagination offset.' },
+        status_filter: { type: 'string', description: "list — comma-separated status filter, e.g. 'identified,deferred'." },
+        fields: { type: 'object', description: 'update — any other candidate metadata fields the REST surface accepts (topic, rationale, quality_failures, etc).' },
+      },
+    },
+  },
   // myco_maintenance and myco_update wrap operator workflows the daemon
   // UI exposes (Optimize / Vacuum / Reindex / Integrity-check / Reconcile
   // / Rebuild / Backup-now / Restore-preview / Restore / Update). They
@@ -296,7 +319,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   // -------------------------------------------------------------------------
   {
     name: TOOL_MAINTENANCE,
-    description: 'Operator actions for the local Myco daemon: database maintenance (optimize/vacuum/reindex/integrity-check), embedding pipeline (rebuild/reconcile), backups (now/list), and restore (preview/apply). All ops accept an optional ActionScope body — `kind: "project"` (default), `"grove"`, or `"all-groves"` — that mirrors the daemon UI\'s scope pill and fans actions out across registered Groves when set.',
+    description: 'Operator actions for the local Myco daemon: database maintenance (optimize/vacuum/reindex/integrity-check), embedding pipeline (rebuild/reconcile), backups (now/list), restore (preview/apply), and daemon lifecycle (intent_status/restart/update_pin/cancel_update — mirrors `myco restart` and `myco update --target-version`). All ops accept an optional ActionScope body — `kind: "project"` (default), `"grove"`, or `"all-groves"` — that mirrors the daemon UI\'s scope pill and fans actions out across registered Groves when set. Lifecycle ops ignore scope (daemon is process-global).',
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -319,16 +342,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             'backup_list',
             'restore_preview',
             'restore',
+            'intent_status',
+            'restart',
+            'update_pin',
+            'cancel_update',
           ],
-          description: 'Operation to perform. Read-only: backup_list, restore_preview. Mutating: everything else.',
+          description: 'Operation to perform. Read-only: backup_list, restore_preview, intent_status. Mutating: everything else. Lifecycle: intent_status returns pending {restart, update}; restart queues a daemon restart; update_pin requests a pinned upgrade (requires target_version); cancel_update withdraws a pending update.',
         },
         scope: {
           type: 'object',
-          description: 'Optional ActionScope envelope: `{ kind: "project", grove_id, project_id }` | `{ kind: "grove", grove_id }` | `{ kind: "all-groves" }`. Defaults to the request-context Grove/project when omitted.',
+          description: 'Optional ActionScope envelope: `{ kind: "project", grove_id, project_id }` | `{ kind: "grove", grove_id }` | `{ kind: "all-groves" }`. Defaults to the request-context Grove/project when omitted. Ignored by lifecycle ops.',
         },
         file_name: { type: 'string', description: 'restore_preview / restore — point-in-time backup file name (preferred over machine_id).' },
         machine_id: { type: 'string', description: 'restore_preview / restore — restore the newest backup for this machine. Pass file_name OR machine_id.' },
         async: { type: 'boolean', description: 'embedding_rebuild — when true, queue work for the background loop and return immediately instead of draining inline.' },
+        reason: { type: 'string', description: 'restart — optional reason string recorded into the intent file. Defaults to "mcp" when omitted.' },
+        target_version: { type: 'string', description: 'update_pin — strict semver (e.g. "0.27.11") to pin the daemon to. The reconciler applies the upgrade on the next tick and restarts via the supervisor.' },
       },
       required: ['op'],
     },

@@ -24,6 +24,7 @@ import {
   TOOL_CORTEX,
   TOOL_DEFINITIONS,
   TOOL_MAINTENANCE,
+  TOOL_SKILL_CANDIDATES,
   TOOL_PLANS,
   TOOL_SEARCH,
   TOOL_SESSIONS,
@@ -179,6 +180,24 @@ const HANDLERS = new Map<string, ToolLoader>([
       },
       // HTTP-only proxy. The local DB stays untouched; restore_preview
       // in particular runs even when the local DB is locked.
+      skipDatabase: true,
+    };
+  }],
+  [TOOL_SKILL_CANDIDATES, async () => {
+    const { handleMycoSkillCandidates } = await import('./skill-candidates.js');
+    return {
+      handle: (input, client, context) => handleMycoSkillCandidates(input as unknown as Parameters<typeof handleMycoSkillCandidates>[0], client, context),
+      summarize: (input, result) => {
+        const r = result as { ok?: boolean; candidate?: { id?: string; status?: string }; total?: number };
+        return {
+          op: input.op ?? 'list',
+          id: input.id ?? r.candidate?.id,
+          status: r.candidate?.status,
+          total: r.total,
+          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
+        };
+      },
+      // HTTP-only proxy. No local DB interaction.
       skipDatabase: true,
     };
   }],

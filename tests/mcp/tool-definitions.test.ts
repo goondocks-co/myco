@@ -266,7 +266,10 @@ describe('cross-surface tool-name drift', () => {
   // (cloud read surface) explicitly opts out. The cross-surface test
   // therefore checks that Pi covers every NON-operator tool, not the
   // full canonical set.
-  const OPERATOR_TOOL_NAMES = new Set(['myco_maintenance', 'myco_update']);
+  // Operator + daemon-local tools that Pi (handheld terminal-agent
+  // template) does not register. myco_skill_candidates is daemon-local
+  // (writes to the skill_candidates table) so portable agents skip it.
+  const OPERATOR_TOOL_NAMES = new Set(['myco_maintenance', 'myco_update', 'myco_skill_candidates']);
 
   it('Pi symbiont registers every non-operator canonical tool', () => {
     const names = extractToolNames('packages/myco/src/symbionts/templates/pi/plugin.ts', 'registerTool');

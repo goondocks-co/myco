@@ -27,7 +27,7 @@ describe('MCP tool surface (createMycoTools)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated core tool surface (7 retrieval/entity tools + 2 operator tools)', () => {
+  it('registers the consolidated core tool surface (7 retrieval/entity tools + 2 operator tools + 1 lifecycle/triage tool)', () => {
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
@@ -39,16 +39,20 @@ describe('MCP tool surface (createMycoTools)', () => {
     // Stream J — agent-native parity (operator action tools).
     expect(tools).toContain('myco_maintenance');
     expect(tools).toContain('myco_update');
-    expect(tools).toHaveLength(9);
+    // F.4 — agent-facing skill-candidate triage (re-added after the
+    // 2026-04-22 retirement; reinstated so agents can close the
+    // skill-survey loop without driving the UI).
+    expect(tools).toContain('myco_skill_candidates');
+    expect(tools).toHaveLength(10);
   });
 
   it('no longer registers the retired MCP surfaces', () => {
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     // These were retired in the 2026-04-22 MCP surface cleanup.
+    // (myco_skill_candidates was re-added in F.4 — see test above.)
     for (const retired of [
       'myco_team',
       'myco_graph',
-      'myco_skill_candidates',
       'myco_recall',
       'myco_remember',
       'myco_save_plan',

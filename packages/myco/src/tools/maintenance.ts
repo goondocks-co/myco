@@ -37,6 +37,13 @@ export const MAINTENANCE_OPS = [
   'backup_list',
   'restore_preview',
   'restore',
+  // Daemon lifecycle intent surface — mirrors `myco restart` /
+  // `myco update --target-version` so agents drive lifecycle ops
+  // through MCP instead of shelling to the CLI.
+  'intent_status',
+  'restart',
+  'update_pin',
+  'cancel_update',
 ] as const;
 
 export type MaintenanceOp = typeof MAINTENANCE_OPS[number];
@@ -63,6 +70,10 @@ export interface MaintenanceInput {
   machine_id?: string;
   /** embedding_rebuild — when true, queue work for the background loop and return immediately. */
   async?: boolean;
+  /** restart — optional reason recorded into the intent file (default: "mcp"). */
+  reason?: string;
+  /** update_pin — strict semver (e.g. "0.27.11") to pin the daemon to. */
+  target_version?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +129,57 @@ export async function handleMycoMaintenance(
       return await postRestore(client, '/api/restore/preview', input, headers);
     case 'restore':
       return await postRestore(client, '/api/restore', input, headers);
+    case 'intent_status': {
+      const result = headers
+        ? await client.get('/api/daemon/intent', { headers })
+        : await client.get('/api/daemon/intent');
+      if (!result.ok || !result.data) {
+        return { ok: false, error: 'Intent status unavailable' };
+      }
+      return result.data;
+    }
+    case 'restart': {
+      const payload = input.reason ? { reason: input.reason } : {};
+      const result = headers
+        ? await client.post('/api/daemon/intent/restart', payload, { headers })
+        : await client.post('/api/daemon/intent/restart', payload);
+      if (!result.ok) {
+        throw new ToolError('tool_call_failed', extractError(result) ?? 'Restart intent write failed');
+      }
+      return result.data ?? { ok: true };
+    }
+    case 'update_pin': {
+      if (!input.target_version) {
+        throw new ToolError('invalid_input', 'target_version is required for op: update_pin (semver string)');
+      }
+      const payload = { target_version: input.target_version };
+      const result = headers
+        ? await client.post('/api/daemon/intent/update', payload, { headers })
+        : await client.post('/api/daemon/intent/update', payload);
+      if (!result.ok) {
+        throw new ToolError('tool_call_failed', extractError(result) ?? 'Update intent write failed');
+      }
+      return result.data ?? { ok: true };
+    }
+    case 'cancel_update': {
+      const result = headers
+        ? await client.delete('/api/daemon/intent/update', undefined, { headers })
+        : await client.delete('/api/daemon/intent/update');
+      if (!result.ok) {
+        throw new ToolError('tool_call_failed', extractError(result) ?? 'Cancel update failed');
+      }
+      return result.data ?? { ok: true };
+    }
   }
+}
+
+function extractError(result: { data?: unknown }): string | null {
+  const body = result.data;
+  if (body && typeof body === 'object' && 'error' in body) {
+    const err = (body as { error: unknown }).error;
+    if (typeof err === 'string') return err;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
