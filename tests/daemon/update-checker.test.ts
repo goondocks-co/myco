@@ -34,6 +34,9 @@ const fsMocks = {
   writeFileSync: mock(() => undefined),
   mkdirSync: mock(() => undefined),
   unlinkSync: mock(() => undefined),
+  // atomicWriteFileSync writes to a temp path then renames. The release
+  // channel writer flows through that helper now.
+  renameSync: mock(() => undefined),
 };
 mock.module('node:fs', () => ({
   default: fsMocks,
@@ -270,10 +273,16 @@ describe('project release channel helpers', () => {
 
     writeProjectReleaseChannel('/vault/.myco', 'beta');
 
+    // Atomic write: content goes to a sibling tempfile, then renames over
+    // the final path. Assert against both legs of the dance.
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      '/vault/.myco/local.yaml',
+      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
       expect.stringContaining('channel: beta'),
       'utf-8',
+    );
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
+      '/vault/.myco/local.yaml',
     );
   });
 
@@ -283,9 +292,13 @@ describe('project release channel helpers', () => {
     writeProjectReleaseChannel('/vault/.myco', 'stable');
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      '/vault/.myco/local.yaml',
+      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
       '{}\n',
       'utf-8',
+    );
+    expect(fs.renameSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
+      '/vault/.myco/local.yaml',
     );
   });
 

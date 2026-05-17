@@ -16,6 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 const SECRETS_FILE = 'secrets.env';
 const SECRETS_FILE_MODE = 0o600;
@@ -171,12 +172,8 @@ function ensureSecretsDirSecure(vaultDir: string): void {
 }
 
 function writeSecretsFile(secretsPath: string, content: string): void {
-  fs.writeFileSync(secretsPath, content, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
-  // writeFileSync only applies the mode when creating the file. If it
-  // already existed, force the tightening explicitly.
-  try {
-    fs.chmodSync(secretsPath, SECRETS_FILE_MODE);
-  } catch {
-    // Best-effort.
-  }
+  // Atomic write protects against torn writes; the mode-aware helper
+  // applies 0o600 to the tempfile before rename so the final path is
+  // never briefly readable at the default umask.
+  atomicWriteFileSync(secretsPath, content, { encoding: 'utf-8', mode: SECRETS_FILE_MODE });
 }

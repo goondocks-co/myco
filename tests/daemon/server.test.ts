@@ -415,15 +415,25 @@ describe('DaemonServer', () => {
     }
   });
 
-  it('cleans up daemon.json on stop', async () => {
+  it('leaves daemon.json in place on stop — successor owns cleanup', async () => {
+    // Cleanup ownership inversion (self-mutation-discipline tenet): stop()
+    // never unlinks daemon.json. If it did, a wedged shutdown would leave a
+    // live process with no discoverable state file. Cleanup is owned by the
+    // successor process's reconcileExistingDaemon path, which removes the
+    // file only after confirming the recorded pid is dead.
     const server = new DaemonServer({ vaultDir, logger });
     await server.start();
+    const jsonPath = path.join(vaultDir, 'daemon.json');
+    expect(fs.existsSync(jsonPath)).toBe(true);
     await server.stop();
 
-    expect(fs.existsSync(path.join(vaultDir, 'daemon.json'))).toBe(false);
+    expect(fs.existsSync(jsonPath)).toBe(true);
   });
 
   it('does not delete daemon.json on stop if another daemon has taken over', async () => {
+    // Same invariant: stop() never unlinks. This test additionally checks
+    // the successor-overwritten-state shape so a regression that re-introduced
+    // a pid-guarded delete in stop() would still be caught.
     const server = new DaemonServer({ vaultDir, logger });
     await server.start();
 

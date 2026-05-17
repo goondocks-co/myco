@@ -13,6 +13,7 @@ export const POWER_JOB_NAMES = {
   STAGING_GC: 'staging-gc',
   CANOPY_BACKGROUND_SCAN: 'canopy-background-scan',
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance-reconcile',
+  SELF_RECONCILE: 'self-reconcile',
 } as const;
 
 export type PowerJobName = (typeof POWER_JOB_NAMES)[keyof typeof POWER_JOB_NAMES];

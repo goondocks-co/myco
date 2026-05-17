@@ -7,9 +7,11 @@ import { withInferredReleaseProvenanceDefaults } from '../release-provenance/def
 import { getPluginVersion } from '../version.js';
 import { UPDATE_STAMP_FILENAME } from '../constants/update.js';
 import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
-import { readDaemonPort } from '../daemon/service-state.js';
+import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
+import { mergeIntent, clearIntentSection, readIntent } from '../daemon/intent.js';
+import { DaemonClient } from '../hooks/client.js';
 import {
   activateProjectMigration,
   activationMarkerPath,
@@ -31,14 +33,36 @@ Regenerate managed Myco project files and migrate legacy config to the
 current Machine/Grove/Project config tiers.
 
 Options:
-  --project <path>  Project root to update
-  --all-projects    Update every registered project served by this binary
-  -h, --help        Show this help
+  --project <path>           Project root to update
+  --all-projects             Update every registered project served by this binary
+  --target-version <ver>     Request the daemon install @goondocks/myco@<ver>
+                             via the intent + reconciliation pipeline
+  --cancel-update            Clear a pending [update] intent without installing
+  -h, --help                 Show this help
 `;
 
 export async function run(args: string[]): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(USAGE);
+    return;
+  }
+
+  // `--target-version <v>` writes a binary-update intent for the daemon's
+  // reconciler to pick up. Distinct from the project-config-sync path
+  // (the rest of this command). Doesn't touch project files.
+  const targetVersionIdx = args.indexOf('--target-version');
+  if (targetVersionIdx !== -1) {
+    const target = args[targetVersionIdx + 1];
+    if (!target) {
+      console.error('--target-version requires a version argument');
+      process.exit(1);
+    }
+    await runUpdateIntent(target);
+    return;
+  }
+
+  if (args.includes('--cancel-update')) {
+    await runCancelUpdate();
     return;
   }
 
@@ -321,6 +345,65 @@ async function runAllProjects(): Promise<void> {
     console.error(`  - ${target.groveSlug}/${target.projectName}: ${error instanceof Error ? error.message : String(error)}`);
   }
   process.exit(1);
+}
+
+/**
+ * Write a `[update]` intent under `<stateDir>/intent.toml` and exit.
+ *
+ * Parallel to `myco restart`: the CLI does not call the installer
+ * directly. Instead it writes intent and lets the daemon's
+ * `reconcileSelf` PowerManager tick observe it and invoke
+ * `spawnUpdateScript`. On install failure, the intent is retained so
+ * the next reconcile tick retries — see `self-reconcile.ts`.
+ *
+ * The current daemon's running version is read via `DaemonClient`. When
+ * the daemon is already at the requested version, no intent is written.
+ */
+async function runUpdateIntent(targetVersion: string): Promise<void> {
+  const vaultDir = resolveVaultDir();
+  const daemonService = resolveDaemonServiceState(vaultDir);
+  const client = new DaemonClient(vaultDir);
+  const reachable = await client.getInfoAsync();
+
+  if (!reachable) {
+    console.error('No daemon found. Start the daemon before running `myco update --target-version`.');
+    process.exit(1);
+  }
+
+  // `getInfoAsync` returns the daemon's pid/port but not version (the
+  // `/health` fallback intentionally omits it). For the same-version
+  // short-circuit we consult daemon.json — written by the live daemon's
+  // self-reconcile tick, includes the version field.
+  const state = readDaemonState(daemonService.statePath);
+  if (state?.version === targetVersion) {
+    console.log(`Daemon already at version ${targetVersion}. Nothing to do.`);
+    return;
+  }
+
+  mergeIntent(daemonService, {
+    update: { target_version: targetVersion, requested_at: new Date().toISOString() },
+  });
+  console.log(
+    `Update to ${targetVersion} requested. The daemon will apply it on the next reconcile tick.`,
+  );
+  console.log(`Tail ~/.myco/update-error.json if the update fails.`);
+  console.log(`Run \`myco update --cancel-update\` to withdraw before it lands.`);
+}
+
+/**
+ * Clear a pending `[update]` intent. Idempotent — succeeds even when
+ * no intent is present.
+ */
+async function runCancelUpdate(): Promise<void> {
+  const vaultDir = resolveVaultDir();
+  const daemonService = resolveDaemonServiceState(vaultDir);
+  const intent = readIntent(daemonService);
+  if (!intent.update) {
+    console.log('No pending update intent.');
+    return;
+  }
+  clearIntentSection(daemonService, 'update');
+  console.log(`Cleared pending update intent (target was ${intent.update.target_version}).`);
 }
 
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {

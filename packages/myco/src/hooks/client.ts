@@ -25,14 +25,13 @@ import {
 import {
   daemonStateMtimeMs,
   readDaemonState,
-  removeDaemonState,
   resolveDaemonServiceState,
   type DaemonServiceState,
 } from '../daemon/service-state.js';
-import { SERVICE_DEV_DIRNAME } from '../grove/paths.js';
 import { findInstalledServiceLabel } from '../daemon/api/restart.js';
 import { getServiceManager } from '../service/manager.js';
-import type { ServiceManager, ServiceVariant } from '../service/types.js';
+import { serviceVariantForState } from '../service/labels.js';
+import type { ServiceManager } from '../service/types.js';
 
 export interface DaemonInfo {
   pid: number;
@@ -131,10 +130,6 @@ function defaultIsPortBound(port: number, pid: number): boolean {
   } catch {
     return false;
   }
-}
-
-function serviceVariantForState(state: DaemonServiceState): ServiceVariant {
-  return path.basename(state.stateDir) === SERVICE_DEV_DIRNAME ? 'dev' : 'prod';
 }
 
 /**
@@ -364,15 +359,13 @@ export class DaemonClient {
     }
   }
 
-  /**
-   * Kill the running daemon process.
-   */
+  // SIGTERM only. Never unlinks daemon.json — see reconcileExistingDaemon
+  // for the cleanup-ownership-inversion rationale (the canonical comment).
   private killDaemon(info: DaemonInfo | null): void {
+    if (!info) return;
     try {
-      if (!info) return;
       process.kill(info.pid, 'SIGTERM');
     } catch { /* already dead */ }
-    removeDaemonState(this.daemonService.statePath);
   }
 
   /**
@@ -410,6 +403,45 @@ export class DaemonClient {
    */
   getInfo(): DaemonInfo | null {
     return this.readDaemonJson();
+  }
+
+  /**
+   * Async sibling of `getInfo()` that falls back to a `/health` probe
+   * on the canonical port when daemon.json is missing or stale. The
+   * sync `getInfo()` returns null in that case, which loses sight of a
+   * healthy daemon any time the state file is externally nuked between
+   * its write and the daemon's next self-reconcile tick.
+   *
+   * The reconstructed `DaemonInfo` omits `auth_token` because /health
+   * deliberately doesn't expose it. Callers that need the bearer
+   * (context-switching requests) must wait for the daemon's next
+   * self-reconcile tick to re-write daemon.json.
+   */
+  async getInfoAsync(): Promise<DaemonInfo | null> {
+    const direct = this.readDaemonJson();
+    if (direct) return direct;
+    return this.discoverViaHealth();
+  }
+
+  /**
+   * Probe `/health` on the variant's canonical port. Used as a
+   * last-resort discovery path when daemon.json is missing. Returns
+   * null on any failure — a missing or non-Myco response is
+   * indistinguishable from "no daemon" for caller purposes.
+   */
+  private async discoverViaHealth(): Promise<DaemonInfo | null> {
+    const port = this.daemonService.canonicalPort;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { myco?: boolean; version?: string; pid?: number };
+      if (data.myco !== true || typeof data.pid !== 'number') return null;
+      return { pid: data.pid, port };
+    } catch {
+      return null;
+    }
   }
 
   private requestHeaders(headers?: Record<string, string>): Record<string, string> | undefined {
@@ -451,9 +483,11 @@ export class DaemonClient {
     const prevPid = prevInfo?.pid;
     const prevPort = prevInfo?.port;
 
-    // Initiate the bounce. killDaemon issues SIGTERM and clears daemon.json;
-    // spawnDaemon (or the service supervisor's KeepAlive) brings a fresh
-    // daemon up.
+    // Initiate the bounce. killDaemon issues SIGTERM but never unlinks
+    // daemon.json — the successor's reconcileExistingDaemon owns state-file
+    // cleanup once the recorded pid is confirmed dead. spawnDaemon (or the
+    // service supervisor's KeepAlive) brings a fresh daemon up, which
+    // overwrites daemon.json with its own pid as part of normal startup.
     this.killDaemon(prevInfo);
     // Kick the spawn / supervisor start without blocking on retry delays —
     // the unified poll loop below is the single source of truth for the
