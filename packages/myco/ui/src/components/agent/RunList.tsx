@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, AlertCircle, GitBranch, Play, RotateCcw } from 'lucide-react';
 import { Button } from '../ui/button';
 import { CompareBar } from '../ui/compare-bar';
@@ -300,6 +300,15 @@ export function RunList({ selectedId, onSelectRun, onTriggerRun, onCompareRuns }
 
   const runs = data?.runs ?? [];
   const total = data?.total ?? 0;
+
+  // Master-detail default: when the Runs tab loads with nothing selected,
+  // jump to the topmost run so the detail pane is never blank. Driven
+  // through onSelectRun so the parent owns URL replace semantics.
+  useEffect(() => {
+    if (!selectedId && !isLoading && runs.length > 0) {
+      onSelectRun(runs[0].id, { replace: true });
+    }
+  }, [selectedId, isLoading, runs, onSelectRun]);
 
   const nav = useListKeyboardNav({
     items: runs,

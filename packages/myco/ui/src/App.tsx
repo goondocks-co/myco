@@ -12,7 +12,7 @@ import GroveDashboard from './pages/GroveDashboard';
 import Operations from './pages/Operations';
 import Logs from './pages/Logs';
 import MachineDashboard from './pages/MachineDashboard';
-import { TeamDashboard, TeamMaintenance } from './pages/Team';
+import TeamPage from './pages/Team';
 import Onboarding from './pages/Onboarding';
 import Groves from './pages/Groves';
 import { useGroves } from './hooks/use-groves';
@@ -82,8 +82,8 @@ export default function App() {
       {/* Phase 4 unifies operations under /operations; /maintenance redirects forward. */}
       <Route path="/g/:groveSlug/maintenance" element={<LegacyMaintenanceRedirect />} />
       <Route path="/g/:groveSlug/team" element={<GroveScopedLayout />}>
-        <Route index element={<TeamDashboard />} />
-        <Route path="maintenance" element={<TeamMaintenance />} />
+        <Route index element={<TeamPage />} />
+        <Route path="maintenance" element={<TeamMaintenanceRedirect />} />
       </Route>
       <Route path="/sessions" element={<LegacyProjectRedirect suffix="/sessions" />} />
       <Route path="/sessions/:id" element={<LegacyProjectRedirect suffixFromPath />} />
@@ -157,6 +157,17 @@ function LegacyTeamRedirect() {
   const { groveSlug } = useParams();
   if (!groveSlug) return <Navigate to="/" replace />;
   return <Navigate to={`/g/${groveSlug}/team`} replace />;
+}
+
+/**
+ * Legacy Grove-scoped /g/:slug/team/maintenance → /g/:slug/team?tab=sync.
+ * Phase 6 collapses TeamDashboard + TeamMaintenance into a single tabbed
+ * TeamPage; the Maintenance route forwards to the Sync tab.
+ */
+function TeamMaintenanceRedirect() {
+  const { groveSlug } = useParams();
+  if (!groveSlug) return <Navigate to="/" replace />;
+  return <Navigate to={`/g/${groveSlug}/team?tab=sync`} replace />;
 }
 
 /**
