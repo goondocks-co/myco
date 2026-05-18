@@ -3,7 +3,8 @@ import { Activity, RefreshCw, Users } from 'lucide-react';
 import { useTeamStatus } from '../../hooks/use-team';
 import { PageHeader } from '../../components/ui/page-header';
 import { PageLoading } from '../../components/ui/page-loading';
-import type { Tab } from '../../components/ui/tab-switcher';
+import { PageContainer } from '../../components/ui/page-container';
+import { TileTabs } from '../../components/ui/tile-tabs';
 import { StatusTab } from './StatusTab';
 import { SyncTab } from './SyncTab';
 import { MembersTab } from './MembersTab';
@@ -11,10 +12,10 @@ import { NotConnectedView } from './NotConnectedView';
 
 type TabId = 'status' | 'sync' | 'members';
 
-const TABS: Tab[] = [
-  { id: 'status', label: 'Status', Icon: Activity },
-  { id: 'sync', label: 'Sync', Icon: RefreshCw },
-  { id: 'members', label: 'Members', Icon: Users },
+const TABS = [
+  { id: 'status', label: 'Status', description: 'identity + health', Icon: Activity },
+  { id: 'sync', label: 'Sync', description: 'queue + secrets', Icon: RefreshCw },
+  { id: 'members', label: 'Members', description: 'roster', Icon: Users },
 ];
 
 const VALID_TABS = new Set<TabId>(['status', 'sync', 'members']);
@@ -38,38 +39,38 @@ export function TeamPage() {
   const scopeName = status.grove?.name ?? status.project.name ?? 'this Grove';
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="px-6 pt-6">
-        <PageHeader
-          title="Team"
-          subtitle="Grove-scoped team sync and membership"
-          tabs={isConnected ? TABS : undefined}
-          activeTab={isConnected ? tab : undefined}
-          onTabChange={
-            isConnected
-              ? (id) => setParams((prev) => {
-                  const next = new URLSearchParams(prev);
-                  next.set('tab', id);
-                  return next;
-                }, { replace: true })
-              : undefined
+    <PageContainer>
+      <PageHeader
+        title="Team"
+        subtitle="Grove-scoped team sync and membership"
+      />
+      {isConnected && (
+        <TileTabs
+          tabs={TABS}
+          activeTab={tab}
+          onTabChange={(id) =>
+            setParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.set('tab', id);
+                return next;
+              },
+              { replace: true },
+            )
           }
+          columns={3}
         />
-      </div>
-      <div className="flex-1 overflow-auto">
-        <div className="px-6 py-6">
-          {!isConnected ? (
-            <NotConnectedView scopeName={scopeName} />
-          ) : tab === 'sync' ? (
-            <SyncTab status={status} />
-          ) : tab === 'members' ? (
-            <MembersTab />
-          ) : (
-            <StatusTab status={status} />
-          )}
-        </div>
-      </div>
-    </div>
+      )}
+      {!isConnected ? (
+        <NotConnectedView scopeName={scopeName} />
+      ) : tab === 'sync' ? (
+        <SyncTab status={status} />
+      ) : tab === 'members' ? (
+        <MembersTab />
+      ) : (
+        <StatusTab status={status} />
+      )}
+    </PageContainer>
   );
 }
 

@@ -12,8 +12,7 @@ import {
 } from '../../hooks/use-team';
 import { useDaemon } from '../../hooks/use-daemon';
 import { postJson, ApiError } from '../../lib/api';
-import { Surface } from '../../components/ui/surface';
-import { SectionHeader } from '../../components/ui/section-header';
+import { Panel } from '../../components/ui/panel';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { StatCard } from '../../components/ui/stat-card';
@@ -353,14 +352,17 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
   );
 
   return (
-    <div className="space-y-4">
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <SectionHeader>Worker</SectionHeader>
+    <div className="flex flex-col gap-4">
+      <Panel
+        tone="sage"
+        eyebrow="Sync"
+        title="Worker"
+        actions={
           <Badge variant={status.worker_update_available ? 'outline' : 'default'}>
             {status.worker_update_available ? 'update available' : workerVersionKnown ? 'current' : 'deployed'}
           </Badge>
-        </div>
+        }
+      >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <StatCard
             label="Deployed"
@@ -407,17 +409,20 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           </div>
         )}
         {upgradeMessage && (
-          <p className="text-xs text-on-surface-variant">{upgradeMessage}</p>
+          <p className="text-xs text-on-surface-variant m-0 mt-3">{upgradeMessage}</p>
         )}
-      </Surface>
+      </Panel>
 
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Backfill</SectionHeader>
+      <Panel
+        tone="sage"
+        eyebrow="Sync"
+        title="Backfill"
+        actions={
           <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
             {draining ? 'Backfilling...' : 'Backfill existing records'}
           </Button>
-        </div>
+        }
+      >
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatCard
             label="Left to sync"
@@ -426,13 +431,12 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             href="/logs?component=team-sync"
           />
         </div>
-        {drainMessage && <p className="text-sm text-primary">{drainMessage}</p>}
-      </Surface>
+        {drainMessage && <p className="text-sm text-sage m-0 mt-3">{drainMessage}</p>}
+      </Panel>
 
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <SectionHeader>Sync status</SectionHeader>
+      <Panel tone="sage" eyebrow="Sync" title="Last handoff">
         {summaryLoading && !syncSummary ? (
-          <p className="text-xs text-on-surface-variant">Loading...</p>
+          <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -459,25 +463,28 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               />
             </div>
             {lastHandoff?.error && (
-              <p className="text-sm text-tertiary break-words">{lastHandoff.error}</p>
+              <p className="text-sm text-terracotta break-words m-0 mt-3">{lastHandoff.error}</p>
             )}
           </>
         )}
-      </Surface>
+      </Panel>
 
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <SectionHeader>Remote store</SectionHeader>
-          {syncSummary?.remote && (
+      <Panel
+        tone="sage"
+        eyebrow="Sync"
+        title="Remote store"
+        actions={
+          syncSummary?.remote ? (
             <Badge variant="default">v{syncSummary.remote.package_version}</Badge>
-          )}
-        </div>
+          ) : null
+        }
+      >
         {summaryLoading && !syncSummary ? (
-          <p className="text-xs text-on-surface-variant">Loading...</p>
+          <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : syncSummary?.remote_error ? (
-          <p className="text-sm text-tertiary break-words">{syncSummary.remote_error}</p>
+          <p className="text-sm text-terracotta break-words m-0">{syncSummary.remote_error}</p>
         ) : syncSummary ? (
-          <div className="space-y-3">
+          <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               <StatCard label="Local records" value={formatNumber(localTotal)} accent="outline" />
               <StatCard label="Remote records" value={formatNumber(remoteTotal)} accent="outline" />
@@ -491,16 +498,15 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             <SyncStoreTable summary={syncSummary} />
           </div>
         ) : (
-          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+          <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         )}
-      </Surface>
+      </Panel>
 
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <SectionHeader>Queue health</SectionHeader>
+      <Panel tone="sage" eyebrow="Sync" title="Queue health">
         {queueLoading ? (
-          <p className="text-xs text-on-surface-variant">Loading...</p>
+          <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : queueUnavailable ? (
-          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+          <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         ) : (
           /* Cloudflare's QueueStats API exposes only depth + oldest_msg_age_s
              (no in-flight/consumer count), so there's no "Processing" tile.
@@ -531,11 +537,13 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             />
           </div>
         )}
-      </Surface>
+      </Panel>
 
-      <Surface level="low" ghostBorder className="p-5 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <SectionHeader>Failed syncs</SectionHeader>
+      <Panel
+        tone="sage"
+        eyebrow="Sync"
+        title="Failed syncs"
+        actions={
           <div className="flex items-center gap-2">
             <Button
               size="sm"
@@ -554,16 +562,17 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               {dlqMessages.length > 0 ? `Retry all (${dlqMessages.length})` : 'Retry all'}
             </Button>
           </div>
-        </div>
+        }
+      >
         {dlqMessage && (
-          <p className="text-xs font-mono text-on-surface-variant">{dlqMessage}</p>
+          <p className="text-xs font-mono text-on-surface-variant m-0 mb-3">{dlqMessage}</p>
         )}
         {failedSyncsLoading ? (
-          <p className="text-xs text-on-surface-variant">Loading...</p>
+          <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : failedSyncsUnavailable ? (
-          <p className="text-sm text-on-surface-variant">{unavailableMessage}</p>
+          <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         ) : dlqMessages.length === 0 ? (
-          <p className="text-sm text-on-surface-variant">No failed syncs.</p>
+          <p className="text-sm text-on-surface-variant m-0">No failed syncs.</p>
         ) : (
           <div className="divide-y divide-outline-variant/10">
             {dlqMessages.map((message) => (
@@ -571,16 +580,19 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             ))}
           </div>
         )}
-      </Surface>
+      </Panel>
 
       {hasVectorIndexStatus && (
-        <Surface level="low" ghostBorder className="p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <SectionHeader>Remote Vector Index</SectionHeader>
+        <Panel
+          tone="sage"
+          eyebrow="Sync"
+          title="Remote Vector Index"
+          actions={
             <Badge variant={status.vector_reindex_status === 'error' ? 'destructive' : status.vector_reindex_status === 'running' ? 'outline' : 'default'}>
               {status.vector_reindex_status ?? 'ready'}
             </Badge>
-          </div>
+          }
+        >
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <span className="text-xs text-on-surface-variant">Last table</span>
@@ -602,12 +614,12 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             </div>
           </div>
           {status.vector_reindex_last_error && (
-            <div className="space-y-1 border-t border-outline-variant/10 pt-3">
+            <div className="space-y-1 border-t border-[var(--ghost-border)] pt-3 mt-3">
               <span className="text-xs text-on-surface-variant">Last error</span>
-              <p className="text-xs text-tertiary break-words">{status.vector_reindex_last_error}</p>
+              <p className="text-xs text-terracotta break-words m-0">{status.vector_reindex_last_error}</p>
             </div>
           )}
-        </Surface>
+        </Panel>
       )}
     </div>
   );
