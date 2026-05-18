@@ -289,16 +289,32 @@ export async function main(): Promise<void> {
    * Wire all upstream handlers. Called on initial setup AND on every
    * post-self-heal rebuild so the new transport routes messages back to
    * the same downstream and we don't leak the previous instance's events.
+   *
+   * `onclose` fires on EVERY upstream death — daemon SIGTERM, network
+   * reset, planned teardown by our own reconnect path. Conflating these
+   * killed the bridge the moment a `make build` cycle restarted the
+   * daemon, leaving Claude Code holding a dead bridge that it doesn't
+   * auto-respawn (the next tool call hangs indefinitely). The reconnect
+   * path nulls out `onclose` before tearing down the old transport, so
+   * any fire we see here is daemon-driven — try the same self-heal
+   * sequence the send-error path uses, and only exit if it can't
+   * recover. Same single-flight (`reconnectInFlight`) prevents double-
+   * firing when send-error AND onclose both observe the same death.
    */
   function wireUpstream(t: StreamableHTTPClientTransport): void {
     t.onmessage = (msg) => {
       downstream.send(msg).catch((err: Error) => logErr(`downstream send failed: ${err.message}`));
     };
     t.onclose = () => {
-      // Don't unconditionally exit on upstream close — a close caused by
-      // our own self-heal teardown is expected. The reconnect path nulls
-      // out handlers before close to suppress the spurious onclose.
-      void downstream.close().finally(() => exitWithReason('upstream (daemon) closed'));
+      logErr('upstream onclose fired — entering self-heal');
+      void (async () => {
+        const recovered = await reconnectUpstream();
+        if (!recovered) {
+          void downstream.close().finally(() =>
+            exitWithReason('upstream closed and self-heal exhausted probe budget — agent will respawn bridge'),
+          );
+        }
+      })();
     };
     t.onerror = (err) => logErr(`upstream: ${err.message}`);
   }
