@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { AlertCircle, BookOpen } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
+import { ListFilterBar, type FilterDefinition } from '../ui/list-filter-bar';
 import { Pagination } from '../ui/pagination';
 import { useSkillRecords, type SkillRecord } from '../../hooks/use-skills';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
@@ -147,13 +147,14 @@ export function SkillList({ onSelectSkill }: { onSelectSkill: (name: string) => 
     : records;
 
   const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Search skills..."
+    <ListFilterBar
+      searchPlaceholder="Search skills by name, slug, or description..."
       searchValue={searchInput}
       onSearchChange={handleSearchChange}
       filters={SKILL_FILTERS}
       filterValues={filterValues}
       onFilterChange={handleFilterChange}
+      count={total > 0 ? `${total} ${total === 1 ? 'skill' : 'skills'}` : undefined}
     />
   );
 
