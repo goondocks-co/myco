@@ -2,35 +2,23 @@ import { useNavigate } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
 import { ConfirmDialog } from '../ui/confirm-dialog';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
 import { Pagination } from '../ui/pagination';
 import { StatusDot, type StatusTone } from '../ui/status-dot';
 import { Sparkline } from '../ui/sparkline';
 import { useSessions, useDeleteSession, useSessionImpact, type SessionSummary } from '../../hooks/use-sessions';
 import { useSymbionts } from '../../hooks/use-symbionts';
-import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
 import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { sectionRows } from '../../lib/section-rows';
 import { cn } from '../../lib/cn';
-import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
 /* ---------- Constants ---------- */
 
 /** Number of skeleton rows to show during loading. */
 const SKELETON_ROW_COUNT = 5;
-
-const STATUS_FILTER: FilterDefinition = {
-  key: 'status',
-  label: 'Status',
-  options: [
-    { value: FILTER_ALL, label: 'All statuses' },
-    { value: 'active', label: 'Active' },
-    { value: 'completed', label: 'Completed' },
-  ],
-};
 
 /* ---------- Helpers ---------- */
 
@@ -65,11 +53,16 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
       data-selected={isSelected || undefined}
       data-cursor={isCursor || undefined}
       className={cn(
-        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
-        'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
-        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
-        isSelected && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
-        isCursor && !isSelected && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
+        // v7 myco-grove-active-row treatment: ghost-border separators, soft
+        // surface-container hover, sage left-stripe + tinted background on
+        // active. Cursor (keyboard-focused but not selected) gets a softer
+        // ring so j/k feedback stays visible without competing with the
+        // selected row's accent.
+        'group relative border-b border-[var(--ghost-border)] last:border-b-0 px-4 py-3 cursor-pointer transition-colors duration-100',
+        'hover:bg-surface-container',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage/40',
+        isSelected && 'bg-sage/[0.08] shadow-[inset_2px_0_0_var(--sage)]',
+        isCursor && !isSelected && 'bg-surface-container/60 ring-1 ring-inset ring-sage/30',
       )}
       onClick={onClick}
       onKeyDown={(e) => {
@@ -111,7 +104,7 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
                 e.stopPropagation();
               }
             }}
-            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-tertiary/10 hover:text-tertiary transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-tertiary/40"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded hover:bg-terracotta/10 hover:text-terracotta transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-terracotta/40"
             aria-label={`Delete session ${sessionLabel}`}
             title="Delete session"
           >
@@ -138,7 +131,7 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
 
 function SkeletonCardRow() {
   return (
-    <div className="border-b border-outline-variant/20 px-4 py-3">
+    <div className="border-b border-[var(--ghost-border)] last:border-b-0 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-2 min-w-0 flex-1">
           <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-surface-container-high animate-pulse shrink-0" />
@@ -160,35 +153,33 @@ export interface SessionListProps {
   /** When set, the row with this session id renders as active. Also seeds the
    * keyboard-nav cursor so j/k continues from the selection. */
   selectedId?: string;
+  /** Debounced search string from the page-level filter bar. */
+  search?: string;
+  /** Active filter values from the page-level filter bar (undefined = all). */
+  statusFilter?: string;
+  agentFilter?: string;
+  /** Pagination state (owned by the page so it resets when filters change). */
+  offset: number;
+  onOffsetChange: (offset: number) => void;
+  /** Search-input ref from the page filter bar — passed to keyboard nav so
+   * the `/` shortcut focuses the page-level input. */
+  filterInputRef?: RefObject<HTMLInputElement | null>;
 }
 
-export function SessionList({ selectedId }: SessionListProps = {}) {
+export function SessionList({
+  selectedId,
+  search,
+  statusFilter,
+  agentFilter,
+  offset,
+  onOffsetChange,
+  filterInputRef,
+}: SessionListProps) {
   const navigate = useNavigate();
-  const filterInputRef = useRef<HTMLInputElement>(null);
-  const { searchInput, debouncedSearch, filterValues, offset, setOffset, handleSearchChange, handleFilterChange, activeFilter } = useListFilters({
-    initialFilters: { status: FILTER_ALL, agent: FILTER_ALL },
-  });
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
   const deleteSession = useDeleteSession();
   const { data: impact } = useSessionImpact(deleteTarget?.id ?? null);
   const { data: symbiontsData } = useSymbionts();
-
-  // Build the Symbiont filter from whichever symbionts this project has
-  // enabled. The filter key stays `agent` because that's what the backend
-  // sessions query expects, but the label and options reflect the project's
-  // actual configuration rather than a hardcoded list.
-  const sessionFilters = useMemo<FilterDefinition[]>(() => {
-    const enabledSymbionts = (symbiontsData?.symbionts ?? []).filter((s) => s.enabled);
-    const symbiontFilter: FilterDefinition = {
-      key: 'agent',
-      label: 'Symbiont',
-      options: [
-        { value: FILTER_ALL, label: 'All symbionts' },
-        ...enabledSymbionts.map((s) => ({ value: s.name, label: s.displayName })),
-      ],
-    };
-    return [STATUS_FILTER, symbiontFilter];
-  }, [symbiontsData]);
 
   // Lookup from the DB-stored agent name (e.g. 'claude-code') to the
   // manifest display name. Falls back to the raw name for sessions whose
@@ -204,15 +195,12 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
     };
   }, [symbiontsData]);
 
-  const activeStatus = activeFilter('status');
-  const activeAgent = activeFilter('agent');
-
   const { data, isLoading, isError, error } = useSessions({
     limit: DEFAULT_PAGE_SIZE,
     offset,
-    status: activeStatus,
-    agent: activeAgent,
-    search: debouncedSearch,
+    status: statusFilter,
+    agent: agentFilter,
+    search,
   });
 
   function handleDeleteConfirm() {
@@ -248,18 +236,6 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
     filterInputRef,
   });
 
-  const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Search sessions..."
-      searchValue={searchInput}
-      onSearchChange={handleSearchChange}
-      filters={sessionFilters}
-      filterValues={filterValues}
-      onFilterChange={handleFilterChange}
-      inputRef={filterInputRef}
-    />
-  );
-
   // Page-local sums: aggregates reflect the visible page only. The sessions
   // query doesn't expose project-scoped totals for prompts/active-status
   // separately, so we sum what's loaded. TOTAL comes from the paginated
@@ -268,12 +244,10 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
   const promptsTotal = sessions.reduce((sum, s) => sum + (s.prompt_count ?? 0), 0);
 
   const totalsHeader = (
-    <div className="px-4 py-3 border-b border-outline-variant/20">
+    <div className="px-4 py-3 border-b border-[var(--ghost-border)]">
       <div className="flex items-baseline justify-between gap-2 mb-2">
-        <h2 className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
-          Sessions
-        </h2>
-        <span className="font-serif italic text-sm text-on-surface">Archive</span>
+        <h2 className="myco-eyebrow-sm">Sessions</h2>
+        <span className="myco-display-sm text-on-surface">Archive</span>
       </div>
       <div className="font-mono text-[11px] text-on-surface-variant inline-flex items-center gap-1.5">
         <span><strong className="text-on-surface font-semibold">{total.toLocaleString()}</strong> TOTAL</span>
@@ -287,10 +261,9 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
 
   if (isError) {
     return (
-      <div className="p-4">
+      <div>
         {totalsHeader}
-        {toolbar}
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-tertiary mt-4">
+        <div className="flex h-40 flex-col items-center justify-center gap-2 text-terracotta mt-4">
           <AlertCircle className="h-5 w-5" />
           <span className="font-sans text-sm">Failed to load sessions</span>
           <span className="font-sans text-xs text-on-surface-variant">
@@ -302,10 +275,8 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
   }
 
   return (
-    <div className="p-4">
+    <div>
       {totalsHeader}
-
-      {toolbar}
 
       {isLoading ? (
         <Surface level="low" className="rounded-md overflow-hidden mt-4">
@@ -319,11 +290,11 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
         <div className="flex h-40 flex-col items-center justify-center gap-2 text-on-surface-variant mt-4">
           <MessageSquare className="h-8 w-8 opacity-30" />
           <span className="font-sans text-sm">
-            {total === 0 && !debouncedSearch && !activeStatus && !activeAgent
+            {total === 0 && !search && !statusFilter && !agentFilter
               ? 'No sessions yet'
               : 'No matching sessions'}
           </span>
-          {total === 0 && !debouncedSearch && !activeStatus && !activeAgent && (
+          {total === 0 && !search && !statusFilter && !agentFilter && (
             <span className="font-sans text-xs">Sessions appear here as you work with your agent</span>
           )}
         </div>
@@ -333,7 +304,7 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
             {...nav.containerProps}
             role="list"
             aria-label="Session archive"
-            className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+            className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage/40"
           >
             {(() => {
               const sections = sectionRows(sessions, {
@@ -349,12 +320,10 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
                 <div key={section.label}>
                   <div
                     role="separator"
-                    className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/20 bg-surface-container/30"
+                    className="flex items-center justify-between px-4 py-2 border-b border-[var(--ghost-border)] bg-surface-container/40"
                   >
-                    <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
-                      {section.label}
-                    </span>
-                    <span className="font-mono text-[10px] text-on-surface-variant">
+                    <span className="myco-eyebrow-sm">{section.label}</span>
+                    <span className="font-mono text-[10px] text-outline">
                       {section.rows.length}
                     </span>
                   </div>
@@ -384,7 +353,7 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
         total={total}
         offset={offset}
         limit={DEFAULT_PAGE_SIZE}
-        onPageChange={setOffset}
+        onPageChange={onOffsetChange}
       />
 
       <ConfirmDialog
@@ -392,7 +361,7 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
         onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
         title="Delete Session"
         description="This will permanently remove this session and all related data. This action cannot be undone."
-        icon={<Trash2 className="h-4 w-4 text-tertiary" />}
+        icon={<Trash2 className="h-4 w-4 text-terracotta" />}
         meta={deleteTarget ? [
           { label: 'ID', value: shortSession(deleteTarget.id) },
           { label: 'Title', value: deleteTarget.title || shortSession(deleteTarget.id) },
