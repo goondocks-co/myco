@@ -386,7 +386,11 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
 
-          const maxBytes = 200_000_000;
+          // 210 MB: 5 cross-compiled bun binaries (~77 MB each unpacked)
+          // dominate the tarball; a single Bun runtime bump can tip past
+          // 200 MB. Structural fix: per-platform npm packages (tracked
+          // separately) so users download only their platform.
+          const maxBytes = 210_000_000;
           const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
 
           if (pack.size > maxBytes) {
