@@ -44,15 +44,22 @@ export async function ensureSelfInstalledAsService(
 
     const variant = opts.variant ?? (isDevServiceMode() ? 'dev' : 'prod');
     const label = serviceLabel(variant);
-    if (await mgr.isInstalled(label)) return;
+    const wasInstalled = await mgr.isInstalled(label);
 
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });
+    // Always call install — its content-compare is the only path that
+    // rewrites a stale plist (e.g. one pointing at a binary location that
+    // no longer exists after a layout change). Short-circuiting on
+    // `isInstalled` strands users with a broken unit file across upgrades.
     await mgr.install(spec);
-    logger.info('daemon.service_install', `Installed managed service ${label}`, {
+    logger.info('daemon.service_install', wasInstalled
+      ? `Refreshed managed service ${label}`
+      : `Installed managed service ${label}`, {
       variant,
       platform: mgr.platformName,
       executable,
+      refreshed: wasInstalled,
     });
   } catch (err) {
     logger.warn('daemon.service_install', 'Service install skipped', {

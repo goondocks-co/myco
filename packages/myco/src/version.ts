@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from './utils/find-package-root.js';
+import { findCorePackageRoot } from './utils/find-package-root.js';
 
 let cached: string | undefined;
 
@@ -21,7 +21,7 @@ export function setPluginVersion(version: string): void {
 export function getPluginVersion(): string {
   if (cached) return cached;
 
-  const root = findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+  const root = findCorePackageRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (root) {
     try {
       const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf-8')) as { version?: string };

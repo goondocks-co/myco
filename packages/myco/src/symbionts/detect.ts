@@ -1,6 +1,6 @@
 import { SymbiontManifestSchema, type SymbiontManifest } from './manifest-schema.js';
 import { BUNDLED_MANIFESTS } from './manifests.generated.js';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -104,11 +104,12 @@ export function detectSymbionts(projectRoot: string): DetectedSymbiont[] {
  *      `dist/` that shadowed the real package.
  */
 export function resolvePackageRoot(): string {
-  const fromImportMeta = findPackageRoot(import.meta.dirname);
+  // Symbiont templates ship in @goondocks/myco core only.
+  const fromImportMeta = findCorePackageRoot(import.meta.dirname);
   if (fromImportMeta) return fromImportMeta;
 
   try {
-    const fromExec = findPackageRoot(path.dirname(fs.realpathSync(process.execPath)));
+    const fromExec = findCorePackageRoot(path.dirname(fs.realpathSync(process.execPath)));
     if (fromExec) return fromExec;
   } catch { /* ignore */ }
 
