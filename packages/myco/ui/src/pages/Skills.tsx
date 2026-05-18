@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { HelpCircle, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../components/ui/page-header';
-import type { Tab } from '../components/ui/tab-switcher';
+import { TileTabs } from '../components/ui/tile-tabs';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import {
@@ -27,8 +27,8 @@ const PARAM_SKILL = 'skill';
 
 const VALID_TABS = new Set<SkillsTab>(['candidates', 'skills']);
 
-function readUrlState(): { tab: SkillsTab; skill?: string } {
-  const params = new URLSearchParams(window.location.search);
+function readUrlState(search: string): { tab: SkillsTab; skill?: string } {
+  const params = new URLSearchParams(search);
   const rawTab = params.get(PARAM_TAB);
   const tab: SkillsTab =
     rawTab && VALID_TABS.has(rawTab as SkillsTab) ? (rawTab as SkillsTab) : 'skills';
@@ -49,10 +49,10 @@ function writeUrlState(tab: SkillsTab, skill?: string): void {
 
 /* ---------- Tab definitions ---------- */
 
-const TABS: Tab[] = [
-  { id: 'skills', label: 'Skills' },
-  { id: 'candidates', label: 'Candidates' },
-];
+const TABS = [
+  { id: 'skills', label: 'Skills', description: 'promoted records' },
+  { id: 'candidates', label: 'Candidates', description: 'approval queue' },
+] as const;
 
 /* ---------- Help Dialog ---------- */
 
@@ -133,7 +133,7 @@ function SkillsHelpDialog() {
 
 export default function Skills() {
   const location = useLocation();
-  const initial = readUrlState();
+  const initial = readUrlState(location.search);
   const [tab, setTab] = useState<SkillsTab>(initial.tab);
   const [selectedSkill, setSelectedSkill] = useState<string | undefined>(initial.skill);
 
@@ -148,7 +148,7 @@ export default function Skills() {
   }, [tab, selectedSkill]);
 
   useEffect(() => {
-    const state = readUrlState();
+    const state = readUrlState(location.search);
     setTab(state.tab);
     setSelectedSkill(state.skill);
   }, [location.search, location.key]);
@@ -165,13 +165,10 @@ export default function Skills() {
   }, []);
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="p-6 space-y-6">
       <PageHeader
         title="Skills"
         subtitle="Discovered skill candidates and promoted skill records"
-        tabs={TABS}
-        activeTab={tab}
-        onTabChange={switchTab}
         actions={
           <div className="flex items-center gap-2">
             {pendingCount > 0 && <Badge variant="secondary">{pendingCount} pending</Badge>}
@@ -179,6 +176,13 @@ export default function Skills() {
             <SkillsHelpDialog />
           </div>
         }
+      />
+
+      <TileTabs
+        tabs={TABS.map((t) => ({ id: t.id, label: t.label, description: t.description }))}
+        activeTab={tab}
+        onTabChange={switchTab}
+        columns={2}
       />
 
       {/* Candidates tab */}

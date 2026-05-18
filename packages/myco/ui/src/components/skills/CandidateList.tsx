@@ -5,7 +5,7 @@ import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
 import { Button } from '../ui/button';
 import { MarkdownContent } from '../ui/markdown-content';
-import { ListToolbar, type FilterDefinition } from '../ui/list-toolbar';
+import { ListFilterBar, type FilterDefinition } from '../ui/list-filter-bar';
 import { Pagination } from '../ui/pagination';
 import { useSkillCandidates, useUpdateCandidate, type SkillCandidate } from '../../hooks/use-skills';
 import { useListFilters, FILTER_ALL } from '../../hooks/use-list-filters';
@@ -350,8 +350,8 @@ export function CandidateList() {
   }
 
   const toolbar = (
-    <ListToolbar
-      searchPlaceholder="Search candidates..."
+    <ListFilterBar
+      searchPlaceholder="Search candidates by title or rationale..."
       searchValue={searchInput}
       onSearchChange={handleSearchChange}
       filters={CANDIDATE_FILTERS}
