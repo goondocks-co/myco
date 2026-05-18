@@ -3,7 +3,8 @@ import { ArrowLeft, AlertCircle, Trash2 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { StatCard } from '../ui/stat-card';
+import { MetricCard } from '../ui/metric-card';
+import { Eyebrow } from '../ui/eyebrow';
 import { SectionHeader } from '../ui/section-header';
 import { MarkdownContent } from '../ui/markdown-content';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -108,10 +109,11 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
       </div>
 
       {/* Header card */}
-      <Surface level="low" className="p-4 space-y-3">
+      <Surface level="low" accent="sage" className="p-5 space-y-3">
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 space-y-1 min-w-0">
-            <h1 className="font-serif text-lg text-on-surface">
+            <Eyebrow tone="sage">Skill · {skill.name}</Eyebrow>
+            <h1 className="myco-display-md text-on-surface m-0">
               {skill.display_name}
             </h1>
             {skill.description && (
@@ -140,23 +142,23 @@ export function SkillDetail({ skillName, onBack }: SkillDetailProps) {
         </div>
       </Surface>
 
-      {/* Stat cards */}
+      {/* Metric tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard
+        <MetricCard
           label="Generation"
           value={`v${skill.generation}`}
-          accent="sage"
+          tone="sage"
+          mono
         />
-        <StatCard
+        <MetricCard
           label="Usage"
           value={`${skill.usage_total ?? skill.usage_count ?? 0}`}
-          sublabel="sessions"
-          accent="ochre"
+          sub="sessions"
+          tone="ochre"
         />
-        <StatCard
+        <MetricCard
           label="Sources"
           value={`${sourceCount}`}
-          accent="outline"
         />
       </div>
 
