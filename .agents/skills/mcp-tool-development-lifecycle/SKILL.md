@@ -354,118 +354,17 @@ Decide whether new tools belong in local or cloud MCP surface:
 
 5. **Document placement rationale** — explain why tool belongs in its chosen surface.
 
-## Procedure H: Skill Lifecycle Tool Registration Patterns
+## Procedure H: Skill Lifecycle Belongs Inside the Harness, Not on MCP
 
-The skill lifecycle system requires specific tools that follow domain-specific registration patterns:
+Skill candidates, skill records, and skill file writes are managed by the **Myco agent** (skill-survey, skill-generate, skill-evolve tasks) — not exposed as MCP tools for Symbionts. The MCP surface only exposes `myco_skills` (read-only listing) so Symbionts can see which skills are installed.
 
-1. **Register skill candidate management tools**:
-   ```typescript
-   // In packages/myco/src/tools/definitions.ts
-   export const TOOL_SKILL_CANDIDATES = 'myco_skill_candidates';
+If you need a new affordance for the skill lifecycle:
 
-   {
-     name: TOOL_SKILL_CANDIDATES,
-     description: 'Manage skill candidates (identified topics that may become skills). Supports list, get, create, and update actions.',
-     cortex: {
-       guidance: 'Use for candidate discovery, approval workflows, and candidate lifecycle management',
-       priority: 80,
-       requiresTeam: false,
-       requiresCollective: false,
-     },
-     annotations: {
-       readOnlyHint: false,
-       destructiveHint: false,
-       idempotentHint: false,
-       openWorldHint: false,
-     },
-     inputSchema: {
-       type: 'object',
-       properties: {
-         action: {
-           type: 'string',
-           description: 'Action to perform: list, get, create, update, delete'
-         },
-         id: {
-           type: 'string',
-           description: 'Candidate ID (required for get/update)'
-         },
-         topic: {
-           type: 'string',
-           description: 'Skill topic (required for create)'
-         },
-         rationale: {
-           type: 'string',
-           description: 'Why this should be a skill (required for create)'
-         },
-         status: {
-           type: 'string',
-           description: 'Candidate status: identified, dismissed'
-         }
-       },
-       required: ['action']
-     }
-   }
-   ```
+1. **Add it under `packages/myco/src/agent/tools/`** — the internal harness tool surface. These tools are wired into the agent runtime and are not advertised over MCP.
+2. **Do NOT add it under `packages/myco/src/tools/`** — that's the Symbiont MCP surface, reserved for read + editorial operations on project intelligence. Skill-lifecycle writes are administrative within the Myco agent's domain.
+3. **The structural test at `tests/mcp/surface-discipline.test.ts` will fail** if you accidentally place a skill-lifecycle write tool on the MCP surface — it asserts no admin imports from `tools/`.
 
-2. **Register skill record management tools**:
-   ```typescript
-   export const TOOL_SKILL_RECORDS = 'myco_skill_records';
-
-   {
-     name: TOOL_SKILL_RECORDS,
-     description: 'Read, update, and delete skill records (materialized skills on disk). Supports list, get, update, and delete actions.',
-     cortex: {
-       guidance: 'Use for skill lifecycle operations — reading existing skills, updating status, managing skill evolution',
-       priority: 80,
-     },
-     inputSchema: {
-       type: 'object',
-       properties: {
-         action: { type: 'string', description: 'Action: list, get, update, delete' },
-         id: { type: 'string', description: 'Skill record ID or name (for get/update/delete)' },
-         status: { type: 'string', description: 'Filter by or new status: active, stale, retired' },
-         generation: { type: 'number', description: 'New generation number (for update)' }
-       },
-       required: ['action']
-     }
-   }
-   ```
-
-3. **Register skill file writing tools**:
-   ```typescript
-   export const TOOL_WRITE_SKILL = 'myco_write_skill';
-
-   {
-     name: TOOL_WRITE_SKILL,
-     description: 'Write a SKILL.md file to disk and create or update the corresponding skill record and lineage entry.',
-     cortex: {
-       guidance: 'Use when materializing a new skill from approved candidates or updating existing skills',
-       priority: 90,
-     },
-     annotations: {
-       readOnlyHint: false,
-       destructiveHint: false,
-       idempotentHint: false,
-       openWorldHint: false,
-     },
-     inputSchema: {
-       type: 'object',
-       properties: {
-         name: { type: 'string', description: 'Skill directory name (kebab-case, NO colon)' },
-         display_name: { type: 'string', description: 'Human-readable display name' },
-         description: { type: 'string', description: 'Short description of what the skill does' },
-         content: { type: 'string', description: 'Full SKILL.md content in markdown' },
-         rationale: { type: 'string', description: 'Why this skill was created or updated' },
-         candidate_id: { type: 'string', description: 'Candidate ID that prompted this skill creation' }
-       },
-       required: ['name', 'display_name', 'description', 'content']
-     }
-   }
-   ```
-
-4. **Implement domain-specific validation patterns** — skill tools require structural validation (YAML frontmatter, name prefixes, content length limits) that differs from general vault tools.
-
-5. **Test skill workflow integration** — verify tools support the complete skill lifecycle: survey → approve → generate → evolve.
+Background: `myco_skill_candidates` was briefly exposed on the MCP surface and removed in Bucket K (PR #308). See [`docs/architecture/actors-and-boundaries.md`](../../../docs/architecture/actors-and-boundaries.md) for the actor model.
 
 ## Procedure I: Shared Tool-Runtime Integration
 
