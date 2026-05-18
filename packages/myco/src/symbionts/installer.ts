@@ -1393,6 +1393,14 @@ export function syncSkillSymlinks(
   skillName: string,
   opts?: { remove?: boolean },
 ): void {
+  // Filesystem-safety gate: skillName flows into linkPath / unlinkSync
+  // and (during create) into the symlink target string. A peer-supplied
+  // name like `../../etc` would otherwise place a symlink outside the
+  // agent's skills dir (or, on remove, unlink an arbitrary same-name
+  // file). Keep the rule identical to the API-layer gate in
+  // `daemon/api/skills.ts` so both paths reject the same set.
+  if (!/^[a-z0-9][a-z0-9-]{0,99}$/.test(skillName)) return;
+
   // Resolve manifests dir — try sibling (source layout) then dist layout
   // (tsup bundles into dist/chunk-*.js, but manifests are at dist/src/symbionts/manifests/)
   const selfDir = path.dirname(new URL(import.meta.url).pathname);

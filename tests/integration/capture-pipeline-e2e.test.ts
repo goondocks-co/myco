@@ -22,9 +22,12 @@
  * instead of letting it leak to a user.
  *
  * Stop processing (`POST /events/stop`) lives in a separate processor
- * with heavier deps (transcriptMiner, embeddingManager) and is covered
- * by its own future integration test; this file stays focused on the
- * `/events` dispatcher path.
+ * with heavier deps (transcriptMiner, embeddingManager). Unit-level
+ * coverage for its session-capture rules lives in
+ * `tests/daemon/stop-processing.test.ts`; a full integration test that
+ * exercises the wired-up HTTP path is still a TODO — see issue #285 for
+ * the regression that motivated the bucket-level coverage push.
+ * This file stays focused on the `/events` dispatcher path.
  */
 
 import fs from 'node:fs';
@@ -206,5 +209,35 @@ describe('capture pipeline — end-to-end through dispatcher', () => {
     const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
     expect(batches.length).toBe(1);
     expect(batches[0].prompt_number).toBe(1);
+  });
+
+  it('does NOT dedup three different prompts on the same session (negative-dedup invariant)', async () => {
+    // The identical-prompt case above passes even if dedup were always-on
+    // (a buggy "always coalesce" would still produce one batch). This
+    // negative-dedup test pins the other half of the contract: distinct
+    // prompts must NOT be coalesced — each produces its own batch.
+    const { handler } = makeDispatcher();
+    const sessionId = 'capture-e2e-no-dedup-001';
+    const agent = 'claude-code';
+    const prompts = [
+      'first distinct prompt',
+      'second distinct prompt',
+      'third distinct prompt',
+    ];
+
+    for (const prompt of prompts) {
+      await post(handler, {
+        type: 'user_prompt',
+        session_id: sessionId,
+        agent,
+        prompt,
+        transcript_path: '/tmp/fake-transcript.jsonl',
+      });
+    }
+
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batches.length).toBe(3);
+    expect(batches.map((b) => b.prompt_number)).toEqual([1, 2, 3]);
+    expect(batches.map((b) => b.user_prompt)).toEqual(prompts);
   });
 });

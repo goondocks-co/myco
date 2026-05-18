@@ -14,12 +14,12 @@ export interface TeamMemberRow {
   synced_at: number | null;
 }
 
-/** List all team members ordered by user name. */
+/** List all team members ordered by user name, with id as deterministic tiebreaker. */
 export function listTeamMembers(): TeamMemberRow[] {
   return getDatabase().prepare(
     `SELECT id, "user", role, joined, tags, machine_id, synced_at
      FROM team_members
-     ORDER BY "user" ASC`,
+     ORDER BY "user" ASC, id ASC`,
   ).all() as TeamMemberRow[];
 }
 
@@ -32,9 +32,8 @@ export function listTeamMembers(): TeamMemberRow[] {
  * only stable local identity the daemon has at this layer; a friendlier
  * display name can be supplied later through member-management UI.
  *
- * Returns `{ inserted: true }` on the first call (caller is expected to
- * enqueue this row into the team outbox so peers learn about us);
- * `false` thereafter.
+ * Returns `{ inserted: true, row }` when the INSERT created the row;
+ * `{ inserted: false, row }` when a row already existed.
  */
 export function upsertSelfMember(machineId: string, joinedIso: string): {
   inserted: boolean;

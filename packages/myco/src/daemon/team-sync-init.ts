@@ -4,6 +4,31 @@
  * Extracted from main.ts — creates the TeamSyncClient from saved config,
  * registers the node, backfills unsynced records, and exposes the outbox
  * flush power job.
+ *
+ * ## team_members trust model (audited 2026-05-17, Bucket H.6)
+ *
+ * The local SQLite `team_members` table is SELF-ONLY: the only write path
+ * on the daemon side is `upsertSelfMember(machineId, ...)` in
+ * `db/queries/team-members.ts`, called from `reconcileSelfMember` below.
+ * That call hard-codes `id = machineId = user = machine_id`, so a row in
+ * the local table is by construction a self-record (or a row legacy users
+ * inserted by hand pre-team-sync, which is treated as opaque).
+ *
+ * Peers never INSERT into this table on our local DB. The outbound flow
+ * pushes the self row to the cloud Worker via `enqueueOutbox`; the Worker
+ * stores per-machine rows in its own D1 instance for cross-machine
+ * directory queries. Inbound from the Worker is read-only — the
+ * `/api/team/members` daemon endpoint (`api/team-members.ts`) selects
+ * locally; cross-team listing happens via search APIs that return data
+ * shaped from D1, never INSERTing into the local SQLite.
+ *
+ * The reviewer's concern — "a peer-claimed row whose machine_id doesn't
+ * match the sender" — would only apply if we accepted peer rows into the
+ * local table. We don't. If a future change introduces an inbound
+ * write path (e.g. team-roster sync), the validator MUST live there at
+ * the write site (reject rows where `payload.machine_id !== sender.machine_id`,
+ * reject rows where `payload.id !== payload.machine_id`, etc.) and this
+ * docblock MUST be updated to point at it.
  */
 
 import type { DaemonLogger } from './logger.js';
@@ -34,7 +59,7 @@ import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import type { GroveRuntimeCache } from './grove-runtime-cache.js';
 import { forEachGrove } from './scope-iteration.js';
-import { withDatabase } from '@myco/db/client.js';
+import { withDatabase, getDatabase } from '@myco/db/client.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,19 +122,36 @@ export function initTeamSync(deps: TeamSyncDeps): TeamSyncResult {
     try {
       const nowSec = epochSeconds();
       const joinedIso = new Date(nowSec * 1000).toISOString();
-      const { inserted, row } = upsertSelfMember(machineId, joinedIso);
-      if (!inserted) return;
-      enqueueOutbox({
-        table_name: 'team_members',
-        row_id: row.id,
-        operation: 'upsert',
-        payload: JSON.stringify(row),
-        machine_id: machineId,
-        created_at: nowSec,
-      });
-      logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
-        machine_id: machineId,
-      });
+      // Wrap upsert + enqueue in a single SQLite transaction. Without
+      // this, a crash (or enqueueOutbox throw) between INSERT OR IGNORE
+      // returning changes=1 and the enqueue call would leave the
+      // team_members row inserted but never queued — and because the
+      // upsert is idempotent, every subsequent reconnect reports
+      // inserted=false and skips the enqueue forever. The self member
+      // would be permanently invisible to peers. Transaction rollback
+      // restores the pre-insert state so the next call retries cleanly.
+      let inserted = false;
+      let row: ReturnType<typeof upsertSelfMember>['row'] | null = null;
+      getDatabase().transaction(() => {
+        const result = upsertSelfMember(machineId, joinedIso);
+        inserted = result.inserted;
+        row = result.row;
+        if (inserted && row) {
+          enqueueOutbox({
+            table_name: 'team_members',
+            row_id: row.id,
+            operation: 'upsert',
+            payload: JSON.stringify(row),
+            machine_id: machineId,
+            created_at: nowSec,
+          });
+        }
+      })();
+      if (inserted) {
+        logger.info(LOG_KINDS.TEAM_SYNC_START, 'Self team_members row reconciled', {
+          machine_id: machineId,
+        });
+      }
     } catch (err) {
       logger.warn(LOG_KINDS.TEAM_SYNC_ERROR, 'Self team_members reconcile failed', {
         error: (err as Error).message,

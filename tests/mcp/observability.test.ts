@@ -64,7 +64,7 @@ describe('MCP server observability (#288)', () => {
     recording = makeRecordingLogger();
   });
 
-  it('logs an info entry on successful tool dispatch', async () => {
+  it('logs an info entry on successful tool dispatch (received is debug; completed is info)', async () => {
     const { client } = await connectAndCall(makeFakeTools(), {
       logger: recording.logger,
       sessionId: 'sess-test-1',
@@ -75,8 +75,12 @@ describe('MCP server observability (#288)', () => {
     const calls = recording.entries.filter((e) => e.kind === 'mcp.call');
     expect(calls.length).toBeGreaterThanOrEqual(2); // received + completed
 
+    // `received` lives at debug to keep the dispatch hot path off
+    // two-sync-writes-per-call. `completed` stays at info so a
+    // production operator running at info still gets one entry per
+    // dispatch with the outcome.
     const received = calls.find((e) => e.message === 'MCP tool call received');
-    expect(received?.level).toBe('info');
+    expect(received?.level).toBe('debug');
     expect(received?.data).toMatchObject({ tool_name: 'fake_tool', session_id: 'sess-test-1' });
 
     const completed = calls.find((e) => e.message === 'MCP tool call completed');
@@ -113,6 +117,44 @@ describe('MCP server observability (#288)', () => {
       error_message: 'first line',
     });
     expect((errorEntry?.data?.error_message as string).includes('\n')).toBe(false);
+
+    await client.close();
+  });
+
+  it('redacts secret-shaped substrings out of error_message before logging (H.7)', async () => {
+    // A tool that surfaces an upstream HTTP error verbatim (the daemon's
+    // fetch helpers wrap upstream responses without scrubbing auth
+    // headers) could leak a bearer token, OpenAI sk-, GitHub ghp_, or
+    // auth_token=... into the persisted log. The MCP error log emitter
+    // pipes the first line through `redactSecrets` to defang that
+    // exposure regardless of which tool emitted the error.
+    const throwingTools = makeFakeTools({
+      callTool: async () => {
+        throw new Error(
+          'Upstream 401: Bearer abc123.def-456 — sk-1234567890abcdef1234567890abcdef — ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ — auth_token=zzz.yyy-xxx',
+        );
+      },
+    });
+    const { client } = await connectAndCall(throwingTools, {
+      logger: recording.logger,
+      sessionId: 'sess-test-redact',
+    });
+    await client.callTool({ name: 'anything', arguments: {} }).catch(() => undefined);
+
+    const errorEntry = recording.entries.find(
+      (e) => e.level === 'warn' && e.kind === 'mcp.call' && e.data?.session_id === 'sess-test-redact',
+    );
+    expect(errorEntry).toBeDefined();
+    const msg = errorEntry?.data?.error_message as string;
+    expect(msg).toContain('Bearer [REDACTED]');
+    expect(msg).toContain('sk-[REDACTED]');
+    expect(msg).toContain('ghp_[REDACTED]');
+    expect(msg).toContain('auth_token=[REDACTED]');
+    // And the raw secrets are gone.
+    expect(msg).not.toContain('abc123.def-456');
+    expect(msg).not.toContain('1234567890abcdef1234567890abcdef');
+    expect(msg).not.toContain('abcdefghijklmnopqrstuvwxyzABCDEFGHIJ');
+    expect(msg).not.toContain('zzz.yyy-xxx');
 
     await client.close();
   });

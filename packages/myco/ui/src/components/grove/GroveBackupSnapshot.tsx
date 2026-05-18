@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { HardDrive, Clock, File as FileIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Surface } from '../ui/surface';
@@ -27,15 +27,11 @@ function formatRelative(iso: string): string {
 }
 
 export function GroveBackupSnapshot() {
-  const [backups, setBackups] = useState<BackupMeta[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchJson<BackupListResponse>('/backups')
-      .then((res) => setBackups(res.backups))
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load backups'));
-  }, []);
-
+  const { data, error, isLoading } = useQuery<BackupListResponse, Error>({
+    queryKey: ['backups'],
+    queryFn: ({ signal }) => fetchJson<BackupListResponse>('/backups', { signal }),
+  });
+  const backups = data?.backups ?? null;
   const last = backups && backups.length > 0 ? backups[0] : null;
   const recent = backups ? backups.slice(1, 5) : [];
 
@@ -51,8 +47,8 @@ export function GroveBackupSnapshot() {
         </Link>
       </div>
       {error ? (
-        <p className="text-sm text-tertiary">{error}</p>
-      ) : !backups ? (
+        <p className="text-sm text-tertiary">{error.message}</p>
+      ) : isLoading || !backups ? (
         <p className="text-sm text-on-surface-variant">Loading…</p>
       ) : last === null ? (
         <p className="text-sm text-on-surface-variant">No backups yet.</p>

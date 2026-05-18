@@ -28,7 +28,7 @@ import {
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
-import { detectServiceManagedLabel } from './restart.js';
+import { resolveServiceRestartCommand } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
 import type { ServiceManager } from '../../service/types.js';
 import semver from 'semver';
@@ -81,24 +81,6 @@ export function createUpdateHandlers(deps: UpdateDeps) {
   const serviceManager = deps.serviceManager ?? getServiceManager();
 
   /**
-   * Returns the literal `launchctl kickstart -k …` / `systemctl --user restart …`
-   * command to bake into the detached update / restart script — or null when
-   * this process is NOT the service-managed daemon (manual dev runs, test
-   * fixtures, unsupported platforms). Mirrors the detection used by
-   * handleRestart so /api/update/* and /api/restart agree on what the daemon's
-   * "supervisor" actually is. */
-  async function resolveServiceRestartCommand(): Promise<string | undefined> {
-    const label = await detectServiceManagedLabel(serviceManager);
-    if (!label) return undefined;
-    try {
-      return serviceManager.restartShellCommand(label);
-    } catch {
-      // Unsupported manager — fall back to spawning a daemon child.
-      return undefined;
-    }
-  }
-
-  /**
    * Per-request snapshot of everything derived from vault state on disk.
    * Reads each source once per handler invocation; handlers pass the
    * snapshot into all downstream helpers instead of re-reading.
@@ -147,17 +129,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
 
     const snapshot = readVaultSnapshot();
 
-    // --- Installed-version check (short-circuits before registry) ---
-    // Only run this when there is NO `runtime.command` pin at all. A pin
-    // means the daemon is locked to a specific binary (beta runtimes under
-    // `.myco/runtime/`, dogfood symlinks like ~/.local/bin/myco-dev, any
-    // other user-set pin). `npm install -g` never touches those binaries,
-    // so respawning via the pin re-execs the same binary and loops. This
-    // gate is on `runtimeCommand === null` rather than the older
-    // `runtimeScope === 'machine'` check because the scope label lumped
-    // "no pin" and "pin outside .myco/runtime/" together — the latter still
-    // has the loop problem. Pinned-runtime updates flow through
-    // handleUpdateApply's install path.
+    // Installed-version check — short-circuits before the registry call
+    // and only when there is NO `runtime.command` pin. A pin means the
+    // daemon is locked to a specific binary (beta runtimes under
+    // `.myco/runtime/`, dogfood symlinks like ~/.local/bin/myco-dev, or
+    // any other user-set pin). `npm install -g` never touches those
+    // binaries, so respawning via the pin re-execs the same binary and
+    // loops. Pinned-runtime updates flow through handleUpdateApply.
     if (globalPrefix && !restartInitiated && snapshot.runtimeCommand === null) {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
@@ -168,7 +146,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       ) {
         restartInitiated = true;
         const runLocalUpdate = !isStampMatching(installedVersion);
-        const serviceRestartCommand = await resolveServiceRestartCommand();
+        const serviceRestartCommand = await resolveServiceRestartCommand(serviceManager);
         spawnRestartScript({
           projectRoot, vaultDir, runLocalUpdate,
           fromVersion: currentVersion,
@@ -322,7 +300,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
       : installSpecs;
 
-    const serviceRestartCommand = await resolveServiceRestartCommand();
+    const serviceRestartCommand = await resolveServiceRestartCommand(serviceManager);
     spawnUpdateScript({
       packageSpecs: globalPackageSpecs,
       localRuntimeSpec,

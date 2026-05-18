@@ -21,6 +21,7 @@ allowed-tools: Read, Edit, Write, Bash, Grep, Glob
 - Know that config is deep-merged via `loadConfig()` with `arrayStrategy: 'replace'` where higher-tier (personal) values win
 - Recognize that daemon subsystems can subscribe to config changes for live-reload without restart
 - Understand Grove's global daemon architecture and how it coordinates settings across multiple projects
+- Know that config tier migration preserves existing project configurations while enabling grove coordination
 
 ---
 
@@ -71,6 +72,8 @@ The solution: `updateConfig(vaultDir, fn)` in `packages/myco/src/config/loader.t
 **Global daemon coordination**: Grove's global daemon architecture means config changes may need coordination across multiple project vaults. Use the appropriate grove-aware config loader when working in a multi-project context.
 
 **Migration patterns**: Grove migration introduces new config layering where project-local configs can reference grove-global settings. Ensure config updates respect these layered dependencies and don't break grove coordination.
+
+**Tier migration compatibility**: When implementing features that modify configuration across projects, ensure compatibility with config tier migration patterns. Project configurations should remain functional when migrated to grove coordination models.
 
 ### Pitfall: append-only gitignore staleness
 
@@ -196,6 +199,8 @@ The daemon uses `loadConfig()` to deep-merge these files with `arrayStrategy: 'r
 **Migration compatibility**: Grove migration procedures can update existing project configurations to reference grove-global settings where appropriate, maintaining backward compatibility while enabling grove-wide coordination.
 
 **Initialization patterns**: Grove-aware init procedures detect and integrate with existing project configurations, ensuring smooth onboarding without disrupting established project settings.
+
+**Config tier migration patterns**: When migrating configurations to grove coordination, preserve existing project config semantics while adding grove-level defaults. Ensure that migrated configurations maintain the same effective behavior for teams that don't use grove features.
 
 ### Classify New Config Settings by Tier
 
@@ -396,6 +401,8 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 
 **Grove-tier scope selection:** When adding grove-level settings, ensure they truly coordinate across projects rather than duplicating project-level functionality. Grove settings should enable multi-project workflows, not replace project autonomy.
 
+**Config tier migration false positives:** During drift analysis, config property paths like `myco.yaml` and `backup.dir` are configuration property references, not missing file paths. Verify that core config safety functions remain present in the loader module before assuming drift.
+
 ---
 
 ## Checklist Before Submitting a Config Change
@@ -411,4 +418,5 @@ This pattern keeps side-effects deterministic and avoids the complexity of subpr
 - [ ] Config toggle side-effects use managed blocks and in-process reconciliation
 - [ ] Grove architecture compatibility considered for multi-project coordination
 - [ ] Three-tier merge precedence understood and documented
+- [ ] Config tier migration compatibility verified for grove coordination features
 - [ ] Manual verification: inspect `myco.yaml` after a test save to confirm no data loss

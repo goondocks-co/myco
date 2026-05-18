@@ -1,15 +1,34 @@
-import { useState, useCallback } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Copy, Check, X } from 'lucide-react';
+
+type CopyState = 'idle' | 'copied' | 'failed';
 
 export function CopyableField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>('idle');
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearTimer, [clearTimer]);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [value]);
+    clearTimer();
+    navigator.clipboard.writeText(value).then(
+      () => {
+        setCopyState('copied');
+        timerRef.current = setTimeout(() => setCopyState('idle'), 2000);
+      },
+      () => {
+        setCopyState('failed');
+        timerRef.current = setTimeout(() => setCopyState('idle'), 2000);
+      },
+    );
+  }, [value, clearTimer]);
 
   return (
     <div className="space-y-1">
@@ -22,9 +41,12 @@ export function CopyableField({ label, value, mono = true }: { label: string; va
           type="button"
           onClick={handleCopy}
           className="shrink-0 p-1 rounded text-on-surface-variant hover:text-on-surface opacity-0 group-hover:opacity-100 transition-opacity"
-          title="Copy to clipboard"
+          title={copyState === 'failed' ? 'Copy failed — check clipboard permissions' : 'Copy to clipboard'}
+          aria-live="polite"
         >
-          {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+          {copyState === 'copied' && <Check className="h-3.5 w-3.5 text-primary" />}
+          {copyState === 'failed' && <X className="h-3.5 w-3.5 text-error" />}
+          {copyState === 'idle' && <Copy className="h-3.5 w-3.5" />}
         </button>
       </div>
     </div>

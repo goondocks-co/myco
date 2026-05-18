@@ -105,6 +105,14 @@ const ResumeRunBody = z.object({
   mode: z.enum(['manual', 'scheduled']).optional(),
 });
 
+/**
+ * Tasks that honor the `force` flag on /api/agent/run. Used by the
+ * request handler to reject `force: true` against tasks that would
+ * otherwise silently ignore it. Add a task here once it wires `force`
+ * through to its instruction builder.
+ */
+const FORCE_AWARE_TASKS = new Set<string>([SKILL_SURVEY_TASK]);
+
 // Re-export for backward compatibility
 export { buildTaskInstruction, SKILL_GENERATE_TASK, SKILL_EVOLVE_TASK, SKILL_SURVEY_TASK } from '@myco/agent/instruction-builders.js';
 
@@ -149,6 +157,22 @@ export function createAgentRunHandlers(deps: AgentRunDeps) {
     } = parsedBody.data;
     const scope = projectScopeFromRequestContext(req.requestContext);
     const effectiveAgentId = agentId ?? DEFAULT_AGENT_ID;
+
+    // `force` is opt-in per task and currently only meaningful for
+    // skill-survey (bypasses the incremental watermark). For any other
+    // task the flag would be silently ignored, which is exactly the
+    // kind of contract drift that hides bugs — surface it as a 400
+    // instead. When a new task adopts `force`, add it to FORCE_AWARE_TASKS.
+    if (force === true && task !== undefined && !FORCE_AWARE_TASKS.has(task)) {
+      return {
+        status: 400,
+        body: {
+          ok: false,
+          error: `Task '${task}' does not honor the 'force' flag. ` +
+            `Force is only meaningful for: ${[...FORCE_AWARE_TASKS].join(', ')}.`,
+        },
+      };
+    }
 
     // SSRF defense: strip caller-supplied baseUrl from any remote-provider
     // override. The daemon's bearer key cannot follow a redirected URL.

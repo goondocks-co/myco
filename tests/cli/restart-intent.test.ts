@@ -5,20 +5,24 @@ import path from 'node:path';
 import os from 'node:os';
 import { parse as parseToml } from 'smol-toml';
 
-// Stub the DaemonClient: getInfoAsync is the only call the CLI makes
-// before deciding whether to write the intent. The shared mutable
-// state lets each test control "what does the CLI see for the
-// current daemon" and "what does the CLI see during the polling
-// loop". Without this, the real DaemonClient would try to read a
-// non-existent daemon.json and hit the 37s spawn/retry path the
-// vault memory warns about.
+/**
+ * `myco restart` now mirrors the UI: POST /api/restart synchronously
+ * triggers the supervisor kickstart. The intent file write is reserved
+ * for the HTTP-unreachable fallback path. These tests pin both surfaces:
+ * the happy path (HTTP succeeds → no intent file) and the fallback
+ * (HTTP fails → intent file written as a recovery marker).
+ */
 const { fakeDaemon } = vi.hoisted(() => {
   const fakeDaemon: {
     before: { pid: number; port: number } | null;
     pollResponses: ({ pid: number; port: number } | null)[];
+    postResult: { ok: boolean; data?: unknown };
+    postCalls: { endpoint: string; body: unknown }[];
   } = {
     before: null,
     pollResponses: [],
+    postResult: { ok: true, data: { status: 'restarting' } },
+    postCalls: [],
   };
   return { fakeDaemon };
 });
@@ -27,31 +31,30 @@ mock.module('@myco/hooks/client.js', () => ({
   DaemonClient: class {
     constructor(_vaultDir: string) {}
     async getInfoAsync() {
-      // First call serves `before`; subsequent calls drain
-      // `pollResponses`. When the queue is empty the loop sees null
-      // (treated as "still restarting") until the deadline.
       if (this._beforeServed === false) {
         this._beforeServed = true;
         return fakeDaemon.before;
       }
       return fakeDaemon.pollResponses.shift() ?? null;
     }
+    async post(endpoint: string, body: unknown) {
+      fakeDaemon.postCalls.push({ endpoint, body });
+      return fakeDaemon.postResult;
+    }
     private _beforeServed = false;
   },
 }));
 
-// Pin MYCO_HOME inside the test temp dir so resolveDaemonServiceState
-// drops intent.toml under our fixture instead of ~/.myco.
 import { run } from '@myco/cli/restart.js';
 
-describe('myco restart writes intent', () => {
+describe('myco restart converges on /api/restart', () => {
   let testDir: string;
   let vault: string;
   let serviceDir: string;
   let originalHome: string | undefined;
 
   beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-restart-intent-'));
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-restart-'));
     vault = path.join(testDir, '.myco');
     fs.mkdirSync(vault, { recursive: true });
 
@@ -62,6 +65,8 @@ describe('myco restart writes intent', () => {
 
     fakeDaemon.before = null;
     fakeDaemon.pollResponses = [];
+    fakeDaemon.postResult = { ok: true, data: { status: 'restarting' } };
+    fakeDaemon.postCalls = [];
   });
 
   afterEach(() => {
@@ -70,10 +75,8 @@ describe('myco restart writes intent', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  it('writes a [restart] section to intent.toml and converges on a new pid', async () => {
+  it('POSTs /api/restart and converges on new pid — no intent file written', async () => {
     fakeDaemon.before = { pid: 11111, port: 20915 };
-    // First poll: still old pid (shouldn't happen, but defensive).
-    // Second poll: new pid → CLI returns.
     fakeDaemon.pollResponses = [
       null, // gap during SIGTERM/respawn
       { pid: 22222, port: 20915 },
@@ -81,20 +84,26 @@ describe('myco restart writes intent', () => {
 
     await run([], vault);
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
-    expect(fs.existsSync(intentPath)).toBe(true);
-    const parsed = parseToml(fs.readFileSync(intentPath, 'utf-8')) as {
-      restart?: { requested_at: string; reason?: string };
-    };
-    expect(parsed.restart).toBeDefined();
-    expect(parsed.restart!.reason).toBe('cli');
-    // ISO8601 timestamp shape
-    expect(parsed.restart!.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(fakeDaemon.postCalls).toHaveLength(1);
+    expect(fakeDaemon.postCalls[0]!.endpoint).toBe('/api/restart');
+    expect(fakeDaemon.postCalls[0]!.body).toEqual({});
+
+    // No intent file on the happy path — the supervisor kickstart is in flight.
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
+    expect(fs.existsSync(intentPath)).toBe(false);
   });
 
-  it('does NOT write intent when no daemon is discovered', async () => {
+  it('forwards --force as { force: true } to the daemon', async () => {
+    fakeDaemon.before = { pid: 11111, port: 20915 };
+    fakeDaemon.pollResponses = [{ pid: 22222, port: 20915 }];
+
+    await run(['--force'], vault);
+
+    expect(fakeDaemon.postCalls[0]!.body).toEqual({ force: true });
+  });
+
+  it('does NOT call /api/restart when no daemon is discovered', async () => {
     fakeDaemon.before = null;
-    fakeDaemon.pollResponses = [];
 
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
       throw new Error('__exit__');
@@ -103,27 +112,56 @@ describe('myco restart writes intent', () => {
 
     await expect(run([], vault)).rejects.toThrow('__exit__');
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    expect(fakeDaemon.postCalls).toHaveLength(0);
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
     expect(fs.existsSync(intentPath)).toBe(false);
 
     exitSpy.mockRestore();
     errSpy.mockRestore();
   });
 
-  it('treats null poll responses as "still restarting" (no early exit)', async () => {
+  it('exits with a clear error when the daemon rejects with status=busy', async () => {
     fakeDaemon.before = { pid: 11111, port: 20915 };
-    // Several nulls in a row, then convergence — proves the loop
-    // doesn't bail on the first null.
-    fakeDaemon.pollResponses = [
-      null,
-      null,
-      null,
-      { pid: 33333, port: 20915 },
-    ];
+    fakeDaemon.postResult = { ok: false, data: { status: 'busy', message: 'active ops' } };
 
-    await run([], vault);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
+      throw new Error('__exit__');
+    }) as never);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const intentPath = path.join(serviceDir, 'intent.toml');
+    await expect(run([], vault)).rejects.toThrow('__exit__');
+
+    expect(fakeDaemon.postCalls).toHaveLength(1);
+    // No fallback intent on a structured 409 — user must explicitly --force.
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
+    expect(fs.existsSync(intentPath)).toBe(false);
+
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('falls back to writing intent.restart.toml when /api/restart is unreachable', async () => {
+    fakeDaemon.before = { pid: 11111, port: 20915 };
+    // ok=false with no body shape signals transport failure (recoverAfterRequestFailure path).
+    fakeDaemon.postResult = { ok: false };
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
+      throw new Error('__exit__');
+    }) as never);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(run([], vault)).rejects.toThrow('__exit__');
+
+    const intentPath = path.join(serviceDir, 'intent.restart.toml');
     expect(fs.existsSync(intentPath)).toBe(true);
+    const parsed = parseToml(fs.readFileSync(intentPath, 'utf-8')) as {
+      requested_at: string;
+      reason?: string;
+    };
+    expect(parsed.reason).toBe('cli');
+    expect(parsed.requested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
   });
 });

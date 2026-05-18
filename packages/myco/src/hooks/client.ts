@@ -426,8 +426,14 @@ export class DaemonClient {
   /**
    * Probe `/health` on the variant's canonical port. Used as a
    * last-resort discovery path when daemon.json is missing. Returns
-   * null on any failure — a missing or non-Myco response is
-   * indistinguishable from "no daemon" for caller purposes.
+   * null on any failure — a missing or non-Myco response, an
+   * unverifiable pid, or any network error is indistinguishable from
+   * "no daemon" for caller purposes.
+   *
+   * Cross-checks the response's `pid` against the local OS before
+   * returning. Without this, a buggy or compromised process on the
+   * canonical port responding `{myco:true, pid:99999}` would steer
+   * callers at kill/restart paths that target a fabricated pid.
    */
   private async discoverViaHealth(): Promise<DaemonInfo | null> {
     const port = this.daemonService.canonicalPort;
@@ -438,6 +444,7 @@ export class DaemonClient {
       if (!res.ok) return null;
       const data = await res.json() as { myco?: boolean; version?: string; pid?: number };
       if (data.myco !== true || typeof data.pid !== 'number') return null;
+      if (!isProcessAlive(data.pid)) return null;
       return { pid: data.pid, port };
     } catch {
       return null;

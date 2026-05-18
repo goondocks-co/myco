@@ -27,7 +27,12 @@ describe('MCP tool surface (createMycoTools)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('registers the consolidated core tool surface (7 retrieval/entity tools + 2 operator tools)', () => {
+  it('registers the trimmed core tool surface (7 read/editorial tools — no admin)', () => {
+    // The MCP surface is for Symbionts to read project intelligence.
+    // Administrative operations belong to the CLI + UI, not MCP.
+    // See docs/architecture/actors-and-boundaries.md and Bucket K
+    // (PR #308) for the removal of myco_maintenance, myco_update, and
+    // myco_skill_candidates.
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
     expect(tools).toContain('myco_search');
     expect(tools).toContain('myco_cortex');
@@ -36,19 +41,18 @@ describe('MCP tool surface (createMycoTools)', () => {
     expect(tools).toContain('myco_skills');
     expect(tools).toContain('myco_spores');
     expect(tools).toContain('myco_agent');
-    // Stream J — agent-native parity (operator action tools).
-    expect(tools).toContain('myco_maintenance');
-    expect(tools).toContain('myco_update');
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(7);
   });
 
   it('no longer registers the retired MCP surfaces', () => {
     const tools = createMycoTools(tmpDir, client).getRegisteredTools();
-    // These were retired in the 2026-04-22 MCP surface cleanup.
+    // Two waves of retirement:
+    //   - 2026-04-22 MCP surface cleanup (myco_team, myco_graph, …)
+    //   - 2026-05-17 Bucket K boundary restoration (myco_maintenance,
+    //     myco_update, myco_skill_candidates) — see actors-and-boundaries.md
     for (const retired of [
       'myco_team',
       'myco_graph',
-      'myco_skill_candidates',
       'myco_recall',
       'myco_remember',
       'myco_save_plan',
@@ -62,6 +66,9 @@ describe('MCP tool surface (createMycoTools)', () => {
       'myco_phase_audit',
       'myco_resume_run',
       'myco_digest_revisions',
+      'myco_maintenance',
+      'myco_update',
+      'myco_skill_candidates',
     ]) {
       expect(tools).not.toContain(retired);
     }

@@ -29,6 +29,8 @@ import {
 import { useDaemon } from '../hooks/use-daemon';
 import { useRestart } from '../hooks/use-restart';
 import { useProjectPath, useProjectSelection } from '../hooks/use-project-selection';
+import { useGroves } from '../hooks/use-groves';
+import { selectionFromLast, defaultSelection, type ProjectSelection, type GroveSummary } from '../lib/selection';
 import { Button } from '../components/ui/button';
 import { GlobalSearch } from '../components/search/GlobalSearch';
 import { ProjectSwitcher } from '../components/ProjectSwitcher';
@@ -46,7 +48,7 @@ import { Topbar } from './Topbar';
 type NavScope = 'project' | 'grove' | 'machine';
 type NavCategory = 'Project' | 'Observability' | 'Grove management' | 'Settings';
 
-interface NavItem {
+export interface NavItem {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
@@ -338,6 +340,37 @@ function NavGroup({
   );
 }
 
+/**
+ * Resolve the URL a sidebar nav item should point to, given the current
+ * project selection and the loaded grove list.
+ *
+ * Machine-wide pages (/groves, /logs, /settings) render under
+ * GlobalSelectionBoundary — useProjectSelection() returns null there.
+ * For grove-scoped nav items (Operations, Grove, Team), we still need a
+ * grove slug to build a valid URL. We resolve a fallback the same way
+ * LegacyGroveRedirect does, so the sidebar never silently rewrites
+ * grove-scoped links to '/'.
+ *
+ * Exported for unit testing.
+ */
+export function resolveNavLinkTo(
+  item: NavItem,
+  selection: ProjectSelection | null,
+  projectScopedTo: string,
+  groveList: readonly GroveSummary[],
+): string {
+  if (item.scope === 'project') return projectScopedTo;
+  if (item.scope === 'machine') return item.to;
+  // grove-scoped:
+  if (!item.to.includes(':groveSlug')) return projectScopedTo;
+  const grove =
+    selection?.grove
+    ?? selectionFromLast(groveList as GroveSummary[])?.grove
+    ?? defaultSelection(groveList as GroveSummary[])?.grove
+    ?? groveList[0];
+  return grove ? item.to.replace(':groveSlug', grove.slug) : '/';
+}
+
 function SidebarNavLink({
   item,
   collapsed,
@@ -347,22 +380,13 @@ function SidebarNavLink({
 }) {
   const selection = useProjectSelection();
   const projectScopedTo = useProjectPath(item.to);
-
-  let to: string;
-  if (item.scope === 'project') {
-    to = projectScopedTo;
-  } else if (item.scope === 'grove') {
-    // Grove-scoped: replace :groveSlug template if present, otherwise the
-    // path is project-relative for now (Operations, Team) and stays under
-    // /g/<grove>/p/<project>/<page> until P8 lifts them.
-    if (item.to.includes(':groveSlug')) {
-      to = selection ? item.to.replace(':groveSlug', selection.grove.slug) : '/';
-    } else {
-      to = projectScopedTo;
-    }
-  } else {
-    to = item.to;
-  }
+  const grovesQuery = useGroves();
+  const to = resolveNavLinkTo(
+    item,
+    selection,
+    projectScopedTo,
+    grovesQuery.data?.groves ?? [],
+  );
   return (
     <NavLink
       to={to}

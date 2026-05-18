@@ -544,6 +544,102 @@ npm config get cache
 - Package lock files are independent per worktree
 - Binary executables in `.bin/` are worktree-specific
 
+### Nested UI Workspace Installation
+
+Install dependencies for nested UI workspaces with proper isolation:
+
+```bash
+# Install nested UI workspace dependencies in worktree
+for ui_dir in packages/*/ui; do
+  if [ -d "$ui_dir" ]; then
+    echo "Installing UI workspace: $ui_dir"
+    (cd "$ui_dir" && npm ci --cache="$(pwd)/.npm-cache")
+    
+    # Verify UI workspace isolation
+    echo "Checking isolation for $ui_dir"
+    (cd "$ui_dir" && npm config get cache)
+  fi
+done
+```
+
+### Cloudflare Worker Package Dependencies
+
+Handle Cloudflare worker package dependencies with proper isolation:
+
+```bash
+# Install worker package dependencies with npm ci
+for worker_dir in packages/*/worker; do
+  if [ -d "$worker_dir" ]; then
+    echo "Installing worker dependencies: $worker_dir"
+    (cd "$worker_dir" && npm ci --production)
+    
+    # Verify worker package integrity
+    (cd "$worker_dir" && npm audit --audit-level moderate)
+  fi
+done
+```
+
+### Native Vendor Cache Manual Copy
+
+Manually copy native vendor cache for cross-platform compatibility:
+
+```bash
+# Manual native vendor cache copy for worktree setup
+MAIN_CACHE_DIR="../myco-main/node_modules/.cache"
+WORKTREE_CACHE_DIR="$(pwd)/node_modules/.cache"
+
+if [ -d "$MAIN_CACHE_DIR" ]; then
+  echo "Copying native vendor cache..."
+  mkdir -p "$WORKTREE_CACHE_DIR"
+  
+  # Copy native binaries and compilation cache
+  cp -r "$MAIN_CACHE_DIR/esbuild" "$WORKTREE_CACHE_DIR/" 2>/dev/null || true
+  cp -r "$MAIN_CACHE_DIR/better-sqlite3" "$WORKTREE_CACHE_DIR/" 2>/dev/null || true
+  cp -r "$MAIN_CACHE_DIR/@rollup" "$WORKTREE_CACHE_DIR/" 2>/dev/null || true
+  
+  echo "Native vendor cache copied successfully"
+fi
+```
+
+### MCP/Capture Wiring Setup
+
+Initialize MCP and capture system for worktree development:
+
+```bash
+# Initialize MCP/capture wiring for worktree
+myco-dev init --worktree
+
+# Verify MCP server configuration
+if [ -f ".myco/mcp-config.json" ]; then
+  echo "MCP configuration found"
+  cat .myco/mcp-config.json | jq '.servers | keys'
+else
+  echo "Warning: MCP configuration not found"
+fi
+
+# Test capture system connectivity
+myco-dev test-capture --worktree
+```
+
+### Isolated Smoke Testing Patterns
+
+Implement isolated smoke testing for worktree development:
+
+```bash
+# Run isolated smoke tests in worktree environment
+export MYCO_TEST_ISOLATION=true
+export MYCO_WORKTREE_ID="$(basename $(pwd))"
+
+# Isolated component smoke tests
+npm run test:smoke-components --isolation
+
+# Isolated integration smoke tests  
+npm run test:smoke-integration --worktree="$MYCO_WORKTREE_ID"
+
+# Isolated end-to-end smoke tests
+npm run test:smoke-e2e --isolation --worktree="$MYCO_WORKTREE_ID"
+```
+
 ### Worktree Testing Patterns
 
 Implement comprehensive testing patterns for worktree-isolated development:
@@ -576,7 +672,12 @@ npm install && npm run build && npm test
 - [ ] Git worktree created successfully: `../myco-feature-name`
 - [ ] NPM cache isolation configured: `NPM_CONFIG_CACHE`
 - [ ] Dependencies installed: `npm install` completed
+- [ ] Nested UI workspaces installed: UI-specific `npm ci` completed  
+- [ ] Cloudflare worker dependencies installed: Worker-specific `npm ci` completed
+- [ ] Native vendor cache copied: Manual cache copy from main worktree
+- [ ] MCP/capture wiring initialized: `myco-dev init --worktree` completed
 - [ ] Build artifacts generated: `npm run build` passed
+- [ ] Isolated smoke tests pass: All smoke test tiers green with isolation
 - [ ] Test suite passes: `npm test` all green
 - [ ] Vendor cache isolated: no cross-worktree contamination
 - [ ] Database isolation verified: `.myco/test.db` is worktree-scoped
@@ -637,6 +738,11 @@ done
 - **Cleanup failures**: Incomplete worktree cleanup leaves orphaned artifacts and cache directories
 - **Resource exhaustion**: Unbounded worktree creation overwhelms disk space and system handles
 - **Build artifact conflicts**: Cross-worktree build artifacts contaminate each other causing build failures
+- **Nested UI workspace cache conflicts**: UI workspace npm caches contaminate each other across worktrees
+- **Worker package dependency drift**: Cloudflare worker dependencies misalign between worktrees causing deployment failures
+- **Native vendor cache staleness**: Outdated native cache causes compilation failures in fresh worktrees
+- **MCP/capture wiring failures**: Incomplete MCP setup breaks development workflow and capture functionality
+- **Smoke test isolation breakdown**: Non-isolated smoke tests pollute each other causing false failures
 
 ### Pre-Release Quality Validation Hazards
 - **Agent review isolation**: Parallel agent reviews may conflict if run in same working directory

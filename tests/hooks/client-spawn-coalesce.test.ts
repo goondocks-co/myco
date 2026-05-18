@@ -4,6 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DAEMON_SPAWN_COALESCE_MS } from '@myco/constants';
+
+// Pin MYCO_HOME to an isolated temp dir BEFORE importing anything that
+// resolves daemon state paths. Without this, `resolveServiceDaemonStatePath`
+// returns the user's real `~/.myco/service{,-dev}/daemon.json` and the
+// tests would (a) delete a running daemon's state file and (b) be poisoned
+// by a real daemon's live pid when the dev-service-mode tests flip on.
+const TEST_MYCO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-spawn-coalesce-home-'));
+const PRIOR_MYCO_HOME = process.env.MYCO_HOME;
+process.env.MYCO_HOME = TEST_MYCO_HOME;
+
 import { resolveServiceDaemonStatePath, setDevServiceMode } from '@myco/grove/paths';
 import * as childProcessActual__ns from 'node:child_process';
 import { FakeServiceManager, noServiceManager } from '../helpers/fake-service-manager';
@@ -22,6 +32,14 @@ mock.module('node:child_process', () => ({ ...childProcessActual, spawn: spawnMo
 // this file finishes.
 afterAll(() => {
   mock.module('node:child_process', () => childProcessActual);
+  // Restore MYCO_HOME so any later test file in the same isolate sees the
+  // real env. Remove the temp dir.
+  if (PRIOR_MYCO_HOME === undefined) {
+    delete process.env.MYCO_HOME;
+  } else {
+    process.env.MYCO_HOME = PRIOR_MYCO_HOME;
+  }
+  fs.rmSync(TEST_MYCO_HOME, { recursive: true, force: true });
 });
 
 // Late import so the mock is in place before client.ts evaluates.

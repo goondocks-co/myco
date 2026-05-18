@@ -2,7 +2,7 @@ import type { DaemonLogger } from './logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   readDaemonState,
-  writeDaemonState,
+  writeOrTouchDaemonState,
   type DaemonServiceState,
   type DaemonState,
 } from './service-state.js';
@@ -14,17 +14,38 @@ export interface ReconcileSelfDeps {
   logger: DaemonLogger;
   requestSupervisorRestart?: () => void;
   installUpdate?: (targetVersion: string) => Promise<void>;
+  /**
+   * Reads the post-install error file (~/.myco/update-error.json) if
+   * present. The installer script writes this on npm install failure
+   * and clears it on success, so its presence on a daemon that has the
+   * old version means the most recent attempt failed.
+   */
+  readUpdateError?: () => string | null;
+  /** Removes the update-error.json file so a future install starts clean. */
+  consumeUpdateError?: () => void;
 }
 
 /**
  * Continuously enforces `pid alive ⇔ daemon.json exists` and drains
- * intent.toml. Two intent kinds with deliberately asymmetric clear
- * semantics:
- *   - `[restart]`: clear BEFORE invoking — load-bearing. A respawn
- *     that observes the intent before it's cleared would trigger an
- *     infinite restart loop.
- *   - `[update]`: clear ONLY on installer success. Retain on failure
- *     so the next tick retries (installs are flaky).
+ * per-section intent files. Two intent kinds with deliberately asymmetric
+ * clear semantics:
+ *
+ *   [restart] (intent.restart.toml)
+ *     - Clear BEFORE invoking the supervisor restart — load-bearing. A
+ *       respawn that observes the intent before it is cleared would
+ *       trigger an infinite restart loop.
+ *
+ *   [update] (intent.update.toml)
+ *     - Retain across the install spawn so the post-restart daemon can
+ *       finish the decision: success (version matches target) clears it,
+ *       failure (update-error.json present) clears it and surfaces.
+ *     - On the FIRST tick that observes the intent: check update-error
+ *       to detect a prior-attempt failure. If present, log + clear (no
+ *       auto-retry — surface to the user). Otherwise spawn the installer
+ *       and let the daemon shut down; intent persists across the restart.
+ *     - Sync spawn failures (the rare path where installUpdate throws
+ *       before the script lands) leave the intent in place so the next
+ *       tick retries.
  */
 export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   const expected = deps.currentState();
@@ -39,9 +60,7 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       observed_port: observed?.port ?? null,
     });
   }
-  // Always re-write to refresh mtime; siblings consult mtime via
-  // DAEMON_STALE_GRACE_PERIOD_MS to decide whether the file is fresh.
-  writeDaemonState(deps.daemonService.statePath, expected);
+  writeOrTouchDaemonState(deps.daemonService.statePath, expected);
 
   const intent = readIntent(deps.daemonService);
   if (intent.restart) {
@@ -64,19 +83,38 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       );
       clearIntentSection(deps.daemonService, 'update');
     } else if (deps.installUpdate) {
-      deps.logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Update intent observed', {
-        target_version: intent.update.target_version,
-        current_version: current ?? null,
-      });
-      try {
-        await deps.installUpdate(intent.update.target_version);
-        clearIntentSection(deps.daemonService, 'update');
-      } catch (err) {
+      const priorError = deps.readUpdateError?.() ?? null;
+      if (priorError) {
         deps.logger.error(
           LOG_KINDS.DAEMON_RECONCILE,
-          'Update failed; intent retained for retry',
-          { target_version: intent.update.target_version, err: String(err) },
+          'Update failed during a prior attempt; clearing intent (no auto-retry — see ~/.myco/update-error.json)',
+          {
+            target_version: intent.update.target_version,
+            current_version: current ?? null,
+            error: priorError,
+          },
         );
+        clearIntentSection(deps.daemonService, 'update');
+        deps.consumeUpdateError?.();
+      } else {
+        deps.logger.info(LOG_KINDS.DAEMON_RECONCILE, 'Update intent observed', {
+          target_version: intent.update.target_version,
+          current_version: current ?? null,
+        });
+        try {
+          await deps.installUpdate(intent.update.target_version);
+          // Intent intentionally NOT cleared here. The installer script
+          // is detached: it will restart the daemon (success or failure).
+          // The next-tick reconciler on the post-restart daemon decides
+          // based on current.version vs intent.update.target_version
+          // and the presence of update-error.json.
+        } catch (err) {
+          deps.logger.error(
+            LOG_KINDS.DAEMON_RECONCILE,
+            'Update spawn failed synchronously; intent retained for next-tick retry',
+            { target_version: intent.update.target_version, err: String(err) },
+          );
+        }
       }
     }
   }

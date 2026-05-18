@@ -30,6 +30,7 @@ import {
 import { registerConfigRoutes } from './api/register-config-routes.js';
 import { handleLogSearch, handleLogStream, handleLogDetail, createLogIngestionHandler } from './api/log-explorer.js';
 import { handleRestart } from './api/restart.js';
+import { createIntentHandlers } from './api/intent.js';
 import { createUpdateHandlers } from './api/update.js';
 import { reconcileConfiguredSymbionts } from '../symbionts/reconcile.js';
 import { resolveGlobalPrefix, getDevBuildCliEntry } from './update-checker.js';
@@ -37,7 +38,7 @@ import { getMachineId } from './machine-id.js';
 import { createBackupHandlers, createBackupConfigHandlers } from './api/backup.js';
 import { sweepLegacyBackupRoot } from './backup.js';
 import { createTeamHandlers } from './api/team-connect.js';
-import { createListTeamMembersHandler } from './api/team-members.js';
+import { listTeamMembersHandler } from './api/team-members.js';
 import { createCollectiveHandlers } from './api/collective.js';
 import { createSessionLifecycleHandlers } from './api/session-lifecycle.js';
 import {
@@ -209,7 +210,7 @@ import {
   RECONCILE_SIGKILL_GRACE_MS,
   RECONCILE_SIGTERM_GRACE_MS,
 } from '../constants.js';
-import { isProcessAlive, waitForProcessExit } from '@goondocks/myco-shared';
+import { isProcessAlive, waitForProcessExit, readProcessCommandLine } from '@goondocks/myco-shared';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -245,6 +246,13 @@ export async function isHealthyMycoSibling(port: number): Promise<boolean> {
 export interface ReconcileDeps {
   kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
   isProcessAlive?: (pid: number) => boolean;
+  /**
+   * Returns the process's cmdline string (e.g. "node /path/to/myco daemon")
+   * or null when the pid cannot be read (foreign uid, transient
+   * /proc absence). Used to distinguish a cross-uid live myco daemon
+   * (preserve step-aside) from a recycled foreign pid (take over).
+   */
+  readProcessCommandLine?: (pid: number) => string | null;
   sigtermGraceMs?: number;
   sigkillGraceMs?: number;
   pollMs?: number;
@@ -275,6 +283,7 @@ export async function reconcileExistingDaemon(
 ): Promise<'ok' | 'step-aside'> {
   const kill = deps.kill ?? ((pid, sig) => process.kill(pid, sig));
   const alive = deps.isProcessAlive ?? isProcessAlive;
+  const cmdlineReader = deps.readProcessCommandLine ?? readProcessCommandLine;
   const sigtermGraceMs = deps.sigtermGraceMs ?? RECONCILE_SIGTERM_GRACE_MS;
   const sigkillGraceMs = deps.sigkillGraceMs ?? RECONCILE_SIGKILL_GRACE_MS;
   const pollMs = deps.pollMs ?? RECONCILE_POLL_MS;
@@ -368,14 +377,48 @@ export async function reconcileExistingDaemon(
     return 'ok';
   }
 
-  // Pid survived SIGKILL. user-space cannot kill it. Refusing to remove
-  // daemon.json is the safe move — the file still describes a live daemon,
-  // and stepping aside hands control back to the supervisor (launchd /
-  // systemd) without binding our own port on top of the live predecessor.
+  // Pid survived SIGKILL. Two distinct shapes:
+  //   (a) A live Myco daemon owned by a different uid (EPERM made
+  //       SIGTERM/SIGKILL no-ops). Stepping aside is the right call —
+  //       supervisor owns lifecycle, we're not authorized to touch it.
+  //   (b) A FOREIGN process that recycled the pid that daemon.json
+  //       records. Stepping aside here would loop forever: the file
+  //       describes a "live daemon" that isn't ours, the supervisor
+  //       respawns us, we re-enter this branch, repeat. Distinguish
+  //       by reading the cmdline — if it's non-null and doesn't
+  //       reference myco, this slot was stolen by an unrelated process
+  //       and we can safely evict the stale state file.
+  // Conservative default: when cmdline is unreadable (null — common
+  // for cross-uid processes on some platforms), assume the pid is
+  // unknown rather than foreign, and preserve the existing step-aside
+  // posture. Only the "we can prove this is NOT a myco process" path
+  // takes over.
+  const cmdline = cmdlineReader(info.pid);
+  const provenForeign = cmdline !== null && !/\bmyco\b/i.test(cmdline);
+  if (provenForeign) {
+    logger.warn(
+      LOG_KINDS.DAEMON_RECONCILE,
+      `Pid ${info.pid} survived SIGKILL but its cmdline does not look like a myco daemon — treating as a recycled foreign pid and taking over`,
+      {
+        pid: info.pid,
+        cmdline,
+        sigterm_grace_ms: sigtermGraceMs,
+        sigkill_grace_ms: sigkillGraceMs,
+      },
+    );
+    removeDaemonState(daemonJsonPath);
+    return 'ok';
+  }
+
   logger.error(
     LOG_KINDS.DAEMON_RECONCILE,
-    `Refusing to remove daemon.json: prior daemon pid ${info.pid} is unkillable`,
-    { pid: info.pid, sigterm_grace_ms: sigtermGraceMs, sigkill_grace_ms: sigkillGraceMs },
+    `Refusing to remove daemon.json: prior daemon pid ${info.pid} is unkillable (cmdline ${cmdline === null ? 'unreadable' : 'references myco'} — likely cross-uid live daemon)`,
+    {
+      pid: info.pid,
+      cmdline,
+      sigterm_grace_ms: sigtermGraceMs,
+      sigkill_grace_ms: sigkillGraceMs,
+    },
   );
   return 'step-aside';
 }
@@ -1170,6 +1213,17 @@ export async function main(): Promise<void> {
   server.registerRoute('GET', '/api/git/status', handleGetGitStatus);
   server.registerRoute('POST', '/api/restart', async (req) => handleRestart({ vaultDir: bootstrapVaultDir, progressTracker }, req.body));
 
+  // Intent surface: read + write the per-section intent files behind
+  // `myco restart` / `myco update --target-version`. Surfacing these via
+  // HTTP lets MCP tool callers and the UI drive daemon lifecycle ops
+  // without shelling to the CLI. Reconciler still owns convergence.
+  const intentHandlers = createIntentHandlers(daemonService);
+  server.registerRoute('GET',    '/api/daemon/intent',         intentHandlers.status);
+  server.registerRoute('POST',   '/api/daemon/intent/restart', intentHandlers.requestRestart);
+  server.registerRoute('POST',   '/api/daemon/intent/update',  intentHandlers.requestUpdate);
+  server.registerRoute('DELETE', '/api/daemon/intent/restart', intentHandlers.cancelRestart);
+  server.registerRoute('DELETE', '/api/daemon/intent/update',  intentHandlers.cancelUpdate);
+
   // --- Update routes ---
   const updateProjectRoot = resolveProjectRoot(bootstrapVaultDir);
   const updateHandlers = createUpdateHandlers({
@@ -1521,7 +1575,10 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleStatus(req);
   });
-  server.registerRoute('GET', '/api/team/members', createListTeamMembersHandler());
+  server.registerRoute('GET', '/api/team/members', async (req) => {
+    await reconcileTeamRoute(req);
+    return listTeamMembersHandler(req);
+  });
   server.registerRoute('POST', '/api/team/backfill', async (req) => {
     const startedAt = Date.now();
     await reconcileTeamRoute(req);

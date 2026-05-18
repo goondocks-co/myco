@@ -4,20 +4,30 @@ import {
   PARENT_WATCHDOG_INTERVAL_MS,
   DAEMON_HEARTBEAT_INTERVAL_MS,
   DAEMON_HEARTBEAT_FAILURE_THRESHOLD,
+  UPSTREAM_SEND_TIMEOUT_MS,
+  SELF_HEAL_PROBE_BACKOFFS_MS,
+  REQUEST_RESEND_MAX_ATTEMPTS,
 } from '@myco/mcp/stdio-bridge.js';
 
 /**
  * Regression coverage for the MCP-bridge lifecycle gates. The actual
- * watchdog/heartbeat loops are setInterval-driven and call process.exit,
- * so they're not unit-testable directly. We test the pure predicate that
- * decides whether to fire the exit, plus the constants — the only knobs
- * that materially change behavior between bridge lifetimes.
+ * watchdog/heartbeat/self-heal loops are setInterval-driven and call
+ * process.exit, so they're not unit-testable directly. We test the pure
+ * predicate that decides whether to fire the exit, plus the constants —
+ * the only knobs that materially change behavior between bridge lifetimes.
  *
  * Context: 2026-05-15 — a 21-hour-old stale MCP bridge was holding a dead
  * stdio connection. The agent's next `myco_plans` call hung indefinitely
- * because no liveness gate ran after the bridge had wired its pipes. The
- * constants below + the predicate below are the contract that prevents
- * recurrence.
+ * because no liveness gate ran after the bridge had wired its pipes.
+ * 2026-05-17 — a `make build` rebuild during a live dogfood session
+ * surfaced a 60-second hang on the next MCP tool call: the bridge's
+ * existing upstream connection pointed at a dead socket and the previous
+ * heartbeat cadence (30 s × 2) was too loose. Bucket J tightens the
+ * cadence to 5 s × 2 and adds an active-send self-heal path that probes
+ * + rebuilds upstream on the next message.
+ *
+ * The constants below + the predicate below are the contract that
+ * prevents recurrence.
  */
 describe('mcp stdio-bridge lifecycle gates', () => {
   describe('isParentGone predicate', () => {
@@ -43,7 +53,7 @@ describe('mcp stdio-bridge lifecycle gates', () => {
     });
   });
 
-  describe('cadence constants', () => {
+  describe('background-heartbeat cadence constants', () => {
     // These constants are the only thing standing between a clean exit
     // and another 21-hour zombie. Pinning them prevents a well-meaning
     // "make it more responsive" tweak from spiking polling cost, AND
@@ -53,26 +63,75 @@ describe('mcp stdio-bridge lifecycle gates', () => {
       expect(PARENT_WATCHDOG_INTERVAL_MS).toBe(10_000);
     });
 
-    it('daemon heartbeat runs every 30 seconds', () => {
-      expect(DAEMON_HEARTBEAT_INTERVAL_MS).toBe(30_000);
+    it('daemon heartbeat runs every 5 seconds (Bucket J: was 30 s — too loose for `make build` restarts)', () => {
+      // The earlier 30 s × 2 cadence produced a worst-case 60-second hang
+      // on the next MCP tool call after a daemon rebuild. 5 s × 2 caps
+      // that at ~10 s for an idle bridge; the active-send self-heal
+      // shrinks it further when a message is actually in flight.
+      expect(DAEMON_HEARTBEAT_INTERVAL_MS).toBe(5_000);
     });
 
-    it('daemon heartbeat tolerates exactly one transient miss before exiting', () => {
-      // A single missed probe during a daemon restart is normal; two in a
-      // row means the bridge's HTTP target is stale and it should die so
-      // the agent respawns a fresh one.
+    it('agent-death detection stays under 30 seconds', () => {
+      // The only watchdog that EXITS the bridge is the parent-death
+      // watchdog. Daemon-death no longer terminates the bridge — it
+      // routes through the indefinite self-heal loop — so there is no
+      // longer a "zombie window" tied to daemon health. The agent-death
+      // window stays bounded so an orphaned bridge doesn't sit idle.
+      expect(PARENT_WATCHDOG_INTERVAL_MS).toBeLessThan(30_000);
+    });
+
+    it('heartbeat threshold triggers self-heal, not bridge exit', () => {
+      // Pinned so a "tweak this back to exit-on-failure" PR has to
+      // engage with the contract. The bridge MUST survive daemon-down
+      // so Claude Code's MCP supervisor doesn't lose the surface
+      // (it doesn't auto-respawn — manual /mcp reconnect required
+      // after a bridge exit). N missed heartbeats just trigger a
+      // proactive reconnect for the idle-bridge case.
       expect(DAEMON_HEARTBEAT_FAILURE_THRESHOLD).toBe(2);
     });
+  });
 
-    it('zombie window stays under one minute in the worst case', () => {
-      // Worst-case time from agent-death to bridge-exit is one watchdog
-      // tick. Worst-case time from daemon-down to bridge-exit is
-      // (FAILURE_THRESHOLD × HEARTBEAT_INTERVAL_MS) + fetch timeout.
-      // Both must stay well below the 21-hour observed zombie.
-      const worstAgentDeathMs = PARENT_WATCHDOG_INTERVAL_MS;
-      const worstDaemonDeathMs = DAEMON_HEARTBEAT_FAILURE_THRESHOLD * DAEMON_HEARTBEAT_INTERVAL_MS;
-      expect(worstAgentDeathMs).toBeLessThan(60_000);
-      expect(worstDaemonDeathMs).toBeLessThanOrEqual(60_000);
+  describe('active-send self-heal constants (Bucket J)', () => {
+    it('caps a single forwarded JSON-RPC message at UPSTREAM_SEND_TIMEOUT_MS', () => {
+      // StreamableHTTPClientTransport.send() returns when the POST is
+      // accepted — long tool calls stream back via SSE, not via the
+      // send() return value — so 30 s is generous for a loopback POST
+      // and short enough that a hung half-open socket on a dead daemon
+      // doesn't sit waiting for OS TCP keepalive (often minutes).
+      // Bucket J's original 120 s was too loose; user-visible hang on a
+      // `make build` rebuild needs to be sub-10 s.
+      expect(UPSTREAM_SEND_TIMEOUT_MS).toBe(30_000);
+    });
+
+    it('caps the per-message re-send loop at REQUEST_RESEND_MAX_ATTEMPTS', () => {
+      // After self-heal succeeds, the bridge re-sends the dropped
+      // message so the agent sees a real response instead of a hang.
+      // 2 retries (3 total attempts incl. original) covers the realistic
+      // restart-mid-call window without becoming a DoS amplifier when
+      // the daemon is genuinely down.
+      expect(REQUEST_RESEND_MAX_ATTEMPTS).toBe(2);
+    });
+
+    it('exposes an indefinite probe backoff schedule (the bridge never gives up on daemon-down)', () => {
+      // The bridge retries forever because Claude Code's MCP supervisor
+      // doesn't auto-respawn — exit would leave the agent's MCP surface
+      // dead until manual /mcp reconnect. The schedule below tunes the
+      // ramp from "fast catch quick restart" to "stable steady-state
+      // retry while the daemon recovers from a longer outage".
+      expect(SELF_HEAL_PROBE_BACKOFFS_MS.length).toBeGreaterThan(0);
+    });
+
+    it('backoffs grow monotonically and cap at a sane steady-state', () => {
+      // Once past the last entry the reconnect loop holds at that value
+      // indefinitely, so the cap controls battery / poll rate during a
+      // long outage. 5 s is cheap (one fetch) and recovers quickly when
+      // the daemon comes back.
+      for (let i = 1; i < SELF_HEAL_PROBE_BACKOFFS_MS.length; i++) {
+        expect(SELF_HEAL_PROBE_BACKOFFS_MS[i]!).toBeGreaterThanOrEqual(
+          SELF_HEAL_PROBE_BACKOFFS_MS[i - 1]!,
+        );
+      }
+      expect(SELF_HEAL_PROBE_BACKOFFS_MS[SELF_HEAL_PROBE_BACKOFFS_MS.length - 1]).toBeLessThanOrEqual(10_000);
     });
   });
 });

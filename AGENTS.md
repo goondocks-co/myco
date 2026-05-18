@@ -35,6 +35,31 @@ Myco captures project memory in a local vault and serves it back through context
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
 
+## Actors and Boundaries
+
+Three actors interact with Myco. Mixing them is the source of architectural drift.
+
+- **Myco agent** — Myco's own LLM-powered intelligence harness (skill-survey, full-intelligence, plan generation, etc.). Does work users don't do. Has its own internal tool surface under `packages/myco/src/agent/tools/` — **not** the same as the MCP surface.
+- **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + the MCP bridge + installed skills. Symbionts **use Myco; they do not control it**.
+- **User** — the human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and administers the Myco agent.
+
+The surface each actor touches is fixed:
+
+| Surface | Whose | For |
+|---|---|---|
+| **MCP tools** (`packages/myco/src/tools/`) | Symbionts | Read project intelligence. No administrative ops. |
+| **Skills** (`packages/myco/src/skills/`, generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
+| **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
+| **UI** (`packages/myco/ui/`) | Users | Primary interface for ongoing work. |
+| **Agent harness tools** (`packages/myco/src/agent/tools/`) | Myco agent | Internal; not exposed via MCP. |
+
+**Non-rules** (these are violations to push back on):
+- Symbionts do **not** drive admin ops (restart, update, restore, backup). Add no MCP tool that does.
+- The Myco agent does **not** share a tool surface with Symbionts. If the harness needs a capability, add it under `agent/tools/`, not `tools/`.
+- "Agent-native parity" is scoped to the agent's editorial work — not a license to mirror every UI button as an MCP tool.
+
+Full discussion: [`docs/architecture/actors-and-boundaries.md`](docs/architecture/actors-and-boundaries.md).
+
 ## Grove Primitives
 
 Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of projects served by a single global daemon, each with its own SQLite database. The following invariants are non-negotiable for new daemon code:

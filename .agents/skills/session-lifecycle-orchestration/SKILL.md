@@ -18,6 +18,7 @@ This skill covers the complete operational domain of session management and agen
 - Project configuration is valid (`myco.yaml` exists and is well-formed)
 - Database schema is current (no pending migrations)
 - Agent symbionts are properly installed and registered
+- Daemon startup coordination is complete (all subsystems initialized)
 
 ## Procedure A: Session Creation and Project Scoping
 
@@ -99,24 +100,46 @@ This skill covers the complete operational domain of session management and agen
 3. **Resource sharing**: Coordinate shared vault and database access
 4. **Result synchronization**: Merge results from parallel agent operations
 
+### Daemon Startup Coordination
+
+1. **Subsystem initialization**: Ensure all daemon subsystems are fully loaded before session processing
+2. **Service dependency**: Validate that intelligence processing services are ready
+3. **Runtime boundary establishment**: Set up agent execution boundaries during daemon startup
+4. **Health check coordination**: Verify all runtime components are operational
+
 ## Procedure D: Session Status Transitions and Lifecycle Management
 
-### Status Progression Patterns
+### Refined Status Progression Model
 
-1. **Active phase**: Session is accepting new operations and capturing content
-   - All capture operations are valid
-   - Agent operations can modify session state
-   - Transitions to `completed` when agent finishes work
+The session lifecycle uses a three-phase progression model that prevents feedback loops between capture orchestration and intelligence processing:
 
-2. **Completed phase**: Session work is finished, ready for intelligence processing
-   - No new captures accepted
-   - Session is queued for intelligence tasks
-   - Transitions to `processed` after intelligence runs
+1. **CAPTURING phase** (`active` status): Session is actively capturing content from agent interactions
+   - All capture operations are valid and expected
+   - Agent operations can modify session state and add new content
+   - Session remains in this state until agent work is complete
+   - Transitions to PROCESSING when agent finishes work and session is marked completed
 
-3. **Processed phase**: Intelligence extraction is complete, session is archived
-   - Session is read-only for historical reference
+2. **PROCESSING phase** (`completed` status): Session work is finished, intelligence processing begins
+   - No new captures accepted - session is sealed for processing
+   - Intelligence tasks (skill-survey, full-intelligence) can now safely process the session
+   - Session data is stable and won't be modified by ongoing agent operations
+   - Prevents feedback loops where intelligence tasks would process incomplete sessions
+   - Transitions to COMPLETE after all intelligence processing finishes
+
+3. **COMPLETE phase** (`processed` status): Intelligence extraction is complete, session is archived
+   - Session is read-only for historical reference and lineage tracking
+   - All derived spores and insights have been extracted and stored
    - Can be reopened for follow-up work if needed
-   - Final state for most sessions
+   - Final state for most sessions in the system
+
+### Session Gating for Intelligence Tasks
+
+Intelligence processing tasks must gate on session-terminal state to prevent processing incomplete or actively-changing sessions:
+
+1. **Session-terminal validation**: Intelligence tasks only process sessions with `completed` or `processed` status
+2. **Active session exclusion**: Skip sessions with `active` status as they may still receive new content
+3. **State transition coordination**: Ensure clean handoff from capture to processing phases
+4. **Consistency guarantees**: Process only stable session content that won't change during analysis
 
 ### Transition Validation
 
@@ -176,9 +199,10 @@ This skill covers the complete operational domain of session management and agen
 ## Cross-Cutting Gotchas
 
 ### Session State Consistency
-- Always validate session status before operations - intelligence tasks must gate on session-terminal state as active sessions produce stale artifacts
-- Never assume session data is immutable - agents can modify sessions even after completion
+- Always validate session status before operations - intelligence tasks must gate on session-terminal state (completed/processed) as active sessions produce stale artifacts and create feedback loops
+- Never assume session data is immutable - agents can modify sessions during CAPTURING phase
 - Use database transactions for multi-step status changes to ensure atomicity
+- The refined CAPTURING → PROCESSING → COMPLETE model prevents intelligence tasks from processing incomplete sessions
 
 ### Cross-Platform Hook Deployment
 - The `.agents/myco-run.cjs` guard handles OSS contributor safety across platforms
@@ -189,8 +213,10 @@ This skill covers the complete operational domain of session management and agen
 - Agent harness execution can consume significant resources - implement proper cleanup
 - Concurrent sessions must coordinate vault database access to prevent corruption
 - Local model agents need 3-4× the turn budget compared to cloud models
+- Daemon startup coordination ensures all subsystems are ready before session processing begins
 
 ### Error Handling and Recovery
 - Session lifecycle errors often cascade - isolate failures early to prevent spread
 - Always preserve session lineage even during error recovery procedures
 - Agent runtime boundaries are enforced in tool code, not prompts - implement deterministic checks
+- Session gating prevents intelligence feedback loops by ensuring only stable sessions are processed

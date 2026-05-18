@@ -13,7 +13,9 @@ See the [Lifecycle docs](lifecycle.md) for more on how this works.
 
 ## Local MCP tools
 
-9 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any agent Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
+7 tools exposed through the local daemon over stdio or Streamable HTTP. Available to any Symbiont (Claude Code, Cursor, etc.) Myco has been installed into. When the project is connected to a Myco Collective, 4 additional `collective_*` tools are also registered. The canonical list lives in `packages/myco/src/tools/definitions.ts`.
+
+The MCP surface is intentionally limited to **read and editorial** operations — symbionts use Myco's project intelligence; they don't control the daemon. Administrative operations (restart, update, backup, restore, database maintenance) live in the **CLI** and **UI**, not on the MCP wire. See [Actors and Boundaries](architecture/actors-and-boundaries.md).
 
 Every vault-scoped tool accepts optional `grove_id` / `project_id` body fields that pivot the call to a different (Grove, project) than the harness launched under — mirroring the daemon UI's project switcher.
 
@@ -33,13 +35,6 @@ Every vault-scoped tool accepts optional `grove_id` / `project_id` body fields t
 | `myco_skills` | List, inspect, or read auto-generated skills with their full lineage. |
 | `myco_spores` | List, retrieve, save, supersede, or consolidate spores using `op=list|get|save|supersede|consolidate`. |
 | `myco_agent` | Read agent run history using `op=runs|run` — token budget, cost, reasoning level, and per-run details. |
-
-### Operator tools
-
-| Tool | Purpose |
-|------|---------|
-| `myco_maintenance` | Drive operator actions: database `optimize`/`vacuum`/`reindex`/`integrity-check`, embedding `rebuild`/`reconcile`, `backup_now`/`backup_list`, and `restore_preview`/`restore`. Body accepts an optional `scope` envelope (`{kind:"project"|"grove"|"all-groves"}`) so a single call can fan out across every Grove the same way the daemon UI's "All Groves" pill does. |
-| `myco_update` | Manage Myco self-update: read installed/latest versions and channel (`op=status`), force a registry check (`op=check`), apply pending updates (`op=apply`), and switch release channel (`op=set_channel`). Cross-Grove fan-out on apply is handled by the daemon installer post-install. |
 
 ## Cloud MCP tools
 

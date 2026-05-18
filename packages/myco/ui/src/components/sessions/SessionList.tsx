@@ -225,12 +225,17 @@ export function SessionList({ selectedId }: SessionListProps = {}) {
   const sessions = data?.sessions ?? [];
   const total = data?.total ?? 0;
 
-  // Master-detail default: when the user lands on `/sessions` with no row
-  // selected, jump to the topmost entry so the detail pane is never blank.
-  // `replace: true` keeps `/sessions` out of history so back-navigation
-  // skips the redirect.
+  // Master-detail default: on first arrival at /sessions with no row
+  // selected, jump to the topmost entry. The `didAutoSelect` ref makes
+  // it a true one-shot per mount — without the guard, every poll
+  // refetch re-references the `sessions` array and re-fires the
+  // navigate, which corrupts back-button history if the user has
+  // since navigated to `/sessions/<id>` and then back to `/sessions`.
+  const didAutoSelect = useRef(false);
   useEffect(() => {
+    if (didAutoSelect.current) return;
     if (!selectedId && !isLoading && sessions.length > 0) {
+      didAutoSelect.current = true;
       navigate(`/sessions/${sessions[0].id}`, { replace: true });
     }
   }, [selectedId, isLoading, sessions, navigate]);

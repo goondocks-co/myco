@@ -48,31 +48,38 @@ describe('config atomic writes', () => {
 });
 
 describe('atomicWriteFileSync mode option', () => {
-  test('applies mode to the tempfile before rename (chmod before rename)', () => {
-    // Defense against umask: even if writeFileSync's mode is masked by the
-    // process umask on create, the explicit chmodSync on the tempfile must
-    // land the requested mode before the rename exposes the final path.
+  test('opens the tempfile O_EXCL with the requested mode (no umask window)', () => {
+    // The previous implementation used writeFileSync + chmodSync, which
+    // briefly exposed the tempfile at the default umask (0o644 typical)
+    // before chmod tightened it — a TOCTOU read window for same-user
+    // attackers. The new implementation calls openSync with O_CREAT |
+    // O_EXCL | O_WRONLY and the requested mode so the file lands with
+    // the right bits on the open() syscall itself.
     const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-mode-'));
     const finalPath = join(dir, 'secrets.env');
 
-    const chmodSpy = spyOn(fs, 'chmodSync');
+    const openSpy = spyOn(fs, 'openSync');
     const renameSpy = spyOn(fs, 'renameSync');
     try {
       atomicWriteFileSync(finalPath, 'TOKEN=abc\n', { mode: 0o600 });
 
-      // chmodSync must fire on the tempfile (not the final path) and must
-      // be called before renameSync — the whole point of the helper.
-      expect(chmodSpy).toHaveBeenCalled();
-      const chmodCall = chmodSpy.mock.calls[0] as [string, number];
-      expect(chmodCall[0].startsWith(`${finalPath}.tmp-`)).toBe(true);
-      expect(chmodCall[1]).toBe(0o600);
+      // openSync must fire on the tempfile with O_CREAT|O_EXCL|O_WRONLY
+      // and the requested mode.
+      expect(openSpy).toHaveBeenCalled();
+      const openCall = openSpy.mock.calls[0] as [string, number, number];
+      expect(typeof openCall[0]).toBe('string');
+      expect((openCall[0] as string).startsWith(`${finalPath}.tmp-`)).toBe(true);
+      const expectedFlags =
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL;
+      expect(openCall[1]).toBe(expectedFlags);
+      expect(openCall[2]).toBe(0o600);
 
       expect(renameSpy).toHaveBeenCalledTimes(1);
       const renameCall = renameSpy.mock.calls[0] as [string, string];
-      expect(renameCall[0].startsWith(`${finalPath}.tmp-`)).toBe(true);
+      expect((renameCall[0] as string).startsWith(`${finalPath}.tmp-`)).toBe(true);
       expect(renameCall[1]).toBe(finalPath);
     } finally {
-      chmodSpy.mockRestore();
+      openSpy.mockRestore();
       renameSpy.mockRestore();
     }
 
@@ -83,21 +90,43 @@ describe('atomicWriteFileSync mode option', () => {
     }
   });
 
+  test('tempfile path is unpredictable (random suffix, not pid+timestamp)', () => {
+    // Predictable `.tmp-<pid>-<ms>` paths let a same-user attacker race
+    // the write window. The new suffix is cryptographic randomness; two
+    // back-to-back writes to the same final path must produce different
+    // tempfile paths even within the same millisecond.
+    const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-rand-'));
+    const finalPath = join(dir, 'secrets.env');
+    const seen = new Set<string>();
+    const openSpy = spyOn(fs, 'openSync');
+    try {
+      for (let i = 0; i < 5; i++) {
+        atomicWriteFileSync(finalPath, `iter=${i}\n`, { mode: 0o600 });
+      }
+      for (const call of openSpy.mock.calls) {
+        const tmp = call[0] as string;
+        if (typeof tmp === 'string' && tmp.startsWith(`${finalPath}.tmp-`)) {
+          seen.add(tmp);
+        }
+      }
+    } finally {
+      openSpy.mockRestore();
+    }
+    expect(seen.size).toBe(5);
+  });
+
   test('legacy encoding-string form still works', () => {
     // Existing callers pass 'utf-8' as the third arg. The union signature
     // must keep them working without any mode side-effect.
     const dir = mkdtempSync(join(tmpdir(), 'myco-atomic-legacy-'));
     const finalPath = join(dir, 'plain.txt');
-    const chmodSpy = spyOn(fs, 'chmodSync');
+    const fchmodSpy = spyOn(fs, 'fchmodSync');
     try {
       atomicWriteFileSync(finalPath, 'hello', 'utf-8');
-      // No mode requested → no chmod on the tempfile.
-      const tempChmods = chmodSpy.mock.calls.filter(
-        (c) => typeof c[0] === 'string' && (c[0] as string).startsWith(`${finalPath}.tmp-`),
-      );
-      expect(tempChmods.length).toBe(0);
+      // No mode requested → no fchmod on the tempfile fd.
+      expect(fchmodSpy).not.toHaveBeenCalled();
     } finally {
-      chmodSpy.mockRestore();
+      fchmodSpy.mockRestore();
     }
     expect(readFileSync(finalPath, 'utf-8')).toBe('hello');
   });

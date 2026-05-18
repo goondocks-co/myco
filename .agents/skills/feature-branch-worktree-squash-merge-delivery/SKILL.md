@@ -46,6 +46,16 @@ cd ../myco-branch-name
 
 **Critical**: use a sibling directory (e.g., `../myco-branch-name`), **not a subdirectory inside the repo**. Nested worktrees confuse Myco's CWD detection and create phantom sessions.
 
+### Step 2b: Bootstrap Myco hooks in the worktree
+
+```bash
+myco-dev init --worktree   # or `myco init --worktree` when working from a released CLI
+```
+
+This materializes `.claude/settings.json`, `.agents/myco-run.cjs`, and `.myco/runtime.command` inside the worktree. Those files are gitignored and untracked — `git worktree add` only checks out tracked files, so without this step the worktree's capture stack is silent and the daemon never sees the work happening here. Symbiont enablement is inherited from the main repo's merged config, so no prompts; vault reads still resolve through the shared `<main>/.myco`.
+
+Skip this step ONLY when you have deliberately decided the worktree should not capture (rare; the default is to bootstrap).
+
 ### Step 3: Implement with incremental commits
 
 Commit regularly in the worktree. Don't worry about commit message quality — these will be squashed. Keep `.myco/` and `VAULT_GITIGNORE`-tracked files out of commits.
@@ -195,6 +205,14 @@ The single squashed commit becomes the PR commit.
 - **Absolute path leaks** — worktree-specific absolute paths contaminate shared configuration. Always use relative paths or project-root-relative references in config files.
 
 - **Build artifact scope collision** — multiple worktrees can overwrite each other's build outputs. Ensure build directories are worktree-scoped or use unique naming.
+
+### CLI and Configuration Compatibility
+
+- **CLI subcommand help regression prevention** — when adding new CLI commands or modifying existing ones, ensure help text remains accessible and accurate. Test `myco <command> --help` patterns after CLI changes.
+
+- **Config tier migration safety** — features that modify configuration must be compatible with Myco's three-tier config system (machine/grove/project/personal). Test config changes across all scope levels during worktree development.
+
+- **Cross-worktree config isolation** — configuration changes made in a worktree should not affect the main development environment or other concurrent worktrees. Use environment variables or temporary config files when needed.
 
 ### Standard Quality and Build Gotchas
 

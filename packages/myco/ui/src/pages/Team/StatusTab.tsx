@@ -43,12 +43,17 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
   const [showMcpSnippet, setShowMcpSnippet] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
   const [rotating, setRotating] = useState(false);
+  const [rotateError, setRotateError] = useState<string | null>(null);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   const handleDisconnect = async () => {
     setDisconnecting(true);
+    setDisconnectError(null);
     try {
       await postJson('/team/disconnect');
       queryClient.invalidateQueries({ queryKey: ['team-status'] });
+    } catch (err) {
+      setDisconnectError(err instanceof Error ? err.message : String(err));
     } finally {
       setDisconnecting(false);
     }
@@ -274,17 +279,27 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
         isPending={rotating}
         onConfirm={async () => {
           setRotating(true);
+          setRotateError(null);
           try {
             await postJson('/team/rotate-mcp-token');
             queryClient.invalidateQueries({ queryKey: ['team-status'] });
             setShowRotateConfirm(false);
-          } catch {
-            // Error visible via status refetch
+          } catch (err) {
+            // Surface the failure instead of dismissing the dialog. Without
+            // this, an operator hits "Rotate" and sees nothing happen —
+            // making the path indistinguishable from success at a glance.
+            setRotateError(err instanceof Error ? err.message : String(err));
           } finally {
             setRotating(false);
           }
         }}
+        errorMessage={rotateError}
       />
+      {disconnectError && (
+        <p className="text-sm text-tertiary text-right" data-testid="team-disconnect-error">
+          Disconnect failed: {disconnectError}
+        </p>
+      )}
     </div>
   );
 }
