@@ -37,6 +37,22 @@ const fsMocks = {
   // atomicWriteFileSync writes to a temp path then renames. The release
   // channel writer flows through that helper now.
   renameSync: mock(() => undefined),
+  // The Bucket H atomic-write refactor (H.1) replaced
+  // writeFileSync+chmodSync with openSync(O_EXCL) + fchmodSync + writeSync
+  // + fsyncSync + closeSync. The test only cares that the writer
+  // reaches renameSync (the assertion on writtenContent reads from the
+  // tempfile path, but here we just need the call chain not to throw on
+  // an undefined method).
+  openSync: mock(() => 7 as unknown as number),
+  fchmodSync: mock(() => undefined),
+  writeSync: mock(() => 0),
+  fsyncSync: mock(() => undefined),
+  closeSync: mock(() => undefined),
+  constants: {
+    O_WRONLY: 1,
+    O_CREAT: 64,
+    O_EXCL: 128,
+  },
 };
 mock.module('node:fs', () => ({
   default: fsMocks,
@@ -273,13 +289,21 @@ describe('project release channel helpers', () => {
 
     writeProjectReleaseChannel('/vault/.myco', 'beta');
 
-    // Atomic write: content goes to a sibling tempfile, then renames over
-    // the final path. Assert against both legs of the dance.
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
+    // Atomic write (H.1): openSync(tmp, O_CREAT|O_EXCL|O_WRONLY) →
+    // writeSync(fd, buf) → fsyncSync(fd) → closeSync(fd) → renameSync.
+    // Assert the open and rename land on the sibling tempfile path and
+    // that the written buffer carries the channel marker.
+    expect(fs.openSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      expect.stringContaining('channel: beta'),
-      'utf-8',
+      expect.any(Number),
+      expect.any(Number),
     );
+    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
+    const wroteBeta = writeCalls.some(([, buf]) => {
+      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
+      return text.includes('channel: beta');
+    });
+    expect(wroteBeta).toBe(true);
     expect(fs.renameSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
       '/vault/.myco/local.yaml',
@@ -291,11 +315,17 @@ describe('project release channel helpers', () => {
 
     writeProjectReleaseChannel('/vault/.myco', 'stable');
 
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
+    expect(fs.openSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
-      '{}\n',
-      'utf-8',
+      expect.any(Number),
+      expect.any(Number),
     );
+    const writeCalls = vi.mocked(fs.writeSync).mock.calls;
+    const wroteEmpty = writeCalls.some(([, buf]) => {
+      const text = buf instanceof Buffer ? buf.toString('utf-8') : String(buf);
+      return text === '{}\n';
+    });
+    expect(wroteEmpty).toBe(true);
     expect(fs.renameSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/vault\/\.myco\/local\.yaml\.tmp-/),
       '/vault/.myco/local.yaml',

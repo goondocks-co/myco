@@ -36,6 +36,12 @@ import { getSession, listSessions } from '@myco/db/queries/sessions.js';
 import { listBatchesBySession } from '@myco/db/queries/batches.js';
 import { ALL_PROJECTS_SCOPE, projectScope } from '@myco/grove/ids.js';
 import type { GroveProjectId } from '@myco/grove/ids.js';
+import {
+  handleGetConfig,
+  handlePutScopedConfig,
+} from '@myco/daemon/api/config.js';
+import { saveConfig } from '@myco/config/loader.js';
+import { MycoConfigSchema } from '@myco/config/schema.js';
 
 const GROVE_A = 'grove_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
 const PROJECT_A = 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1' as GroveProjectId;
@@ -168,6 +174,62 @@ describe('multi-tenancy invariant — end-to-end through dispatcher', () => {
 
     const batchesBfromA = listBatchesBySession(sessionB, { scope: projectScope(PROJECT_A) });
     expect(batchesBfromA.length).toBe(0);
+  });
+
+  it('config handlers honor the per-request projectVaultDir (no cross-vault leak — #280 surface)', async () => {
+    // The #280 regression was that /api/config* fell back to the daemon's
+    // bootstrap vault, so a project-A request would see project-B's
+    // myco.yaml. The fix routes vaultDir per-request via
+    // `req.requestContext?.projectVaultDir ?? bootstrapVaultDir`. The
+    // handlers themselves still take `vaultDir` as a plain argument, so
+    // we test the contract by writing distinct configs to two temp vaults
+    // and proving handleGetConfig returns the right one for each.
+    const vaultA = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cfg-tenant-a-'));
+    const vaultB = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cfg-tenant-b-'));
+    try {
+      saveConfig(
+        vaultA,
+        MycoConfigSchema.parse({
+          version: 3,
+          appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'compact' },
+        }),
+      );
+      saveConfig(
+        vaultB,
+        MycoConfigSchema.parse({
+          version: 3,
+          appearance: { theme: 'sage', mode: 'dark', font: 'default', density: 'normal' },
+        }),
+      );
+
+      // Each handler call must return the config that matches the
+      // vaultDir we passed — never the other project's.
+      const resA = await handleGetConfig(vaultA);
+      const resB = await handleGetConfig(vaultB);
+      const bodyA = resA.body as { appearance?: { density?: string } };
+      const bodyB = resB.body as { appearance?: { density?: string } };
+
+      // Density is a stable, low-side-effect field. Both reads should
+      // come back as the value we wrote, never crossed.
+      expect(bodyA.appearance?.density).toBe('compact');
+      expect(bodyB.appearance?.density).toBe('normal');
+
+      // And a PUT under vaultA must never bleed into vaultB. handlePutScopedConfig
+      // writes to the project tier (vaultDir/myco.yaml), so the post-write
+      // re-read should show the patched density only in the vault we
+      // targeted.
+      await handlePutScopedConfig(vaultA, {
+        scope: 'project',
+        patch: { appearance: { density: 'comfy' } },
+      });
+      const resA2 = await handleGetConfig(vaultA);
+      const resB2 = await handleGetConfig(vaultB);
+      expect((resA2.body as { appearance?: { density?: string } }).appearance?.density).toBe('comfy');
+      expect((resB2.body as { appearance?: { density?: string } }).appearance?.density).toBe('normal');
+    } finally {
+      fs.rmSync(vaultA, { recursive: true, force: true });
+      fs.rmSync(vaultB, { recursive: true, force: true });
+    }
   });
 
   it('the dispatcher stamps the project_id from the request context onto inserted rows', async () => {
