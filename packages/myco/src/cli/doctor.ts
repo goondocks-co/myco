@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
 import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
@@ -279,12 +279,10 @@ function isHooksRegistered(
  */
 function checkBinaryVersionSkew(): DoctorCheck {
   const baked = getPluginVersion();
-  // The binary lives at <pkgRoot>/vendor/<target>/myco. Walk up from
-  // process.argv[0] to find the package.json on disk; that's the manifest
-  // npm/install actually shipped. (For source checkouts, this finds the
-  // monorepo's packages/myco/package.json — also correct.)
+  // Walk up from the binary to @goondocks/myco core — that's the manifest
+  // npm install actually shipped. (Source checkouts find packages/myco/.)
   const argv0 = process.argv[0];
-  const installedRoot = argv0 ? findPackageRoot(path.dirname(argv0)) : null;
+  const installedRoot = argv0 ? findCorePackageRoot(path.dirname(argv0)) : null;
   if (!installedRoot) {
     return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, fixable: false };
   }

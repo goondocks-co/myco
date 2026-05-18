@@ -53,12 +53,14 @@ describe('ensureSelfInstalledAsService', () => {
     expect(mgr.installCalls[0].variant).toBe('dev');
   });
 
-  test('no-ops when the unit is already installed', async () => {
+  test('passes the current spec to install when a unit is already present, so content-compare can refresh a stale unit file', async () => {
     const mgr = new FakeManager({ preInstalled: true });
     const logger = new CapturingLogger();
     await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });
-    expect(mgr.installCalls).toHaveLength(0);
-    expect(mgr.statusCalls).toBe(0);
+    expect(mgr.installCalls).toHaveLength(1);
+    expect(mgr.installCalls[0].label).toBe('co.goondocks.myco');
+    expect(logger.infos.some((e) => e.message.includes('Refreshed managed service'))).toBe(true);
+    expect(logger.infos.some((e) => e.meta?.refreshed === true)).toBe(true);
   });
 
   test('skips and logs info when the platform is unsupported', async () => {

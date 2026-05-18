@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { extractJson } from '@myco/intelligence/response.js';
 import type { PhaseDefinition, OrchestratorPlan, OrchestratorPhaseDirective } from './types.js';
@@ -78,8 +78,9 @@ export function resolveOrchestratorPromptTemplate(scriptDir: string): string {
     return fs.readFileSync(adjacentPath, 'utf-8');
   }
 
-  // tsup bundles into dist/chunk-XXXX.js — walk up to package root
-  const root = findPackageRoot(scriptDir);
+  // tsup bundles into dist/chunk-XXXX.js — walk up to @goondocks/myco core
+  // so we read the prompts that ship in core, not the platform sub-package.
+  const root = findCorePackageRoot(scriptDir);
   if (root) {
     const distPath = path.join(root, 'dist', 'src', 'agent', 'prompts', ORCHESTRATOR_PROMPT_FILE);
     if (fs.existsSync(distPath)) {

@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 import { errorMessage } from '@myco/utils/error-message.js';
 import { parse as parseYaml } from 'yaml';
 import { epochSeconds, DEFAULT_AGENT_ID, BUILT_IN_SOURCE, USER_TASK_SOURCE } from '@myco/constants.js';
@@ -32,7 +32,7 @@ const AGENT_DEFINITION_FILE = 'agent.yaml';
 /** Subdirectory containing task YAML files. */
 const TASKS_SUBDIRECTORY = 'tasks';
 
-// Package root resolution uses shared findPackageRoot from @myco/utils
+// Package root resolution uses shared findCorePackageRoot from @myco/utils
 
 // BUILT_IN_SOURCE imported from @myco/constants.js
 
@@ -58,8 +58,8 @@ export function resolveDefinitionsDir(): string {
     return adjacentDefs;
   }
 
-  // Walk up to package root using shared utility
-  const root = findPackageRoot(scriptDir);
+  // Walk up to @goondocks/myco core — agent definitions only ship there.
+  const root = findCorePackageRoot(scriptDir);
   if (root) {
     // Try dist path first (tsup bundled output)
     const distPath = path.join(root, 'dist', 'src', 'agent', 'definitions');

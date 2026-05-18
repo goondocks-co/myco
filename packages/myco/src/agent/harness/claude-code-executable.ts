@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { findPackageRoot } from '@myco/utils/find-package-root.js';
+import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
 
 interface ResolveClaudeExecutableDeps {
   importMetaUrl?: string;
@@ -91,7 +91,10 @@ export function resolveClaudeCodeExecutable(
   const requireFactory = deps.requireFactory ?? createRequire;
 
   for (const origin of candidatePackageRoots(importMetaUrl, execPath, realpathSync)) {
-    const packageRoot = findPackageRoot(origin);
+    // Resolve from @goondocks/myco core so requireFromPackage below
+    // can find the SDK's platform-specific optional packages sitting
+    // alongside it in node_modules.
+    const packageRoot = findCorePackageRoot(origin);
     if (!packageRoot) continue;
 
     const requireFromPackage = requireFactory(path.join(packageRoot, 'package.json'));
