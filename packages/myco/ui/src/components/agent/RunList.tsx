@@ -120,11 +120,14 @@ const RunRailRow = memo(forwardRef<HTMLDivElement, RunRailRowProps>(function Run
       data-selected={isActive || undefined}
       data-cursor={isCursor || undefined}
       className={cn(
-        'group relative border-b border-outline-variant/20 last:border-0 px-4 py-3 cursor-pointer transition-all duration-150',
-        'hover:bg-surface-container-high/50 hover:shadow-[inset_3px_0_0_var(--primary)]',
-        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
-        isActive && 'bg-surface-container-high shadow-[inset_3px_0_0_var(--primary)]',
-        isCursor && !isActive && 'bg-surface-container/40 ring-2 ring-inset ring-primary/30',
+        // v7 row treatment — matches Sessions Block 2 (.myco-grove-active-row pattern):
+        // ghost-border separators, soft surface-container hover, sage left-stripe
+        // + tinted background on the active row.
+        'group relative border-b border-[var(--ghost-border)] last:border-b-0 px-4 py-3 cursor-pointer transition-colors duration-100',
+        'hover:bg-surface-container',
+        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage/40',
+        isActive && 'bg-sage/[0.08] shadow-[inset_2px_0_0_var(--sage)]',
+        isCursor && !isActive && 'bg-surface-container/60 ring-1 ring-inset ring-sage/30',
       )}
       onClick={onClick}
       onKeyDown={(e) => {
