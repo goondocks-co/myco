@@ -177,9 +177,11 @@ function startParentWatchdog(): void {
  * Probe `/health` once with a tight timeout. Used by both the background
  * heartbeat and the active-send self-heal path. Reads the port via the
  * `portRef` closure so the function picks up post-self-heal port changes
- * automatically.
+ * automatically. Exported so the heal-primitive integration test can
+ * exercise it against a real fake daemon without standing up the full
+ * bridge subprocess (which would need Grove fixtures).
  */
-async function probeDaemonHealth(portRef: { port: number }): Promise<boolean> {
+export async function probeDaemonHealth(portRef: { port: number }): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${portRef.port}/health`, {
       signal: AbortSignal.timeout(5_000),
