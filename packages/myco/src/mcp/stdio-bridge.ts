@@ -104,16 +104,20 @@ export const UPSTREAM_SEND_TIMEOUT_MS = 30_000;
 export const REQUEST_RESEND_MAX_ATTEMPTS = 2;
 
 /**
- * Self-heal probe budget on a detected upstream failure. The bridge probes
- * `/health` up to this many times (with the backoff below) before declaring
- * the daemon truly gone and exiting. A `make build` rebuild typically
- * completes within a few seconds; this budget covers normal rebuild times
- * without giving up too eagerly on slow machines.
+ * Self-heal probe backoff schedule. The bridge probes `/health` on every
+ * miss with the next interval in this list; once past the end, it stays
+ * at the last interval forever. The bridge does NOT exit on daemon-down
+ * (live verification showed Claude Code's MCP supervisor doesn't auto-
+ * respawn — `MCP server "myco" is not connected` until manual /mcp
+ * reconnect). Indefinite retry with a 5 s steady-state ceiling means
+ * a `make build` rebuild that takes 30 s of launchd throttle still
+ * recovers without operator intervention, while a permanently-dead
+ * daemon doesn't burn battery harder than one probe per 5 s.
+ *
+ * Parent-death watchdog remains the only path that terminates the
+ * bridge: if the agent is gone, there's no one for the bridge to serve.
  */
-export const SELF_HEAL_PROBE_ATTEMPTS = 5;
-
-/** Backoff per self-heal probe attempt (ms). Total budget ≈ sum of these. */
-export const SELF_HEAL_PROBE_BACKOFFS_MS: readonly number[] = [200, 500, 1_000, 2_000, 4_000];
+export const SELF_HEAL_PROBE_BACKOFFS_MS: readonly number[] = [200, 500, 1_000, 2_000, 5_000];
 
 function logErr(msg: string): void {
   // stderr only — stdout is the JSON-RPC channel and must stay clean.
@@ -190,12 +194,21 @@ async function probeDaemonHealth(portRef: { port: number }): Promise<boolean> {
 
 /**
  * Periodically probe the daemon's /health endpoint. On
- * DAEMON_HEARTBEAT_FAILURE_THRESHOLD consecutive failures, exit cleanly so
- * the agent respawns a fresh bridge that re-reads daemon.json (handling the
- * case where the daemon restarted on a different port and the active-send
- * self-heal path didn't have a chance to fire because the bridge was idle).
+ * DAEMON_HEARTBEAT_FAILURE_THRESHOLD consecutive failures, hand off to
+ * the supplied `triggerSelfHeal` callback — which routes through the
+ * same single-flight reconnect path as the send-error and onclose
+ * paths. This handles the idle-bridge case where the user hasn't sent
+ * a message in a while; without the heartbeat-triggered heal, the
+ * stale upstream would only be discovered on the NEXT tool call.
+ *
+ * The bridge never exits from heartbeat failure (used to, but Claude
+ * Code's MCP supervisor doesn't auto-respawn on exit, which left the
+ * agent's MCP surface dead until manual /mcp reconnect).
  */
-function startDaemonHeartbeat(portRef: { port: number }): void {
+function startDaemonHeartbeat(
+  portRef: { port: number },
+  triggerSelfHeal: () => void,
+): void {
   let consecutiveFailures = 0;
   const timer = setInterval(async () => {
     const ok = await probeDaemonHealth(portRef);
@@ -206,8 +219,9 @@ function startDaemonHeartbeat(portRef: { port: number }): void {
     consecutiveFailures++;
     logErr(`daemon heartbeat failure ${consecutiveFailures}/${DAEMON_HEARTBEAT_FAILURE_THRESHOLD}`);
     if (consecutiveFailures >= DAEMON_HEARTBEAT_FAILURE_THRESHOLD) {
-      clearInterval(timer);
-      exitWithReason(`daemon health failed ${consecutiveFailures}× — agent will respawn bridge`);
+      consecutiveFailures = 0; // reset so we don't double-fire
+      logErr('heartbeat threshold reached — triggering self-heal');
+      triggerSelfHeal();
     }
   }, DAEMON_HEARTBEAT_INTERVAL_MS);
   timer.unref();
@@ -331,40 +345,42 @@ export async function main(): Promise<void> {
     };
     t.onclose = () => {
       logErr('upstream onclose fired — entering self-heal');
-      void (async () => {
-        const recovered = await reconnectUpstream();
-        if (!recovered) {
-          void downstream.close().finally(() =>
-            exitWithReason('upstream closed and self-heal exhausted probe budget — agent will respawn bridge'),
-          );
-        }
-      })();
+      void reconnectUpstream().catch((err: Error) =>
+        logErr(`onclose-triggered self-heal failed unexpectedly: ${err.message}`),
+      );
     };
     t.onerror = (err) => logErr(`upstream: ${err.message}`);
   }
 
   /**
    * Re-resolve the daemon (re-read daemon.json) and swap upstream to a
-   * fresh transport. Returns true on success; false if the daemon stays
-   * unreachable through the probe budget (in which case the caller should
-   * exit so the agent respawns the bridge).
+   * fresh transport. Indefinitely retries with the SELF_HEAL_PROBE_BACKOFFS_MS
+   * schedule (settling at the final interval), because the bridge never
+   * exits on daemon-down — Claude Code's MCP supervisor doesn't auto-
+   * respawn the bridge after exit, so giving up would leave the agent's
+   * MCP surface dead until manual /mcp reconnect. The only way out of
+   * this loop is success (returns true) or the parent-death watchdog
+   * firing (process.exit).
    *
-   * Single-flight via `reconnectInFlight`: concurrent message sends that
-   * trip the failure path while a reconnect is already underway await the
-   * same promise instead of each spawning their own rebuild.
+   * Single-flight via `reconnectInFlight`: concurrent message sends and
+   * onclose handlers that trip the failure path while a reconnect is
+   * already underway await the same promise instead of each spawning
+   * their own rebuild.
    */
   async function reconnectUpstream(): Promise<boolean> {
     if (reconnectInFlight) return reconnectInFlight;
     reconnectInFlight = (async () => {
       logErr('self-heal: probing daemon and rebuilding upstream');
-      for (let attempt = 0; attempt < SELF_HEAL_PROBE_ATTEMPTS; attempt++) {
+      for (let attempt = 0; ; attempt++) {
         if (attempt > 0) {
-          const backoff = SELF_HEAL_PROBE_BACKOFFS_MS[attempt - 1] ?? 4_000;
-          await sleepMs(backoff);
+          const backoffIdx = Math.min(attempt - 1, SELF_HEAL_PROBE_BACKOFFS_MS.length - 1);
+          await sleepMs(SELF_HEAL_PROBE_BACKOFFS_MS[backoffIdx]!);
         }
         const rebuilt = buildUpstreamForCurrentDaemon(vaultDir);
         if (!rebuilt) {
-          logErr(`self-heal: attempt ${attempt + 1}/${SELF_HEAL_PROBE_ATTEMPTS} — no daemon.json yet`);
+          if (attempt === 0 || attempt % 5 === 0) {
+            logErr(`self-heal: attempt ${attempt + 1} — no daemon.json yet, retrying`);
+          }
           continue;
         }
         // Health-check against the freshly-discovered port BEFORE swapping
@@ -372,9 +388,9 @@ export async function main(): Promise<void> {
         // a not-yet-listening one.
         const ok = await probeDaemonHealth({ port: rebuilt.port });
         if (!ok) {
-          logErr(`self-heal: attempt ${attempt + 1}/${SELF_HEAL_PROBE_ATTEMPTS} — /health probe failed`);
-          // Discard the just-built transport; we'll rebuild from fresh
-          // daemon.json on the next attempt in case the port shifts again.
+          if (attempt === 0 || attempt % 5 === 0) {
+            logErr(`self-heal: attempt ${attempt + 1} — /health probe failed, retrying`);
+          }
           void rebuilt.transport.close().catch(() => undefined);
           continue;
         }
@@ -393,15 +409,13 @@ export async function main(): Promise<void> {
         wireUpstream(upstream);
         try {
           await upstream.start();
-          logErr(`self-heal: upstream rebuilt on port ${rebuilt.port}`);
+          logErr(`self-heal: upstream rebuilt on port ${rebuilt.port} after ${attempt + 1} attempts`);
           return true;
         } catch (err) {
-          logErr(`self-heal: new upstream start() failed: ${(err as Error).message}`);
+          logErr(`self-heal: new upstream start() failed: ${(err as Error).message} — continuing to retry`);
           // Drop through to the next attempt.
         }
       }
-      logErr('self-heal: daemon stayed unreachable through probe budget');
-      return false;
     })();
     const result = await reconnectInFlight;
     reconnectInFlight = null;
@@ -435,11 +449,7 @@ export async function main(): Promise<void> {
       } catch (err) {
         const errMsg = (err as Error).message;
         logErr(`upstream send failed: ${errMsg} — entering self-heal (attempt ${attempt + 1})`);
-        const recovered = await reconnectUpstream();
-        if (!recovered) {
-          respondWithError(msg, 'daemon unreachable; bridge exiting so agent respawns');
-          exitWithReason('self-heal exhausted probe budget — agent will respawn bridge');
-        }
+        await reconnectUpstream(); // never returns false — keeps trying indefinitely
         if (attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
           logErr(`self-heal succeeded; re-sending message through rebuilt upstream`);
           return send(attempt + 1);
@@ -489,7 +499,11 @@ export async function main(): Promise<void> {
   // fails before this point, we'll have already exited via the catch path
   // and the timers would never have fired.
   startParentWatchdog();
-  startDaemonHeartbeat(portRef);
+  startDaemonHeartbeat(portRef, () => {
+    void reconnectUpstream().catch((err: Error) =>
+      logErr(`heartbeat-triggered self-heal failed unexpectedly: ${err.message}`),
+    );
+  });
 
   logErr('bridge ready');
 }

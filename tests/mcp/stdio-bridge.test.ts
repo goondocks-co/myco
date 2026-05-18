@@ -5,7 +5,6 @@ import {
   DAEMON_HEARTBEAT_INTERVAL_MS,
   DAEMON_HEARTBEAT_FAILURE_THRESHOLD,
   UPSTREAM_SEND_TIMEOUT_MS,
-  SELF_HEAL_PROBE_ATTEMPTS,
   SELF_HEAL_PROBE_BACKOFFS_MS,
   REQUEST_RESEND_MAX_ATTEMPTS,
 } from '@myco/mcp/stdio-bridge.js';
@@ -72,24 +71,23 @@ describe('mcp stdio-bridge lifecycle gates', () => {
       expect(DAEMON_HEARTBEAT_INTERVAL_MS).toBe(5_000);
     });
 
-    it('daemon heartbeat tolerates exactly one transient miss before exiting', () => {
-      // A single missed probe during a daemon restart is normal; two in a
-      // row means the bridge's HTTP target is stale and it should die so
-      // the agent respawns a fresh one.
-      expect(DAEMON_HEARTBEAT_FAILURE_THRESHOLD).toBe(2);
+    it('agent-death detection stays under 30 seconds', () => {
+      // The only watchdog that EXITS the bridge is the parent-death
+      // watchdog. Daemon-death no longer terminates the bridge — it
+      // routes through the indefinite self-heal loop — so there is no
+      // longer a "zombie window" tied to daemon health. The agent-death
+      // window stays bounded so an orphaned bridge doesn't sit idle.
+      expect(PARENT_WATCHDOG_INTERVAL_MS).toBeLessThan(30_000);
     });
 
-    it('zombie window stays under 30 seconds in the worst case', () => {
-      // Worst-case time from agent-death to bridge-exit is one watchdog
-      // tick. Worst-case time from daemon-down to bridge-exit via the
-      // background heartbeat alone is (FAILURE_THRESHOLD × HEARTBEAT_INTERVAL_MS)
-      // plus the per-probe fetch timeout. The active-send self-heal beats
-      // this when a message is in flight; this assertion locks in the
-      // bound on the IDLE-bridge case.
-      const worstAgentDeathMs = PARENT_WATCHDOG_INTERVAL_MS;
-      const worstDaemonDeathMs = DAEMON_HEARTBEAT_FAILURE_THRESHOLD * DAEMON_HEARTBEAT_INTERVAL_MS;
-      expect(worstAgentDeathMs).toBeLessThan(30_000);
-      expect(worstDaemonDeathMs).toBeLessThanOrEqual(30_000);
+    it('heartbeat threshold triggers self-heal, not bridge exit', () => {
+      // Pinned so a "tweak this back to exit-on-failure" PR has to
+      // engage with the contract. The bridge MUST survive daemon-down
+      // so Claude Code's MCP supervisor doesn't lose the surface
+      // (it doesn't auto-respawn — manual /mcp reconnect required
+      // after a bridge exit). N missed heartbeats just trigger a
+      // proactive reconnect for the idle-bridge case.
+      expect(DAEMON_HEARTBEAT_FAILURE_THRESHOLD).toBe(2);
     });
   });
 
@@ -114,30 +112,26 @@ describe('mcp stdio-bridge lifecycle gates', () => {
       expect(REQUEST_RESEND_MAX_ATTEMPTS).toBe(2);
     });
 
-    it('probes the daemon up to SELF_HEAL_PROBE_ATTEMPTS times before giving up', () => {
-      // A `make build` rebuild typically completes in a few seconds; the
-      // probe budget covers normal rebuild times without giving up so
-      // eagerly that a slow machine forces a full bridge respawn.
-      expect(SELF_HEAL_PROBE_ATTEMPTS).toBe(5);
+    it('exposes an indefinite probe backoff schedule (the bridge never gives up on daemon-down)', () => {
+      // The bridge retries forever because Claude Code's MCP supervisor
+      // doesn't auto-respawn — exit would leave the agent's MCP surface
+      // dead until manual /mcp reconnect. The schedule below tunes the
+      // ramp from "fast catch quick restart" to "stable steady-state
+      // retry while the daemon recovers from a longer outage".
+      expect(SELF_HEAL_PROBE_BACKOFFS_MS.length).toBeGreaterThan(0);
     });
 
-    it('exposes per-attempt backoffs whose total stays under the heartbeat exit window', () => {
-      // If the self-heal probe budget took longer than the background
-      // heartbeat's exit threshold, the bridge could die out from under
-      // a self-heal in progress. Belt-and-suspenders: keep the probe
-      // total comfortably below the heartbeat-driven exit time.
-      expect(SELF_HEAL_PROBE_BACKOFFS_MS).toHaveLength(SELF_HEAL_PROBE_ATTEMPTS);
-      const totalBackoffMs = SELF_HEAL_PROBE_BACKOFFS_MS.reduce((sum, ms) => sum + ms, 0);
-      const heartbeatExitWindowMs = DAEMON_HEARTBEAT_FAILURE_THRESHOLD * DAEMON_HEARTBEAT_INTERVAL_MS;
-      expect(totalBackoffMs).toBeLessThan(heartbeatExitWindowMs);
-    });
-
-    it('backoffs grow monotonically so retries spread under sustained restarts', () => {
+    it('backoffs grow monotonically and cap at a sane steady-state', () => {
+      // Once past the last entry the reconnect loop holds at that value
+      // indefinitely, so the cap controls battery / poll rate during a
+      // long outage. 5 s is cheap (one fetch) and recovers quickly when
+      // the daemon comes back.
       for (let i = 1; i < SELF_HEAL_PROBE_BACKOFFS_MS.length; i++) {
         expect(SELF_HEAL_PROBE_BACKOFFS_MS[i]!).toBeGreaterThanOrEqual(
           SELF_HEAL_PROBE_BACKOFFS_MS[i - 1]!,
         );
       }
+      expect(SELF_HEAL_PROBE_BACKOFFS_MS[SELF_HEAL_PROBE_BACKOFFS_MS.length - 1]).toBeLessThanOrEqual(10_000);
     });
   });
 });
