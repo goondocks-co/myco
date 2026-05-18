@@ -34,6 +34,7 @@ export const ALLOWED_CLAUDE_CODE_TOOLS: ReadonlySet<string> = new Set([
   'Read', 'Edit', 'Write', 'MultiEdit', 'Bash', 'Grep', 'Glob',
   'NotebookRead', 'NotebookEdit', 'WebFetch', 'WebSearch',
   'Task', 'TodoWrite',
+  'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList',
 ]);
 
 type ParsedFrontmatter = Record<string, unknown>;
