@@ -28,6 +28,13 @@ const surfaceVariants = cva('rounded-md transition-colors', {
       true: 'shadow-[inset_0_0_12px_rgba(171,207,184,0.2)]',
       false: '',
     },
+    accent: {
+      none: '',
+      sage: 'border-t-2 border-t-sage',
+      ochre: 'border-t-2 border-t-ochre',
+      terra: 'border-t-2 border-t-terracotta',
+      outline: 'border-t-2 border-t-outline-variant',
+    },
   },
   defaultVariants: {
     level: 'low',
@@ -35,6 +42,7 @@ const surfaceVariants = cva('rounded-md transition-colors', {
     ghostBorder: false,
     glass: false,
     glow: false,
+    accent: 'none',
   },
 });
 
@@ -43,12 +51,12 @@ export interface SurfaceProps
     VariantProps<typeof surfaceVariants> {}
 
 const Surface = forwardRef<HTMLDivElement, SurfaceProps>(
-  ({ className, level, interactive, ghostBorder, glass, glow, ...props }, ref) => {
+  ({ className, level, interactive, ghostBorder, glass, glow, accent, ...props }, ref) => {
     return (
       <div
         ref={ref}
         className={cn(
-          surfaceVariants({ level, interactive, ghostBorder, glass, glow }),
+          surfaceVariants({ level, interactive, ghostBorder, glass, glow, accent }),
           className,
         )}
         {...props}

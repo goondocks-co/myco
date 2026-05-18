@@ -1,9 +1,33 @@
 /*
- * Shared secondary (amber) and tertiary (terracotta) accents for themes
- * that use the neutral-accent family: moss, dusk, plum, slate.
- * Sage and terracotta themes override these with their own accent choices.
+ * Theme-stable accent palette.
+ *
+ * --sage / --sage-dim / --ochre / --terracotta are intentionally NOT scoped by
+ * `[data-theme=...]`. They read the same hue regardless of which theme primary
+ * is active, so sage stays sage in Plum and ochre stays ochre in Moss. Values
+ * still shift between dark and light mode for legibility on either ground.
+ *
+ * --secondary / --tertiary continue to follow the older neutral-accent family
+ * (moss/dusk/plum/slate) — the sage and terracotta themes already define their
+ * own values in their theme files.
  */
 
+/* --- Theme-stable accents (dark mode default) -------------------------- */
+:root {
+  --sage: #abcfb8;
+  --sage-dim: #7b9e89;
+  --ochre: #edbf7f;
+  --terracotta: #ffb4a1;
+}
+
+/* --- Theme-stable accents (light mode) --------------------------------- */
+:root.light {
+  --sage: #446553;
+  --sage-dim: #5d8270;
+  --ochre: #8a5e15;
+  --terracotta: #8B5C44;
+}
+
+/* --- Neutral-accent family secondary/tertiary -------------------------- */
 :root[data-theme="moss"],
 :root[data-theme="dusk"],
 :root[data-theme="plum"],
