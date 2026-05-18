@@ -37,9 +37,10 @@
   --color-tertiary: var(--tertiary);
   --color-tertiary-container: var(--tertiary-container);
   --color-destructive: var(--destructive, var(--tertiary));
-  --color-sage: var(--primary);
-  --color-ochre: var(--secondary);
-  --color-terracotta: var(--tertiary);
+  --color-sage: var(--sage);
+  --color-sage-dim: var(--sage-dim);
+  --color-ochre: var(--ochre);
+  --color-terracotta: var(--terracotta);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -57,9 +58,9 @@
   --radius-sm: 0.25rem;
 
   --shadow-ambient: 0 24px 48px rgba(var(--shadow-tint), 0.06);
-  --shadow-sage-glow: 0 0 8px var(--primary);
-  --shadow-ochre-glow: 0 0 8px var(--secondary);
-  --shadow-terracotta-glow: 0 0 8px var(--tertiary);
+  --shadow-sage-glow: 0 0 8px var(--sage);
+  --shadow-ochre-glow: 0 0 8px var(--ochre);
+  --shadow-terracotta-glow: 0 0 8px var(--terracotta);
 }
 
 /* ---------- Self-hosted variable fonts ---------- */
@@ -284,6 +285,74 @@
     border: 2px solid var(--surface);
     box-shadow: 0 0 0 1px var(--primary-container);
     cursor: pointer;
+  }
+}
+
+/* ---------- v7 display typography ----------
+ *
+ * Italic Newsreader serif used for card titles and large metric values.
+ * Sizes track the v7 reference (`styles-v7.css`):
+ *   xs  → connect-step heads (16px)
+ *   sm  → settings group titles (18px)
+ *   md  → metric card values, vault metric (22px)
+ *   lg  → grove identity name (24px)
+ *
+ * Mono uppercase eyebrows above titles and column headers; the two sizes
+ * mirror the 9.5px and 10.5px cases used across v7 surfaces.
+ *
+ * Classes use the `myco-` prefix instead of `text-*` to avoid `tailwind-merge`
+ * collapsing them with `text-{color}` utilities (e.g. `text-sage`) when both
+ * are combined via `cn()`.
+ */
+@layer utilities {
+  .myco-display-xs {
+    font-family: var(--font-heading, 'Newsreader', Georgia, serif);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 16px;
+    line-height: 1.2;
+    letter-spacing: -0.005em;
+  }
+  .myco-display-sm {
+    font-family: var(--font-heading, 'Newsreader', Georgia, serif);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 18px;
+    line-height: 1.15;
+    letter-spacing: -0.005em;
+  }
+  .myco-display-md {
+    font-family: var(--font-heading, 'Newsreader', Georgia, serif);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 22px;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+  .myco-display-lg {
+    font-family: var(--font-heading, 'Newsreader', Georgia, serif);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 24px;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+  }
+
+  .myco-eyebrow {
+    font-family: var(--font-data, 'JetBrains Mono', monospace);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--outline);
+  }
+  .myco-eyebrow-sm {
+    font-family: var(--font-data, 'JetBrains Mono', monospace);
+    font-size: 9.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--outline);
   }
 }
 
