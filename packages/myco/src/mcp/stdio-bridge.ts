@@ -84,17 +84,24 @@ export const DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
 export const DAEMON_HEARTBEAT_FAILURE_THRESHOLD = 2;
 
 /**
- * Per-message upstream-send deadline. Long enough that legitimate slow tool
- * calls (skill-generate, skill-evolve, long agent runs) don't false-trip
- * the self-heal path; short enough that a hung half-open socket from a
- * dead daemon doesn't sit forever waiting for OS TCP timeouts.
- *
- * Tool calls that genuinely run for longer than this stream progress
- * notifications back through the same transport, which reset the
- * downstream-facing inactivity perception — the agent sees activity.
- * This deadline only fires when send() never resolves AT ALL.
+ * Per-message upstream-send deadline. StreamableHTTPClientTransport's
+ * `send()` returns as soon as the POST is accepted (the response — long
+ * tool calls included — streams back via the SSE channel, NOT via
+ * send()'s return value), so this only needs to be long enough for the
+ * loopback POST to complete and short enough that a hung half-open
+ * socket on a dead daemon doesn't sit waiting for OS TCP keepalive
+ * (often minutes by default). 30 s is generous for a loopback POST.
  */
-export const UPSTREAM_SEND_TIMEOUT_MS = 120_000;
+export const UPSTREAM_SEND_TIMEOUT_MS = 30_000;
+
+/**
+ * Max re-send attempts for a single forwarded JSON-RPC request when
+ * the original send trips the self-heal path. Re-sending preserves the
+ * agent's contract (it sees a response, not a dropped request) without
+ * requiring Claude Code's MCP client to implement its own retry layer.
+ * The hard cap stops a persistent-failure scenario from looping forever.
+ */
+export const REQUEST_RESEND_MAX_ATTEMPTS = 2;
 
 /**
  * Self-heal probe budget on a detected upstream failure. The bridge probes
@@ -208,6 +215,23 @@ function startDaemonHeartbeat(portRef: { port: number }): void {
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Narrow predicate: is `msg` a JSON-RPC request (i.e., expecting a
+ * response)? Notifications have no `id`; requests have `id` as a
+ * non-null number or string. The pump uses this to decide whether a
+ * dropped message owes the agent a synthetic error response.
+ */
+function isJsonRpcRequest(
+  msg: unknown,
+): msg is { jsonrpc: '2.0'; id: number | string; method: string } {
+  if (!msg || typeof msg !== 'object') return false;
+  const m = msg as Record<string, unknown>;
+  if (m.jsonrpc !== '2.0') return false;
+  if (typeof m.method !== 'string') return false;
+  const id = m.id;
+  return (typeof id === 'number' || typeof id === 'string') && id !== '';
 }
 
 /**
@@ -390,30 +414,65 @@ export async function main(): Promise<void> {
   //
   // When upstream.send fails (synchronous network error) OR hangs past
   // UPSTREAM_SEND_TIMEOUT_MS (half-open socket on a dead daemon), the
-  // active-send self-heal path fires: re-resolve daemon, rebuild upstream,
-  // and drop the failed message — the agent's retry policy covers the
-  // dropped one. If the daemon stays gone through the probe budget, the
-  // bridge exits cleanly so the agent respawns.
+  // self-heal path fires: re-resolve daemon, rebuild upstream, and
+  // RE-SEND the original message through the new transport. Claude
+  // Code's MCP client doesn't implement its own request retry, so a
+  // dropped JSON-RPC request would leave the agent waiting forever for
+  // a response that never comes — which is the exact "tool call hangs
+  // after make build" symptom Bucket J was supposed to fix.
+  //
+  // If re-send still fails after REQUEST_RESEND_MAX_ATTEMPTS, and the
+  // message was a request (has an `id`), we synthesize a JSON-RPC error
+  // response so the agent gets closure instead of a silent hang.
   downstream.onmessage = (msg) => {
     // Wait for any in-flight reconnect to settle before forwarding, so a
     // burst of messages during a daemon restart doesn't each try to
     // independently rebuild upstream.
-    const send = async (): Promise<void> => {
+    const send = async (attempt = 0): Promise<void> => {
       if (reconnectInFlight) await reconnectInFlight;
       try {
         await withTimeout(upstream.send(msg), UPSTREAM_SEND_TIMEOUT_MS, 'upstream.send');
       } catch (err) {
-        logErr(`upstream send failed: ${(err as Error).message} — entering self-heal`);
+        const errMsg = (err as Error).message;
+        logErr(`upstream send failed: ${errMsg} — entering self-heal (attempt ${attempt + 1})`);
         const recovered = await reconnectUpstream();
         if (!recovered) {
+          respondWithError(msg, 'daemon unreachable; bridge exiting so agent respawns');
           exitWithReason('self-heal exhausted probe budget — agent will respawn bridge');
         }
-        // Recovered; the in-flight message is gone. Agent's tool-call
-        // timeout / retry will resend it through the rebuilt upstream.
+        if (attempt < REQUEST_RESEND_MAX_ATTEMPTS) {
+          logErr(`self-heal succeeded; re-sending message through rebuilt upstream`);
+          return send(attempt + 1);
+        }
+        // Out of retries. Don't leave a JSON-RPC request unanswered.
+        logErr(`upstream send still failing after ${attempt + 1} attempts; surfacing error to agent`);
+        respondWithError(msg, `bridge could not deliver request after ${attempt + 1} attempts: ${errMsg}`);
       }
     };
     send().catch((err: Error) => logErr(`downstream pump error: ${err.message}`));
   };
+
+  /**
+   * Synthesize a JSON-RPC error response for a dropped request so the
+   * agent gets closure. Notifications (no `id`) are dropped silently —
+   * that's the JSON-RPC contract: no response is expected, no response
+   * is owed. Best-effort: if downstream.send rejects, just log it; we
+   * tried.
+   */
+  function respondWithError(originalMsg: unknown, reason: string): void {
+    if (!isJsonRpcRequest(originalMsg)) return; // notifications get no response
+    const errorResponse = {
+      jsonrpc: '2.0' as const,
+      id: originalMsg.id,
+      error: {
+        code: -32000,
+        message: `[myco stdio-bridge] ${reason}`,
+      },
+    };
+    void downstream.send(errorResponse).catch((err: Error) =>
+      logErr(`failed to deliver synthetic error response (id=${originalMsg.id}): ${err.message}`),
+    );
+  }
 
   // When downstream closes, tear down upstream and exit.
   downstream.onclose = () => {

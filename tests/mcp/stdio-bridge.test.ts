@@ -7,6 +7,7 @@ import {
   UPSTREAM_SEND_TIMEOUT_MS,
   SELF_HEAL_PROBE_ATTEMPTS,
   SELF_HEAL_PROBE_BACKOFFS_MS,
+  REQUEST_RESEND_MAX_ATTEMPTS,
 } from '@myco/mcp/stdio-bridge.js';
 
 /**
@@ -94,12 +95,23 @@ describe('mcp stdio-bridge lifecycle gates', () => {
 
   describe('active-send self-heal constants (Bucket J)', () => {
     it('caps a single forwarded JSON-RPC message at UPSTREAM_SEND_TIMEOUT_MS', () => {
-      // Long enough that legitimate slow tool calls (skill-generate,
-      // skill-evolve, long agent runs that stream progress) don't false-
-      // trip the self-heal path; short enough that a hung half-open
-      // socket from a dead daemon doesn't sit waiting for OS TCP
-      // keepalive (often minutes by default).
-      expect(UPSTREAM_SEND_TIMEOUT_MS).toBe(120_000);
+      // StreamableHTTPClientTransport.send() returns when the POST is
+      // accepted — long tool calls stream back via SSE, not via the
+      // send() return value — so 30 s is generous for a loopback POST
+      // and short enough that a hung half-open socket on a dead daemon
+      // doesn't sit waiting for OS TCP keepalive (often minutes).
+      // Bucket J's original 120 s was too loose; user-visible hang on a
+      // `make build` rebuild needs to be sub-10 s.
+      expect(UPSTREAM_SEND_TIMEOUT_MS).toBe(30_000);
+    });
+
+    it('caps the per-message re-send loop at REQUEST_RESEND_MAX_ATTEMPTS', () => {
+      // After self-heal succeeds, the bridge re-sends the dropped
+      // message so the agent sees a real response instead of a hang.
+      // 2 retries (3 total attempts incl. original) covers the realistic
+      // restart-mid-call window without becoming a DoS amplifier when
+      // the daemon is genuinely down.
+      expect(REQUEST_RESEND_MAX_ATTEMPTS).toBe(2);
     });
 
     it('probes the daemon up to SELF_HEAL_PROBE_ATTEMPTS times before giving up', () => {
