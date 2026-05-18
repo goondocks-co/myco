@@ -3,10 +3,7 @@ import { useTeamStatus } from '../../hooks/use-team';
 import { Surface } from '../../components/ui/surface';
 import { SectionHeader } from '../../components/ui/section-header';
 import { Badge } from '../../components/ui/badge';
-
-function initials(name: string): string {
-  return name.split(/\s+/).slice(0, 2).map((p) => p[0] ?? '').join('').toUpperCase() || '?';
-}
+import { MemberAvatar } from '../../components/ui/member-avatar';
 
 function timeAgo(at: number | null): string {
   if (!at) return 'never';
@@ -21,10 +18,8 @@ function timeAgo(at: number | null): string {
 
 function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
   return (
-    <li className="flex items-center gap-3 py-3 border-b border-outline-variant/10 last:border-b-0">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
-        {initials(m.user)}
-      </div>
+    <li className="flex items-center gap-3 py-3 border-b border-[var(--ghost-border)] last:border-b-0">
+      <MemberAvatar name={m.user} size={36} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm text-on-surface">{m.user}</span>

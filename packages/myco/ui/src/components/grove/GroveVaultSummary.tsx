@@ -1,8 +1,8 @@
 import { Cpu } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Surface } from '../ui/surface';
-import { SectionHeader } from '../ui/section-header';
-import { StatCard } from '../ui/stat-card';
+import { Eyebrow } from '../ui/eyebrow';
+import { MetricCard } from '../ui/metric-card';
 import { useEmbeddingDetails } from '../../hooks/use-embedding-details';
 import { useDatabaseDetails } from '../../hooks/use-database-details';
 import { formatBytes } from '../../lib/format';
@@ -18,35 +18,41 @@ export function GroveVaultSummary({ groveSlug }: Props) {
   const totalPending = emb ? Object.values(emb.pending).reduce((a, b) => a + b, 0) : 0;
 
   return (
-    <Surface level="low" className="rounded-lg p-5 space-y-3">
+    <Surface level="low" accent="sage" className="rounded-lg p-5 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Cpu className="h-4 w-4 text-primary" />
-          <SectionHeader>Vault</SectionHeader>
+          <Cpu className="h-4 w-4 text-sage" />
+          <div className="space-y-0.5">
+            <Eyebrow tone="sage">Grove</Eyebrow>
+            <h3 className="myco-display-sm text-on-surface m-0">Vault</h3>
+          </div>
         </div>
         <Link
           to={`/g/${groveSlug}/operations`}
-          className="text-xs text-primary hover:text-primary/80"
+          className="text-xs text-sage hover:text-sage/80"
         >
           Manage in Operations →
         </Link>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Vectors" value={emb ? String(emb.total) : '—'} accent="sage" />
-        <StatCard
+        <MetricCard label="Vectors" value={emb ? String(emb.total) : '—'} tone="sage" mono />
+        <MetricCard
           label="Pending"
           value={String(totalPending)}
-          accent={totalPending > 0 ? 'ochre' : 'outline'}
+          tone={totalPending > 0 ? 'ochre' : 'default'}
+          mono
         />
-        <StatCard
+        <MetricCard
           label="DB size"
           value={db ? formatBytes(db.file.size_bytes) : '—'}
-          accent="sage"
+          tone="sage"
+          mono
         />
-        <StatCard
+        <MetricCard
           label="Fragmentation"
           value={db ? `${db.file.fragmentation_pct.toFixed(1)}%` : '—'}
-          accent={db && db.file.fragmentation_pct > 25 ? 'ochre' : 'outline'}
+          tone={db && db.file.fragmentation_pct > 25 ? 'ochre' : 'default'}
+          mono
         />
       </div>
     </Surface>
