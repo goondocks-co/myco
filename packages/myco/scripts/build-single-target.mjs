@@ -37,7 +37,12 @@ if (!fs.existsSync(entry)) {
 const pkgJson = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
 const mycoVersion = pkgJson.version;
 
-const outputDir = path.join(pkgRoot, 'vendor', target);
+// Compile the binary directly into its per-platform npm package
+// (`packages/myco-<target>/bin/`). The core package's postinstall then uses
+// `require.resolve('@goondocks/myco-<target>/bin/<bin>')` to locate it at
+// runtime. Workspace symlinks make this work in monorepo dev too.
+const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
+const outputDir = path.join(platformPkgDir, 'bin');
 fs.mkdirSync(outputDir, { recursive: true });
 const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
 const outfile = path.join(outputDir, binaryName);

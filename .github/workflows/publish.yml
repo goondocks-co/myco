@@ -221,7 +221,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: myco-binary-${{ matrix.target }}
-          path: packages/myco/vendor/${{ matrix.target }}/
+          # build-single-target.mjs writes the binary into the per-platform
+          # npm package's bin/ directory. Upload just that — the build job
+          # downloads back into the same path so the per-platform npm pack
+          # picks it up.
+          path: packages/myco-${{ matrix.target }}/bin/
           if-no-files-found: error
 
   build:
@@ -295,52 +299,60 @@ jobs:
           PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
         run: npm run build -w "$PACKAGE_NAME"
 
-      # Stage the pre-built per-target binaries into vendor/ so the fat
-      # tarball contains all 5. Only runs for myco tags. download-artifact
-      # with a pattern places each artifact in a subdirectory named after
-      # the artifact (e.g. myco-binary-darwin-arm64/myco); we then rename
-      # each to the target-only key the select-binary.mjs postinstall
-      # expects (vendor/<target>/myco).
+      # Stage the pre-built per-target binaries back into their platform
+      # packages. download-artifact with `pattern` places each artifact in a
+      # subdirectory named after the artifact; we move each binary into the
+      # matching `packages/myco-<target>/bin/`. Only runs for myco tags.
       - name: Download cross-compiled myco binaries
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         uses: actions/download-artifact@v8
         with:
           pattern: myco-binary-*
-          path: packages/myco/vendor-staging/
+          path: artifacts-staging/
 
-      - name: Reshape vendor layout
+      - name: Stage platform binaries
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
           set -euo pipefail
-          STAGING="packages/myco/vendor-staging"
-          VENDOR="packages/myco/vendor"
-          mkdir -p "$VENDOR"
+          STAGING="artifacts-staging"
           for dir in "$STAGING"/myco-binary-*; do
             [ -d "$dir" ] || continue
             target="${dir##*/myco-binary-}"
-            mkdir -p "$VENDOR/$target"
-            cp -R "$dir"/. "$VENDOR/$target/"
+            destdir="packages/myco-${target}/bin"
+            mkdir -p "$destdir"
+            cp -R "$dir"/. "$destdir/"
           done
           rm -rf "$STAGING"
-          ls -lR "$VENDOR"
 
       - name: Build myco UI
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: npm run build:ui -w @goondocks/myco
 
-      # Verify that every target has a binary staged in vendor/ before we
-      # pack. Fails loudly if any cross-compile artifact is missing.
-      - name: Verify vendor/ completeness (myco)
+      # Verify every platform binary landed before packing.
+      - name: Verify platform binaries
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
           set -euo pipefail
           for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
             ext=""
             [ "$target" = "windows-x64" ] && ext=".exe"
-            if [ ! -f "packages/myco/vendor/${target}/myco${ext}" ]; then
-              echo "missing binary: packages/myco/vendor/${target}/myco${ext}" >&2
+            binary="packages/myco-${target}/bin/myco${ext}"
+            if [ ! -f "$binary" ]; then
+              echo "missing binary: $binary" >&2
               exit 1
             fi
+          done
+
+      # For myco tags, pack the 5 platform packages first (each injects
+      # os/cpu metadata just before pack so the published tarball carries
+      # the constraint while source-tree workspaces stay platform-neutral).
+      - name: Pack platform packages (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: |
+          set -euo pipefail
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
+            node scripts/inject-platform-metadata.mjs "$target"
+            (cd "packages/myco-${target}" && npm pack --json > npm-pack.json)
           done
 
       - name: Pack npm tarball
@@ -382,15 +394,18 @@ jobs:
 
       - name: Verify packed package size
         working-directory: ${{ needs.validate-tag.outputs.package_dir }}
+        env:
+          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
 
-          // 210 MB: 5 cross-compiled bun binaries (~77 MB each unpacked)
-          // dominate the tarball; a single Bun runtime bump can tip past
-          // 200 MB. Structural fix: per-platform npm packages (tracked
-          // separately) so users download only their platform.
-          const maxBytes = 210_000_000;
+          // Core @goondocks/myco no longer bundles platform binaries — each
+          // ships in its own @goondocks/myco-<arch> package. Core should
+          // stay well under the old 210 MB ceiling. Per-platform packages
+          // are verified separately below.
+          const tagPrefix = process.env.TAG_PREFIX;
+          const maxBytes = tagPrefix === 'myco' ? 50_000_000 : 210_000_000;
           const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
 
           if (pack.size > maxBytes) {
@@ -400,11 +415,51 @@ jobs:
           }
           NODE
 
+      - name: Verify packed platform-package sizes (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+
+          // Each per-platform package ships one Bun-compiled binary,
+          // typically ~30 MB packed. Guard the upper end to catch a
+          // regression that re-bundles unintended payloads.
+          const maxBytes = 60_000_000;
+          const targets = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64'];
+          for (const target of targets) {
+            const pack = JSON.parse(fs.readFileSync(`packages/myco-${target}/npm-pack.json`, 'utf-8'))[0];
+            if (pack.size > maxBytes) {
+              const sizeMb = (pack.size / 1_000_000).toFixed(1);
+              const maxMb = (maxBytes / 1_000_000).toFixed(1);
+              throw new Error(`@goondocks/myco-${target}: packed tarball is ${sizeMb} MB, above guardrail ${maxMb} MB`);
+            }
+          }
+          NODE
+
       - name: Upload build artifact
+        if: needs.validate-tag.outputs.tag_prefix != 'myco'
         uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: ${{ needs.validate-tag.outputs.package_dir }}/${{ needs.validate-tag.outputs.tarball_prefix }}-*.tgz
+
+      # For myco tags we upload core + 5 per-platform tarballs as one artifact
+      # bundle. download-artifact preserves the directory layout, so the
+      # publish step recovers `packages/myco/*.tgz` and
+      # `packages/myco-<target>/*.tgz`.
+      - name: Upload build artifact (myco)
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: |
+            packages/myco/goondocks-myco-*.tgz
+            packages/myco-darwin-arm64/goondocks-myco-darwin-arm64-*.tgz
+            packages/myco-darwin-x64/goondocks-myco-darwin-x64-*.tgz
+            packages/myco-linux-x64/goondocks-myco-linux-x64-*.tgz
+            packages/myco-linux-arm64/goondocks-myco-linux-arm64-*.tgz
+            packages/myco-windows-x64/goondocks-myco-windows-x64-*.tgz
+          if-no-files-found: error
 
   create-release:
     name: Create GitHub Release
@@ -534,6 +589,21 @@ jobs:
           # Export the title for the next step.
           echo "title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
 
+      # Collect every .tgz under release-files/ (multi-directory for myco
+      # tags, single file for team/collective) into a flat list. Using
+      # `find` keeps the gh-release invocation directory-structure-agnostic.
+      - name: Collect release assets
+        id: assets
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-files -type f -name '*.tgz' | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "no .tgz files found in release-files/" >&2
+            exit 1
+          fi
+          printf '%s\n' "${assets[@]}" > release-assets.txt
+          cat release-assets.txt
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -542,6 +612,8 @@ jobs:
           RELEASE_TITLE: ${{ steps.notes.outputs.title }}
         run: |
           set -euo pipefail
+
+          mapfile -t assets < release-assets.txt
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             edit_args=(
@@ -554,11 +626,11 @@ jobs:
               edit_args+=(--prerelease)
             fi
             gh release edit "${edit_args[@]}"
-            gh release upload "$TAG_NAME" release-files/* --clobber
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
             create_args=(
               "$TAG_NAME"
-              release-files/*
+              "${assets[@]}"
               --verify-tag
               --title "$RELEASE_TITLE"
               --notes-file release-notes.md
@@ -597,14 +669,41 @@ jobs:
       - name: Publish package
         env:
           NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
+          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
         run: |
           set -euo pipefail
-          TARBALL="$(find publish-files -maxdepth 1 -name '*.tgz' -print -quit)"
-          if [ -z "$TARBALL" ]; then
-            echo "no tarball found in publish-files/" >&2
-            exit 1
+
+          if [ "$TAG_PREFIX" = "myco" ]; then
+            # Publish each platform package first so core's
+            # optionalDependencies pin resolves on the registry by the time
+            # users install core. Then publish core last.
+            for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
+              # download-artifact preserves directory structure relative to
+              # the upload root, so platform tarballs land at
+              # publish-files/packages/myco-<target>/*.tgz.
+              tgz="$(find publish-files -type f -name "goondocks-myco-${target}-*.tgz" -print -quit)"
+              if [ -z "$tgz" ]; then
+                echo "missing platform tarball: ${target}" >&2
+                exit 1
+              fi
+              echo "Publishing @goondocks/myco-${target} from ${tgz}"
+              npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+            done
+            tgz="$(find publish-files -type f -regex '.*/goondocks-myco-[0-9].*\.tgz$' -print -quit)"
+            if [ -z "$tgz" ]; then
+              echo "missing core tarball" >&2
+              exit 1
+            fi
+            echo "Publishing @goondocks/myco from ${tgz}"
+            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
+          else
+            tgz="$(find publish-files -maxdepth 2 -type f -name '*.tgz' -print -quit)"
+            if [ -z "$tgz" ]; then
+              echo "no tarball found in publish-files/" >&2
+              exit 1
+            fi
+            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
           fi
-          npx npm@latest publish "./$TARBALL" --tag "$NPM_TAG" --provenance --access public
 
       - name: Publish summary
         env:

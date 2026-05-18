@@ -126,13 +126,19 @@ dev-build:
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	cd packages/myco && { test -d ui/node_modules || (cd ui && npm ci); } && cd ui && npx vite build
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
+	@# After the binary lands in packages/myco-$(HOST_TARGET)/bin/, re-run
+	@# select-binary.mjs so vendor/resolved.json is populated for callers
+	@# that go through bin/myco.cjs directly (postinstall already ran during
+	@# `npm ci` but found no binary then; the source-checkout escape exited
+	@# 0 without writing the resolution).
+	cd packages/myco && node scripts/select-binary.mjs
 
 dev-link: dev-build
 	@mkdir -p $(HOME)/.local/bin
 	@mkdir -p $(HOME)/.myco
 	@# Symlink the host-target Bun binary as myco-dev. The binary bundles
 	@# the Bun runtime, so the caller's Node version is irrelevant.
-	@ln -sf $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco $(HOME)/.local/bin/myco-dev
+	@ln -sf $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.local/bin/myco-dev
 	@chmod +x $(HOME)/.local/bin/myco-dev
 	@ln -sf $(PWD)/packages/myco-team/dist/main.js $(HOME)/.local/bin/myco-team-dev
 	@chmod +x $(HOME)/.local/bin/myco-team-dev
@@ -158,7 +164,7 @@ dev-link: dev-build
 		rm -f $(HOME)/.myco/runtime.command; \
 		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
 	fi
-	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco/vendor/$(HOST_TARGET)/myco"
+	@echo "✓ myco-dev symlinked to $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
 	@echo "✓ myco-team-dev symlinked to $(PWD)/packages/myco-team/dist/main.js"
 	@echo "✓ myco-collective-dev symlinked to $(PWD)/packages/myco-collective/dist/main.js"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
