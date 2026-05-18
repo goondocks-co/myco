@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Platform-binary dispatcher for @goondocks/myco.
 //
-// The npm package ships pre-compiled Bun binaries under `vendor/<target>/myco`
-// for each supported platform. At postinstall, `scripts/select-binary.mjs`
-// writes `vendor/resolved.json` with the host target. This shim reads that
-// file and execFileSyncs the correct binary with forwarded argv.
+// The host-specific binary lives in a separate npm package
+// (`@goondocks/myco-<target>`) installed automatically as an
+// `optionalDependency`. At postinstall, `scripts/select-binary.mjs` uses
+// `require.resolve` to locate it and writes `vendor/resolved.json` with the
+// absolute `binaryPath`. This shim reads that file and `execFileSync`s the
+// binary with forwarded argv.
 //
 // Before dispatching, the shim consults a layered `runtime.command` pin
 // via runtime-redirect.cjs:
@@ -45,14 +47,16 @@ try {
   die(`could not read ${resolvedPath} — did postinstall run? (${err.message})`);
 }
 
-const { target } = resolved;
+const { target, binaryPath } = resolved;
 if (!target) die(`invalid ${resolvedPath} — missing "target" field`);
-
-const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
-const binaryPath = path.join(pkgRoot, 'vendor', target, binaryName);
+if (!binaryPath) die(`invalid ${resolvedPath} — missing "binaryPath" field`);
 
 if (!fs.existsSync(binaryPath)) {
-  die(`platform binary missing at ${binaryPath} for target "${target}"`);
+  die(
+    `platform binary missing at ${binaryPath} for target "${target}" — ` +
+    `the @goondocks/myco-${target} package may have been removed; reinstall with: ` +
+    `npm install --include=optional -g @goondocks/myco`,
+  );
 }
 
 try {

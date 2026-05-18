@@ -10,7 +10,6 @@
   "files": [
     "bin/",
     "dist/",
-    "vendor/",
     "scripts/",
     "commands/",
     "skills/",
@@ -71,6 +70,13 @@
     "smol-toml": "^1.6.1",
     "yaml": "^2.8.4",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@goondocks/myco-darwin-arm64": "0.25.0",
+    "@goondocks/myco-darwin-x64": "0.25.0",
+    "@goondocks/myco-linux-x64": "0.25.0",
+    "@goondocks/myco-linux-arm64": "0.25.0",
+    "@goondocks/myco-windows-x64": "0.25.0"
   },
   "devDependencies": {
     "@goondocks/myco-shared": "*",
