@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, GitBranch, MessageSquare, Trash2 } from 'lucide-react';
 import { Surface } from '../ui/surface';
+import { Row } from '../ui/row';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Pagination } from '../ui/pagination';
 import { StatusDot, type StatusTone } from '../ui/status-dot';
@@ -48,33 +49,18 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
   const sessionLabel = session.title || shortSession(session.id);
 
   return (
-    <div
+    <Row
       ref={ref}
+      isActive={isSelected}
+      accent="sage"
+      onClick={onClick}
+      aria-label={`Session: ${sessionLabel}`}
       data-selected={isSelected || undefined}
       data-cursor={isCursor || undefined}
       className={cn(
-        // v7 myco-grove-active-row treatment: ghost-border separators, soft
-        // surface-container hover, sage left-stripe + tinted background on
-        // active. Cursor (keyboard-focused but not selected) gets a softer
-        // ring so j/k feedback stays visible without competing with the
-        // selected row's accent.
-        'group relative border-b border-[var(--ghost-border)] last:border-b-0 px-4 py-3 cursor-pointer transition-colors duration-100',
-        'hover:bg-surface-container',
-        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage/40',
-        isSelected && 'bg-sage/[0.08] shadow-[inset_2px_0_0_var(--sage)]',
+        'group',
         isCursor && !isSelected && 'bg-surface-container/60 ring-1 ring-inset ring-sage/30',
       )}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick();
-        }
-      }}
-      tabIndex={0}
-      role="row"
-      aria-selected={isSelected}
-      aria-label={`Session: ${sessionLabel}`}
     >
       {/* Top row: status + title on the left, time + sparkline + actions on the right */}
       <div className="flex items-start justify-between gap-3">
@@ -125,7 +111,7 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
           {session.branch}
         </div>
       )}
-    </div>
+    </Row>
   );
 });
 

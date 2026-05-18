@@ -11,6 +11,7 @@ import {
   type GroveProjectSummary,
 } from '../lib/selection';
 import { PageLoading } from '../components/ui/page-loading';
+import { PageContainer } from '../components/ui/page-container';
 import { Button } from '../components/ui/button';
 import { GroveActionMenu } from '../components/groves/GroveActionMenu';
 import { ProjectActionMenu } from '../components/groves/ProjectActionMenu';
@@ -75,8 +76,8 @@ export default function Groves() {
 
   return (
     <PageLoading isLoading={query.isLoading} error={query.error} loadingText="Loading Groves...">
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <div className="mb-6 flex items-center justify-between gap-3">
+      <PageContainer>
+        <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
               <FolderTree className="h-5 w-5" />
@@ -92,7 +93,7 @@ export default function Groves() {
           </Button>
         </div>
 
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           {groves.map((grove) => (
             <section key={grove.id} className="border-t border-outline-variant/30 py-4">
               <div className="mb-3 flex items-center gap-2">
@@ -151,7 +152,7 @@ export default function Groves() {
             </section>
           ))}
         </div>
-      </div>
+      </PageContainer>
 
       <NewGroveModal open={newOpen} onOpenChange={setNewOpen} />
 

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Layout, Trees, Terminal, ArrowRight, Sparkles, FileCode } from 'lucide-react';
+import { Layout, Trees, ArrowRight, Sparkles, FileCode } from 'lucide-react';
 import { useDaemon, type StatsResponse } from '../hooks/use-daemon';
 import { useSessions, type SessionSummary } from '../hooks/use-sessions';
 import { useAgentRuns, type RunRow } from '../hooks/use-agent';
@@ -7,24 +7,21 @@ import { useSkillRecords, type SkillRecord } from '../hooks/use-skills';
 import { useCanopyEntries, type CanopyEntryRow } from '../hooks/use-canopy';
 import { useProjectPathBuilder } from '../hooks/use-project-selection';
 import { PageLoading } from '../components/ui/page-loading';
+import { PageContainer } from '../components/ui/page-container';
 import { AccentSurface } from '../components/ui/accent-surface';
 import { Panel } from '../components/ui/panel';
 import { MetricCard } from '../components/ui/metric-card';
 import { Eyebrow } from '../components/ui/eyebrow';
 import { StatusDot, type StatusTone } from '../components/ui/status-dot';
 import { Sparkline } from '../components/ui/sparkline';
-import { formatEpochAgo, formatUptime, basename } from '../lib/format';
+import { formatEpochAgo, basename } from '../lib/format';
 import { cn } from '../lib/cn';
 
 /*
- * Dashboard rebuilt for Phase 7 per `dashboard-v3.jsx`: three scope cards
- * (Project / Grove / Machine) → active-sessions hero → two-column row with
- * agent runs on the left and a Skills + Canopy stack on the right.
- *
- * Data sourcing follows the resolved decision (#3): every panel is wired to a
- * real hook. Mock-only fields that we don't capture (e.g. v3's
- * "spend · 24h", per-session sparklines for the runs panel) are dropped
- * rather than stubbed.
+ * Dashboard layout: project + grove header cards → active-sessions hero →
+ * two-column row with agent runs on the left and a Skills + Canopy stack on
+ * the right. Daemon health lives in the topbar pill (DaemonStatusPill), so
+ * the Dashboard no longer carries a machine card.
  */
 
 const ACTIVE_SESSIONS_LIMIT = 6;
@@ -57,7 +54,7 @@ export default function Dashboard() {
       loadingText="Connecting to daemon..."
     >
       {stats && (
-        <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-8">
+        <PageContainer className="gap-8">
           <DashboardHead
             stats={stats}
             activeSessionCount={activeSessionsData?.total ?? 0}
@@ -76,7 +73,7 @@ export default function Dashboard() {
               <CanopyPanel entries={canopyData?.rows ?? []} />
             </div>
           </div>
-        </div>
+        </PageContainer>
       )}
     </PageLoading>
   );
@@ -108,8 +105,8 @@ function DashboardHead({
 
 function describeActivity(activeSessions: number, runs: number, embedQueue: number): string {
   const parts: string[] = [];
-  if (activeSessions > 0) parts.push(`${activeSessions} ${activeSessions === 1 ? 'session' : 'sessions'} weaving`);
-  if (runs > 0) parts.push(`${runs} ${runs === 1 ? 'run' : 'runs'} in flight`);
+  if (activeSessions > 0) parts.push(`${activeSessions} ${activeSessions === 1 ? 'active session' : 'active sessions'}`);
+  if (runs > 0) parts.push(`${runs} ${runs === 1 ? 'run' : 'runs'} running`);
   if (embedQueue > 0) parts.push(`${embedQueue} in the embed queue`);
   if (parts.length === 0) return 'Quiet right now — nothing running.';
   return parts.join(' · ');
@@ -119,25 +116,24 @@ function describeActivity(activeSessions: number, runs: number, embedQueue: numb
 
 function ScopeRow({ stats }: { stats: StatsResponse }) {
   return (
-    <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <ProjectScopeCard stats={stats} />
-      <GroveScopeCard stats={stats} />
-      <MachineScopeCard stats={stats} />
+    <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <ProjectHeaderCard stats={stats} />
+      <GroveHeaderCard stats={stats} />
     </section>
   );
 }
 
-function ScopeCard({
+function HeaderCard({
   accent,
   Icon,
-  scopeLabel,
+  eyebrow,
   name,
   sub,
   children,
 }: {
   accent: 'sage' | 'ochre' | 'terra';
   Icon: typeof Layout;
-  scopeLabel: string;
+  eyebrow: string;
   name: string;
   sub: string;
   children: React.ReactNode;
@@ -150,7 +146,7 @@ function ScopeCard({
       <div className="flex flex-col gap-1 min-w-0">
         <div className="flex items-center gap-2">
           <Icon className={cn('h-3.5 w-3.5', iconTone)} />
-          <Eyebrow tone={eyebrowTone}>{scopeLabel}</Eyebrow>
+          <Eyebrow tone={eyebrowTone}>{eyebrow}</Eyebrow>
         </div>
         <div className="myco-display-md text-on-surface truncate" title={name}>{name}</div>
         <div className="font-mono text-[10px] text-outline truncate" title={sub}>{sub}</div>
@@ -160,13 +156,13 @@ function ScopeCard({
   );
 }
 
-function ProjectScopeCard({ stats }: { stats: StatsResponse }) {
+function ProjectHeaderCard({ stats }: { stats: StatsResponse }) {
   const name = stats.context.project.name || basename(stats.context.project.root);
   return (
-    <ScopeCard
+    <HeaderCard
       accent="sage"
       Icon={Layout}
-      scopeLabel="project scope"
+      eyebrow="Project"
       name={name}
       sub={stats.context.project.root}
     >
@@ -179,11 +175,11 @@ function ProjectScopeCard({ stats }: { stats: StatsResponse }) {
         sub="described"
         mono
       />
-    </ScopeCard>
+    </HeaderCard>
   );
 }
 
-function GroveScopeCard({ stats }: { stats: StatsResponse }) {
+function GroveHeaderCard({ stats }: { stats: StatsResponse }) {
   const grove = stats.context.grove;
   const name = grove.name ?? 'Local only';
   const sub = grove.slug ? `${grove.mode ?? 'local'} · ${grove.connection_state}` : 'no grove bound';
@@ -191,10 +187,10 @@ function GroveScopeCard({ stats }: { stats: StatsResponse }) {
   const embedDone = stats.embedding.embedded_count;
   const queue = stats.embedding.queue_depth;
   return (
-    <ScopeCard
+    <HeaderCard
       accent="ochre"
       Icon={Trees}
-      scopeLabel="grove scope"
+      eyebrow="Grove"
       name={name}
       sub={sub}
     >
@@ -210,26 +206,7 @@ function GroveScopeCard({ stats }: { stats: StatsResponse }) {
         value={queue.toLocaleString()}
         sub={queue > 0 ? 'pending' : 'idle'}
       />
-    </ScopeCard>
-  );
-}
-
-function MachineScopeCard({ stats }: { stats: StatsResponse }) {
-  const daemon = stats.daemon;
-  const name = `port ${daemon.port}`;
-  const runtimeSource = daemon.runtime?.source ?? 'stable';
-  const sub = `${runtimeSource} · pid ${daemon.pid}`;
-  return (
-    <ScopeCard
-      accent="terra"
-      Icon={Terminal}
-      scopeLabel="machine scope"
-      name={name}
-      sub={sub}
-    >
-      <MetricCard label="Daemon up" value={formatUptime(daemon.uptime_seconds)} mono tone="terra" />
-      <MetricCard label="Version" value={daemon.version} mono />
-    </ScopeCard>
+    </HeaderCard>
   );
 }
 
@@ -248,8 +225,8 @@ function ActiveSessionsHero({
   const projectPath = useProjectPathBuilder();
   const headline =
     totalActiveCount === 0
-      ? 'No active threads'
-      : `${totalActiveCount} ${totalActiveCount === 1 ? 'thread' : 'threads'} weaving`;
+      ? 'No active sessions'
+      : `${totalActiveCount} ${totalActiveCount === 1 ? 'active session' : 'active sessions'}`;
 
   return (
     <Panel accent="sage" eyebrow={`Active sessions · ${totalActiveCount}`} title={headline}>
@@ -347,7 +324,7 @@ function AgentRunsPanel({ runs }: { runs: RunRow[] }) {
     <Panel
       accent="terra"
       eyebrow="Agent runs"
-      title="In flight"
+      title="Recent"
       actions={
         <button
           type="button"
@@ -414,16 +391,12 @@ function RunMiniRow({ run, onClick }: { run: RunRow; onClick: () => void }) {
 function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
   const navigate = useNavigate();
   const projectPath = useProjectPathBuilder();
-  const sorted = [...skills].sort((a, b) => {
-    const aTouched = a.last_used_at ?? a.updated_at;
-    const bTouched = b.last_used_at ?? b.updated_at;
-    return bTouched - aTouched;
-  });
+  const sorted = [...skills].sort((a, b) => b.updated_at - a.updated_at);
   return (
     <Panel
       accent="sage"
       eyebrow="Skills"
-      title="Recently touched"
+      title="Recently evolved"
       actions={
         <button
           type="button"
@@ -446,19 +419,16 @@ function SkillsPanel({ skills }: { skills: SkillRecord[] }) {
               className="rounded-md border border-[var(--ghost-border)] bg-surface-container-lowest px-3 py-2"
             >
               <div className="flex items-center gap-1.5">
-                <Sparkles className="h-3 w-3 text-sage" />
+                <Sparkles className="h-3 w-3 text-sage shrink-0" />
                 <span className="font-sans text-xs font-medium text-on-surface truncate" title={skill.display_name}>
                   {skill.display_name || skill.name}
                 </span>
-              </div>
-              <div className="mt-1 font-mono text-[10px] text-outline flex items-center gap-2">
-                <span>{skill.usage_count} uses</span>
-                <span>·</span>
-                <span>
-                  {skill.last_used_at
-                    ? formatEpochAgo(skill.last_used_at)
-                    : formatEpochAgo(skill.updated_at)}
+                <span className="ml-auto font-mono text-[9px] uppercase tracking-wider text-ochre bg-ochre/10 px-1.5 rounded shrink-0">
+                  gen {skill.generation}
                 </span>
+              </div>
+              <div className="mt-1 font-mono text-[10px] text-outline">
+                {formatEpochAgo(skill.updated_at)}
               </div>
             </li>
           ))}

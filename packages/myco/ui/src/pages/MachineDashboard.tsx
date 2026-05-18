@@ -1,6 +1,7 @@
 import { Cpu, Server } from 'lucide-react';
 import { useDaemon } from '../hooks/use-daemon';
 import { PageHeader } from '../components/ui/page-header';
+import { PageContainer } from '../components/ui/page-container';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { GrovesOverviewCard } from '../components/operations/GrovesOverviewCard';
@@ -71,7 +72,7 @@ function Stat({ label, value, mono = false }: { label: string; value: string; mo
 
 export default function MachineDashboard() {
   return (
-    <div className="p-6 space-y-6">
+    <PageContainer>
       <div className="flex items-center gap-3">
         <Cpu className="h-5 w-5 text-primary" />
         <PageHeader
@@ -84,6 +85,6 @@ export default function MachineDashboard() {
       <DaemonStatsCard />
       <GrovesOverviewCard />
       <ProjectsActivityCard />
-    </div>
+    </PageContainer>
   );
 }

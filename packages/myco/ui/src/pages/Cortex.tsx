@@ -8,6 +8,7 @@ import { useAgentRuns, useAgentTasks } from '../hooks/use-agent';
 import { useScopedConfig } from '../hooks/use-scoped-config';
 import { useSymbionts, type SymbiontInfo } from '../hooks/use-symbionts';
 import { PageHeader } from '../components/ui/page-header';
+import { PageContainer } from '../components/ui/page-container';
 import { Surface } from '../components/ui/surface';
 import { SectionHeader } from '../components/ui/section-header';
 import { Badge } from '../components/ui/badge';
@@ -261,7 +262,7 @@ export default function Cortex() {
   }, [location.pathname, location.search, navigate]);
 
   return (
-    <div className="p-6 space-y-6">
+    <PageContainer>
       <PageHeader
         title="Cortex"
         subtitle="Manage session-start context, prompt building, and digest access for connected symbionts."
@@ -287,7 +288,7 @@ export default function Cortex() {
       ) : (
         <InstructionsTab />
       )}
-    </div>
+    </PageContainer>
   );
 }
 
