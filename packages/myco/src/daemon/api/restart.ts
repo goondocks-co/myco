@@ -93,6 +93,26 @@ export async function detectServiceManagedLabel(
   return null;
 }
 
+/**
+ * Resolve the literal supervisor restart command to bake into a detached
+ * update/restart script. Returns the platform-specific kickstart/systemctl
+ * string when this process is the service-managed daemon, otherwise
+ * undefined — meaning the detached script should respawn a daemon child
+ * directly. Single source of truth for the /api/update/* and SELF_RECONCILE
+ * install paths so they agree on the supervisor.
+ */
+export async function resolveServiceRestartCommand(
+  mgr: ServiceManager,
+): Promise<string | undefined> {
+  const label = await detectServiceManagedLabel(mgr);
+  if (!label) return undefined;
+  try {
+    return mgr.restartShellCommand(label);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function handleRestart(
   deps: RestartHandlerDeps,
   body: unknown,

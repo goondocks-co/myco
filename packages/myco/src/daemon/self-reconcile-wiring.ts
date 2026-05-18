@@ -10,7 +10,7 @@ import {
   readUpdateError,
   consumeUpdateError,
 } from './update-checker.js';
-import { detectServiceManagedLabel } from './api/restart.js';
+import { resolveServiceRestartCommand } from './api/restart.js';
 import { getServiceManager } from '../service/manager.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import { errorMessage } from '@myco/utils/error-message.js';
@@ -58,7 +58,7 @@ export function registerSelfReconcileJob(
           currentState: () => deps.server.currentDaemonState(),
           logger,
           requestSupervisorRestart: () => requestSupervisorRestart(logger, deps.daemonService),
-          installUpdate: (target: string) => installUpdateToVersion(deps, target),
+          installUpdate: (target: string) => runUpdateInstall(deps, target),
           readUpdateError,
           consumeUpdateError,
         });
@@ -90,22 +90,18 @@ function requestSupervisorRestart(logger: DaemonLogger, daemonService: DaemonSer
   });
 }
 
-// Restart shell command the post-install script invokes after npm install.
-// Mirrors createUpdateHandlers — both flows must agree on the supervisor
-// so the post-install respawn lands on the same path.
-async function resolveServiceRestartCommandForInstall(): Promise<string | undefined> {
-  const serviceManager = getServiceManager();
-  const label = await detectServiceManagedLabel(serviceManager);
-  if (!label) return undefined;
-  try { return serviceManager.restartShellCommand(label); } catch { return undefined; }
-}
-
-async function installUpdateToVersion(
+/**
+ * Spawn the detached update installer for `targetVersion` and schedule
+ * daemon shutdown so the install lands while the daemon is gone. Shares
+ * the supervisor-detection path with createUpdateHandlers so both flows
+ * resolve the same restart-shell-command for the post-install respawn.
+ */
+async function runUpdateInstall(
   deps: SelfReconcileWiringDeps,
   targetVersion: string,
 ): Promise<void> {
   const mycoBinary = resolveMycoBinary();
-  const serviceRestartCommand = await resolveServiceRestartCommandForInstall();
+  const serviceRestartCommand = await resolveServiceRestartCommand(getServiceManager());
   spawnUpdateScript({
     packageSpecs: [`${NPM_PACKAGE_NAME}@${targetVersion}`],
     projectRoot: deps.projectRoot,

@@ -2,7 +2,7 @@ import type { DaemonLogger } from './logger.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import {
   readDaemonState,
-  writeDaemonState,
+  writeOrTouchDaemonState,
   type DaemonServiceState,
   type DaemonState,
 } from './service-state.js';
@@ -60,7 +60,7 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
       observed_port: observed?.port ?? null,
     });
   }
-  writeDaemonState(deps.daemonService.statePath, expected);
+  writeOrTouchDaemonState(deps.daemonService.statePath, expected);
 
   const intent = readIntent(deps.daemonService);
   if (intent.restart) {
