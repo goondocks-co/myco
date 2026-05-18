@@ -80,7 +80,7 @@
     "@types/shell-quote": "^1.7.5",
     "@vscode/ripgrep": "^1.15.14",
     "sqlite-vec": "^0.1.8",
-    "tsx": "^4.0.0",
+    "tsx": "^4.22.2",
     "typescript": "^6.0.3"
   }
 }
