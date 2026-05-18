@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { HardDrive, Clock, File as FileIcon } from 'lucide-react';
+import { Clock, File as FileIcon, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Surface } from '../ui/surface';
-import { SectionHeader } from '../ui/section-header';
+import { Panel } from '../ui/panel';
 import { fetchJson } from '../../lib/api';
 import { formatBytes } from '../../lib/format';
 
@@ -35,25 +34,38 @@ export function GroveBackupSnapshot() {
   const last = backups && backups.length > 0 ? backups[0] : null;
   const recent = backups ? backups.slice(1, 5) : [];
 
+  const title = error
+    ? 'Snapshot unavailable'
+    : isLoading || !backups
+      ? '—'
+      : last
+        ? formatRelative(last.modified_at)
+        : 'No backups yet';
+
   return (
-    <Surface level="low" className="rounded-lg p-5 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <HardDrive className="h-4 w-4 text-primary" />
-          <SectionHeader>Backup</SectionHeader>
-        </div>
-        <Link to="/settings#backup" className="text-xs text-primary hover:text-primary/80">
-          Backup settings →
+    <Panel
+      tone="sage"
+      eyebrow="Backup"
+      title={title}
+      actions={
+        <Link
+          to="/settings#backup"
+          className="inline-flex items-center gap-1 text-xs font-sans text-on-surface-variant hover:text-on-surface"
+        >
+          Settings <ArrowRight className="h-3 w-3" />
         </Link>
-      </div>
+      }
+    >
       {error ? (
-        <p className="text-sm text-tertiary">{error.message}</p>
+        <p className="text-sm text-terracotta m-0">{error.message}</p>
       ) : isLoading || !backups ? (
-        <p className="text-sm text-on-surface-variant">Loading…</p>
+        <p className="text-sm text-on-surface-variant m-0">Loading…</p>
       ) : last === null ? (
-        <p className="text-sm text-on-surface-variant">No backups yet.</p>
+        <p className="text-sm text-on-surface-variant m-0">
+          Run <code className="font-mono">myco backup</code> to create the first snapshot.
+        </p>
       ) : (
-        <div className="space-y-3">
+        <div className="flex flex-col gap-3">
           <div>
             <div className="flex items-center gap-2 text-sm text-on-surface">
               <FileIcon className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
@@ -69,8 +81,8 @@ export function GroveBackupSnapshot() {
           </div>
           {recent.length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-on-surface-variant">Recent</div>
-              <ul className="mt-1 space-y-0.5">
+              <div className="myco-eyebrow-sm text-outline">Recent</div>
+              <ul className="mt-1 m-0 p-0 list-none flex flex-col gap-0.5">
                 {recent.map((b) => (
                   <li key={b.file_name} className="flex justify-between text-xs text-on-surface-variant">
                     <span>{formatRelative(b.modified_at)}</span>
@@ -82,6 +94,6 @@ export function GroveBackupSnapshot() {
           )}
         </div>
       )}
-    </Surface>
+    </Panel>
   );
 }

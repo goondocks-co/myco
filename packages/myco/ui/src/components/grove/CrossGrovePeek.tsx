@@ -1,7 +1,6 @@
 import { Trees } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Surface } from '../ui/surface';
-import { SectionHeader } from '../ui/section-header';
+import { Panel } from '../ui/panel';
 import { Badge } from '../ui/badge';
 import { useGroves } from '../../hooks/use-groves';
 
@@ -16,36 +15,37 @@ export function CrossGrovePeek({ currentGroveSlug }: Props) {
 
   if (isLoading && others.length === 0) {
     return (
-      <Surface level="low" className="rounded-lg p-5">
-        <SectionHeader>Other Groves</SectionHeader>
-        <p className="mt-2 text-sm text-on-surface-variant">Loading…</p>
-      </Surface>
+      <Panel tone="ochre" eyebrow="Other Groves" title="Loading…">
+        <span />
+      </Panel>
     );
   }
 
   if (others.length === 0) {
     return (
-      <Surface level="low" className="rounded-lg p-5">
-        <SectionHeader>Other Groves</SectionHeader>
-        <p className="mt-2 text-sm text-on-surface-variant">
-          You only have one Grove. Create another with <code className="font-mono">myco grove create</code>.
+      <Panel tone="ochre" eyebrow="Other Groves" title="Just this one">
+        <p className="text-sm text-on-surface-variant m-0">
+          Create another with <code className="font-mono">myco grove create</code>.
         </p>
-      </Surface>
+      </Panel>
     );
   }
 
   return (
-    <Surface level="low" className="space-y-3 rounded-lg p-5">
-      <SectionHeader>Other Groves</SectionHeader>
+    <Panel
+      tone="ochre"
+      eyebrow="Other Groves"
+      title={`${others.length} ${others.length === 1 ? 'sibling Grove' : 'sibling Groves'}`}
+    >
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {others.map((g) => (
           <Link
             key={g.slug}
             to={`/g/${g.slug}`}
-            className="block rounded-md border border-outline-variant/10 p-3 transition-colors hover:bg-surface-container"
+            className="block rounded-md border border-[var(--ghost-border)] p-3 transition-colors hover:bg-surface-container"
           >
             <div className="flex items-center gap-2">
-              <Trees className="h-3.5 w-3.5 text-on-surface-variant" />
+              <Trees className="h-3.5 w-3.5 text-ochre" />
               <span className="truncate text-sm font-medium text-on-surface">{g.name}</span>
               {g.is_default && <Badge variant="outline">default</Badge>}
             </div>
@@ -57,6 +57,6 @@ export function CrossGrovePeek({ currentGroveSlug }: Props) {
           </Link>
         ))}
       </div>
-    </Surface>
+    </Panel>
   );
 }
