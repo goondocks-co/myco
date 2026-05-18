@@ -10,7 +10,7 @@ import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
 import { readDaemonPort, readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
 import { listGroves, listRegisteredProjects } from '../grove/registry.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
-import { mergeIntent, clearIntentSection, readIntent } from '../daemon/intent.js';
+import { writeUpdateIntent, clearIntentSection, readUpdateIntent } from '../daemon/intent.js';
 import { DaemonClient } from '../hooks/client.js';
 import {
   activateProjectMigration,
@@ -360,6 +360,22 @@ async function runAllProjects(): Promise<void> {
  * the daemon is already at the requested version, no intent is written.
  */
 async function runUpdateIntent(targetVersion: string): Promise<void> {
+  // Strict semver gate at the CLI write boundary. The HTTP intent API
+  // (Bucket F) applies the same regex, but the CLI writes intent.toml
+  // directly via `writeUpdateIntent` without going through the HTTP
+  // surface — an attacker who controls argv could otherwise bypass the
+  // daemon-side validation and land an npm-spec like `file:/tmp/evil` or
+  // `git+ssh://...` that the reconciler interpolates into
+  // `npm install -g @goondocks/myco@<value>`. Keep this regex
+  // byte-identical to `SEMVER_RE` in `daemon/api/intent.ts`.
+  const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  if (!SEMVER_RE.test(targetVersion)) {
+    console.error(
+      `--target-version must be a strict semver (e.g. 0.27.11); got '${targetVersion}'`,
+    );
+    process.exit(1);
+  }
+
   const vaultDir = resolveVaultDir();
   const daemonService = resolveDaemonServiceState(vaultDir);
   const client = new DaemonClient(vaultDir);
@@ -380,8 +396,9 @@ async function runUpdateIntent(targetVersion: string): Promise<void> {
     return;
   }
 
-  mergeIntent(daemonService, {
-    update: { target_version: targetVersion, requested_at: new Date().toISOString() },
+  writeUpdateIntent(daemonService, {
+    target_version: targetVersion,
+    requested_at: new Date().toISOString(),
   });
   console.log(
     `Update to ${targetVersion} requested. The daemon will apply it on the next reconcile tick.`,
@@ -397,13 +414,13 @@ async function runUpdateIntent(targetVersion: string): Promise<void> {
 async function runCancelUpdate(): Promise<void> {
   const vaultDir = resolveVaultDir();
   const daemonService = resolveDaemonServiceState(vaultDir);
-  const intent = readIntent(daemonService);
-  if (!intent.update) {
+  const updateIntent = readUpdateIntent(daemonService);
+  if (!updateIntent) {
     console.log('No pending update intent.');
     return;
   }
   clearIntentSection(daemonService, 'update');
-  console.log(`Cleared pending update intent (target was ${intent.update.target_version}).`);
+  console.log(`Cleared pending update intent (target was ${updateIntent.target_version}).`);
 }
 
 async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
@@ -416,8 +433,20 @@ async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
       signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
     });
-    return response.status === 404;
+    if (response.status === 404) return true;
+    if (response.ok) return false;
+    // 5xx/4xx-not-404 — daemon is responding but /mcp is degraded
+    // (router half-registered, auth busted, internal error). Treat as
+    // missing so the caller triggers a restart to re-bind the route
+    // table from a clean boot.
+    return true;
   } catch {
-    return false;
+    // Network failure (ECONNREFUSED / ETIMEDOUT / abort): the caller
+    // already confirmed the daemon is "running" via ensureRunning's
+    // pid check, so an unreachable TCP socket is the wedged-shutdown
+    // shape this whole `myco update` finalizer exists to recover from.
+    // The previous `return false` here silently kept the wedge alive
+    // and the user had to `kill -9` manually. Restart it.
+    return true;
   }
 }

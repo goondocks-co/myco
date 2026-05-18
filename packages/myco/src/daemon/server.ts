@@ -91,9 +91,15 @@ export class DaemonServer {
    * that didn't inherit the env) can recover it.
    */
   private authToken: string;
-  // Captured once at listen() so currentDaemonState() returns a stable
-  // `started` across reconcile re-writes (otherwise uptime jitters).
-  private startedAt: string | null = null;
+  /**
+   * The stable `started` timestamp surfaced via currentDaemonState().
+   * Initialized in the constructor so the value never changes across
+   * calls (the prior `?? new Date().toISOString()` fallback in
+   * currentDaemonState fabricated a fresh timestamp on every call when
+   * the field was still null, defeating the "stable" invariant).
+   * Overwritten once in listen() with the actual listen-time stamp.
+   */
+  private startedAt: string = new Date().toISOString();
   /**
    * Cache of post-injection dashboard HTML, keyed by source file path.
    * The token is fixed for the daemon's lifetime and the built HTML is
@@ -137,7 +143,7 @@ export class DaemonServer {
       pid: process.pid,
       port: this.port,
       command: process.execPath,
-      started: this.startedAt ?? new Date().toISOString(),
+      started: this.startedAt,
       sessions: [],
       version: this.version,
       auth_token: this.authToken,

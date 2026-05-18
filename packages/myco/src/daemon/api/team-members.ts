@@ -35,10 +35,18 @@ function rowToDto(row: TeamMemberRow): TeamMemberDto {
   };
 }
 
+/**
+ * Direct handler. Prefer this in new route registrations so the
+ * reconcileTeamRoute prelude can wrap a single function reference;
+ * `createListTeamMembersHandler()` is kept for tests that already
+ * exercise the factory shape.
+ */
+export const listTeamMembersHandler: RouteHandler = async () => {
+  const rows = listTeamMembers();
+  const body: ListTeamMembersResponse = { members: rows.map(rowToDto) };
+  return { body };
+};
+
 export function createListTeamMembersHandler(): RouteHandler {
-  return async () => {
-    const rows = listTeamMembers();
-    const body: ListTeamMembersResponse = { members: rows.map(rowToDto) };
-    return { body };
-  };
+  return listTeamMembersHandler;
 }

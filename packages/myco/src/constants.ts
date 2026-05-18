@@ -222,7 +222,7 @@ export const MCP_SEARCH_DEFAULT_LIMIT = 10;
 export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
 /** Default result limit for myco_logs. */
 export const MCP_LOGS_DEFAULT_LIMIT = 50;
-/** Default result limit for myco_skills and myco_skill_candidates. */
+/** Default result limit for myco_skills. */
 export const MCP_SKILLS_DEFAULT_LIMIT = 50;
 
 // --- Feed ---

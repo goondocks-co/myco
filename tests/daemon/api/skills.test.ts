@@ -245,15 +245,46 @@ describe('handleListCandidates multi-status filter', () => {
 });
 
 describe('handleUpdateCandidate', () => {
-  it('rejects approval when evidence metadata is incomplete', async () => {
-    insertCandidate(makeCandidate({ id: 'cand-update', status: 'identified' }));
+  it('treats a pre-v42 candidate (no quality metadata at all) as legacy and approves with a warning', async () => {
+    // A pre-v42 candidate is one where none of the v42 evidence columns are
+    // populated AND the patch doesn't supply any. The approval path must
+    // still accept these — refusing them would strand candidates the user
+    // already triaged before v42 shipped — but surfaces a warning so the
+    // UI can flag the bypass.
+    insertCandidate(makeCandidate({ id: 'cand-legacy', status: 'identified' }));
 
     const result = await handleUpdateCandidate(
-      makeReq({ params: { id: 'cand-update' }, body: { status: 'approved' } }),
+      makeReq({ params: { id: 'cand-legacy' }, body: { status: 'approved' } }),
+    );
+
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      candidate: { id: string; status: string };
+      warnings?: string[];
+    };
+    expect(body.candidate.status).toBe('approved');
+    expect(body.warnings).toEqual(['legacy-candidate-approved-without-v42-quality-gate']);
+  });
+
+  it('rejects approval when post-v42 evidence metadata is incomplete', async () => {
+    // Any row the v42 pipeline has TOUCHED — evidence_bundle_id set, or any
+    // other quality column moved off its default — must go through the full
+    // gate. The candidate here has evidence_bundle_id but no resolvable
+    // source refs and no quality score, so validation rejects.
+    insertCandidate(makeCandidate({
+      id: 'cand-partial',
+      status: 'identified',
+      evidence_bundle_id: 'bundle-partial-001',
+    }));
+
+    const result = await handleUpdateCandidate(
+      makeReq({ params: { id: 'cand-partial' }, body: { status: 'approved' } }),
     );
 
     expect(result.status).toBe(400);
     expect((result.body as { error: string }).error).toMatch(/evidence metadata/i);
+    const body = result.body as { details?: { issues?: string[] } };
+    expect(Array.isArray(body.details?.issues), 'details.issues must be present on approval-gate rejection').toBe(true);
   });
 
   it('updates the candidate status and returns updated row', async () => {
@@ -330,7 +361,15 @@ describe('handleUpdateCandidate', () => {
     );
 
     expect(result.status).toBe(400);
-    expect((result.body as { error: string }).error).toMatch('quality_failures');
+    const errorBody = result.body as {
+      error: string;
+      details?: { issues?: Array<{ path?: (string | number)[] }> };
+    };
+    expect(errorBody.error).toBe('Invalid request body');
+    expect(
+      errorBody.details?.issues?.some((issue) => issue.path?.includes('quality_failures')),
+      'details.issues must reference quality_failures',
+    ).toBe(true);
 
     const getResult = await handleGetCandidate(
       makeReq({ params: { id: 'cand-null-quality-failures' } }),
@@ -364,7 +403,15 @@ describe('handleUpdateCandidate', () => {
     );
 
     expect(result.status).toBe(400);
-    expect((result.body as { error: string }).error).toMatch('coverage_matches');
+    const errorBody = result.body as {
+      error: string;
+      details?: { issues?: Array<{ path?: (string | number)[] }> };
+    };
+    expect(errorBody.error).toBe('Invalid request body');
+    expect(
+      errorBody.details?.issues?.some((issue) => issue.path?.includes('coverage_matches')),
+      'details.issues must reference coverage_matches',
+    ).toBe(true);
 
     const getResult = await handleGetCandidate(
       makeReq({ params: { id: 'cand-null-coverage-matches' } }),

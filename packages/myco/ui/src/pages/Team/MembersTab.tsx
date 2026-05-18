@@ -43,9 +43,14 @@ function MemberRow({ m, isSelf }: { m: TeamMember; isSelf: boolean }) {
 }
 
 export function MembersTab() {
-  const { data, isLoading } = useTeamMembers();
-  const { data: status } = useTeamStatus();
+  const { data, isLoading: membersLoading } = useTeamMembers();
+  const { data: status, isLoading: statusLoading } = useTeamStatus();
   const selfMachineId = status?.machine_id ?? null;
+  // Hold rendering until BOTH the members list AND the self machine_id
+  // have resolved. Painting members before status would flicker rows
+  // without the "this machine" badge and — when status arrives null
+  // permanently — flatly mis-label peer rows as not-self.
+  const isHydrating = membersLoading || statusLoading;
 
   return (
     <div className="space-y-4">
@@ -56,7 +61,7 @@ export function MembersTab() {
             {data ? `${data.members.length} member${data.members.length === 1 ? '' : 's'}` : ' '}
           </span>
         </div>
-        {isLoading ? (
+        {isHydrating ? (
           <p className="text-sm text-on-surface-variant">Loading…</p>
         ) : !data || data.members.length === 0 ? (
           <p className="text-sm text-on-surface-variant">

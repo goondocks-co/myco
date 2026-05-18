@@ -10,13 +10,24 @@ interface RecordedBatch {
   sqls: string[];
 }
 
-function createFakeD1(options: { markerPresent?: boolean; projectIdMarkerPresent?: boolean; unsafeNodeCount?: number } = {}) {
+function createFakeD1(options: {
+  markerPresent?: boolean;
+  projectIdMarkerPresent?: boolean;
+  unsafeNodeCount?: number;
+  /**
+   * Make `run()` throw "no such column" when the prepared SQL matches
+   * this substring. Used to simulate a D1 connection where an ALTER
+   * has been issued but the column is not yet addressable.
+   */
+  failColumnVerifyMatching?: string;
+} = {}) {
   const runs: RecordedRun[] = [];
   const batchedSql: string[] = [];
   const batches: RecordedBatch[] = [];
   const markerPresent = options.markerPresent ?? false;
   const projectIdMarkerPresent = options.projectIdMarkerPresent ?? false;
   const unsafeNodeCount = options.unsafeNodeCount ?? 0;
+  const failColumnVerifyMatching = options.failColumnVerifyMatching;
 
   return {
     runs,
@@ -32,6 +43,14 @@ function createFakeD1(options: { markerPresent?: boolean; projectIdMarkerPresent
             return this;
           },
           async run() {
+            if (
+              failColumnVerifyMatching &&
+              sql.startsWith('SELECT') &&
+              sql.includes(failColumnVerifyMatching) &&
+              sql.includes('LIMIT 0')
+            ) {
+              throw new Error(`no such column: ${failColumnVerifyMatching} (simulated D1 schema lag)`);
+            }
             runs.push({ sql, values: [...state.values] });
             return { success: true };
           },
@@ -131,6 +150,65 @@ describe('initD1Schema', () => {
     expect(fake.runs).toContainEqual({
       sql: 'ALTER TABLE skill_candidates ADD COLUMN reconciliation_reason TEXT',
       values: [],
+    });
+  });
+
+  describe('post-ALTER column verification', () => {
+    it('issues SELECT ... LIMIT 0 against each migrated table after the ALTER chain', async () => {
+      const fake = createFakeD1();
+
+      await initD1Schema(fake.db as never);
+
+      const v42Probe = fake.runs.find(
+        (run) =>
+          run.sql.startsWith('SELECT')
+          && run.sql.includes('FROM skill_candidates')
+          && run.sql.includes('LIMIT 0'),
+      );
+      expect(v42Probe, 'expected post-ALTER verification SELECT against skill_candidates').toBeDefined();
+      expect(v42Probe!.sql).toMatch(/evidence_bundle_id/);
+      expect(v42Probe!.sql).toMatch(/quality_score/);
+      expect(v42Probe!.sql).toMatch(/quality_failures/);
+      expect(v42Probe!.sql).toMatch(/coverage_matches/);
+      expect(v42Probe!.sql).toMatch(/last_reconciled_at/);
+      expect(v42Probe!.sql).toMatch(/reconciliation_reason/);
+
+      const promptBatchesProbe = fake.runs.find(
+        (run) =>
+          run.sql.startsWith('SELECT')
+          && run.sql.includes('FROM prompt_batches')
+          && run.sql.includes('LIMIT 0'),
+      );
+      expect(promptBatchesProbe, 'expected verification SELECT against prompt_batches').toBeDefined();
+      expect(promptBatchesProbe!.sql).toMatch(/parent_prompt_batch_id/);
+    });
+
+    it('runs verification BEFORE the post-migration index creation', async () => {
+      const fake = createFakeD1();
+
+      await initD1Schema(fake.db as never);
+
+      const verifyIndex = fake.runs.findIndex(
+        (run) =>
+          run.sql.startsWith('SELECT')
+          && run.sql.includes('FROM skill_candidates')
+          && run.sql.includes('LIMIT 0'),
+      );
+      const projectIndexCreateIndex = fake.runs.findIndex(
+        (run) =>
+          run.sql === 'CREATE INDEX IF NOT EXISTS idx_skill_candidates_project_id ON skill_candidates (project_id)',
+      );
+
+      expect(verifyIndex).toBeGreaterThanOrEqual(0);
+      expect(projectIndexCreateIndex).toBeGreaterThan(verifyIndex);
+    });
+
+    it('throws when a verification SELECT cannot resolve a v42 column', async () => {
+      const fake = createFakeD1({ failColumnVerifyMatching: 'evidence_bundle_id' });
+
+      await expect(initD1Schema(fake.db as never)).rejects.toThrow(
+        /D1 schema verification failed for skill_candidates/,
+      );
     });
   });
 

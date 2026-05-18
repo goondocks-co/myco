@@ -65,8 +65,6 @@ export const TOOL_SESSIONS = 'myco_sessions';
 export const TOOL_SKILLS = 'myco_skills';
 export const TOOL_SPORES = 'myco_spores';
 export const TOOL_AGENT = 'myco_agent';
-export const TOOL_MAINTENANCE = 'myco_maintenance';
-export const TOOL_UPDATE = 'myco_update';
 export const TOOL_COLLECTIVE_SEARCH = 'collective_search';
 export const TOOL_COLLECTIVE_PROJECTS = 'collective_projects';
 export const TOOL_COLLECTIVE_PROJECT = 'collective_project';
@@ -281,72 +279,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         task: { type: 'string', description: 'Filter op: "runs" by task name' },
         agent_id: { type: 'string', description: 'Filter op: "runs" by agent id' },
         limit: { type: 'number', description: 'Max results for op: "runs" (default: 50)' },
-      },
-    },
-  },
-  // -------------------------------------------------------------------------
-  // Operator action tools (Stream J — agent-native parity).
-  //
-  // myco_maintenance and myco_update wrap operator workflows the daemon
-  // UI exposes (Optimize / Vacuum / Reindex / Integrity-check / Reconcile
-  // / Rebuild / Backup-now / Restore-preview / Restore / Update). They
-  // are not retrieval tools — no `cortex` metadata so they don't appear
-  // in the session-start guidance brief — and they're allowed to be
-  // absent from non-daemon tool surfaces (Pi/Team) by intent.
-  // -------------------------------------------------------------------------
-  {
-    name: TOOL_MAINTENANCE,
-    description: 'Operator actions for the local Myco daemon: database maintenance (optimize/vacuum/reindex/integrity-check), embedding pipeline (rebuild/reconcile), backups (now/list), and restore (preview/apply). All ops accept an optional ActionScope body — `kind: "project"` (default), `"grove"`, or `"all-groves"` — that mirrors the daemon UI\'s scope pill and fans actions out across registered Groves when set.',
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        op: {
-          type: 'string',
-          enum: [
-            'database_optimize',
-            'database_vacuum',
-            'database_reindex',
-            'database_integrity_check',
-            'embedding_rebuild',
-            'embedding_reconcile',
-            'backup_now',
-            'backup_list',
-            'restore_preview',
-            'restore',
-          ],
-          description: 'Operation to perform. Read-only: backup_list, restore_preview. Mutating: everything else.',
-        },
-        scope: {
-          type: 'object',
-          description: 'Optional ActionScope envelope: `{ kind: "project", grove_id, project_id }` | `{ kind: "grove", grove_id }` | `{ kind: "all-groves" }`. Defaults to the request-context Grove/project when omitted.',
-        },
-        file_name: { type: 'string', description: 'restore_preview / restore — point-in-time backup file name (preferred over machine_id).' },
-        machine_id: { type: 'string', description: 'restore_preview / restore — restore the newest backup for this machine. Pass file_name OR machine_id.' },
-        async: { type: 'boolean', description: 'embedding_rebuild — when true, queue work for the background loop and return immediately instead of draining inline.' },
-      },
-      required: ['op'],
-    },
-  },
-  {
-    name: TOOL_UPDATE,
-    description: 'Manage Myco self-update: read installed/latest versions and channel (op: "status"), force a registry check (op: "check"), apply pending updates (op: "apply"), and switch release channel (op: "set_channel"). Cross-Grove fan-out on apply is built into the daemon installer (it calls `myco update --all-projects` post-install) so a single op: "apply" call drives every registered project.',
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        op: { type: 'string', enum: ['status', 'check', 'apply', 'set_channel'], description: 'Operation: status (default), check, apply, or set_channel.' },
-        channel: { type: 'string', enum: ['stable', 'beta'], description: 'Required for op: "set_channel" — the release channel to switch to.' },
       },
     },
   },

@@ -45,6 +45,18 @@ mock.module('@myco/db/queries/team-members.js', () => ({
   upsertSelfMember: upsertSelfMemberMock,
 }));
 
+// reconcileSelfMember wraps upsertSelfMember + enqueueOutbox in a
+// db.transaction(fn)() call so a crash between the two leaves no
+// orphaned team_members row. The stub here mirrors better-sqlite3's
+// transaction signature (returns a callable) without involving an
+// actual database connection.
+mock.module('@myco/db/client.js', () => ({
+  getDatabase: () => ({
+    transaction: (fn: () => void) => () => fn(),
+  }),
+  withDatabase: <T>(_db: unknown, fn: () => T) => fn(),
+}));
+
 mock.module('@myco/daemon/team-sync.js', () => ({
   TeamSyncClient: class {
     connect = connectMock;

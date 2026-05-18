@@ -145,8 +145,11 @@ describe('DaemonServer', () => {
 
       // /health must respond well under the 3s+ regression threshold even
       // while the hung handler is still in flight on its own socket. The
-      // 1000ms budget tolerates CI event-loop contention while still
-      // proving the contract — locally the response is typically <10ms.
+      // budget is split: locally we hold the contract to <100ms so a real
+      // regression (background work blocking the /health path) shows up
+      // immediately; on CI we relax to <1000ms because shared event-loop
+      // contention from sibling tests can spike single-digit-ms responses
+      // into the hundreds without breaking the production contract.
       // See issue #287 for the suite-wide pattern of CI-flaky strict
       // timing assertions.
       const start = Date.now();
@@ -156,7 +159,9 @@ describe('DaemonServer', () => {
 
       expect(status).toBe(200);
       expect(parsed.myco).toBe(true);
-      expect(elapsed).toBeLessThan(1000);
+      const isCi = process.env.CI === 'true' || process.env.CI === '1';
+      const budgetMs = isCi ? 1000 : 100;
+      expect(elapsed).toBeLessThan(budgetMs);
 
       // Let the hung handler finish so the test can shut down cleanly.
       releaseHung();

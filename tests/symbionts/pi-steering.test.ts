@@ -103,15 +103,13 @@ describe('Pi plugin', () => {
     expect(source).toContain('ctx.shutdown()');
   });
 
-  it('mirrors the local MCP retrieval tool surface by name', () => {
-    // Pi intentionally does NOT register operator-tier local-only tools
-    // (myco_maintenance, myco_update) — these reach back into the user's
-    // daemon to drive maintenance/update actions and only make sense in a
-    // local-machine context. The Team worker test follows the same pattern.
-    const OPERATOR_TOOL_NAMES = new Set(['myco_maintenance', 'myco_update']);
+  it('mirrors the canonical local MCP tool surface by name', () => {
+    // The MCP surface is intentionally limited to read/editorial tools
+    // for symbionts — no operator/admin tools. Pi (handheld terminal-
+    // agent template) mirrors that canonical surface 1:1.
+    // See docs/architecture/actors-and-boundaries.md for the boundary.
     const source = pluginSource();
     for (const tool of TOOL_DEFINITIONS) {
-      if (OPERATOR_TOOL_NAMES.has(tool.name)) continue;
       expect(source).toContain(`name: "${tool.name}"`);
     }
   });

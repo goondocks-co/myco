@@ -34,6 +34,12 @@ export interface ConfirmDialogProps {
   variant?: 'destructive';
   onConfirm: () => void;
   isPending?: boolean;
+  /**
+   * Inline error message shown inside the dialog when the confirm action
+   * failed. The dialog stays open so the user sees the failure instead of
+   * a silent dismissal. Cleared by the caller on the next attempt.
+   */
+  errorMessage?: string | null;
 }
 
 export function ConfirmDialog({
@@ -48,6 +54,7 @@ export function ConfirmDialog({
   variant = 'destructive',
   onConfirm,
   isPending = false,
+  errorMessage = null,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -95,6 +102,16 @@ export function ConfirmDialog({
               </div>
             ))}
           </div>
+        )}
+
+        {errorMessage && (
+          <p
+            className="text-sm text-tertiary"
+            data-testid="confirm-dialog-error"
+            role="alert"
+          >
+            {errorMessage}
+          </p>
         )}
 
         <DialogFooter>

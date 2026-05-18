@@ -83,6 +83,26 @@ describe('harness properties', () => {
         ).toBe(true);
       }
     });
+
+    it('skill-survey write tools are annotated idempotentHint: false (each call mutates state)', () => {
+      // These three tools each write to agent_state (or to skill_candidates
+      // via apply_reconciliation). MCP auto-retry layers must NOT treat
+      // a repeat call as a safe replay, so the hint must explicitly say
+      // "calling twice is NOT the same as calling once".
+      const nonIdempotentToolNames = [
+        'vault_skill_survey_bundle_decisions',
+        'vault_skill_survey_reconciliation_plan',
+        'vault_skill_survey_apply_reconciliation',
+      ];
+      for (const name of nonIdempotentToolNames) {
+        const t = tools.find(tool => tool.name === name);
+        expect(t, `Skill-survey write tool "${name}" not found`).toBeDefined();
+        expect(
+          t!.annotations?.idempotentHint,
+          `Skill-survey write tool "${name}" must have idempotentHint: false — repeat calls mutate state`,
+        ).toBe(false);
+      }
+    });
   });
 
   // ---------------------------------------------------------------------------

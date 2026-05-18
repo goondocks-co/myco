@@ -23,13 +23,11 @@ import {
   TOOL_COLLECTIVE_SETTINGS,
   TOOL_CORTEX,
   TOOL_DEFINITIONS,
-  TOOL_MAINTENANCE,
   TOOL_PLANS,
   TOOL_SEARCH,
   TOOL_SESSIONS,
   TOOL_SKILLS,
   TOOL_SPORES,
-  TOOL_UPDATE,
   type ToolDefinition,
 } from './definitions.js';
 
@@ -65,12 +63,6 @@ type ToolInput = Record<string, unknown>;
 interface ToolEntry {
   handle: (input: ToolInput, client: DaemonClient, context: MycoRequestContext) => Promise<unknown>;
   summarize?: (input: ToolInput, result: unknown) => Record<string, unknown>;
-  /**
-   * When true, dispatch the tool without opening a local DB connection.
-   * Used by HTTP-proxy operator tools (`myco_maintenance`, `myco_update`)
-   * that talk to the daemon over HTTP and never touch the local vault DB.
-   */
-  skipDatabase?: boolean;
 }
 
 type ToolLoader = () => Promise<ToolEntry>;
@@ -161,43 +153,6 @@ const HANDLERS = new Map<string, ToolLoader>([
         const r = result as { ok: unknown };
         return { op: input.op ?? 'runs', id: input.id, ok: r.ok };
       },
-    };
-  }],
-  [TOOL_MAINTENANCE, async () => {
-    const { handleMycoMaintenance } = await import('./maintenance.js');
-    return {
-      handle: (input, client, context) => handleMycoMaintenance(input as unknown as Parameters<typeof handleMycoMaintenance>[0], client, context),
-      summarize: (input, result) => {
-        const r = result as { ok?: boolean; summary?: { ok?: number; failed?: number } };
-        const scope = (input.scope as { kind?: string } | undefined)?.kind;
-        return {
-          op: input.op,
-          scope: scope,
-          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
-          summary: r.summary,
-        };
-      },
-      // HTTP-only proxy. The local DB stays untouched; restore_preview
-      // in particular runs even when the local DB is locked.
-      skipDatabase: true,
-    };
-  }],
-  [TOOL_UPDATE, async () => {
-    const { handleMycoUpdate } = await import('./update.js');
-    return {
-      handle: (input, client, context) => handleMycoUpdate(input as unknown as Parameters<typeof handleMycoUpdate>[0], client, context),
-      summarize: (input, result) => {
-        const r = result as { ok?: boolean; status?: string; running_version?: string };
-        return {
-          op: input.op ?? 'status',
-          status: r.status,
-          running_version: r.running_version,
-          ok: r.ok ?? !(typeof r === 'object' && r !== null && 'error' in r),
-        };
-      },
-      // myco_update is a pure HTTP proxy onto the daemon's
-      // /api/update/* routes — no local DB access required.
-      skipDatabase: true,
     };
   }],
 ]);
@@ -479,14 +434,7 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
       const loader = HANDLERS.get(name);
       if (!loader) throw new ToolError('unknown_tool', `Unknown tool: ${name}`);
       const entry = await loader();
-      // Operator tools (`myco_maintenance`, `myco_update`) are HTTP-only
-      // proxies — they don't read or write the local DB and don't need
-      // `runWithRequestDatabase` to open one. Skipping the DB open here
-      // avoids surfacing "Vault database is not available" errors when
-      // the local DB is locked or absent (e.g. during restore_preview).
-      const result = entry.skipDatabase
-        ? await entry.handle(handlerInput, client, context)
-        : await runWithRequestDatabase(context, () => entry.handle(handlerInput, client, context));
+      const result = await runWithRequestDatabase(context, () => entry.handle(handlerInput, client, context));
       logActivity(name, {
         ...(entry.summarize?.(handlerInput, result) ?? {}),
         duration_ms: Date.now() - start,
