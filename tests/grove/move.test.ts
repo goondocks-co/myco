@@ -77,7 +77,7 @@ function seedAgent(groveId: string): void {
   });
 }
 
-function seedProjectRows(groveId: string, projectId: string): void {
+function seedProjectRows(groveId: string, projectId: string, root = projectRoot): void {
   withGroveDb(groveId, (db) => {
     db.prepare(
       `INSERT INTO sessions (
@@ -87,7 +87,7 @@ function seedProjectRows(groveId: string, projectId: string): void {
     ).run(
       `sess-${projectId}-1`,
       'claude-code',
-      projectRoot,
+      root,
       'main',
       200,
       'completed',
@@ -144,6 +144,26 @@ function countRows(groveId: string, table: string, projectId: string): number {
       `SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`,
     ).get(projectId) as { n: number };
     return row.n;
+  });
+}
+
+function countAllRows(groveId: string, table: string): number {
+  return withGroveDb(groveId, (db) => {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+    return row.n;
+  });
+}
+
+function foreignKeyViolations(groveId: string): unknown[] {
+  return withGroveDb(groveId, (db) => db.prepare('PRAGMA foreign_key_check').all());
+}
+
+function embeddedValue(groveId: string, table: string, id: string): number {
+  return withGroveDb(groveId, (db) => {
+    const row = db.prepare(`SELECT embedded FROM ${table} WHERE id = ?`).get(id) as {
+      embedded: number;
+    };
+    return row.embedded;
   });
 }
 
@@ -253,6 +273,42 @@ describe('moveProjectBetweenGroves', () => {
     expect(countRows(target.id, 'plans', projectId)).toBe(1);
     expect(countRows(target.id, 'spores', projectId)).toBe(1);
     expect(countRows(source.id, 'sessions', projectId)).toBe(0);
+    expect(countAllRows(target.id, 'agents')).toBe(1);
+    expect(foreignKeyViolations(target.id)).toEqual([]);
+    expect(embeddedValue(target.id, 'sessions', `sess-${projectId}-1`)).toBe(0);
+    expect(embeddedValue(target.id, 'plans', `plan-${projectId}-1`)).toBe(0);
+    expect(embeddedValue(target.id, 'spores', `spore-${projectId}-1`)).toBe(0);
+  });
+
+  it('cleans stale source rows for the same project root after a successful move', () => {
+    const source = createGrove('Source', mycoHome);
+    const target = createGrove('Target', mycoHome);
+    ensureGroveDb(source.id);
+    ensureGroveDb(target.id);
+    seedAgent(source.id);
+    seedAgent(target.id);
+
+    const currentProjectId = createProjectId();
+    const staleProjectId = createProjectId();
+    const unrelatedProjectId = createProjectId();
+    registerProjectInGrove(source.id, {
+      projectId: currentProjectId,
+      projectName: 'Demo',
+      projectRoot,
+    }, mycoHome);
+    seedProjectRows(source.id, currentProjectId);
+    seedProjectRows(source.id, staleProjectId);
+    seedProjectRows(source.id, unrelatedProjectId, path.join(tmpDir, 'other-project'));
+
+    moveProjectBetweenGroves(source.id, target.id, currentProjectId, mycoHome, { snapshotsRoot });
+
+    expect(countRows(target.id, 'sessions', currentProjectId)).toBe(1);
+    expect(countRows(source.id, 'sessions', currentProjectId)).toBe(0);
+    expect(countRows(source.id, 'spores', currentProjectId)).toBe(0);
+    expect(countRows(source.id, 'sessions', staleProjectId)).toBe(0);
+    expect(countRows(source.id, 'spores', staleProjectId)).toBe(0);
+    expect(countRows(source.id, 'sessions', unrelatedProjectId)).toBe(1);
+    expect(countRows(source.id, 'spores', unrelatedProjectId)).toBe(1);
   });
 
   it('throws when source and target Grove ids are the same', () => {
