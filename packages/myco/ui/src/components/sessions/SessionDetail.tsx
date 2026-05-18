@@ -4,7 +4,7 @@ import { ArrowLeft, AlertCircle, Loader2, Sparkles, Check, Trash2, CheckCircle2 
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Surface } from '../ui/surface';
-import { StatCard } from '../ui/stat-card';
+import { MetricCard } from '../ui/metric-card';
 import { SectionHeader } from '../ui/section-header';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { useSession, useDeleteSession, useSessionImpact, useSessionPlans, useCompleteSession } from '../../hooks/use-sessions';
@@ -180,7 +180,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
       {/* Header */}
       <div className="space-y-2">
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="font-serif text-2xl font-normal text-on-surface tracking-wide">
+          <h1 className="myco-display-lg text-on-surface m-0">
             {session.title ?? shortSession(session.id)}
           </h1>
           <StatusBadge status={session.status} />
@@ -268,13 +268,14 @@ export function SessionDetail({ id }: SessionDetailProps) {
         </div>
       </div>
 
-      {/* Key stats (compact row). Canopy tile renders for every session
-          (including non-Claude / pre-feature) with zeros where data is
-          absent — fits the four-column row regardless of agent. */}
+      {/* Key stats (compact row). Canopy tile keeps its bespoke chrome — it
+          aggregates efficiency, not a single metric, and gets re-skinned
+          alongside the broader Canopy work. The other three move to the v7
+          MetricCard treatment per Phase 7 T14. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Prompts" value={String(session.prompt_count)} accent="sage" />
-        <StatCard label="Tool Calls" value={String(session.tool_count)} accent="sage" />
-        <StatCard label="Plans" value={String(plans?.length ?? 0)} accent="outline" />
+        <MetricCard label="Prompts" value={String(session.prompt_count)} tone="sage" />
+        <MetricCard label="Tool Calls" value={String(session.tool_count)} tone="sage" />
+        <MetricCard label="Plans" value={String(plans?.length ?? 0)} />
         <CanopyEfficiencyTile sessionId={id} />
       </div>
 
