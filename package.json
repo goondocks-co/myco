@@ -54,7 +54,7 @@
     "lucide-react": "^1.14.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.14.2",
+    "react-router-dom": "^7.15.1",
     "sqlite-vec": "^0.1.8",
     "tailwind-merge": "^3.6.0",
     "tsup": "^8.0.0",
