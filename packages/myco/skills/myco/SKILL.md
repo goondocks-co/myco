@@ -75,7 +75,7 @@ Use the worktree-scoped pattern instead:
 make dev-link-worktree
 ```
 
-This builds the worktree binary and writes the worktree's `.myco/runtime.command` directly to `packages/myco/vendor/<target>/myco`. That file is local runtime state and is not inherited when a worktree is created, so run the command from each worktree that needs project-scoped CLI/tool testing.
+This builds the worktree binary and writes the worktree's `.myco/runtime.command` directly to `packages/myco-<target>/bin/myco`. That file is local runtime state and is not inherited when a worktree is created, so run the command from each worktree that needs project-scoped CLI/tool testing.
 
 Runtime scopes stay separate:
 

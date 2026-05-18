@@ -40,12 +40,24 @@ describe('parseServiceArgs', () => {
 // format diverged from the installed prod binary's. The fence below
 // makes that path unreachable at the CLI boundary.
 describe('assertSafeServiceMutation (prod-from-dev-binary fence)', () => {
-  const devBuildPath = '/Users/dev/repos/myco/packages/myco/vendor/darwin-arm64/myco';
-  const globalPath = '/opt/homebrew/lib/node_modules/@goondocks/myco/vendor/darwin-arm64/myco';
+  // New layout: dev binary lives in its own platform package, sibling
+  // to packages/myco/. Legacy layout: binary lived under packages/myco/vendor/.
+  // Both must be caught by the dev-build guard.
+  const devBuildPath = '/Users/dev/repos/myco/packages/myco-darwin-arm64/bin/myco';
+  const legacyDevBuildPath = '/Users/dev/repos/myco/packages/myco/vendor/darwin-arm64/myco';
+  const globalPath = '/opt/homebrew/lib/node_modules/@goondocks/myco-darwin-arm64/bin/myco';
 
   test('refuses every mutating verb against prod when run from a dev-build binary', () => {
     for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
       const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, devBuildPath);
+      expect(refusal).not.toBeNull();
+      expect(refusal!).toMatch(/Refusing to .* the \*prod\* service from a dev-build binary/);
+    }
+  });
+
+  test('refuses every mutating verb against prod from the legacy vendor/<arch>/ layout', () => {
+    for (const action of ['install', 'uninstall', 'start', 'stop', 'restart'] as const) {
+      const refusal = assertSafeServiceMutation({ action, variant: 'prod' }, legacyDevBuildPath);
       expect(refusal).not.toBeNull();
       expect(refusal!).toMatch(/Refusing to .* the \*prod\* service from a dev-build binary/);
     }

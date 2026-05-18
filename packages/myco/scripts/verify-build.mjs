@@ -3,7 +3,7 @@
 //
 // Checks:
 //   1. UI bundle exists at dist/ui/index.html.
-//   2. The host-target binary exists at vendor/<host>/myco (or myco.exe).
+//   2. The host-target binary exists at ../myco-<host>/bin/myco (or myco.exe).
 //   3. The host-target binary's baked --version matches package.json.
 //      (Catches the version-skew class of bug where sync-package-versions
 //      ran AFTER the binary was already built — the binary embeds
@@ -39,7 +39,8 @@ if (!fs.existsSync(uiIndex)) fail(`missing UI bundle: ${uiIndex}`);
 
 const target = hostTarget();
 const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
-const binaryPath = path.join(pkgRoot, 'vendor', target, binaryName);
+const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
+const binaryPath = path.join(platformPkgDir, 'bin', binaryName);
 if (!fs.existsSync(binaryPath)) fail(`missing host binary: ${binaryPath}`);
 
 const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));

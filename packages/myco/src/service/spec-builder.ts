@@ -13,8 +13,9 @@ export interface BuildSpecOptions {
 }
 
 /**
- * Detect a dev-build executable path — anything inside a checkout's
- * `packages/<pkg>/vendor/<arch>/myco` tree.
+ * Detect a dev-build executable path — anything compiled inside a checkout's
+ * per-platform binary package (`packages/myco-<arch>/bin/myco`) or the
+ * legacy pre-split `packages/<pkg>/vendor/<arch>/myco` tree.
  *
  * Used as a guard in `buildServiceSpec` (and the prod-only callsite
  * fence below) to refuse installing a dev-build binary as the *prod*
@@ -30,10 +31,16 @@ export interface BuildSpecOptions {
  * Detection is intentionally a literal path match — we want to catch
  * the path *as it will be written into the plist*, before any realpath
  * resolution could flatten it. We also realpath the executable below
- * so a symlink pointing into a vendor tree can't bypass the check.
+ * so a symlink pointing into a dev-build tree can't bypass the check.
+ *
+ * The installed-from-npm path always contains a `node_modules/` segment
+ * (the platform package is dropped into `node_modules/@goondocks/myco-<arch>/`
+ * by npm), so this regex never matches an installed binary.
  */
 export function looksLikeDevBuildExecutable(executable: string): boolean {
-  return /\/packages\/[^/]+\/vendor\//.test(executable);
+  const platformPkgPattern = /\/packages\/myco-(?:darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64)\/bin\//;
+  const legacyVendorPattern = /\/packages\/[^/]+\/vendor\//;
+  return platformPkgPattern.test(executable) || legacyVendorPattern.test(executable);
 }
 
 export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
@@ -53,7 +60,7 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
   if (exeBase === 'bun' || exeBase === 'bun.exe' || exeBase === 'node' || exeBase === 'node.exe') {
     throw new Error(
       `Refusing to install service with a script-runner executable: ${executable}. `
-      + `Service install requires a standalone daemon binary (e.g. ~/.local/bin/myco or the vendored binary at packages/myco/vendor/<arch>/myco). `
+      + `Service install requires a standalone daemon binary (e.g. ~/.local/bin/myco or the dev binary at packages/myco-<arch>/bin/myco). `
       + `Start the daemon at least once with \`myco daemon\` so it records its own binary path in daemon.json, then retry.`,
     );
   }
@@ -67,10 +74,10 @@ export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
     if (offender) {
       throw new Error(
         `Refusing to install the *prod* service with a dev-build executable: ${offender}. `
-        + `Dev-build binaries (any path under packages/<pkg>/vendor/) belong to the *dev* service variant only. `
+        + `Dev-build binaries (any path under packages/myco-<arch>/bin/ or legacy packages/<pkg>/vendor/) belong to the *dev* service variant only. `
         + `If you meant to install the dogfood daemon, pass \`--dev\`. `
         + `If you intended to install the production daemon, point at the globally installed binary `
-        + `(e.g. /opt/homebrew/lib/node_modules/@goondocks/myco/vendor/<arch>/myco) instead.`,
+        + `(e.g. /opt/homebrew/lib/node_modules/@goondocks/myco-darwin-arm64/bin/myco) instead.`,
       );
     }
   }

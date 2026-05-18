@@ -569,7 +569,7 @@ Point to development binaries for local testing:
 echo "myco" > .myco/runtime.command
 
 # For local development (make dev-link creates this)
-echo "/path/to/myco/vendor/darwin-arm64/myco" > .myco/runtime.command
+echo "/path/to/myco/packages/myco-darwin-arm64/bin/myco" > .myco/runtime.command
 
 # For npm link workflows  
 echo "myco-dev" > .myco/runtime.command

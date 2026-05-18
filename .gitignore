@@ -10,6 +10,14 @@ bun.lock
 packages/myco/vendor-src/
 packages/myco/vendor/
 
+# Per-platform npm packages — built binaries (CI / dev-link writes here).
+# Keep bin/.gitkeep tracked so the directory exists; ignore the binaries.
+packages/myco-*/bin/myco
+packages/myco-*/bin/myco.exe
+# npm pack output during local smoke tests
+packages/myco-*/*.tgz
+packages/myco/*.tgz
+
 # User-local settings (vault paths contain home directory)
 .claude/settings.user.json
 
