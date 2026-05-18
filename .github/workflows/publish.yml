@@ -673,6 +673,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Resolve to an absolute path before passing to `npm publish`. If
+          # the arg looks like `foo/bar.tgz` (one slash, no leading ./ or /),
+          # npm interprets it as a GitHub shorthand specifier and tries to
+          # `git ls-remote` it — exit 128 with "Permission denied (publickey)".
+          # `realpath` guarantees an absolute path so npm always treats it as
+          # a local tarball file.
           if [ "$TAG_PREFIX" = "myco" ]; then
             # Publish each platform package first so core's
             # optionalDependencies pin resolves on the registry by the time
@@ -686,6 +692,7 @@ jobs:
                 echo "missing platform tarball: ${target}" >&2
                 exit 1
               fi
+              tgz="$(realpath "$tgz")"
               echo "Publishing @goondocks/myco-${target} from ${tgz}"
               npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
             done
@@ -694,6 +701,7 @@ jobs:
               echo "missing core tarball" >&2
               exit 1
             fi
+            tgz="$(realpath "$tgz")"
             echo "Publishing @goondocks/myco from ${tgz}"
             npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
           else
@@ -702,6 +710,7 @@ jobs:
               echo "no tarball found in publish-files/" >&2
               exit 1
             fi
+            tgz="$(realpath "$tgz")"
             npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
           fi
 

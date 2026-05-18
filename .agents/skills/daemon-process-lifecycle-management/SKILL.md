@@ -30,6 +30,42 @@ Myco daemon processes require careful lifecycle management to ensure reliable op
 
 ## Procedure A: Daemon Startup and Robustness
 
+### Service-Aware Daemon Control via launchd Integration
+
+**Critical architecture**: Grove's launchd service installer (PR #267) creates a permanent service (`co.goondocks.myco-dev`) with `KeepAlive=true`. This fundamentally changes daemon control from direct process management to service-aware coordination:
+
+```typescript
+// Service-Aware Daemon Control - Three Unified Code Paths
+async function serviceAwareDaemonControl(action: 'start' | 'restart' | 'stop'): Promise<void> {
+  const serviceId = 'co.goondocks.myco-dev';
+  
+  switch (action) {
+    case 'start':
+      // launchctl will respawn if daemon dies
+      await execAsync(`launchctl start ${serviceId}`);
+      break;
+      
+    case 'restart':
+      // Coordinated service restart - launchd handles respawn
+      await execAsync(`launchctl stop ${serviceId}`);
+      await delay(1000); // Allow launchd to detect exit
+      await execAsync(`launchctl start ${serviceId}`);
+      break;
+      
+    case 'stop':
+      // Permanent service stop
+      await execAsync(`launchctl stop ${serviceId}`);
+      break;
+  }
+}
+```
+
+**Service control implications:**
+- **Daemon restart** via `myco-dev restart` works through launchd, not direct SIGTERM
+- **Process respawn** is automatic via `KeepAlive=true` if daemon crashes
+- **Update application** must coordinate with launchd to prevent double-spawning
+- **Development workflow** benefits from automatic crash recovery during debugging
+
 ### Global Daemon Auto-Spawn via DaemonClient
 
 Grove architecture uses a global daemon that manages all projects through centralized `DaemonClient`:
@@ -170,6 +206,33 @@ async function safeGroveOperation() {
 
 ## Procedure B: Unified Eviction and Restart
 
+### Service-Aware Eviction with launchd Coordination
+
+With launchd service management, eviction must coordinate with the service to prevent double-spawning:
+
+```typescript
+// Service-aware daemon eviction
+async function serviceAwareDaemonEviction(): Promise<void> {
+  const serviceId = 'co.goondocks.myco-dev';
+  
+  // 1. Notify groves of pending shutdown
+  await notifyGrovesShutdown();
+  
+  // 2. Stop via launchd (prevents automatic respawn)
+  await execAsync(`launchctl stop ${serviceId}`);
+  
+  // 3. Verify process termination
+  const daemonState = JSON.parse(fs.readFileSync('~/.myco/daemon.json', 'utf8'));
+  if (daemonState.pid && isProcessRunning(daemonState.pid)) {
+    // Direct SIGKILL if launchd stop didn't work
+    process.kill(daemonState.pid, 'SIGKILL');
+  }
+  
+  // 4. Clean up daemon.json
+  fs.unlinkSync('~/.myco/daemon.json');
+}
+```
+
 ### Centralized Global Daemon Eviction
 
 All restart paths use global daemon eviction through centralized management:
@@ -206,13 +269,13 @@ fi
 
 ### Grove-Coordinated Restart Paths
 
-**Common global restart triggers**: `myco restart` CLI command, global daemon health reconciliation, system update application, cross-grove health-check fallback recovery, global version-sync operations, Hub removal cleanup, **MCP bridge reconnect failures**.
+**Common global restart triggers**: `myco restart` CLI command, global daemon health reconciliation, system update application, cross-grove health-check fallback recovery, global version-sync operations, Hub removal cleanup, **MCP bridge reconnect failures** (now auto-resolved).
 
 All use the same grove-aware eviction → spawn cycle for consistency.
 
-### Four Daemon Restart Failure Modes and Mitigations
+### Five Daemon Restart Failure Modes and Mitigations (All Resolved)
 
-**Critical wisdom**: Daemon restarts during active sessions trigger four distinct failure modes that require different recovery patterns:
+**Critical wisdom**: Daemon restarts during active sessions trigger five distinct failure modes that now have comprehensive mitigations:
 
 #### Mode 1: Parallel Spawn Race (Multiple Daemons Launch Simultaneously)
 **Symptoms**: Multiple daemon processes, port conflict errors, inconsistent daemon.json state
@@ -226,36 +289,69 @@ All use the same grove-aware eviction → spawn cycle for consistency.
 **Symptoms**: Healthy new daemon but stale processes consuming resources, confusion in process discovery
 **Mitigation**: PID validation via kill -0, cleanup of orphaned processes, daemon.json reconciliation
 
-#### Mode 4: MCP Bridge Reconnect Failure (Session Tool Loss)
-**Symptoms**: Agent sessions lose MCP tool access, "myco_remember" and vault tools fail, session must be restarted
-**Recovery patterns**:
-- **Session restart required** - MCP bridge cannot auto-reconnect after daemon restart
-- **Detection**: Tool calls return connection errors, MCP stdio bridge reports broken pipe
-- **User mitigation**: Close and reopen agent session to spawn fresh MCP bridge
-- **Development workaround**: Use CLI fallbacks (`myco spore` commands) until session restart
+#### Mode 4: MCP Bridge Reconnect Failure (Session Tool Loss) — **RESOLVED**
+**Previous symptoms**: Agent sessions lose MCP tool access, "myco_remember" and vault tools fail, session must be restarted
+**Resolution**: MCP stdio bridge now includes automatic daemon-restart recovery with indefinite reconnect capability
 
 ```typescript
-// MCP Bridge Health Check for Restart Detection
-async function detectMcpBridgeHealth(): Promise<{ healthy: boolean; reason?: string }> {
-  try {
-    // Test basic MCP tool connectivity
-    const response = await mcpClient.call('myco_vault_state', {});
-    return { healthy: true };
-  } catch (error) {
-    if (error.message.includes('connection') || error.message.includes('pipe')) {
-      return { 
-        healthy: false, 
-        reason: 'MCP bridge connection lost - daemon likely restarted, session restart required'
-      };
-    }
-    return { healthy: false, reason: error.message };
+// MCP Bridge Auto-Recovery (v0.27.11+)
+class McpStdioBridge {
+  private static readonly DAEMON_HEARTBEAT_INTERVAL_MS = 5000;
+  private static readonly RECONNECT_MAX_ATTEMPTS = Infinity; // Indefinite retry
+  
+  async startDaemonHeartbeat(): Promise<void> {
+    setInterval(async () => {
+      try {
+        await this.checkDaemonHealth();
+      } catch (error) {
+        console.log('Daemon unreachable - attempting reconnect...');
+        await this.attemptReconnect();
+      }
+    }, this.DAEMON_HEARTBEAT_INTERVAL_MS);
+  }
+  
+  async attemptReconnect(): Promise<void> {
+    // Re-read daemon.json in case daemon restarted with new port
+    const newDaemonState = await this.readDaemonState();
+    this.daemonPort = newDaemonState.port;
+    
+    // Test reconnection
+    await this.validateMcpConnection();
+    console.log('MCP bridge reconnected successfully');
   }
 }
 ```
 
-**MCP Bridge Failure Detection Signals**: Tool calls failing with connection errors, stdio bridge reporting broken pipe, MCP child process exit without restart capability, agent harness losing vault access mid-session.
+**Recovery behavior**: MCP bridge automatically detects daemon restart, re-reads daemon.json for new port/PID, reconnects stdio transport, restores tool access without session restart required.
 
-**Critical limitation**: Unlike daemon process restart which is automatic, MCP bridge reconnect requires manual session restart due to stdio bridge architecture constraints.
+#### Mode 5: Self-Update Double-Respawn Race (launchd + Manual Spawn Conflict) — **RESOLVED**
+**Symptoms**: Two daemon processes after self-update, port conflicts, service state inconsistency
+**Root cause**: Self-update triggers manual spawn while launchd `KeepAlive=true` also respawns daemon
+
+**Resolution pattern**:
+```typescript
+// Self-update with service-aware coordination
+async function selfUpdateWithServiceCoordination(): Promise<void> {
+  const serviceId = 'co.goondocks.myco-dev';
+  
+  // 1. Disable automatic respawn during update
+  await execAsync(`launchctl unload -w ~/Library/LaunchAgents/${serviceId}.plist`);
+  
+  // 2. Stop daemon manually (no respawn)
+  await stopDaemonDirect();
+  
+  // 3. Apply update
+  await applyBinaryUpdate();
+  
+  // 4. Re-enable service and start
+  await execAsync(`launchctl load -w ~/Library/LaunchAgents/${serviceId}.plist`);
+  await execAsync(`launchctl start ${serviceId}`);
+}
+```
+
+**Prevention mechanisms**: Temporary launchd service disable during updates, atomic update application, coordinated service restart, race condition detection and cleanup.
+
+All five failure modes now have automated detection and recovery mechanisms in v0.27.11-12.
 
 ## Procedure C: Process Identity and State Management
 
@@ -406,6 +502,10 @@ app.get('/ready', async (req, res) => {
   }
 });
 ```
+
+**Probe usage patterns:**
+- **Liveness probe** (`/health`): Process monitoring, restart decisions, binary version checks
+- **Readiness probe** (`/ready`): Service availability, load balancing, grove-specific health
 
 ### Session Freshness Check with Tool-Use Activity Detection
 
@@ -558,6 +658,20 @@ async function resolveAfterRepair(grove: Grove) {
 
 ## Cross-Cutting Gotchas
 
+### Service-Aware Operations
+
+**launchd coordination gotcha**: Always coordinate with launchd service when managing daemon lifecycle to prevent double-spawning:
+
+```bash
+# Wrong - manual kill bypasses launchd
+kill -TERM $(jq -r '.pid' ~/.myco/daemon.json)
+
+# Right - service-aware stop
+launchctl stop co.goondocks.myco-dev
+```
+
+**Prevention**: Use service-aware control functions that coordinate with launchd for all daemon lifecycle operations.
+
 ### Global Daemon Race Conditions
 
 **Grove coordination race gotcha**: When restarting global daemon, always coordinate grove shutdown before eviction. Starting immediately without grove coordination can cause grove connection interruption, orphaned grove processes, resource contention.
@@ -583,28 +697,11 @@ try {
 }
 ```
 
-### MCP Bridge Session Dependencies
+### MCP Bridge Session Dependencies — **RESOLVED**
 
-**MCP bridge restart gotcha**: Unlike daemon processes that restart automatically, MCP bridges require manual session restart:
+**Previous gotcha**: MCP bridge required manual session restart after daemon restart.
 
-```typescript
-// Wrong - assuming MCP bridge auto-reconnects after daemon restart
-async function handleDaemonRestart() {
-  await restartDaemon();
-  // MCP bridge connection lost - tool calls will fail
-  await mcpClient.call('myco_vault_state', {}); // This will fail
-}
-
-// Right - detect MCP bridge health and guide user to restart session
-async function handleMcpBridgeFailure() {
-  const bridgeHealth = await detectMcpBridgeHealth();
-  if (!bridgeHealth.healthy && bridgeHealth.reason?.includes('connection lost')) {
-    console.warn('MCP bridge connection lost - session restart required');
-    console.log('Please close and reopen your agent session to restore MCP tool access');
-    return { requiresSessionRestart: true };
-  }
-}
-```
+**Current behavior**: MCP stdio bridge automatically recovers from daemon restarts with indefinite reconnect capability. Sessions remain functional without manual intervention.
 
 ### Grove Ownership and Multi-Environment Coordination
 
