@@ -48,6 +48,12 @@ export interface UpdateDeps {
   projectRoot: string;
   /** The currently running version (from package.json at startup). */
   currentVersion: string;
+  /**
+   * Canonical port the running daemon is listening on. Baked into the
+   * detached update / restart scripts so their post-install readiness
+   * guard can probe /health without re-discovering the port.
+   */
+  daemonPort: number;
   /** Callback that schedules a graceful daemon shutdown after the update script spawns. */
   scheduleShutdown: () => void;
   /** npm global prefix, resolved once at daemon startup. Null if resolution failed. */
@@ -77,7 +83,7 @@ const ChannelBodySchema = z.object({
  * Returns an object with named handlers for each update endpoint.
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
-  const { vaultDir, projectRoot, currentVersion, scheduleShutdown, globalPrefix } = deps;
+  const { vaultDir, projectRoot, currentVersion, daemonPort, scheduleShutdown, globalPrefix } = deps;
   const serviceManager = deps.serviceManager ?? getServiceManager();
 
   /**
@@ -153,6 +159,7 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           toVersion: installedVersion,
           mycoBinary: snapshot.mycoBinary,
           serviceRestartCommand,
+          daemonPort,
         });
         scheduleShutdown();
         return {
@@ -309,6 +316,8 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       vaultDir,
       mycoBinary: snapshot.mycoBinary,
       serviceRestartCommand,
+      daemonPort,
+      targetVersion: status.latest_version,
     });
     scheduleShutdown();
 

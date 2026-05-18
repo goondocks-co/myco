@@ -149,6 +149,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     vaultDir: '/vault',
     projectRoot: '/project',
     currentVersion: '1.0.0',
+    daemonPort: 20915,
     scheduleShutdown: vi.fn(),
     ...overrides,
   };
@@ -338,6 +339,8 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      daemonPort: 20915,
+      targetVersion: '1.1.0',
     });
     expect(scheduleShutdown).toHaveBeenCalled();
     expect(result.body).toMatchObject({ status: 'applying', version: '1.1.0' });
@@ -381,6 +384,8 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      daemonPort: 20915,
+      targetVersion: '1.1.0',
     });
   });
 
@@ -417,6 +422,8 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: '/mock-home/.myco/runtime/node_modules/.bin/myco',
+      daemonPort: 20915,
+      targetVersion: '1.0.0',
     });
   });
 
@@ -532,6 +539,8 @@ describe('handleUpdateApply', () => {
       projectRoot: '/project',
       vaultDir: '/vault',
       mycoBinary: 'myco',
+      daemonPort: 20915,
+      targetVersion: '1.0.0',
     });
   });
 });

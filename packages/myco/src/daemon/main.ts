@@ -1230,6 +1230,7 @@ export async function main(): Promise<void> {
     vaultDir: bootstrapVaultDir,
     projectRoot: updateProjectRoot,
     currentVersion: server.version,
+    daemonPort: server.port,
     globalPrefix,
     scheduleShutdown: () => {
       setTimeout(() => {

@@ -60,6 +60,21 @@ export interface InstallParams {
    * service-managed daemon.
    */
   serviceRestartCommand?: string;
+  /**
+   * Canonical daemon port for the variant this update is running against
+   * (e.g. 20915 prod, 19344 dev). Used by the post-install readiness
+   * probe to skip the supervisor restart when launchd's KeepAlive has
+   * already brought the daemon back at the target version. Without this
+   * probe, `kickstart -k` unconditionally SIGTERMs the freshly-respawned
+   * daemon and forces a redundant cycle through the throttle window.
+   */
+  daemonPort: number;
+  /**
+   * The version we expect the daemon to be running after this update
+   * (e.g. "0.27.12"). The readiness probe verifies /health.version
+   * matches before skipping the supervisor restart.
+   */
+  targetVersion: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +104,8 @@ export function generateUpdateScript(params: InstallParams): string {
     projectRoot,
     mycoBinary,
     serviceRestartCommand,
+    daemonPort,
+    targetVersion,
   } = params;
 
   // Use JSON.stringify for safe path quoting (handles spaces, special chars).
@@ -155,11 +172,36 @@ else
   MYCO=${quotedMycoBinary}
 fi
 
+${buildReadinessGuard(daemonPort, targetVersion)}
 ${buildRestartTail(serviceRestartCommand, quotedProjectRoot)}
 
 # Clean up this script
 rm -f "$0"
 `;
+}
+
+/**
+ * Pre-restart readiness guard. Probes /health on the canonical port; if
+ * the daemon already reports the target version, launchd's KeepAlive has
+ * brought it back from the freshly-installed binary and we must NOT
+ * kickstart — kickstart -k unconditionally SIGTERMs and forces a
+ * redundant respawn through launchd's throttle window (~10s of dead
+ * daemon for the user).
+ *
+ * Uses curl + grep so the script stays portable (no jq dependency).
+ */
+function buildReadinessGuard(daemonPort: number, targetVersion: string): string {
+  const url = `http://127.0.0.1:${daemonPort}/health`;
+  // grep pattern: match "version":"<target>" with optional whitespace.
+  // The daemon's /health body shape is {"myco":true,"version":"X","pid":Y,"uptime":Z}.
+  return `# Readiness guard: skip supervisor restart if launchd already brought
+# the daemon back at the target version. See generateUpdateScript().
+if curl -sf --max-time 2 ${JSON.stringify(url)} 2>/dev/null \\
+   | grep -q '"version":"${targetVersion}"'; then
+  echo "[update] daemon already on ${targetVersion} — skipping supervisor restart"
+  rm -f "$0"
+  exit 0
+fi`;
 }
 
 /**
@@ -244,6 +286,8 @@ export interface RestartParams {
    * same fix shape.
    */
   serviceRestartCommand?: string;
+  /** Canonical daemon port for the readiness guard. See InstallParams. */
+  daemonPort: number;
 }
 
 /**
@@ -264,6 +308,7 @@ export function generateRestartScript(params: RestartParams): string {
     toVersion,
     mycoBinary,
     serviceRestartCommand,
+    daemonPort,
   } = params;
   const quotedProjectRoot = JSON.stringify(projectRoot);
   const quotedMycoBinary = JSON.stringify(mycoBinary);
@@ -297,6 +342,7 @@ ${updateBlock}
 # Write restart reason for the new daemon to pick up
 echo ${reasonJson} > ${reasonFile}
 
+${buildReadinessGuard(daemonPort, toVersion)}
 ${buildRestartTail(serviceRestartCommand, quotedProjectRoot)}
 
 # Clean up this script
