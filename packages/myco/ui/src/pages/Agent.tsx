@@ -6,7 +6,7 @@ import { PageHeader } from '../components/ui/page-header';
 import { Surface } from '../components/ui/surface';
 import { MasterDetailSplit } from '../components/ui/master-detail-split';
 import { EmptyDetailHint } from '../components/ui/empty-detail-hint';
-import type { Tab } from '../components/ui/tab-switcher';
+import { TileTabs } from '../components/ui/tile-tabs';
 import { RunList } from '../components/agent/RunList';
 import { RunDetail } from '../components/agent/RunDetail';
 import { RunTaskDialog } from '../components/agent/RunTaskDialog';
@@ -87,12 +87,12 @@ function buildUrlState({ tab, taskId, compareRunIds }: BuildUrlArgs): URLSearchP
 
 /* ---------- Tab definitions ---------- */
 
-const TABS: Tab[] = [
-  { id: 'runs', label: 'Runs' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'comparisons', label: 'Comparisons' },
-  { id: 'config', label: 'Config' },
-];
+const TABS = [
+  { id: 'runs', label: 'Runs', description: 'execution log' },
+  { id: 'tasks', label: 'Tasks', description: 'task library' },
+  { id: 'comparisons', label: 'Comparisons', description: 'side-by-side' },
+  { id: 'config', label: 'Config', description: 'agent settings' },
+] as const;
 
 /* ---------- Component ---------- */
 
@@ -225,14 +225,17 @@ export default function Agent() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 p-6 pb-0">
+      <div className="shrink-0 p-6 pb-0 space-y-6">
         <PageHeader
           title="Agent"
           subtitle="Intelligence runs, task configuration, and operational settings"
-          tabs={TABS}
+          actions={pageAction}
+        />
+        <TileTabs
+          tabs={TABS.map((t) => ({ id: t.id, label: t.label, description: t.description }))}
           activeTab={tab}
           onTabChange={switchTab}
-          actions={pageAction}
+          columns={4}
         />
       </div>
 

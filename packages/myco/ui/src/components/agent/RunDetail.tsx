@@ -3,7 +3,7 @@ import { ArrowLeft, AlertCircle, Loader2, ChevronDown, ChevronRight, RotateCcw }
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Surface } from '../ui/surface';
-import { StatCard } from '../ui/stat-card';
+import { MetricCard } from '../ui/metric-card';
 import { MarkdownContent } from '../ui/markdown-content';
 import { RefreshIndicator } from '../ui/refresh-indicator';
 import { POLL_INTERVALS, MS_PER_SECOND } from '../../lib/constants';
@@ -462,14 +462,14 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
         )}
       </div>
 
-      {/* Stat cards */}
+      {/* Metric tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        <StatCard label="Status" value={capitalize(run.status)} accent="sage" />
-        <StatCard label="Task" value={resolveTaskName(run.task, tasksList)} accent="outline" />
-        <StatCard label="Started" value={formatEpochRelative(run.started_at)} accent="outline" />
-        <StatCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} accent="outline" />
-        <StatCard label="Tokens" value={formatTokens(run.tokens_used)} accent="ochre" />
-        <StatCard label={costCardLabel} value={formatCost(run.cost_usd, run.cost_source)} accent="ochre" />
+        <MetricCard label="Status" value={capitalize(run.status)} tone="sage" />
+        <MetricCard label="Task" value={resolveTaskName(run.task, tasksList)} mono />
+        <MetricCard label="Started" value={formatEpochRelative(run.started_at)} mono />
+        <MetricCard label="Duration" value={formatDuration(run.started_at, run.completed_at)} mono />
+        <MetricCard label="Tokens" value={formatTokens(run.tokens_used)} tone="ochre" mono />
+        <MetricCard label={costCardLabel} value={formatCost(run.cost_usd, run.cost_source)} tone="ochre" mono />
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">

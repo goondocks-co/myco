@@ -5,13 +5,13 @@ import { Inspector } from '../components/mycelium/Inspector';
 import { SporeList } from '../components/mycelium/SporeList';
 import { SporeDetail } from '../components/mycelium/SporeDetail';
 import { PageHeader } from '../components/ui/page-header';
+import { TileTabs } from '../components/ui/tile-tabs';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { useFullGraph, useGraph, useGraphSeeds } from '../hooks/use-spores';
 import { Network, Target, Info, Search } from 'lucide-react';
 import type { GraphNode } from '../hooks/use-graph-canvas';
 import type { SporeSummary } from '../hooks/use-spores';
-import type { Tab } from '../components/ui/tab-switcher';
 import { cn } from '../lib/cn';
 import { formatGraphLabel } from '../lib/graph-labels';
 
@@ -33,11 +33,11 @@ type UiGraphEdge = { source_id: string; target_id: string; label: string; weight
 type ActiveTab = 'graph' | 'spores';
 type ViewMode = 'global' | 'focus';
 
-/** Tab definitions for the PageHeader TabSwitcher. */
-const MYCELIUM_TABS: Tab[] = [
-  { id: 'graph', label: 'Graph' },
-  { id: 'spores', label: 'Spores' },
-];
+/** Tab definitions for the page-level TileTabs control. */
+const MYCELIUM_TABS = [
+  { id: 'graph', label: 'Graph', description: 'connection map' },
+  { id: 'spores', label: 'Spores', description: 'captured knowledge' },
+] as const;
 
 /* ---------- URL state helpers ---------- */
 
@@ -458,13 +458,17 @@ export default function Mycelium() {
   }
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="p-6 space-y-6">
       <PageHeader
         title="Mycelium"
         subtitle="Derived intelligence — spores, entity graph, and synthesized context."
-        tabs={MYCELIUM_TABS}
+      />
+
+      <TileTabs
+        tabs={MYCELIUM_TABS.map((t) => ({ id: t.id, label: t.label, description: t.description }))}
         activeTab={activeTab}
         onTabChange={(tabId) => handleTabChange(tabId as ActiveTab)}
+        columns={2}
       />
 
       {/* Tab content */}
