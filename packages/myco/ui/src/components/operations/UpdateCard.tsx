@@ -89,11 +89,16 @@ export function UpdateCard() {
     setApplyState('applying');
     setErrorMessage(null);
     try {
-      await applyMutation.mutateAsync();
+      const applyResponse = await applyMutation.mutateAsync();
       // The daemon spawns a detached update script and SIGTERMs itself.
-      // Do NOT call restart() — that sends POST /restart which races with
-      // the update script and can restart the OLD version.
-      // Instead, poll /health directly until the new daemon is up.
+      // Poll /health AND verify the running version matches the target
+      // before reloading. A first /health 200 isn't enough: launchd's
+      // KeepAlive can briefly bring the old binary back, and a daemon
+      // started before the npm install finishes can answer /health at
+      // the OLD version. Without the version check the reload can race
+      // an in-flight respawn cycle and land on a connection-refused
+      // screen.
+      const targetVersion = applyResponse.version;
       setApplyState('restarting');
       const deadline = Date.now() + HEALTH_POLL_TIMEOUT_MS;
       await new Promise<void>((resolve, reject) => {
@@ -104,7 +109,13 @@ export function UpdateCard() {
           }
           try {
             const res = await fetch(withBasePath('/health'));
-            if (res.ok) { resolve(); return; }
+            if (res.ok) {
+              const body = await res.json().catch(() => null) as { version?: string } | null;
+              if (body?.version === targetVersion) {
+                resolve();
+                return;
+              }
+            }
           } catch { /* daemon still down — keep polling */ }
           setTimeout(check, HEALTH_POLL_INTERVAL_MS);
         };

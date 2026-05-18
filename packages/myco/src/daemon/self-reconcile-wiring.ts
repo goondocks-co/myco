@@ -108,6 +108,8 @@ async function runUpdateInstall(
     vaultDir: deps.daemonVaultDir,
     mycoBinary,
     serviceRestartCommand,
+    daemonPort: deps.server.port,
+    targetVersion,
   });
   deps.scheduleShutdown();
 }
