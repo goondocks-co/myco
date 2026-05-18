@@ -15,7 +15,7 @@ import { loadMergedConfig } from '../config/loader.js';
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
-import { findPackageRoot } from '../utils/find-package-root.js';
+import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
@@ -837,14 +837,11 @@ export async function main(): Promise<void> {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: errorMessage(err) });
   }
 
-  // Resolve dist/ui/ from the package root. Two candidate origins:
-  //   1. `import.meta.url` — works under dev mode (tsx/bun run) and the
-  //      old tsup build where each JS lives under the package root.
-  //   2. `process.execPath` — needed in the Bun-compiled binary because
-  //      `import.meta.url` there is a `/$bunfs/` virtual path that
-  //      findPackageRoot can't walk. The binary sits at
-  //      `<pkg-root>/vendor/<target>/myco`, so walking up from its real
-  //      path lands on the package root where `dist/ui/` lives.
+  // Resolve dist/ui/ from @goondocks/myco core. Two candidate origins —
+  // `import.meta.url` works under tsx/bun run and the tsup output;
+  // `process.execPath` is needed in the Bun-compiled binary where
+  // `import.meta.url` is a `/$bunfs/` virtual path. `dist/ui/` only
+  // ships in core, never in the platform sub-package.
   let uiDir: string | null = null;
   const uiDevProxyTarget = process.env.MYCO_UI_DEV_PROXY_TARGET || null;
   {
@@ -857,7 +854,7 @@ export async function main(): Promise<void> {
     } catch { /* no real path — ignore */ }
 
     for (const origin of origins) {
-      const root = findPackageRoot(origin);
+      const root = findCorePackageRoot(origin);
       if (!root) continue;
       const candidate = path.join(root, 'dist', 'ui');
       if (fs.existsSync(candidate)) { uiDir = candidate; break; }
