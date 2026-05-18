@@ -19,6 +19,7 @@ import path from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { GROVE_PROJECT_SCOPED_TABLES } from '@myco/db/schema-ddl.js';
 import { openDatabase } from '@myco/db/client.js';
+import { EMBEDDABLE_TABLES } from '@myco/db/queries/embeddings.js';
 import {
   saveProjectManifest,
   saveProjectLocalManifest,
@@ -255,8 +256,10 @@ export function moveProjectBetweenGroves(
     // `openDatabase` only creates an empty file; restoreBackup needs the
     // schema present before its INSERT OR IGNORE statements run.
     ensureGroveDatabase(targetGroveId, mycoHome);
-    withDb(targetDbPath, (targetDb) => {
+    withDbs(sourceDbPath, targetDbPath, (sourceDb, targetDb) => {
+      copyAgents(sourceDb, targetDb);
       restoreBackup(targetDb, snapshotPath);
+      resetTargetEmbeddingFlags(targetDb, projectId);
     });
     marker = { ...marker, phase: 'restored' };
     writeMarker(markerPath, marker);
@@ -326,7 +329,7 @@ export function moveProjectBetweenGroves(
 
   if (orderOf(marker.phase) <= orderOf('committed')) {
     withDb(sourceDbPath, (sourceDb) => {
-      deleteProjectRows(sourceDb, projectId);
+      deleteProjectRows(sourceDb, projectIdsForCleanup(sourceDb, projectId, projectRoot));
     });
     marker = { ...marker, phase: 'cleaned' };
     writeMarker(markerPath, marker);
@@ -449,6 +452,69 @@ function withDb<T>(dbPath: string, fn: (db: Database) => T): T {
   }
 }
 
+function withDbs<T>(
+  firstDbPath: string,
+  secondDbPath: string,
+  fn: (firstDb: Database, secondDb: Database) => T,
+): T {
+  fs.mkdirSync(path.dirname(firstDbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(secondDbPath), { recursive: true });
+  const firstDb = openDatabase(firstDbPath);
+  const secondDb = openDatabase(secondDbPath);
+  try {
+    return fn(firstDb, secondDb);
+  } finally {
+    secondDb.close();
+    firstDb.close();
+  }
+}
+
+function copyAgents(sourceDb: Database, targetDb: Database): void {
+  const agents = sourceDb.prepare(
+    `SELECT
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     FROM agents
+     ORDER BY created_at ASC, id ASC`,
+  ).all() as Array<Record<string, unknown>>;
+  if (agents.length === 0) return;
+
+  const insert = targetDb.prepare(
+    `INSERT OR IGNORE INTO agents (
+       id, name, provider, model, system_prompt_hash, config,
+       source, system_prompt, max_turns, timeout_seconds, tool_access,
+       enabled, created_at, updated_at
+     ) VALUES (
+       ?, ?, ?, ?, ?, ?,
+       ?, ?, ?, ?, ?,
+       ?, ?, ?
+     )`,
+  );
+
+  const tx = targetDb.transaction(() => {
+    for (const row of agents) {
+      insert.run(
+        row.id,
+        row.name,
+        row.provider,
+        row.model,
+        row.system_prompt_hash,
+        row.config,
+        row.source ?? 'built-in',
+        row.system_prompt,
+        row.max_turns,
+        row.timeout_seconds,
+        row.tool_access,
+        row.enabled ?? 1,
+        row.created_at,
+        row.updated_at,
+      );
+    }
+  });
+  tx();
+}
+
 function countProjectRows(db: Database, projectId: string): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const table of MOVE_SCOPED_TABLES) {
@@ -464,13 +530,54 @@ function countProjectRows(db: Database, projectId: string): Record<string, numbe
   return counts;
 }
 
-function deleteProjectRows(db: Database, projectId: string): void {
+function resetTargetEmbeddingFlags(db: Database, projectId: string): void {
+  const tx = db.transaction(() => {
+    for (const table of EMBEDDABLE_TABLES) {
+      try {
+        db.prepare(`UPDATE ${table} SET embedded = 0 WHERE project_id = ?`).run(projectId);
+      } catch {
+        // Older schemas may not have every embeddable table; skip.
+      }
+    }
+  });
+  tx();
+}
+
+function projectIdsForCleanup(
+  db: Database,
+  projectId: string,
+  projectRoot: string,
+): string[] {
+  const ids = new Set<string>([projectId]);
+  try {
+    const rows = db.prepare(
+      `SELECT DISTINCT project_id
+       FROM sessions
+       WHERE project_root = ?
+         AND project_id IS NOT NULL
+         AND project_id <> ''`,
+    ).all(projectRoot) as Array<{ project_id: string }>;
+    for (const row of rows) {
+      if (typeof row.project_id === 'string') ids.add(row.project_id);
+    }
+  } catch {
+    // Older schemas may not have project_root/project_id; fall back to the
+    // project id from the active registry entry.
+  }
+  return [...ids];
+}
+
+function deleteProjectRows(db: Database, projectIds: string[]): void {
+  const uniqueProjectIds = [...new Set(projectIds)].filter((id) => id.length > 0);
+  if (uniqueProjectIds.length === 0) return;
+
   db.run('PRAGMA foreign_keys = OFF');
   try {
     const tx = db.transaction(() => {
       for (const table of MOVE_SCOPED_TABLES) {
         try {
-          db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
+          const stmt = db.prepare(`DELETE FROM ${table} WHERE project_id = ?`);
+          for (const id of uniqueProjectIds) stmt.run(id);
         } catch {
           // Table may not exist on a brand-new target Grove DB; skip.
         }
@@ -482,7 +589,8 @@ function deleteProjectRows(db: Database, projectId: string): void {
       // them from source explicitly here — the moved project must leave
       // no orphans behind.
       try {
-        db.prepare(`DELETE FROM entity_mentions WHERE project_id = ?`).run(projectId);
+        const stmt = db.prepare(`DELETE FROM entity_mentions WHERE project_id = ?`);
+        for (const id of uniqueProjectIds) stmt.run(id);
       } catch {
         // Table may not exist on older schemas; skip.
       }
