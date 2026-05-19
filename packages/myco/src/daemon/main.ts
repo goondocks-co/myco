@@ -16,6 +16,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
+import { attemptDaemonStartup } from './lifecycle-lock-startup.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
@@ -597,12 +598,43 @@ export async function main(): Promise<void> {
     process.env.MYCO_AGENT_DEBUG = '1';
   }
 
-  // Reconcile with any existing daemon for the resolved service. Grove-bound
-  // projects use the per-user global daemon state; legacy projects keep the
-  // historical project-local state file.
-  const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
-  if (reconcileResult === 'step-aside') {
-    process.exit(0);
+  // Single-instance enforcement via OS file lock. The flock attempt is
+  // the first I/O — no SQLite open, schema work, or HTTP bind precedes
+  // it. The process holding the lock IS the daemon; nothing downstream
+  // is consulted as a source of truth for "who owns this."
+  const lockPath = path.join(daemonService.stateDir, 'daemon.lock');
+  const lockResult = attemptDaemonStartup({
+    lockPath,
+    databasePath: dataPaths.databasePath,
+  });
+
+  if (lockResult.outcome === 'refused') {
+    // Defer to the existing reconcile path for the health decision. If
+    // the holder responds healthy: step aside. If not: evict and retry
+    // the lock (another contender may take it during the eviction
+    // window — that's still a step-aside outcome for us).
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock held by another process', {
+      holder_pid: lockResult.holderPid,
+      reason: lockResult.reason,
+    });
+    const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
+    if (reconcileResult === 'step-aside') {
+      process.exit(0);
+    }
+    const retry = attemptDaemonStartup({
+      lockPath,
+      databasePath: dataPaths.databasePath,
+    });
+    if (retry.outcome === 'refused') {
+      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock taken by another contender during eviction — stepping aside', {
+        holder_pid: retry.holderPid,
+      });
+      process.exit(0);
+    }
+  } else {
+    // Acquired on the first try. Skip the legacy reconcile path: there
+    // is no sibling to reconcile against because flock denied none.
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: lockPath });
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
