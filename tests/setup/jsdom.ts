@@ -7,6 +7,7 @@
 // the component under test (ui). Force all `react`/`react-dom` imports to
 // resolve to the root-level copies.
 import path from 'node:path';
+import fs from 'node:fs';
 const repoRoot = path.resolve(import.meta.dir, '..', '..');
 Bun.plugin({
   name: 'react-dedupe',
@@ -24,6 +25,30 @@ Bun.plugin({
     }
   },
 });
+
+// Belt-and-suspenders: warn loudly if nested React copies still exist when
+// jsdom.ts loads. The Bun.plugin above can't re-route already-cached static
+// imports (see scripts/run-bun-tests.mjs::stripDuplicateReact); a dev
+// invoking `bun test` directly — bypassing the canonical runner — will hit
+// "invalid hook call" with no clue why. The warning points at `npm test`,
+// which strips duplicates physically before the jsdom pass.
+const NESTED_UI_NODE_MODULES = [
+  path.join(repoRoot, 'packages/myco/ui/node_modules'),
+  path.join(repoRoot, 'packages/myco-collective/ui/node_modules'),
+  path.join(repoRoot, 'packages/myco-team/ui/node_modules'),
+];
+const NESTED_REACT_PKGS = ['react', 'react-dom', 'react-router-dom', 'react-router', '@tanstack/react-query'];
+for (const base of NESTED_UI_NODE_MODULES) {
+  for (const pkg of NESTED_REACT_PKGS) {
+    const dupe = path.join(base, pkg);
+    if (fs.existsSync(dupe)) {
+      console.warn(
+        `[jsdom-preload] nested copy detected: ${path.relative(repoRoot, dupe)}\n` +
+        '  -> hooks may break under direct `bun test`; prefer `npm test`, which strips these before the jsdom phase.',
+      );
+    }
+  }
+}
 
 import { JSDOM } from 'jsdom';
 

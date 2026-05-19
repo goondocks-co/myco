@@ -427,7 +427,11 @@ function FilterBar({ scope, onScopeChange, searchInput, onSearchChange, scopeCou
   const totalCount = scopeCounts.project + scopeCounts.grove + scopeCounts.machine;
   return (
     <div className="mb-4 flex flex-wrap items-center gap-3">
-      <div className="inline-flex overflow-hidden rounded-md border border-outline-variant/30 bg-surface-container/30">
+      <div
+        role="tablist"
+        aria-label="Filter settings by scope"
+        className="inline-flex overflow-hidden rounded-md border border-[var(--ghost-border)] bg-surface-container-low"
+      >
         {SCOPE_OPTIONS.map((opt) => {
           const count = opt.value === 'all' ? totalCount : scopeCounts[opt.value];
           const active = opt.value === scope;
@@ -435,17 +439,27 @@ function FilterBar({ scope, onScopeChange, searchInput, onSearchChange, scopeCou
             <button
               key={opt.value}
               type="button"
+              role="tab"
+              aria-selected={active}
               onClick={() => onScopeChange(opt.value)}
-              aria-pressed={active}
               className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 font-sans text-sm transition-colors',
+                'relative flex items-center gap-1.5 px-3 py-1.5 transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage/40',
                 active
-                  ? 'bg-primary/15 text-primary'
-                  : 'text-on-surface-variant hover:bg-surface-container-high/40 hover:text-on-surface',
+                  ? 'bg-sage/10 text-on-surface'
+                  : 'text-on-surface-variant hover:bg-surface-container hover:text-on-surface',
               )}
             >
-              <span>{opt.label}</span>
-              <Badge variant="outline" className="px-1 py-0 text-[10px]">{count}</Badge>
+              {active && (
+                <span
+                  aria-hidden
+                  className="absolute inset-x-0 top-0 h-[2px] bg-sage"
+                />
+              )}
+              <span className={cn('myco-display-xs', !active && 'text-on-surface-variant')}>
+                {opt.label}
+              </span>
+              <Badge variant="outline" className="px-1 py-0 text-[10px] font-mono">{count}</Badge>
             </button>
           );
         })}
@@ -557,7 +571,7 @@ function SettingsGroupCard({
               {group.category}
             </div>
             <h2 className="font-sans text-base text-on-surface">{group.label}</h2>
-            <p className="font-sans text-xs text-on-surface-variant">{group.desc}</p>
+            <p className="font-sans text-xs text-outline">{group.desc}</p>
           </div>
           {mixedScopes && (
             <Badge variant="outline" className="text-[10px]">

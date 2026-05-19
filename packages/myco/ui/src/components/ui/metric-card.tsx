@@ -2,6 +2,7 @@ import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '../../lib/cn';
 import { Eyebrow } from './eyebrow';
+import { Sparkline } from './sparkline';
 
 /*
  * 2-up / 4-up metric tile used by Dashboard scope cards, Grove vault summary,
@@ -32,10 +33,12 @@ export interface MetricCardProps
   sub?: ReactNode;
   /** When true, render the value in mono at 16px instead of italic serif at 22px. */
   mono?: boolean;
+  /** Optional inline sparkline (≥2 points). Mirrors StatCard's sparkline slot. */
+  sparklineData?: number[];
 }
 
 export const MetricCard = forwardRef<HTMLDivElement, MetricCardProps>(
-  ({ label, value, sub, tone, mono = false, className, ...props }, ref) => (
+  ({ label, value, sub, tone, mono = false, sparklineData, className, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(metricCardVariants({ tone }), className)}
@@ -44,12 +47,21 @@ export const MetricCard = forwardRef<HTMLDivElement, MetricCardProps>(
       <Eyebrow size="sm">{label}</Eyebrow>
       <div
         className={cn(
-          mono
-            ? 'font-mono text-base leading-tight text-on-surface'
-            : 'myco-display-md text-on-surface',
+          'flex items-end justify-between gap-2',
         )}
       >
-        {value}
+        <div
+          className={cn(
+            mono
+              ? 'font-mono text-base leading-tight text-on-surface'
+              : 'myco-display-md text-on-surface',
+          )}
+        >
+          {value}
+        </div>
+        {sparklineData && sparklineData.length >= 2 && (
+          <Sparkline data={sparklineData} widthPx={80} heightPx={20} className="opacity-60 shrink-0" />
+        )}
       </div>
       {sub != null && (
         <div className="font-mono text-[10px] text-outline">{sub}</div>
