@@ -25,11 +25,8 @@
  */
 
 import path from 'node:path';
-import {
-  clearJsonSentinel,
-  readJsonSentinel,
-  writeJsonSentinel,
-} from '../utils/json-sentinel.js';
+import { readJsonFile } from '../utils/json.js';
+import { clearJsonSentinel, writeJsonSentinel } from '../utils/json-sentinel.js';
 
 const FILE_NAME = 'update.in-progress';
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -65,7 +62,7 @@ export function write(stateDir: string, value: UpdateInProgressSentinel): void {
 }
 
 export function read(stateDir: string): UpdateInProgressSentinel | null {
-  return readJsonSentinel(sentinelPath(stateDir), isSentinel);
+  return readJsonFile(sentinelPath(stateDir), isSentinel);
 }
 
 export function clear(stateDir: string): void {

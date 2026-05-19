@@ -64,7 +64,7 @@ describe('ensureSelfInstalledAsService', () => {
     expect(logger.infos.some((e) => e.message.includes('Wrote updated managed service'))).toBe(true);
   });
 
-  test('passes no force flag — the daemon must never request a supervisor reload during self-install (it would terminate itself)', async () => {
+  test('calls install without force (a supervisor reload would terminate the calling daemon)', async () => {
     const mgr = new FakeManager({ preInstalled: true });
     const logger = new CapturingLogger();
     await ensureSelfInstalledAsService(logger, { manager: mgr, variant: 'prod', executable: fakeBinary() });

@@ -44,7 +44,8 @@ import {
   resolveMachineRuntimeDir,
   setDevServiceMode,
 } from '../grove/paths.js';
-import { clearJsonSentinel, readJsonSentinel } from '../utils/json-sentinel.js';
+import { clearJsonSentinel } from '../utils/json-sentinel.js';
+import { readJsonFile } from '../utils/json.js';
 import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
@@ -548,7 +549,7 @@ function isUpdateErrorSentinel(value: unknown): value is UpdateErrorSentinel {
  * otherwise.
  */
 export function readUpdateError(): string | null {
-  return readJsonSentinel(UPDATE_ERROR_PATH, isUpdateErrorSentinel)?.error ?? null;
+  return readJsonFile(UPDATE_ERROR_PATH, isUpdateErrorSentinel)?.error ?? null;
 }
 
 /**

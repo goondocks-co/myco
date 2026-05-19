@@ -102,20 +102,6 @@ async function runUpdateInstall(
   deps: SelfReconcileWiringDeps,
   targetVersion: string,
 ): Promise<void> {
-  // Belt-and-suspenders: `reconcileSelf` already short-circuits when
-  // `updateInFlight()` is true, so the common path never reaches here
-  // with a sentinel present. This guard catches the narrow race where
-  // `/api/update/apply` writes the sentinel between the reconciler's
-  // gate read and this call — without it, a slow install running
-  // across multiple PowerManager ticks would produce N installers in
-  // rapid succession.
-  //
-  // Speculative full removal of this fallback is parked until a real
-  // production trace from `scheduleShutdownWithAttribution` confirms
-  // which races actually occur — see PR #348 follow-ups.
-  if (updateInProgress.inFlight(deps.daemonService.stateDir)) {
-    return;
-  }
   const mycoBinary = resolveMycoBinary();
   const serviceRestartCommand = await resolveServiceRestartCommand(getServiceManager());
   spawnUpdateScript({

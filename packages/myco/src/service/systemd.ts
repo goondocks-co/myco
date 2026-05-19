@@ -56,7 +56,8 @@ export class SystemdUserServiceManager implements ServiceManager {
   async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
     const unitPath = this.unitPath(spec.label);
     const rendered = renderSystemdUnit(spec);
-    const existing = fs.existsSync(unitPath) ? fs.readFileSync(unitPath, 'utf-8') : null;
+    let existing: string | null = null;
+    try { existing = fs.readFileSync(unitPath, 'utf-8'); } catch { /* ENOENT */ }
     if (existing === rendered) {
       return { changed: false, supervisorReloaded: false };
     }

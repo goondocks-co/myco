@@ -45,7 +45,7 @@ import {
 } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { readJsonSentinel } from '../utils/json-sentinel.js';
+import { readJsonFile } from '../utils/json.js';
 import { derivePort } from './port.js';
 
 export class GroveBindingRequiredError extends Error {
@@ -138,7 +138,7 @@ function isDaemonState(value: unknown): value is DaemonState {
 }
 
 export function readDaemonState(statePath: string): DaemonState | null {
-  return readJsonSentinel(statePath, isDaemonState);
+  return readJsonFile(statePath, isDaemonState);
 }
 
 /**

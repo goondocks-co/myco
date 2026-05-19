@@ -50,10 +50,7 @@ export async function ensureSelfInstalledAsService(
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });
 
-    // Self-install runs inside the daemon's own startup, so we never
-    // pass `force: true` — a supervisor reload would terminate the
-    // calling daemon. When the spec drifts, the new unit file is
-    // written and propagates on the next supervisor-initiated restart.
+    // `force: true` would terminate the calling daemon.
     const result = await mgr.install(spec);
 
     if (!result.changed) {

@@ -65,7 +65,8 @@ export class LaunchdServiceManager implements ServiceManager {
     const plistPath = this.plistPath(spec.label);
     const rendered = renderLaunchdPlist(spec);
 
-    const existing = fs.existsSync(plistPath) ? fs.readFileSync(plistPath, 'utf-8') : null;
+    let existing: string | null = null;
+    try { existing = fs.readFileSync(plistPath, 'utf-8'); } catch { /* ENOENT */ }
     if (existing === rendered) {
       return { changed: false, supervisorReloaded: false };
     }
@@ -75,20 +76,15 @@ export class LaunchdServiceManager implements ServiceManager {
     fs.mkdirSync(path.dirname(spec.stderrPath), { recursive: true });
     atomicWriteFileSync(plistPath, rendered);
 
-    // Fresh install: nothing for the supervisor to terminate, safe to
-    // bootstrap immediately.
     if (existing === null) {
       await this.runner.run(['bootstrap', `gui/${this.uid}`, plistPath]);
       await this.runner.run(['enable', this.domainTarget(spec.label)]);
       return { changed: true, supervisorReloaded: true };
     }
 
-    // Content delta on an already-installed unit. bootout + bootstrap
-    // would terminate the running service — including the calling
-    // daemon when this is `ensureSelfInstalledAsService`. Skip the
-    // reload by default; the new plist takes effect on the next
-    // supervisor-initiated restart. Callers that need an immediate
-    // swap (e.g. `myco service repair`) pass `force: true`.
+    // bootout terminates the running service; default is to write the
+    // new plist and let the next supervisor-initiated restart pick it
+    // up. `force: true` opts into an immediate swap.
     if (!opts.force) {
       return { changed: true, supervisorReloaded: false };
     }

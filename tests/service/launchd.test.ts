@@ -74,7 +74,7 @@ describe('LaunchdServiceManager', () => {
     expect(runner.calls).toEqual([]);
   });
 
-  test('install on changed spec writes the new plist WITHOUT bootout by default — the running daemon must not be terminated by its own self-install path', async () => {
+  test('install on changed spec writes the new plist without bootout when force is omitted', async () => {
     const s1 = spec(home);
     await mgr.install(s1);
     runner.calls.length = 0;
