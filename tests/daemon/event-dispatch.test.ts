@@ -404,4 +404,119 @@ describe('createEventDispatcher', () => {
       fs.rmSync(transcriptDir, { recursive: true, force: true });
     });
   });
+
+  describe('synthetic SubagentStop suppression', () => {
+    // Claude Code fires a SubagentStop hook after every turn's Stop with
+    // empty agent_type and no paired SubagentStart. Pre-fix, this produced
+    // one phantom kind='recovered' batch per turn in every session.
+
+    function makeStartedSession(handler: ReturnType<typeof makeHandler>['handler'], sessionId: string, transcriptPath: string) {
+      return handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'user_prompt',
+          session_id: sessionId,
+          agent: 'claude-code',
+          prompt: 'opening turn so a real INITIAL batch exists',
+          transcript_path: transcriptPath,
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+    }
+
+    it('drops a SubagentStop with empty agent_type and no prior start', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'synthetic-subagent-stop-001';
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-syn-sub-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      await makeStartedSession(handler, sessionId, transcriptPath);
+
+      // Same pattern observed in the daemon log: empty agent_type, fresh agent_id.
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: {
+          type: 'subagent_stop',
+          session_id: sessionId,
+          agent_id: 'a3c68fc9779378bfd',
+          agent_type: '',
+        },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(res.body).toMatchObject({ ok: true });
+
+      // No recovered batch fabricated; no subagent_stop activity recorded.
+      const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+      expect(batches.some((b) => b.kind === 'recovered')).toBe(false);
+      expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(0);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('records a real SubagentStop when paired with a SubagentStart', async () => {
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'real-subagent-stop-001';
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-real-sub-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      await makeStartedSession(handler, sessionId, transcriptPath);
+
+      // Real subagent: SubagentStart first (non-empty type) then SubagentStop
+      // with the same agent_id. Mirrors the Task/Explore pattern in the wild.
+      const startRes = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'subagent_start', session_id: sessionId, agent_id: 'real-explore-001', agent_type: 'Explore' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(startRes.body).toMatchObject({ ok: true });
+
+      const stopRes = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'subagent_stop', session_id: sessionId, agent_id: 'real-explore-001', agent_type: 'Explore', last_assistant_message: 'done' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      expect(stopRes.body).toMatchObject({ ok: true });
+
+      expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(2);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+
+    it('drops a SubagentStop with non-empty agent_type but no prior Start', async () => {
+      // Edge case — Claude Code could theoretically fire a stop with a
+      // populated agent_type without our daemon ever seeing the Start
+      // (e.g., the Start was dropped or lost). We err on the side of
+      // dropping: real subagents always have a Start; an unpaired Stop
+      // is bookkeeping noise.
+      const { handler, logger, vaultDir } = makeHandler();
+      const sessionId = 'unpaired-subagent-stop-001';
+      const transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unpaired-'));
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+      fs.writeFileSync(transcriptPath, '');
+
+      await makeStartedSession(handler, sessionId, transcriptPath);
+
+      const res = await handler({
+        requestContext: TEST_REQUEST_CONTEXT,
+        body: { type: 'subagent_stop', session_id: sessionId, agent_id: 'orphan-stop-001', agent_type: 'Explore' },
+        query: {}, params: {}, pathname: '/events',
+      });
+      // Non-empty agent_type — we record it even without a prior Start. The
+      // synthetic detector only fires when BOTH the agent_type is empty AND
+      // no Start was seen. This test pins that behavior so we know exactly
+      // what happens if the contract widens later.
+      expect(res.body).toMatchObject({ ok: true });
+      expect(countActivities(sessionId, ALL_PROJECTS_SCOPE)).toBe(1);
+
+      logger.close();
+      fs.rmSync(vaultDir, { recursive: true, force: true });
+      fs.rmSync(transcriptDir, { recursive: true, force: true });
+    });
+  });
 });

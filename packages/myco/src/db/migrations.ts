@@ -2739,22 +2739,32 @@ function migrateV43ToV44(db: Database): void {
           AND pb.user_prompt = '(implicit batch — capture recovered)'`,
     ).all() as Array<{ id: number }>;
 
+    const selectActivityIds = db.prepare(
+      `SELECT id FROM activities WHERE prompt_batch_id = ?`,
+    );
+    // activities_fts uses content='activities' (contentless FTS5). The
+    // documented way to remove a row is the 'delete' command; a plain
+    // DELETE on the virtual table can leave the index in a state SQLite
+    // later reports as "database disk image is malformed".
+    const deleteActivityFts = db.prepare(
+      `INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path)
+       VALUES ('delete', ?, '', '', '')`,
+    );
     const deleteActivities = db.prepare(
       `DELETE FROM activities WHERE prompt_batch_id = ?`,
-    );
-    const deleteActivitiesFts = db.prepare(
-      `DELETE FROM activities_fts WHERE rowid IN
-         (SELECT id FROM activities WHERE prompt_batch_id = ?)`,
     );
     const deleteBatch = db.prepare(
       `DELETE FROM prompt_batches WHERE id = ?`,
     );
 
-    for (const { id } of phantomBatchRows) {
-      // FTS rowids match activity ids; remove FTS rows before activities.
-      deleteActivitiesFts.run(id);
-      deleteActivities.run(id);
-      deleteBatch.run(id);
+    for (const { id: batchId } of phantomBatchRows) {
+      const activityIds = selectActivityIds.all(batchId) as Array<{ id: number }>;
+      for (const { id: activityId } of activityIds) {
+        try { deleteActivityFts.run(activityId); }
+        catch { /* FTS row may not exist for activities whose fields were all empty */ }
+      }
+      deleteActivities.run(batchId);
+      deleteBatch.run(batchId);
     }
 
     // 2. Recompute drifted activity_count on remaining batches.
