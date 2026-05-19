@@ -5,6 +5,7 @@ import type { DaemonServiceState } from './service-state.js';
 import { reconcileSelf } from './self-reconcile.js';
 import { serviceLabel, serviceVariantForState } from '../service/labels.js';
 import { spawnUpdateScript } from './update-installer.js';
+import * as updateInProgress from './update-in-progress.js';
 import {
   resolveMycoBinary,
   readUpdateError,
@@ -100,6 +101,14 @@ async function runUpdateInstall(
   deps: SelfReconcileWiringDeps,
   targetVersion: string,
 ): Promise<void> {
+  // Don't fire a redundant installer if `/api/update/apply` or a
+  // prior self-reconcile tick already has one in flight. Without
+  // this guard, a slow install + multiple PowerManager ticks can
+  // produce N installers in rapid succession (the trace's bounce
+  // #3 shape).
+  if (updateInProgress.inFlight(deps.daemonService.stateDir)) {
+    return;
+  }
   const mycoBinary = resolveMycoBinary();
   const serviceRestartCommand = await resolveServiceRestartCommand(getServiceManager());
   spawnUpdateScript({
@@ -111,5 +120,17 @@ async function runUpdateInstall(
     daemonPort: deps.server.port,
     targetVersion,
   });
-  deps.scheduleShutdown();
+  updateInProgress.write(deps.daemonService.stateDir, {
+    targetVersion,
+    startedAt: Date.now(),
+    initiator: 'self-reconcile',
+  });
+
+  // When the service manager will drive the restart, skip the
+  // immediate SIGTERM here. Same reasoning as in handleUpdateApply:
+  // a SIGTERM before `npm install` completes lets launchd respawn
+  // a ghost daemon on the old binary in the gap.
+  if (!serviceRestartCommand) {
+    deps.scheduleShutdown();
+  }
 }

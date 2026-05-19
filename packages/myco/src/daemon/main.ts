@@ -17,6 +17,7 @@ import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { attemptDaemonStartup } from './lifecycle-lock-startup.js';
+import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
@@ -455,6 +456,27 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
     info: (kind, message, data) => logger.info(kind, message, addProject(data)),
     warn: (kind, message, data) => logger.warn(kind, message, addProject(data)),
     error: (kind, message, data) => logger.error(kind, message, addProject(data)),
+  };
+}
+
+/**
+ * Build a `scheduleShutdown` closure annotated with its caller site
+ * and a stack snapshot. The trace from the update-orchestration bug
+ * (multiple bounces per update) was unattributable because all three
+ * scheduleShutdown call sites looked identical in the daemon.log.
+ * Recording the call site at construction + the JS stack at invocation
+ * means the next problematic shutdown identifies itself.
+ */
+function scheduleShutdownWithAttribution(callerLabel: string, logger: DaemonLogger): () => void {
+  return () => {
+    const stack = new Error().stack?.split('\n').slice(1, 6).join('\n').trim() ?? '';
+    logger.info(LOG_KINDS.DAEMON_START, 'Shutdown scheduled', {
+      caller: callerLabel,
+      stack,
+    });
+    setTimeout(() => {
+      process.kill(process.pid, 'SIGTERM');
+    }, RESTART_RESPONSE_FLUSH_MS);
   };
 }
 
@@ -1276,11 +1298,8 @@ export async function main(): Promise<void> {
     currentVersion: server.version,
     daemonPort: server.port,
     globalPrefix,
-    scheduleShutdown: () => {
-      setTimeout(() => {
-        process.kill(process.pid, 'SIGTERM');
-      }, RESTART_RESPONSE_FLUSH_MS);
-    },
+    daemonStateDir: daemonService.stateDir,
+    scheduleShutdown: scheduleShutdownWithAttribution('api/update', logger),
   });
 
   server.registerRoute('GET', '/api/update/status', async (req) => updateHandlers.handleUpdateStatus(req));
@@ -1815,6 +1834,23 @@ export async function main(): Promise<void> {
   }
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
 
+  // Clear any update-in-progress sentinel left by the orchestrator
+  // that triggered this restart. If the sentinel's target version
+  // matches what we're running, the update succeeded — drop the
+  // sentinel so future updates aren't blocked. If it doesn't match
+  // (the install errored before reaching the target), the stale-age
+  // sweep in `update-in-progress.inFlight()` will drop it eventually.
+  {
+    const sentinel = updateInProgress.read(daemonService.stateDir);
+    if (sentinel && sentinel.targetVersion === server.version) {
+      updateInProgress.clear(daemonService.stateDir);
+      logger.info(LOG_KINDS.DAEMON_START, 'Update sentinel cleared on target-version match', {
+        target_version: sentinel.targetVersion,
+        initiator: sentinel.initiator,
+      });
+    }
+  }
+
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
   // content hash baked in (e.g. `./executor-ABC123.js`). When the bundle is
@@ -1878,11 +1914,7 @@ export async function main(): Promise<void> {
     server,
     daemonVaultDir: bootstrapVaultDir,
     projectRoot,
-    scheduleShutdown: () => {
-      setTimeout(() => {
-        process.kill(process.pid, 'SIGTERM');
-      }, RESTART_RESPONSE_FLUSH_MS);
-    },
+    scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 

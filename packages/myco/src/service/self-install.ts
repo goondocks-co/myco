@@ -48,10 +48,9 @@ export async function ensureSelfInstalledAsService(
 
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });
-    // Always call install — its content-compare is the only path that
-    // rewrites a stale plist (e.g. one pointing at a binary location that
-    // no longer exists after a layout change). Short-circuiting on
-    // `isInstalled` strands users with a broken unit file across upgrades.
+    // TODO: drop the "Refreshed" log line when `mgr.install` is a
+    // content-compare no-op. Requires extending the ServiceManager
+    // interface to return whether the operation mutated state.
     await mgr.install(spec);
     logger.info('daemon.service_install', wasInstalled
       ? `Refreshed managed service ${label}`
