@@ -606,31 +606,30 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     if (event.type === 'subagent_stop') {
       const agentId = typeof event.agent_id === 'string' ? event.agent_id : undefined;
       const agentType = typeof event.agent_type === 'string' ? event.agent_type : undefined;
+      // Claude Code fires a SubagentStop hook for the main agent itself
+      // after every turn's Stop (empty agent_type, no preceding Start).
+      // It carries no semantic information; record nothing.
       if (isSyntheticSubagentStop(event.session_id, agentId, agentType)) {
-        // Claude Code fires a SubagentStop hook for the main agent itself
-        // after every turn's Stop (empty agent_type, no preceding Start).
-        // Drop it: it carries no semantic information and would otherwise
-        // be recorded as a noise activity on the just-closed turn's batch.
         logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Dropped synthetic subagent_stop', {
           session_id: event.session_id,
           agent_id: agentId,
         });
-      } else {
-        logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
-          session_id: event.session_id,
-          agent_id: agentId,
-          agent_type: agentType,
-        });
-        try {
-          handleSubagentStop(
-            event.session_id,
-            agentId,
-            agentType,
-            typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
-          );
-        } catch (err) {
-          logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
-        }
+        return { body: { ok: true, ignored: 'synthetic-subagent-stop' } };
+      }
+      logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
+        session_id: event.session_id,
+        agent_id: agentId,
+        agent_type: agentType,
+      });
+      try {
+        handleSubagentStop(
+          event.session_id,
+          agentId,
+          agentType,
+          typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
+        );
+      } catch (err) {
+        logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent stop', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 

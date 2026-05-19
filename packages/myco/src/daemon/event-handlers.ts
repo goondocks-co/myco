@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, BATCH_KIND, RECOVERED_BATCH_SENTINEL } from '@myco/db/queries/batches.js';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
@@ -101,7 +101,7 @@ export function ensureOpenBatch(sessionId: string): void {
   const now = epochSeconds();
   insertBatchStateless({
     session_id: sessionId,
-    user_prompt: '(implicit batch — capture recovered)',
+    user_prompt: RECOVERED_BATCH_SENTINEL,
     started_at: now,
     created_at: now,
     machine_id: getTeamMachineId(),
@@ -111,10 +111,12 @@ export function ensureOpenBatch(sessionId: string): void {
 }
 
 /**
- * Insert an activity and update the linked batch's `activity_count` in one
- * call. Centralises the increment so bookkeeping handlers (subagent_*,
- * task_completed, compact, stop_failure) and `handleToolUse` agree on
- * the invariant. Returns the inserted activity for callers that need it.
+ * Invariant: every activity insert increments the linked batch's
+ * `activity_count`. Pre-PR-#346 only `handleToolUse` honored it; the
+ * bookkeeping handlers (subagent_*, task_completed, compact, stop_failure)
+ * silently skipped the increment, so the cached column drifted from the
+ * real row count on every batch they touched. Routing all callers through
+ * this one helper makes the drift impossible.
  */
 function recordActivity(data: StatelessActivityInsert): ActivityRow {
   const activity = insertActivityWithBatch(data);

@@ -2731,7 +2731,10 @@ function migrateV42ToV43(db: Database): void {
 function migrateV43ToV44(db: Database): void {
   db.prepare('BEGIN').run();
   try {
-    // 1. Identify phantom recovered batches.
+    // 1. Identify phantom recovered batches by the exact `user_prompt`
+    //    body that ensureOpenBatch wrote (RECOVERED_BATCH_SENTINEL in
+    //    batches.ts). Pre-#346 recovery rows carry a different body
+    //    ('(recovered — pre-invariant orphans)') and are left alone.
     const phantomBatchRows = db.prepare(
       `SELECT pb.id AS id
          FROM prompt_batches pb
