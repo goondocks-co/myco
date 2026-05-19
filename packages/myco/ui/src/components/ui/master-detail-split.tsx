@@ -52,7 +52,7 @@ export function MasterDetailSplit({
               <span>Back</span>
             </button>
           )}
-          <div className="flex-1 overflow-y-auto">{detail}</div>
+          <div className="flex-1 overflow-y-auto p-6">{detail}</div>
         </section>
       );
     }
@@ -80,7 +80,13 @@ export function MasterDetailSplit({
       >
         {master}
       </aside>
-      <section aria-label={detailAriaLabel} className="flex-1 overflow-y-auto">
+      {/* Detail padding lives on the primitive so every consumer gets the
+          same gutter between the rail divider and the content body. Without
+          it, callers like Agent's RunDetail butted against the divider
+          while Sessions' SessionDetail (which used to wrap itself in p-6)
+          had breathing room — the resulting spacing mismatch was a real
+          Phase 8 review finding. */}
+      <section aria-label={detailAriaLabel} className="flex-1 overflow-y-auto p-6">
         {detail}
       </section>
     </div>
