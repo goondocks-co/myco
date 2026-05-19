@@ -24,8 +24,12 @@
  * `daemonService.stateDir` lifecycle.
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
+import {
+  clearJsonSentinel,
+  readJsonSentinel,
+  writeJsonSentinel,
+} from '../utils/json-sentinel.js';
 
 const FILE_NAME = 'update.in-progress';
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
@@ -44,32 +48,28 @@ function isInitiator(value: unknown): value is UpdateInitiator {
     && (UPDATE_INITIATORS as readonly string[]).includes(value);
 }
 
+function isSentinel(value: unknown): value is UpdateInProgressSentinel {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<UpdateInProgressSentinel>;
+  return typeof v.targetVersion === 'string'
+    && typeof v.startedAt === 'number'
+    && isInitiator(v.initiator);
+}
+
 export function sentinelPath(stateDir: string): string {
   return path.join(stateDir, FILE_NAME);
 }
 
 export function write(stateDir: string, value: UpdateInProgressSentinel): void {
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(sentinelPath(stateDir), JSON.stringify(value, null, 2) + '\n');
+  writeJsonSentinel(sentinelPath(stateDir), value);
 }
 
 export function read(stateDir: string): UpdateInProgressSentinel | null {
-  const file = sentinelPath(stateDir);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<UpdateInProgressSentinel>;
-    if (typeof parsed.targetVersion !== 'string') return null;
-    if (typeof parsed.startedAt !== 'number') return null;
-    if (!isInitiator(parsed.initiator)) return null;
-    return parsed as UpdateInProgressSentinel;
-  } catch {
-    return null;
-  }
+  return readJsonSentinel(sentinelPath(stateDir), isSentinel);
 }
 
 export function clear(stateDir: string): void {
-  const file = sentinelPath(stateDir);
-  try { fs.unlinkSync(file); } catch { /* already gone */ }
+  clearJsonSentinel(sentinelPath(stateDir));
 }
 
 /**

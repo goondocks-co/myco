@@ -44,6 +44,7 @@ import {
   resolveMachineRuntimeDir,
   setDevServiceMode,
 } from '../grove/paths.js';
+import { clearJsonSentinel, readJsonSentinel } from '../utils/json-sentinel.js';
 import { getPluginVersion } from '../version.js';
 
 // ---------------------------------------------------------------------------
@@ -534,18 +535,20 @@ export function isCacheStale(cache: CachedCheck | null, intervalHours: number): 
 // Error file
 // ---------------------------------------------------------------------------
 
+interface UpdateErrorSentinel { error: string }
+
+function isUpdateErrorSentinel(value: unknown): value is UpdateErrorSentinel {
+  return !!value
+    && typeof value === 'object'
+    && typeof (value as Partial<UpdateErrorSentinel>).error === 'string';
+}
+
 /**
  * Reads ~/.myco/update-error.json. Returns the error string when present, null
  * otherwise.
  */
 export function readUpdateError(): string | null {
-  try {
-    const raw = fs.readFileSync(UPDATE_ERROR_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as { error?: string };
-    return parsed?.error ?? null;
-  } catch {
-    return null;
-  }
+  return readJsonSentinel(UPDATE_ERROR_PATH, isUpdateErrorSentinel)?.error ?? null;
 }
 
 /**
@@ -555,11 +558,7 @@ export function readUpdateError(): string | null {
  * so the next user-driven `myco update` is not gated on a stale failure.
  */
 export function consumeUpdateError(): void {
-  try {
-    fs.unlinkSync(UPDATE_ERROR_PATH);
-  } catch {
-    // Already gone — expected.
-  }
+  clearJsonSentinel(UPDATE_ERROR_PATH);
 }
 
 // ---------------------------------------------------------------------------

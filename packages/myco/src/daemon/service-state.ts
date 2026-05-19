@@ -45,6 +45,7 @@ import {
 } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/tools/request-context.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { readJsonSentinel } from '../utils/json-sentinel.js';
 import { derivePort } from './port.js';
 
 export class GroveBindingRequiredError extends Error {
@@ -130,14 +131,14 @@ export function resolveDaemonLogDir(
   return path.join(resolveDaemonServiceState(vaultDir, options).stateDir, 'logs');
 }
 
+function isDaemonState(value: unknown): value is DaemonState {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<DaemonState>;
+  return typeof v.pid === 'number' && typeof v.port === 'number';
+}
+
 export function readDaemonState(statePath: string): DaemonState | null {
-  try {
-    const info = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as Partial<DaemonState>;
-    if (typeof info.pid !== 'number' || typeof info.port !== 'number') return null;
-    return info as DaemonState;
-  } catch {
-    return null;
-  }
+  return readJsonSentinel(statePath, isDaemonState);
 }
 
 /**
