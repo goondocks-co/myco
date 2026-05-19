@@ -1,6 +1,7 @@
 import { Cpu, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Panel } from '../ui/panel';
+import { IconEyebrow } from '../ui/icon-eyebrow';
 import { MetricCard } from '../ui/metric-card';
 import { useEmbeddingDetails } from '../../hooks/use-embedding-details';
 import { useDatabaseDetails } from '../../hooks/use-database-details';
@@ -19,12 +20,7 @@ export function GroveVaultSummary({ groveSlug }: Props) {
   return (
     <Panel
       tone="sage"
-      eyebrow={
-        <span className="inline-flex items-center gap-1.5">
-          <Cpu className="h-3 w-3" />
-          Grove
-        </span>
-      }
+      eyebrow={<IconEyebrow Icon={Cpu} tone="sage">Grove</IconEyebrow>}
       title="Vault"
       actions={
         <Link

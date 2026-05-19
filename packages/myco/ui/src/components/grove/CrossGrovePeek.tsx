@@ -15,9 +15,7 @@ export function CrossGrovePeek({ currentGroveSlug }: Props) {
 
   if (isLoading && others.length === 0) {
     return (
-      <Panel tone="ochre" eyebrow="Other Groves" title="Loading…">
-        <span />
-      </Panel>
+      <Panel tone="ochre" eyebrow="Other Groves" title="Loading…" />
     );
   }
 

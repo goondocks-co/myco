@@ -29,13 +29,6 @@ const SCOPE_BADGE_TITLES: Record<ScopeBadgeProps['scope'], string> = {
   machine: 'This setting applies to every Grove on this machine',
 };
 
-/*
- * Theme-stable accents per the Phase 7 token map:
- *   personal  → sage   (local overlay you can promote or drop)
- *   project   → ghost-border outline (the shared baseline)
- *   grove     → ochre  (Grove-wide)
- *   all-groves/machine → terracotta (cross-Grove span)
- */
 const SCOPE_BADGE_CLASSES: Record<ScopeBadgeProps['scope'], string> = {
   personal: 'border-sage/40 bg-sage/5 text-sage',
   project: 'border-[var(--ghost-border)] bg-surface-container/40 text-on-surface-variant',

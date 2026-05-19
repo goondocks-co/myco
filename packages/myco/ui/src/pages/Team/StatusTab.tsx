@@ -4,22 +4,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { type TeamStatusResponse } from '../../hooks/use-team';
 import { postJson } from '../../lib/api';
 import { Panel } from '../../components/ui/panel';
+import { IconEyebrow } from '../../components/ui/icon-eyebrow';
+import { Eyebrow } from '../../components/ui/eyebrow';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { CopyableField } from '../../components/team/CopyableField';
 import { RedactedField } from '../../components/team/RedactedField';
-
-const eyebrowClass = 'text-[10px] uppercase tracking-wider text-on-surface-variant';
-
-function IconEyebrow({ Icon, children }: { Icon: typeof Key; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <Icon className="h-3 w-3" />
-      {children}
-    </span>
-  );
-}
 
 export function StatusTab({ status }: { status: TeamStatusResponse }) {
   const queryClient = useQueryClient();
@@ -101,7 +92,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
                 e.preventDefault();
                 setShowMcpSnippet(!showMcpSnippet);
               }}
-              className={`${eyebrowClass} cursor-pointer hover:text-on-surface transition-colors list-none`}
+              className="myco-eyebrow-sm text-on-surface-variant cursor-pointer hover:text-on-surface transition-colors list-none"
             >
               {showMcpSnippet ? 'Hide snippet' : 'Config snippet'}
             </summary>
@@ -140,19 +131,19 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
       >
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="space-y-1">
-            <div className={eyebrowClass}>Machine ID</div>
+            <Eyebrow size="sm">Machine ID</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.machine_id}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Package version</div>
+            <Eyebrow size="sm">Package version</Eyebrow>
             <code className="text-xs font-mono text-on-surface break-all">{status.package_version}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Protocol version</div>
+            <Eyebrow size="sm">Protocol version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.sync_protocol_version}</code>
           </div>
           <div className="space-y-1">
-            <div className={eyebrowClass}>Schema version</div>
+            <Eyebrow size="sm">Schema version</Eyebrow>
             <code className="text-xs font-mono text-on-surface">v{status.schema_version}</code>
           </div>
         </div>
@@ -177,31 +168,31 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
             <div className="grid gap-3 sm:grid-cols-2">
               {status.collective_url && (
                 <div className="space-y-1">
-                  <div className={eyebrowClass}>URL</div>
+                  <Eyebrow size="sm">URL</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_url}</code>
                 </div>
               )}
               {status.collective_project_id && (
                 <div className="space-y-1">
-                  <div className={eyebrowClass}>Project ID</div>
+                  <Eyebrow size="sm">Project ID</Eyebrow>
                   <code className="text-xs font-mono text-on-surface break-all">{status.collective_project_id}</code>
                 </div>
               )}
               <div className="space-y-1">
-                <div className={eyebrowClass}>Last settings sync</div>
+                <Eyebrow size="sm">Last settings sync</Eyebrow>
                 <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_settings_sync ? new Date(status.collective_last_settings_sync * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
               <div className="space-y-1">
-                <div className={eyebrowClass}>Last heartbeat</div>
+                <Eyebrow size="sm">Last heartbeat</Eyebrow>
                 <p className="text-xs font-mono text-on-surface m-0">
                   {status.collective_last_heartbeat ? new Date(status.collective_last_heartbeat * 1000).toLocaleString() : 'Never'}
                 </p>
               </div>
             </div>
             <div className="space-y-1">
-              <div className={eyebrowClass}>Capabilities</div>
+              <Eyebrow size="sm">Capabilities</Eyebrow>
               <div className="flex flex-wrap gap-2">
                 {status.collective_capabilities.map((capability) => (
                   <Badge key={capability} variant="outline">{capability}</Badge>
@@ -209,7 +200,7 @@ export function StatusTab({ status }: { status: TeamStatusResponse }) {
               </div>
             </div>
             <div className="space-y-1">
-              <div className={eyebrowClass}>Effective overrides</div>
+              <Eyebrow size="sm">Effective overrides</Eyebrow>
               <pre className="text-xs bg-surface-container p-3 rounded-lg overflow-x-auto text-on-surface-variant">
                 {JSON.stringify(status.collective_settings, null, 2)}
               </pre>

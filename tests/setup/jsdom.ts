@@ -26,12 +26,7 @@ Bun.plugin({
   },
 });
 
-// Belt-and-suspenders: warn loudly if nested React copies still exist when
-// jsdom.ts loads. The Bun.plugin above can't re-route already-cached static
-// imports (see scripts/run-bun-tests.mjs::stripDuplicateReact); a dev
-// invoking `bun test` directly — bypassing the canonical runner — will hit
-// "invalid hook call" with no clue why. The warning points at `npm test`,
-// which strips duplicates physically before the jsdom pass.
+// Warn when nested React copies still exist; `npm test` strips them before jsdom.
 const NESTED_UI_NODE_MODULES = [
   path.join(repoRoot, 'packages/myco/ui/node_modules'),
   path.join(repoRoot, 'packages/myco-collective/ui/node_modules'),

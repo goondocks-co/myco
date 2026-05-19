@@ -33,7 +33,7 @@ export interface MetricCardProps
   sub?: ReactNode;
   /** When true, render the value in mono at 16px instead of italic serif at 22px. */
   mono?: boolean;
-  /** Optional inline sparkline (≥2 points). Mirrors StatCard's sparkline slot. */
+  /** Optional inline sparkline (≥2 points). */
   sparklineData?: number[];
 }
 

@@ -328,12 +328,7 @@ function NavGroup({
   collapsed: boolean;
   children: React.ReactNode;
 }) {
-  // Expanded: the section header carries the grouping ("PROJECT",
-  // "OBSERVABILITY", …). Collapsed: icons would otherwise run together as one
-  // undifferentiated strip — emit a ghost-border divider above each group so
-  // the visual grouping the header conveys survives collapse. `first:`
-  // resets suppress the divider above the topmost group so the column
-  // doesn't get a stray line under the topbar controls.
+  // Collapsed sidebar: emit a divider above each group to preserve grouping.
   return (
     <div
       role="group"

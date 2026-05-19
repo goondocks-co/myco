@@ -1,19 +1,16 @@
 // @vitest-environment jsdom
 
 /**
- * Phase 7 Block 3 T18 — Dashboard v3 rebuild smoke test.
- *
- * Renders the rebuilt Dashboard with stubbed data hooks and asserts that the
- * four sections from `dashboard-v3.jsx` mount and consume real data:
+ * Renders the Dashboard with stubbed data hooks and asserts that the
+ * four sections mount and consume real data:
  *
  *   1. Page head (project name eyebrow + "Dashboard" title)
- *   2. Two header cards (Project / Grove) — Machine card retired in Phase 8
- *      (daemon health moved to the topbar pill).
- *   3. Active sessions hero panel (plain-language vocab)
+ *   2. Two header cards (Project / Grove)
+ *   3. Active sessions hero panel
  *   4. Two-column Agent runs + Skills + Canopy stack
  *
- * Empty-state branches are exercised in a separate `it()` to confirm the
- * panels render their fallback copy when their hook returns no items.
+ * Empty-state branches are exercised separately to confirm the panels
+ * render their fallback copy when their hook returns no items.
  */
 
 import { describe, expect, it, mock } from 'bun:test';
@@ -284,8 +281,6 @@ describe('Dashboard v3 rebuild (T16/T17)', () => {
     expect(screen.getByText('1280/1310')).toBeTruthy(); // embedded/total
     expect(screen.getByText('12')).toBeTruthy(); // queue depth
 
-    // The Machine scope card was retired in Phase 8; daemon health (incl.
-    // version) now lives in the topbar pill rendered by Layout, not here.
     expect(screen.queryByText('machine scope')).toBeNull();
   });
 

@@ -256,8 +256,7 @@ describe('Unified Settings page', () => {
   it('scope filter narrows visible groups', () => {
     renderPage();
     // Click "Machine" — only groups with at least one machine-scoped field
-    // (Logging, Update) should remain visible. The Phase-8 FilterBar gives
-    // the scope buttons role="tab" (it's a roving tablist now).
+    // (Logging, Update) should remain visible. Scope buttons are role="tab".
     fireEvent.click(screen.getByRole('tab', { name: /^Machine/ }));
 
     // Visible: Logging, Update.

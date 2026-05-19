@@ -12,14 +12,43 @@ import {
 } from '../../hooks/use-team';
 import { useDaemon } from '../../hooks/use-daemon';
 import { postJson, ApiError } from '../../lib/api';
+import { type ReactNode } from 'react';
 import { Panel } from '../../components/ui/panel';
 import { Button } from '../../components/ui/button';
-import { Badge } from '../../components/ui/badge';
+import { Badge, type BadgeProps } from '../../components/ui/badge';
 import { StatCard } from '../../components/ui/stat-card';
 import { QueueTile } from '../../components/team/QueueTile';
 
 const SECONDS_PER_MIN = 60;
 const SECONDS_PER_HOUR = 3600;
+
+function SyncPanel({
+  title,
+  actions,
+  children,
+}: {
+  title: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Panel tone="sage" eyebrow="Sync" title={title} actions={actions}>
+      {children}
+    </Panel>
+  );
+}
+
+const REINDEX_BADGE: Record<'error' | 'running' | 'ready', BadgeProps['variant']> = {
+  error: 'destructive',
+  running: 'outline',
+  ready: 'default',
+};
+
+function reindexBadgeVariant(status: string | null | undefined): BadgeProps['variant'] {
+  if (status === 'error') return REINDEX_BADGE.error;
+  if (status === 'running') return REINDEX_BADGE.running;
+  return REINDEX_BADGE.ready;
+}
 
 function formatAge(seconds: number | null): string {
   if (seconds === null) return '—';
@@ -353,9 +382,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <Panel
-        tone="sage"
-        eyebrow="Sync"
+      <SyncPanel
         title="Worker"
         actions={
           <Badge variant={status.worker_update_available ? 'outline' : 'default'}>
@@ -411,11 +438,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         {upgradeMessage && (
           <p className="text-xs text-on-surface-variant m-0 mt-3">{upgradeMessage}</p>
         )}
-      </Panel>
+      </SyncPanel>
 
-      <Panel
-        tone="sage"
-        eyebrow="Sync"
+      <SyncPanel
         title="Backfill"
         actions={
           <Button size="sm" variant="default" onClick={handleDrain} disabled={draining}>
@@ -432,9 +457,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
           />
         </div>
         {drainMessage && <p className="text-sm text-sage m-0 mt-3">{drainMessage}</p>}
-      </Panel>
+      </SyncPanel>
 
-      <Panel tone="sage" eyebrow="Sync" title="Last handoff">
+      <SyncPanel title="Last handoff">
         {summaryLoading && !syncSummary ? (
           <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : (
@@ -467,11 +492,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             )}
           </>
         )}
-      </Panel>
+      </SyncPanel>
 
-      <Panel
-        tone="sage"
-        eyebrow="Sync"
+      <SyncPanel
         title="Remote store"
         actions={
           syncSummary?.remote ? (
@@ -500,9 +523,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
         ) : (
           <p className="text-sm text-on-surface-variant m-0">{unavailableMessage}</p>
         )}
-      </Panel>
+      </SyncPanel>
 
-      <Panel tone="sage" eyebrow="Sync" title="Queue health">
+      <SyncPanel title="Queue health">
         {queueLoading ? (
           <p className="text-xs text-on-surface-variant m-0">Loading...</p>
         ) : queueUnavailable ? (
@@ -537,11 +560,9 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             />
           </div>
         )}
-      </Panel>
+      </SyncPanel>
 
-      <Panel
-        tone="sage"
-        eyebrow="Sync"
+      <SyncPanel
         title="Failed syncs"
         actions={
           <div className="flex items-center gap-2">
@@ -580,15 +601,13 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
             ))}
           </div>
         )}
-      </Panel>
+      </SyncPanel>
 
       {hasVectorIndexStatus && (
-        <Panel
-          tone="sage"
-          eyebrow="Sync"
+        <SyncPanel
           title="Remote Vector Index"
           actions={
-            <Badge variant={status.vector_reindex_status === 'error' ? 'destructive' : status.vector_reindex_status === 'running' ? 'outline' : 'default'}>
+            <Badge variant={reindexBadgeVariant(status.vector_reindex_status)}>
               {status.vector_reindex_status ?? 'ready'}
             </Badge>
           }
@@ -619,7 +638,7 @@ export function SyncTab({ status }: { status: TeamStatusResponse }) {
               <p className="text-xs text-terracotta break-words m-0">{status.vector_reindex_last_error}</p>
             </div>
           )}
-        </Panel>
+        </SyncPanel>
       )}
     </div>
   );

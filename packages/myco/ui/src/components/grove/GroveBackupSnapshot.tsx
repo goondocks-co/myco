@@ -3,7 +3,7 @@ import { Clock, File as FileIcon, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Panel } from '../ui/panel';
 import { fetchJson } from '../../lib/api';
-import { formatBytes } from '../../lib/format';
+import { formatBytes, formatTimeAgo } from '../../lib/format';
 
 interface BackupMeta {
   machine_id: string;
@@ -15,14 +15,21 @@ interface BackupListResponse {
   backups: BackupMeta[];
 }
 
-function formatRelative(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(ms / 60_000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+function backupTitle({
+  error,
+  isLoading,
+  backups,
+  last,
+}: {
+  error: Error | null;
+  isLoading: boolean;
+  backups: BackupMeta[] | null;
+  last: BackupMeta | null;
+}): string {
+  if (error) return 'Snapshot unavailable';
+  if (isLoading || !backups) return '—';
+  if (last) return formatTimeAgo(last.modified_at);
+  return 'No backups yet';
 }
 
 export function GroveBackupSnapshot() {
@@ -34,19 +41,11 @@ export function GroveBackupSnapshot() {
   const last = backups && backups.length > 0 ? backups[0] : null;
   const recent = backups ? backups.slice(1, 5) : [];
 
-  const title = error
-    ? 'Snapshot unavailable'
-    : isLoading || !backups
-      ? '—'
-      : last
-        ? formatRelative(last.modified_at)
-        : 'No backups yet';
-
   return (
     <Panel
       tone="sage"
       eyebrow="Backup"
-      title={title}
+      title={backupTitle({ error: error ?? null, isLoading, backups, last })}
       actions={
         <Link
           to="/settings#backup"
@@ -73,7 +72,7 @@ export function GroveBackupSnapshot() {
             </div>
             <div className="mt-1 flex gap-x-3 text-xs text-on-surface-variant">
               <span className="inline-flex items-center gap-1">
-                <Clock className="h-3 w-3" />{formatRelative(last.modified_at)}
+                <Clock className="h-3 w-3" />{formatTimeAgo(last.modified_at)}
               </span>
               <span>·</span>
               <span>{formatBytes(last.size_bytes)}</span>
@@ -85,7 +84,7 @@ export function GroveBackupSnapshot() {
               <ul className="mt-1 m-0 p-0 list-none flex flex-col gap-0.5">
                 {recent.map((b) => (
                   <li key={b.file_name} className="flex justify-between text-xs text-on-surface-variant">
-                    <span>{formatRelative(b.modified_at)}</span>
+                    <span>{formatTimeAgo(b.modified_at)}</span>
                     <span>{formatBytes(b.size_bytes)}</span>
                   </li>
                 ))}

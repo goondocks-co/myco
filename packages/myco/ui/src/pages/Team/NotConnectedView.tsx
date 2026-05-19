@@ -3,6 +3,7 @@ import { WifiOff, RefreshCw } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { postJson } from '../../lib/api';
 import { Panel } from '../../components/ui/panel';
+import { IconEyebrow } from '../../components/ui/icon-eyebrow';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { StepCircle } from '../../components/ui/step-circle';
@@ -74,12 +75,7 @@ function ConnectForm({
   return (
     <Panel
       tone="sage"
-      eyebrow={
-        <span className="inline-flex items-center gap-1.5">
-          <WifiOff className="h-3 w-3" />
-          Connect Grove
-        </span>
-      }
+      eyebrow={<IconEyebrow Icon={WifiOff} tone="sage">Connect Grove</IconEyebrow>}
       title="Paste credentials"
     >
       <p className="text-sm text-on-surface-variant m-0 mb-3">

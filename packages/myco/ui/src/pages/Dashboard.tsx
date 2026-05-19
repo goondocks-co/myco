@@ -17,12 +17,7 @@ import { Sparkline } from '../components/ui/sparkline';
 import { formatEpochAgo, basename } from '../lib/format';
 import { cn } from '../lib/cn';
 
-/*
- * Dashboard layout: project + grove header cards → active-sessions hero →
- * two-column row with agent runs on the left and a Skills + Canopy stack on
- * the right. Daemon health lives in the topbar pill (DaemonStatusPill), so
- * the Dashboard no longer carries a machine card.
- */
+// Daemon health renders in the topbar pill (DaemonStatusPill), not here.
 
 const ACTIVE_SESSIONS_LIMIT = 6;
 const RUNS_LIMIT = 6;
@@ -229,7 +224,7 @@ function ActiveSessionsHero({
       : `${totalActiveCount} ${totalActiveCount === 1 ? 'active session' : 'active sessions'}`;
 
   return (
-    <Panel accent="sage" eyebrow={`Active sessions · ${totalActiveCount}`} title={headline}>
+    <Panel tone="sage" eyebrow={`Active sessions · ${totalActiveCount}`} title={headline}>
       {sessions.length === 0 ? (
         <p className="font-sans text-sm text-on-surface-variant m-0">
           Sessions appear here when a symbiont starts a new conversation.

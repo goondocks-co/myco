@@ -12,7 +12,6 @@ import { DEFAULT_PAGE_SIZE } from '../../lib/constants';
 import { shortSession, formatEpochAgo } from '../../lib/format';
 import { ReleaseStateDot } from '../release-state/ReleaseStateBadge';
 import { sectionRows } from '../../lib/section-rows';
-import { cn } from '../../lib/cn';
 import { forwardRef, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useListKeyboardNav } from '../../hooks/use-list-keyboard-nav';
 
@@ -52,15 +51,12 @@ const SessionCardRow = forwardRef<HTMLDivElement, {
     <Row
       ref={ref}
       isActive={isSelected}
+      isCursor={isCursor}
       accent="sage"
       onClick={onClick}
       aria-label={`Session: ${sessionLabel}`}
       data-selected={isSelected || undefined}
-      data-cursor={isCursor || undefined}
-      className={cn(
-        'group',
-        isCursor && !isSelected && 'bg-surface-container/60 ring-1 ring-inset ring-sage/30',
-      )}
+      className="group"
     >
       {/* Top row: status + title on the left, time + sparkline + actions on the right */}
       <div className="flex items-start justify-between gap-3">
