@@ -291,16 +291,17 @@ function parseFailuresFromJunit(file) {
  * Implemented with synchronous spawnSync + a child that writes to a pipe
  * to `tee` via shell — simplest cross-platform path that preserves exit
  * code without requiring Node's async event loop in this script.
+ *
+ * Explicit `/bin/bash` invocation: `set -o pipefail` is a bash-only
+ * feature. Ubuntu CI runners ship dash as `/bin/sh`, which rejects it
+ * with "Illegal option -o pipefail" and aborts before any tests run.
+ * bash is reliably present on every CI runner and on macOS.
  */
 function runWithTee(command, args, teeFile) {
-  // Use /bin/sh to set pipefail so the parent's exit code reflects the
-  // child's status (not tee's). `tee -a` is fine because we pre-truncated
-  // the file in runPhase. Quote args defensively — they're internal so
-  // we control them, but defense in depth never hurts.
   const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
   const teePath = teeFile.replace(/'/g, `'\\''`);
   const shellCmd = `set -o pipefail; ${command} ${escaped} 2>&1 | tee -a '${teePath}'`;
-  const result = spawnSync('/bin/sh', ['-c', shellCmd], {
+  const result = spawnSync('/bin/bash', ['-c', shellCmd], {
     cwd: REPO,
     stdio: 'inherit',
     env: process.env,
