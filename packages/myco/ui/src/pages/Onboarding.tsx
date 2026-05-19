@@ -1,9 +1,10 @@
 import { Terminal } from 'lucide-react';
+import { PageContainer } from '../components/ui/page-container';
 
 export default function Onboarding() {
   return (
-    <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center px-6 py-12">
-      <div className="space-y-4">
+    <PageContainer variant="narrow" className="min-h-full justify-center">
+      <div className="flex flex-col gap-4">
         <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
           <Terminal className="h-5 w-5" />
         </div>
@@ -17,6 +18,6 @@ export default function Onboarding() {
           <code>myco init</code>
         </pre>
       </div>
-    </div>
+    </PageContainer>
   );
 }

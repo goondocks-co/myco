@@ -8,6 +8,7 @@ const eyebrowVariants = cva('inline-flex items-center myco-eyebrow', {
       default: 'text-outline',
       sage: 'text-sage',
       ochre: 'text-ochre',
+      terra: 'text-terracotta',
       outline: 'text-outline',
     },
     size: {

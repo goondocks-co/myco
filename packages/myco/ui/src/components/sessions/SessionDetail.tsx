@@ -129,7 +129,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
   if (isLoading) {
     return (
-      <div className="p-6 space-y-4">
+      <div className="space-y-4">
         <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           <span className="font-sans text-sm">Session Archive</span>
@@ -144,7 +144,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
 
   if (isError || !session) {
     return (
-      <div className="p-6 space-y-4">
+      <div className="space-y-4">
         <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="gap-2 text-on-surface-variant">
           <ArrowLeft className="h-4 w-4" />
           <span className="font-sans text-sm">Session Archive</span>
@@ -165,7 +165,7 @@ export function SessionDetail({ id }: SessionDetailProps) {
     : null;
 
   return (
-    <div className="p-6 space-y-6 overflow-hidden">
+    <div className="space-y-6 overflow-hidden">
       {/* Back nav */}
       <Button
         variant="ghost"

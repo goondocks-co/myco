@@ -102,4 +102,41 @@ describe('findCorePackageRoot', () => {
     fs.mkdirSync(deep, { recursive: true });
     expect(findCorePackageRoot(deep)).toBe(core);
   });
+
+  it('resolves core from a sibling platform package in the source monorepo', () => {
+    // `packages/myco/` (core) and `packages/myco-<arch>/bin/myco` (binary)
+    // are siblings under `packages/` in a source checkout. Ancestor-walk
+    // from the binary's bin/ never visits core; the sibling-package
+    // fallback should pick it up via the `myco-<arch>` -> `myco/` mapping.
+    const packagesDir = path.join(tmp, 'packages');
+    const core = path.join(packagesDir, 'myco');
+    writePkg(core, { name: '@goondocks/myco' });
+    const platform = path.join(packagesDir, 'myco-darwin-arm64');
+    writePkg(platform, { name: '@goondocks/myco-darwin-arm64' });
+    const binDir = path.join(platform, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    expect(findCorePackageRoot(binDir)).toBe(core);
+  });
+
+  it('does not match a sibling package whose name is not @goondocks/myco', () => {
+    // Guard against false positives — only `myco/` named `@goondocks/myco`
+    // counts as core. A sibling named anything else must not resolve.
+    const packagesDir = path.join(tmp, 'packages');
+    const wrongCore = path.join(packagesDir, 'myco');
+    writePkg(wrongCore, { name: 'some-other-package' });
+    const platform = path.join(packagesDir, 'myco-darwin-arm64');
+    writePkg(platform, { name: '@goondocks/myco-darwin-arm64' });
+    const binDir = path.join(platform, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    expect(findCorePackageRoot(binDir)).toBeUndefined();
+  });
+
+  it('does not treat a non-platform @goondocks/myco-* package as the platform marker', () => {
+    // `@goondocks/myco-shared` is a sibling but NOT a platform package —
+    // the sibling-fallback should not engage off the wrong package.
+    const packagesDir = path.join(tmp, 'packages');
+    const shared = path.join(packagesDir, 'myco-shared');
+    writePkg(shared, { name: '@goondocks/myco-shared' });
+    expect(findCorePackageRoot(path.join(shared, 'src'))).toBeUndefined();
+  });
 });

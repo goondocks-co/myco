@@ -1,18 +1,16 @@
 // @vitest-environment jsdom
 
 /**
- * Phase 7 Block 3 T18 — Dashboard v3 rebuild smoke test.
- *
- * Renders the rebuilt Dashboard with stubbed data hooks and asserts that the
- * four sections from `dashboard-v3.jsx` mount and consume real data:
+ * Renders the Dashboard with stubbed data hooks and asserts that the
+ * four sections mount and consume real data:
  *
  *   1. Page head (project name eyebrow + "Dashboard" title)
- *   2. Three scope cards (Project / Grove / Machine)
+ *   2. Two header cards (Project / Grove)
  *   3. Active sessions hero panel
  *   4. Two-column Agent runs + Skills + Canopy stack
  *
- * Empty-state branches are exercised in a separate `it()` to confirm the
- * panels render their fallback copy when their hook returns no items.
+ * Empty-state branches are exercised separately to confirm the panels
+ * render their fallback copy when their hook returns no items.
  */
 
 import { describe, expect, it, mock } from 'bun:test';
@@ -266,11 +264,10 @@ describe('Dashboard v3 rebuild (T16/T17)', () => {
     expect(screen.getAllByText('goondocks').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('renders the three scope cards with their data tiles', () => {
+  it('renders the two header cards with their data tiles', () => {
     renderPage();
-    expect(screen.getByText('project scope')).toBeTruthy();
-    expect(screen.getByText('grove scope')).toBeTruthy();
-    expect(screen.getByText('machine scope')).toBeTruthy();
+    expect(screen.getByText('Project')).toBeTruthy();
+    expect(screen.getByText('Grove')).toBeTruthy();
 
     // Project tiles surface the vault counts from the stats fixture.
     expect(screen.getByText('412')).toBeTruthy(); // session_count
@@ -284,27 +281,27 @@ describe('Dashboard v3 rebuild (T16/T17)', () => {
     expect(screen.getByText('1280/1310')).toBeTruthy(); // embedded/total
     expect(screen.getByText('12')).toBeTruthy(); // queue depth
 
-    // Machine tiles surface the daemon version.
-    expect(screen.getByText('0.15.0')).toBeTruthy();
+    expect(screen.queryByText('machine scope')).toBeNull();
   });
 
   it('renders the active-sessions hero with both session titles', () => {
     renderPage();
-    expect(screen.getByText(/threads weaving/)).toBeTruthy();
+    // Heading-level assertion: the hero <h3> shows the plain-language count.
+    expect(screen.getByRole('heading', { name: /^\d+ active sessions?$/i })).toBeTruthy();
     expect(screen.getByText('Phase 7 Block 3 dashboard rebuild')).toBeTruthy();
     expect(screen.getByText('Cold-start embed backlog trace')).toBeTruthy();
   });
 
   it('renders agent runs panel with running + recent rows', () => {
     renderPage();
-    expect(screen.getByText('In flight')).toBeTruthy();
+    expect(screen.getByText('Recent')).toBeTruthy();
     expect(screen.getByText('skill-survey')).toBeTruthy();
     expect(screen.getByText('title-summary')).toBeTruthy();
   });
 
-  it('renders skills panel with the recently-touched grid', () => {
+  it('renders skills panel with the recently-evolved grid', () => {
     renderPage();
-    expect(screen.getByText('Recently touched')).toBeTruthy();
+    expect(screen.getByText('Recently evolved')).toBeTruthy();
     expect(screen.getByText('Phase 7 UI evolution')).toBeTruthy();
     expect(screen.getByText('Safe config updates')).toBeTruthy();
   });

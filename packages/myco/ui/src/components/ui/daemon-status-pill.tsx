@@ -17,28 +17,42 @@ export function formatUptime(seconds: number): string {
 
 export interface DaemonStatusPillViewProps {
   uptimeSeconds: number | undefined;
+  version?: string;
   className?: string;
 }
 
-export function DaemonStatusPillView({ uptimeSeconds, className }: DaemonStatusPillViewProps) {
+export function DaemonStatusPillView({ uptimeSeconds, version, className }: DaemonStatusPillViewProps) {
   return (
     <div
       className={cn(
         'inline-flex items-center gap-2 rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1',
         className,
       )}
-      title="Daemon uptime"
+      title={version ? `Daemon uptime · ${version}` : 'Daemon uptime'}
+      aria-live="polite"
     >
       <StatusDot tone="sage" />
       <span className="font-sans text-[10px] uppercase tracking-wider text-on-surface-variant">daemon</span>
       <span className="font-mono text-xs text-on-surface">
         {uptimeSeconds !== undefined ? formatUptime(uptimeSeconds) : '—'}
       </span>
+      {version && (
+        <>
+          <span aria-hidden className="text-on-surface-variant">·</span>
+          <span className="font-mono text-xs text-on-surface-variant">v{version}</span>
+        </>
+      )}
     </div>
   );
 }
 
 export function DaemonStatusPill({ className }: { className?: string }) {
   const { data } = useDaemon();
-  return <DaemonStatusPillView uptimeSeconds={data?.daemon.uptime_seconds} className={className} />;
+  return (
+    <DaemonStatusPillView
+      uptimeSeconds={data?.daemon.uptime_seconds}
+      version={data?.daemon.version}
+      className={className}
+    />
+  );
 }

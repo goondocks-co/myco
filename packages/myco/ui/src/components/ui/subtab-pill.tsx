@@ -2,8 +2,7 @@ import { cn } from '../../lib/cn';
 
 /*
  * Inline pill row used as the sub-tab control under a TileTabs row — e.g.
- * Cortex > Canopy then Settings / Entries / Map. Distinct from <TabSwitcher>,
- * which keeps the older underlined-text style for compact contexts (Team page).
+ * Cortex > Canopy then Settings / Entries / Map.
  */
 
 export interface SubtabPillItem {

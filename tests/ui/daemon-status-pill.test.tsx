@@ -31,4 +31,9 @@ describe('DaemonStatusPillView', () => {
     render(<DaemonStatusPillView uptimeSeconds={undefined} />);
     expect(screen.getByText('—')).toBeDefined();
   });
+
+  it('appends version when provided', () => {
+    render(<DaemonStatusPillView uptimeSeconds={60} version="0.25.1" />);
+    expect(screen.getByText('v0.25.1')).toBeDefined();
+  });
 });

@@ -2,6 +2,7 @@ import { useProjectSelection } from '../hooks/use-project-selection';
 import { useDaemon } from '../hooks/use-daemon';
 import { PageHeader } from '../components/ui/page-header';
 import { PageLoading } from '../components/ui/page-loading';
+import { PageContainer } from '../components/ui/page-container';
 import { GroveIdentityCard } from '../components/grove/GroveIdentityCard';
 import { DaemonStatusCard } from '../components/grove/DaemonStatusCard';
 import { TeamStatusCard } from '../components/grove/TeamStatusCard';
@@ -26,7 +27,7 @@ export default function GroveDashboard() {
   const grove = selection.grove;
 
   return (
-    <div className="space-y-6 p-6 max-w-6xl mx-auto">
+    <PageContainer>
       <PageHeader
         title={grove.name}
         subtitle="Database boundary for this set of projects. Embedding, vault, backups, and team sync are all Grove-scoped."
@@ -58,6 +59,6 @@ export default function GroveDashboard() {
       </div>
 
       <CrossGrovePeek currentGroveSlug={grove.slug} />
-    </div>
+    </PageContainer>
   );
 }
