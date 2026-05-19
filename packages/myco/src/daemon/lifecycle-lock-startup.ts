@@ -26,6 +26,14 @@ export interface AttemptDaemonStartupOptions {
   /** Optional override for the command string written to the lock
    *  file. Defaults to `process.argv.join(' ')`. */
   command?: string;
+  /** If non-zero and the first acquire is denied, poll on a short
+   *  interval until the budget elapses. Lets a respawn (e.g. `myco
+   *  update` post-install, `launchctl bootout` followed by a new
+   *  daemon) tolerate the brief window where the prior holder is
+   *  mid-SIGTERM. Default 0 (one-shot). */
+  waitForReleaseMs?: number;
+  /** Interval between poll attempts when `waitForReleaseMs` is set. */
+  pollIntervalMs?: number;
 }
 
 export interface AttemptDaemonStartupAcquired {
@@ -44,22 +52,31 @@ export type AttemptDaemonStartupResult =
   | AttemptDaemonStartupAcquired
   | AttemptDaemonStartupRefused;
 
-export function attemptDaemonStartup(
+export async function attemptDaemonStartup(
   opts: AttemptDaemonStartupOptions,
-): AttemptDaemonStartupResult {
+): Promise<AttemptDaemonStartupResult> {
   const acquireOpts: AcquireOptions = {};
   if (opts.command !== undefined) acquireOpts.command = opts.command;
-  const result = LifecycleLock.acquire(opts.lockPath, acquireOpts);
-  if (result.acquired) {
-    return { outcome: 'acquired', lock: result.lock };
+  const waitBudgetMs = Math.max(0, opts.waitForReleaseMs ?? 0);
+  const pollIntervalMs = Math.max(10, opts.pollIntervalMs ?? 100);
+  const deadline = Date.now() + waitBudgetMs;
+
+  let lastResult = LifecycleLock.acquire(opts.lockPath, acquireOpts);
+  while (!lastResult.acquired && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+    lastResult = LifecycleLock.acquire(opts.lockPath, acquireOpts);
+  }
+
+  if (lastResult.acquired) {
+    return { outcome: 'acquired', lock: lastResult.lock };
   }
   return {
     outcome: 'refused',
-    holder: result.holder,
-    holderPid: result.holderPid,
+    holder: lastResult.holder,
+    holderPid: lastResult.holderPid,
     reason:
-      result.holderPid !== null
-        ? `another daemon is running (pid ${result.holderPid})`
+      lastResult.holderPid !== null
+        ? `another daemon is running (pid ${lastResult.holderPid})`
         : 'another daemon is running (holder pid unavailable)',
   };
 }

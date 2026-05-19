@@ -602,17 +602,26 @@ export async function main(): Promise<void> {
   // the first I/O — no SQLite open, schema work, or HTTP bind precedes
   // it. The process holding the lock IS the daemon; nothing downstream
   // is consulted as a source of truth for "who owns this."
+  //
+  // waitForReleaseMs tolerates the brief window where the prior holder
+  // is mid-SIGTERM (e.g. `myco update` post-install respawn, `launchctl
+  // bootout` followed by `myco daemon`). The bounded poll lets the
+  // handoff complete without each side hitting the legacy reconcile
+  // path's HTTP probe.
   const lockPath = path.join(daemonService.stateDir, 'daemon.lock');
-  const lockResult = attemptDaemonStartup({
+  let daemonLifecycleLock: import('./lifecycle-lock-startup.js').AttemptDaemonStartupAcquired['lock'] | null = null;
+  const lockResult = await attemptDaemonStartup({
     lockPath,
     databasePath: dataPaths.databasePath,
+    waitForReleaseMs: 2000,
   });
 
   if (lockResult.outcome === 'refused') {
-    // Defer to the existing reconcile path for the health decision. If
-    // the holder responds healthy: step aside. If not: evict and retry
-    // the lock (another contender may take it during the eviction
-    // window — that's still a step-aside outcome for us).
+    // Holder is still alive after the wait window. Defer to the
+    // existing reconcile path for the health decision. If healthy:
+    // step aside. If not: evict and retry the lock (another
+    // contender may take it during the eviction window — still a
+    // step-aside outcome for us).
     logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock held by another process', {
       holder_pid: lockResult.holderPid,
       reason: lockResult.reason,
@@ -621,9 +630,10 @@ export async function main(): Promise<void> {
     if (reconcileResult === 'step-aside') {
       process.exit(0);
     }
-    const retry = attemptDaemonStartup({
+    const retry = await attemptDaemonStartup({
       lockPath,
       databasePath: dataPaths.databasePath,
+      waitForReleaseMs: 2000,
     });
     if (retry.outcome === 'refused') {
       logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock taken by another contender during eviction — stepping aside', {
@@ -631,9 +641,12 @@ export async function main(): Promise<void> {
       });
       process.exit(0);
     }
+    daemonLifecycleLock = retry.lock;
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired after eviction', { lock_path: lockPath });
   } else {
-    // Acquired on the first try. Skip the legacy reconcile path: there
-    // is no sibling to reconcile against because flock denied none.
+    // Acquired on the first try (or during the wait window). Skip the
+    // legacy reconcile path — flock denied none.
+    daemonLifecycleLock = lockResult.lock;
     logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: lockPath });
   }
 
@@ -2011,6 +2024,12 @@ export async function main(): Promise<void> {
     runtimeCache.closeAll();
     vectorStore.close();
     closeDatabase();
+    // Release the lifecycle lock as the last visible step so a respawn
+    // can acquire it without depending on Node's `exit` handler ordering.
+    if (daemonLifecycleLock) {
+      daemonLifecycleLock.release();
+      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock released');
+    }
     logger.close();
     process.exit(0);
   };
