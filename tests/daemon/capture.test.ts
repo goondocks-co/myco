@@ -151,13 +151,19 @@ describe('daemon capture flow', () => {
       created_at: now,
     });
 
-    // Tool use without a prior user prompt — should still record activity
+    // Tool use without a prior user prompt — handler opens an implicit
+    // 'recovered' batch so the activity has a parent.
     handleToolUse(sessionId, 'claude-code', 'Read', { file_path: '/tmp/file.ts' }, 'contents', TEST_PROJECT_ROOT);
 
     const activities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
     expect(activities.length).toBe(1);
-    expect(activities[0].prompt_batch_id).toBeNull();
+    expect(activities[0].prompt_batch_id).not.toBeNull();
     expect(activities[0].tool_name).toBe('Read');
+
+    const batches = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batches.length).toBe(1);
+    expect(batches[0].kind).toBe('recovered');
+    expect(activities[0].prompt_batch_id).toBe(batches[0].id);
   });
 
   it('extracts file_path from camelCase filePath tool input', async () => {
@@ -454,21 +460,25 @@ describe('stateless DB functions', () => {
       expect(activity.file_path).toBe('/tmp/test.ts');
     });
 
-    it('sets prompt_batch_id to NULL when no open batch exists', async () => {
+    it('rejects insert when no open batch exists (NOT NULL FK enforced)', async () => {
       const sessionId = 'test-activity-batch-002';
       const now = epochNow();
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
-      // No batch created — activity should have NULL batch
-      const activity = insertActivityWithBatch({
-        session_id: sessionId,
-        tool_name: 'Read',
-        timestamp: now,
-        created_at: now,
-      });
-
-      expect(activity.prompt_batch_id).toBeNull();
+      // Schema v43 enforces activities.prompt_batch_id NOT NULL. The inline
+      // subquery in insertActivityWithBatch resolves to NULL when no batch
+      // is open, so the INSERT fails the constraint. This is the safety
+      // net — `handleToolUse` is responsible for opening a recovery batch
+      // before this path runs.
+      expect(() =>
+        insertActivityWithBatch({
+          session_id: sessionId,
+          tool_name: 'Read',
+          timestamp: now,
+          created_at: now,
+        }),
+      ).toThrow();
     });
 
     it('links to the most recent open batch when multiple exist', async () => {
@@ -492,7 +502,7 @@ describe('stateless DB functions', () => {
       expect(activity.prompt_batch_id).toBe(batch2.id);
     });
 
-    it('does not link to closed batches', async () => {
+    it('does not link to closed batches — rejects insert under v43 invariant', async () => {
       const sessionId = 'test-activity-batch-004';
       const now = epochNow();
 
@@ -502,15 +512,18 @@ describe('stateless DB functions', () => {
       insertBatchStateless({ session_id: sessionId, user_prompt: 'closed', created_at: now });
       closeOpenBatches(sessionId, now + 1);
 
-      // Activity should have NULL batch since only closed batches exist
-      const activity = insertActivityWithBatch({
-        session_id: sessionId,
-        tool_name: 'Read',
-        timestamp: now + 2,
-        created_at: now + 2,
-      });
-
-      expect(activity.prompt_batch_id).toBeNull();
+      // Only closed batches exist → inline subquery returns no row → NULL
+      // → fails NOT NULL constraint. Insertion at this level is rejected;
+      // the runtime caller (handleToolUse) is expected to open a fresh
+      // recovery batch first.
+      expect(() =>
+        insertActivityWithBatch({
+          session_id: sessionId,
+          tool_name: 'Read',
+          timestamp: now + 2,
+          created_at: now + 2,
+        }),
+      ).toThrow();
     });
 
     it('accepts canopy_injection_tokens in the same INSERT (no follow-up UPDATE needed)', async () => {
@@ -518,6 +531,7 @@ describe('stateless DB functions', () => {
       const now = epochNow();
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+      insertBatchStateless({ session_id: sessionId, user_prompt: 'p', created_at: now });
 
       const activity = insertActivityWithBatch({
         session_id: sessionId,
@@ -537,6 +551,7 @@ describe('stateless DB functions', () => {
       const now = epochNow();
 
       upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
+      insertBatchStateless({ session_id: sessionId, user_prompt: 'p', created_at: now });
 
       const activity = insertActivityWithBatch({
         session_id: sessionId,
@@ -649,37 +664,40 @@ describe('daemon-restart resilience', () => {
     expect(activities[1].prompt_batch_id).toBe(postBatch.id);
   });
 
-  it('activity before any post-restart batch gets NULL batch', async () => {
+  it('activity before any post-restart batch is captured via implicit recovery batch (v43 invariant)', async () => {
     const sessionId = 'test-restart-orphan-001';
     const now = epochNow();
 
     upsertSession({ id: sessionId, agent: 'claude-code', started_at: now, created_at: now });
 
     // Pre-restart: open batch, close it
-    insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
+    const preBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'pre', created_at: now });
     closeOpenBatches(sessionId, now + 1);
 
     // ---- RESTART ----
 
-    // Tool use before the first post-restart prompt — no open batch
-    const orphanActivity = insertActivityWithBatch({
-      session_id: sessionId,
-      tool_name: 'Read',
-      file_path: '/tmp/context.ts',
-      timestamp: now + 2,
-      created_at: now + 2,
-    });
-    expect(orphanActivity.prompt_batch_id).toBeNull();
+    // Tool use before the first post-restart prompt. Under v43 + the
+    // handleToolUse defense, this opens an implicit recovery batch
+    // rather than orphaning the activity.
+    handleToolUse(sessionId, 'claude-code', 'Read', { file_path: '/tmp/context.ts' }, 'contents', TEST_PROJECT_ROOT);
 
-    // Now open a new batch — subsequent activities link correctly
+    const batchesMid = listBatchesBySession(sessionId, { scope: ALL_PROJECTS_SCOPE });
+    expect(batchesMid.length).toBe(2);
+    const recovered = batchesMid.find((b) => b.kind === 'recovered');
+    expect(recovered).toBeDefined();
+
+    const activitiesMid = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+    expect(activitiesMid.length).toBe(1);
+    expect(activitiesMid[0].prompt_batch_id).toBe(recovered!.id);
+
+    // Now open a new real batch — subsequent activities link correctly to it.
     const postBatch = insertBatchStateless({ session_id: sessionId, user_prompt: 'post', created_at: now + 3 });
-    const linkedActivity = insertActivityWithBatch({
-      session_id: sessionId,
-      tool_name: 'Write',
-      timestamp: now + 4,
-      created_at: now + 4,
-    });
-    expect(linkedActivity.prompt_batch_id).toBe(postBatch.id);
+    handleToolUse(sessionId, 'claude-code', 'Write', {}, 'ok', TEST_PROJECT_ROOT);
+    const finalActivities = listActivities({ session_id: sessionId, scope: ALL_PROJECTS_SCOPE });
+    expect(finalActivities.length).toBe(2);
+    expect(finalActivities[1].prompt_batch_id).toBe(postBatch.id);
+    // Reference the pre-restart batch so the linter doesn't flag the binding.
+    expect(preBatch.id).toBeGreaterThan(0);
   });
 
   it('multiple restarts maintain correct numbering', async () => {
@@ -804,7 +822,9 @@ describe('new event type handlers', () => {
       expect(activities[0].tool_name).toBe('subagent_start');
       expect(activities[0].tool_input).toContain('agent-123');
       expect(activities[0].tool_input).toContain('researcher');
-      expect(activities[0].prompt_batch_id).toBeNull();
+      // Under schema v43, prompt_batch_id is NOT NULL. The handler opens
+      // an implicit recovery batch when none is found.
+      expect(activities[0].prompt_batch_id).not.toBeNull();
     });
   });
 

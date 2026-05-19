@@ -80,8 +80,8 @@ describe('migrateV41ToV42 skill candidate quality metadata', () => {
     closeDatabase();
   });
 
-  it('SCHEMA_VERSION is 42', () => {
-    expect(SCHEMA_VERSION).toBe(42);
+  it('SCHEMA_VERSION reflects the latest migration', () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(42);
   });
 
   it('is registered in MIGRATIONS at version 42', () => {

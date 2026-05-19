@@ -5,7 +5,7 @@
  * exercises the query function, and tears down the database.
  */
 
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'bun:test';
 import { setupTestDb, cleanTestDb, teardownTestDb } from '../../helpers/db';
 import { upsertSession } from '@myco/db/queries/sessions.js';
 import { insertBatch } from '@myco/db/queries/batches.js';
@@ -46,7 +46,9 @@ function makeBatch(sessionId: string, overrides: Partial<BatchInsert> = {}): Bat
   };
 }
 
-/** Factory for minimal valid activity data. */
+/** Factory for minimal valid activity data. Tests that need a specific
+ *  batch override this; otherwise the surrounding describe binds
+ *  `defaultBatchId` (set in beforeEach) for the activity FK. */
 function makeActivity(
   sessionId: string,
   overrides: Partial<ActivityInsert> = {},
@@ -57,9 +59,15 @@ function makeActivity(
     tool_name: 'Read',
     timestamp: now,
     created_at: now,
+    prompt_batch_id: defaultBatchIdOrNull(),
     ...overrides,
   };
 }
+
+// Lazy lookup so the helper compiles before the describe block runs.
+let _defaultBatchId: number | null = null;
+function setDefaultBatchId(id: number | null) { _defaultBatchId = id; }
+function defaultBatchIdOrNull() { return _defaultBatchId; }
 
 describe('activity query helpers', () => {
   let sessionId: string;
@@ -72,7 +80,13 @@ describe('activity query helpers', () => {
     const session = makeSession();
     upsertSession(session);
     sessionId = session.id;
+
+    // v43 invariant: activities.prompt_batch_id is NOT NULL. Tests that
+    // don't explicitly set a batch_id receive this default via makeActivity().
+    const batch = insertBatch(makeBatch(sessionId));
+    setDefaultBatchId(batch.id);
   });
+  afterEach(() => { setDefaultBatchId(null); });
 
   // ---------------------------------------------------------------------------
   // insertActivity
@@ -131,6 +145,7 @@ describe('activity query helpers', () => {
     it('derives project_id from the session for stateless inserts', () => {
       const scopedSession = makeSession({ id: 'sess-project-a', project_id: 'proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
       upsertSession(scopedSession);
+      insertBatch(makeBatch(scopedSession.id));
 
       const row = insertActivityWithBatch(makeActivity(scopedSession.id));
 

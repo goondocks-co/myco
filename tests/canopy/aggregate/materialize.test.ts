@@ -28,14 +28,25 @@ function seedSession(sessionId: string) {
 }
 
 function seedRead(sessionId: string, filePath: string, injectionTokens: number | null, ts: number) {
-  getDatabase()
-    .prepare(`
-      INSERT INTO activities (
-        session_id, tool_name, tool_input, file_path, timestamp,
-        processed, created_at, canopy_injection_tokens
-      ) VALUES (?, 'Read', ?, ?, ?, 0, ?, ?)
-    `)
-    .run(sessionId, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
+  // v43 invariant: activities.prompt_batch_id is NOT NULL. Open or reuse
+  // a batch for the session before inserting the activity.
+  const db = getDatabase();
+  let batchId = (db.prepare(
+    'SELECT id FROM prompt_batches WHERE session_id = ? ORDER BY id LIMIT 1',
+  ).get(sessionId) as { id: number } | undefined)?.id;
+  if (batchId === undefined) {
+    const result = db.prepare(
+      `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+       VALUES (?, 1, ?, ?, 'active')`,
+    ).run(sessionId, ts, ts);
+    batchId = Number(result.lastInsertRowid);
+  }
+  db.prepare(`
+    INSERT INTO activities (
+      session_id, prompt_batch_id, tool_name, tool_input, file_path, timestamp,
+      processed, created_at, canopy_injection_tokens
+    ) VALUES (?, ?, 'Read', ?, ?, ?, 0, ?, ?)
+  `).run(sessionId, batchId, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
 }
 
 function seedCanopyEntry(path: string, tokens: number) {

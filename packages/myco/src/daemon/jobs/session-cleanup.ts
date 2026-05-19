@@ -48,4 +48,8 @@ export async function cleanupAfterSessionCascade(
   for (const filePath of result.deletedAttachmentPaths) {
     try { await unlink(filePath); } catch { /* best-effort */ }
   }
+
+  // Buffer journal file. Removed alongside DB cascade so a same-id
+  // reload doesn't resurrect stale events through reconciliation.
+  try { await unlink(`${vaultDir}/buffer/${sessionId}.jsonl`); } catch { /* best-effort */ }
 }

@@ -62,6 +62,8 @@ export class EventLoopLagProbe {
   private peakLagMs = 0;
   /** Number of samples that exceeded the warn threshold. */
   private stallCount = 0;
+  /** Per-tick subscribers, invoked synchronously inside tick(). */
+  private listeners = new Set<(lagMs: number) => void>();
 
   constructor(private readonly logger: Logger, options: EventLoopLagProbeOptions = {}) {
     this.sampleIntervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
@@ -94,6 +96,18 @@ export class EventLoopLagProbe {
     this.stallCount = 0;
   }
 
+  /** Subscribe to per-tick lag values. Returns an unsubscribe function.
+   *
+   *  Listeners are invoked synchronously inside the probe's tick. Keep
+   *  them cheap — exceptions are caught and logged but the listener is
+   *  not removed, so a buggy subscriber will keep firing. */
+  addTickListener(fn: (lagMs: number) => void): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
   private schedule(): void {
     if (!this.running) return;
     this.timer = setTimeout(() => this.tick(), this.sampleIntervalMs);
@@ -109,6 +123,17 @@ export class EventLoopLagProbe {
     this.lastTick = now;
 
     if (lag > this.peakLagMs) this.peakLagMs = lag;
+    for (const fn of this.listeners) {
+      try {
+        fn(lag);
+      } catch (err) {
+        this.logger.warn(
+          LOG_KINDS.DAEMON_LAG,
+          'Event-loop lag tick listener threw',
+          { error: (err as Error).message },
+        );
+      }
+    }
     if (lag >= this.warnThresholdMs) {
       this.stallCount += 1;
       this.logger.warn(

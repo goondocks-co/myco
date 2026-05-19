@@ -35,19 +35,31 @@ function seedSession(id: string, opts: {
 
   const db = getDatabase();
 
+  let batchId: number | null = null;
   if (opts.batchStartedAt !== undefined) {
-    db.prepare(
+    const result = db.prepare(
       `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
        VALUES (?, 1, ?, ?, 'active')`,
     ).run(id, opts.batchStartedAt, now);
+    batchId = Number(result.lastInsertRowid);
   }
 
   if (opts.activityTimestamp !== undefined) {
+    // v43 invariant: activities.prompt_batch_id is NOT NULL. If the test
+    // didn't ask for a real batch, attach the activity to a synthetic
+    // recovery batch (mirrors what handleToolUse does in production).
+    if (batchId === null) {
+      const result = db.prepare(
+        `INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status, kind, user_prompt, origin)
+         VALUES (?, 0, ?, ?, 'completed', 'recovered', '(implicit batch — capture recovered)', 'system')`,
+      ).run(id, opts.activityTimestamp, now);
+      batchId = Number(result.lastInsertRowid);
+    }
     db.prepare(
       `INSERT INTO activities
-         (session_id, tool_name, timestamp, created_at)
-       VALUES (?, 'Bash', ?, ?)`,
-    ).run(id, opts.activityTimestamp, now);
+         (session_id, prompt_batch_id, tool_name, timestamp, created_at)
+       VALUES (?, ?, 'Bash', ?, ?)`,
+    ).run(id, batchId, opts.activityTimestamp, now);
   }
 }
 

@@ -867,6 +867,13 @@ export async function main(): Promise<void> {
     logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
   }
 
+  // Always-on diagnostic for event-loop pinning. Catches stalls regardless
+  // of cause (sync bun:sqlite, multi-MB JSON.parse, microtask cascade in a
+  // streaming SDK aggregator). Stopped during shutdown alongside the
+  // PowerManager. Constructed before PowerManager so PowerManager can wire
+  // it in for per-job lag attribution.
+  const eventLoopLagProbe = new EventLoopLagProbe(logger);
+
   const powerManager = new PowerManager({
     idleThresholdMs: POWER_IDLE_THRESHOLD_MS,
     sleepThresholdMs: POWER_SLEEP_THRESHOLD_MS,
@@ -874,13 +881,8 @@ export async function main(): Promise<void> {
     activeIntervalMs: POWER_ACTIVE_INTERVAL_MS,
     sleepIntervalMs: POWER_SLEEP_INTERVAL_MS,
     logger,
+    lagProbe: eventLoopLagProbe,
   });
-
-  // Always-on diagnostic for event-loop pinning. Catches stalls regardless
-  // of cause (sync bun:sqlite, multi-MB JSON.parse, microtask cascade in a
-  // streaming SDK aggregator). Stopped during shutdown alongside the
-  // PowerManager.
-  const eventLoopLagProbe = new EventLoopLagProbe(logger);
 
   // Per-project power state. Pre-Grove, each project ran in its own
   // daemon with its own PowerManager. With one global daemon hosting
@@ -1247,7 +1249,7 @@ export async function main(): Promise<void> {
 
   const teamFallbackDeps = { getTeamClient: () => teamSync.getTeamClient(), machineId };
   server.registerRoute('GET', '/api/sessions/:id', createGetSessionHandler(teamFallbackDeps));
-  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig });
+  const sessionMutations = createSessionMutationHandlers({ embeddingManager, vaultDir: bootstrapVaultDir, logger, liveConfig, reconciler });
   server.registerRoute('GET', '/api/sessions/:id/impact', sessionMutations.handleGetSessionImpact);
   server.registerRoute('POST', '/api/sessions/:id/complete', sessionMutations.handleCompleteSession);
   server.registerRoute('DELETE', '/api/sessions/:id', sessionMutations.handleDeleteSession);
