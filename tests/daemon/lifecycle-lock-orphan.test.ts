@@ -23,41 +23,7 @@ import { createSchema, SCHEMA_VERSION } from '@myco/db/schema.js';
 const supportsCwdIntrospection =
   process.platform === 'linux' || process.platform === 'darwin';
 
-/**
- * Orphan program: acquires the LifecycleLock on the supplied lock path,
- * opens the SQLite vault DB, holds an open write transaction, and parks.
- *
- * Run via Bun so it can `import` the same `LifecycleLock` module the
- * daemon entry uses — emits READY on stdout once both locks are held.
- */
-const ORPHAN_PROGRAM = `
-import { Database } from 'bun:sqlite';
-import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-
-const lockPath = process.argv[2];
-const dbPath = process.argv[3];
-
-const lock = LifecycleLock.acquire(lockPath);
-if (!lock.acquired) {
-  process.stderr.write('orphan: failed to acquire lock\\n');
-  process.exit(2);
-}
-
-const db = new Database(dbPath);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA busy_timeout = 200');
-db.exec('BEGIN IMMEDIATE');
-db.exec('CREATE TABLE IF NOT EXISTS _orphan_witness (n INTEGER)');
-db.exec('INSERT INTO _orphan_witness (n) VALUES (1)');
-process.stdout.write('READY\\n');
-
-// Park forever; both locks released only on SIGKILL/SIGTERM.
-process.on('SIGTERM', () => {
-  try { db.exec('ROLLBACK'); } catch {}
-  process.exit(0);
-});
-setInterval(() => {}, 1000);
-`;
+const ORPHAN_HELPER = path.resolve('tests/helpers/lifecycle-lock-orphan-helper.ts');
 
 interface SchemaSnapshot {
   schemaVersion: number;
@@ -94,7 +60,6 @@ describe.skipIf(!supportsCwdIntrospection)(
     let tmpDir: string;
     let dbPath: string;
     let lockPath: string;
-    let orphanScript: string;
     let orphan: ChildProcess | null = null;
 
     beforeEach(() => {
@@ -107,9 +72,6 @@ describe.skipIf(!supportsCwdIntrospection)(
       const db = initDatabase(dbPath);
       createSchema(db, 'test-machine');
       closeDatabase();
-
-      orphanScript = path.join(tmpDir, 'orphan.ts');
-      fs.writeFileSync(orphanScript, ORPHAN_PROGRAM);
     });
 
     afterEach(() => {
@@ -122,7 +84,7 @@ describe.skipIf(!supportsCwdIntrospection)(
     });
 
     async function spawnOrphanHoldingLockAndSqlite(): Promise<number> {
-      orphan = spawn(process.execPath, ['run', orphanScript, lockPath, dbPath], {
+      orphan = spawn(process.execPath, ['run', ORPHAN_HELPER, lockPath, dbPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: process.cwd(),
       });
