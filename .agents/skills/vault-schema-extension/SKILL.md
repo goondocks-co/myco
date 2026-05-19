@@ -63,61 +63,11 @@ Key rules:
 
 ### 2. Create the query functions
 
-Add query functions directly in the appropriate module or create a dedicated query module as needed:
-
-```typescript
-import type { Database } from 'better-sqlite3';
-
-export interface MyNewTableRow {
-  id: string;
-  session_id: string | null;
-  content: string;
-  created_at: number;
-}
-
-export function insertMyNewTableRow(
-  db: Database,
-  row: { id: string; sessionId: string | null; content: string }
-): void {
-  db.prepare(`
-    INSERT INTO my_new_table (id, session_id, content)
-    VALUES (@id, @sessionId, @content)
-  `).run(row);
-}
-
-export function getMyNewTableBySession(
-  db: Database,
-  sessionId: string
-): MyNewTableRow[] {
-  return db.prepare(`
-    SELECT * FROM my_new_table
-    WHERE session_id = ?
-    ORDER BY created_at ASC
-  `).all(sessionId) as MyNewTableRow[];
-}
-```
-
-All SQL lives in the appropriate query modules — never inline SQL strings in MCP handlers or business logic.
+Add query functions directly in the appropriate module or create a dedicated query module as needed. All SQL lives in the appropriate query modules — never inline SQL strings in MCP handlers or business logic.
 
 ### 3. Update schema constants
 
-Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants. The schema has grown with subsystem additions (like CANOPY_* tables for code intelligence) representing natural schema evolution:
-
-| Constant | Add the table if… |
-|---|---|
-| `TABLE_DDLS` | Always add new table DDL definition |
-| `FTS_TABLES` | Table is FTS5-indexed and searchable |
-| `SECONDARY_INDEXES` | Table has custom indexes beyond primary key |
-
-Review the schema-ddl.ts file to identify other table registration constants that may apply to your new table. Look for patterns like how existing tables (sessions, spores, etc.) are registered and follow the same registration approach.
-
-**Grove considerations**: When designing tables for Grove's global daemon architecture, consider whether data needs project-level isolation or grove-wide coordination. Most tables remain project-scoped, but some Grove features may require cross-project data organization.
-
-Find all places a similar table name appears to avoid missing any registration point:
-
-```bash
-grep -r "prompt_batches" packages/myco/src/config/ packages/myco/src/db/ --include="*.ts" -l
-```
+Open `packages/myco/src/db/schema-ddl.ts` and update the relevant constants. Add to `TABLE_DDLS` (always), `FTS_TABLES` (if FTS5-indexed), and `SECONDARY_INDEXES` (if custom indexes exist).
 
 ### 4. Wire the MCP surface (if needed)
 
@@ -164,21 +114,7 @@ Cloudflare D1 mirrors the local SQLite schema for team sync. Its critical behavi
 
 ### Maintaining the D1 migration file
 
-Keep a parallel migration file in the Workers project:
-
-```sql
--- 0021_add_my_new_table.sql
-CREATE TABLE IF NOT EXISTS my_new_table (
-  id          TEXT PRIMARY KEY,
-  session_id  TEXT,
-  content     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL DEFAULT (unixepoch())
-);
-CREATE INDEX IF NOT EXISTS idx_my_new_table_session
-  ON my_new_table(session_id);
-```
-
-Use the same version number as the local migration. Apply via: `wrangler d1 migrations apply <db-name> --env staging`
+Keep a parallel migration file in the Workers project using the same version number as the local migration. Apply via: `wrangler d1 migrations apply <db-name> --env staging`
 
 ### Mitigating the lazy-migration gotcha
 
@@ -198,54 +134,7 @@ Tables that the intelligence agent keyword-searches need FTS5 virtual tables wit
 
 ### Creating the FTS5 virtual table and triggers
 
-Add both in the same migration entry as the source table:
-
-```typescript
-{
-  version: 21,
-  name: 'add_my_new_table_with_fts',
-  description: 'Add my_new_table with FTS5 search support',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS my_new_table (
-        id      TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch())
-      );
-
-      -- Content-table FTS5: reads from source table, stays in sync via triggers
-      CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
-        USING fts5(
-          content,
-          content='my_new_table',
-          content_rowid='rowid'
-        );
-
-      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_insert
-        AFTER INSERT ON my_new_table BEGIN
-          INSERT INTO my_new_table_fts(rowid, content)
-            VALUES (new.rowid, new.content);
-        END;
-
-      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_delete
-        BEFORE DELETE ON my_new_table BEGIN
-          INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
-            VALUES ('delete', old.rowid, old.content);
-        END;
-
-      CREATE TRIGGER IF NOT EXISTS my_new_table_fts_update
-        AFTER UPDATE ON my_new_table BEGIN
-          INSERT INTO my_new_table_fts(my_new_table_fts, rowid, content)
-            VALUES ('delete', old.rowid, old.content);
-          INSERT INTO my_new_table_fts(rowid, content)
-            VALUES (new.rowid, new.content);
-        END;
-    `);
-  }
-}
-```
-
-`CREATE TRIGGER IF NOT EXISTS` is mandatory — without it, re-opening the DB after a partial migration creates duplicate triggers and corrupts the FTS index.
+Add both in the same migration entry as the source table. `CREATE TRIGGER IF NOT EXISTS` is mandatory — without it, re-opening the DB after a partial migration creates duplicate triggers and corrupts the FTS index.
 
 ### FTS5 search query pattern
 
@@ -270,23 +159,7 @@ export function searchMyNewTable(
 
 ### Backfilling existing rows into a new FTS index
 
-If FTS is added to a table that already has rows, populate the index in the migration:
-
-```typescript
-{
-  version: 22,
-  name: 'add_fts_to_existing_table',
-  description: 'Add FTS5 index to existing my_new_table',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS my_new_table_fts
-        USING fts5(content, content='my_new_table', content_rowid='rowid');
-      INSERT INTO my_new_table_fts(rowid, content)
-        SELECT rowid, content FROM my_new_table;
-    `);
-  }
-}
-```
+If FTS is added to a table that already has rows, populate the index in the migration.
 
 ## Procedure E: Migration Testing and Conflict Resolution
 
@@ -294,46 +167,7 @@ For complex migrations involving data transformations or potential conflicts, im
 
 ### Migration Test Patterns
 
-Include test functions in the migration module for complex data transformations:
-
-```typescript
-// Migration v20 example with collision resolution
-{
-  version: 20,
-  name: 'resolve_plan_identity_collisions',
-  description: 'Resolve plan identity collisions from schema v19',
-  up: (db: Database) => {
-    const collisions = db.prepare(`
-      SELECT logical_key, COUNT(*) as count
-      FROM plans
-      GROUP BY logical_key
-      HAVING count > 1
-    `).all();
-
-    if (collisions.length > 0) {
-      resolveV20PlanIdentityCollisionsForTest(db, collisions);
-    }
-  }
-}
-
-export function resolveV20PlanIdentityCollisionsForTest(
-  db: Database,
-  collisions: Array<{logical_key: string, count: number}>
-): void {
-  for (const collision of collisions) {
-    const duplicates = db.prepare(`
-      SELECT id, created_at FROM plans
-      WHERE logical_key = ?
-      ORDER BY created_at ASC
-    `).all(collision.logical_key);
-
-    // Keep first, remove rest
-    for (let i = 1; i < duplicates.length; i++) {
-      db.prepare(`DELETE FROM plans WHERE id = ?`).run(duplicates[i].id);
-    }
-  }
-}
-```
+Include test functions in the migration module for complex data transformations. Always design migrations to be re-runnable safely using `PRAGMA table_info` checks for column existence.
 
 ### Idempotent Migration Guards
 
@@ -362,11 +196,17 @@ Always design migrations to be re-runnable safely:
 
 Choose the right pattern upfront — post-filter in JS is a performance trap that compounds as the table grows. The Myco vault is accessed by both the daemon and MCP tool handlers, which can be called in tight loops by agent pipelines. Small query inefficiencies compound quickly.
 
+### Core Optimization Patterns
+
+| Situation | Pattern | Reason |
+|---|---|---|
+| `WHERE id IN (dynamic list)` | `json_each(json(?))` | Stable, cacheable query shape |
+| JavaScript `.filter()` on DB results | Push condition into SQL | SQLite query planner uses indexes |
+| New table creation | Add `(agent_id, status)` index immediately | Avoid full table scan later |
+| Pagination endpoint | `listWithCount` combined query | Never two round-trips |
+| `db.prepare()` inside function | Move to module scope | Compiled once at load |
+
 ### Pattern 1: Use `json_each` for Variable-Length List Filters
-
-**Problem:** `WHERE id IN (?, ?, ?)` creates a new statement shape for every list length. SQLite cannot cache the query plan, so every call re-parses and re-plans.
-
-**Solution:** Pass a JSON array and use `json_each(json(?))` to produce a stable, cacheable query shape.
 
 ```typescript
 // ❌ Different statement shape for each call — not cacheable
@@ -382,27 +222,9 @@ db.prepare(`
 `).all(JSON.stringify(ids), agentId);
 ```
 
-### Pattern 2: Filter in SQL, Not in JavaScript
+### Pattern 2: Add Indexes at Schema Definition Time
 
-**Problem:** Fetching all rows and filtering by a condition in application code is O(n) memory allocation plus a full-table read. SQLite's query planner can use indexes; JavaScript cannot.
-
-```typescript
-// ❌ Load everything, filter in memory
-const all = db.prepare('SELECT * FROM edges').all();
-const relevant = all.filter(e => ids.includes(e.source_id));
-
-// ✅ Push the filter into SQL
-db.prepare(`
-  SELECT * FROM edges
-  WHERE source_id IN (SELECT value FROM json_each(json(?)))
-`).all(JSON.stringify(ids));
-```
-
-### Pattern 3: Add Indexes at Schema Definition Time
-
-**Problem:** Adding an index to a populated table requires a full table scan to build the index. Deferring index creation is a common source of production slowdowns.
-
-**Rule:** Add covering indexes for all primary query shapes in the same `CREATE TABLE` migration. Typical patterns:
+Add covering indexes for all primary query shapes in the same `CREATE TABLE` migration:
 
 ```sql
 -- For any table with agent-scoped queries:
@@ -414,63 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_team_outbox_table_row
   ON team_outbox (table_name, row_id);
 ```
 
-### Pattern 4: Pre-Compile Prepared Statements and Regex at Module Scope
-
-**Problem:** `db.prepare(sql)` inside a function body re-compiles the statement on every call. A regex literal inside a function body is reconstructed on every call.
-
-```typescript
-// ❌ Compiled fresh on every invocation
-export function getSpore(db, id) {
-  return db.prepare('SELECT * FROM spores WHERE id = ?').get(id);
-}
-
-// ✅ Compiled once at module load
-const GET_SPORE = (db: Database) =>
-  db.prepare('SELECT * FROM spores WHERE id = ?');
-
-// Same for regex — move to module scope
-const VALID_NAME = /^[a-z_]+$/;
-function validate(val: string) {
-  return VALID_NAME.test(val);
-}
-```
-
-### Pattern 5: Combined `listWithCount` — Never Two Round-Trips for Pagination
-
-When a list endpoint needs both a page of rows and a total count, issue both queries in the same function call (not two separate exported functions called sequentially).
-
-```typescript
-export function listSpores(db, agentId, opts) {
-  const rows = db.prepare(`
-    SELECT * FROM spores WHERE agent_id = ? AND status = ?
-    ORDER BY created_at DESC LIMIT ? OFFSET ?
-  `).all(agentId, opts.status, opts.limit, opts.offset);
-
-  const { total } = db.prepare(`
-    SELECT COUNT(*) as total FROM spores
-    WHERE agent_id = ? AND status = ?
-  `).get(agentId, opts.status) as { total: number };
-
-  return { rows, total };
-}
-```
-
-### Additional Patterns
-
-- **Hydration joins (avoid N+1)**: Use JOIN queries instead of fetching related data in loops
-- **Cursor-based pagination (avoid OFFSET)**: OFFSET degrades linearly; use keyset cursors with `WHERE id > ?`
-- **Index gaps to watch**: SQLite does not auto-index foreign keys; explicitly add indexes for all FK columns, `WHERE`/`ORDER BY` columns, and `created_at` if filtered/sorted by time
-
-### Query Optimization Quick Reference
-
-| Situation | Pattern |
-|---|---|
-| `WHERE id IN (dynamic list)` | `json_each(json(?))` |
-| JavaScript `.filter()` on DB results | Push condition into SQL |
-| New table creation | Add `(agent_id, status)` index immediately |
-| Pagination endpoint | `listWithCount` combined query |
-| `db.prepare()` inside function | Move to module scope |
-| `/regex/` inside function | Move to module scope |
+**Index gaps to watch**: SQLite does not auto-index foreign keys; explicitly add indexes for all FK columns, `WHERE`/`ORDER BY` columns, and `created_at` if filtered/sorted by time.
 
 ## Procedure G: Grove Project-Scoped Schema Architecture
 
@@ -478,53 +244,11 @@ Grove's global daemon architecture introduces project-scoped row management patt
 
 ### Project-Scoped Row Management
 
-Grove migration (v31-v32) adds `project_id` columns across 24+ tables for proper project-scoped access:
-
-```typescript
-{
-  version: 31,
-  name: 'add_project_id_columns',
-  description: 'Add project_id columns for Grove multi-project isolation',
-  up: (db: Database) => {
-    const tables = ['sessions', 'spores', 'prompt_batches', 'entities', 'edges'];
-    for (const table of tables) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT;`);
-    }
-
-    const projectId = getDefaultProjectId(db);
-    for (const table of tables) {
-      db.exec(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL;`, projectId);
-    }
-  }
-}
-```
+Grove migration (v31-v32) adds `project_id` columns across 24+ tables for proper project-scoped access. When querying in Grove context, always scope by project_id to maintain proper isolation.
 
 ### Migration Import Journal Pattern
 
-Grove migration introduces `migration_import_journal` tables for tracking data imports from legacy project vaults:
-
-```typescript
-{
-  version: 32,
-  name: 'add_migration_import_journal',
-  description: 'Add migration import journal for Grove data coordination',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS migration_import_journal (
-        id              TEXT PRIMARY KEY,
-        source_vault    TEXT NOT NULL,
-        target_project  TEXT NOT NULL,
-        import_type     TEXT NOT NULL,
-        imported_at     INTEGER NOT NULL DEFAULT (unixepoch()),
-        row_count       INTEGER NOT NULL,
-        checksum        TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_import_journal_target_project
-        ON migration_import_journal(target_project);
-    `);
-  }
-}
-```
+Grove migration introduces `migration_import_journal` tables for tracking data imports from legacy project vaults.
 
 ### Grove Migration Contract Requirements
 
@@ -544,24 +268,6 @@ grove-importer import --source normalized_import.db --target grove_db.db
 
 **Why this matters**: Legacy vaults can have outdated column names (e.g., `agent_runs.runtime` before the v29 harness rename to `agent_runs.harness`) while the Grove importer expects current schema. Direct import from mismatched schema causes activation failures.
 
-### Project-Scoped Query Patterns
-
-When querying in Grove context, always scope by project_id to maintain proper isolation:
-
-```typescript
-// ❌ Cross-project data leak
-export function getSpores(db: Database, agentId: string) {
-  return db.prepare(`SELECT * FROM spores WHERE agent_id = ?`).all(agentId);
-}
-
-// ✅ Project-scoped isolation
-export function getSpores(db: Database, agentId: string, projectId: string) {
-  return db.prepare(`
-    SELECT * FROM spores WHERE agent_id = ? AND project_id = ?
-  `).all(agentId, projectId);
-}
-```
-
 ## Procedure H: Git Reconciler Schema Design for Release Provenance
 
 The Git reconciler feature introduces schema tables to distinguish between work that has shipped to production and work still in development. This enables agents to make informed decisions about knowledge relevance and maturity.
@@ -572,125 +278,130 @@ Implement release provenance as two tables that follow Grove + project scoping r
 
 #### knowledge_git_provenance (Raw Git Evidence)
 
-Captures factual git state at session lifecycle points:
-
-```typescript
-{
-  version: 33,
-  name: 'add_knowledge_git_provenance',
-  description: 'Add git provenance tracking for release reconciliation',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS knowledge_git_provenance (
-        id            TEXT PRIMARY KEY,
-        project_id    TEXT NOT NULL,
-        grove_id      TEXT,
-        session_id    TEXT NOT NULL,
-        batch_id      TEXT,
-        capture_point TEXT NOT NULL, -- 'session_start', 'batch_start', 'batch_stop', 'session_end'
-        branch_name   TEXT NOT NULL,
-        head_sha      TEXT NOT NULL,
-        repo_state    TEXT,
-        captured_at   INTEGER NOT NULL DEFAULT (unixepoch()),
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_git_provenance_project_session
-        ON knowledge_git_provenance(project_id, session_id);
-      CREATE INDEX IF NOT EXISTS idx_git_provenance_branch_sha
-        ON knowledge_git_provenance(branch_name, head_sha);
-    `);
-  }
-}
-```
+Captures factual git state at session lifecycle points (session_start, batch_start, batch_stop, session_end).
 
 #### knowledge_release_state (Derived Release Classification)
 
 Computes release state from git provenance with reconciliation logic:
-
-```typescript
-{
-  version: 34,
-  name: 'add_knowledge_release_state',
-  description: 'Add release state tracking derived from git provenance',
-  up: (db: Database) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS knowledge_release_state (
-        id                TEXT PRIMARY KEY,
-        project_id        TEXT NOT NULL,
-        grove_id          TEXT,
-        session_id        TEXT NOT NULL,
-        release_status    TEXT NOT NULL, -- 'shipped', 'development', 'unknown'
-        confidence_score  REAL NOT NULL DEFAULT 0.0,
-        reasoning         TEXT,
-        last_reconciled   INTEGER NOT NULL DEFAULT (unixepoch()),
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_release_state_project_status
-        ON knowledge_release_state(project_id, release_status);
-    `);
-  }
-}
-```
-
-### Critical Design Requirements
-
-**Grove + Project Scoping**: Both tables include `project_id` for project isolation and `grove_id` for cross-project coordination. This enables session-level release status for local intelligence and organizational patterns about shipping velocity across projects.
-
-**Capture Points**: Git provenance captures at four lifecycle points: session_start, batch_start, batch_stop, session_end. This granularity detects mid-session commits, branch switches, and merge events that change release classification.
-
-**Reconciliation Logic**: Release state reconciliation implements decision patterns:
 - Session spans main/master branch → likely shipped
 - Session on feature branch that later merged to main → shipped  
 - Session entirely on feature branch with no main merge → development
 - Mixed signals → development (conservative classification)
 
-### Agent Integration Patterns
+### Critical Design Requirements
 
-Enable agents to query release status for intelligence decisions:
+**Grove + Project Scoping**: Both tables include `project_id` for project isolation and `grove_id` for cross-project coordination. This enables session-level release status for local intelligence and organizational patterns about shipping velocity across projects.
 
-```typescript
-export function getSessionReleaseStatus(
-  db: Database,
-  sessionId: string,
-  projectId: string
-): ReleaseStateRow | null {
-  return db.prepare(`
-    SELECT * FROM knowledge_release_state
-    WHERE session_id = ? AND project_id = ?
-  `).get(sessionId, projectId) as ReleaseStateRow | null;
-}
+**Capture Points**: Git provenance captures at four lifecycle points to detect mid-session commits, branch switches, and merge events that change release classification.
 
-export function getShippedKnowledgeSpores(
-  db: Database,
-  projectId: string,
-  limit = 50
-): SporeRow[] {
-  return db.prepare(`
-    SELECT s.* FROM spores s
-    JOIN knowledge_release_state r ON s.session_id = r.session_id
-    WHERE s.project_id = ? AND r.project_id = ?
-      AND r.release_status = 'shipped' AND r.confidence_score > 0.7
-    ORDER BY s.created_at DESC LIMIT ?
-  `).all(projectId, projectId, limit) as SporeRow[];
-}
-```
+## Procedure I: Migration Chain Validation
 
-### Schema Constants Update
+Test the complete migration path from v1 to current version, not just individual migrations.
 
-Add both tables to schema-ddl.ts constants:
+### Steps
 
-```typescript
-// In packages/myco/src/db/schema-ddl.ts
-export const KNOWLEDGE_GIT_PROVENANCE_TABLE = `...`;
-export const KNOWLEDGE_RELEASE_STATE_TABLE = `...`;
+1. **Run Existing Migration Tests**: Execute specific migration version tests that exist in the codebase
+   ```bash
+   npm test -- tests/db/migrate-v40.test.ts
+   npm test -- tests/db/migrate-v43-activity-not-null.test.ts
+   npm test -- tests/db/project-id-cleanup-migration.test.ts
+   ```
 
-// Add to TABLE_DDLS array
-export const TABLE_DDLS = [
-  // ... existing tables
-  KNOWLEDGE_GIT_PROVENANCE_TABLE,
-  KNOWLEDGE_RELEASE_STATE_TABLE,
-];
-```
+2. **Verify Schema Invariants**: Test that all expected tables, columns, and indexes exist
+   ```javascript
+   // Assert invariants, not version constants
+   import { SCHEMA_VERSION } from '@myco/db/schema.js';
+   expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(42);
+   
+   // Verify actual schema structure
+   const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+   expect(tables.map(t => t.name)).toContain('skill_candidates');
+   ```
+
+3. **Test Migration Idempotency**: Ensure migrations can be run multiple times safely
+   ```bash
+   # Apply migrations twice - second run should be no-op  
+   npm run build && npm run db:migrate
+   npm run build && npm run db:migrate  # Should not fail or change anything
+   ```
+
+**Key Pattern**: Always test the real migration chain rather than constructing specific versions manually. Follow the pattern from existing tests like `tests/db/migrate-v40.test.ts`.
+
+## Procedure J: Fresh Install vs Migration Equivalence Testing
+
+Verify that fresh installs and migrated databases produce functionally equivalent schemas.
+
+### Steps
+
+1. **Create Two Database Instances**: Database A (fresh install from DDL), Database B (migrate from earlier version)
+
+2. **Compare Schema Structure by Column Names**: Use the pattern from existing tests
+   ```javascript
+   function getColumnNames(db: Database, tableName: string): string[] {
+     const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+     return rows.map(r => r.name);
+   }
+   
+   // Verify expected columns exist and are addressable
+   const freshColumns = getColumnNames(freshDb, 'skill_candidates');
+   const migratedColumns = getColumnNames(migratedDb, 'skill_candidates');
+   
+   expect(freshColumns).toContain('quality_score');
+   expect(migratedColumns).toContain('quality_score');
+   // Don't assert column order - fresh vs migrated differ
+   ```
+
+3. **Test Functional Equivalence**: Run identical queries against both databases
+
+**Gotcha**: Fresh installs follow CREATE TABLE column order; migrated databases append ALTER TABLE columns at the end. Test column addressability, not ordinal position.
+
+## Procedure K: Migration Test Hardening
+
+Write tests that survive schema evolution and don't break on version advances.
+
+### Steps
+
+1. **Avoid Version Pinning**: Don't assert exact `SCHEMA_VERSION` values
+   ```javascript
+   // BAD - breaks after every migration
+   expect(SCHEMA_VERSION).toBe(41);
+   
+   // GOOD - tests compatibility
+   expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(41);
+   ```
+
+2. **Test Schema Invariants**: Assert actual database structure, not version numbers
+   ```javascript
+   const tableInfo = await db.prepare("PRAGMA table_info(skill_candidates)").all();
+   const hasQualityScore = tableInfo.some(col => col.name === 'quality_score');
+   expect(hasQualityScore).toBe(true);
+   ```
+
+3. **Use Current Schema**: Test against the current state, not historical snapshots
+
+**Pattern**: Tests should check invariants ("this feature works") rather than absolute values ("version is exactly X"). Follow the patterns from `tests/db/migrate-v40.test.ts` and `tests/db/schema.test.ts`.
+
+## Procedure L: D1 Schema Parity Management
+
+Ensure SQLite schema changes are propagated to D1 deployment schema.
+
+### Steps
+
+1. **Identify Sync Tables**: Determine which tables sync to D1 via team CLI
+   ```bash
+   grep -r "skill_candidates" packages/myco-team/ --include="*.ts" | grep -i sync
+   ```
+
+2. **Update D1 Schema Files**: Add new columns to D1 schema configuration following patterns from team deployment
+
+3. **Create Idempotent D1 Migrations**: Add `ALTER TABLE` statements for existing D1 databases
+
+4. **Test D1 Compatibility**: Run schema validation tests
+   ```bash
+   npm test -- tests/worker/schema.test.ts
+   ```
+
+**Critical Rule**: Treat D1 schema updates as a required paired step with any SQLite schema change that syncs to team. Add checklist verification for D1 column parity.
 
 ## Cross-Cutting Gotchas
 
@@ -704,5 +415,7 @@ export const TABLE_DDLS = [
 - **Grove project_id is mandatory in v31+** — all new project-scoped tables must include a project_id column and all project-scoped queries must scope by project_id.
 - **Grove migration contract enforcement** — never import directly from legacy DBs with older schemas. Always serialize legacy DB, run current migrations on normalized copy, then import from schema-aligned source.
 - **Historical column renames** — be aware of column renames like `agent_runs.runtime` → `agent_runs.harness` (v29) when working with legacy database imports or when updating query functions. Always use current column names in new code.
-- **Git reconciler Grove + project scoping** — knowledge_* schema tables must be Grove + project scoped with both project_id and grove_id columns for proper organizational intelligence coordination.
-- **Release provenance lifecycle capture** — git provenance should capture at all four session lifecycle points to detect mid-session changes and provide accurate reconciliation.
+- **Column Order Drift** — Fresh installs and migrated databases have different column orders. Always test column addressability by name using `PRAGMA table_info`, never by position. Use the `getColumnNames()` helper pattern from `packages/myco/src/db/migrations.ts`.
+- **Version Pinning Fragility** — Tests asserting `SCHEMA_VERSION === N` break immediately when the schema advances. Test schema capabilities and invariants instead of exact version numbers. Import `SCHEMA_VERSION` from `packages/myco/src/db/schema.ts` and use relative comparisons.
+- **D1 Parity Gaps** — Adding columns to SQLite without updating D1 schema causes silent sync failures. The team CLI at `packages/myco-team/src/cli.ts` manages D1 deployment - treat D1 updates as mandatory paired steps.
+- **Test Chain Assumptions** — Hand-building specific schema versions in tests misses migration chain interactions. Follow patterns from existing migration tests like `tests/db/migrate-v40.test.ts` that test real migration sequences.
