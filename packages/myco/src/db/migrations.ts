@@ -22,6 +22,7 @@ import {
   SKILL_RECORDS_TABLE,
   SKILL_LINEAGE_TABLE,
   SKILL_USAGE_TABLE,
+  SESSION_MYCO_TOOL_CALLS_TABLE,
   NOTIFICATIONS_TABLE,
   AGENT_RUN_WRITE_INTENTS_TABLE,
   DIGEST_EXTRACT_REVISIONS_TABLE,
@@ -100,6 +101,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 42, migrate: (db) => migrateV41ToV42(db) },
   { version: 43, migrate: (db) => migrateV42ToV43(db) },
   { version: 44, migrate: (db) => migrateV43ToV44(db) },
+  { version: 45, migrate: (db) => migrateV44ToV45(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2788,6 +2790,110 @@ function migrateV43ToV44(db: Database): void {
        VALUES (?, ?)
        ON CONFLICT (version) DO NOTHING`,
     ).run(44, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  }
+}
+
+/**
+ * Version 45 lands per-session Myco tool-call aggregation:
+ *   - new `session_myco_tool_calls` table — pre-aggregated counts of every
+ *     Myco tool call per (session, tool_name, op), materialized from the
+ *     `activities` log at Stop boundary.
+ *   - backfill from existing activity rows so historical sessions report
+ *     non-zero counts immediately. Replaces the dispatch-time write counter
+ *     (`sessions.canopy_map_tool_calls`) which only ever fired when
+ *     `context.sessionId` was set at MCP dispatch — leading to 0-counts in
+ *     production even when the activity log proved the call ran.
+ *
+ * Tool-name canonicalization: MCP-routed activity rows arrive prefixed as
+ * `mcp__myco__<tool>` (the Myco MCP server name). The aggregator strips the
+ * `mcp__myco__` prefix so MCP and non-MCP calls collapse onto the same
+ * canonical row.
+ *
+ * `op` defaults to `''` (empty string, not NULL) so the composite PRIMARY KEY
+ * is stable across rows that have no op dimension. The aggregator uses
+ * `COALESCE(json_extract(tool_input, '$.op'), '')` and skips rows whose
+ * `tool_input` is not valid JSON so a single malformed payload cannot poison
+ * the migration.
+ *
+ * The `sessions.canopy_map_tool_calls` column is intentionally LEFT IN PLACE
+ * here. Its remaining UI/API readers migrate to the new table in subsequent
+ * commits; a later cleanup migration drops the column once those reads have
+ * been verified against the new pathway.
+ */
+function migrateV44ToV45(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    db.prepare(SESSION_MYCO_TOOL_CALLS_TABLE).run();
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_session_myco_tool_calls_project_id
+         ON session_myco_tool_calls (project_id)`,
+    ).run();
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS idx_session_myco_tool_calls_tool
+         ON session_myco_tool_calls (tool_name, op)`,
+    ).run();
+
+    // Backfill from activities. INSERT OR REPLACE keeps this safe to re-run
+    // after a partial migration. Canonicalization rules applied in the CTE:
+    //   - `mcp__myco__<tool>` → `<tool>`        (MCP-routed names; prefix len 11)
+    //   - `myco_myco_<tool>`  → `myco_<tool>`   (legacy logging artifact: an
+    //                                            earlier daemon applied the
+    //                                            `myco_` prefix twice. Confirmed
+    //                                            in the dogfood vault; no tool
+    //                                            in TOOL_DEFINITIONS is actually
+    //                                            named `myco_myco_*`.)
+    // The CTE wrap is load-bearing: SQLite shadows a bare `GROUP BY tool_name`
+    // with the source table column, which would split canonicalized rows
+    // (`myco_cortex` from a bare row vs. from an `mcp__myco__myco_cortex` row)
+    // into separate buckets even though the SELECT shows the same canonical
+    // label. Grouping on CTE-derived column names avoids that resolution.
+    // Rows with malformed `tool_input` are skipped via `json_valid` so one bad
+    // payload cannot abort the GROUP BY.
+    db.prepare(
+      `INSERT OR REPLACE INTO session_myco_tool_calls
+         (session_id, project_id, tool_name, op, count, computed_at)
+       WITH normalized AS (
+         SELECT
+           a.session_id AS session_id,
+           s.project_id AS project_id,
+           CASE
+             WHEN a.tool_name LIKE 'mcp__myco__myco_myco_%' THEN substr(a.tool_name, 17)
+             WHEN a.tool_name LIKE 'mcp__myco__%'           THEN substr(a.tool_name, 12)
+             WHEN a.tool_name LIKE 'myco_myco_%'            THEN substr(a.tool_name, 6)
+             ELSE a.tool_name
+           END AS canonical_tool_name,
+           COALESCE(json_extract(a.tool_input, '$.op'), '') AS canonical_op
+         FROM activities a
+         JOIN sessions s ON s.id = a.session_id
+         WHERE a.session_id IS NOT NULL
+           AND (
+             a.tool_name LIKE 'myco\\_%' ESCAPE '\\'
+             OR a.tool_name LIKE 'mcp__myco__myco\\_%' ESCAPE '\\'
+             OR a.tool_name LIKE 'collective\\_%' ESCAPE '\\'
+             OR a.tool_name LIKE 'mcp__myco__collective\\_%' ESCAPE '\\'
+           )
+           AND (a.tool_input IS NULL OR json_valid(a.tool_input))
+       )
+       SELECT
+         session_id,
+         project_id,
+         canonical_tool_name,
+         canonical_op,
+         COUNT(*) AS count,
+         unixepoch() AS computed_at
+       FROM normalized
+       GROUP BY session_id, canonical_tool_name, canonical_op`,
+    ).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(45, epochSeconds());
     db.prepare('COMMIT').run();
   } catch (err) {
     db.prepare('ROLLBACK').run();

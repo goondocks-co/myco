@@ -143,6 +143,13 @@ describe('Myco tools dispatcher', () => {
       return dir;
     }
 
+    // Both log-shape tests pair an async dispatcher call with a synchronous
+    // log-file read. logActivity() uses fs.appendFileSync (deliberate — see
+    // tools/index.ts) so the entry is on disk before await resolves; under
+    // heavy parallel test load both the sync write and the immediate
+    // readFileSync compete for disk and can exceed the default 2s timeout.
+    // 10s preserves the assertion shape without flaking on saturated CI/local
+    // runs.
     it('myco_cortex digest log carries tier + duration_ms', async () => {
       const vaultDir = freshVault();
       const tools = createMycoTools(vaultDir, mockClient({
@@ -155,7 +162,7 @@ describe('Myco tools dispatcher', () => {
       expect(entry.tier).toBe(5000);
       expect(typeof entry.duration_ms).toBe('number');
       fs.rmSync(vaultDir, { recursive: true, force: true });
-    });
+    }, 10_000);
 
     it('myco_search log carries query, matches, and duration_ms', async () => {
       const vaultDir = freshVault();
@@ -174,7 +181,7 @@ describe('Myco tools dispatcher', () => {
       expect(entry.matches).toBe(0);
       expect(typeof entry.duration_ms).toBe('number');
       fs.rmSync(vaultDir, { recursive: true, force: true });
-    });
+    }, 10_000);
   });
 
   // Stream J — agent-native parity reads on myco_cortex.

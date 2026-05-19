@@ -7,7 +7,7 @@
 
 import { getDatabase, changesSince, type Database } from '@myco/db/client.js';
 import { getTeamMachineId } from '@myco/daemon/team-context.js';
-import { syncRow } from '@myco/db/queries/team-outbox.js';
+import { syncRow, enqueueDelete, enqueueDeletes } from '@myco/db/queries/team-outbox.js';
 import { appendProjectCondition, projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';
 
 // ---------------------------------------------------------------------------
@@ -530,20 +530,6 @@ export function incrementSessionToolCount(id: string): void {
 }
 
 /**
- * Atomically increment `canopy_map_tool_calls` for a session.
- *
- * No-op when the session id does not exist — callers invoke this from MCP
- * tool dispatch and may pass an unknown / synthetic id when no in-flight
- * session is associated with the call.
- */
-export function incrementCanopyMapToolCalls(id: string): void {
-  const db = getDatabase();
-  db.prepare(
-    `UPDATE sessions SET canopy_map_tool_calls = canopy_map_tool_calls + 1 WHERE id = ?`,
-  ).run(id);
-}
-
-/**
  * Close a session — set status to 'completed' and record the end time.
  *
  * @returns the updated row, or null if the session does not exist.
@@ -572,16 +558,34 @@ export function closeSession(
  *
  * No ON DELETE CASCADE in the schema, so we delete children first.
  * Returns true if the session existed and was deleted.
+ *
+ * Team-sync propagation: captures the affected synced-row IDs (sessions,
+ * prompt_batches) before deletion and enqueues per-row `delete` outbox
+ * records after. Without this the worker D1 keeps the rows forever and
+ * the Team Sync UI shows a positive remote delta that grows with every
+ * local session purge. `enqueueDeletes` gates on `isTeamSyncEnabled` so
+ * sync-disabled projects pay no cost.
  */
 export function deleteSession(id: string): boolean {
   const db = getDatabase();
+
+  // Capture child IDs before delete so we can mirror the cascade to D1.
+  // activities/attachments are local-only (not in SYNCED_TABLES) — skip.
+  const batchIds = (db.prepare(
+    `SELECT id FROM prompt_batches WHERE session_id = ?`,
+  ).all(id) as { id: number }[]).map((r) => r.id);
 
   db.prepare(`DELETE FROM activities WHERE session_id = ?`).run(id);
   db.prepare(`DELETE FROM attachments WHERE session_id = ?`).run(id);
   db.prepare(`DELETE FROM prompt_batches WHERE session_id = ?`).run(id);
   const info = db.prepare(`DELETE FROM sessions WHERE id = ?`).run(id);
 
-  return info.changes > 0;
+  if (info.changes > 0) {
+    enqueueDeletes('prompt_batches', batchIds);
+    enqueueDelete('sessions', id);
+    return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +678,39 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
     `SELECT file_path FROM attachments WHERE session_id = ?`,
   ).all(sessionId) as { file_path: string }[]).map((r) => r.file_path);
 
+  // Capture synced-row IDs across every child table so the team outbox can
+  // mirror the cascade to D1 after the local transaction commits. Without
+  // this, the worker's D1 keeps every cascaded row forever; positive
+  // remote deltas on sessions/prompt_batches/spores/etc. grow with every
+  // local cascade delete. Queries mirror the DELETE WHERE clauses below
+  // so the captured IDs are exactly what will be removed locally.
+  const batchIds = (db.prepare(
+    `SELECT id FROM prompt_batches WHERE session_id = ?`,
+  ).all(sessionId) as { id: number }[]).map((r) => r.id);
+  const planIds = (db.prepare(
+    `SELECT id FROM plans WHERE session_id = ?`,
+  ).all(sessionId) as { id: string }[]).map((r) => r.id);
+  const skillUsageIds = (db.prepare(
+    `SELECT id FROM skill_usage WHERE session_id = ?`,
+  ).all(sessionId) as { id: string }[]).map((r) => r.id);
+  const resolutionEventIds = (db.prepare(
+    `SELECT id FROM resolution_events
+     WHERE session_id = ?
+        OR spore_id IN (
+          SELECT id FROM spores
+          WHERE session_id = ?
+             OR prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)
+        )`,
+  ).all(sessionId, sessionId, sessionId) as { id: string }[]).map((r) => r.id);
+  const graphEdgeIds = (db.prepare(
+    `SELECT id FROM graph_edges WHERE session_id = ?`,
+  ).all(sessionId) as { id: string }[]).map((r) => r.id);
+  const knowledgeReleaseIds = (db.prepare(
+    `SELECT id FROM knowledge_release_state
+     WHERE source_session_id = ?
+        OR source_prompt_batch_id IN (SELECT id FROM prompt_batches WHERE session_id = ?)`,
+  ).all(sessionId, sessionId) as { id: number }[]).map((r) => r.id);
+
   // Run all deletes in a single transaction.
   //
   // Order matters — foreign_keys = ON is set in client.ts, so every DELETE
@@ -744,6 +781,19 @@ export function deleteSessionCascade(sessionId: string): DeleteCascadeResult {
       },
     };
   })();
+
+  // Mirror the cascade to the team outbox AFTER the local transaction
+  // commits. `enqueueDelete{,s}` is a no-op when team sync is disabled.
+  if (result.deleted) {
+    enqueueDeletes('knowledge_release_state', knowledgeReleaseIds);
+    enqueueDeletes('skill_usage', skillUsageIds);
+    enqueueDeletes('resolution_events', resolutionEventIds);
+    enqueueDeletes('graph_edges', graphEdgeIds);
+    enqueueDeletes('plans', planIds);
+    enqueueDeletes('spores', sporeIds);
+    enqueueDeletes('prompt_batches', batchIds);
+    enqueueDelete('sessions', sessionId);
+  }
 
   return {
     ...result,

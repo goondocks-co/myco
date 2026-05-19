@@ -635,6 +635,60 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * `POST /verify` — drift confirmation for the local sync reconciler.
+ *
+ * Body: `{ machine_id, table, ids: string[] }`
+ * Returns: `{ present: string[], missing: string[] }`
+ *
+ * The daemon stamps `synced_at` on a source row when the worker's
+ * `/enqueue` returns 200 — but "accepted by /enqueue" only means the
+ * record was queued, not that the queue consumer succeeded in writing
+ * it to D1. A record can be silently dead-lettered (column mismatch,
+ * constraint violation, queue consumer crash) while the daemon thinks
+ * it landed. Over time `synced_at` IS NOT NULL accumulates rows that
+ * never actually exist in D1, and `backfillUnsynced` (which only scans
+ * `synced_at IS NULL`) never sees them again — that's how negative
+ * remote deltas (-9 on skill_candidates in the dogfood Grove) arise.
+ *
+ * This endpoint lets the daemon ask D1 the authoritative question
+ * ("for these ids on my machine_id, which actually exist?") so it can
+ * reset `synced_at` to NULL on the missing rows and re-enqueue them via
+ * the normal backfill path.
+ *
+ * Capped at 500 ids per call to stay under D1's bound-parameter limit
+ * (100 per prepared statement); the daemon chunks larger inputs. Table
+ * names are validated against `SYNCED_TABLES_SET` so the endpoint can't
+ * be used to enumerate non-sync tables on the D1.
+ */
+async function handleVerify(request: Request, env: Env): Promise<Response> {
+  const body = await request.json() as { machine_id?: unknown; table?: unknown; ids?: unknown };
+  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : '';
+  const table = typeof body.table === 'string' ? body.table.trim() : '';
+  const ids = Array.isArray(body.ids)
+    ? body.ids.filter((id): id is string | number => typeof id === 'string' || typeof id === 'number').map((id) => String(id))
+    : [];
+
+  if (!machineId) return errorResponse('machine_id is required', 400);
+  if (!SYNCED_TABLES_SET.has(table)) return errorResponse(`Unknown table: ${table}`, 400);
+  if (ids.length === 0) return jsonResponse({ present: [], missing: [] });
+  if (ids.length > 500) return errorResponse('Maximum 500 ids per call', 400);
+
+  const D1_BIND_LIMIT_PAIRS = 50;
+  const present = new Set<string>();
+  for (let offset = 0; offset < ids.length; offset += D1_BIND_LIMIT_PAIRS) {
+    const slice = ids.slice(offset, offset + D1_BIND_LIMIT_PAIRS);
+    const placeholders = slice.map(() => '?').join(', ');
+    const result = await env.MYCO_TEAM_DB.prepare(
+      `SELECT id FROM ${table} WHERE machine_id = ? AND id IN (${placeholders})`,
+    ).bind(machineId, ...slice).all<{ id: string | number }>();
+    for (const row of result.results ?? []) present.add(String(row.id));
+  }
+
+  const missing = ids.filter((id) => !present.has(id));
+  return jsonResponse({ present: Array.from(present), missing });
+}
+
+/**
  * Conditionally bump nodes.last_seen for the given machine. Worker-side
  * memo skips the D1 UPDATE when the last write for this machine landed
  * inside the heartbeat window — at PowerManager's 5min cadence this turns
@@ -1029,16 +1083,47 @@ function routeRecordForEmbedding(
 }
 
 /**
- * Dead-letter consumer. Logs each failed message so operators can see the
- * tail-end record id and table without leaving the Worker logs view; the
- * daemon UI's Sync tab provides the structured replay/discard path.
+ * Dead-letter consumer.
+ *
+ * Two delivery paths land here:
+ *   1. First-time failure — the main consumer exhausted its retries and CF
+ *      moved the message to this DLQ. We log it so operators can see the
+ *      tail-end record id and table without leaving the Worker logs view.
+ *   2. Operator-initiated replay — `handleDlqRetry` calls the CF Queues
+ *      `messages/ack` endpoint with `retries: [...]`, which re-delivers
+ *      those messages. CF redelivers them BACK to this same DLQ consumer,
+ *      not the main sync queue. Without an explicit re-publish, the
+ *      operator's "Retry all" click silently no-ops: the message lands
+ *      here, gets ack()ed, and never reaches `handleSyncBatch` / D1.
+ *
+ * Re-publishing each message to the main SYNC_QUEUE before acking gives
+ * `Retry all` real semantics: the message re-enters the normal sync path,
+ * gets validated and written to D1 (or re-DLQs if the underlying problem
+ * is unfixed — but at least the retry attempt happens). The ack-then-send
+ * order would risk message loss if send() throws, so we send first and
+ * ack only on success.
  */
-async function handleDlqBatch(batch: MessageBatch<SyncRecord>, _env: Env): Promise<void> {
-  for (const message of batch.messages) {
-    console.error(
-      `team-sync.dlq received ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
-    );
-    message.ack();
+async function handleDlqBatch(batch: MessageBatch<SyncRecord>, env: Env): Promise<void> {
+  if (batch.messages.length === 0) return;
+  // Single sendBatch instead of N individual sends — Cloudflare Queues
+  // atomically enqueues the whole array, dropping N HTTP-shaped calls
+  // to 1 per consumer batch (up to 100 msgs). The per-message ack/retry
+  // still happens individually so an enqueue failure isn't load-bearing
+  // for the unaffected messages.
+  try {
+    await env.SYNC_QUEUE.sendBatch(batch.messages.map((m) => ({ body: m.body })));
+    for (const message of batch.messages) {
+      console.error(
+        `team-sync.dlq replay -> main ${message.body.table}/${message.body.id} machine=${message.body.machine_id}`,
+      );
+      message.ack();
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`team-sync.dlq replay_failed (batch of ${batch.messages.length}): ${reason}`);
+    // Don't ack — let CF redeliver. If the SYNC_QUEUE binding is
+    // genuinely broken, the messages stay in DLQ instead of being lost.
+    for (const message of batch.messages) message.retry();
   }
 }
 
@@ -1655,6 +1740,9 @@ export default {
       }
       if (method === 'POST' && path === '/enqueue') {
         return await handleEnqueue(request, env);
+      }
+      if (method === 'POST' && path === '/verify') {
+        return await handleVerify(request, env);
       }
       if (method === 'GET' && path === '/search') {
         return await handleSearch(request, env);

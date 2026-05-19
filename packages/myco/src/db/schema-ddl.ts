@@ -540,6 +540,30 @@ export const SKILL_USAGE_TABLE = `
     detected_at INTEGER NOT NULL
   )`;
 
+// -- Myco tool-call usage (per-session, aggregated from activities) ---------
+//
+// Pre-aggregated per-session counts of every Myco tool call, derived from
+// `activities` at Stop boundary by `materializeSessionMycoToolCalls`. Mirrors
+// the materialization pattern used by Canopy aggregates (see
+// `aggregateSessionCanopy` in db/queries/canopy.ts) — pure SQL over the
+// authoritative activity log, no write-time counters at dispatch.
+//
+// `tool_name` stores the canonical Myco tool name (`myco_cortex`, `myco_search`,
+// etc.); MCP-prefixed activity rows (`mcp__myco__myco_cortex`) are folded onto
+// the canonical name by the aggregator so both code paths roll up together.
+// `op` is the JSON `tool_input.op` dimension where present, '' otherwise — the
+// empty string (not NULL) so the composite PK is stable.
+export const SESSION_MYCO_TOOL_CALLS_TABLE = `
+  CREATE TABLE IF NOT EXISTS session_myco_tool_calls (
+    session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id   TEXT,
+    tool_name    TEXT NOT NULL,
+    op           TEXT NOT NULL DEFAULT '',
+    count        INTEGER NOT NULL DEFAULT 0,
+    computed_at  INTEGER NOT NULL,
+    PRIMARY KEY (session_id, tool_name, op)
+  )`;
+
 // -- Notifications Layer ----------------------------------------------------
 
 export const NOTIFICATIONS_TABLE = `
@@ -722,6 +746,7 @@ export const GROVE_PROJECT_SCOPED_TABLES = [
   'agent_state',
   'canopy_entries',
   'canopy_maps',
+  'session_myco_tool_calls',
 ] as const;
 
 export const GROVE_PROJECT_SCOPE_INDEX_DDLS: readonly string[] =
@@ -959,6 +984,9 @@ export const SECONDARY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_session_id ON skill_usage (session_id)',
   'CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_session ON skill_usage (skill_id, session_id)',
 
+  // Session Myco tool calls (aggregated per session/tool/op at Stop)
+  'CREATE INDEX IF NOT EXISTS idx_session_myco_tool_calls_tool ON session_myco_tool_calls (tool_name, op)',
+
   // Log entries
   'CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries (timestamp)',
   'CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries (level)',
@@ -1022,6 +1050,8 @@ export const TABLE_DDLS = [
   SKILL_RECORDS_TABLE,
   SKILL_LINEAGE_TABLE,
   SKILL_USAGE_TABLE,
+  // Per-session Myco tool usage (aggregated from activities at Stop)
+  SESSION_MYCO_TOOL_CALLS_TABLE,
   // Sync layer
   TEAM_OUTBOX_TABLE,
   // Logging layer

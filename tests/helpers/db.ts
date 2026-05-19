@@ -33,6 +33,7 @@ const DELETE_TABLES = [
   'canopy_maps',
   'canopy_entries',
   'attachments',
+  'session_myco_tool_calls',
   'activities',
   'spores',
   'plans',

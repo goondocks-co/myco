@@ -4,6 +4,7 @@ import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';
 import { getSession } from '@myco/db/queries/sessions.js';
 import { projectScopeFromRequestContext } from '@myco/tools/request-context.js';
 import { CANOPY_ENTRIES_ORDER_BY, getCanopyToolCallContext, rollupCanopy } from '@myco/db/queries/canopy.js';
+import { getSessionMycoToolCallCounts } from '@myco/db/queries/myco-tool-usage.js';
 import type { CanopyEntry } from '@myco/db/schema.js';
 import { getDatabase } from '@myco/db/client.js';
 import { errorBody } from './error-envelope.js';
@@ -43,9 +44,15 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
   const session = getSession(sessionId, projectScopeFromRequestContext(req.requestContext));
   if (!session) return notFound('session');
 
+  // Per-(tool, op) Myco tool-call counts, sourced from
+  // `session_myco_tool_calls` (materialized at Stop from `activities`).
+  // UI consumers read specific tools via `getMycoToolCallCount` from
+  // `use-canopy.ts`.
+  const mycoToolCalls = getSessionMycoToolCallCounts(sessionId);
+
   // Flat shape with column-name parity (see SessionCanopyAggregate in
   // packages/myco/ui/src/hooks/use-canopy.ts). Pre-feature sessions return
-  // every field as NULL; the UI hides the tile when that happens.
+  // every canopy_* field as NULL; the UI hides the tile when that happens.
   return {
     body: {
       canopy_injections_offered: session.canopy_injections_offered,
@@ -54,7 +61,7 @@ export const handleGetSessionCanopy: RouteHandler = async (req) => {
       canopy_reads_after_injection: session.canopy_reads_after_injection,
       canopy_tokens_saved: session.canopy_tokens_saved,
       canopy_redundant_reads: session.canopy_redundant_reads,
-      canopy_map_tool_calls: session.canopy_map_tool_calls,
+      myco_tool_calls: mycoToolCalls,
     },
   };
 };

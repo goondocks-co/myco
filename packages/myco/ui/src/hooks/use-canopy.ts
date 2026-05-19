@@ -20,12 +20,24 @@ const ENTRIES_STALE_TIME = 30_000;
 /* ---------- Types ---------- */
 
 /**
+ * One per-(tool, op) row from the session's Myco tool-call aggregate.
+ * `op` is the empty string for tools that have no op dimension. Sourced
+ * from `session_myco_tool_calls`, materialized at Stop from `activities`.
+ */
+export interface SessionMycoToolCallRow {
+  tool_name: string;
+  op: string;
+  count: number;
+}
+
+/**
  * Per-session Canopy aggregates returned by `GET /sessions/:id/canopy`.
  *
- * Mirrors the canopy_* columns on the session row.
- * All numeric fields are nullable to cover pre-feature sessions, sessions
- * where the feature is disabled in the active scope, and sessions whose
- * Stop hook hasn't materialized aggregates yet.
+ * Mirrors the canopy_* columns on the session row, plus the new
+ * `myco_tool_calls` map sourced from `session_myco_tool_calls`.
+ * All numeric canopy_* fields are nullable to cover pre-feature sessions,
+ * sessions where the feature is disabled in the active scope, and sessions
+ * whose Stop hook hasn't materialized aggregates yet.
  */
 export interface SessionCanopyAggregate {
   canopy_injections_offered: number | null;
@@ -35,11 +47,27 @@ export interface SessionCanopyAggregate {
   canopy_tokens_saved: number | null;
   canopy_redundant_reads: number | null;
   /**
-   * Count of `canopy_map` MCP tool calls attributed to this session.
-   * Always a non-negative integer (NOT NULL DEFAULT 0 in the schema), so
-   * pre-feature sessions report `0` rather than `null`.
+   * Per-(tool, op) Myco tool-call counts for this session. Includes every
+   * Myco / Collective tool the agent invoked, regardless of code path
+   * (MCP, HTTP, CLI, agent-internal). Materialized at Stop boundary from
+   * `activities`. Empty array when the session made no Myco tool calls.
    */
-  canopy_map_tool_calls: number;
+  myco_tool_calls: SessionMycoToolCallRow[];
+}
+
+/**
+ * Look up the count for a specific (tool, op) on a session aggregate.
+ * Returns 0 when the row is absent — that's the right default for tile
+ * rendering since "no rows" and "zero calls" are observationally the same.
+ */
+export function getMycoToolCallCount(
+  agg: SessionCanopyAggregate | null | undefined,
+  toolName: string,
+  op: string = '',
+): number {
+  if (!agg?.myco_tool_calls) return 0;
+  const row = agg.myco_tool_calls.find((r) => r.tool_name === toolName && r.op === op);
+  return row?.count ?? 0;
 }
 
 /**

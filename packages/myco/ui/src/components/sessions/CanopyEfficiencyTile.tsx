@@ -9,6 +9,7 @@ import {
 } from '../ui/dialog';
 import {
   useSessionCanopy,
+  getMycoToolCallCount,
   type SessionCanopyAggregate,
 } from '../../hooks/use-canopy';
 import { cn } from '../../lib/cn';
@@ -116,10 +117,13 @@ export function CanopyEfficiencyTile({
   const reads = data?.canopy_reads_after_injection ?? null;
   const redundant = data?.canopy_redundant_reads ?? null;
   const totalTokens = data?.canopy_injection_total_tokens ?? null;
-  // Map calls is NOT NULL DEFAULT 0 in the schema, so pre-feature sessions
-  // (where data is null) report `0` here too — same shape the live session
-  // would show before the agent has called canopy_map().
-  const mapCalls = data?.canopy_map_tool_calls ?? 0;
+  // Map calls is sourced from the per-(tool, op) `myco_tool_calls` map the
+  // daemon now returns on this endpoint. Pre-feature sessions (where data is
+  // null, or where Stop hasn't materialized yet) report `0` here — same shape
+  // the live session would show before the agent has called canopy_map().
+  // Replaces the prior `data?.canopy_map_tool_calls ?? 0` read, which depended
+  // on a dispatch-time counter that silently zeroed for several symbionts.
+  const mapCalls = getMycoToolCallCount(data, 'myco_cortex', 'canopy_map');
 
   const skipRatio =
     offered !== null && offered > 0 && skips !== null

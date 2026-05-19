@@ -290,7 +290,13 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
         fs.mkdirSync(logDir, { recursive: true });
         logDirReady = true;
       }
-      fs.appendFile(path.join(logDir, 'mcp.jsonl'), entry, () => { /* non-fatal */ });
+      // Synchronous write: tool calls happen at human/agent pace (not a hot
+      // loop), entries are ~1 KB, and downstream readers (tests + daemon
+      // tailing) assume an entry is on disk by the time the caller's await
+      // resolves. The previous async fs.appendFile + ignored callback
+      // produced a write-after-read race that surfaced as flaky test
+      // failures whenever larger suite ordering shifted timing.
+      fs.appendFileSync(path.join(logDir, 'mcp.jsonl'), entry);
     } catch { /* logging failure is non-fatal */ }
 
     void client.post('/api/log', { level: 'info', component: 'mcp', message: `Tool call: ${tool}`, data: { tool, ...detail } }).catch(() => { /* non-fatal */ });
@@ -367,16 +373,18 @@ export function createMycoTools(vaultDir: string, client: DaemonClient, options:
     start: number,
     handleCortexCanopyMap: typeof import('./cortex.js')['handleCortexCanopyMap'],
   ): Promise<unknown> {
+    // Per-session canopy_map counts are derived from `activities` at Stop
+    // boundary by `materializeSessionMycoToolCalls` (see
+    // db/queries/myco-tool-usage.ts), not incremented at dispatch. The prior
+    // dispatch-time increment depended on `context.sessionId` being supplied
+    // by the transport and silently produced zeros for several symbionts —
+    // see plan session:3216054f...:key:myco-tool-call-tracking-per-session.
     try {
       return await runWithRequestDatabase(context, async () => {
-        const { incrementCanopyMapToolCalls } = await import('@myco/db/queries/sessions.js');
         const projectId = context.projectId;
         const machineId = context.machineId;
         const sessionId = context.sessionId;
         const result = await handleCortexCanopyMap({ projectId, machineId });
-        if (sessionId) {
-          try { incrementCanopyMapToolCalls(sessionId); } catch { /* counter is best-effort */ }
-        }
         logActivity(TOOL_CORTEX, {
           op: 'canopy_map',
           is_empty: (result as { is_empty?: boolean }).is_empty === true,
