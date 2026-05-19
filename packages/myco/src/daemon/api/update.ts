@@ -27,6 +27,7 @@ import {
   isManagedMachineRuntime,
 } from '../update-checker.js';
 import { spawnUpdateScript, spawnRestartScript } from '../update-installer.js';
+import * as updateInProgress from '../update-in-progress.js';
 import { RELEASE_CHANNELS, UPDATE_STAMP_FILENAME } from '../../constants/update.js';
 import { resolveServiceRestartCommand } from './restart.js';
 import { getServiceManager } from '../../service/manager.js';
@@ -58,6 +59,9 @@ export interface UpdateDeps {
   scheduleShutdown: () => void;
   /** npm global prefix, resolved once at daemon startup. Null if resolution failed. */
   globalPrefix: string | null;
+  /** Daemon state directory (`<myco-home>/<variant>/`). The update-in-
+   *  progress sentinel lives here as a sibling to `daemon.json`. */
+  daemonStateDir: string;
   /** Optional override for tests; defaults to the platform service manager.
    *  Used to detect whether this process is the service-managed daemon and
    *  to derive the restart-shell-command baked into the detached update /
@@ -83,7 +87,7 @@ const ChannelBodySchema = z.object({
  * Returns an object with named handlers for each update endpoint.
  */
 export function createUpdateHandlers(deps: UpdateDeps) {
-  const { vaultDir, projectRoot, currentVersion, daemonPort, scheduleShutdown, globalPrefix } = deps;
+  const { vaultDir, projectRoot, currentVersion, daemonPort, scheduleShutdown, globalPrefix, daemonStateDir } = deps;
   const serviceManager = deps.serviceManager ?? getServiceManager();
 
   /**
@@ -150,6 +154,19 @@ export function createUpdateHandlers(deps: UpdateDeps) {
         semver.valid(currentVersion) &&
         semver.gt(installedVersion, currentVersion)
       ) {
+        // Don't fire a redundant restart if an update orchestrator is
+        // already in flight. The sentinel module clears stale entries
+        // (>10 min) so a crashed updater can't block future restarts.
+        if (updateInProgress.inFlight(daemonStateDir)) {
+          return {
+            body: {
+              exempt: false,
+              update_in_progress: true,
+              running_version: currentVersion,
+              installed_version: installedVersion,
+            },
+          };
+        }
         restartInitiated = true;
         const runLocalUpdate = !isStampMatching(installedVersion);
         const serviceRestartCommand = await resolveServiceRestartCommand(serviceManager);
@@ -160,6 +177,11 @@ export function createUpdateHandlers(deps: UpdateDeps) {
           mycoBinary: snapshot.mycoBinary,
           serviceRestartCommand,
           daemonPort,
+        });
+        updateInProgress.write(daemonStateDir, {
+          targetVersion: installedVersion,
+          startedAt: Date.now(),
+          initiator: 'api/update/apply',
         });
         scheduleShutdown();
         return {
@@ -303,6 +325,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       return { status: 400, body: { error: 'no_update_available' } };
     }
 
+    // Refuse a second apply while an update is already in flight. The
+    // sentinel auto-clears after a 10-minute stale window so a crashed
+    // updater can't block future updates forever.
+    if (updateInProgress.inFlight(daemonStateDir)) {
+      return { status: 409, body: { error: 'update_in_progress' } };
+    }
+
     const globalPackageSpecs = localRuntimeSpec
       ? installSpecs.filter((spec) => spec !== localRuntimeSpec)
       : installSpecs;
@@ -319,7 +348,22 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       daemonPort,
       targetVersion: status.latest_version,
     });
-    scheduleShutdown();
+    updateInProgress.write(daemonStateDir, {
+      targetVersion: status.latest_version,
+      startedAt: Date.now(),
+      initiator: 'api/update/apply',
+    });
+
+    // When a service manager drives the restart (kickstart -k), the
+    // script's tail does the SIGTERM as part of the atomic swap.
+    // Calling scheduleShutdown here would shut the daemon down before
+    // `npm install` completes, letting the supervisor's KeepAlive
+    // respawn a daemon on the still-pre-install binary. Without a
+    // service manager the script can't initiate the SIGTERM itself,
+    // so the caller has to.
+    if (!serviceRestartCommand) {
+      scheduleShutdown();
+    }
 
     const reportedPackages = localRuntimeSpec && !installSpecs.includes(localRuntimeSpec)
       ? [...installSpecs, localRuntimeSpec]

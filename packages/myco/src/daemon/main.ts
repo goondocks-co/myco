@@ -16,6 +16,8 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
+import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
+import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
 import { loadManifests } from '../symbionts/detect.js';
@@ -458,6 +460,24 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
 }
 
 /**
+ * Build a `scheduleShutdown` closure that records its caller label
+ * and a stack snapshot in the daemon log on every invocation. Makes
+ * shutdown-triggered events attributable to a specific call site.
+ */
+function scheduleShutdownWithAttribution(callerLabel: string, logger: DaemonLogger): () => void {
+  return () => {
+    const stack = new Error().stack?.split('\n').slice(1, 6).join('\n').trim() ?? '';
+    logger.info(LOG_KINDS.DAEMON_START, 'Shutdown scheduled', {
+      caller: callerLabel,
+      stack,
+    });
+    setTimeout(() => {
+      process.kill(process.pid, 'SIGTERM');
+    }, RESTART_RESPONSE_FLUSH_MS);
+  };
+}
+
+/**
  * Fan out canopy initial-populate across every registered project on
  * boot. Cold projects (no recent activity) defer to their next
  * SessionStart's delta scan so idle Groves don't pay a full-scan cost
@@ -597,12 +617,56 @@ export async function main(): Promise<void> {
     process.env.MYCO_AGENT_DEBUG = '1';
   }
 
-  // Reconcile with any existing daemon for the resolved service. Grove-bound
-  // projects use the per-user global daemon state; legacy projects keep the
-  // historical project-local state file.
-  const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
-  if (reconcileResult === 'step-aside') {
-    process.exit(0);
+  // Single-instance enforcement via OS file lock. The flock attempt is
+  // the first I/O — no SQLite open, schema work, or HTTP bind precedes
+  // it. The process holding the lock IS the daemon; nothing downstream
+  // is consulted as a source of truth for "who owns this."
+  //
+  // waitForReleaseMs tolerates the brief window where the prior holder
+  // is mid-SIGTERM (e.g. `myco update` post-install respawn, `launchctl
+  // bootout` followed by `myco daemon`). The bounded poll lets the
+  // handoff complete without each side hitting the legacy reconcile
+  // path's HTTP probe.
+  const lockPath = path.join(daemonService.stateDir, 'daemon.lock');
+  let daemonLifecycleLock: LockHandle | null = null;
+  const lockResult = await attemptDaemonStartup({
+    lockPath,
+    databasePath: dataPaths.databasePath,
+    waitForReleaseMs: 2000,
+  });
+
+  if (lockResult.outcome === 'refused') {
+    // Holder is still alive after the wait window. Defer to the
+    // existing reconcile path for the health decision. If healthy:
+    // step aside. If not: evict and retry the lock (another
+    // contender may take it during the eviction window — still a
+    // step-aside outcome for us).
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock held by another process', {
+      holder_pid: lockResult.holderPid,
+      reason: lockResult.reason,
+    });
+    const reconcileResult = await reconcileExistingDaemon(daemonService, logger);
+    if (reconcileResult === 'step-aside') {
+      process.exit(0);
+    }
+    const retry = await attemptDaemonStartup({
+      lockPath,
+      databasePath: dataPaths.databasePath,
+      waitForReleaseMs: 2000,
+    });
+    if (retry.outcome === 'refused') {
+      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock taken by another contender during eviction — stepping aside', {
+        holder_pid: retry.holderPid,
+      });
+      process.exit(0);
+    }
+    daemonLifecycleLock = retry.lock;
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired after eviction', { lock_path: lockPath });
+  } else {
+    // Acquired on the first try (or during the wait window). Skip the
+    // legacy reconcile path — flock denied none.
+    daemonLifecycleLock = lockResult.lock;
+    logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock acquired', { lock_path: lockPath });
   }
 
   logger.info(LOG_KINDS.DAEMON_CONFIG, 'Config loaded', {
@@ -1231,11 +1295,8 @@ export async function main(): Promise<void> {
     currentVersion: server.version,
     daemonPort: server.port,
     globalPrefix,
-    scheduleShutdown: () => {
-      setTimeout(() => {
-        process.kill(process.pid, 'SIGTERM');
-      }, RESTART_RESPONSE_FLUSH_MS);
-    },
+    daemonStateDir: daemonService.stateDir,
+    scheduleShutdown: scheduleShutdownWithAttribution('api/update', logger),
   });
 
   server.registerRoute('GET', '/api/update/status', async (req) => updateHandlers.handleUpdateStatus(req));
@@ -1770,6 +1831,23 @@ export async function main(): Promise<void> {
   }
   logger.info(LOG_KINDS.DAEMON_READY, 'Daemon ready', { vault: bootstrapVaultDir, port: server.port });
 
+  // Clear any update-in-progress sentinel left by the orchestrator
+  // that triggered this restart. If the sentinel's target version
+  // matches what we're running, the update succeeded — drop the
+  // sentinel so future updates aren't blocked. If it doesn't match
+  // (the install errored before reaching the target), the stale-age
+  // sweep in `update-in-progress.inFlight()` will drop it eventually.
+  {
+    const sentinel = updateInProgress.read(daemonService.stateDir);
+    if (sentinel && sentinel.targetVersion === server.version) {
+      updateInProgress.clear(daemonService.stateDir);
+      logger.info(LOG_KINDS.DAEMON_START, 'Update sentinel cleared on target-version match', {
+        target_version: sentinel.targetVersion,
+        initiator: sentinel.initiator,
+      });
+    }
+  }
+
   // Pre-warm modules that are dynamically imported from daemon hot paths.
   // tsup compiles `await import('@myco/...')` into a chunk filename with a
   // content hash baked in (e.g. `./executor-ABC123.js`). When the bundle is
@@ -1833,11 +1911,7 @@ export async function main(): Promise<void> {
     server,
     daemonVaultDir: bootstrapVaultDir,
     projectRoot,
-    scheduleShutdown: () => {
-      setTimeout(() => {
-        process.kill(process.pid, 'SIGTERM');
-      }, RESTART_RESPONSE_FLUSH_MS);
-    },
+    scheduleShutdown: scheduleShutdownWithAttribution('self-reconcile', logger),
   });
   teamSync.registerFlushJob(powerManager, runtimeCache);
 
@@ -1979,6 +2053,12 @@ export async function main(): Promise<void> {
     runtimeCache.closeAll();
     vectorStore.close();
     closeDatabase();
+    // Release the lifecycle lock as the last visible step so a respawn
+    // can acquire it without depending on Node's `exit` handler ordering.
+    if (daemonLifecycleLock) {
+      daemonLifecycleLock.release();
+      logger.info(LOG_KINDS.DAEMON_START, 'Lifecycle lock released');
+    }
     logger.close();
     process.exit(0);
   };

@@ -66,6 +66,14 @@ export interface StagedManifest {
  *
  * Overwrites any existing staged content — the draft phase may call this
  * multiple times during iterative rewrites before the validate phase.
+ *
+ * Single-writer invariant: the staging path is `<vaultDir>/staging/
+ * skills/<candidateId>/`. `candidateId` is unique per candidate (the
+ * survey assigns it and the agent run owns it for the duration of
+ * the draft phase), so two concurrent agent runs always write to
+ * disjoint directories. Same-task concurrent runs are blocked by the
+ * executor's per-task single-run guard in `agent/executor.ts`. No
+ * file lock is required at this layer.
  */
 export function writeStagedSkill(
   vaultDir: string,

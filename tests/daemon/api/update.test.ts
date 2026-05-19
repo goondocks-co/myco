@@ -143,13 +143,16 @@ const NO_UPDATE_STATUS = {
   ],
 };
 
-/** Default deps for tests. */
+/** Default deps for tests. Each call gets a fresh tmpdir for the
+ *  update-in-progress sentinel so tests don't interfere across runs. */
 function makeDeps(overrides: Record<string, unknown> = {}) {
+  const daemonStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-test-'));
   return {
     vaultDir: '/vault',
     projectRoot: '/project',
     currentVersion: '1.0.0',
     daemonPort: 20915,
+    daemonStateDir,
     scheduleShutdown: vi.fn(),
     ...overrides,
   };

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
 
 interface BufferOptions {
   maxEvents?: number;
@@ -7,6 +8,7 @@ interface BufferOptions {
 
 export class EventBuffer {
   private filePath: string;
+  private lockPath: string;
   private maxEvents: number;
   private eventCount = 0;
 
@@ -16,7 +18,12 @@ export class EventBuffer {
     options: BufferOptions = {},
   ) {
     this.filePath = path.join(bufferDir, `${sessionId}.jsonl`);
+    this.lockPath = path.join(bufferDir, `.${sessionId}.lock`);
     this.maxEvents = options.maxEvents ?? 500;
+
+    // Ensure the buffer dir exists once at construction so the per-append
+    // hot path doesn't repeat mkdirSync for every event.
+    fs.mkdirSync(this.bufferDir, { recursive: true });
 
     if (fs.existsSync(this.filePath)) {
       const content = fs.readFileSync(this.filePath, 'utf-8').trim();
@@ -24,15 +31,24 @@ export class EventBuffer {
     }
   }
 
+  /**
+   * Append one event to the session's buffer journal.
+   *
+   * Two processes can reach this method for the same session: the
+   * daemon's event dispatcher and the hook subprocess (fallback when
+   * its HTTP POST fails). The flock around the write serializes those
+   * callers so event lines never interleave at the byte level, even
+   * for events that exceed PIPE_BUF.
+   */
   append(event: Record<string, unknown>): void {
-    fs.mkdirSync(this.bufferDir, { recursive: true });
-
     const line = JSON.stringify({
       ...event,
       timestamp: event.timestamp ?? new Date().toISOString(),
     });
 
-    fs.appendFileSync(this.filePath, line + '\n');
+    withFileLockSync(this.lockPath, () => {
+      fs.appendFileSync(this.filePath, line + '\n');
+    });
     this.eventCount++;
   }
 

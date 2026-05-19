@@ -273,6 +273,37 @@ describe('reconcileSelf update intent', () => {
     expect(logger.calls.some((c) => c.message.includes('Update intent observed'))).toBe(true);
   });
 
+  test('skips installUpdate and stays silent when updateInFlight reports an in-flight installer', async () => {
+    // Real failure mode: `/api/update/apply` writes the in-progress
+    // sentinel and spawns the installer; the next reconciler tick
+    // observes the still-present intent file and would re-spawn a
+    // second installer without this gate. We assert no installUpdate
+    // call, no "Update intent observed" log noise, and that the
+    // intent file is retained (the post-restart tick decides).
+    const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-inflight-'));
+    const daemonService = makeDaemonService(dir);
+    const state = makeState();
+    const logger = makeLogger();
+
+    writeUpdateIntent(daemonService, {
+      target_version: '0.27.99',
+      requested_at: new Date().toISOString(),
+    });
+
+    let installerCalls = 0;
+    await reconcileSelf({
+      daemonService,
+      currentState: () => state,
+      logger,
+      installUpdate: async () => { installerCalls += 1; },
+      updateInFlight: () => true,
+    });
+
+    expect(installerCalls).toBe(0);
+    expect(existsSync(join(dir, UPDATE_INTENT_FILE))).toBe(true);
+    expect(logger.calls.some((c) => c.message.includes('Update intent observed'))).toBe(false);
+  });
+
   test('clears intent when current version matches target (post-restart success path)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'myco-recon-update-success-'));
     const daemonService = makeDaemonService(dir);
