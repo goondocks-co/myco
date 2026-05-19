@@ -97,25 +97,38 @@ phases:
          explaining that Myco provides project memory, prior decisions,
          plans, and retrieval tools for this repository.
 
-      2. A retrieval paragraph naming the highest-priority tools from
-         the tool guidance list (typically `myco_cortex` and
-         `myco_search`). Describe when each is useful, not what each
-         argument does. Explain that `myco_search` returns stable IDs
-         and retrieve hints that point to the owning entity tool.
+      2. A retrieval paragraph structured as two short workflow-framed
+         sentences, in this order:
 
-         If the tool guidance flags Canopy Map as a default opener,
-         frame it as a default action in this paragraph — phrasing like
-         "Call `node .agents/myco-cli.cjs tool call myco_cortex --json --input '{"op":"canopy_map"}'`
-         first whenever you need to find a feature, locate the right
-         file before editing, or orient in this codebase; use
-         `myco_cortex({"op":"canopy_map"})` via MCP when the host
-         exposes Myco tools cleanly." Never frame
-         it as a condition the agent self-evaluates
-         ("when you need to explore unfamiliar code", "if you're new to
-         the project") — the directive exists precisely because that
-         conditional framing causes agents to skip the tool. Preserve
-         the default-action wording exactly; do not paraphrase it back
-         into a conditional.
+         (a) Canopy Map opener — if and only if the tool guidance
+             flags `myco_cortex` op `"canopy_map"` as a default opener,
+             lead with a single MCP-form sentence such as
+             "Call `myco_cortex({"op":"canopy_map"})` first when you
+             need project layout — finding a feature, locating the right
+             file before editing, or orienting in this codebase." Use
+             exactly one invocation form (MCP). Do NOT also list the
+             `node .agents/myco-cli.cjs tool call ...` CLI form in this
+             paragraph; the dual-form phrasing reads as two redundant
+             steps and is the reason agents skip the tool. Frame it as a
+             default first move, never as a condition the agent
+             self-evaluates ("when you need to explore unfamiliar code",
+             "if you're new to the project"). Do NOT enumerate other
+             `myco_cortex` ops here — `digest` and `canopy_entry` do not
+             belong in the opener sentence.
+
+         (b) Search sentence — describe `myco_search` by the workflow
+             moment that triggers it, not by listing tool args: prior
+             decisions, bug fixes, why-was-this-built questions, or
+             locating source by what it does. Explain that every result
+             includes a stable ID and a `retrieve` hint pointing to the
+             owning entity tool (`myco_sessions`, `myco_plans`,
+             `myco_spores`, etc.). Mention `myco_cortex` op
+             `"canopy_entry"` only here, as the follow-up move for a
+             canopy search result — not as a sibling of `canopy_map`.
+
+         The two sentences MUST be a single paragraph (no list, no
+         sub-bullets) so the reading flow is "default first move →
+         situational lookup."
 
       3. A plan-persistence paragraph naming `myco_plans` with
          op `"list"`, `"get"`, and `"save"`.
@@ -132,9 +145,18 @@ phases:
          or pad with stale items.
 
       5. A closing paragraph on `myco_spores` op `"save"` for saving
-         discoveries during this session. This is the call-to-action — it lands
-         last on purpose so the freshest impression is "as you work,
-         capture surprising things," not the background plan list.
+         discoveries during this session. Name 2-3 concrete moments
+         that trigger a save — for example, after fixing a non-obvious
+         bug, after making a design decision with non-obvious reasoning,
+         after discovering a gotcha, or after learning something
+         surprising about how a component actually behaves. Mirror the
+         workflow-trigger framing of the plan-persistence paragraph
+         ("when you do X, call op:save") rather than a passive "as you
+         work, capture what you discover." This is the call-to-action —
+         it lands last on purpose so the freshest impression is a
+         directive to save, not the background plan list. Remind the
+         agent to prefer specific over vague: name the file, function,
+         or component, and explain the *why*.
 
       Keep the output compact and ready for direct injection. Do not
       restate AGENTS.md. Do not mention `myco_skills`. Do not reorder

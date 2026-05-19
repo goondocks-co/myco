@@ -12,6 +12,7 @@
 
 import { getDatabase } from '@myco/db/client.js';
 import { isTeamSyncEnabled, getTeamMachineId } from '@myco/daemon/team-context.js';
+import { epochSeconds } from '@myco/constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,8 +24,26 @@ const BURST_BATCH_SIZE = 100;
 /** Age in seconds after which sent records are pruned (24 hours). */
 const SENT_PRUNE_AGE_SECONDS = 86_400;
 
-/** Milliseconds-per-second multiplier for epoch math. */
-const MS_PER_SECOND = 1000;
+/**
+ * SQL `LIKE` allowlist for activity rows that represent a Myco tool call.
+ *
+ * Shared by:
+ *   - `aggregateSessionMycoToolCalls` in `db/queries/myco-tool-usage.ts`
+ *     (per-session aggregator run at Stop boundary)
+ *   - `migrateV44ToV45` in `db/migrations.ts` (one-time backfill of the
+ *     new `session_myco_tool_calls` table)
+ *
+ * Kept in one place so the two consumers can't drift on what counts as a
+ * "Myco tool call" — adding a new prefix here lights it up for both. The
+ * embedded backslash escapes match SQLite's `ESCAPE '\'` clause used at
+ * both call sites.
+ */
+export const MYCO_TOOL_LIKE_PATTERNS: readonly string[] = Object.freeze([
+  'myco\\_%',
+  'mcp__myco__myco\\_%',
+  'collective\\_%',
+  'mcp__myco__collective\\_%',
+]);
 
 /**
  * Tables that are intentionally *local-only* and must never be enqueued for
@@ -44,6 +63,12 @@ export const LOCAL_ONLY_OUTBOX_TABLES = new Set<string>([
   // Raw release provenance carries branch names, changed paths, and local Git
   // evidence. Only the derived knowledge_release_state rows are team-safe.
   'knowledge_git_provenance',
+  // Per-session Myco tool-call counts (added schema v45). Same class of data
+  // as the Canopy behavioural counters on `sessions` already listed in
+  // LOCAL_ONLY_SYNC_COLUMNS: it's local agent-behavioural telemetry derived
+  // from `activities` (which itself does not sync). The value lives in the
+  // local session-detail tile; cross-machine rollups are not a use case.
+  'session_myco_tool_calls',
 ]);
 
 export const LOCAL_ONLY_SYNC_COLUMNS: Record<string, readonly string[]> = {
@@ -78,6 +103,7 @@ export const LOCAL_ONLY_RATIONALES: Record<string, string> = {
   knowledge_git_provenance: 'Raw local Git provenance can include branch names, changed paths, and patch evidence; only derived release state syncs.',
   sessions: 'Local-only behavioural counters: embedding state and Canopy injection telemetry stay on the originating machine.',
   knowledge_release_state: 'Derived release state syncs, but local branch names, commit SHAs, and evidence summaries stay on the originating machine.',
+  session_myco_tool_calls: 'Per-session Myco tool-call telemetry, derived locally from activities; same class as the Canopy behavioural counters on sessions and stays on the originating machine.',
 };
 
 // ---------------------------------------------------------------------------
@@ -188,7 +214,7 @@ export function syncRow(
     row_id: String(row.id),
     payload: JSON.stringify(sanitizeSyncPayload(tableName, row)),
     machine_id: getTeamMachineId(),
-    created_at: row.created_at ?? Math.floor(Date.now() / 1000),
+    created_at: row.created_at ?? epochSeconds(),
   });
 }
 
@@ -286,7 +312,7 @@ export function discardRows(ids: number[]): void {
  */
 export function pruneOld(): number {
   const db = getDatabase();
-  const cutoff = Math.floor(Date.now() / MS_PER_SECOND) - SENT_PRUNE_AGE_SECONDS;
+  const cutoff = epochSeconds() - SENT_PRUNE_AGE_SECONDS;
 
   const info = db.prepare(
     `DELETE FROM team_outbox
@@ -305,6 +331,175 @@ export function countPending(): number {
   ).get() as { count: number };
 
   return row.count;
+}
+
+/**
+ * Per-table breakdown of pending (unsent) outbox records. Used by the
+ * disable-time purge so the daemon can log what's being dropped without
+ * the operator having to query SQLite themselves.
+ */
+export function countPendingByTable(): Record<string, number> {
+  const db = getDatabase();
+  const rows = db.prepare(
+    `SELECT table_name, COUNT(*) as count
+       FROM team_outbox
+      WHERE sent_at IS NULL
+      GROUP BY table_name`,
+  ).all() as Array<{ table_name: string; count: number }>;
+  const out: Record<string, number> = {};
+  for (const row of rows) out[row.table_name] = row.count;
+  return out;
+}
+
+/**
+ * Enqueue a single row deletion for team sync. Same pattern as `syncRow`
+ * but for the `'delete'` operation: gates on `isTeamSyncEnabled()`, emits
+ * a payload the worker's `handleDelete` can consume.
+ *
+ * Without this, locally-deleted rows accumulate on D1 forever — the
+ * source of the positive remote delta on `sessions`, `prompt_batches`,
+ * `knowledge_release_state`, etc. Every direct DELETE on a synced table
+ * should pair with a call here, otherwise local and remote drift apart.
+ *
+ * `extra` is optional payload metadata for audit/debug. The worker only
+ * uses `id` and `machine_id` for the actual DELETE statement; `extra`
+ * makes outbox rows self-describing for operator inspection.
+ */
+export function enqueueDelete(
+  tableName: string,
+  id: string | number,
+  extra: Record<string, unknown> = {},
+): void {
+  if (!isTeamSyncEnabled()) return;
+  const machineId = getTeamMachineId();
+  enqueueOutbox({
+    table_name: tableName,
+    row_id: String(id),
+    operation: 'delete',
+    payload: JSON.stringify({ id, machine_id: machineId, ...extra }),
+    machine_id: machineId,
+    created_at: epochSeconds(),
+  });
+}
+
+/** Batch variant of `enqueueDelete` — silently no-ops on an empty list. */
+export function enqueueDeletes(
+  tableName: string,
+  ids: ReadonlyArray<string | number>,
+): void {
+  if (ids.length === 0) return;
+  if (!isTeamSyncEnabled()) return;
+  for (const id of ids) enqueueDelete(tableName, id);
+}
+
+/**
+ * Insert pre-selected source rows into `team_outbox` as `'upsert'` records.
+ *
+ * Shared write contract used by both `forceEnqueueRows` (drift reconciler)
+ * and `backfillRows` (startup unsynced sweep). Centralizes the
+ * `INSERT INTO team_outbox` SQL, the `sanitizeSyncPayload` call, and the
+ * single-table transaction wrapping so the two callers can't drift on the
+ * payload shape.
+ */
+function insertOutboxRowsForUpsert(
+  db: ReturnType<typeof getDatabase>,
+  tableName: string,
+  rows: ReadonlyArray<Record<string, unknown>>,
+  machineId: string,
+  now: number,
+): void {
+  if (rows.length === 0) return;
+  db.transaction((batchRows: ReadonlyArray<Record<string, unknown>>) => {
+    const stmt = db.prepare(
+      `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
+       VALUES (?, ?, 'upsert', ?, ?, ?)`,
+    );
+    for (const row of batchRows) {
+      stmt.run(tableName, String(row.id), JSON.stringify(sanitizeSyncPayload(tableName, row)), machineId, now);
+    }
+  })(rows);
+}
+
+/**
+ * Force-enqueue specific source rows into the outbox, bypassing the
+ * NOT EXISTS guard `backfillUnsynced` uses against `team_outbox`.
+ *
+ * The backfill path deliberately skips rows that already have an outbox
+ * entry (sent or not) to avoid duplicate sends on normal restart. But the
+ * drift reconciler needs the opposite behavior: rows that were marked
+ * synced (and have a long-since-sent outbox entry) but never actually
+ * landed in D1 need a fresh enqueue. Without this, calling backfill
+ * after the reconciler's `resetSyncedAtForIds` produces zero re-enqueues
+ * because the prior sent-outbox row blocks it.
+ *
+ * Returns the number of new outbox rows written.
+ */
+export function forceEnqueueRows(
+  tableName: string,
+  ids: ReadonlyArray<string | number>,
+): number {
+  if (ids.length === 0) return 0;
+  if (!isTeamSyncEnabled()) return 0;
+  const db = getDatabase();
+
+  const placeholders = ids.map(() => '?').join(', ');
+  const rows = db.prepare(
+    `SELECT * FROM ${tableName} WHERE id IN (${placeholders})`,
+  ).all(...ids) as Record<string, unknown>[];
+  if (rows.length === 0) return 0;
+
+  insertOutboxRowsForUpsert(db, tableName, rows, getTeamMachineId(), epochSeconds());
+  return rows.length;
+}
+
+/**
+ * Reset `synced_at` to NULL on the listed source rows so the next
+ * `backfillUnsynced` pass re-enqueues them to the team outbox.
+ *
+ * Used by the D1-drift reconciler when the worker's `/verify` endpoint
+ * reports rows the daemon marked synced but D1 doesn't actually have.
+ * Returns the number of rows whose `synced_at` was cleared (capped by
+ * D1's bound-parameter limit; the caller chunks larger inputs).
+ *
+ * The table name comes from the worker's verify response, which is
+ * already gated against `SYNCED_TABLES_SET`; we don't re-validate here,
+ * but the SQL is parameterized so a malformed name would just produce a
+ * SQL error rather than execute arbitrary code.
+ */
+export function resetSyncedAtForIds(
+  tableName: string,
+  ids: ReadonlyArray<string | number>,
+): number {
+  if (ids.length === 0) return 0;
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(', ');
+  const info = db.prepare(
+    `UPDATE ${tableName} SET synced_at = NULL WHERE id IN (${placeholders})`,
+  ).run(...ids);
+  return info.changes;
+}
+
+/**
+ * Drop pending (unsent) outbox rows. Used when team sync is disabled —
+ * either explicitly via the disconnect handler, or by the daemon startup
+ * sweep for vaults whose `team.enabled = false` setting has left orphan
+ * rows behind.
+ *
+ * Only `sent_at IS NULL` rows are removed. Successfully-sent rows are
+ * retained for retention pruning to handle on its own cadence.
+ *
+ * Returns the number of rows removed so the caller can log the operation.
+ * The corresponding source records (sessions, spores, etc.) are untouched —
+ * if team sync is re-enabled later, `handleBackfill` re-enqueues from
+ * current state. Stale outbox rows would carry months-old snapshots, so
+ * dropping them is the correct behavior, not data loss.
+ */
+export function purgePendingOutbox(): number {
+  const db = getDatabase();
+  const info = db.prepare(
+    `DELETE FROM team_outbox WHERE sent_at IS NULL`,
+  ).run();
+  return info.changes;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,10 +618,12 @@ export function backfillAll(machineId: string): number {
 function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
   const db = getDatabase();
   let total = 0;
+  const now = epochSeconds();
 
-  const now = Math.floor(Date.now() / MS_PER_SECOND);
-
-  // Process one table at a time in separate transactions to avoid long locks
+  // Process one table at a time in separate transactions to avoid long locks.
+  // INSERT happens via the shared `insertOutboxRowsForUpsert` helper so the
+  // sanitization contract stays in one place — backfill and the drift
+  // reconciler's `forceEnqueueRows` cannot drift on payload shape.
   for (const table of TEAM_SYNC_BACKFILL_TABLES) {
     const sourcePredicate = mode === 'unsynced' ? 'synced_at IS NULL' : '1 = 1';
     const outboxPredicate = mode === 'unsynced' ? '' : 'AND team_outbox.sent_at IS NULL';
@@ -441,21 +638,7 @@ function backfillRows(machineId: string, mode: 'unsynced' | 'all'): number {
     ).all(table) as Record<string, unknown>[];
 
     if (rows.length === 0) continue;
-
-    const insertBatch = db.transaction((batchRows: Record<string, unknown>[]) => {
-      const stmt = db.prepare(
-        `INSERT INTO team_outbox (table_name, row_id, operation, payload, machine_id, created_at)
-         VALUES (?, ?, 'upsert', ?, ?, ?)`,
-      );
-      for (const row of batchRows) {
-        // Strip local-only columns before serializing — backfill must follow
-        // the same contract as syncRow(), or restart-driven re-enqueues will
-        // ship columns the worker D1 has no place for.
-        stmt.run(table, String(row.id), JSON.stringify(sanitizeSyncPayload(table, row)), machineId, now);
-      }
-    });
-
-    insertBatch(rows);
+    insertOutboxRowsForUpsert(db, table, rows, machineId, now);
     total += rows.length;
   }
 

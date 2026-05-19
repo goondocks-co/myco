@@ -88,6 +88,7 @@ Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of pr
 
 ## Quality Gates
 
+- For local test loops, target the smallest relevant scope first: `npm test -- <test-file-or-dir>` or `npm run test:debug -- <test-file-or-dir>`. Do not repeatedly pipe the full `npm test` suite through `grep` just to find one failure.
 - Before finishing a feature, run `make build`.
 - Before finishing a feature, smoke-test the changed behavior.
 - When changing an installed, generated, or user-facing surface, verify it through the real command or runtime path, not only through unit tests.

@@ -23,6 +23,8 @@ function renderTile(fixture: SessionCanopyAggregate | null) {
   );
 }
 
+// The tile reads via `getMycoToolCallCount(data, 'myco_cortex', 'canopy_map')`,
+// so fixture map-call counts are encoded in the `myco_tool_calls` array.
 const POPULATED: SessionCanopyAggregate = {
   canopy_injections_offered: 12,
   canopy_injection_total_tokens: 720,
@@ -30,7 +32,7 @@ const POPULATED: SessionCanopyAggregate = {
   canopy_reads_after_injection: 4,
   canopy_tokens_saved: 4_320,
   canopy_redundant_reads: 1,
-  canopy_map_tool_calls: 3,
+  myco_tool_calls: [{ tool_name: 'myco_cortex', op: 'canopy_map', count: 3 }],
 };
 
 const ALL_NULL: SessionCanopyAggregate = {
@@ -40,7 +42,7 @@ const ALL_NULL: SessionCanopyAggregate = {
   canopy_reads_after_injection: null,
   canopy_tokens_saved: null,
   canopy_redundant_reads: null,
-  canopy_map_tool_calls: 0,
+  myco_tool_calls: [],
 };
 
 const NEGATIVE: SessionCanopyAggregate = {
@@ -50,7 +52,7 @@ const NEGATIVE: SessionCanopyAggregate = {
   canopy_reads_after_injection: 5,
   canopy_tokens_saved: -400,
   canopy_redundant_reads: 0,
-  canopy_map_tool_calls: 0,
+  myco_tool_calls: [],
 };
 
 /* ---------- Tests ---------- */

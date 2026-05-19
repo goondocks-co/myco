@@ -409,9 +409,15 @@ describe('buildCortexInstructionsInput', () => {
     );
     cleanup();
     expect(result.instruction).toContain('myco_cortex');
-    expect(result.instruction).toContain('node .agents/myco-cli.cjs tool call myco_cortex --json');
+    expect(result.instruction).toContain('myco_cortex({"op":"canopy_map"})');
     expect(result.instruction).toContain('"op":"canopy_map"');
-    expect(result.instruction).toContain('default opener');
+    expect(result.instruction).toContain('default first move');
+    // The canopy_map directive paragraph no longer pairs the MCP form with the
+    // CLI fallback — the dual-form phrasing produced "do the same thing twice"
+    // sentences in generated instructions and led agents to skip the tool. The
+    // CLI launcher is still mentioned elsewhere in the brief (as a portable
+    // tool-surface fallback), but not co-located with this directive.
+    expect(result.instruction).not.toContain('node .agents/myco-cli.cjs tool call myco_cortex --json');
   });
 
   it('omits the myco_cortex canopy_map directive when the project has no map yet', async () => {
