@@ -137,6 +137,34 @@ export const LifecycleLock = {
   },
 };
 
+/**
+ * Run `fn` while holding an exclusive blocking flock on `lockPath`.
+ *
+ * Distinct primitive from `LifecycleLock.acquire`: this one BLOCKS
+ * waiting for the lock (no LOCK_NB) and releases as soon as `fn`
+ * returns. Used for short-lived critical sections — typically
+ * sub-millisecond — where contention is rare and the caller wants
+ * to serialize without writing its own retry loop.
+ *
+ * The libc flock call returns in microseconds when uncontended; for
+ * the daemon's buffer-append usage this is acceptable on the hot
+ * path.
+ */
+export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
+  const flockApi = loadFlock();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+  try {
+    if (flockApi.flock(fd, LOCK_EX) !== 0) {
+      throw new Error(`withFileLockSync: flock(LOCK_EX) failed on ${lockPath}`);
+    }
+    return fn();
+  } finally {
+    try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
+    try { fs.closeSync(fd); } catch { /* idem */ }
+  }
+}
+
 function writeHolderMetadata(fd: number, info: LockHolder): void {
   const json = JSON.stringify(info, null, 2) + '\n';
   fs.ftruncateSync(fd, 0);
