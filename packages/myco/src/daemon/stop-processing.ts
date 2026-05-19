@@ -49,6 +49,7 @@ import type { RegisteredSession } from './lifecycle.js';
 import { cleanupAfterSessionCascade } from './jobs/session-cleanup.js';
 import type { PlanWatchConfig } from './plan-capture.js';
 import { materializeCanopyAggregates } from '@myco/canopy/aggregate.js';
+import { materializeSessionMycoToolCalls } from '@myco/db/queries/myco-tool-usage.js';
 import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from '@myco/tools/request-context.js';
 import { ALL_PROJECTS_SCOPE } from '@myco/grove/ids.js';
 import { resolveProjectRoot } from '@myco/vault/resolve.js';
@@ -588,6 +589,13 @@ export function createStopProcessor(deps: StopProcessorDeps): {
     // failure is swallowed by materializeCanopyAggregates so it never blocks
     // the rest of the Stop pipeline.
     materializeCanopyAggregates(sessionId);
+
+    // Materialize per-(tool, op) Myco tool-call counts into
+    // `session_myco_tool_calls`. Same pattern: pure SQL over the activity
+    // log, internal failures swallowed. Replaces the dispatch-time
+    // `canopy_map_tool_calls` counter that depended on a transport-supplied
+    // sessionId and silently produced zeros for several symbionts.
+    materializeSessionMycoToolCalls(sessionId);
   }
 
   const handleStopRoute: RouteHandler = async (req) => {

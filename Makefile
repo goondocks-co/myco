@@ -1,12 +1,27 @@
-.PHONY: build build-fast build-only build-rebuild rebuild check check-fast test test-fast test-integration lint clean watch install dev-build dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-link dev-unlink ui-dev collective-ui-dev daemon-dev dev ui ui-myco ui-collective
 
+# `make build` runs the fast unit-test profile + build. Integration / smoke
+# tests are deliberately excluded from the inner dev loop — they pair real
+# subprocesses, lsof scans, port binding, and disk I/O, which costs ~100s
+# per run AND flakes under parallel load. The full sweep still runs in CI
+# on every PR; locally, use `make build-all` only when you specifically
+# need pre-release confidence.
 build:
-	$(MAKE) check
-	npm run build
-
-build-fast:
 	$(MAKE) check-fast
 	npm run build
+
+# Legacy / explicit full sweep: lint + every test bucket including
+# integration + smoke. Use before tagging a release; CI always runs this.
+build-all:
+	$(MAKE) check-all
+	npm run build
+
+build-packages:
+	$(MAKE) check-fast
+	npm run build:packages
+
+# Alias retained for backward compatibility with existing automation.
+build-fast: build
 
 build-only:
 	npm run build
@@ -21,18 +36,26 @@ build-rebuild: rebuild build
 rebuild:
 	npm rebuild
 
-check: lint test
-
 check-fast: lint test-fast
+
+# Full quality gate — every test bucket. Slow; intended for CI / pre-release.
+check-all: lint test-all
+
+# Backward-compatible alias — `check` historically meant the full sweep.
+check: check-all
 
 lint:
 	npm run lint
 
+# `test` is now the fast unit profile to match the renamed `build` semantics.
 test:
-	npm test
+	npm run test:fast
 
 test-fast:
 	npm run test:fast
+
+test-all:
+	npm test
 
 test-integration:
 	npm run test:integration

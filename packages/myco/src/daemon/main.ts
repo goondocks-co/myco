@@ -1702,6 +1702,14 @@ export async function main(): Promise<void> {
     await reconcileTeamRoute(req);
     return teamHandlers.handleClearCfApiToken(req);
   });
+  // POST /api/team/reconcile-drift — query the worker for rows the
+  // daemon thinks were synced but D1 doesn't actually have, reset
+  // synced_at on the missing ones, and re-enqueue them. Heals the
+  // "marked-synced before D1-confirmed" drift class.
+  server.registerRoute('POST', '/api/team/reconcile-drift', async (req) => {
+    await reconcileTeamRoute(req);
+    return { body: await teamSync.reconcileD1Drift(req.requestContext) };
+  });
 
   const collectiveHandlers = createCollectiveHandlers({
     getTeamClient: () => teamSync.getTeamClient(),

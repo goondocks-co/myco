@@ -22,6 +22,8 @@ import {
 } from '@myco/grove/team-connection.js';
 import {
   countPending,
+  countPendingByTable,
+  purgePendingOutbox,
   countTeamSyncRows,
   backfillAll,
   backfillUnsynced,
@@ -632,13 +634,36 @@ export function createTeamHandlers(deps: TeamHandlerDeps) {
   /**
    * POST /api/team/disconnect
    *
-   * Disables team sync and clears the live client reference.
+   * Disables team sync, clears the live client reference, and purges any
+   * pending outbox rows. Without the purge, every prior enqueue sits
+   * forever as `pending_sync_count` on the status endpoint — surfacing in
+   * the Team page UI as "N failures in the queue" against a sync that
+   * will never run. The source records (sessions, spores, etc.) are
+   * untouched; if team sync is later re-enabled, `handleBackfill`
+   * re-enqueues them from current state.
    */
   async function handleDisconnect(req: RouteRequest): Promise<RouteResponse> {
     updateTeamConnectionConfig(vaultDir, req.requestContext, { enabled: false });
     deps.setTeamClient(null, req.requestContext);
 
-    return { body: { connected: false } };
+    let purged = 0;
+    let purgedByTable: Record<string, number> = {};
+    try {
+      purgedByTable = countPendingByTable();
+      purged = purgePendingOutbox();
+    } catch (err) {
+      logger.warn('team-sync.outbox.purge-failed', 'Failed to purge pending outbox on disconnect', {
+        error: errorMessage(err),
+      });
+    }
+    if (purged > 0) {
+      logger.info('team-sync.outbox.purged', 'Purged pending outbox rows after team-sync disconnect', {
+        purged,
+        by_table: purgedByTable,
+      });
+    }
+
+    return { body: { connected: false, purged_pending: purged } };
   }
 
   /**

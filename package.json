@@ -16,6 +16,7 @@
     "build:types": "tsc",
     "check:workers": "npm run check --prefix packages/myco-team/worker && npm run check --prefix packages/myco-collective/worker",
     "test": "node scripts/run-bun-tests.mjs",
+    "test:debug": "node scripts/run-bun-tests.mjs --bail=1 --only-failures",
     "test:fast": "MYCO_TEST_PROFILE=fast node scripts/run-bun-tests.mjs",
     "test:integration": "MYCO_TEST_PROFILE=integration node scripts/run-bun-tests.mjs",
     "test:watch": "bun test --watch",
