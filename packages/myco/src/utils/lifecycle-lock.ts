@@ -32,6 +32,20 @@ const LOCK_EX = 2;
 const LOCK_NB = 4;
 const LOCK_UN = 8;
 
+/**
+ * Candidate library names per platform. The plain `libc.${suffix}`
+ * form works on macOS (where `libc.dylib` resolves to libSystem) but
+ * NOT on Linux: `libc.so` is a GNU ld linker script, not a runtime-
+ * loadable shared object. The actual runtime library is `libc.so.6`.
+ * Try the versioned name first, fall back to the suffix-only name
+ * for unusual distros that expose a generic libc.
+ */
+function libcCandidates(): readonly string[] {
+  if (process.platform === 'linux') return ['libc.so.6', `libc.${suffix}`];
+  if (process.platform === 'darwin') return [`libc.${suffix}`, 'libSystem.dylib'];
+  return [`libc.${suffix}`];
+}
+
 let flockBinding: { flock: (fd: number, op: number) => number } | null = null;
 let flockBindingError: Error | null = null;
 
@@ -44,18 +58,22 @@ function loadFlock(): { flock: (fd: number, op: number) => number } {
     );
     throw flockBindingError;
   }
-  try {
-    const lib = dlopen(`libc.${suffix}`, {
-      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-    });
-    flockBinding = lib.symbols as never;
-    return flockBinding!;
-  } catch (err) {
-    flockBindingError = new Error(
-      `LifecycleLock: failed to bind libc.flock — refusing to start. Cause: ${(err as Error).message}`,
-    );
-    throw flockBindingError;
+  const errors: string[] = [];
+  for (const name of libcCandidates()) {
+    try {
+      const lib = dlopen(name, {
+        flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      });
+      flockBinding = lib.symbols as never;
+      return flockBinding!;
+    } catch (err) {
+      errors.push(`${name}: ${(err as Error).message}`);
+    }
   }
+  flockBindingError = new Error(
+    `LifecycleLock: failed to bind libc.flock — refusing to start. Tried: ${errors.join('; ')}`,
+  );
+  throw flockBindingError;
 }
 
 export interface LockHolder {
