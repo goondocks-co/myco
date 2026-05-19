@@ -1,4 +1,5 @@
 import type { DaemonLogger } from './logger.js';
+import type { EventLoopLagProbe } from './event-loop-lag.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 
 export type PowerState = 'active' | 'idle' | 'sleep' | 'deep_sleep';
@@ -18,6 +19,10 @@ export interface PowerManagerConfig {
   activeIntervalMs: number;
   sleepIntervalMs: number;
   logger: DaemonLogger;
+  /** Optional. When provided, every job invocation emits a `power.job`
+   *  log entry annotated with the peak event-loop lag observed during
+   *  the job's runtime. */
+  lagProbe?: EventLoopLagProbe;
 }
 
 export class PowerManager {
@@ -144,15 +149,42 @@ export class PowerManager {
     });
 
     for (const job of eligible) {
-      try {
-        await job.fn();
-      } catch (err) {
-        this.logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${job.name}" failed`, {
-          error: (err as Error).message,
-        });
-      }
+      await this.runJob(job);
     }
 
     this.scheduleNextTick();
+  }
+
+  private async runJob(job: PowerJob): Promise<void> {
+    const probe = this.config.lagProbe;
+    const startMs = performance.now();
+    let peakLagDuringMs = 0;
+    const unsubscribe = probe?.addTickListener((lag) => {
+      if (lag > peakLagDuringMs) peakLagDuringMs = lag;
+    });
+    let errored: Error | null = null;
+    try {
+      await job.fn();
+    } catch (err) {
+      errored = err as Error;
+    }
+    // Yield once to libuv's timer phase so any probe tick deferred by a
+    // sync-heavy job fires and reaches the listener before unsubscribe.
+    if (probe) {
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
+    unsubscribe?.();
+    const durationMs = performance.now() - startMs;
+    this.logger.info(LOG_KINDS.POWER_JOB, 'Power job completed', {
+      job_name: job.name,
+      duration_ms: durationMs,
+      event_loop_lag_during_ms: probe ? peakLagDuringMs : null,
+      status: errored ? 'error' : 'ok',
+    });
+    if (errored) {
+      this.logger.error(LOG_KINDS.POWER_JOB_ERROR, `Job "${job.name}" failed`, {
+        error: errored.message,
+      });
+    }
   }
 }

@@ -140,7 +140,7 @@ export const ACTIVITIES_TABLE = `
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id           TEXT,
     session_id           TEXT NOT NULL REFERENCES sessions(id),
-    prompt_batch_id      INTEGER REFERENCES prompt_batches(id),
+    prompt_batch_id      INTEGER NOT NULL REFERENCES prompt_batches(id),
     tool_name            TEXT NOT NULL,
     tool_input           TEXT,
     tool_output_summary  TEXT,

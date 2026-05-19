@@ -54,14 +54,25 @@ function seedRead(
   injectionTokens: number | null,
   ts: number,
 ): number {
-  const result = getDatabase()
-    .prepare(`
-      INSERT INTO activities (
-        session_id, project_id, tool_name, tool_input, file_path, timestamp,
-        processed, created_at, canopy_injection_tokens
-      ) VALUES (?, ?, 'Read', ?, ?, ?, 0, ?, ?)
-    `)
-    .run(sessionId, PROJECT_ID, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
+  // v43 invariant: activities.prompt_batch_id is NOT NULL. Reuse the
+  // session's batch (open one if absent).
+  const db = getDatabase();
+  let batchId = (db.prepare(
+    'SELECT id FROM prompt_batches WHERE session_id = ? ORDER BY id LIMIT 1',
+  ).get(sessionId) as { id: number } | undefined)?.id;
+  if (batchId === undefined) {
+    const result = db.prepare(
+      `INSERT INTO prompt_batches (session_id, project_id, prompt_number, started_at, created_at, status)
+       VALUES (?, ?, 1, ?, ?, 'active')`,
+    ).run(sessionId, PROJECT_ID, ts, ts);
+    batchId = Number(result.lastInsertRowid);
+  }
+  const result = db.prepare(`
+    INSERT INTO activities (
+      session_id, project_id, prompt_batch_id, tool_name, tool_input, file_path, timestamp,
+      processed, created_at, canopy_injection_tokens
+    ) VALUES (?, ?, ?, 'Read', ?, ?, ?, 0, ?, ?)
+  `).run(sessionId, PROJECT_ID, batchId, JSON.stringify({ file_path: filePath }), filePath, ts, ts, injectionTokens);
   return Number(result.lastInsertRowid);
 }
 

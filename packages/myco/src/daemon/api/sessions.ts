@@ -158,10 +158,14 @@ export interface SessionMutationDeps {
   vaultDir: string;
   logger: DaemonLogger;
   liveConfig: { current: MycoConfig };
+  /** Cleared on DELETE so a re-created session with the same id is not
+   *  short-circuited by the per-lifetime reconciliation cache. Mirrors
+   *  the unregister path in session-lifecycle.ts. */
+  reconciler: { clearSession(sessionId: string): void };
 }
 
 export function createSessionMutationHandlers(deps: SessionMutationDeps) {
-  const { embeddingManager, vaultDir, logger, liveConfig } = deps;
+  const { embeddingManager, vaultDir, logger, liveConfig, reconciler } = deps;
 
   /** DELETE /api/sessions/:id — cascade delete with post-transaction cleanup. */
   async function handleDeleteSession(req: RouteRequest): Promise<RouteResponse> {
@@ -171,7 +175,12 @@ export function createSessionMutationHandlers(deps: SessionMutationDeps) {
     const result = deleteSessionCascade(sessionId);
     if (!result.deleted) return { status: 404, body: { error: 'Session not found' } };
 
-    // Post-transaction cleanup (fire-and-forget)
+    // Clear the per-lifetime reconciliation cache so a re-registration
+    // with the same session id replays its buffer cleanly.
+    reconciler.clearSession(sessionId);
+
+    // Fire-and-forget cleanup: embeddings, vault files, attachments,
+    // and the session's buffer journal.
     cleanupAfterSessionCascade(sessionId, result, embeddingManager, vaultDir).catch(() => {});
 
     logger.info(LOG_KINDS.API_SESSION_DELETE, 'Session cascade deleted', {

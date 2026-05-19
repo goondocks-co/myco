@@ -51,6 +51,10 @@ export const BATCH_KIND = {
   INITIAL: 'initial',
   STEERING: 'steering',
   INTERRUPT: 'interrupt',
+  /** Synthetic batch opened when an activity arrives without a
+   *  preceding user prompt. Required for the activities FK; rendered
+   *  distinctly in the UI. */
+  RECOVERED: 'recovered',
 } as const;
 
 export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];

@@ -74,6 +74,56 @@ describe('EventLoopLagProbe', () => {
     expect(probe.getStats().stallCount).toBeGreaterThanOrEqual(1);
   });
 
+  it('addTickListener delivers per-tick lag values and supports unsubscribe', async () => {
+    const { logger } = captureLogger();
+    const probe = new EventLoopLagProbe(logger, {
+      sampleIntervalMs: FAST_INTERVAL,
+      warnThresholdMs: 50,
+    });
+    const observed: number[] = [];
+    const unsubscribe = probe.addTickListener((lag) => observed.push(lag));
+
+    probe.start();
+    await new Promise((r) => setTimeout(r, FAST_INTERVAL * 4));
+    expect(observed.length).toBeGreaterThanOrEqual(2);
+
+    const seenAtUnsubscribe = observed.length;
+    unsubscribe();
+    await new Promise((r) => setTimeout(r, FAST_INTERVAL * 3));
+    probe.stop();
+
+    // After unsubscribe the listener is not called again.
+    expect(observed.length).toBe(seenAtUnsubscribe);
+  });
+
+  it('addTickListener: a throwing listener does not crash the probe or block other listeners', async () => {
+    const { logs, logger } = captureLogger();
+    const probe = new EventLoopLagProbe(logger, {
+      sampleIntervalMs: FAST_INTERVAL,
+      warnThresholdMs: 50,
+    });
+    let goodCount = 0;
+    probe.addTickListener(() => {
+      throw new Error('boom');
+    });
+    probe.addTickListener(() => {
+      goodCount++;
+    });
+
+    probe.start();
+    await new Promise((r) => setTimeout(r, FAST_INTERVAL * 4));
+    probe.stop();
+
+    expect(goodCount).toBeGreaterThanOrEqual(2);
+    const listenerWarns = logs.filter(
+      (entry) =>
+        entry.kind === LOG_KINDS.DAEMON_LAG &&
+        entry.level === 'warn' &&
+        entry.message?.includes('listener threw'),
+    );
+    expect(listenerWarns.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('stop() halts further samples', async () => {
     const { logs, logger } = captureLogger();
     const probe = new EventLoopLagProbe(logger, {

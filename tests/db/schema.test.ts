@@ -48,7 +48,7 @@ describe('Database schema', () => {
 
   describe('constants', () => {
     it('exports SCHEMA_VERSION as a positive integer', () => {
-      expect(SCHEMA_VERSION).toBe(42);
+      expect(SCHEMA_VERSION).toBe(43);
       expect(Number.isInteger(SCHEMA_VERSION)).toBe(true);
     });
 
@@ -1554,14 +1554,15 @@ describe('Database schema', () => {
           `INSERT INTO sessions (id, agent, started_at, created_at, content_hash, title)
            VALUES ('sess-a', 'test', 1000, 1000, 'session-hash', 'searchabletitle')`,
         ).run();
-        db.prepare(
+        const batchInsert = db.prepare(
           `INSERT INTO prompt_batches (session_id, user_prompt, created_at, content_hash)
            VALUES ('sess-a', 'searchable prompt', 1000, 'batch-hash')`,
         ).run();
+        const batchId = Number(batchInsert.lastInsertRowid);
         db.prepare(
-          `INSERT INTO activities (session_id, tool_name, timestamp, created_at, content_hash)
-           VALUES ('sess-a', 'Read', 1000, 1000, 'activity-hash')`,
-        ).run();
+          `INSERT INTO activities (session_id, prompt_batch_id, tool_name, timestamp, created_at, content_hash)
+           VALUES ('sess-a', ?, 'Read', 1000, 1000, 'activity-hash')`,
+        ).run(batchId);
         db.prepare(
           `INSERT INTO spores (id, agent_id, observation_type, content, content_hash, created_at)
            VALUES ('spore-a', 'agent-test', 'discovery', 'searchable spore', 'spore-hash', 1000)`,
