@@ -5,6 +5,7 @@ import { isDevServiceMode } from '../grove/paths.js';
 import type { ServiceManager, ServiceVariant } from './types.js';
 
 interface MinimalLogger {
+  debug(kind: string, message: string, meta?: Record<string, unknown>): void;
   info(kind: string, message: string, meta?: Record<string, unknown>): void;
   warn(kind: string, message: string, meta?: Record<string, unknown>): void;
 }
@@ -48,17 +49,30 @@ export async function ensureSelfInstalledAsService(
 
     const executable = opts.executable ?? process.execPath;
     const spec = buildServiceSpec({ variant, executable });
-    // TODO: drop the "Refreshed" log line when `mgr.install` is a
-    // content-compare no-op. Requires extending the ServiceManager
-    // interface to return whether the operation mutated state.
-    await mgr.install(spec);
-    logger.info('daemon.service_install', wasInstalled
-      ? `Refreshed managed service ${label}`
-      : `Installed managed service ${label}`, {
+
+    // Self-install runs inside the daemon's own startup, so we never
+    // pass `force: true` — a supervisor reload would terminate the
+    // calling daemon. When the spec drifts, the new unit file is
+    // written and propagates on the next supervisor-initiated restart.
+    const result = await mgr.install(spec);
+
+    if (!result.changed) {
+      logger.debug('daemon.service_install', `Managed service ${label} unchanged`, {
+        variant, platform: mgr.platformName, executable,
+      });
+      return;
+    }
+    if (!wasInstalled) {
+      logger.info('daemon.service_install', `Installed managed service ${label}`, {
+        variant, platform: mgr.platformName, executable,
+      });
+      return;
+    }
+    logger.info('daemon.service_install', `Wrote updated managed service ${label}`, {
       variant,
       platform: mgr.platformName,
       executable,
-      refreshed: wasInstalled,
+      supervisor_reloaded: result.supervisorReloaded,
     });
   } catch (err) {
     logger.warn('daemon.service_install', 'Service install skipped', {

@@ -37,6 +37,31 @@ export interface ServiceStatus {
   unitPath: string | null;
 }
 
+/** Outcome of an `install` call. */
+export interface InstallResult {
+  /** Did this call write the unit file? False on an idempotent no-op
+   *  (existing file content already matches the rendered spec). */
+  changed: boolean;
+  /** Did the call also reload the supervisor's view of the unit
+   *  (e.g. launchctl bootout + bootstrap)? Reloading terminates the
+   *  running service, so implementations skip it unless `opts.force`
+   *  is set OR the unit is being installed for the first time. When
+   *  false and `changed` is true, the new unit takes effect on the
+   *  supervisor's next natural restart of the service. */
+  supervisorReloaded: boolean;
+}
+
+/** Options for `install`. */
+export interface InstallOptions {
+  /** Force the supervisor to reload the unit even when doing so
+   *  would terminate the calling process. Default false.
+   *  `ensureSelfInstalledAsService` runs inside the daemon's own
+   *  startup, where reloading would kill the calling daemon — that
+   *  path uses the default. User-initiated commands like
+   *  `myco service repair` set true. */
+  force?: boolean;
+}
+
 /** Platform-agnostic service lifecycle operations. */
 export interface ServiceManager {
   /** True if this platform implementation is functional. */
@@ -45,7 +70,7 @@ export interface ServiceManager {
   readonly platformName: string;
   /** Cheap existence check — file-system level, no shell-out. */
   isInstalled(label: string): Promise<boolean>;
-  install(spec: ServiceSpec): Promise<void>;
+  install(spec: ServiceSpec, opts?: InstallOptions): Promise<InstallResult>;
   uninstall(label: string): Promise<void>;
   start(label: string): Promise<void>;
   stop(label: string): Promise<void>;

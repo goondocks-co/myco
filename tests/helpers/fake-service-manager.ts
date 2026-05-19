@@ -17,7 +17,13 @@
  * but nothing is installed" wedge — exercising the legacy raw-spawn path.
  */
 
-import type { ServiceManager, ServiceSpec, ServiceStatus } from '@myco/service/types';
+import type {
+  InstallOptions,
+  InstallResult,
+  ServiceManager,
+  ServiceSpec,
+  ServiceStatus,
+} from '@myco/service/types';
 
 export interface FakeServiceManagerOptions {
   /** Whether the platform appears to support services at all. Default true. */
@@ -45,6 +51,15 @@ export class FakeServiceManager implements ServiceManager {
   restartShellCommands = new Map<string, string>();
 
   installCalls: ServiceSpec[] = [];
+  installOptions: (InstallOptions | undefined)[] = [];
+  /** Return value handed back from `install()`. Tests can override to
+   *  exercise specific outcomes (unchanged no-op, write-without-reload,
+   *  etc.). Default behavior mirrors `LaunchdServiceManager.install`:
+   *  first install for a label → `{ changed: true, supervisorReloaded: true }`;
+   *  repeat install with an identical spec → `{ changed: false, supervisorReloaded: false }`;
+   *  install with a delta + no `force` → `{ changed: true, supervisorReloaded: false }`. */
+  installResultOverride: InstallResult | null = null;
+  private installedSpecs = new Map<string, string>();
   uninstallCalls: string[] = [];
   startCalls: string[] = [];
   stopCalls: string[] = [];
@@ -72,10 +87,25 @@ export class FakeServiceManager implements ServiceManager {
     return this.installed.has(label);
   }
 
-  async install(spec: ServiceSpec): Promise<void> {
+  async install(spec: ServiceSpec, opts?: InstallOptions): Promise<InstallResult> {
     this.installCalls.push(spec);
+    this.installOptions.push(opts);
+    if (this.installResultOverride) {
+      this.installed.add(spec.label);
+      this.installedSpecs.set(spec.label, JSON.stringify(spec));
+      return this.installResultOverride;
+    }
+    const serialized = JSON.stringify(spec);
+    const prior = this.installedSpecs.get(spec.label);
     this.installed.add(spec.label);
-    if (this._preInstalledAll) this._preInstalledAll = true;
+    this.installedSpecs.set(spec.label, serialized);
+    if (prior === serialized) {
+      return { changed: false, supervisorReloaded: false };
+    }
+    if (prior === undefined) {
+      return { changed: true, supervisorReloaded: true };
+    }
+    return { changed: true, supervisorReloaded: opts?.force === true };
   }
 
   async uninstall(label: string): Promise<void> {

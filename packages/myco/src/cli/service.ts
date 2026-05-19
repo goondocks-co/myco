@@ -110,7 +110,10 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
   switch (parsed.action) {
     case 'install': {
       const spec = buildServiceSpec({ variant: parsed.variant, executable: resolveServiceExecutable(parsed.variant) });
-      await mgr.install(spec);
+      // User-initiated install: force a supervisor reload so a stale unit
+      // file is replaced and the freshly-installed spec takes effect now,
+      // not at the next supervisor-initiated restart.
+      await mgr.install(spec, { force: true });
       await mgr.start(label);
       console.log(`Installed ${label} via ${mgr.platformName}`);
       return;
