@@ -23,6 +23,14 @@ export interface ReconcileSelfDeps {
   readUpdateError?: () => string | null;
   /** Removes the update-error.json file so a future install starts clean. */
   consumeUpdateError?: () => void;
+  /**
+   * True when an `update.in-progress` sentinel is present and fresh —
+   * another orchestrator (likely `/api/update/apply`) has already
+   * spawned an installer that the reconciler must not duplicate.
+   * Gates the intent.update branch BEFORE any logging or installUpdate
+   * call: a tick that observes an in-flight update is a no-op.
+   */
+  updateInFlight?: () => boolean;
 }
 
 /**
@@ -74,6 +82,13 @@ export async function reconcileSelf(deps: ReconcileSelfDeps): Promise<void> {
   }
 
   if (intent.update) {
+    if (deps.updateInFlight?.() === true) {
+      // Another orchestrator already has an installer in flight for
+      // this update intent. Stay silent — the post-restart reconciler
+      // tick will decide whether the install succeeded (version
+      // matches) or failed (update-error.json present).
+      return;
+    }
     const current = deps.currentState().version;
     if (intent.update.target_version === current) {
       deps.logger.info(
