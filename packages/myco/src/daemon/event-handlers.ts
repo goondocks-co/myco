@@ -82,6 +82,26 @@ export interface UserPromptOptions {
 }
 
 /**
+ * Open a synthetic `kind='recovered'` batch when no batch is currently
+ * open for the session. Callers that produce an activity but don't
+ * manage their own batch lifecycle invoke this first so the FK on
+ * `activities.prompt_batch_id` (NOT NULL) is satisfied.
+ */
+export function ensureOpenBatch(sessionId: string): void {
+  if (findOpenParentBatch(sessionId)) return;
+  const now = epochSeconds();
+  insertBatchStateless({
+    session_id: sessionId,
+    user_prompt: '(implicit batch — capture recovered)',
+    started_at: now,
+    created_at: now,
+    machine_id: getTeamMachineId(),
+    kind: BATCH_KIND.RECOVERED,
+    parent_prompt_batch_id: null,
+  });
+}
+
+/**
  * Handle a UserPromptSubmit event.
  *
  * For initial prompts: closes open batches, opens a new initial batch.
@@ -141,10 +161,9 @@ export function handleUserPrompt(
 }
 
 /**
- * Handle a PostToolUse event: insert activity with inline batch linkage.
- *
- * Fully stateless — the batch ID is resolved via an inline subquery in
- * `insertActivityWithBatch`, so no in-memory state is needed.
+ * Handle a PostToolUse event: ensure a batch is open (opening a
+ * synthetic recovery batch if necessary) and insert the activity
+ * linked to it.
  */
 export function handleToolUse(
   sessionId: string,
@@ -155,6 +174,8 @@ export function handleToolUse(
   projectRoot: string,
 ): void {
   const now = epochSeconds();
+
+  ensureOpenBatch(sessionId);
 
   const filePath = extractToolFilePath(agent, toolName, toolInput);
   const activityFilePath = filePath ? relativizeToolPath(filePath, projectRoot) : null;
@@ -183,7 +204,6 @@ export function handleToolUse(
     canopy_injection_tokens: injectionTokens,
   });
 
-  // Increment batch activity count if linked to a batch
   if (activity.prompt_batch_id !== null) {
     incrementActivityCount(activity.prompt_batch_id);
   }
@@ -222,6 +242,8 @@ export function handleToolFailure(
   const now = epochSeconds();
   const filePath = extractToolFilePath(agent, toolName, toolInput);
 
+  ensureOpenBatch(sessionId);
+
   const activity = insertActivityWithBatch({
     session_id: sessionId,
     tool_name: toolName,
@@ -248,6 +270,7 @@ export function handleSubagentStart(
   agentType: string | undefined,
 ): void {
   const now = epochSeconds();
+  ensureOpenBatch(sessionId);
   insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_start',
@@ -267,6 +290,7 @@ export function handleSubagentStop(
   lastAssistantMessage: string | undefined,
 ): void {
   const now = epochSeconds();
+  ensureOpenBatch(sessionId);
   insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'subagent_stop',
@@ -286,6 +310,7 @@ export function handleStopFailure(
   errorDetails: string | undefined,
 ): void {
   const now = epochSeconds();
+  ensureOpenBatch(sessionId);
   insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'stop_failure',
@@ -307,6 +332,7 @@ export function handleTaskCompleted(
   taskDescription: string | undefined,
 ): void {
   const now = epochSeconds();
+  ensureOpenBatch(sessionId);
   insertActivityWithBatch({
     session_id: sessionId,
     tool_name: 'task_completed',
@@ -327,6 +353,7 @@ export function handleCompact(
   compactSummary: string | undefined,
 ): void {
   const now = epochSeconds();
+  ensureOpenBatch(sessionId);
   insertActivityWithBatch({
     session_id: sessionId,
     tool_name: `${phase}_compact`,

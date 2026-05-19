@@ -60,7 +60,12 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
       </div>
 
       {/* Card content */}
-      <Surface level="low" className="flex-1 overflow-hidden rounded-md max-w-full border border-outline-variant/10 mb-2">
+      <Surface level="low" className={cn(
+        'flex-1 overflow-hidden rounded-md max-w-full border border-outline-variant/10 mb-2',
+        // Synthetic recovery batches render faded + dashed so the
+        // timeline shows they are reconstructed, not real prompts.
+        batch.kind === 'recovered' && 'opacity-60 border-dashed',
+      )}>
         {/* Collapsible header */}
         <button
           type="button"
@@ -80,7 +85,7 @@ export function PromptBatchCard({ batch, batchAttachments, steeringChildren, def
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className="flex items-baseline justify-between gap-2 mb-0.5">
               <span className="font-sans text-[10px] font-medium uppercase tracking-widest text-on-surface-variant shrink-0">
-                Prompt
+                {batch.kind === 'recovered' ? 'Recovered' : 'Prompt'}
               </span>
               {batch.activity_count > 0 && (
                 <span className="font-mono text-[10px] text-on-surface-variant/70 shrink-0">

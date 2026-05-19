@@ -143,6 +143,7 @@ describe('handleCompleteSession', () => {
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: liveConfig as never,
+      reconciler: { clearSession: vi.fn() },
     });
   }
 
@@ -226,6 +227,7 @@ describe('handleDeletePlan', () => {
       vaultDir: tmpDir,
       logger: makeLogger() as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
     });
   }
 
@@ -319,6 +321,7 @@ describe('handleDeletePlan — machine_id ownership', () => {
       vaultDir: tmpDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
       liveConfig: { current: { agent: { event_tasks_enabled: false } } } as never,
+      reconciler: { clearSession: vi.fn() },
     });
   }
 

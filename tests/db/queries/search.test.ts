@@ -52,7 +52,9 @@ function makeBatch(sessionId: string, overrides: Partial<BatchInsert> = {}): Bat
   };
 }
 
-/** Factory for minimal valid activity data (requires a session_id). */
+/** Factory for minimal valid activity data (requires a session_id). The
+ *  surrounding describe sets a default batch_id via setDefaultBatchId
+ *  so activities satisfy the v43 NOT NULL FK. */
 function makeActivity(sessionId: string, overrides: Partial<ActivityInsert> = {}): ActivityInsert {
   const now = epochNow();
   return {
@@ -60,9 +62,13 @@ function makeActivity(sessionId: string, overrides: Partial<ActivityInsert> = {}
     tool_name: 'Bash',
     timestamp: now,
     created_at: now,
+    prompt_batch_id: _defaultBatchId,
     ...overrides,
   };
 }
+
+let _defaultBatchId: number | null = null;
+function setDefaultBatchId(id: number | null) { _defaultBatchId = id; }
 
 // ---------------------------------------------------------------------------
 // Test suite
@@ -79,6 +85,10 @@ describe('fullTextSearch', () => {
     const session = makeSession();
     upsertSession(session);
     sessionId = session.id;
+
+    // v43 invariant: activities.prompt_batch_id is NOT NULL.
+    const defaultBatch = insertBatch(makeBatch(sessionId, { prompt_number: 0 }));
+    setDefaultBatchId(defaultBatch.id);
   });
 
   it('finds matching prompt batches by keyword in user_prompt', () => {

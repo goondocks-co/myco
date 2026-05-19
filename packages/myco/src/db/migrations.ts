@@ -98,6 +98,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 40, migrate: (db) => migrateV39ToV40(db) },
   { version: 41, migrate: (db) => migrateV40ToV41(db) },
   { version: 42, migrate: (db) => migrateV41ToV42(db) },
+  { version: 43, migrate: (db) => migrateV42ToV43(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2593,5 +2594,121 @@ function migrateV41ToV42(db: Database): void {
   } catch (err) {
     db.prepare('ROLLBACK').run();
     throw err;
+  }
+}
+
+/**
+ * Version 43 enforces NOT NULL on `activities.prompt_batch_id`.
+ *
+ *  1. For each session with one or more orphan activities
+ *     (`prompt_batch_id IS NULL`), insert one synthetic
+ *     `kind='recovered'` batch and UPDATE those activities to point
+ *     at it. The Sessions UI renders `'recovered'` batches distinctly.
+ *  2. Recreate the `activities` table with NOT NULL on `prompt_batch_id`
+ *     via the recreate-and-swap pattern (SQLite has no ALTER COLUMN),
+ *     with foreign_keys OFF during the swap.
+ */
+function migrateV42ToV43(db: Database): void {
+  const foreignKeys = readPragmaNumber(db, 'foreign_keys');
+  setPragmaBoolean(db, 'foreign_keys', 0);
+
+  db.prepare('BEGIN').run();
+  try {
+    // 1. Backfill orphans per session.
+    const orphanSessions = db.prepare(
+      'SELECT DISTINCT session_id FROM activities WHERE prompt_batch_id IS NULL',
+    ).all() as Array<{ session_id: string }>;
+
+    const insertRecoveryBatch = db.prepare(
+      `INSERT INTO prompt_batches
+         (project_id, session_id, kind, prompt_number, user_prompt,
+          started_at, ended_at, status, processed, created_at,
+          machine_id, origin)
+       VALUES (?, ?, 'recovered', 0, '(recovered — pre-invariant orphans)',
+               ?, ?, 'completed', 0, ?, 'local', 'system')`,
+    );
+    const orphanRange = db.prepare(
+      `SELECT MIN(timestamp) AS started_at,
+              MAX(timestamp) AS ended_at
+         FROM activities
+        WHERE session_id = ? AND prompt_batch_id IS NULL`,
+    );
+    const sessionProject = db.prepare(
+      'SELECT project_id FROM sessions WHERE id = ?',
+    );
+    const relinkOrphans = db.prepare(
+      `UPDATE activities
+          SET prompt_batch_id = ?
+        WHERE session_id = ? AND prompt_batch_id IS NULL`,
+    );
+    const nowSec = epochSeconds();
+    for (const { session_id } of orphanSessions) {
+      const range = orphanRange.get(session_id) as { started_at: number | null; ended_at: number | null };
+      const session = sessionProject.get(session_id) as { project_id: string | null } | undefined;
+      const result = insertRecoveryBatch.run(
+        session?.project_id ?? null,
+        session_id,
+        range.started_at ?? nowSec,
+        range.ended_at ?? nowSec,
+        nowSec,
+      );
+      relinkOrphans.run(Number(result.lastInsertRowid), session_id);
+    }
+
+    // 2. Recreate activities with NOT NULL prompt_batch_id. Activities_fts
+    //    is keyed by rowid (= activities.id); preserving ids through the
+    //    swap keeps FTS row matches intact. reapplyCurrentSchemaDdl()
+    //    after migrations reinstalls secondary indexes via IF NOT EXISTS.
+    db.exec(`
+      CREATE TABLE activities_v43 (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id           TEXT,
+        session_id           TEXT NOT NULL REFERENCES sessions(id),
+        prompt_batch_id      INTEGER NOT NULL REFERENCES prompt_batches(id),
+        tool_name            TEXT NOT NULL,
+        tool_input           TEXT,
+        tool_output_summary  TEXT,
+        file_path            TEXT,
+        files_affected       TEXT,
+        duration_ms          INTEGER,
+        success              INTEGER DEFAULT 1,
+        error_message        TEXT,
+        timestamp            INTEGER NOT NULL,
+        processed            INTEGER DEFAULT 0,
+        content_hash         TEXT,
+        created_at           INTEGER NOT NULL,
+        canopy_injection_tokens INTEGER
+      )
+    `);
+    db.exec(`
+      INSERT INTO activities_v43
+        (id, project_id, session_id, prompt_batch_id, tool_name, tool_input,
+         tool_output_summary, file_path, files_affected, duration_ms, success,
+         error_message, timestamp, processed, content_hash, created_at,
+         canopy_injection_tokens)
+      SELECT id, project_id, session_id, prompt_batch_id, tool_name, tool_input,
+             tool_output_summary, file_path, files_affected, duration_ms, success,
+             error_message, timestamp, processed, content_hash, created_at,
+             canopy_injection_tokens
+        FROM activities
+    `);
+    db.exec('DROP TABLE activities');
+    db.exec('ALTER TABLE activities_v43 RENAME TO activities');
+    // sqlite_sequence is metadata. After the swap, AUTOINCREMENT tracking
+    // points at name='activities_v43'. Re-key so future INSERTs continue
+    // past the highest preserved id.
+    db.exec("UPDATE sqlite_sequence SET name='activities' WHERE name='activities_v43'");
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(43, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
+  } finally {
+    setPragmaBoolean(db, 'foreign_keys', foreignKeys);
   }
 }

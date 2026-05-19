@@ -64,17 +64,26 @@ function seedSession(sessionId: string) {
 function seedActivities(sessionId: string, activities: SeedActivity[]) {
   const db = getDatabase();
   const base = epochNow();
+  // v43 invariant: activities.prompt_batch_id is NOT NULL. Open a batch
+  // for the session and reuse its id for every seeded activity.
+  const batchInsert = db.prepare(`
+    INSERT INTO prompt_batches (session_id, prompt_number, started_at, created_at, status)
+    VALUES (?, 1, ?, ?, 'active')
+  `).run(sessionId, base, base);
+  const batchId = Number(batchInsert.lastInsertRowid);
+
   const insert = db.prepare(`
     INSERT INTO activities (
-      session_id, tool_name, tool_input, file_path,
+      session_id, prompt_batch_id, tool_name, tool_input, file_path,
       timestamp, processed, created_at, canopy_injection_tokens
-    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
   `);
   activities.forEach((a, i) => {
     const path = a.file_path;
     const toolInput = path === null ? null : JSON.stringify({ file_path: path });
     insert.run(
       sessionId,
+      batchId,
       a.tool_name ?? 'Read',
       toolInput,
       path,

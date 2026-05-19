@@ -54,6 +54,7 @@ Each daemon subsystem has a distinct failure signature:
 | **Executor (phased tasks)** | Task status transitions to `complete` or `failed` silently; no error thrown |
 | **Timeout cascade failure** | Task shows *"process aborted by user"* when no user action occurred |
 | **Self-mutation discipline** | Daemon corrupts its own state during normal operations; daemon.json becomes invalid after restart |
+| **Daemon restart/reconciliation** | PID conflicts, EPERM errors, MCP bridge indefinite reconnect loops |
 
 ---
 
@@ -159,7 +160,126 @@ try {
 
 ---
 
-## Step 4 — Write the Regression Test First
+## Step 4 — Daemon Restart and PID Reconciliation Failures
+
+### EPERM Livelock in reconcileExistingDaemon
+
+**Problem:** When daemon restart encounters an existing daemon.json with a stale PID, `reconcileExistingDaemon` can enter an EPERM livelock where repeated `process.kill(pid, 0)` calls fail with EPERM but the function keeps retrying without resolution.
+
+**Root cause:** The kill-probe doesn't distinguish between "process doesn't exist" (ESRCH, safe to proceed) and "process exists but we can't signal it" (EPERM, uncertain state).
+
+**Fix pattern:** Treat EPERM as "uncertain" and escalate to user decision rather than looping:
+```typescript
+export async function reconcileExistingDaemon(existingRecord: DaemonRecord): Promise<'cleared' | 'escalate'> {
+  try {
+    // Probe with kill signal 0 (no-op probe)
+    process.kill(existingRecord.pid, 0);
+    // If we get here, process exists and we can signal it
+    logger.info(`Found existing daemon process ${existingRecord.pid}, attempting clean shutdown`);
+    process.kill(existingRecord.pid, 'SIGTERM');
+    await waitForProcessExit(existingRecord.pid, { timeoutMs: 10000 });
+    return 'cleared';
+  } catch (err) {
+    if (err.code === 'ESRCH') {
+      // Process doesn't exist, safe to clear the record
+      logger.info(`Daemon record points to non-existent process ${existingRecord.pid}, clearing stale record`);
+      return 'cleared';
+    } else if (err.code === 'EPERM') {
+      // Process may exist but we can't signal it - escalate to user
+      logger.warn(`Cannot signal existing daemon process ${existingRecord.pid} (EPERM). Manual intervention required.`);
+      console.error(`Existing daemon process ${existingRecord.pid} is running but not accessible.`);
+      console.error(`Please manually stop the process or run: sudo kill ${existingRecord.pid}`);
+      return 'escalate';
+    } else {
+      throw err; // Unexpected error
+    }
+  }
+}
+```
+
+### Daemon Restart Failure Mode 4 — MCP Bridge Indefinite Reconnect
+
+**Problem:** During daemon restart, if the MCP bridge connection fails to establish cleanly, it can enter an indefinite reconnect loop where the daemon appears to start successfully but the bridge never becomes functional.
+
+**Diagnosis patterns:**
+```bash
+# Look for these log patterns indicating Mode 4 failure:
+grep -A 5 -B 5 "MCP bridge.*reconnect" ~/.myco/daemon.log
+grep "bridge.*timeout\|bridge.*failed" ~/.myco/daemon.log | tail -20
+```
+
+**Typical Mode 4 signature:**
+```
+[MCP] Bridge connection attempt 1 failed: connect ECONNREFUSED 127.0.0.1:3456
+[MCP] Bridge connection attempt 2 failed: connect ECONNREFUSED 127.0.0.1:3456
+[MCP] Bridge connection attempt 3 failed: connect ECONNREFUSED 127.0.0.1:3456
+[MCP] Bridge reconnect exponential backoff, next attempt in 8000ms
+[MCP] Bridge connection attempt 4 failed: connect ECONNREFUSED 127.0.0.1:3456
+```
+
+**Resolution procedure:**
+```typescript
+export async function resolveMcpBridgeLoopMode4() {
+  // Step 1: Stop daemon cleanly to break the reconnect loop
+  await stopDaemonProcess({ force: false, timeoutMs: 15000 });
+  
+  // Step 2: Clean any stale MCP bridge state
+  await cleanupMcpBridgeState();
+  
+  // Step 3: Restart with bridge connection verification
+  const startResult = await startDaemonWithBridgeVerification();
+  
+  if (!startResult.bridgeHealthy) {
+    throw new Error('Daemon started but MCP bridge failed verification. Check daemon port conflicts.');
+  }
+  
+  return startResult;
+}
+
+async function startDaemonWithBridgeVerification(): Promise<{ pid: number; bridgeHealthy: boolean }> {
+  const daemon = await startDaemonProcess();
+  
+  // Wait for bridge to establish or timeout
+  const bridgeHealthy = await waitForMcpBridgeReady({
+    timeoutMs: 10000,
+    healthCheckInterval: 500
+  });
+  
+  return { pid: daemon.pid, bridgeHealthy };
+}
+
+async function waitForMcpBridgeReady({ timeoutMs, healthCheckInterval }: { timeoutMs: number; healthCheckInterval: number }): Promise<boolean> {
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < timeoutMs) {
+    try {
+      // Test bridge connectivity with a minimal request
+      const response = await fetch('http://127.0.0.1:3456/mcp/health', { 
+        timeout: 2000,
+        headers: { 'X-Bridge-Health-Check': '1' }
+      });
+      
+      if (response.ok) {
+        logger.info('[MCP] Bridge health check passed');
+        return true;
+      }
+    } catch (err) {
+      // Bridge not ready yet, continue waiting
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, healthCheckInterval));
+  }
+  
+  logger.warn('[MCP] Bridge health check timed out');
+  return false;
+}
+```
+
+**Prevention:** Always verify MCP bridge health after daemon restart before declaring the restart successful.
+
+---
+
+## Step 5 — Write the Regression Test First
 
 Write a test that fails with the current code. This confirms you've identified the root cause.
 
@@ -169,7 +289,7 @@ Tests for daemon subsystems live in:
 
 ---
 
-## Step 5 — Apply the Fix and Verify
+## Step 6 — Apply the Fix and Verify
 
 1. Apply the minimal surgical fix
 2. Run the targeted test first: confirm it goes green
@@ -180,7 +300,7 @@ Tests for daemon subsystems live in:
 
 ---
 
-## Step 6 — Diagnostic Logging for Session Type Disambiguation
+## Step 7 — Diagnostic Logging for Session Type Disambiguation
 
 **When:** Investigating phantom sessions or parent-child session relationships.
 
@@ -224,7 +344,7 @@ function processSessionHook(payload: any) {
 
 ---
 
-## Step 7 — Daemon Restart Resilience Patterns
+## Step 8 — Daemon Restart Resilience Patterns
 
 **When:** Daemon crashes or restarts unexpectedly, leaving tasks/sessions in inconsistent states.
 
@@ -278,7 +398,7 @@ export async function cleanupStaleActiveSessions() {
 
 ---
 
-## Step 8 — Self-Mutation Discipline: Intent + Reconciliation Patterns
+## Step 9 — Self-Mutation Discipline: Intent + Reconciliation Patterns
 
 **When:** Daemon operations that modify Myco's own state, configuration, or process identity create inconsistencies.
 
@@ -462,3 +582,5 @@ export class DaemonSupervisor {
 | "No daemon" false positive during restart | Race condition in daemon.json lifecycle | Apply intent + reconciliation: supervisor manages daemon.json |
 | Daemon state corruption after config updates | Non-atomic configuration changes with no rollback | Use intent + reconciliation for config updates with validation |
 | Process identity drift after daemon updates | Self-mutation during update process | Supervisor-owned lifecycle: external supervisor manages updates |
+| EPERM livelock during daemon restart | `reconcileExistingDaemon` loops on permission error | Distinguish ESRCH from EPERM; escalate EPERM to user intervention |
+| MCP bridge indefinite reconnect loop | Mode 4 restart failure - bridge never establishes | Stop daemon, clean bridge state, restart with bridge health verification |

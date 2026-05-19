@@ -139,7 +139,6 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
    */
   function reconcileSession(sessionId: string): void {
     if (reconciledSessions.has(sessionId)) return;
-    reconciledSessions.add(sessionId);
 
     // Read buffer file directly — avoid EventBuffer constructor which reads
     // the file to compute a count we don't need.
@@ -148,17 +147,23 @@ export function createReconciler({ bufferDir, logger, projectRoot }: ReconcilerD
     try {
       content = fs.readFileSync(bufferPath, 'utf-8').trim();
     } catch {
-      return; // Buffer file doesn't exist or is unreadable
+      // Buffer file absent. Return WITHOUT marking reconciled so a later
+      // call after the buffer appears can replay it.
+      return;
     }
     if (!content) return;
 
-    // Buffer files outlive session rows — sessions may have been manually
-    // deleted or cleaned up by the session cleanup job. Skip reconciliation
-    // for sessions that no longer exist rather than resurrecting them.
+    // Session row absent (deleted, or not yet created by an /events
+    // POST). Return WITHOUT marking reconciled — if the row later
+    // appears, the next call must be free to replay.
     if (!getSession(sessionId, ALL_PROJECTS_SCOPE)) {
-      logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation for deleted session', { session_id: sessionId });
+      logger.debug(LOG_KINDS.LIFECYCLE_RECONCILE, 'Skipping reconciliation — session row absent', { session_id: sessionId });
       return;
     }
+
+    // Both preconditions hold; mark reconciled so the startup loop and
+    // a later /events auto-register don't replay it twice.
+    reconciledSessions.add(sessionId);
 
     const allEvents: Array<Record<string, unknown>> = content.split('\n').map((line) => JSON.parse(line));
 
