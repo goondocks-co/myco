@@ -60,6 +60,14 @@ export const BATCH_KIND = {
 export type BatchKind = typeof BATCH_KIND[keyof typeof BATCH_KIND];
 
 /**
+ * `user_prompt` body used when `ensureOpenBatch` fabricates a synthetic
+ * RECOVERED batch (session has zero batches, an activity arrived first).
+ * Exported so migrations and tests can target the row precisely without
+ * a string duplicate going stale.
+ */
+export const RECOVERED_BATCH_SENTINEL = '(implicit batch — capture recovered)';
+
+/**
  * Discriminated vocabulary for `prompt_batches.origin`. Orthogonal to `kind`
  * — every batch has both. `kind` records WHERE the batch sits in conversation
  * flow; `origin` records WHO issued the prompt.
@@ -764,6 +772,15 @@ export function findOpenParentBatch(sessionId: string): BatchRow | null {
      ORDER BY id DESC LIMIT 1`,
   ).get(sessionId) as Record<string, unknown> | undefined;
   return row ? toBatchRow(row) : null;
+}
+
+/** True if the session already has at least one batch (any kind, any state). */
+export function hasAnyBatch(sessionId: string): boolean {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT 1 AS hit FROM prompt_batches WHERE session_id = ? LIMIT 1`,
+  ).get(sessionId) as { hit: number } | undefined;
+  return !!row;
 }
 
 /**
