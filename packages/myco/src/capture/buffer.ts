@@ -21,6 +21,10 @@ export class EventBuffer {
     this.lockPath = path.join(bufferDir, `.${sessionId}.lock`);
     this.maxEvents = options.maxEvents ?? 500;
 
+    // Ensure the buffer dir exists once at construction so the per-append
+    // hot path doesn't repeat mkdirSync for every event.
+    fs.mkdirSync(this.bufferDir, { recursive: true });
+
     if (fs.existsSync(this.filePath)) {
       const content = fs.readFileSync(this.filePath, 'utf-8').trim();
       this.eventCount = content ? content.split('\n').length : 0;
@@ -30,16 +34,13 @@ export class EventBuffer {
   /**
    * Append one event to the session's buffer journal.
    *
-   * Two distinct processes can reach this method for the same session:
-   * the daemon's event dispatcher (when an event POST succeeds) and
-   * the hook subprocess (when the POST fails and the event falls back
-   * to the durable buffer). The flock around the write serializes
-   * those callers so event lines never interleave at the byte level,
-   * even for large events that exceed PIPE_BUF.
+   * Two processes can reach this method for the same session: the
+   * daemon's event dispatcher and the hook subprocess (fallback when
+   * its HTTP POST fails). The flock around the write serializes those
+   * callers so event lines never interleave at the byte level, even
+   * for events that exceed PIPE_BUF.
    */
   append(event: Record<string, unknown>): void {
-    fs.mkdirSync(this.bufferDir, { recursive: true });
-
     const line = JSON.stringify({
       ...event,
       timestamp: event.timestamp ?? new Date().toISOString(),

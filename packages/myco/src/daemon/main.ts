@@ -16,7 +16,7 @@ import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
-import { attemptDaemonStartup } from './lifecycle-lock-startup.js';
+import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from './update-in-progress.js';
 import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
 import { EventBuffer } from '../capture/buffer.js';
@@ -460,12 +460,9 @@ function loggerForProject(logger: Logger, projectId: GroveProjectId): Logger {
 }
 
 /**
- * Build a `scheduleShutdown` closure annotated with its caller site
- * and a stack snapshot. The trace from the update-orchestration bug
- * (multiple bounces per update) was unattributable because all three
- * scheduleShutdown call sites looked identical in the daemon.log.
- * Recording the call site at construction + the JS stack at invocation
- * means the next problematic shutdown identifies itself.
+ * Build a `scheduleShutdown` closure that records its caller label
+ * and a stack snapshot in the daemon log on every invocation. Makes
+ * shutdown-triggered events attributable to a specific call site.
  */
 function scheduleShutdownWithAttribution(callerLabel: string, logger: DaemonLogger): () => void {
   return () => {
@@ -631,7 +628,7 @@ export async function main(): Promise<void> {
   // handoff complete without each side hitting the legacy reconcile
   // path's HTTP probe.
   const lockPath = path.join(daemonService.stateDir, 'daemon.lock');
-  let daemonLifecycleLock: import('./lifecycle-lock-startup.js').AttemptDaemonStartupAcquired['lock'] | null = null;
+  let daemonLifecycleLock: LockHandle | null = null;
   const lockResult = await attemptDaemonStartup({
     lockPath,
     databasePath: dataPaths.databasePath,

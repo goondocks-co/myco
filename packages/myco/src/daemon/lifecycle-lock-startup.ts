@@ -15,6 +15,8 @@ import {
   type LockHolder,
 } from '../utils/lifecycle-lock.js';
 
+export type { LockHandle, LockHolder } from '../utils/lifecycle-lock.js';
+
 export interface AttemptDaemonStartupOptions {
   /** Path to the daemon lockfile. Typically
    *  `~/.myco/<variant>/daemon.lock`. */

@@ -354,17 +354,13 @@ export function createUpdateHandlers(deps: UpdateDeps) {
       initiator: 'api/update/apply',
     });
 
-    // When a service manager is going to drive the restart (the
-    // script's tail uses `launchctl kickstart -k` or equivalent),
-    // we must NOT also schedule an immediate SIGTERM here. Doing so
-    // shuts the daemon down before the script's `npm install`
-    // completes, which lets the supervisor's KeepAlive respawn a
-    // ghost daemon on the OLD binary in the gap — the trace's
-    // bounce #1 shape. The daemon keeps running on its mmap'd
-    // binary file through `npm install`; the script's restart tail
-    // sends the actual SIGTERM as part of the swap. Without a
-    // service manager, the script can't initiate the SIGTERM itself
-    // so the caller must do it.
+    // When a service manager drives the restart (kickstart -k), the
+    // script's tail does the SIGTERM as part of the atomic swap.
+    // Calling scheduleShutdown here would shut the daemon down before
+    // `npm install` completes, letting the supervisor's KeepAlive
+    // respawn a daemon on the still-pre-install binary. Without a
+    // service manager the script can't initiate the SIGTERM itself,
+    // so the caller has to.
     if (!serviceRestartCommand) {
       scheduleShutdown();
     }

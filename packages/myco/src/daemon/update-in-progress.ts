@@ -30,10 +30,18 @@ import path from 'node:path';
 const FILE_NAME = 'update.in-progress';
 const MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
+export const UPDATE_INITIATORS = ['api/update/apply', 'self-reconcile'] as const;
+export type UpdateInitiator = typeof UPDATE_INITIATORS[number];
+
 export interface UpdateInProgressSentinel {
   targetVersion: string;
   startedAt: number;
-  initiator: 'api/update/apply' | 'self-reconcile';
+  initiator: UpdateInitiator;
+}
+
+function isInitiator(value: unknown): value is UpdateInitiator {
+  return typeof value === 'string'
+    && (UPDATE_INITIATORS as readonly string[]).includes(value);
 }
 
 export function sentinelPath(stateDir: string): string {
@@ -52,7 +60,7 @@ export function read(stateDir: string): UpdateInProgressSentinel | null {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<UpdateInProgressSentinel>;
     if (typeof parsed.targetVersion !== 'string') return null;
     if (typeof parsed.startedAt !== 'number') return null;
-    if (parsed.initiator !== 'api/update/apply' && parsed.initiator !== 'self-reconcile') return null;
+    if (!isInitiator(parsed.initiator)) return null;
     return parsed as UpdateInProgressSentinel;
   } catch {
     return null;

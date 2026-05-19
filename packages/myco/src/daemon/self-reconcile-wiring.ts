@@ -101,11 +101,10 @@ async function runUpdateInstall(
   deps: SelfReconcileWiringDeps,
   targetVersion: string,
 ): Promise<void> {
-  // Don't fire a redundant installer if `/api/update/apply` or a
-  // prior self-reconcile tick already has one in flight. Without
-  // this guard, a slow install + multiple PowerManager ticks can
-  // produce N installers in rapid succession (the trace's bounce
-  // #3 shape).
+  // Don't fire a redundant installer if another orchestrator
+  // already has one in flight. Without this guard, a slow install
+  // running across multiple PowerManager ticks produces N installers
+  // in rapid succession.
   if (updateInProgress.inFlight(deps.daemonService.stateDir)) {
     return;
   }
@@ -128,8 +127,8 @@ async function runUpdateInstall(
 
   // When the service manager will drive the restart, skip the
   // immediate SIGTERM here. Same reasoning as in handleUpdateApply:
-  // a SIGTERM before `npm install` completes lets launchd respawn
-  // a ghost daemon on the old binary in the gap.
+  // a SIGTERM before `npm install` completes lets the supervisor
+  // respawn a daemon on the still-pre-install binary.
   if (!serviceRestartCommand) {
     deps.scheduleShutdown();
   }
