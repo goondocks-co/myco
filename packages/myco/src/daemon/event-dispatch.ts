@@ -177,6 +177,33 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     droppedSessions.set(sessionId, { reason, hadTranscriptMeta });
   }
 
+  // Per-session set of `agent_id`s seen on a Subagent start event. Used to
+  // distinguish real subagent completions (always paired Start+Stop, non-empty
+  // agent_type) from Claude Code's synthetic per-turn SubagentStop fires
+  // (empty agent_type, no preceding Start). The latter arrive ~3-5s after
+  // the turn's Stop and used to fabricate a phantom `kind='recovered'`
+  // batch via `ensureOpenBatch`. We now drop them at dispatch.
+  const startedSubagents = new Map<string, Set<string>>();
+  const STARTED_SUBAGENT_SESSION_CAP = 1024;
+  function recordSubagentStart(sessionId: string, agentId: string | undefined): void {
+    if (!agentId) return;
+    let set = startedSubagents.get(sessionId);
+    if (!set) {
+      if (startedSubagents.size >= STARTED_SUBAGENT_SESSION_CAP) {
+        const oldest = startedSubagents.keys().next().value;
+        if (oldest !== undefined) startedSubagents.delete(oldest);
+      }
+      set = new Set();
+      startedSubagents.set(sessionId, set);
+    }
+    set.add(agentId);
+  }
+  function isSyntheticSubagentStop(sessionId: string, agentId: string | undefined, agentType: string | undefined): boolean {
+    if (agentType && agentType.length > 0) return false;
+    if (!agentId) return true;
+    return !startedSubagents.get(sessionId)?.has(agentId);
+  }
+
   function evaluateAutoRegistration(event: Record<string, unknown>): {
     decision: { action: 'pass' } | { action: 'drop'; reason?: string };
     hadTranscriptMeta: boolean;
@@ -561,33 +588,44 @@ export function createEventDispatcher(deps: EventDispatchDeps): RouteHandler {
     }
 
     if (event.type === 'subagent_start') {
+      const agentId = typeof event.agent_id === 'string' ? event.agent_id : undefined;
+      const agentType = typeof event.agent_type === 'string' ? event.agent_type : undefined;
       logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent start event', {
         session_id: event.session_id,
-        agent_id: event.agent_id,
-        agent_type: event.agent_type,
+        agent_id: agentId,
+        agent_type: agentType,
       });
+      recordSubagentStart(event.session_id, agentId);
       try {
-        handleSubagentStart(
-          event.session_id,
-          typeof event.agent_id === 'string' ? event.agent_id : undefined,
-          typeof event.agent_type === 'string' ? event.agent_type : undefined,
-        );
+        handleSubagentStart(event.session_id, agentId, agentType);
       } catch (err) {
         logger.warn(LOG_KINDS.CAPTURE_ACTIVITY, 'Failed to record subagent start', { session_id: event.session_id, error: (err as Error).message });
       }
     }
 
     if (event.type === 'subagent_stop') {
+      const agentId = typeof event.agent_id === 'string' ? event.agent_id : undefined;
+      const agentType = typeof event.agent_type === 'string' ? event.agent_type : undefined;
+      // Claude Code fires a SubagentStop hook for the main agent itself
+      // after every turn's Stop (empty agent_type, no preceding Start).
+      // It carries no semantic information; record nothing.
+      if (isSyntheticSubagentStop(event.session_id, agentId, agentType)) {
+        logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Dropped synthetic subagent_stop', {
+          session_id: event.session_id,
+          agent_id: agentId,
+        });
+        return { body: { ok: true, ignored: 'synthetic-subagent-stop' } };
+      }
       logger.info(LOG_KINDS.HOOKS_SUBAGENT, 'Subagent stop event', {
         session_id: event.session_id,
-        agent_id: event.agent_id,
-        agent_type: event.agent_type,
+        agent_id: agentId,
+        agent_type: agentType,
       });
       try {
         handleSubagentStop(
           event.session_id,
-          typeof event.agent_id === 'string' ? event.agent_id : undefined,
-          typeof event.agent_type === 'string' ? event.agent_type : undefined,
+          agentId,
+          agentType,
           typeof event.last_assistant_message === 'string' ? event.last_assistant_message : undefined,
         );
       } catch (err) {

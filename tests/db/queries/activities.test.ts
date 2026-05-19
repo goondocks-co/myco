@@ -151,6 +151,40 @@ describe('activity query helpers', () => {
 
       expect(row.project_id).toBe('proj_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     });
+
+    it('links activity to the open batch when one exists', () => {
+      // Fresh session — no default batch from beforeEach() applies here.
+      const session = makeSession({ id: 'sess-open-batch-link' });
+      upsertSession(session);
+      const openBatch = insertBatch(makeBatch(session.id));
+      const row = insertActivityWithBatch(makeActivity(session.id));
+      expect(row.prompt_batch_id).toBe(openBatch.id);
+    });
+
+    it('falls back to the most-recent closed batch when no batch is open', () => {
+      const session = makeSession({ id: 'sess-closed-fallback' });
+      upsertSession(session);
+      const earlier = insertBatch(makeBatch(session.id, { started_at: epochNow() - 10 }));
+      const latest = insertBatch(makeBatch(session.id, { started_at: epochNow() }));
+      const { getDatabase } = require('@myco/db/client.js');
+      const db = getDatabase();
+      db.prepare('UPDATE prompt_batches SET ended_at = ? WHERE id = ?').run(epochNow(), earlier.id);
+      db.prepare('UPDATE prompt_batches SET ended_at = ? WHERE id = ?').run(epochNow(), latest.id);
+
+      const row = insertActivityWithBatch(makeActivity(session.id));
+      // Falls back to the highest-id closed batch (= `latest`),
+      // preserving "attach to the turn that just ended."
+      expect(row.prompt_batch_id).toBe(latest.id);
+    });
+
+    it('throws on NOT NULL FK when the session has zero batches (caller must ensureOpenBatch first)', () => {
+      // The v43 invariant forbids NULL prompt_batch_id. Callers in the
+      // event-handlers module use ensureOpenBatch() to fabricate a row
+      // before insert when the session truly has no batches yet.
+      const session = makeSession({ id: 'sess-no-batches' });
+      upsertSession(session);
+      expect(() => insertActivityWithBatch(makeActivity(session.id))).toThrow(/NOT NULL constraint failed/);
+    });
   });
 
   // ---------------------------------------------------------------------------

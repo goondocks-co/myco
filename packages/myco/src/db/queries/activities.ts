@@ -213,9 +213,12 @@ export interface StatelessActivityInsert {
 /**
  * Insert an activity with batch linkage resolved via inline subquery.
  *
- * The `prompt_batch_id` is set to the latest open batch for the session
- * (i.e., `ended_at IS NULL`, ordered by `id DESC`). If no open batch exists,
- * `prompt_batch_id` will be NULL. The caller never needs a separate SELECT.
+ * Linkage prefers the latest open batch for the session, then falls back
+ * to the most-recently-created batch (closed batches included). The fallback
+ * keeps bookkeeping events (`subagent_stop`, `task_completed`, `compact`,
+ * `stop_failure`) that arrive *after* the turn's Stop attached to that turn's
+ * just-closed INITIAL batch instead of fabricating a phantom recovered row.
+ * `prompt_batch_id` is NULL only when the session has zero batches.
  *
  * FTS5 index is kept in sync via a follow-up INSERT into activities_fts.
  */
@@ -233,7 +236,8 @@ export function insertActivityWithBatch(
      ) VALUES (
        (SELECT project_id FROM sessions WHERE id = ?),
        ?,
-       (SELECT id FROM prompt_batches WHERE session_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1),
+       (SELECT id FROM prompt_batches WHERE session_id = ?
+          ORDER BY (ended_at IS NULL) DESC, id DESC LIMIT 1),
        ?, ?,
        ?, ?, ?, ?,
        ?, ?, ?, ?,

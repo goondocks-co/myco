@@ -99,6 +99,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 41, migrate: (db) => migrateV40ToV41(db) },
   { version: 42, migrate: (db) => migrateV41ToV42(db) },
   { version: 43, migrate: (db) => migrateV42ToV43(db) },
+  { version: 44, migrate: (db) => migrateV43ToV44(db) },
 ];
 
 // ---------------------------------------------------------------------------
@@ -2710,5 +2711,86 @@ function migrateV42ToV43(db: Database): void {
     throw err;
   } finally {
     setPragmaBoolean(db, 'foreign_keys', foreignKeys);
+  }
+}
+
+/**
+ * Version 44 cleans up the fallout from PR #346's over-eager
+ * `ensureOpenBatch`:
+ *
+ *  1. Delete `kind='recovered'` phantom rows that the post-#346
+ *     `ensureOpenBatch` path created. They are identified by the
+ *     `user_prompt` string the function used. Pre-#346 recovered rows
+ *     carry the body `"(recovered — pre-invariant orphans)"` and are
+ *     left alone.
+ *  2. Recompute `activity_count` on any surviving batch where the cached
+ *     column drifted from the true row count. Pre-v44 bookkeeping
+ *     handlers inserted activities without bumping `activity_count`;
+ *     this corrects the drift across existing data.
+ */
+function migrateV43ToV44(db: Database): void {
+  db.prepare('BEGIN').run();
+  try {
+    // 1. Identify phantom recovered batches by the exact `user_prompt`
+    //    body that ensureOpenBatch wrote (RECOVERED_BATCH_SENTINEL in
+    //    batches.ts). Pre-#346 recovery rows carry a different body
+    //    ('(recovered — pre-invariant orphans)') and are left alone.
+    const phantomBatchRows = db.prepare(
+      `SELECT pb.id AS id
+         FROM prompt_batches pb
+        WHERE pb.kind = 'recovered'
+          AND pb.user_prompt = '(implicit batch — capture recovered)'`,
+    ).all() as Array<{ id: number }>;
+
+    const selectActivityIds = db.prepare(
+      `SELECT id FROM activities WHERE prompt_batch_id = ?`,
+    );
+    // activities_fts uses content='activities' (contentless FTS5). The
+    // documented way to remove a row is the 'delete' command; a plain
+    // DELETE on the virtual table can leave the index in a state SQLite
+    // later reports as "database disk image is malformed".
+    const deleteActivityFts = db.prepare(
+      `INSERT INTO activities_fts(activities_fts, rowid, tool_name, tool_input, file_path)
+       VALUES ('delete', ?, '', '', '')`,
+    );
+    const deleteActivities = db.prepare(
+      `DELETE FROM activities WHERE prompt_batch_id = ?`,
+    );
+    const deleteBatch = db.prepare(
+      `DELETE FROM prompt_batches WHERE id = ?`,
+    );
+
+    for (const { id: batchId } of phantomBatchRows) {
+      const activityIds = selectActivityIds.all(batchId) as Array<{ id: number }>;
+      for (const { id: activityId } of activityIds) {
+        try { deleteActivityFts.run(activityId); }
+        catch { /* FTS row may not exist for activities whose fields were all empty */ }
+      }
+      deleteActivities.run(batchId);
+      deleteBatch.run(batchId);
+    }
+
+    // 2. Recompute drifted activity_count on remaining batches.
+    db.prepare(
+      `UPDATE prompt_batches
+          SET activity_count = (
+            SELECT COUNT(*) FROM activities a
+             WHERE a.prompt_batch_id = prompt_batches.id
+          )
+        WHERE activity_count != (
+          SELECT COUNT(*) FROM activities a
+           WHERE a.prompt_batch_id = prompt_batches.id
+        )`,
+    ).run();
+
+    db.prepare(
+      `INSERT INTO schema_version (version, applied_at)
+       VALUES (?, ?)
+       ON CONFLICT (version) DO NOTHING`,
+    ).run(44, epochSeconds());
+    db.prepare('COMMIT').run();
+  } catch (err) {
+    db.prepare('ROLLBACK').run();
+    throw err;
   }
 }
