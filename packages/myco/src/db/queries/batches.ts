@@ -766,6 +766,15 @@ export function findOpenParentBatch(sessionId: string): BatchRow | null {
   return row ? toBatchRow(row) : null;
 }
 
+/** True if the session already has at least one batch (any kind, any state). */
+export function hasAnyBatch(sessionId: string): boolean {
+  const db = getDatabase();
+  const row = db.prepare(
+    `SELECT 1 AS hit FROM prompt_batches WHERE session_id = ? LIMIT 1`,
+  ).get(sessionId) as { hit: number } | undefined;
+  return !!row;
+}
+
 /**
  * Count prompt batches for a session — authoritative prompt count.
  */

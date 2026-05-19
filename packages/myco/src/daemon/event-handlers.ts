@@ -8,7 +8,8 @@
 import path from 'node:path';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { getTeamMachineId } from './team-context.js';
-import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
+import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, BATCH_KIND } from '@myco/db/queries/batches.js';
+import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';
 import { insertActivityWithBatch } from '@myco/db/queries/activities.js';
 import { updateSession, incrementSessionToolCount } from '@myco/db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
@@ -82,13 +83,21 @@ export interface UserPromptOptions {
 }
 
 /**
- * Open a synthetic `kind='recovered'` batch when no batch is currently
- * open for the session. Callers that produce an activity but don't
- * manage their own batch lifecycle invoke this first so the FK on
- * `activities.prompt_batch_id` (NOT NULL) is satisfied.
+ * Open a synthetic `kind='recovered'` batch ONLY when the session has
+ * no batches at all. Activity handlers call this before insert so that
+ * the FK on `activities.prompt_batch_id` is satisfied even for a session
+ * whose first observed event is a tool_use (or similar) instead of a
+ * user_prompt.
+ *
+ * Late post-turn bookkeeping events (subagent_stop, task_completed,
+ * compact, stop_failure) used to fabricate a phantom row here whenever
+ * the turn's INITIAL batch had already closed. They no longer do — the
+ * relaxed inline subquery in `insertActivityWithBatch` falls back to the
+ * just-closed batch instead, so the activity stays attached to the turn
+ * it belongs to.
  */
 export function ensureOpenBatch(sessionId: string): void {
-  if (findOpenParentBatch(sessionId)) return;
+  if (hasAnyBatch(sessionId)) return;
   const now = epochSeconds();
   insertBatchStateless({
     session_id: sessionId,
@@ -99,6 +108,20 @@ export function ensureOpenBatch(sessionId: string): void {
     kind: BATCH_KIND.RECOVERED,
     parent_prompt_batch_id: null,
   });
+}
+
+/**
+ * Insert an activity and update the linked batch's `activity_count` in one
+ * call. Centralises the increment so bookkeeping handlers (subagent_*,
+ * task_completed, compact, stop_failure) and `handleToolUse` agree on
+ * the invariant. Returns the inserted activity for callers that need it.
+ */
+function recordActivity(data: StatelessActivityInsert): ActivityRow {
+  const activity = insertActivityWithBatch(data);
+  if (activity.prompt_batch_id !== null) {
+    incrementActivityCount(activity.prompt_batch_id);
+  }
+  return activity;
 }
 
 /**
@@ -193,7 +216,7 @@ export function handleToolUse(
       ?? (activityFilePath !== filePath ? consumePendingInjection(sessionId, filePath) : null);
   }
 
-  const activity = insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -203,10 +226,6 @@ export function handleToolUse(
     created_at: now,
     canopy_injection_tokens: injectionTokens,
   });
-
-  if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id);
-  }
 
   // Increment session-level tool_count atomically.
   incrementSessionToolCount(sessionId);
@@ -244,7 +263,7 @@ export function handleToolFailure(
 
   ensureOpenBatch(sessionId);
 
-  const activity = insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: toolName,
     tool_input: toolInput ? JSON.stringify(toolInput).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
@@ -255,10 +274,6 @@ export function handleToolFailure(
     timestamp: now,
     created_at: now,
   });
-
-  if (activity.prompt_batch_id !== null) {
-    incrementActivityCount(activity.prompt_batch_id);
-  }
 }
 
 /**
@@ -271,7 +286,7 @@ export function handleSubagentStart(
 ): void {
   const now = epochSeconds();
   ensureOpenBatch(sessionId);
-  insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: 'subagent_start',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -291,7 +306,7 @@ export function handleSubagentStop(
 ): void {
   const now = epochSeconds();
   ensureOpenBatch(sessionId);
-  insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: 'subagent_stop',
     tool_input: JSON.stringify({ agent_id: agentId, agent_type: agentType }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -311,7 +326,7 @@ export function handleStopFailure(
 ): void {
   const now = epochSeconds();
   ensureOpenBatch(sessionId);
-  insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: 'stop_failure',
     tool_output_summary: errorDetails?.slice(0, TOOL_OUTPUT_STORE_LIMIT) ?? null,
@@ -333,7 +348,7 @@ export function handleTaskCompleted(
 ): void {
   const now = epochSeconds();
   ensureOpenBatch(sessionId);
-  insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: 'task_completed',
     tool_input: JSON.stringify({ task_id: taskId, task_subject: taskSubject, task_description: taskDescription }).slice(0, TOOL_INPUT_STORE_LIMIT),
@@ -354,7 +369,7 @@ export function handleCompact(
 ): void {
   const now = epochSeconds();
   ensureOpenBatch(sessionId);
-  insertActivityWithBatch({
+  recordActivity({
     session_id: sessionId,
     tool_name: `${phase}_compact`,
     tool_input: trigger ? JSON.stringify({ trigger }).slice(0, TOOL_INPUT_STORE_LIMIT) : null,
